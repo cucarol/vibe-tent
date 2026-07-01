@@ -1,0 +1,261 @@
+import * as nodePath from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn } from "node:child_process";
+import type { LoadedTent } from "./tree.js";
+import { parseOutputPointer } from "./output.js";
+import { splitType } from "./typeRegistry.js";
+import type { RoleWorkspaceContract } from "./task.js";
+
+export interface IntegrationResult {
+  sourceRef: string;
+  integratedRef: string;
+  alreadyIntegrated: boolean;
+}
+
+export interface RoleCommit {
+  ref: string;
+  shortRef: string;
+  subject: string;
+}
+
+export interface WorkspaceHead {
+  ref: string;
+  shortRef: string;
+  branch: string;
+}
+
+/** 一顶 Tent 只允许解析出一个真实 workspace。 */
+export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
+  const workspaces = new Set<string>();
+  for (const box of tent.byPath.values()) {
+    if (splitType(box.type).base !== "output") continue;
+    const workspace = parseOutputPointer(box.fm, box.body).workspace;
+    if (workspace) workspaces.add(nodePath.resolve(workspace));
+  }
+  if (workspaces.size > 1) {
+    throw new Error(`一顶 Tent 只能对应一个 workspace,当前发现: ${[...workspaces].join(", ")}`);
+  }
+  return [...workspaces][0];
+}
+
+/** 读取正式分支当前 HEAD；只读，不要求 workspace 正 checkout 在正式分支。 */
+export async function readWorkspaceHead(workspace: string): Promise<WorkspaceHead> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const branch = await resolveTargetBranch(root);
+  const ref = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
+  const shortRef = (await git(root, ["rev-parse", "--short", ref])).trim();
+  if (!ref || !shortRef) throw new Error("无法读取 workspace HEAD");
+  return { ref, shortRef, branch };
+}
+
+export async function ensureRoleWorkspace(
+  workspace: string,
+  role: string
+): Promise<RoleWorkspaceContract> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath.join(
+    nodePath.dirname(root),
+    `${nodePath.basename(root)}-worktrees`,
+    roleSlug
+  );
+
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath.resolve(existing)), branch, targetBranch };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`role worktree 路径已存在但未登记给 ${branch}: ${worktree}`);
+  }
+
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+
+/** 把 user 在验收交互中明确选中的 commits 逐个纳入正式分支；不 push。 */
+export async function integrateWorkspaceCommits(
+  contract: RoleWorkspaceContract,
+  refs: string[]
+): Promise<IntegrationResult[]> {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (current !== contract.targetBranch) {
+    throw new Error(`workspace 必须 checkout ${contract.targetBranch},当前是 ${current || "(detached)"}`);
+  }
+  const dirty = (await git(root, ["status", "--porcelain"])).trim();
+  if (dirty) throw new Error("workspace 有未提交改动,不能验收合入");
+
+  const results: IntegrationResult[] = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    const prior = await findCherryPick(root, sourceRef);
+    if (prior) {
+      results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+      continue;
+    }
+    try {
+      await git(root, ["cherry-pick", "-x", sourceRef]);
+    } catch (error) {
+      await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+      throw new Error(`workspace 合入冲突: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+    results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+  }
+  return results;
+}
+
+/** 列出 role lane 尚未进入正式分支的 commits；只读，异常按空候选处理。 */
+export async function listRoleCommits(contract: RoleWorkspaceContract): Promise<RoleCommit[]> {
+  try {
+    const output = await git(contract.workspace, [
+      "log",
+      `${contract.targetBranch}..${contract.branch}`,
+      "--format=%H%x09%h%x09%s",
+    ]);
+    return output
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .map((line) => {
+        const [ref = "", shortRef = "", ...subjectParts] = line.split("\t");
+        return { ref, shortRef, subject: subjectParts.join("\t") };
+      })
+      .filter((item) => item.ref && item.shortRef);
+  } catch {
+    return [];
+  }
+}
+
+/** 只读列举 role lane 未合入正式分支的 commits；不建 worktree、不建分支。 */
+export async function listRoleCommitsFor(workspace: string, role: string): Promise<RoleCommit[]> {
+  try {
+    const root = nodePath.resolve(workspace);
+    await assertGitWorkspace(root);
+    const targetBranch = await resolveTargetBranch(root);
+    const branch = `tent-role/${safeComponent(role)}`;
+    const exists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+    if (!exists) return [];
+    return listRoleCommits({ workspace: root, worktree: "", branch, targetBranch });
+  } catch {
+    return [];
+  }
+}
+
+async function assertGitWorkspace(root: string): Promise<void> {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath.resolve(top)),
+    nodeFs.realpath(root),
+  ]);
+  if (realTop.toLowerCase() !== realRoot.toLowerCase()) {
+    throw new Error(`workspace 必须是 Git 根目录: ${root}`);
+  }
+}
+
+async function resolveTargetBranch(root: string): Promise<string> {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("无法识别 workspace 正式分支");
+  return current;
+}
+
+async function worktreeForBranch(root: string, branch: string): Promise<string | undefined> {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return undefined;
+}
+
+async function findCherryPick(root: string, sourceRef: string): Promise<string | undefined> {
+  const needle = `(cherry picked from commit ${await fullRef(root, sourceRef)})`;
+  const output = await git(root, ["log", "--format=%H%x00%B%x00", contractRange()]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    if (parts[i + 1].includes(needle)) return parts[i].trim();
+  }
+  return undefined;
+}
+
+function contractRange(): string {
+  return "-n1000";
+}
+
+async function fullRef(root: string, ref: string): Promise<string> {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+
+function safeComponent(value: string): string {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized
+    .replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved
+    ? `${clean}-${shortHash(source)}`
+    : clean;
+}
+
+function shortHash(value: string): string {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+
+async function pathExists(path: string): Promise<boolean> {
+  try {
+    await nodeFs.access(path);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+async function gitOk(cwd: string, args: string[]): Promise<boolean> {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function git(cwd: string, args: string[]): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => (out += data));
+    child.stderr.on("data", (data) => (err += data));
+    child.on("close", (code) => {
+      if (code === 0) resolve(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}

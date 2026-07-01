@@ -1,0 +1,2338 @@
+#!/usr/bin/env node
+
+// src/cli/tent.ts
+import * as path from "node:path";
+
+// src/fs/node-fs.ts
+import * as fs from "node:fs/promises";
+import * as nodePath from "node:path";
+var NodeFs = class {
+  constructor(root) {
+    this.root = root;
+  }
+  abs(p) {
+    return nodePath.join(this.root, p);
+  }
+  async listDir(dir) {
+    const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
+    return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  }
+  async readFile(path2) {
+    return fs.readFile(this.abs(path2), "utf8");
+  }
+  async writeFile(path2, content) {
+    await fs.mkdir(nodePath.dirname(this.abs(path2)), { recursive: true });
+    await fs.writeFile(this.abs(path2), content, "utf8");
+  }
+  async exists(path2) {
+    try {
+      await fs.access(this.abs(path2));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async mkdir(path2) {
+    await fs.mkdir(this.abs(path2), { recursive: true });
+  }
+  async move(from, to) {
+    await fs.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
+    await fs.rename(this.abs(from), this.abs(to));
+  }
+  async remove(path2) {
+    await fs.rm(this.abs(path2), { recursive: true, force: true });
+  }
+  async withLock(path2, action) {
+    const lockPath = this.abs(path2);
+    await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
+    let handle;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        handle = await fs.open(lockPath, "wx");
+        break;
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+        const stale = await isStaleLock(lockPath);
+        if (!stale || attempt > 0) throw new Error("Tent \u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u5199\u64CD\u4F5C,\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+        await fs.rm(lockPath, { force: true });
+      }
+    }
+    if (!handle) throw new Error("\u65E0\u6CD5\u83B7\u53D6 Tent mutation lock");
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
+      return await action();
+    } finally {
+      await handle.close();
+      await fs.rm(lockPath, { force: true });
+    }
+  }
+};
+var SystemClock = class {
+  now() {
+    return (/* @__PURE__ */ new Date()).toISOString();
+  }
+};
+function isAlreadyExists(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+async function isStaleLock(path2) {
+  try {
+    const stat2 = await fs.stat(path2);
+    return Date.now() - stat2.mtimeMs > 12e4;
+  } catch {
+    return true;
+  }
+}
+
+// src/core/frontmatter.ts
+var FENCE = "---";
+var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+function parseFrontmatter(raw) {
+  const text = raw.replace(/\r\n/g, "\n");
+  if (!text.startsWith(FENCE + "\n")) {
+    return { data: {}, body: raw, keyOrder: [] };
+  }
+  const end = text.indexOf("\n" + FENCE, FENCE.length);
+  if (end === -1) {
+    return { data: {}, body: raw, keyOrder: [] };
+  }
+  const fmBlock = text.slice(FENCE.length + 1, end);
+  const afterFence = text.indexOf("\n", end + 1);
+  const body = afterFence === -1 ? "" : text.slice(afterFence + 1);
+  const data = {};
+  const keyOrder = [];
+  for (const line of fmBlock.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colon = trimmed.indexOf(":");
+    if (colon === -1) continue;
+    const key = trimmed.slice(0, colon).trim();
+    let valuePart = trimmed.slice(colon + 1).trim();
+    valuePart = stripInlineComment(valuePart);
+    data[key] = coerce(valuePart);
+    keyOrder.push(key);
+  }
+  return { data, body, keyOrder };
+}
+function stripInlineComment(v) {
+  if (v.startsWith('"') || v.startsWith("'")) return v;
+  const hash = v.indexOf(" #");
+  return hash === -1 ? v : v.slice(0, hash).trim();
+}
+function coerce(v) {
+  if (v === "") return void 0;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (v === "null" || v === "~") return null;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if (v.startsWith('"') && v.endsWith('"') || v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1);
+  }
+  if (v.startsWith("[") && v.endsWith("]")) {
+    const inner = v.slice(1, -1).trim();
+    if (!inner) return [];
+    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+  }
+  return v;
+}
+function splitFlowArray(inner) {
+  const items = [];
+  let current = "";
+  let quote = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && inner[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ",") {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
+}
+function serializeFrontmatter(data, body, keyOrder = []) {
+  const keys = orderedKeys(data, keyOrder);
+  const lines = [FENCE];
+  for (const k of keys) {
+    const val = data[k];
+    if (val === void 0) continue;
+    lines.push(`${k}: ${emit(val)}`);
+  }
+  lines.push(FENCE);
+  const out = lines.join("\n");
+  return body ? out + "\n" + body : out + "\n";
+}
+function orderedKeys(data, keyOrder) {
+  const seen = /* @__PURE__ */ new Set();
+  const result = [];
+  for (const k of keyOrder) {
+    if (k in data && !seen.has(k)) {
+      result.push(k);
+      seen.add(k);
+    }
+  }
+  for (const k of Object.keys(data)) {
+    if (!seen.has(k)) {
+      result.push(k);
+      seen.add(k);
+    }
+  }
+  return result;
+}
+function emit(v) {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return String(v);
+  if (v === null) return "null";
+  if (Array.isArray(v)) {
+    if (v.length === 0) return "[]";
+    return "[" + v.map((item) => emit(item)).join(", ") + "]";
+  }
+  const s = String(v);
+  if (/[:,#\[\]]/.test(s) || s !== s.trim() || s === "") return JSON.stringify(s);
+  return s;
+}
+
+// src/core/order.ts
+var ROOT_KEY = "__root__";
+var ORDER_PATH = ".tent/order.json";
+async function loadOrder(fs2) {
+  if (!await fs2.exists(ORDER_PATH)) return {};
+  try {
+    return JSON.parse(await fs2.readFile(ORDER_PATH));
+  } catch {
+    return {};
+  }
+}
+async function saveOrder(fs2, map) {
+  if (!await fs2.exists(".tent")) await fs2.mkdir(".tent");
+  await fs2.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+}
+function sortByOrder(items, order, fallback) {
+  const sorted = [...items];
+  if (!order || order.length === 0) {
+    sorted.sort(fallback);
+    return sorted;
+  }
+  const idx = new Map(order.map((id, i) => [id, i]));
+  sorted.sort((a, b) => {
+    const ai = idx.has(a.id) ? idx.get(a.id) : Infinity;
+    const bi = idx.has(b.id) ? idx.get(b.id) : Infinity;
+    if (ai !== bi) return ai - bi;
+    return fallback(a, b);
+  });
+  return sorted;
+}
+
+// src/core/typeRegistry.ts
+var TYPE_REGISTRY_PATH = ".tent/types.json";
+var DEFAULT_TYPE_REGISTRY = {
+  goal: {
+    readable: true,
+    writable: false,
+    color: "blue",
+    tier: "base",
+    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
+  },
+  prompt: {
+    readable: true,
+    writable: true,
+    color: "purple",
+    tier: "base",
+    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
+  },
+  output: {
+    readable: true,
+    writable: true,
+    color: "cyan",
+    tier: "base",
+    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
+  },
+  open: {
+    readable: true,
+    writable: true,
+    color: "green",
+    tier: "modifier",
+    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
+  },
+  reference: {
+    readable: true,
+    color: "blue",
+    tier: "modifier",
+    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
+  },
+  asset: {
+    writable: true,
+    color: "purple",
+    tier: "modifier",
+    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
+  },
+  sealed: {
+    readable: false,
+    writable: false,
+    color: "red",
+    tier: "modifier",
+    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
+  }
+};
+function splitType(type) {
+  const i = type.indexOf("-");
+  if (i === -1) return { base: type };
+  return { base: type.slice(0, i), modifier: type.slice(i + 1) };
+}
+function joinType(base, modifier) {
+  return modifier ? `${base}-${modifier}` : base;
+}
+function typeExists(type, registry) {
+  if (registry[type]) return true;
+  const { base, modifier } = splitType(type);
+  return !!(registry[base] && (modifier === void 0 || !!registry[modifier]));
+}
+function resolveTypeAxis(type, axis, registry) {
+  const exact = registry[type];
+  if (exact) return exact[axis];
+  const { base, modifier } = splitType(type);
+  const baseVal = registry[base]?.[axis];
+  const modVal = modifier ? registry[modifier]?.[axis] : void 0;
+  return typeof modVal === "boolean" ? modVal : baseVal;
+}
+async function loadTypeRegistry(fs2) {
+  if (!await fs2.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+  try {
+    const parsed = JSON.parse(await fs2.readFile(TYPE_REGISTRY_PATH));
+    return normalizeRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`types.json \u635F\u574F: ${detail}`);
+  }
+}
+function normalizeRegistry(value) {
+  const root = isRecord(value) ? value : {};
+  const registry = cloneDefaults();
+  if (isRecord(root.primary) || isRecord(root.secondary)) {
+    mergeDefinitions(registry, root.primary, true, "base");
+    mergeDefinitions(registry, root.secondary, false, "modifier");
+    return registry;
+  }
+  mergeDefinitions(registry, root);
+  return registry;
+}
+function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
+  if (!isRecord(source)) return;
+  for (const [name, raw] of Object.entries(source)) {
+    if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
+    const current = registry[name];
+    const tier = raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier;
+    const resolvedTier = tier ?? "base";
+    const readable = typeof raw.readable === "boolean" ? raw.readable : void 0;
+    const writable = typeof raw.writable === "boolean" ? raw.writable : void 0;
+    if ((legacyBase || resolvedTier === "base") && (readable === void 0 || writable === void 0)) continue;
+    const metadata = {
+      ...typeof raw.color === "string" && raw.color ? { color: raw.color } : current?.color ? { color: current.color } : {},
+      ...typeof raw.description === "string" && raw.description ? { description: raw.description } : current?.description ? { description: current.description } : {}
+    };
+    registry[name] = resolvedTier === "modifier" ? {
+      tier: "modifier",
+      ...readable !== void 0 ? { readable } : {},
+      ...writable !== void 0 ? { writable } : {},
+      ...metadata
+    } : { tier: "base", readable, writable, ...metadata };
+  }
+}
+function cloneDefaults() {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_TYPE_REGISTRY).map(([name, def]) => [name, { ...def }])
+  );
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/tree.ts
+var ZONE_NAMES = ["goal", "prompt", "output"];
+function boxNotePath(boxPath) {
+  return join2(boxPath, baseName(boxPath) + ".md");
+}
+async function loadTent(fs2) {
+  const byId = /* @__PURE__ */ new Map();
+  const byPath = /* @__PURE__ */ new Map();
+  const roots = [];
+  const typeRegistry = await loadTypeRegistry(fs2);
+  const top = await fs2.listDir("");
+  for (const entry of top) {
+    if (!entry.isDir) continue;
+    if (entry.name === "temp") continue;
+    await loadBoxInto(fs2, entry.name, null, typeRegistry, roots);
+  }
+  const order = await loadOrder(fs2);
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
+  for (const root of sortedRoots) sortChildren(root, order);
+  for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
+  const duplicateIds = findDuplicateIds(sortedRoots);
+  for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
+  resolveLocks(sortedRoots);
+  for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
+  return { roots: sortedRoots, byId, byPath, typeRegistry };
+}
+function findDuplicateIds(roots) {
+  const counts = /* @__PURE__ */ new Map();
+  const visit = (box) => {
+    if (box.id) counts.set(box.id, (counts.get(box.id) || 0) + 1);
+    for (const child of box.children) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
+}
+function applyDuplicateInvalid(box, duplicateIds, inherited) {
+  const direct = duplicateIds.has(box.id) ? { rootId: box.id, reason: `\u91CD\u590D id: ${box.id};\u539F\u751F\u590D\u5236\u9700\u8F6C\u4E3A fork` } : void 0;
+  const invalid = inherited || direct;
+  if (invalid) {
+    box.invalid = true;
+    box.invalidRootId = invalid.rootId;
+    box.invalidReason = invalid.reason;
+    box.readable = { value: false, source: "invalid" };
+    box.writable = { value: false, source: "invalid" };
+  }
+  for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
+}
+function sortChildren(box, order) {
+  box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
+  for (const c of box.children) sortChildren(c, order);
+}
+function zoneRank(name) {
+  const i = ZONE_NAMES.indexOf(name);
+  return i === -1 ? 99 : i;
+}
+async function loadBox(fs2, path2, parent, registry) {
+  const boxFile = boxNotePath(path2);
+  if (!await fs2.exists(boxFile)) {
+    return null;
+  }
+  const raw = await fs2.readFile(boxFile);
+  const { data, body } = parseFrontmatter(raw);
+  const name = baseName(path2);
+  const zone = parent ? parent.zone : zoneOf(name);
+  const { fm, tags } = normalizeIdentity(data);
+  const box = {
+    id: fm.id,
+    type: fm.type,
+    kind: fm.kind,
+    tags,
+    archived: false,
+    invalid: false,
+    path: path2,
+    name,
+    fm,
+    body,
+    children: [],
+    parent,
+    zone,
+    locked: false,
+    readable: { value: false, source: "type" },
+    writable: { value: false, source: "type" }
+  };
+  const sub = await fs2.listDir(path2);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    await loadBoxInto(fs2, join2(path2, entry.name), box, registry, box.children);
+  }
+  return box;
+}
+function normalizeIdentity(data) {
+  const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
+  const rawKind = typeof data.kind === "string" && data.kind ? data.kind : "";
+  const effectiveType = rawKind ? joinType(rawType, rawKind) : rawType;
+  const fm = {
+    ...data,
+    id: typeof data.id === "string" ? data.id : "",
+    type: effectiveType
+  };
+  if (rawKind) fm.kind = rawKind;
+  else delete fm.kind;
+  const tags = normalizeTags(data.tags);
+  if (tags.length > 0) fm.tags = tags;
+  else delete fm.tags;
+  if (typeof data.readable === "boolean") fm.readable = data.readable;
+  else delete fm.readable;
+  if (typeof data.writable === "boolean") fm.writable = data.writable;
+  else delete fm.writable;
+  return { fm, tags };
+}
+function normalizeTags(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const tag = item.trim();
+    if (tag && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+async function loadBoxInto(fs2, path2, parent, registry, target) {
+  const box = await loadBox(fs2, path2, parent, registry);
+  if (box) {
+    target.push(box);
+    return;
+  }
+  const sub = await fs2.listDir(path2);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    await loadBoxInto(fs2, join2(path2, entry.name), parent, registry, target);
+  }
+}
+function zoneOf(name) {
+  return ZONE_NAMES.includes(name) ? name : null;
+}
+function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
+  const directInvalid = invalidTypeReference(box, registry);
+  const invalid = inheritedInvalid || directInvalid;
+  box.invalid = !!invalid;
+  box.invalidRootId = invalid?.rootId;
+  box.invalidReason = invalid?.reason;
+  box.archived = inheritedArchived || box.fm.archived === true;
+  if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
+    delete box.fm.status;
+  }
+  box.readable = resolveAxis(box, "readable", registry);
+  box.writable = resolveAxis(box, "writable", registry);
+  for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
+}
+function resolveLocks(roots) {
+  for (const root of roots) clearLocks(root);
+  for (const root of roots) resolveLockSubtree(root);
+}
+function clearLocks(box) {
+  box.locked = false;
+  delete box.lockSource;
+  delete box.lockOwner;
+  for (const child of box.children) clearLocks(child);
+}
+function resolveLockSubtree(box) {
+  let descendantOwner;
+  for (const child of box.children) {
+    const occupied = resolveLockSubtree(child);
+    if (!descendantOwner && occupied) descendantOwner = occupied;
+  }
+  if (box.fm.owner) {
+    applyAncestorLock(box, box.fm.owner);
+    box.locked = true;
+    box.lockSource = "self";
+    box.lockOwner = box.fm.owner;
+    return { owner: box.fm.owner, box };
+  }
+  if (descendantOwner) {
+    box.locked = true;
+    box.lockSource = "descendant";
+    box.lockOwner = descendantOwner.owner;
+    return descendantOwner;
+  }
+  return void 0;
+}
+function applyAncestorLock(box, owner) {
+  for (const child of box.children) {
+    if (!child.fm.owner) {
+      child.locked = true;
+      child.lockSource = "ancestor";
+      child.lockOwner = owner;
+    }
+    applyAncestorLock(child, child.fm.owner || owner);
+  }
+}
+function resolveAxis(box, axis, registry) {
+  if (box.invalid) return { value: false, source: "invalid" };
+  if (box.archived) return { value: false, source: "archived" };
+  const declared = box.fm[axis];
+  if (typeof declared === "boolean") {
+    return { value: declared, source: "self" };
+  }
+  const fallback = resolveTypeAxis(box.type, axis, registry);
+  return { value: typeof fallback === "boolean" ? fallback : false, source: "type" };
+}
+function invalidTypeReference(box, registry) {
+  if (!box.id) {
+    return { rootId: box.path, reason: "\u7F3A\u5C11 id:\u7591\u4F3C\u624B\u5DE5\u521B\u5EFA\u7684\u5B64\u513F\u6846,\u8BF7\u7528 tent new-box \u6216 repair" };
+  }
+  if (!typeExists(box.type, registry)) {
+    return { rootId: box.id, reason: `\u672A\u77E5 type: ${box.type}` };
+  }
+  return void 0;
+}
+function isUsableBox(box) {
+  return !box.invalid && !box.archived;
+}
+function indexSubtree(box, byId, byPath, duplicateIds) {
+  if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
+  byPath.set(box.path, box);
+  for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
+}
+function join2(...parts) {
+  return parts.filter((p) => p !== "").join("/");
+}
+function baseName(path2) {
+  const i = path2.lastIndexOf("/");
+  return i === -1 ? path2 : path2.slice(i + 1);
+}
+function dirName(path2) {
+  const i = path2.lastIndexOf("/");
+  return i === -1 ? "" : path2.slice(0, i);
+}
+
+// src/core/adapter.ts
+function withTentMutation(fs2, action) {
+  return fs2.withLock ? fs2.withLock(".tent/mutation.lock", action) : action();
+}
+
+// src/core/manifest.ts
+function buildManifest(tent, input) {
+  const { role } = input;
+  const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
+  const claimScope = input.claimRoot ? allBoxes(tent).filter(isUsableBox) : claimBoxes.flatMap(subtree);
+  const readable = [];
+  const writable = [];
+  for (const box of allBoxes(tent)) {
+    if (isUsableBox(box) && box.readable.value) {
+      readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
+    }
+  }
+  readable.push({ path: ".tent/roles.json", note: "\u7CFB\u7EDF\u6CE8\u518C\u8868:\u53EF\u7528 role \u4E0E\u957F\u671F prompt" });
+  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EA4\u4ED8\u4E0E handoff" });
+  for (const box of claimScope) {
+    if (isUsableBox(box) && box.writable.value) {
+      writable.push({ id: box.id, path: box.path });
+    }
+  }
+  if (input.claimRoot) {
+    writable.push({ path: "./", note: "\u7ED3\u6784\u6743:\u53EF\u5728\u5E10\u6839\u521B\u5EFA/\u79FB\u52A8\u9876\u5C42\u6846" });
+  }
+  for (const box of claimScope) {
+    writable.push({ id: box.id, path: `${box.path}/`, note: "\u7ED3\u6784\u6743:\u53EF\u5728\u6B64\u6846\u4E0B\u521B\u5EFA/\u79FB\u52A8/\u5220\u9664\u5B50\u6846" });
+  }
+  writable.push({ path: join2("temp", role) + "/" });
+  return {
+    tent: input.tentName,
+    role,
+    claims: input.claimRoot ? ["root"] : claimBoxes.map((box) => box.id),
+    ...input.workspace ? { workspace: input.workspace } : {},
+    ...input.worktree ? { worktree: input.worktree } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
+    readable: dedupe(readable),
+    writable: dedupe(writable),
+    preloaded: buildPreloaded(tent)
+  };
+}
+function manifestToYaml(m) {
+  const lines = [];
+  lines.push(`tent: ${m.tent}`);
+  lines.push(`role: ${m.role}`);
+  lines.push(`claims: [${m.claims.join(", ")}]`);
+  if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
+  if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
+  if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
+  if (m.targetBranch) lines.push(`targetBranch: ${yamlStr(m.targetBranch)}`);
+  lines.push(`readable:`);
+  for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
+  lines.push(`writable:`);
+  for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
+  lines.push(`preloaded:`);
+  for (const p of m.preloaded) lines.push(`  - ${p}`);
+  return lines.join("\n") + "\n";
+}
+function entryLine(e) {
+  const parts = [];
+  if (e.id) parts.push(`id: ${e.id}`);
+  parts.push(`path: ${yamlStr(e.path)}`);
+  if (e.note) parts.push(`note: ${yamlStr(e.note)}`);
+  return `{${parts.join(", ")}}`;
+}
+function yamlStr(s) {
+  return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
+}
+function oneLineNote(box) {
+  const firstLine = box.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  return firstLine ? firstLine.slice(0, 40) : box.type;
+}
+function allBoxes(tent) {
+  return [...tent.byPath.values()];
+}
+function buildPreloaded(tent) {
+  const order = treeOrder(tent);
+  const entries = allBoxes(tent).filter((box) => isUsableBox(box) && box.readable.value).sort((a, b) => {
+    const stable = preloadStabilityRank(a) - preloadStabilityRank(b);
+    if (stable !== 0) return stable;
+    const type = preloadTypeRank(a) - preloadTypeRank(b);
+    if (type !== 0) return type;
+    return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
+  }).map((box) => `${box.path} \u6B63\u6587`);
+  return ["RULES.md", ...entries];
+}
+function preloadStabilityRank(box) {
+  const status = box.fm.status || "todo";
+  if (box.writable.value || box.fm.owner || status === "doing") return 1;
+  return 0;
+}
+function preloadTypeRank(box) {
+  const base = splitType(box.type).base;
+  if (base === "goal") return 0;
+  if (base === "prompt") return 1;
+  if (base === "output") return 2;
+  return 3;
+}
+function treeOrder(tent) {
+  const order = /* @__PURE__ */ new Map();
+  let n = 0;
+  const visit = (box) => {
+    order.set(box.id, n++);
+    for (const child of box.children) visit(child);
+  };
+  for (const root of tent.roots) visit(root);
+  return order;
+}
+function subtree(box) {
+  const out = [box];
+  for (const c of box.children) out.push(...subtree(c));
+  return out;
+}
+function requireClaimBoxes(input) {
+  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("\u7F3A\u5C11\u8BA4\u9886\u6846");
+  return input.claimBoxes;
+}
+function dedupe(entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const e of entries) {
+    if (seen.has(e.path)) continue;
+    seen.add(e.path);
+    out.push(e);
+  }
+  return out;
+}
+
+// src/core/id.ts
+var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+function makeBoxId(rand = Math.random, len = 6) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
+  }
+  return "bx-" + s;
+}
+function makeUniqueBoxId(existing, rand = Math.random) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = makeBoxId(rand);
+    if (!existing.has(id)) return id;
+  }
+  return makeBoxId(rand, 10);
+}
+
+// src/core/claim.ts
+function canClaim(box) {
+  if (box.invalid) return { ok: false, blocker: box, reason: `\u5931\u6548\u5B50\u6811:${box.invalidReason || "\u7C7B\u578B\u5B9A\u4E49\u7F3A\u5931"}` };
+  if (box.archived) return { ok: false, blocker: box, reason: "\u5F52\u6863\u5B50\u6811\u4E0D\u53EF\u8BA4\u9886" };
+  if (box.fm.owner) {
+    return { ok: false, blocker: box, reason: `\u5DF2\u88AB ${box.fm.owner} \u8BA4\u9886` };
+  }
+  let anc = box.parent;
+  while (anc) {
+    if (anc.fm.owner) {
+      return { ok: false, blocker: anc, reason: `\u7956\u5148\u300C${anc.name}\u300D\u5DF2\u88AB ${anc.fm.owner} \u8BA4\u9886` };
+    }
+    anc = anc.parent;
+  }
+  const occupiedChild = findOccupied(box.children);
+  if (occupiedChild) {
+    return {
+      ok: false,
+      blocker: occupiedChild,
+      reason: `\u5B50\u5B59\u300C${occupiedChild.name}\u300D\u5DF2\u88AB ${occupiedChild.fm.owner} \u8BA4\u9886`
+    };
+  }
+  return { ok: true };
+}
+function findOccupied(boxes) {
+  for (const b of boxes) {
+    if (b.fm.owner) return b;
+    const deep = findOccupied(b.children);
+    if (deep) return deep;
+  }
+  return void 0;
+}
+function occupiedBoxes(tent) {
+  const out = [];
+  for (const root of tent.roots) collect(root, out);
+  return out;
+}
+function collect(box, out) {
+  if (box.fm.owner) out.push(box);
+  for (const c of box.children) collect(c, out);
+}
+
+// src/core/proposal.ts
+function validateProposalTarget(tent, targetId) {
+  const target = tent.byId.get(targetId);
+  if (!target) return { ok: false, reason: `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}` };
+  if (target.invalid || target.archived) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u63D0 proposal:${target.invalidReason || "\u5DF2\u5F52\u6863"}` };
+  if (!target.readable.value) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u8BFB,\u4E0D\u80FD\u63D0 proposal: ${targetId}` };
+  return { ok: true, target };
+}
+
+// src/core/tags.ts
+var TAGS_REGISTRY_PATH = ".tent/tags.json";
+async function loadTagRegistry(fs2) {
+  if (!await fs2.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+  try {
+    return normalizeRegistry2(JSON.parse(await fs2.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    return { tags: [] };
+  }
+}
+async function saveTagRegistryUnlocked(fs2, registry) {
+  if (!await fs2.exists(".tent")) await fs2.mkdir(".tent");
+  await fs2.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+}
+async function addRegistryTag(fs2, name) {
+  await withTentMutation(fs2, async () => addRegistryTagUnlocked(fs2, name));
+}
+async function addRegistryTagUnlocked(fs2, name) {
+  const tag = normalizeTagName(name);
+  const registry = await loadTagRegistry(fs2);
+  if (!registry.tags.includes(tag)) {
+    registry.tags.push(tag);
+    await saveTagRegistryUnlocked(fs2, registry);
+  }
+}
+async function addTag(fs2, boxId, name) {
+  await withTentMutation(fs2, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs2);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    await addRegistryTagUnlocked(fs2, tag);
+    const tags = uniqueSorted([...box.tags, tag]);
+    await writeBoxTags(fs2, box, tags);
+  });
+}
+async function removeTag(fs2, boxId, name) {
+  await withTentMutation(fs2, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs2);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    await writeBoxTags(fs2, box, box.tags.filter((item) => item !== tag));
+  });
+}
+async function removeRegistryTag(fs2, name) {
+  await withTentMutation(fs2, async () => {
+    const tag = normalizeTagName(name);
+    const registry = await loadTagRegistry(fs2);
+    await saveTagRegistryUnlocked(fs2, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs2);
+    for (const box of tent.byId.values()) {
+      if (box.tags.includes(tag)) {
+        await writeBoxTags(fs2, box, box.tags.filter((item) => item !== tag));
+      }
+    }
+  });
+}
+function findBoxesByTag(tent, name) {
+  let tag;
+  try {
+    tag = normalizeTagName(name);
+  } catch {
+    return [];
+  }
+  return [...tent.byId.values()].filter((box) => box.tags.includes(tag)).sort((a, b) => a.path.localeCompare(b.path));
+}
+function normalizeTagName(name) {
+  const tag = name.trim();
+  if (!tag) throw new Error("tag \u540D\u4E0D\u80FD\u4E3A\u7A7A");
+  if (/[\/\\\r\n]/.test(tag)) throw new Error("tag \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
+  return tag;
+}
+async function writeBoxTags(fs2, box, tags) {
+  const path2 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(path2));
+  const next = uniqueSorted(tags);
+  if (next.length === 0) delete data.tags;
+  else data.tags = next;
+  await fs2.writeFile(path2, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+}
+function normalizeRegistry2(value) {
+  if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
+  const tags = [];
+  for (const valueTag of value.tags) {
+    if (typeof valueTag !== "string") continue;
+    try {
+      tags.push(normalizeTagName(valueTag));
+    } catch {
+    }
+  }
+  return { tags: uniqueSorted(tags) };
+}
+function uniqueSorted(values) {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+function boxKeyOrder(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/skillRoleRegistry.ts
+var ROLES_REGISTRY_PATH = ".tent/roles.json";
+var DEFAULT_ROLES_REGISTRY = {
+  roles: []
+};
+async function loadRolesRegistry(fs2) {
+  if (!await fs2.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  try {
+    const parsed = JSON.parse(await fs2.readFile(ROLES_REGISTRY_PATH));
+    return normalizeRolesRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`roles.json \u635F\u574F: ${detail}`);
+  }
+}
+function normalizeRolesRegistry(value) {
+  const root = isRecord3(value) ? value : {};
+  const roles = [];
+  if (Array.isArray(root.roles)) {
+    for (const item of root.roles) {
+      if (!isRecord3(item)) continue;
+      const role = normalizeRole(item);
+      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      roles.push(role);
+    }
+  }
+  return { roles };
+}
+function normalizeRole(value) {
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const role = { name };
+  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
+  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
+  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  return role;
+}
+function cloneDefaultRoles() {
+  return {
+    roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
+  };
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/task.ts
+async function ensureRoleInit(fs2, role, tentName) {
+  const path2 = join2("temp", role.name, "init.md");
+  const body = `# Role Init
+
+- Tent: ${tentName}
+- Rules: RULES.md
+- Role registry: .tent/roles.json (or run \`tent roles\`)
+
+## Role Prompt
+
+${role.prompt?.trim() || "(\u65E0\u957F\u671F role prompt)"}
+
+## Operating Model
+
+Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\u5168\u6C99\u7BB1\u3002\u9047\u5230 prompt \u51B2\u7A81\u6216\u65E0\u6CD5\u9075\u5B88\u7684\u8FB9\u754C\u65F6\uFF0C\u505C\u6B62\u5E76\u8BE2\u95EE user\u3002
+`;
+  await fs2.writeFile(path2, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path2;
+}
+async function writeTaskEnvelope(fs2, clock, input) {
+  const userPrompt = input.userPrompt?.trim() || "";
+  const handoffPath = input.handoffPath?.trim() || "";
+  if (!userPrompt && !handoffPath) throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
+  const dir = join2("temp", input.role, "tasks");
+  await ensureDir(fs2, dir);
+  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
+  const path2 = await uniqueMarkdownPath(fs2, dir, stem);
+  const data = {
+    type: "task",
+    role: input.role,
+    claims: input.claims.map((claim) => claim.id),
+    manifest: input.manifestPath
+  };
+  if (handoffPath) data.handoff = handoffPath;
+  if (input.workspace) {
+    data.workspace = input.workspace.workspace;
+    data.worktree = input.workspace.worktree;
+    data.branch = input.workspace.branch;
+    data.targetBranch = input.workspace.targetBranch;
+  }
+  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
+  const body = `# Task
+
+## Context Pointers
+
+${pointers}
+
+- Manifest: ${input.manifestPath}
+` + (handoffPath ? `- Handoff: ${handoffPath}
+` : "") + (userPrompt ? `
+## User Prompt
+
+${userPrompt}
+` : "");
+  await fs2.writeFile(path2, serializeFrontmatter(data, body));
+  return path2;
+}
+function taskStem(now, claimId) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
+  return `task-${stamp2}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
+}
+async function uniqueMarkdownPath(fs2, dir, stem) {
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path2 = join2(dir, `${stem}${suffix}.md`);
+    if (!await fs2.exists(path2)) return path2;
+  }
+}
+async function ensureDir(fs2, path2) {
+  if (!await fs2.exists(path2)) await fs2.mkdir(path2);
+}
+
+// src/core/handoff.ts
+async function loadHandoff(fs2, inputPath) {
+  const path2 = normalizeHandoffPath(inputPath);
+  if (!await fs2.exists(path2)) throw new Error(`\u627E\u4E0D\u5230 handoff: ${path2}`);
+  const sourceRole = path2.split("/")[1] || "";
+  const handoff2 = parseHandoff(path2, await fs2.readFile(path2), sourceRole);
+  if (!handoff2) throw new Error(`handoff \u683C\u5F0F\u65E0\u6548: ${path2}`);
+  return handoff2;
+}
+async function validateDispatchHandoff(fs2, inputPath, targetId, targetRole) {
+  const handoff2 = await loadHandoff(fs2, inputPath);
+  if (handoff2.targetId !== targetId) {
+    throw new Error(`handoff \u76EE\u6807\u662F ${handoff2.targetId},\u4E0D\u80FD\u6D3E\u5230 ${targetId}`);
+  }
+  if (handoff2.targetRole !== targetRole) {
+    throw new Error(`handoff \u6307\u5B9A role ${handoff2.targetRole},\u4E0D\u80FD\u6D3E\u7ED9 ${targetRole}`);
+  }
+  return handoff2;
+}
+function parseHandoff(path2, raw, sourceRole) {
+  const { data, body } = parseFrontmatter(raw);
+  if (data.type !== "handoff") return null;
+  if (typeof data.from !== "string" || typeof data.target !== "string" || typeof data.role !== "string") {
+    return null;
+  }
+  return {
+    path: path2,
+    fromBoxId: data.from,
+    targetId: data.target,
+    targetRole: data.role,
+    fromRole: typeof data.by === "string" && data.by ? data.by : sourceRole,
+    timestamp: typeof data.ts === "string" ? data.ts : void 0,
+    body: body.trim()
+  };
+}
+function normalizeHandoffPath(input) {
+  const path2 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/handoffs\/[^/]+\.md$/.test(path2)) {
+    throw new Error("handoff \u5FC5\u987B\u6307\u5411 temp/<role>/handoffs/*.md");
+  }
+  return path2;
+}
+
+// src/core/report.ts
+async function submitReport(fs2, clock, boxId, body, commits) {
+  return withTentMutation(fs2, async () => submitReportUnlocked(fs2, clock, boxId, body, commits));
+}
+async function submitReportUnlocked(fs2, clock, boxId, body, commits) {
+  const text = body.trim();
+  if (!text) throw new Error("report \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
+  const tent = await loadTent(fs2);
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+  const role = box.fm.owner;
+  if (!role) throw new Error("\u53EA\u6709\u76F4\u63A5\u5E26 owner \u7684\u8BA4\u9886\u6846\u53EF\u4EE5\u63D0\u4EA4 report");
+  const path2 = reportPath(role, box.id);
+  if (await fs2.exists(path2)) {
+    const current = await loadReport(fs2, path2);
+    if (current.status === "ready") throw new Error("\u5DF2\u6709\u5F85\u88C1 report;\u9700\u5148\u7531 user \u786E\u8BA4\u6216\u9A73\u56DE");
+  }
+  const report = {
+    path: path2,
+    boxId: box.id,
+    role,
+    status: "ready",
+    commits: uniqueCommits(commits),
+    timestamp: clock.now(),
+    body: text
+  };
+  await ensureDir2(fs2, join2("temp", role, "reports"));
+  await writeReport(fs2, report);
+  return report;
+}
+async function loadReports(fs2) {
+  const reports = [];
+  if (!await fs2.exists("temp")) return reports;
+  for (const roleDir of await fs2.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join2("temp", roleDir.name, "reports");
+    if (!await fs2.exists(dir)) continue;
+    for (const entry of await fs2.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path2 = join2(dir, entry.name);
+      try {
+        reports.push(await loadReport(fs2, path2));
+      } catch {
+      }
+    }
+  }
+  return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
+}
+async function loadReport(fs2, inputPath) {
+  const path2 = normalizeReportPath(inputPath);
+  if (!await fs2.exists(path2)) throw new Error(`\u627E\u4E0D\u5230 report: ${path2}`);
+  const { data, body } = parseFrontmatter(await fs2.readFile(path2));
+  if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
+    throw new Error(`report \u683C\u5F0F\u65E0\u6548: ${path2}`);
+  }
+  return {
+    path: path2,
+    boxId: data.box,
+    role: data.role,
+    status: data.status,
+    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((item) => typeof item === "string")) : [],
+    timestamp: typeof data.ts === "string" ? data.ts : void 0,
+    review: typeof data.review === "string" ? data.review : void 0,
+    body: body.trim()
+  };
+}
+async function removeReportsForBox(fs2, boxId) {
+  for (const report of await loadReports(fs2)) {
+    if (report.boxId === boxId && await fs2.exists(report.path)) await fs2.remove(report.path);
+  }
+}
+function reportPath(role, boxId) {
+  return join2("temp", role, "reports", `${boxId}.md`);
+}
+function normalizeReportPath(input) {
+  const path2 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path2)) {
+    throw new Error("report \u5FC5\u987B\u6307\u5411 temp/<role>/reports/<boxId>.md");
+  }
+  return path2;
+}
+async function writeReport(fs2, report) {
+  const data = {
+    type: "report",
+    box: report.boxId,
+    role: report.role,
+    status: report.status,
+    commits: report.commits,
+    ts: report.timestamp,
+    review: report.review
+  };
+  await fs2.writeFile(
+    report.path,
+    serializeFrontmatter(data, report.body + "\n", ["type", "box", "role", "status", "commits", "ts", "review"])
+  );
+}
+async function ensureDir2(fs2, path2) {
+  if (!await fs2.exists(path2)) await fs2.mkdir(path2);
+}
+function uniqueCommits(commits) {
+  return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
+}
+
+// src/core/ops.ts
+async function dispatch(env, claimId, role, promptOrOptions) {
+  return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+}
+async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
+  const tent = await loadTent(env.fs);
+  const roleName = assertRoleName(role);
+  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const userPrompt = options.userPrompt?.trim() || "";
+  const handoffPath = options.handoffPath?.trim() || "";
+  let resolvedHandoffPath = handoffPath;
+  if (!userPrompt && !handoffPath) {
+    throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
+  }
+  if (handoffPath) {
+    if (claim.root) throw new Error("handoff \u5FC5\u987B\u6D3E\u5230\u5176\u6307\u5B9A box,\u4E0D\u80FD\u6D3E\u5230\u5E10\u6839");
+    resolvedHandoffPath = (await validateDispatchHandoff(env.fs, handoffPath, claim.box.id, roleName)).path;
+  }
+  if (claim.root) {
+    const occupied = occupiedBoxes(tent);
+    if (occupied.length > 0) {
+      throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:\u5E10\u6839\u4E0B\u5DF2\u6709\u8BA4\u9886\u300C${occupied[0].name}\u300D(${occupied[0].fm.owner})`);
+    }
+  } else {
+    const existingOwner = ownerCovering(claim.box);
+    if (existingOwner) {
+      throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:${existingOwner.name} \u5DF2\u88AB ${existingOwner.fm.owner} \u8BA4\u9886`);
+    }
+    const claimable = canClaim(claim.box);
+    if (!claimable.ok) throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:${claimable.reason || "\u6846\u4E0D\u53EF\u8BA4\u9886"}`);
+    await setOwner(env.fs, claim.box, roleName, "doing");
+    claim.box.fm.owner = roleName;
+    claim.box.fm.status = "doing";
+  }
+  const ownedClaims = claim.root ? [] : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
+  const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
+  const manifest = buildManifest(tent, input);
+  const yaml = manifestToYaml(manifest);
+  const manifestPath = join2("temp", roleName, "manifest.yml");
+  await ensureDir3(env.fs, dirName(manifestPath));
+  await env.fs.writeFile(manifestPath, yaml);
+  const registry = await loadRolesRegistry(env.fs);
+  const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
+  const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+  const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+  const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
+    role: roleName,
+    claims: taskClaims,
+    manifestPath,
+    userPrompt: options.userPrompt,
+    handoffPath: resolvedHandoffPath || void 0,
+    workspace: options.workspace
+  });
+  const relayPrompt = `\u8BFB\u53D6 ${taskPath} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+  return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+}
+function resolveDispatchClaim(tent, claimId, tentName) {
+  const id = claimId.trim();
+  if (id === "." || id === "root" || id === tentName) return { root: true, id: "root", name: "\u5E10\u6839" };
+  const box = tent.byId.get(id);
+  if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
+  return { root: false, id: box.id, name: box.name, box };
+}
+async function stamp(env, boxId) {
+  await completeClaim(env, boxId);
+}
+async function completeClaim(env, boxId, integrate) {
+  await withMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (integrate) await integrate();
+    await setOwner(env.fs, box, void 0, "done");
+  });
+}
+async function propose(env, targetId, role, body) {
+  return withMutation(env.fs, async () => {
+    const roleName = assertRoleName(role);
+    const tent = await loadTent(env.fs);
+    const check = validateProposalTarget(tent, targetId);
+    if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
+    const content = body.trim();
+    if (!content) throw new Error("proposal \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
+    const dir = join2("temp", roleName, "proposals");
+    await ensureDir3(env.fs, dir);
+    const proposalPath = await uniqueProposalPath(env.fs, dir, targetId, env.clock.now());
+    const data = {
+      type: "proposal",
+      target: targetId,
+      status: "open",
+      from: roleName
+    };
+    await env.fs.writeFile(
+      proposalPath,
+      serializeFrontmatter(data, content + "\n", ["type", "target", "status", "from", "note"])
+    );
+    return { proposalPath };
+  });
+}
+async function applyProposal(env, proposalPath, accept, note) {
+  await withMutation(env.fs, async () => {
+    const raw = await env.fs.readFile(proposalPath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (accept) {
+      const targetId = typeof data.target === "string" ? data.target : String(data.target || "");
+      const check = validateProposalTarget(await loadTent(env.fs), targetId);
+      if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
+    }
+    data.status = accept ? "accepted" : "rejected";
+    if (note) data.note = note;
+    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
+  });
+}
+async function grantReadable(env, boxId) {
+  await withMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (!isUsableBox(box)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD\u7FFB\u53EF\u8BFB");
+    await patchFrontmatter(env.fs, box, { readable: true });
+  });
+}
+async function startApply(env, proposalPath) {
+  const { data, body } = parseFrontmatter(await env.fs.readFile(proposalPath));
+  if (data.status !== "accepted") {
+    throw new Error(`proposal \u4E0D\u662F accepted \u72B6\u6001(\u5F53\u524D ${data.status});\u53EA\u6709 user \u6279\u51C6\u8FC7\u7684\u624D\u80FD\u843D\u5730`);
+  }
+  const targetId = String(data.target);
+  const tent = await loadTent(env.fs);
+  const check = validateProposalTarget(tent, targetId);
+  if (!check.ok || !check.target) throw new Error(check.reason || `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}`);
+  const target = check.target;
+  if (!isUsableBox(target)) throw new Error(`\u76EE\u6807\u6846\u4E0D\u53EF\u843D\u5730:${target.invalidReason || "\u5DF2\u5F52\u6863"}`);
+  return { targetId, targetPath: target.path, instructions: body.trim() };
+}
+async function finishApply(env, proposalPath) {
+  await withMutation(env.fs, async () => {
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(proposalPath));
+    if (data.status !== "accepted") {
+      throw new Error(`proposal \u4E0D\u662F accepted \u72B6\u6001,\u65E0\u6CD5\u6536\u5C3E`);
+    }
+    data.status = "applied";
+    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
+  });
+}
+async function forkNode(env, boxId) {
+  return withMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
+}
+async function forkNodeUnlocked(env, boxId) {
+  const tent = await loadTent(env.fs);
+  const source = tent.byId.get(boxId);
+  if (!source) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+  if (!isUsableBox(source)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD fork");
+  const parentPath = dirName(source.path);
+  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
+  await copyTree(env.fs, source.path, forkPath);
+  const sourceBoxes = collectSubtree(source);
+  const usedIds = new Set(tent.byId.keys());
+  const idMap = /* @__PURE__ */ new Map();
+  for (const box of sourceBoxes) {
+    const nextId = makeUniqueBoxId(usedIds, env.rand);
+    usedIds.add(nextId);
+    idMap.set(box.id, nextId);
+  }
+  const forkRootId = idMap.get(source.id);
+  for (const box of sourceBoxes) {
+    const rel = relativePath(source.path, box.path);
+    const nextPath = rel ? join2(forkPath, rel) : forkPath;
+    const notePath = boxNotePath(nextPath);
+    await ensureIdentityFileName(env.fs, nextPath, box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+    data.id = idMap.get(box.id);
+    delete data.owner;
+    delete data.status;
+    delete data.forkOf;
+    delete data.forkBase;
+    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
+  }
+  const order = await loadOrder(env.fs);
+  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
+  const idx = siblings.indexOf(source.id);
+  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
+  order[parentKey] = siblings;
+  for (const box of sourceBoxes) {
+    const oldChildren = order[box.id];
+    const newId = idMap.get(box.id);
+    if (oldChildren && newId) {
+      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
+    }
+  }
+  await saveOrder(env.fs, order);
+  return forkRootId;
+}
+async function handoff(env, fromBoxId, targetId, targetRole, prompt) {
+  return withMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    const from = tent.byId.get(fromBoxId);
+    if (!from) throw new Error(`\u627E\u4E0D\u5230\u6846 ${fromBoxId}`);
+    if (!isUsableBox(from)) throw new Error("\u4EA4\u63A5\u6765\u6E90\u6846\u4E0D\u53EF\u7528");
+    const target = tent.byId.get(targetId);
+    if (!target) throw new Error(`\u627E\u4E0D\u5230\u6846 ${targetId}`);
+    if (!isUsableBox(target)) throw new Error("\u4EA4\u63A5\u76EE\u6807\u6846\u4E0D\u53EF\u7528");
+    const role = assertRoleName(targetRole);
+    const body = prompt.trim();
+    if (!body) throw new Error("handoff prompt \u4E0D\u80FD\u4E3A\u7A7A");
+    const fromRole = from.fm.owner || "_";
+    const dir = join2("temp", fromRole, "handoffs");
+    await ensureDir3(env.fs, dir);
+    const handoffPath = await uniqueHandoffPath(env.fs, dir, targetId, env.clock.now());
+    const data = {
+      type: "handoff",
+      from: fromBoxId,
+      target: targetId,
+      role,
+      by: from.fm.owner || "",
+      ts: env.clock.now()
+    };
+    await env.fs.writeFile(
+      handoffPath,
+      serializeFrontmatter(data, body + "\n", ["type", "from", "target", "role", "by", "ts"])
+    );
+    return handoffPath;
+  });
+}
+async function cleanTemp(env, role) {
+  await withMutation(env.fs, async () => {
+    const target = role ? join2("temp", role) : "temp";
+    if (await env.fs.exists(target)) {
+      await env.fs.remove(target);
+    }
+    if (!role) await ensureDir3(env.fs, "temp");
+  });
+}
+async function forceRelease(env, boxId) {
+  await withMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (!box.fm.owner) throw new Error("\u53EA\u80FD\u4E2D\u65AD\u76F4\u63A5\u5E26 owner \u7684\u8BA4\u9886\u6839");
+    await setOwner(env.fs, box, void 0, "todo");
+    await removeReportsForBox(env.fs, box.id);
+  });
+}
+async function tagBox(env, boxId, name) {
+  await addTag(env.fs, boxId, normalizeTagName(name));
+}
+async function untagBox(env, boxId, name) {
+  await removeTag(env.fs, boxId, normalizeTagName(name));
+}
+async function createTag(env, name) {
+  await addRegistryTag(env.fs, normalizeTagName(name));
+}
+async function deleteTag(env, name) {
+  await removeRegistryTag(env.fs, normalizeTagName(name));
+}
+async function createBox(env, input) {
+  return withMutation(env.fs, async () => createBoxUnlocked(env, input));
+}
+async function createBoxUnlocked(env, input) {
+  assertNotTempPath(input.parentPath);
+  const tent = await loadTent(env.fs);
+  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`\u672A\u77E5 type: ${input.type}`);
+  if (input.parentPath) {
+    const parent = tent.byPath.get(input.parentPath);
+    if (!parent || !isUsableBox(parent)) throw new Error("\u76EE\u6807\u7236\u6846\u5931\u6548\u6216\u5DF2\u5F52\u6863");
+  }
+  const existing = new Set(tent.byId.keys());
+  const id = makeUniqueBoxId(existing, env.rand);
+  const path2 = join2(input.parentPath, input.name);
+  assertNotTempPath(path2);
+  await ensureDir3(env.fs, path2);
+  const fm = { id, type: input.type };
+  const content = serializeFrontmatter(fm, `
+# ${input.name}
+`, BOX_FRONTMATTER_KEY_ORDER);
+  await env.fs.writeFile(boxNotePath(path2), content);
+  return id;
+}
+async function setOwner(fs2, box, owner, status) {
+  const patch = { owner: owner ?? void 0 };
+  if (status) patch.status = status;
+  await patchFrontmatter(fs2, box, patch);
+}
+async function patchFrontmatter(fs2, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  await fs2.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+}
+async function ensureDir3(fs2, path2) {
+  if (path2 && !await fs2.exists(path2)) await fs2.mkdir(path2);
+}
+function boxKeyOrder2(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+}
+function assertNotTempPath(path2) {
+  if (path2 === "temp" || path2.startsWith("temp/")) {
+    throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u5141\u8BB8\u521B\u5EFA\u6216\u79FB\u52A8 typed box");
+  }
+}
+function assertRoleName(role) {
+  const name = role.trim();
+  if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
+  if (/[\/\\\r\n]/.test(name)) throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
+  return name;
+}
+function ownerCovering(box) {
+  if (box.fm.owner) return box;
+  let parent = box.parent;
+  while (parent) {
+    if (parent.fm.owner) return parent;
+    parent = parent.parent;
+  }
+  return void 0;
+}
+async function withMutation(fs2, action) {
+  return withTentMutation(fs2, action);
+}
+async function uniqueProposalPath(fs2, dir, targetId, now) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "proposal";
+  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
+  let n = 1;
+  while (true) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path2 = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
+    if (!await fs2.exists(path2)) return path2;
+    n += 1;
+  }
+}
+async function uniqueHandoffPath(fs2, dir, targetId, now) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
+  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path2 = join2(dir, `hf-${stamp2}-${safeTarget}${suffix}.md`);
+    if (!await fs2.exists(path2)) return path2;
+  }
+}
+async function uniqueSiblingPath(fs2, parentPath, base) {
+  let n = 1;
+  while (true) {
+    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
+    const candidate = join2(parentPath, name);
+    if (!await fs2.exists(candidate)) return candidate;
+    n += 1;
+  }
+}
+async function copyTree(fs2, from, to) {
+  await fs2.mkdir(to);
+  for (const entry of await fs2.listDir(from)) {
+    const src = join2(from, entry.name);
+    const dst = join2(to, entry.name);
+    if (entry.isDir) await copyTree(fs2, src, dst);
+    else await fs2.writeFile(dst, await fs2.readFile(src));
+  }
+}
+function collectSubtree(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree(child, out);
+  return out;
+}
+function relativePath(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName(fs2, newBoxPath, oldBoxPath) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs2.exists(expected)) return;
+  const oldName = `${baseName(oldBoxPath)}.md`;
+  const copied = join2(newBoxPath, oldName);
+  if (await fs2.exists(copied)) await fs2.move(copied, expected);
+}
+
+// src/core/scaffold.ts
+async function scaffoldTent(fs2, options) {
+  const name = options.name.trim();
+  if (!name) throw new Error("\u5E10\u540D\u4E0D\u80FD\u4E3A\u7A7A");
+  if (!options.rules.trim()) throw new Error("RULES.md \u5185\u5BB9\u4E0D\u80FD\u4E3A\u7A7A");
+  const usedIds = /* @__PURE__ */ new Set();
+  for (const box of options.boxes ?? []) {
+    const boxName = box.name.trim();
+    if (!boxName || boxName.includes("/") || boxName.includes("\\")) {
+      throw new Error(`\u65E0\u6548\u6846\u540D: ${box.name}`);
+    }
+    const type = box.kind?.trim() || box.type.trim();
+    if (!type) throw new Error(`\u6846\u300C${boxName}\u300D\u7F3A\u4E00\u7EA7 type`);
+    const id = box.id?.trim() || makeUniqueBoxId(usedIds);
+    usedIds.add(id);
+    const frontmatter = { id, type };
+    await writeBox(fs2, boxName, frontmatter, box.body ?? `# ${boxName}
+`);
+  }
+  await fs2.mkdir("temp");
+  await fs2.mkdir(".tent");
+  await fs2.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
+  await fs2.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
+  await fs2.writeFile(TAGS_REGISTRY_PATH, JSON.stringify({ tags: [] }, null, 2) + "\n");
+  await fs2.writeFile("RULES.md", options.rules);
+}
+async function writeBox(fs2, path2, frontmatter, body) {
+  await fs2.mkdir(path2);
+  await fs2.writeFile(boxNotePath(path2), serializeFrontmatter(frontmatter, `
+${body}
+`, BOX_FRONTMATTER_KEY_ORDER));
+}
+
+// src/core/output.ts
+function parseOutputPointer(fm, body) {
+  const result = {};
+  const fmWorkspace = fieldString(fm.workspace);
+  if (fmWorkspace) result.workspace = fmWorkspace;
+  const fmRef = fieldString(fm.ref);
+  if (fmRef) result.ref = fmRef;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = normalizeLabelLine(rawLine);
+    if (!result.workspace) {
+      const workspace = matchField(line, ["workspace", "workspace \u8DEF\u5F84", "repo", "pointer", "\u8DEF\u5F84"]);
+      if (workspace) result.workspace = workspace;
+    }
+    if (!result.ref) {
+      const ref = matchField(line, ["git ref", "git-ref", "\u5F53\u524D ref", "commit", "ref"]);
+      if (ref) result.ref = ref;
+    }
+  }
+  return result;
+}
+function fieldString(value) {
+  return typeof value === "string" && value.trim() ? cleanValue(value) : void 0;
+}
+function normalizeLabelLine(line) {
+  return line.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "").replace(/`([^`]+)`/g, "$1").trim();
+}
+function matchField(line, fields) {
+  for (const field of fields) {
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`^${escaped}\\s*[:\uFF1A]\\s*(.+)$`, "i").exec(line);
+    if (match) return cleanValue(match[1]);
+  }
+  return void 0;
+}
+function cleanValue(value) {
+  return value.trim().replace(/^`|`$/g, "").trim();
+}
+
+// src/core/typeManagement.ts
+async function migrateKindToType(fs2) {
+  return withTentMutation(fs2, async () => {
+    const tent = await loadTent(fs2);
+    const touched = [];
+    for (const box of tent.byPath.values()) {
+      const kind = typeof box.fm.kind === "string" ? box.fm.kind.trim() : "";
+      if (!kind) continue;
+      const path2 = boxNotePath(box.path);
+      const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(path2));
+      const base = typeof data.type === "string" && data.type.trim() ? data.type.trim() : "custom";
+      data.type = joinType(base, kind);
+      delete data.kind;
+      await fs2.writeFile(path2, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+      touched.push(path2);
+    }
+    const registry = await loadTypeRegistry(fs2);
+    await writeTypeRegistryUnlocked(fs2, registry);
+    touched.push(TYPE_REGISTRY_PATH);
+    return touched;
+  });
+}
+async function writeTypeRegistryUnlocked(fs2, registry) {
+  if (!await fs2.exists(".tent")) await fs2.mkdir(".tent");
+  await fs2.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+}
+function boxKeyOrder3(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+}
+
+// src/core/okf.ts
+async function syncOkfBundle(fs2) {
+  return withTentMutation(fs2, async () => syncOkfBundleUnlocked(fs2));
+}
+async function syncOkfBundleUnlocked(fs2) {
+  const tent = await loadTent(fs2);
+  const concepts = [...tent.byPath.values()];
+  const index = buildConceptIndex(concepts);
+  const generatedFiles = await writeIndexes(fs2, concepts);
+  const projection = await projectWikiLinks(fs2, concepts, index);
+  return { generatedFiles, ...projection };
+}
+function buildConceptIndex(boxes) {
+  const index = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const concept = toConcept(box);
+    addIndex(index, concept.boxId, concept);
+    addIndex(index, concept.id, concept);
+    addIndex(index, concept.path, concept);
+    addIndex(index, concept.notePath, concept);
+    addIndex(index, concept.name, concept);
+  }
+  return index;
+}
+function resolveConcept(index, target) {
+  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
+  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
+  if (matches?.length === 1) return matches[0];
+  const normalized = normalizeLookupKey(clean);
+  if (normalized.length >= 4) {
+    const all = index.get("__all__") ?? [];
+    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    if (fuzzy.length === 1) return fuzzy[0];
+  }
+  return matches?.length === 1 ? matches[0] : void 0;
+}
+function projectMarkdownLinks(body, fromNotePath, index) {
+  const unresolved = [];
+  let changed = false;
+  const next = body.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (full, rawTarget, rawLabel, offset) => {
+    if (offset > 0 && body[offset - 1] === "!") return full;
+    const target = rawTarget.trim();
+    const concept = resolveConcept(index, target);
+    if (!concept) {
+      unresolved.push(target);
+      return full;
+    }
+    const label = (rawLabel ?? concept.name).trim();
+    const href = relativeMarkdownPath(fromNotePath, concept.notePath);
+    changed = true;
+    return `[${label}](${href})`;
+  });
+  return { body: next, unresolved, changed };
+}
+async function projectWikiLinks(fs2, boxes, index) {
+  const projectedFiles = [];
+  const unresolved = [];
+  for (const box of boxes) {
+    const notePath = boxNotePath(box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(notePath));
+    const projected = projectMarkdownLinks(body, notePath, index);
+    if (projected.unresolved.length > 0) {
+      unresolved.push(...projected.unresolved.map((target) => ({ file: notePath, target })));
+    }
+    if (!projected.changed) continue;
+    await fs2.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
+    projectedFiles.push(notePath);
+  }
+  return { projectedFiles, unresolved };
+}
+async function writeIndexes(fs2, boxes) {
+  const generated = /* @__PURE__ */ new Set();
+  const byDir = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const dir = dirName(boxNotePath(box.path));
+    const list = byDir.get(dir) ?? [];
+    list.push(box);
+    byDir.set(dir, list);
+  }
+  const roots = boxes.filter((box) => !box.parent);
+  await fs2.writeFile(
+    "index.md",
+    serializeFrontmatter(
+      { type: "index", okf_version: "0.1" },
+      "# Index\n\n" + roots.map((box) => `- [${box.name}](${boxNotePath(box.path)})`).join("\n") + "\n"
+    )
+  );
+  generated.add("index.md");
+  for (const [dir, siblings] of byDir.entries()) {
+    if (!dir) continue;
+    const indexPath = join2(dir, "index.md");
+    await fs2.writeFile(
+      indexPath,
+      serializeFrontmatter(
+        { type: "index" },
+        "# Index\n\n" + siblings.map((box) => `- [${box.name}](${box.name}.md)`).join("\n") + "\n"
+      )
+    );
+    generated.add(indexPath);
+  }
+  await fs2.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
+  generated.add("log.md");
+  return [...generated].sort();
+}
+function toConcept(box) {
+  const notePath = boxNotePath(box.path);
+  const id = notePath.replace(/\.md$/i, "");
+  return {
+    id,
+    boxId: box.id,
+    path: box.path,
+    notePath,
+    name: box.name,
+    type: box.type
+  };
+}
+function addIndex(index, key, concept) {
+  const clean = key.trim();
+  if (!clean) return;
+  addRawIndex(index, clean, concept);
+  addRawIndex(index, normalizeLookupKey(clean), concept);
+  addRawIndex(index, "__all__", concept);
+}
+function addRawIndex(index, key, concept) {
+  if (!key) return;
+  const list = index.get(key) ?? [];
+  if (!list.some((item) => item.id === concept.id)) list.push(concept);
+  index.set(key, list);
+}
+function normalizeLookupKey(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+function relativeMarkdownPath(fromNotePath, toNotePath) {
+  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
+  const toParts = toNotePath.split("/").filter(Boolean);
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const up = fromParts.map(() => "..");
+  const rel = [...up, ...toParts].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+// src/core/workspace.ts
+import * as nodePath2 from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn } from "node:child_process";
+function resolveTentWorkspace(tent) {
+  const workspaces = /* @__PURE__ */ new Set();
+  for (const box of tent.byPath.values()) {
+    if (splitType(box.type).base !== "output") continue;
+    const workspace = parseOutputPointer(box.fm, box.body).workspace;
+    if (workspace) workspaces.add(nodePath2.resolve(workspace));
+  }
+  if (workspaces.size > 1) {
+    throw new Error(`\u4E00\u9876 Tent \u53EA\u80FD\u5BF9\u5E94\u4E00\u4E2A workspace,\u5F53\u524D\u53D1\u73B0: ${[...workspaces].join(", ")}`);
+  }
+  return [...workspaces][0];
+}
+async function ensureRoleWorkspace(workspace, role) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath2.join(
+    nodePath2.dirname(root),
+    `${nodePath2.basename(root)}-worktrees`,
+    roleSlug
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`role worktree \u8DEF\u5F84\u5DF2\u5B58\u5728\u4F46\u672A\u767B\u8BB0\u7ED9 ${branch}: ${worktree}`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+async function integrateWorkspaceCommits(contract, refs) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (current !== contract.targetBranch) {
+    throw new Error(`workspace \u5FC5\u987B checkout ${contract.targetBranch},\u5F53\u524D\u662F ${current || "(detached)"}`);
+  }
+  const dirty = (await git(root, ["status", "--porcelain"])).trim();
+  if (dirty) throw new Error("workspace \u6709\u672A\u63D0\u4EA4\u6539\u52A8,\u4E0D\u80FD\u9A8C\u6536\u5408\u5165");
+  const results = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    const prior = await findCherryPick(root, sourceRef);
+    if (prior) {
+      results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+      continue;
+    }
+    try {
+      await git(root, ["cherry-pick", "-x", sourceRef]);
+    } catch (error) {
+      await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+      throw new Error(`workspace \u5408\u5165\u51B2\u7A81: ${error instanceof Error ? error.message : String(error)}`);
+    }
+    const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+    results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+  }
+  return results;
+}
+async function assertGitWorkspace(root) {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath2.resolve(top)),
+    nodeFs.realpath(root)
+  ]);
+  if (realTop.toLowerCase() !== realRoot.toLowerCase()) {
+    throw new Error(`workspace \u5FC5\u987B\u662F Git \u6839\u76EE\u5F55: ${root}`);
+  }
+}
+async function resolveTargetBranch(root) {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("\u65E0\u6CD5\u8BC6\u522B workspace \u6B63\u5F0F\u5206\u652F");
+  return current;
+}
+async function worktreeForBranch(root, branch) {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function findCherryPick(root, sourceRef) {
+  const needle = `(cherry picked from commit ${await fullRef(root, sourceRef)})`;
+  const output = await git(root, ["log", "--format=%H%x00%B%x00", contractRange()]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    if (parts[i + 1].includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+function contractRange() {
+  return "-n1000";
+}
+async function fullRef(root, ref) {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+function safeComponent(value) {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+async function pathExists(path2) {
+  try {
+    await nodeFs.access(path2);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk(cwd, args) {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git(cwd, args) {
+  return new Promise((resolve3, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve3(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
+
+// src/cli/tent.ts
+function makeEnv() {
+  const root = process.cwd();
+  return {
+    fs: new NodeFs(root),
+    clock: new SystemClock(),
+    tentName: path.basename(root)
+  };
+}
+async function main() {
+  const [cmd, ...args] = process.argv.slice(2);
+  const env = makeEnv();
+  switch (cmd) {
+    case "new": {
+      const { positionals, flags } = parseFlags(args);
+      if (!positionals[0]) {
+        return fail("\u7528\u6CD5: tent new <\u5E10\u8DEF\u5F84>  \u6216  tent new <\u5E10\u540D> --vault <vault\u8DEF\u5F84>");
+      }
+      await newTent(positionals[0], flags.vault);
+      break;
+    }
+    case "dispatch": {
+      const { positionals, flags } = parseFlags(args);
+      const [claimId, role, ...promptParts] = positionals;
+      if (!claimId || !role) {
+        return fail("\u7528\u6CD5: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
+      }
+      let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
+      if (localPrompt === "-") localPrompt = await readStdin();
+      const tent = await loadTent(env.fs);
+      const workspacePath = resolveTentWorkspace(tent);
+      const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
+      const r = await dispatch(env, claimId, role, {
+        userPrompt: localPrompt,
+        handoffPath: flags.handoff,
+        workspace
+      });
+      console.log(`\u2713 \u5DF2\u6D3E\u6D3B\u3002task: ${r.taskPath}
+
+--- \u6295\u9012 prompt ---
+${r.relayPrompt}`);
+      break;
+    }
+    case "role-init": {
+      const roleName = args[0];
+      if (!roleName) return fail("\u7528\u6CD5: tent role-init <role>");
+      const roles = await loadRolesRegistry(env.fs);
+      const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
+      const initPath = await withTentMutation(
+        env.fs,
+        () => ensureRoleInit(env.fs, role, env.tentName)
+      );
+      console.log(`\u8BFB\u53D6 ${initPath} \u5B8C\u6210 role init\u3002`);
+      break;
+    }
+    case "roles": {
+      const registry = await loadRolesRegistry(env.fs);
+      console.log(JSON.stringify(registry, null, 2));
+      break;
+    }
+    case "report": {
+      const { positionals, flags } = parseFlags(args);
+      const [boxId, bodySource] = positionals;
+      if (!boxId || !bodySource) {
+        return fail("\u7528\u6CD5: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
+      }
+      const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
+      const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const report = await submitReport(env.fs, env.clock, boxId, body, commits);
+      console.log(`\u2713 report \u5F85\u88C1: ${report.path}`);
+      break;
+    }
+    case "complete": {
+      const { positionals, flags } = parseFlags(args);
+      const boxId = positionals[0];
+      if (!boxId) return fail("\u7528\u6CD5: tent complete <boxId> [--commits <sha,sha>]");
+      const tent = await loadTent(env.fs);
+      const box = tent.byId.get(boxId);
+      if (!box) return fail(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+      const owner = ownerFor(box);
+      const refs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      if (refs.length > 0 && !owner) return fail("\u6709 workspace commits \u7684\u5B8C\u6210\u64CD\u4F5C\u9700\u8981 owner");
+      let integrationLines = [];
+      await completeClaim(env, boxId, refs.length === 0 ? void 0 : async () => {
+        const workspacePath = resolveTentWorkspace(tent);
+        if (!workspacePath) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace output \u6307\u9488");
+        const contract = await ensureRoleWorkspace(workspacePath, owner);
+        const integrated = await integrateWorkspaceCommits(contract, refs);
+        integrationLines = integrated.map(
+          (item) => `${item.sourceRef} \u2192 ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
+        );
+      });
+      for (const line of integrationLines) console.log(line);
+      console.log(`\u2713 \u5DF2\u786E\u8BA4\u5B8C\u6210 ${boxId}`);
+      break;
+    }
+    case "stamp": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent stamp <boxId>");
+      await stamp(env, args[0]);
+      console.log(`\u2713 \u5DF2\u76D6\u7AE0 ${args[0]}(done + \u6E05 owner)`);
+      break;
+    }
+    case "propose": {
+      const [targetId, role, bodySource] = args;
+      if (!targetId || !role || !bodySource) return fail("\u7528\u6CD5: tent propose <targetId> <role> <bodyFile|->");
+      const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
+      const r = await propose(env, targetId, role, body);
+      console.log(`\u2713 proposal \u5DF2\u5199\u5165: ${r.proposalPath}`);
+      break;
+    }
+    case "proposal": {
+      const [p, verb, ...noteParts] = args;
+      if (!p || verb !== "accept" && verb !== "reject") return fail("\u7528\u6CD5: tent proposal <path> accept|reject [note]");
+      await applyProposal(env, p, verb === "accept", noteParts.join(" ") || void 0);
+      console.log(`\u2713 proposal ${verb}: ${p}`);
+      break;
+    }
+    case "grant-readable": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent grant-readable <boxId>");
+      await grantReadable(env, args[0]);
+      console.log(`\u2713 ${args[0]} readable=true`);
+      break;
+    }
+    case "new-box": {
+      const [name, type, parentId] = args;
+      if (!name || !type) return fail("\u7528\u6CD5: tent new-box <name> <type> [parentId]");
+      let parentPath = "";
+      if (parentId) {
+        const tent = await loadTent(env.fs);
+        const parent = tent.byId.get(parentId);
+        if (!parent) return fail(`\u627E\u4E0D\u5230\u7236\u6846 ${parentId}`);
+        parentPath = parent.path;
+      }
+      const id = await createBox(env, { parentPath, name, type });
+      console.log(`\u2713 \u5DF2\u5EFA\u6846 ${name} (${id})`);
+      break;
+    }
+    case "tag": {
+      const [boxId, name] = args;
+      if (!boxId || !name) return fail("\u7528\u6CD5: tent tag <boxId> <name>");
+      await tagBox(env, boxId, name);
+      console.log(`\u2713 \u5DF2\u7ED9 ${boxId} \u6253 tag: ${name}`);
+      break;
+    }
+    case "untag": {
+      const [boxId, name] = args;
+      if (!boxId || !name) return fail("\u7528\u6CD5: tent untag <boxId> <name>");
+      await untagBox(env, boxId, name);
+      console.log(`\u2713 \u5DF2\u4ECE ${boxId} \u6458 tag: ${name}`);
+      break;
+    }
+    case "tag-new": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent tag-new <name>");
+      await createTag(env, args[0]);
+      console.log(`\u2713 \u5DF2\u767B\u8BB0 tag: ${args[0]}`);
+      break;
+    }
+    case "tag-rm": {
+      const [name, confirmation] = args;
+      if (!name) return fail("\u7528\u6CD5: tent tag-rm <name> --yes  \u6216  tent tag-rm <name> <name>");
+      if (!args.includes("--yes") && confirmation !== name) {
+        return fail(`\u5220\u9664 tag \u4F1A\u4ECE\u6240\u6709\u6846\u7EA7\u8054\u5265\u79BB\u3002\u8BF7\u52A0 --yes,\u6216\u91CD\u590D\u8F93\u5165 tag \u540D\u786E\u8BA4: tent tag-rm ${name} ${name}`);
+      }
+      await deleteTag(env, name);
+      console.log(`\u2713 \u5DF2\u5220\u9664 tag \u5E76\u7EA7\u8054\u5265\u79BB: ${name}`);
+      break;
+    }
+    case "tags": {
+      const registry = await loadTagRegistry(env.fs);
+      if (registry.tags.length === 0) console.log("(\u65E0 tag)");
+      else for (const tag of registry.tags) console.log(tag);
+      break;
+    }
+    case "find": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent find <name>");
+      const tent = await loadTent(env.fs);
+      const boxes = findBoxesByTag(tent, args[0]);
+      if (boxes.length === 0) {
+        console.log("(\u65E0\u5339\u914D)");
+        break;
+      }
+      for (const box of boxes) {
+        const pointer = splitType(box.type).base === "output" ? outputPointer(box.fm, box.body) : "";
+        console.log(`${box.id}	${box.path}	${box.type}${pointer ? `	${pointer}` : ""}`);
+      }
+      break;
+    }
+    case "apply": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent apply <proposal\u6587\u4EF6\u8DEF\u5F84>");
+      const g = await startApply(env, args[0]);
+      console.log(
+        `\u2713 proposal \u53EF\u843D\u5730\u3002\u76EE\u6807:\u300C${g.targetPath}\u300D\u3002\u8BF7\u6309\u5408\u540C\u4FEE\u6539\u3002
+
+--- \u8981\u843D\u5730\u7684\u6539\u52A8 ---
+${g.instructions || "(proposal \u6B63\u6587\u4E3A\u7A7A,\u89C1\u539F\u6587)"}
+
+\u6539\u5B8C\u76EE\u6807\u6846\u7684\u8EAB\u4EFD\u6587\u4EF6\u540E,\u8FD0\u884C:tent apply-done ${args[0]}`
+      );
+      break;
+    }
+    case "apply-done": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent apply-done <proposal\u6587\u4EF6\u8DEF\u5F84>");
+      await finishApply(env, args[0]);
+      console.log(`\u2713 proposal \u5DF2\u8F6C applied\u3002`);
+      break;
+    }
+    case "fork": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent fork <boxId>");
+      const id = await forkNode(env, args[0]);
+      console.log(`\u2713 \u5DF2 fork ${args[0]} \u2192 ${id}`);
+      break;
+    }
+    case "handoff": {
+      const [fromBoxId, targetId, targetRole, promptSource] = args;
+      if (!fromBoxId || !targetId || !targetRole || !promptSource) {
+        return fail("\u7528\u6CD5: tent handoff <fromBoxId> <targetId> <targetRole> <prompt\u6587\u4EF6|->");
+      }
+      const prompt = promptSource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(promptSource), "utf8");
+      const handoffPath = await handoff(env, fromBoxId, targetId, targetRole, prompt);
+      console.log(`\u2713 handoff \u8349\u7A3F: ${handoffPath}`);
+      break;
+    }
+    case "clean-temp": {
+      await cleanTemp(env, args[0]);
+      console.log(`\u2713 \u5DF2\u6E05 temp/${args[0] || "(\u5168\u90E8)"}`);
+      break;
+    }
+    case "force-release": {
+      if (!args[0]) return fail("\u7528\u6CD5: tent force-release <boxId>");
+      await forceRelease(env, args[0]);
+      console.log(`\u2713 \u5DF2\u5F3A\u6E05 owner: ${args[0]}`);
+      break;
+    }
+    case "migrate-kind-to-type": {
+      const touched = await migrateKindToType(env.fs);
+      if (touched.length === 0) console.log("\u2713 \u65E0\u9700\u8FC1\u79FB:\u672A\u53D1\u73B0 legacy kind");
+      else console.log(`\u2713 \u5DF2\u8FC1\u79FB legacy kind \u2192 type:
+${touched.map((p) => `- ${p}`).join("\n")}`);
+      break;
+    }
+    case "okf-sync": {
+      const result = await syncOkfBundle(env.fs);
+      console.log(
+        `\u2713 OKF \u5DF2\u540C\u6B65
+generated: ${result.generatedFiles.length}
+projected: ${result.projectedFiles.length}
+unresolved wiki links: ${result.unresolved.length}`
+      );
+      if (result.unresolved.length > 0) {
+        for (const item of result.unresolved) console.log(`! ${item.file}: [[${item.target}]]`);
+      }
+      break;
+    }
+    case "tree": {
+      const tent = await loadTent(env.fs);
+      for (const r of tent.roots) printBox(r, 0);
+      break;
+    }
+    default:
+      fail(
+        `\u672A\u77E5\u547D\u4EE4: ${cmd || "(\u7A7A)"}
+\u547D\u4EE4: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync tree`
+      );
+  }
+}
+function readStdin() {
+  return new Promise((resolve3, reject) => {
+    let data = "";
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => data += chunk);
+    process.stdin.on("end", () => resolve3(data));
+    process.stdin.on("error", reject);
+  });
+}
+function printBox(box, depth) {
+  const ind = "  ".repeat(depth);
+  const rw = `R${box.readable.value ? "\u2713" : "\u2717"}/W${box.writable.value ? "\u2713" : "\u2717"}`;
+  const owner = box.fm.owner ? ` \u2691${box.fm.owner}` : "";
+  const type = box.type;
+  const id = box.id || "missing-id";
+  const invalid = box.invalid ? ` invalid:${box.invalidReason || "\u5931\u6548"}` : "";
+  console.log(`${ind}${box.name} [${type} ${id}] ${rw}${owner}${invalid}`);
+  for (const c of box.children) printBox(c, depth + 1);
+}
+function outputPointer(fm, body) {
+  const { workspace, ref } = parseOutputPointer(fm, body);
+  return [workspace ? `workspace=${workspace}` : "", ref ? `ref=${ref}` : ""].filter(Boolean).join(" ");
+}
+function fail(msg) {
+  console.error(msg);
+  process.exitCode = 1;
+}
+function parseFlags(args) {
+  const positionals = [];
+  const flags = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a.startsWith("--")) {
+      flags[a.slice(2)] = args[i + 1] ?? "";
+      i++;
+    } else {
+      positionals.push(a);
+    }
+  }
+  return { positionals, flags };
+}
+async function readVaultPluginSettings(vault) {
+  const fsmod = await import("node:fs/promises");
+  const dataPath = path.join(path.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
+  try {
+    const data = JSON.parse(await fsmod.readFile(dataPath, "utf8"));
+    const root = typeof data?.tentsRoot === "string" ? data.tentsRoot.trim() : "";
+    const defaults = data?.newTentDefaults ?? data?.newTentTemplate;
+    return {
+      tentsRoot: root || "tents",
+      ...defaults?.typeRegistry ? { typeRegistry: normalizeRegistry(defaults.typeRegistry) } : {},
+      ...defaults?.rolesRegistry ? { rolesRegistry: normalizeTemplateRoles(defaults.rolesRegistry) } : {},
+      ...typeof defaults?.rulesTemplate === "string" && defaults.rulesTemplate.trim() ? { rulesTemplate: defaults.rulesTemplate } : {}
+    };
+  } catch {
+    return { tentsRoot: "tents" };
+  }
+}
+async function newTent(target, vault) {
+  const fsmod = await import("node:fs/promises");
+  let pluginSettings;
+  if (vault) {
+    if (target.includes("/") || target.includes("\\")) {
+      return fail(`--vault \u6A21\u5F0F\u4E0B <\u5E10\u540D> \u4E0D\u80FD\u542B\u8DEF\u5F84\u5206\u9694\u7B26: ${target}`);
+    }
+    pluginSettings = await readVaultPluginSettings(vault);
+    target = path.join(path.resolve(vault), pluginSettings.tentsRoot, target);
+  }
+  const fsa = new NodeFs(target);
+  if (await fsa.exists(".tent")) return fail(`\u76EE\u6807\u5DF2\u662F\u4E00\u9876\u5E10: ${target}`);
+  await fsmod.mkdir(target, { recursive: true });
+  const name = path.basename(path.resolve(target));
+  const fallbackRules = `# ${name} \xB7 \u9879\u76EE\u7EA6\u5B9A
+
+> \u8FD9\u9876\u5E10\u7684\u672C\u5730\u89C4\u77E9(global rule):genesis \u5EFA\u3001\u968F\u4FBF\u6539\u3002
+> \u673A\u5236\u89C4\u8303\u4E0D\u5728\u8FD9(\u89C1 Tent \u4ED3\u5E93 docs/SPEC.md);agent \u7684\u64CD\u4F5C\u534F\u8BAE\u5728 tent-role skill\u3002
+
+- \u4EA7\u51FA workspace:<\u586B\u771F\u5B9E\u4EE3\u7801\u4ED3\u8DEF\u5F84>
+- \u63D0\u4EA4 / \u547D\u540D\u7EA6\u5B9A:<\u586B>
+- \u5176\u5B83\u672C\u9879\u76EE\u89C4\u77E9:<\u586B>
+`;
+  const rules = pluginSettings?.rulesTemplate ? pluginSettings.rulesTemplate.replaceAll("{tent}", name) : fallbackRules;
+  await scaffoldTent(fsa, {
+    name,
+    rules,
+    typeRegistry: pluginSettings?.typeRegistry,
+    rolesRegistry: pluginSettings?.rolesRegistry
+  });
+  console.log(
+    `\u2713 \u65B0\u5E10\u5DF2\u5EFA: ${target}
+\u9876\u5C42\u4E3A\u7A7A(\u6309 #C \u4E0D\u5F3A\u5236 zone);\u7528\u9762\u677F\u7684 \uFF0B,\u6216\u76F4\u63A5\u5EFA\u201C\u6587\u4EF6\u5939 + \u540C\u540D .md\u201D\u6DFB\u52A0\u771F\u540D\u8282\u70B9\u3002`
+  );
+}
+function normalizeTemplateRoles(value) {
+  if (typeof value !== "object" || value === null) return { roles: [] };
+  const raw = value;
+  if (!Array.isArray(raw.roles)) return { roles: [] };
+  const roles = [];
+  for (const item of raw.roles) {
+    if (typeof item !== "object" || item === null) continue;
+    const source = item;
+    const name = typeof source.name === "string" ? source.name.trim() : "";
+    if (!name || roles.some((role2) => role2.name === name)) continue;
+    const role = { name };
+    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
+    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
+    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    roles.push(role);
+  }
+  return { roles };
+}
+function ownerFor(box) {
+  if (box.fm.owner) return box.fm.owner;
+  let parent = box.parent;
+  while (parent) {
+    if (parent.fm.owner) return parent.fm.owner;
+    parent = parent.parent;
+  }
+  return void 0;
+}
+main().catch((e) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});

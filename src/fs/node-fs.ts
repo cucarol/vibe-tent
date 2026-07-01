@@ -1,0 +1,96 @@
+// node:fs 实现的 FsAdapter。给 CLI(skill 调用)和测试用。
+// 插件那侧另有一版走 Obsidian Vault API。
+
+import * as fs from "node:fs/promises";
+import * as nodePath from "node:path";
+import { FsAdapter, Clock } from "../core/adapter.js";
+
+export class NodeFs implements FsAdapter {
+  constructor(private root: string) {}
+
+  private abs(p: string): string {
+    return nodePath.join(this.root, p);
+  }
+
+  async listDir(dir: string): Promise<{ name: string; isDir: boolean }[]> {
+    const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
+    return entries
+      .filter((e) => !e.name.startsWith(".git"))
+      .map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  }
+
+  async readFile(path: string): Promise<string> {
+    return fs.readFile(this.abs(path), "utf8");
+  }
+
+  async writeFile(path: string, content: string): Promise<void> {
+    await fs.mkdir(nodePath.dirname(this.abs(path)), { recursive: true });
+    await fs.writeFile(this.abs(path), content, "utf8");
+  }
+
+  async exists(path: string): Promise<boolean> {
+    try {
+      await fs.access(this.abs(path));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  async mkdir(path: string): Promise<void> {
+    await fs.mkdir(this.abs(path), { recursive: true });
+  }
+
+  async move(from: string, to: string): Promise<void> {
+    await fs.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
+    await fs.rename(this.abs(from), this.abs(to));
+  }
+
+  async remove(path: string): Promise<void> {
+    await fs.rm(this.abs(path), { recursive: true, force: true });
+  }
+
+  async withLock<T>(path: string, action: () => Promise<T>): Promise<T> {
+    const lockPath = this.abs(path);
+    await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
+    let handle: fs.FileHandle | undefined;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        handle = await fs.open(lockPath, "wx");
+        break;
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+        const stale = await isStaleLock(lockPath);
+        if (!stale || attempt > 0) throw new Error("Tent 正在执行另一个写操作,请稍后重试");
+        await fs.rm(lockPath, { force: true });
+      }
+    }
+    if (!handle) throw new Error("无法获取 Tent mutation lock");
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), "utf8");
+      return await action();
+    } finally {
+      await handle.close();
+      await fs.rm(lockPath, { force: true });
+    }
+  }
+}
+
+export class SystemClock implements Clock {
+  now(): string {
+    return new Date().toISOString();
+  }
+}
+
+function isAlreadyExists(error: unknown): boolean {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+
+async function isStaleLock(path: string): Promise<boolean> {
+  try {
+    const stat = await fs.stat(path);
+    return Date.now() - stat.mtimeMs > 120_000;
+  } catch {
+    return true;
+  }
+}

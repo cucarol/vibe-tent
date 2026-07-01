@@ -1,0 +1,61 @@
+{
+  "name": "vibe-tent",
+  "version": "0.1.0",
+  "description": "Tent / 帷幄 — 一个把'和 agent 协作'当成'管理意志与上下文'的 Obsidian 插件 + 核心库",
+  "type": "module",
+  "bin": {
+    "tent": "./cli.mjs",
+    "tent-seed": "./scripts/seed-demo.mjs"
+  },
+  "files": [
+    "cli.mjs",
+    "main.js",
+    "manifest.json",
+    "styles.css",
+    "skills/",
+    "scripts/seed-demo.mjs",
+    "scripts/okf-check.mjs",
+    "vendor/okf-conformance/",
+    "docs/SPEC.md",
+    "README.md",
+    "CONTRIBUTING.md",
+    "SECURITY.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "build": "node esbuild.config.mjs production",
+    "build:plugin": "node esbuild.config.mjs production",
+    "dev": "node esbuild.config.mjs",
+    "build:core": "tsc -p tsconfig.core.json",
+    "test": "node --test --import tsx test/core.test.ts test/open-source.test.ts",
+    "test:core": "node --test --import tsx test/core.test.ts",
+    "test:integration": "node --test --import tsx test/open-source.test.ts",
+    "typecheck": "tsc -noEmit",
+    "security:audit": "npm audit --audit-level=high",
+    "okf:check": "node scripts/okf-check.mjs",
+    "okf:check:strict": "node scripts/okf-check.mjs --strict",
+    "check": "npm run typecheck && npm run build && npm test && npm run okf:check",
+    "seed": "node scripts/seed-demo.mjs",
+    "prepack": "npm run check"
+  },
+  "keywords": [
+    "obsidian",
+    "agent",
+    "harness",
+    "context-engineering"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "esbuild": "^0.28.1",
+    "obsidian": "^1.7.2",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  }
+}

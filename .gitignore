@@ -1,0 +1,12 @@
+temp/
+node_modules/
+dist-core/
+.playwright-cli/
+output/
+*-preview.html
+test_script.js
+*.tgz
+.DS_Store
+Thumbs.db
+.claude/settings.local.json
+.zed/settings.json

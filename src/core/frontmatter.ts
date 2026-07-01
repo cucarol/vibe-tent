@@ -1,0 +1,146 @@
+// 极简 frontmatter 解析/序列化。零依赖:框身份文件(<box-name>.md)的 frontmatter 是扁平 key: value,
+// 不需要完整 YAML。只认标量(string/number/bool)和行注释。
+
+export interface ParsedFrontmatter {
+  data: Record<string, unknown>;
+  body: string;
+  /** 原文件里键的出现顺序,序列化时尽量保持。 */
+  keyOrder: string[];
+}
+
+const FENCE = "---";
+export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+
+export function parseFrontmatter(raw: string): ParsedFrontmatter {
+  const text = raw.replace(/\r\n/g, "\n");
+  if (!text.startsWith(FENCE + "\n")) {
+    return { data: {}, body: raw, keyOrder: [] };
+  }
+  const end = text.indexOf("\n" + FENCE, FENCE.length);
+  if (end === -1) {
+    return { data: {}, body: raw, keyOrder: [] };
+  }
+  const fmBlock = text.slice(FENCE.length + 1, end);
+  // body 从第二个 fence 行之后开始
+  const afterFence = text.indexOf("\n", end + 1);
+  const body = afterFence === -1 ? "" : text.slice(afterFence + 1);
+
+  const data: Record<string, unknown> = {};
+  const keyOrder: string[] = [];
+  for (const line of fmBlock.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("#")) continue;
+    const colon = trimmed.indexOf(":");
+    if (colon === -1) continue;
+    const key = trimmed.slice(0, colon).trim();
+    let valuePart = trimmed.slice(colon + 1).trim();
+    // 砍掉行尾 ` # 注释`(简单实现:非引号内的 # 之后)
+    valuePart = stripInlineComment(valuePart);
+    data[key] = coerce(valuePart);
+    keyOrder.push(key);
+  }
+  return { data, body, keyOrder };
+}
+
+function stripInlineComment(v: string): string {
+  if (v.startsWith('"') || v.startsWith("'")) return v;
+  const hash = v.indexOf(" #");
+  return hash === -1 ? v : v.slice(0, hash).trim();
+}
+
+function coerce(v: string): unknown {
+  if (v === "") return undefined;
+  if (v === "true") return true;
+  if (v === "false") return false;
+  if (v === "null" || v === "~") return null;
+  if (/^-?\d+$/.test(v)) return parseInt(v, 10);
+  if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
+    return v.slice(1, -1);
+  }
+  // YAML 流式数组: [item1, item2, ...]
+  if (v.startsWith("[") && v.endsWith("]")) {
+    const inner = v.slice(1, -1).trim();
+    if (!inner) return [];
+    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+  }
+  return v;
+}
+
+function splitFlowArray(inner: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let quote: string | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === quote && inner[i - 1] !== "\\") quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === ",") {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
+}
+
+/** 把 data 写回 frontmatter + body。undefined 的键被省略(= 删除该声明)。 */
+export function serializeFrontmatter(
+  data: Record<string, unknown>,
+  body: string,
+  keyOrder: string[] = []
+): string {
+  const keys = orderedKeys(data, keyOrder);
+  const lines: string[] = [FENCE];
+  for (const k of keys) {
+    const val = data[k];
+    if (val === undefined) continue;
+    lines.push(`${k}: ${emit(val)}`);
+  }
+  lines.push(FENCE);
+  const out = lines.join("\n");
+  return body ? out + "\n" + body : out + "\n";
+}
+
+function orderedKeys(data: Record<string, unknown>, keyOrder: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const k of keyOrder) {
+    if (k in data && !seen.has(k)) {
+      result.push(k);
+      seen.add(k);
+    }
+  }
+  for (const k of Object.keys(data)) {
+    if (!seen.has(k)) {
+      result.push(k);
+      seen.add(k);
+    }
+  }
+  return result;
+}
+
+function emit(v: unknown): string {
+  if (typeof v === "boolean") return v ? "true" : "false";
+  if (typeof v === "number") return String(v);
+  if (v === null) return "null";
+  if (Array.isArray(v)) {
+    // YAML 流式数组: [item1, item2, ...]
+    if (v.length === 0) return "[]";
+    return "[" + v.map((item) => emit(item)).join(", ") + "]";
+  }
+  const s = String(v);
+  // 需要引号的情况:含 YAML/flow 标点或首尾空白
+  if (/[:,#\[\]]/.test(s) || s !== s.trim() || s === "") return JSON.stringify(s);
+  return s;
+}

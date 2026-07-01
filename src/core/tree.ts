@@ -1,0 +1,336 @@
+// 加载帐 → 框树 → 解析 readable/writable。
+// 每条轴:本框显式声明 > 当前 type 默认。
+// 普通 R/W 不看父/祖先;archive/invalid 是单独的子树强制机制。
+
+import { FsAdapter } from "./adapter.js";
+import {
+  Box,
+  BoxFrontmatter,
+  BoxType,
+  ResolvedAxis,
+  ZoneType,
+} from "./types.js";
+import { parseFrontmatter } from "./frontmatter.js";
+import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
+import { joinType, loadTypeRegistry, TypeRegistry, typeExists, resolveTypeAxis } from "./typeRegistry.js";
+
+const ZONE_NAMES: ZoneType[] = ["goal", "prompt", "output"];
+
+/** 框身份文件路径 = <文件夹名>.md */
+export function boxNotePath(boxPath: string): string {
+  return join(boxPath, baseName(boxPath) + ".md");
+}
+
+export interface LoadedTent {
+  /** 顶层 zone/框,按 goal/prompt/output/其它 排。temp 不在框树内。 */
+  roots: Box[];
+  /** id → Box 索引。 */
+  byId: Map<string, Box>;
+  /** path → Box 索引。 */
+  byPath: Map<string, Box>;
+  typeRegistry: TypeRegistry;
+}
+
+export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
+  const byId = new Map<string, Box>();
+  const byPath = new Map<string, Box>();
+  const roots: Box[] = [];
+  const typeRegistry = await loadTypeRegistry(fs);
+
+  const top = await fs.listDir("");
+  for (const entry of top) {
+    if (!entry.isDir) continue;
+    if (entry.name === "temp") continue;
+    await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
+  }
+
+  // 排序:隐藏 order 表优先;缺省时根按 zone 排名+名字,子框按名字
+  const order = await loadOrder(fs);
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
+  for (const root of sortedRoots) sortChildren(root, order);
+
+  // 解析权限/隔离状态 + 建索引
+  for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
+  const duplicateIds = findDuplicateIds(sortedRoots);
+  for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
+  resolveLocks(sortedRoots);
+  for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
+
+  return { roots: sortedRoots, byId, byPath, typeRegistry };
+}
+
+function findDuplicateIds(roots: Box[]): Set<string> {
+  const counts = new Map<string, number>();
+  const visit = (box: Box) => {
+    if (box.id) counts.set(box.id, (counts.get(box.id) || 0) + 1);
+    for (const child of box.children) visit(child);
+  };
+  for (const root of roots) visit(root);
+  return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
+}
+
+function applyDuplicateInvalid(
+  box: Box,
+  duplicateIds: Set<string>,
+  inherited?: { rootId: string; reason: string }
+): void {
+  const direct = duplicateIds.has(box.id)
+    ? { rootId: box.id, reason: `重复 id: ${box.id};原生复制需转为 fork` }
+    : undefined;
+  const invalid = inherited || direct;
+  if (invalid) {
+    box.invalid = true;
+    box.invalidRootId = invalid.rootId;
+    box.invalidReason = invalid.reason;
+    box.readable = { value: false, source: "invalid" };
+    box.writable = { value: false, source: "invalid" };
+  }
+  for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
+}
+
+/** 单框内容落盘后的增量重载。结构与 id 不变时避免重扫整顶帐。 */
+export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: string): Promise<Box> {
+  const box = tent.byPath.get(path);
+  if (!box) throw new Error(`找不到框 ${path}`);
+  const { data, body } = parseFrontmatter(await fs.readFile(boxNotePath(path)));
+  const identity = normalizeIdentity(data);
+  if (identity.fm.id !== box.id) throw new Error("增量重载不允许修改 box id");
+  box.type = identity.fm.type;
+  box.kind = identity.fm.kind;
+  box.tags = identity.tags;
+  box.fm = identity.fm;
+  box.body = body;
+  for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
+  resolveLocks(tent.roots);
+  return box;
+}
+
+function sortChildren(box: Box, order: OrderMap): void {
+  box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
+  for (const c of box.children) sortChildren(c, order);
+}
+
+function zoneRank(name: string): number {
+  const i = ZONE_NAMES.indexOf(name as ZoneType);
+  return i === -1 ? 99 : i;
+}
+
+async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry: TypeRegistry): Promise<Box | null> {
+  const boxFile = boxNotePath(path);
+  if (!(await fs.exists(boxFile))) {
+    // 没有同名 .md 的文件夹不是框(普通分组)。但其子孙里可能有框 —— 透传扫描。
+    return null;
+  }
+  const raw = await fs.readFile(boxFile);
+  const { data, body } = parseFrontmatter(raw);
+  const name = baseName(path);
+  const zone = parent ? parent.zone : zoneOf(name);
+
+  const { fm, tags } = normalizeIdentity(data);
+  const box: Box = {
+    id: fm.id,
+    type: fm.type,
+    kind: fm.kind,
+    tags,
+    archived: false,
+    invalid: false,
+    path,
+    name,
+    fm,
+    body,
+    children: [],
+    parent,
+    zone,
+    locked: false,
+    readable: { value: false, source: "type" },
+    writable: { value: false, source: "type" },
+  };
+
+  const sub = await fs.listDir(path);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    await loadBoxInto(fs, join(path, entry.name), box, registry, box.children);
+  }
+  return box;
+}
+
+function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter; tags: string[] } {
+  const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
+  const rawKind = typeof data.kind === "string" && data.kind ? data.kind : "";
+  const effectiveType = rawKind ? joinType(rawType, rawKind) : rawType;
+  const fm: BoxFrontmatter = {
+    ...data,
+    id: typeof data.id === "string" ? data.id : "",
+    type: effectiveType,
+  } as BoxFrontmatter;
+  if (rawKind) fm.kind = rawKind;
+  else delete fm.kind;
+  const tags = normalizeTags(data.tags);
+  if (tags.length > 0) fm.tags = tags;
+  else delete fm.tags;
+  if (typeof data.readable === "boolean") fm.readable = data.readable;
+  else delete fm.readable;
+  if (typeof data.writable === "boolean") fm.writable = data.writable;
+  else delete fm.writable;
+  return { fm, tags };
+}
+
+function normalizeTags(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const tag = item.trim();
+    if (tag && !out.includes(tag)) out.push(tag);
+  }
+  return out;
+}
+
+// 普通分组文件夹:自己不是框,但把其下的框作为"虚拟同级"上浮给 parent。
+async function loadBoxInto(
+  fs: FsAdapter,
+  path: string,
+  parent: Box | null,
+  registry: TypeRegistry,
+  target: Box[]
+): Promise<void> {
+  const box = await loadBox(fs, path, parent, registry);
+  if (box) {
+    target.push(box);
+    return;
+  }
+  const sub = await fs.listDir(path);
+  for (const entry of sub) {
+    if (!entry.isDir) continue;
+    await loadBoxInto(fs, join(path, entry.name), parent, registry, target);
+  }
+}
+
+function zoneOf(name: string): ZoneType | null {
+  return ZONE_NAMES.includes(name as ZoneType) ? (name as ZoneType) : null;
+}
+
+function resolveSubtree(
+  box: Box,
+  registry: TypeRegistry,
+  inheritedInvalid?: { rootId: string; reason: string },
+  inheritedArchived = false
+): void {
+  const directInvalid = invalidTypeReference(box, registry);
+  const invalid = inheritedInvalid || directInvalid;
+  box.invalid = !!invalid;
+  box.invalidRootId = invalid?.rootId;
+  box.invalidReason = invalid?.reason;
+  box.archived = inheritedArchived || box.fm.archived === true;
+  if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
+    delete box.fm.status;
+  }
+
+  box.readable = resolveAxis(box, "readable", registry);
+  box.writable = resolveAxis(box, "writable", registry);
+  for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
+}
+
+function resolveLocks(roots: Box[]): void {
+  for (const root of roots) clearLocks(root);
+  for (const root of roots) resolveLockSubtree(root);
+}
+
+function clearLocks(box: Box): void {
+  box.locked = false;
+  delete box.lockSource;
+  delete box.lockOwner;
+  for (const child of box.children) clearLocks(child);
+}
+
+function resolveLockSubtree(box: Box): { owner: string; box: Box } | undefined {
+  let descendantOwner: { owner: string; box: Box } | undefined;
+  for (const child of box.children) {
+    const occupied = resolveLockSubtree(child);
+    if (!descendantOwner && occupied) descendantOwner = occupied;
+  }
+
+  if (box.fm.owner) {
+    applyAncestorLock(box, box.fm.owner);
+    box.locked = true;
+    box.lockSource = "self";
+    box.lockOwner = box.fm.owner;
+    return { owner: box.fm.owner, box };
+  }
+  if (descendantOwner) {
+    box.locked = true;
+    box.lockSource = "descendant";
+    box.lockOwner = descendantOwner.owner;
+    return descendantOwner;
+  }
+  return undefined;
+}
+
+function applyAncestorLock(box: Box, owner: string): void {
+  for (const child of box.children) {
+    if (!child.fm.owner) {
+      child.locked = true;
+      child.lockSource = "ancestor";
+      child.lockOwner = owner;
+    }
+    applyAncestorLock(child, child.fm.owner || owner);
+  }
+}
+
+function resolveAxis(box: Box, axis: "readable" | "writable", registry: TypeRegistry): ResolvedAxis {
+  if (box.invalid) return { value: false, source: "invalid" };
+  if (box.archived) return { value: false, source: "archived" };
+
+  const declared = box.fm[axis];
+  if (typeof declared === "boolean") {
+    return { value: declared, source: "self" };
+  }
+
+  // 复合 type "base-modifier":modifier 覆盖 base。
+  const fallback = resolveTypeAxis(box.type, axis, registry);
+  return { value: typeof fallback === "boolean" ? fallback : false, source: "type" };
+}
+
+function invalidTypeReference(
+  box: Box,
+  registry: TypeRegistry
+): { rootId: string; reason: string } | undefined {
+  if (!box.id) {
+    return { rootId: box.path, reason: "缺少 id:疑似手工创建的孤儿框,请用 tent new-box 或 repair" };
+  }
+  if (!typeExists(box.type, registry)) {
+    return { rootId: box.id, reason: `未知 type: ${box.type}` };
+  }
+  return undefined;
+}
+
+export function isUsableBox(box: Box): boolean {
+  return !box.invalid && !box.archived;
+}
+
+function indexSubtree(
+  box: Box,
+  byId: Map<string, Box>,
+  byPath: Map<string, Box>,
+  duplicateIds: Set<string>
+): void {
+  if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
+  byPath.set(box.path, box);
+  for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
+}
+
+// ---- 路径工具(纯字符串,不依赖 node:path,核心层保持可移植) ----
+
+export function join(...parts: string[]): string {
+  return parts.filter((p) => p !== "").join("/");
+}
+
+export function baseName(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? path : path.slice(i + 1);
+}
+
+export function dirName(path: string): string {
+  const i = path.lastIndexOf("/");
+  return i === -1 ? "" : path.slice(0, i);
+}
