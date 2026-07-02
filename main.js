@@ -4547,7 +4547,7 @@ var DEFAULT_SETTINGS = {
     rulesTemplate: DEFAULT_RULES_TEMPLATE
   }
 };
-var TENT_ICON = `<svg viewBox="0 0 100 100"><path fill="currentColor" d="M50 12 L90 82 L52 82 L50 60 L48 82 L10 82 Z M50 60 L62 82 L38 82 Z"/></svg>`;
+var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 var TentPlugin = class extends import_obsidian3.Plugin {
   constructor() {
     super(...arguments);
