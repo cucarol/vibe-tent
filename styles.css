@@ -545,6 +545,35 @@
 .tent-commit-row input { accent-color: var(--interactive-accent); flex: none; margin: 0; }
 .tent-commit-sha { font-family: var(--font-monospace, monospace); font-size: var(--font-ui-smaller); color: var(--text-muted); flex: none; }
 .tent-commit-sub { font-size: var(--font-ui-smaller); color: var(--text-normal); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.tent-child-stamp {
+  margin: 8px 2px 4px;
+  padding: 8px;
+  border-top: 1px solid var(--background-modifier-border);
+}
+.tent-child-stamp-title {
+  color: var(--text-normal);
+  font-size: var(--font-ui-small);
+  font-weight: 500;
+  margin-bottom: 5px;
+}
+.tent-child-stamp-row {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  min-height: 28px;
+  padding: 2px 4px;
+  color: var(--text-muted);
+  font-size: var(--font-ui-smaller);
+  cursor: pointer;
+}
+.tent-child-stamp-row:hover { color: var(--text-normal); }
+.tent-child-stamp-row input { flex: none; margin: 0; accent-color: var(--interactive-accent); }
+.tent-child-stamp-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 6px;
+  margin-top: 7px;
+}
 .tent-bottom-act { margin-left: auto; display: inline-flex; align-items: center; min-height: 34px; }
 .tent-view .tent-bottom-action {
   min-width: 0;

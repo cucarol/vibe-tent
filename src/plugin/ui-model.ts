@@ -33,6 +33,17 @@ export interface TreeCountNode {
   children: TreeCountNode[];
 }
 
+export interface LifecycleNode {
+  fm: {
+    owner?: string;
+    status?: string;
+  };
+}
+
+export interface LifecycleTreeNode extends LifecycleNode {
+  children: LifecycleTreeNode[];
+}
+
 interface ScrollPaneRoot {
   querySelector(selector: string): { scrollTop: number } | null;
 }
@@ -61,6 +72,14 @@ export function visibleTreeCount<T extends TreeCountNode>(
     directCount(current as T) +
     current.children.reduce((total, child) => total + subtreeCount(child), 0);
   return subtreeCount(node);
+}
+
+export function showsUnstampedState(node: LifecycleNode): boolean {
+  return node.fm.status !== undefined || !!node.fm.owner;
+}
+
+export function statuslessDirectChildren<T extends LifecycleTreeNode>(node: T): T["children"] {
+  return node.children.filter((child) => child.fm.status === undefined) as T["children"];
 }
 
 export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
