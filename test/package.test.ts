@@ -55,7 +55,8 @@ function runCli(cwd: string, ...args: string[]): Promise<RunResult> {
 
 function boxId(result: RunResult): string {
   const id = result.stdout.match(/\((bx-[^)]+)\)/)?.[1];
-  assert.ok(id, `new-box 应打印新 id:${result.stdout}`);
+  assert.ok(id, `new-box should print the new id: ${result.stdout}`);
+  assert.match(result.stdout, /^✓ Created box /);
   return id;
 }
 
@@ -111,7 +112,7 @@ test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-tem
   tags = await runCli(tent, "tags");
   assert.doesNotMatch(tags.stdout, /backend-hardening/);
   tagFind = await runCli(tent, "find", "backend-hardening");
-  assert.match(tagFind.stdout, /\(无匹配\)/);
+  assert.match(tagFind.stdout, /\(no matches\)/);
 
   await runCli(tent, "dispatch", checkId, "reviewer", "请重点检查发布说明。");
   const manifest = await fs.readFile(path.join(tent, "temp", "reviewer", "manifest.yml"), "utf8");
@@ -228,7 +229,7 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--dir", target),
-    /skill 已存在/,
+    /Skills already exist/,
   );
 
   await fs.writeFile(path.join(target, "tent-role", "SKILL.md"), "stale\n", "utf8");
@@ -240,7 +241,7 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
-    /目前仅支持 --target claude/,
+    /currently supports only --target claude/,
   );
 });
 
@@ -251,13 +252,18 @@ test("CLI 表面:help 与 version 正常退出", async () => {
   assert.equal(help.stderr, "");
 
   const helpCommand = await runCli(repoRoot, "help");
-  assert.match(helpCommand.stdout, /Tent \/ 帷幄 CLI/);
+  assert.match(helpCommand.stdout, /Tent CLI/);
 
   const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
   const version = await runCli(repoRoot, "--version");
   assert.equal(version.stdout.trim(), pkg.version);
   const shortVersion = await runCli(repoRoot, "-v");
   assert.equal(shortVersion.stdout.trim(), pkg.version);
+
+  await assert.rejects(
+    () => runCli(repoRoot, "not-a-command"),
+    /Unknown command: not-a-command/,
+  );
 });
 
 async function makeWorkspace(parent: string): Promise<string> {
