@@ -778,15 +778,6 @@ function collect(box, out) {
   for (const c of box.children) collect(c, out);
 }
 
-// src/core/proposal.ts
-function validateProposalTarget(tent, targetId) {
-  const target = tent.byId.get(targetId);
-  if (!target) return { ok: false, reason: `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}` };
-  if (target.invalid || target.archived) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u63D0 proposal:${target.invalidReason || "\u5DF2\u5F52\u6863"}` };
-  if (!target.readable.value) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u8BFB,\u4E0D\u80FD\u63D0 proposal: ${targetId}` };
-  return { ok: true, target };
-}
-
 // src/core/tags.ts
 var TAGS_REGISTRY_PATH = ".tent/tags.json";
 async function loadTagRegistry(fs2) {
@@ -1157,13 +1148,183 @@ function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
 }
 
+// src/core/proposal.ts
+function validateProposalTarget(tent, targetId) {
+  const target = tent.byId.get(targetId);
+  if (!target) return { ok: false, reason: `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}` };
+  if (target.invalid || target.archived) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u63D0 proposal:${target.invalidReason || "\u5DF2\u5F52\u6863"}` };
+  if (!target.readable.value) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u8BFB,\u4E0D\u80FD\u63D0 proposal: ${targetId}` };
+  return { ok: true, target };
+}
+
+// src/core/collaborationOps.ts
+async function propose(env, targetId, role, body) {
+  return withTentMutation(env.fs, async () => {
+    const roleName = assertRoleName(role);
+    const tent = await loadTent(env.fs);
+    const check = validateProposalTarget(tent, targetId);
+    if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
+    const content = body.trim();
+    if (!content) throw new Error("proposal \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
+    const dir = join2("temp", roleName, "proposals");
+    await ensureDir3(env.fs, dir);
+    const proposalPath = await uniqueProposalPath(
+      env.fs,
+      dir,
+      targetId,
+      env.clock.now()
+    );
+    const data = {
+      type: "proposal",
+      target: targetId,
+      status: "open",
+      from: roleName
+    };
+    await env.fs.writeFile(
+      proposalPath,
+      serializeFrontmatter(
+        data,
+        content + "\n",
+        ["type", "target", "status", "from", "note"]
+      )
+    );
+    return { proposalPath };
+  });
+}
+async function applyProposal(env, proposalPath, accept, note) {
+  await withTentMutation(env.fs, async () => {
+    const raw = await env.fs.readFile(proposalPath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (accept) {
+      const targetId = typeof data.target === "string" ? data.target : String(data.target || "");
+      const check = validateProposalTarget(await loadTent(env.fs), targetId);
+      if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
+    }
+    data.status = accept ? "accepted" : "rejected";
+    if (note) data.note = note;
+    await env.fs.writeFile(
+      proposalPath,
+      serializeFrontmatter(data, body, keyOrder)
+    );
+  });
+}
+async function startApply(env, proposalPath) {
+  const { data, body } = parseFrontmatter(await env.fs.readFile(proposalPath));
+  if (data.status !== "accepted") {
+    throw new Error(
+      `proposal \u4E0D\u662F accepted \u72B6\u6001(\u5F53\u524D ${data.status});\u53EA\u6709 user \u6279\u51C6\u8FC7\u7684\u624D\u80FD\u843D\u5730`
+    );
+  }
+  const targetId = String(data.target);
+  const tent = await loadTent(env.fs);
+  const check = validateProposalTarget(tent, targetId);
+  if (!check.ok || !check.target) {
+    throw new Error(check.reason || `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}`);
+  }
+  const target = check.target;
+  if (!isUsableBox(target)) {
+    throw new Error(`\u76EE\u6807\u6846\u4E0D\u53EF\u843D\u5730:${target.invalidReason || "\u5DF2\u5F52\u6863"}`);
+  }
+  return {
+    targetId,
+    targetPath: target.path,
+    instructions: body.trim()
+  };
+}
+async function finishApply(env, proposalPath) {
+  await withTentMutation(env.fs, async () => {
+    const { data, body, keyOrder } = parseFrontmatter(
+      await env.fs.readFile(proposalPath)
+    );
+    if (data.status !== "accepted") {
+      throw new Error("proposal \u4E0D\u662F accepted \u72B6\u6001,\u65E0\u6CD5\u6536\u5C3E");
+    }
+    data.status = "applied";
+    await env.fs.writeFile(
+      proposalPath,
+      serializeFrontmatter(data, body, keyOrder)
+    );
+  });
+}
+async function handoff(env, fromBoxId, targetId, targetRole, prompt) {
+  return withTentMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    const from = tent.byId.get(fromBoxId);
+    if (!from) throw new Error(`\u627E\u4E0D\u5230\u6846 ${fromBoxId}`);
+    if (!isUsableBox(from)) throw new Error("\u4EA4\u63A5\u6765\u6E90\u6846\u4E0D\u53EF\u7528");
+    const target = tent.byId.get(targetId);
+    if (!target) throw new Error(`\u627E\u4E0D\u5230\u6846 ${targetId}`);
+    if (!isUsableBox(target)) throw new Error("\u4EA4\u63A5\u76EE\u6807\u6846\u4E0D\u53EF\u7528");
+    const role = assertRoleName(targetRole);
+    const content = prompt.trim();
+    if (!content) throw new Error("handoff prompt \u4E0D\u80FD\u4E3A\u7A7A");
+    const fromRole = from.fm.owner || "_";
+    const dir = join2("temp", fromRole, "handoffs");
+    await ensureDir3(env.fs, dir);
+    const handoffPath = await uniqueHandoffPath(
+      env.fs,
+      dir,
+      targetId,
+      env.clock.now()
+    );
+    const data = {
+      type: "handoff",
+      from: fromBoxId,
+      target: targetId,
+      role,
+      by: from.fm.owner || "",
+      ts: env.clock.now()
+    };
+    await env.fs.writeFile(
+      handoffPath,
+      serializeFrontmatter(
+        data,
+        content + "\n",
+        ["type", "from", "target", "role", "by", "ts"]
+      )
+    );
+    return handoffPath;
+  });
+}
+async function ensureDir3(fs2, path2) {
+  if (path2 && !await fs2.exists(path2)) await fs2.mkdir(path2);
+}
+function assertRoleName(role) {
+  const name = role.trim();
+  if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
+  if (/[\/\\\r\n]/.test(name)) {
+    throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
+  }
+  return name;
+}
+async function uniqueProposalPath(fs2, dir, targetId, now) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "proposal";
+  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
+  let index = 1;
+  while (true) {
+    const suffix = index === 1 ? "" : `-${index}`;
+    const path2 = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
+    if (!await fs2.exists(path2)) return path2;
+    index += 1;
+  }
+}
+async function uniqueHandoffPath(fs2, dir, targetId, now) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
+  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
+  for (let index = 1; ; index += 1) {
+    const suffix = index === 1 ? "" : `-${index}`;
+    const path2 = join2(dir, `hf-${stamp2}-${safeTarget}${suffix}.md`);
+    if (!await fs2.exists(path2)) return path2;
+  }
+}
+
 // src/core/ops.ts
 async function dispatch(env, claimId, role, promptOrOptions) {
   return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
-  const roleName = assertRoleName(role);
+  const roleName = assertRoleName2(role);
   const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
@@ -1197,7 +1358,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const manifest = buildManifest(tent, input);
   const yaml = manifestToYaml(manifest);
   const manifestPath = join2("temp", roleName, "manifest.yml");
-  await ensureDir3(env.fs, dirName(manifestPath));
+  await ensureDir4(env.fs, dirName(manifestPath));
   await env.fs.writeFile(manifestPath, yaml);
   const registry = await loadRolesRegistry(env.fs);
   const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
@@ -1233,44 +1394,6 @@ async function completeClaim(env, boxId, integrate) {
     await setOwner(env.fs, box, void 0, "done");
   });
 }
-async function propose(env, targetId, role, body) {
-  return withMutation(env.fs, async () => {
-    const roleName = assertRoleName(role);
-    const tent = await loadTent(env.fs);
-    const check = validateProposalTarget(tent, targetId);
-    if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
-    const content = body.trim();
-    if (!content) throw new Error("proposal \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
-    const dir = join2("temp", roleName, "proposals");
-    await ensureDir3(env.fs, dir);
-    const proposalPath = await uniqueProposalPath(env.fs, dir, targetId, env.clock.now());
-    const data = {
-      type: "proposal",
-      target: targetId,
-      status: "open",
-      from: roleName
-    };
-    await env.fs.writeFile(
-      proposalPath,
-      serializeFrontmatter(data, content + "\n", ["type", "target", "status", "from", "note"])
-    );
-    return { proposalPath };
-  });
-}
-async function applyProposal(env, proposalPath, accept, note) {
-  await withMutation(env.fs, async () => {
-    const raw = await env.fs.readFile(proposalPath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (accept) {
-      const targetId = typeof data.target === "string" ? data.target : String(data.target || "");
-      const check = validateProposalTarget(await loadTent(env.fs), targetId);
-      if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
-    }
-    data.status = accept ? "accepted" : "rejected";
-    if (note) data.note = note;
-    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
-  });
-}
 async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
@@ -1278,29 +1401,6 @@ async function grantReadable(env, boxId) {
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
     if (!isUsableBox(box)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD\u7FFB\u53EF\u8BFB");
     await patchFrontmatter(env.fs, box, { readable: true });
-  });
-}
-async function startApply(env, proposalPath) {
-  const { data, body } = parseFrontmatter(await env.fs.readFile(proposalPath));
-  if (data.status !== "accepted") {
-    throw new Error(`proposal \u4E0D\u662F accepted \u72B6\u6001(\u5F53\u524D ${data.status});\u53EA\u6709 user \u6279\u51C6\u8FC7\u7684\u624D\u80FD\u843D\u5730`);
-  }
-  const targetId = String(data.target);
-  const tent = await loadTent(env.fs);
-  const check = validateProposalTarget(tent, targetId);
-  if (!check.ok || !check.target) throw new Error(check.reason || `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}`);
-  const target = check.target;
-  if (!isUsableBox(target)) throw new Error(`\u76EE\u6807\u6846\u4E0D\u53EF\u843D\u5730:${target.invalidReason || "\u5DF2\u5F52\u6863"}`);
-  return { targetId, targetPath: target.path, instructions: body.trim() };
-}
-async function finishApply(env, proposalPath) {
-  await withMutation(env.fs, async () => {
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(proposalPath));
-    if (data.status !== "accepted") {
-      throw new Error(`proposal \u4E0D\u662F accepted \u72B6\u6001,\u65E0\u6CD5\u6536\u5C3E`);
-    }
-    data.status = "applied";
-    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
   });
 }
 async function forkNode(env, boxId) {
@@ -1352,44 +1452,13 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function handoff(env, fromBoxId, targetId, targetRole, prompt) {
-  return withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const from = tent.byId.get(fromBoxId);
-    if (!from) throw new Error(`\u627E\u4E0D\u5230\u6846 ${fromBoxId}`);
-    if (!isUsableBox(from)) throw new Error("\u4EA4\u63A5\u6765\u6E90\u6846\u4E0D\u53EF\u7528");
-    const target = tent.byId.get(targetId);
-    if (!target) throw new Error(`\u627E\u4E0D\u5230\u6846 ${targetId}`);
-    if (!isUsableBox(target)) throw new Error("\u4EA4\u63A5\u76EE\u6807\u6846\u4E0D\u53EF\u7528");
-    const role = assertRoleName(targetRole);
-    const body = prompt.trim();
-    if (!body) throw new Error("handoff prompt \u4E0D\u80FD\u4E3A\u7A7A");
-    const fromRole = from.fm.owner || "_";
-    const dir = join2("temp", fromRole, "handoffs");
-    await ensureDir3(env.fs, dir);
-    const handoffPath = await uniqueHandoffPath(env.fs, dir, targetId, env.clock.now());
-    const data = {
-      type: "handoff",
-      from: fromBoxId,
-      target: targetId,
-      role,
-      by: from.fm.owner || "",
-      ts: env.clock.now()
-    };
-    await env.fs.writeFile(
-      handoffPath,
-      serializeFrontmatter(data, body + "\n", ["type", "from", "target", "role", "by", "ts"])
-    );
-    return handoffPath;
-  });
-}
 async function cleanTemp(env, role) {
   await withMutation(env.fs, async () => {
     const target = role ? join2("temp", role) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!role) await ensureDir3(env.fs, "temp");
+    if (!role) await ensureDir4(env.fs, "temp");
   });
 }
 async function forceRelease(env, boxId) {
@@ -1429,7 +1498,7 @@ async function createBoxUnlocked(env, input) {
   const id = makeUniqueBoxId(existing, env.rand);
   const path2 = join2(input.parentPath, input.name);
   assertNotTempPath(path2);
-  await ensureDir3(env.fs, path2);
+  await ensureDir4(env.fs, path2);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${input.name}
@@ -1451,7 +1520,7 @@ async function patchFrontmatter(fs2, box, patch) {
   }
   await fs2.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
-async function ensureDir3(fs2, path2) {
+async function ensureDir4(fs2, path2) {
   if (path2 && !await fs2.exists(path2)) await fs2.mkdir(path2);
 }
 function boxKeyOrder2(existing) {
@@ -1465,7 +1534,7 @@ function assertNotTempPath(path2) {
     throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u5141\u8BB8\u521B\u5EFA\u6216\u79FB\u52A8 typed box");
   }
 }
-function assertRoleName(role) {
+function assertRoleName2(role) {
   const name = role.trim();
   if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
   if (/[\/\\\r\n]/.test(name)) throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
@@ -1482,26 +1551,6 @@ function ownerCovering(box) {
 }
 async function withMutation(fs2, action) {
   return withTentMutation(fs2, action);
-}
-async function uniqueProposalPath(fs2, dir, targetId, now) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "proposal";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  let n = 1;
-  while (true) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path2 = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
-    if (!await fs2.exists(path2)) return path2;
-    n += 1;
-  }
-}
-async function uniqueHandoffPath(fs2, dir, targetId, now) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path2 = join2(dir, `hf-${stamp2}-${safeTarget}${suffix}.md`);
-    if (!await fs2.exists(path2)) return path2;
-  }
 }
 async function uniqueSiblingPath(fs2, parentPath, base) {
   let n = 1;

@@ -1,28 +1,32 @@
 // Tent 状态动作的统一入口，供 CLI 与插件共同调用。
 
-import { FsAdapter, Clock, withTentMutation } from "./adapter.js";
+import { FsAdapter, withTentMutation } from "./adapter.js";
 import { loadTent, join, dirName, boxNotePath, baseName, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
-import { makeUniqueBoxId, RandomSource } from "./id.js";
+import { makeUniqueBoxId } from "./id.js";
 import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType } from "./types.js";
 import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
 import { isUsableBox } from "./tree.js";
-import { validateProposalTarget } from "./proposal.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
 import { ensureRoleInit, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
 import { validateDispatchHandoff } from "./handoff.js";
 import { loadReport, removeReportsForBox } from "./report.js";
+import type { OpsEnv } from "./ops-context.js";
 
-export interface OpsEnv {
-  fs: FsAdapter;
-  clock: Clock;
-  tentName: string;
-  rand?: RandomSource;
-}
+export type { OpsEnv } from "./ops-context.js";
+export {
+  applyProposal,
+  finishApply,
+  handoff,
+  propose,
+  startApply,
+  type ApplyGrant,
+  type ProposeResult,
+} from "./collaborationOps.js";
 
 // ---- dispatch ----
 
@@ -177,53 +181,6 @@ export async function acceptReport(
   });
 }
 
-// ---- apply-proposal ----
-
-export interface ProposeResult {
-  proposalPath: string;
-}
-
-export async function propose(env: OpsEnv, targetId: string, role: string, body: string): Promise<ProposeResult> {
-  return withMutation(env.fs, async () => {
-    const roleName = assertRoleName(role);
-    const tent = await loadTent(env.fs);
-    const check = validateProposalTarget(tent, targetId);
-    if (!check.ok) throw new Error(check.reason || "proposal target 不可用");
-    const content = body.trim();
-    if (!content) throw new Error("proposal 正文不能为空");
-
-    const dir = join("temp", roleName, "proposals");
-    await ensureDir(env.fs, dir);
-    const proposalPath = await uniqueProposalPath(env.fs, dir, targetId, env.clock.now());
-    const data: Record<string, unknown> = {
-      type: "proposal",
-      target: targetId,
-      status: "open",
-      from: roleName,
-    };
-    await env.fs.writeFile(
-      proposalPath,
-      serializeFrontmatter(data, content + "\n", ["type", "target", "status", "from", "note"])
-    );
-    return { proposalPath };
-  });
-}
-
-export async function applyProposal(env: OpsEnv, proposalPath: string, accept: boolean, note?: string): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const raw = await env.fs.readFile(proposalPath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (accept) {
-      const targetId = typeof data.target === "string" ? data.target : String(data.target || "");
-      const check = validateProposalTarget(await loadTent(env.fs), targetId);
-      if (!check.ok) throw new Error(check.reason || "proposal target 不可用");
-    }
-    data.status = accept ? "accepted" : "rejected";
-    if (note) data.note = note;
-    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
-  });
-}
-
 /** 翻可读:批准 asset 请求时顺手把目标框 readable 改 true(无需二段落地)。 */
 export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
@@ -232,44 +189,6 @@ export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
     if (!box) throw new Error(`找不到框 ${boxId}`);
     if (!isUsableBox(box)) throw new Error("失效或归档框不能翻可读");
     await patchFrontmatter(env.fs, box, { readable: true });
-  });
-}
-
-// ---- proposal 落地(accepted → agent 按合同修改 → applied)----
-// 改 goal/prompt 这类"agent 改不动的东西"的提议,批准后走这条流落地:
-//   tent apply <proposal>       校验 accepted + 目标可用,打印改动说明
-//   <agent 据说明改目标框身份文件(<box-name>.md)>
-//   tent apply-done <proposal>  转 applied
-
-export interface ApplyGrant {
-  targetId: string;
-  targetPath: string;
-  instructions: string;
-}
-
-export async function startApply(env: OpsEnv, proposalPath: string): Promise<ApplyGrant> {
-  const { data, body } = parseFrontmatter(await env.fs.readFile(proposalPath));
-  if (data.status !== "accepted") {
-    throw new Error(`proposal 不是 accepted 状态(当前 ${data.status});只有 user 批准过的才能落地`);
-  }
-  const targetId = String(data.target);
-  const tent = await loadTent(env.fs);
-  const check = validateProposalTarget(tent, targetId);
-  if (!check.ok || !check.target) throw new Error(check.reason || `找不到目标框 ${targetId}`);
-  const target = check.target;
-  if (!isUsableBox(target)) throw new Error(`目标框不可落地:${target.invalidReason || "已归档"}`);
-
-  return { targetId, targetPath: target.path, instructions: body.trim() };
-}
-
-export async function finishApply(env: OpsEnv, proposalPath: string): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(proposalPath));
-    if (data.status !== "accepted") {
-      throw new Error(`proposal 不是 accepted 状态,无法收尾`);
-    }
-    data.status = "applied";
-    await env.fs.writeFile(proposalPath, serializeFrontmatter(data, body, keyOrder));
   });
 }
 
@@ -393,47 +312,6 @@ async function normalizeCopiedRootIdentity(fs: FsAdapter, boxPath: string): Prom
     }
   }
   if (candidates.length === 1) await fs.move(candidates[0], expected);
-}
-
-// ---- handoff ----
-
-export async function handoff(
-  env: OpsEnv,
-  fromBoxId: string,
-  targetId: string,
-  targetRole: string,
-  prompt: string
-): Promise<string> {
-  return withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const from = tent.byId.get(fromBoxId);
-    if (!from) throw new Error(`找不到框 ${fromBoxId}`);
-    if (!isUsableBox(from)) throw new Error("交接来源框不可用");
-    const target = tent.byId.get(targetId);
-    if (!target) throw new Error(`找不到框 ${targetId}`);
-    if (!isUsableBox(target)) throw new Error("交接目标框不可用");
-
-    const role = assertRoleName(targetRole);
-    const body = prompt.trim();
-    if (!body) throw new Error("handoff prompt 不能为空");
-    const fromRole = from.fm.owner || "_";
-    const dir = join("temp", fromRole, "handoffs");
-    await ensureDir(env.fs, dir);
-    const handoffPath = await uniqueHandoffPath(env.fs, dir, targetId, env.clock.now());
-    const data: Record<string, unknown> = {
-      type: "handoff",
-      from: fromBoxId,
-      target: targetId,
-      role,
-      by: from.fm.owner || "",
-      ts: env.clock.now(),
-    };
-    await env.fs.writeFile(
-      handoffPath,
-      serializeFrontmatter(data, body + "\n", ["type", "from", "target", "role", "by", "ts"])
-    );
-    return handoffPath;
-  });
 }
 
 // ---- clean-temp ----
@@ -781,28 +659,6 @@ function ownerCovering(box: Box): Box | undefined {
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {
   return withTentMutation(fs, action);
-}
-
-async function uniqueProposalPath(fs: FsAdapter, dir: string, targetId: string, now: string): Promise<string> {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "proposal";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  let n = 1;
-  while (true) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path = join(dir, `pr-${stamp}-${safeTarget}${suffix}.md`);
-    if (!(await fs.exists(path))) return path;
-    n += 1;
-  }
-}
-
-async function uniqueHandoffPath(fs: FsAdapter, dir: string, targetId: string, now: string): Promise<string> {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path = join(dir, `hf-${stamp}-${safeTarget}${suffix}.md`);
-    if (!(await fs.exists(path))) return path;
-  }
 }
 
 async function uniqueSiblingPath(fs: FsAdapter, parentPath: string, base: string): Promise<string> {
