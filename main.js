@@ -5002,12 +5002,12 @@ var TentPlugin = class extends import_obsidian5.Plugin {
     this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
     this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
     this.addCommand({
-      id: "open-tent-panel",
+      id: "open-panel",
       name: "Open panel",
       callback: () => this.activateView()
     });
     this.addCommand({
-      id: "open-tent-board-experimental",
+      id: "open-board-experimental",
       name: "Open or refresh experimental board",
       callback: async () => {
         await this.activateView();
