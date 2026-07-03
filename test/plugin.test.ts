@@ -2,6 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { typeColorValue } from "../src/plugin/colors.js";
 import { TimedCache } from "../src/plugin/timed-cache.js";
+import * as uiModel from "../src/plugin/ui-model.js";
 import {
   createRegistryPaneState,
   roleColorValue,
@@ -33,6 +34,32 @@ test("plugin ui-model:R/W segment states mark active option", () => {
     { label: "开", value: true, active: false },
     { label: "关", value: false, active: true },
   ]);
+});
+
+test("plugin ui-model:captures and restores pane scroll positions across redraws", () => {
+  const capturePaneScroll = Reflect.get(uiModel, "capturePaneScroll");
+  const restorePaneScroll = Reflect.get(uiModel, "restorePaneScroll");
+  assert.equal(typeof capturePaneScroll, "function");
+  assert.equal(typeof restorePaneScroll, "function");
+
+  const oldTree = { scrollTop: 360 };
+  const oldProperty = { scrollTop: 140 };
+  const oldRoot = {
+    querySelector: (selector: string) =>
+      selector === ".tent-tree" ? oldTree : selector === ".tent-prop" ? oldProperty : null,
+  };
+  const positions = capturePaneScroll(oldRoot);
+  assert.deepEqual(positions, { tree: 360, property: 140 });
+
+  const newTree = { scrollTop: 0 };
+  const newProperty = { scrollTop: 0 };
+  const newRoot = {
+    querySelector: (selector: string) =>
+      selector === ".tent-tree" ? newTree : selector === ".tent-prop" ? newProperty : null,
+  };
+  restorePaneScroll(newRoot, positions);
+  assert.equal(newTree.scrollTop, 360);
+  assert.equal(newProperty.scrollTop, 140);
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

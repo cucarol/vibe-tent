@@ -2606,6 +2606,18 @@ function git(cwd, args) {
 var import_obsidian2 = require("obsidian");
 
 // src/plugin/ui-model.ts
+function capturePaneScroll(root) {
+  return {
+    tree: root.querySelector(".tent-tree")?.scrollTop ?? 0,
+    property: root.querySelector(".tent-prop")?.scrollTop ?? 0
+  };
+}
+function restorePaneScroll(root, positions) {
+  const tree = root.querySelector(".tent-tree");
+  const property = root.querySelector(".tent-prop");
+  if (tree) tree.scrollTop = positions.tree;
+  if (property) property.scrollTop = positions.property;
+}
 function createRegistryPaneState() {
   return {
     markedRoles: /* @__PURE__ */ new Set(),
@@ -3503,6 +3515,7 @@ var TentView = class extends import_obsidian4.ItemView {
   // ---- 绘制 ----
   draw() {
     const root = this.contentEl;
+    const paneScroll = capturePaneScroll(root);
     root.empty();
     root.addClass("tent-view");
     root.onclick = (event) => {
@@ -3547,6 +3560,7 @@ var TentView = class extends import_obsidian4.ItemView {
         }
       }, this.registryUi);
     } else this.drawProperty(prop);
+    restorePaneScroll(root, paneScroll);
   }
   wireDivider(cols, divider) {
     divider.onmousedown = (e) => {
