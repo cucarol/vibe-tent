@@ -151,6 +151,47 @@ test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-tem
   assert.deepEqual(await fs.readdir(path.join(tent, "temp")), []);
 });
 
+test("tent complete:defaults to ready report commits and consumes the report", async () => {
+  const fixture = await makeCompletionFixture();
+  const ref = await commitRoleFile(fixture.roleWorktree, "delivered.txt", "from report\n", "report delivery");
+  const body = path.join(path.dirname(fixture.tent), "report.md");
+  await fs.writeFile(body, "Implemented the requested delivery.\n", "utf8");
+  await runCli(fixture.tent, "report", fixture.boxId, body, "--commits", ref);
+
+  await runCli(fixture.tent, "complete", fixture.boxId);
+
+  assert.equal((await fs.readFile(path.join(fixture.workspace, "delivered.txt"), "utf8")).trim(), "from report");
+  assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), false);
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.owner, undefined);
+});
+
+test("tent complete:explicit commits override a ready report and still consume it", async () => {
+  const fixture = await makeCompletionFixture();
+  const reportRef = await commitRoleFile(fixture.roleWorktree, "report-only.txt", "report\n", "report commit");
+  const explicitRef = await commitRoleFile(fixture.roleWorktree, "explicit.txt", "explicit\n", "explicit commit");
+  const body = path.join(path.dirname(fixture.tent), "report.md");
+  await fs.writeFile(body, "Delivery with an overridable commit list.\n", "utf8");
+  await runCli(fixture.tent, "report", fixture.boxId, body, "--commits", reportRef);
+
+  await runCli(fixture.tent, "complete", fixture.boxId, "--commits", explicitRef);
+
+  assert.equal((await fs.readFile(path.join(fixture.workspace, "explicit.txt"), "utf8")).trim(), "explicit");
+  assert.equal(await exists(path.join(fixture.workspace, "report-only.txt")), false);
+  assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), false);
+});
+
+test("tent complete:without a report remains a zero-integration stamp path", async () => {
+  const fixture = await makeCompletionFixture();
+
+  await runCli(fixture.tent, "complete", fixture.boxId);
+
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.owner, undefined);
+});
+
 test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-"));
   const target = path.join(parent, "fresh-tent");
@@ -276,6 +317,44 @@ async function makeWorkspace(parent: string): Promise<string> {
   await run("git", ["add", "README.md"], workspace);
   await run("git", ["commit", "-q", "-m", "init workspace"], workspace);
   return workspace;
+}
+
+async function makeCompletionFixture(): Promise<{
+  tent: string;
+  workspace: string;
+  roleWorktree: string;
+  boxId: string;
+  boxNote: string;
+}> {
+  const tent = await makeSkeletonTent();
+  const workspace = await makeWorkspace(path.dirname(tent));
+  const deliveryId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
+  const outputId = boxId(await runCli(tent, "new-box", "workspace", "output"));
+  await fs.writeFile(
+    path.join(tent, "workspace", "workspace.md"),
+    `---\nid: ${outputId}\ntype: output\nworkspace: ${workspace.replaceAll("\\", "/")}\n---\n`,
+    "utf8",
+  );
+  await runCli(tent, "dispatch", deliveryId, "reviewer", "Implement the delivery.");
+  return {
+    tent,
+    workspace,
+    roleWorktree: path.join(path.dirname(workspace), `${path.basename(workspace)}-worktrees`, "reviewer"),
+    boxId: deliveryId,
+    boxNote: path.join(tent, "delivery", "delivery.md"),
+  };
+}
+
+async function commitRoleFile(
+  roleWorktree: string,
+  filename: string,
+  contents: string,
+  message: string,
+): Promise<string> {
+  await fs.writeFile(path.join(roleWorktree, filename), contents, "utf8");
+  await run("git", ["add", filename], roleWorktree);
+  await run("git", ["commit", "-q", "-m", message], roleWorktree);
+  return (await run("git", ["rev-parse", "HEAD"], roleWorktree)).stdout.trim();
 }
 
 test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {

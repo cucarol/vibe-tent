@@ -272,7 +272,12 @@ tent tree
 ```
 
 `stamp` is completion without workspace commits. `complete` is the normal
-workspace-aware acceptance path.
+workspace-aware acceptance path. When a ready report exists, `complete`
+defaults to that report's commit list; an explicit `--commits` list overrides
+it. A successful `complete` consumes the ready report after integration and
+state mutation succeed. With no report and no explicit commits, `complete`
+remains equivalent to the zero-integration `stamp` path. A rejected report must
+be replaced before `complete` may proceed.
 
 ## 10. UI Contract
 

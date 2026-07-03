@@ -1787,7 +1787,7 @@ async function completeClaim(env, boxId, integrate) {
     await setOwner(env.fs, box, void 0, "done");
   });
 }
-async function acceptReport(env, reportPath, integrate) {
+async function acceptReport(env, reportPath, options = {}) {
   await withMutation(env.fs, async () => {
     const report = await loadReport(env.fs, reportPath);
     if (report.status !== "ready") throw new Error("\u53EA\u6709 ready report \u53EF\u4EE5\u786E\u8BA4");
@@ -1795,9 +1795,10 @@ async function acceptReport(env, reportPath, integrate) {
     const box = tent.byId.get(report.boxId);
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${report.boxId}`);
     if (box.fm.owner !== report.role) throw new Error("report role \u4E0E\u5F53\u524D owner \u4E0D\u4E00\u81F4");
-    if (report.commits.length > 0) {
-      if (!integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
-      await integrate(report.commits);
+    const commits = options.commits ?? report.commits;
+    if (commits.length > 0) {
+      if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
+      await options.integrate(commits);
     }
     await setOwner(env.fs, box, void 0, "done");
     await env.fs.remove(report.path);
@@ -4434,11 +4435,13 @@ var TentView = class extends import_obsidian4.ItemView {
           await acceptReport(
             this.env(),
             report.path,
-            async (refs) => {
-              const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
-              if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace output \u6307\u9488");
-              const contract = await ensureRoleWorkspace(wp, report.role);
-              await integrateWorkspaceCommits(contract, refs);
+            {
+              integrate: async (refs) => {
+                const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
+                if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace output \u6307\u9488");
+                const contract = await ensureRoleWorkspace(wp, report.role);
+                await integrateWorkspaceCommits(contract, refs);
+              }
             }
           );
           this.clearGitUiCache();

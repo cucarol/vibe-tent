@@ -36,6 +36,7 @@ import {
   dispatch,
   stamp,
   completeClaim,
+  acceptReport,
   propose,
   applyProposal,
   grantReadable,
@@ -59,7 +60,7 @@ import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
-import { submitReport } from "../core/report.js";
+import { loadReports, submitReport } from "../core/report.js";
 import { withTentMutation } from "../core/adapter.js";
 import {
   ensureRoleWorkspace,
@@ -156,18 +157,37 @@ async function main() {
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
-      const refs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const reports = (await loadReports(env.fs)).filter((report) => report.boxId === boxId);
+      const readyReport = reports.find((report) => report.status === "ready");
+      const rejectedReport = reports.find((report) => report.status === "rejected");
+      if (!readyReport && rejectedReport) {
+        return fail(`Report for ${boxId} was rejected; submit a revised report before completing`);
+      }
+      const hasExplicitCommits = Object.prototype.hasOwnProperty.call(flags, "commits");
+      const explicitRefs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      if (hasExplicitCommits && explicitRefs.length === 0) {
+        return fail("--commits requires at least one commit ref");
+      }
+      const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines: string[] = [];
-      await completeClaim(env, boxId, refs.length === 0 ? undefined : async () => {
+      const integrate = async (commitRefs: string[]) => {
         const workspacePath = resolveTentWorkspace(tent);
         if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner!);
-        const integrated = await integrateWorkspaceCommits(contract, refs);
+        const integrated = await integrateWorkspaceCommits(contract, commitRefs);
         integrationLines = integrated.map(
           (item) => `${item.sourceRef} → ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
         );
-      });
+      };
+      if (readyReport) {
+        await acceptReport(env, readyReport.path, {
+          commits: refs,
+          integrate: refs.length > 0 ? integrate : undefined,
+        });
+      } else {
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined);
+      }
       for (const line of integrationLines) console.log(line);
       console.log(`✓ Completed ${boxId}`);
       break;

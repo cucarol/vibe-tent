@@ -161,10 +161,15 @@ export async function completeClaim(
 }
 
 /** 采纳一份完整 report：全部 commits 成功合入后才完成并清理临时 report。 */
+export interface AcceptReportOptions {
+  commits?: string[];
+  integrate?: (commits: string[]) => Promise<void>;
+}
+
 export async function acceptReport(
   env: OpsEnv,
   reportPath: string,
-  integrate?: (commits: string[]) => Promise<void>
+  options: AcceptReportOptions = {}
 ): Promise<void> {
   await withMutation(env.fs, async () => {
     const report = await loadReport(env.fs, reportPath);
@@ -173,9 +178,10 @@ export async function acceptReport(
     const box = tent.byId.get(report.boxId);
     if (!box) throw new Error(`找不到框 ${report.boxId}`);
     if (box.fm.owner !== report.role) throw new Error("report role 与当前 owner 不一致");
-    if (report.commits.length > 0) {
-      if (!integrate) throw new Error("report 含 commits,必须完成 workspace 合入");
-      await integrate(report.commits);
+    const commits = options.commits ?? report.commits;
+    if (commits.length > 0) {
+      if (!options.integrate) throw new Error("report 含 commits,必须完成 workspace 合入");
+      await options.integrate(commits);
     }
     await setOwner(env.fs, box, undefined, "done");
     await env.fs.remove(report.path);

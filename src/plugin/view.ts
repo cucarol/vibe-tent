@@ -1335,11 +1335,13 @@ export class TentView extends ItemView {
           await acceptReport(
             this.env(),
             report.path,
-            async (refs) => {
-              const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
-              if (!wp) throw new Error("帐内没有 workspace output 指针");
-              const contract = await ensureRoleWorkspace(wp, report.role);
-              await integrateWorkspaceCommits(contract, refs);
+            {
+              integrate: async (refs) => {
+                const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
+                if (!wp) throw new Error("帐内没有 workspace output 指针");
+                const contract = await ensureRoleWorkspace(wp, report.role);
+                await integrateWorkspaceCommits(contract, refs);
+              },
             }
           );
           this.clearGitUiCache();

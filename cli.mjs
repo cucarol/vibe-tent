@@ -1555,6 +1555,23 @@ async function completeClaim(env, boxId, integrate) {
     await setOwner(env.fs, box, void 0, "done");
   });
 }
+async function acceptReport(env, reportPath2, options = {}) {
+  await withMutation(env.fs, async () => {
+    const report = await loadReport(env.fs, reportPath2);
+    if (report.status !== "ready") throw new Error("\u53EA\u6709 ready report \u53EF\u4EE5\u786E\u8BA4");
+    const tent = await loadTent(env.fs);
+    const box = tent.byId.get(report.boxId);
+    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${report.boxId}`);
+    if (box.fm.owner !== report.role) throw new Error("report role \u4E0E\u5F53\u524D owner \u4E0D\u4E00\u81F4");
+    const commits = options.commits ?? report.commits;
+    if (commits.length > 0) {
+      if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
+      await options.integrate(commits);
+    }
+    await setOwner(env.fs, box, void 0, "done");
+    await env.fs.remove(report.path);
+  });
+}
 async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
@@ -2166,18 +2183,37 @@ ${r.relayPrompt}`);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
-      const refs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      const reports = (await loadReports(env.fs)).filter((report) => report.boxId === boxId);
+      const readyReport = reports.find((report) => report.status === "ready");
+      const rejectedReport = reports.find((report) => report.status === "rejected");
+      if (!readyReport && rejectedReport) {
+        return fail(`Report for ${boxId} was rejected; submit a revised report before completing`);
+      }
+      const hasExplicitCommits = Object.prototype.hasOwnProperty.call(flags, "commits");
+      const explicitRefs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
+      if (hasExplicitCommits && explicitRefs.length === 0) {
+        return fail("--commits requires at least one commit ref");
+      }
+      const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines = [];
-      await completeClaim(env, boxId, refs.length === 0 ? void 0 : async () => {
+      const integrate = async (commitRefs) => {
         const workspacePath = resolveTentWorkspace(tent);
         if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner);
-        const integrated = await integrateWorkspaceCommits(contract, refs);
+        const integrated = await integrateWorkspaceCommits(contract, commitRefs);
         integrationLines = integrated.map(
           (item) => `${item.sourceRef} \u2192 ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
         );
-      });
+      };
+      if (readyReport) {
+        await acceptReport(env, readyReport.path, {
+          commits: refs,
+          integrate: refs.length > 0 ? integrate : void 0
+        });
+      } else {
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0);
+      }
       for (const line of integrationLines) console.log(line);
       console.log(`\u2713 Completed ${boxId}`);
       break;

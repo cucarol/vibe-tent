@@ -212,8 +212,10 @@ test("report:驳回保留 owner,重新交付后整份确认并清理临时文件
   const revised = await submitReport(fsa, clock, "bx-g2", "已补测试", ["ccc"]);
   assert.equal(revised.status, "ready");
   let integrated: string[] = [];
-  await acceptReport(env as any, revised.path, async (commits) => {
-    integrated = commits;
+  await acceptReport(env as any, revised.path, {
+    integrate: async (commits) => {
+      integrated = commits;
+    },
   });
   assert.deepEqual(integrated, ["ccc"]);
   const box = (await loadTent(fsa)).byId.get("bx-g2")!;
