@@ -98,6 +98,7 @@ tent clean-temp [role]
 tent force-release <boxId>
 tent migrate-kind-to-type
 tent okf-sync
+tent skill-install [--target claude] [--force]
 tent tree
 ```
 
@@ -118,6 +119,7 @@ Then enable **Tent / 帷幄** in Obsidian's community plugin settings.
 - Core, CLI, and the agent skills are implemented.
 - The type system is a flat OKF-aligned registry with user-defined types.
 - Legacy `kind` is load-compatible and can be migrated with `tent migrate-kind-to-type`.
+- Breaking Tent overlay format changes ship with idempotent `tent migrate-*` commands.
 - OKF index/log generation and wiki-link projection are available via `tent okf-sync`.
 - `temp/` is a system pipeline, not a semantic node or type.
 - The Obsidian UI is under active iteration.

@@ -42,6 +42,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const versions = JSON.parse(
     await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
   );
+  const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
+  const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, manifest.author);
@@ -56,6 +58,11 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
+  assert.match(readme, /tent skill-install \[--target claude\] \[--force\]/);
+  assert.match(readme, /idempotent `tent migrate-\*` commands/);
+  assert.match(spec, /Overlay Format Migrations/);
+  assert.match(spec, /Any breaking overlay format change must ship with an idempotent/);
+  assert.match(spec, /`tent migrate-\*` command/);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {
