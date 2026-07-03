@@ -2588,6 +2588,12 @@ function bottomTabCounts(input) {
     triage: input.openProposals + input.readyReports
   };
 }
+function bottomTabParts(label, count) {
+  return {
+    label,
+    count: count > 0 ? `(${count})` : ""
+  };
+}
 function createRegistryPaneState() {
   return {
     markedRoles: /* @__PURE__ */ new Set(),
@@ -4372,7 +4378,9 @@ var TentView = class extends import_obsidian4.ItemView {
     });
     const mkTab = (key, label, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
-      t.createSpan({ text: count > 0 ? `${label} (${count})` : label });
+      const parts = bottomTabParts(label, count);
+      t.createSpan({ cls: "tent-bottom-tab-label", text: parts.label });
+      if (parts.count) t.createSpan({ cls: "tent-bottom-tab-count", text: parts.count });
       t.onclick = () => {
         this.bottomTab = key;
         this.draw();

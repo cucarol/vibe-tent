@@ -11,6 +11,7 @@ import * as uiModel from "../src/plugin/ui-model.js";
 import {
   createRegistryPaneState,
   bottomTabCounts,
+  bottomTabParts,
   roleColorValue,
   rwSegmentStates,
   showsUnstampedState,
@@ -113,6 +114,11 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
     }),
     { dispatch: 2, triage: 4 },
   );
+});
+
+test("plugin ui-model:tab count is a stable part separate from its label", () => {
+  assert.deepEqual(bottomTabParts("派活", 1), { label: "派活", count: "(1)" });
+  assert.deepEqual(bottomTabParts("待裁", 0), { label: "待裁", count: "" });
 });
 
 test("plugin pending dispatch:only taken status clears the newest task claims", () => {

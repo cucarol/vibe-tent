@@ -89,6 +89,13 @@ export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number;
   };
 }
 
+export function bottomTabParts(label: string, count: number): { label: string; count: string } {
+  return {
+    label,
+    count: count > 0 ? `(${count})` : "",
+  };
+}
+
 export function createRegistryPaneState(): RegistryPaneState {
   return {
     markedRoles: new Set<string>(),

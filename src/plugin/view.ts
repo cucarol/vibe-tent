@@ -43,6 +43,7 @@ import {
 import {
   capturePaneScroll,
   bottomTabCounts,
+  bottomTabParts,
   restorePaneScroll,
   showsUnstampedState,
   statuslessDirectChildren,
@@ -1263,7 +1264,9 @@ export class TentView extends ItemView {
     });
     const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
-      t.createSpan({ text: count > 0 ? `${label} (${count})` : label });
+      const parts = bottomTabParts(label, count);
+      t.createSpan({ cls: "tent-bottom-tab-label", text: parts.label });
+      if (parts.count) t.createSpan({ cls: "tent-bottom-tab-count", text: parts.count });
       t.onclick = () => {
         this.bottomTab = key;
         this.draw();
