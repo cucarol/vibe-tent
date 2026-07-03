@@ -75,17 +75,19 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 1. 确认工作目录就是 Tent 根目录，且包含 `RULES.md`、`.tent/`、`temp/`。否则停止并告诉 user。
 2. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。
 3. 读取 user 给你的 task Markdown 路径，再读其中指向的 manifest、box 指针、user prompt，以及 user 明确选择的 handoff 指针。
-4. 如果 task 含 handoff 指针，读取那个文件作为 agent-authored task context。不要自己扫描 `temp/` 猜 handoff，也不要替 user 选择另一个 handoff。
-5. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
-6. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
-7. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
-8. 协作命令：
+4. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），照常工作：读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认，不要因为没有 task 文件而拒绝或自己发明一份。
+5. 如果 task 含 handoff 指针，读取那个文件作为 agent-authored task context。不要自己扫描 `temp/` 猜 handoff，也不要替 user 选择另一个 handoff。
+6. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
+7. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
+8. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
+9. 协作命令：
    - `tent roles`：读取共享 role 注册表，再选择 handoff 目标 role。
+   - `tent new-box <name> <type> [parentId]`：创建 box 并获得防撞 id。CLI 只生成空身份笔记——建完立即补写正文（问题、方案、验收标准）和 `status`，不要留空壳框。
    - `tent propose <targetId> <role> <bodyFile|->`：给 readable target 写 agent-to-user 决策文本。
    - `tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->`：创建不可变 agent-to-agent prompt 指针，携带目标 box 和目标 role。它不改变 owner，也不 dispatch。user 后续派活时选择这个 handoff。
    - `tent fork <boxId>`：复制子树，只改变根名称，重发 ids，并清 owner/status。
-9. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
+10. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。报告只写你**实际验证过**的事实——测试贴运行结果，修复贴复现前后对比；命令打了 ✓ 不等于结果发生了，关键动作要回读状态确认。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
 
 不要自己把 box 标记完成。只有 user 确认后，交付才算完成。
 
-proposal 被采纳不会自动启动 agent。handoff 创建不会派活或转移 owner。`tent complete` 和 `tent force-release` 是 user 侧动作。
+proposal 被采纳不会自动启动 agent。handoff 创建不会派活或转移 owner。`tent complete`、`tent stamp` 和 `tent force-release` 是 user 侧动作，除非 user 在会话中明确豁免。
