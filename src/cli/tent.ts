@@ -93,7 +93,7 @@ async function main() {
     case "new": {
       const { positionals, flags } = parseFlags(args);
       if (!positionals[0]) {
-        return fail("用法: tent new <帐路径>  或  tent new <帐名> --vault <vault路径>");
+        return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       }
       await newTent(positionals[0], flags.vault);
       break;
@@ -102,7 +102,7 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("用法: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
@@ -114,19 +114,19 @@ async function main() {
         handoffPath: flags.handoff,
         workspace,
       });
-      console.log(`✓ 已派活。task: ${r.taskPath}\n\n--- 投递 prompt ---\n${r.relayPrompt}`);
+      console.log(`✓ Dispatched. Task: ${r.taskPath}\n\n--- Relay prompt ---\n${r.relayPrompt}`);
       break;
     }
     case "role-init": {
       const roleName = args[0];
-      if (!roleName) return fail("用法: tent role-init <role>");
+      if (!roleName) return fail("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
         env.fs,
         () => ensureRoleInit(env.fs, role, env.tentName)
       );
-      console.log(`读取 ${initPath} 完成 role init。`);
+      console.log(`Read ${initPath} to complete role initialization.`);
       break;
     }
     case "roles": {
@@ -138,30 +138,30 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [boxId, bodySource] = positionals;
       if (!boxId || !bodySource) {
-        return fail("用法: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
+        return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
       }
       const body = bodySource === "-"
         ? await readStdin()
         : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
-      console.log(`✓ report 待裁: ${report.path}`);
+      console.log(`✓ Report ready for review: ${report.path}`);
       break;
     }
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("用法: tent complete <boxId> [--commits <sha,sha>]");
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
-      if (!box) return fail(`找不到框 ${boxId}`);
+      if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
       const refs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
-      if (refs.length > 0 && !owner) return fail("有 workspace commits 的完成操作需要 owner");
+      if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines: string[] = [];
       await completeClaim(env, boxId, refs.length === 0 ? undefined : async () => {
         const workspacePath = resolveTentWorkspace(tent);
-        if (!workspacePath) throw new Error("帐内没有 workspace output 指针");
+        if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner!);
         const integrated = await integrateWorkspaceCommits(contract, refs);
         integrationLines = integrated.map(
@@ -169,94 +169,94 @@ async function main() {
         );
       });
       for (const line of integrationLines) console.log(line);
-      console.log(`✓ 已确认完成 ${boxId}`);
+      console.log(`✓ Completed ${boxId}`);
       break;
     }
     case "stamp": {
-      if (!args[0]) return fail("用法: tent stamp <boxId>");
+      if (!args[0]) return fail("Usage: tent stamp <boxId>");
       await stamp(env, args[0]);
-      console.log(`✓ 已盖章 ${args[0]}(done + 清 owner)`);
+      console.log(`✓ Stamped ${args[0]} (done and owner cleared)`);
       break;
     }
     case "propose": {
       const [targetId, role, bodySource] = args;
-      if (!targetId || !role || !bodySource) return fail("用法: tent propose <targetId> <role> <bodyFile|->");
+      if (!targetId || !role || !bodySource) return fail("Usage: tent propose <targetId> <role> <bodyFile|->");
       const body = bodySource === "-"
         ? await readStdin()
         : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
       const r = await propose(env, targetId, role, body);
-      console.log(`✓ proposal 已写入: ${r.proposalPath}`);
+      console.log(`✓ Proposal written: ${r.proposalPath}`);
       break;
     }
     case "proposal": {
       const [p, verb, ...noteParts] = args;
-      if (!p || (verb !== "accept" && verb !== "reject")) return fail("用法: tent proposal <path> accept|reject [note]");
+      if (!p || (verb !== "accept" && verb !== "reject")) return fail("Usage: tent proposal <path> accept|reject [note]");
       await applyProposal(env, p, verb === "accept", noteParts.join(" ") || undefined);
       console.log(`✓ proposal ${verb}: ${p}`);
       break;
     }
     case "grant-readable": {
-      if (!args[0]) return fail("用法: tent grant-readable <boxId>");
+      if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
       console.log(`✓ ${args[0]} readable=true`);
       break;
     }
     case "new-box": {
       const [name, type, parentId] = args;
-      if (!name || !type) return fail("用法: tent new-box <name> <type> [parentId]");
+      if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
       let parentPath = "";
       if (parentId) {
         const tent = await loadTent(env.fs);
         const parent = tent.byId.get(parentId);
-        if (!parent) return fail(`找不到父框 ${parentId}`);
+        if (!parent) return fail(`Parent box not found: ${parentId}`);
         parentPath = parent.path;
       }
       const id = await createBox(env, { parentPath, name, type });
-      console.log(`✓ 已建框 ${name} (${id})`);
+      console.log(`✓ Created box ${name} (${id})`);
       break;
     }
     case "tag": {
       const [boxId, name] = args;
-      if (!boxId || !name) return fail("用法: tent tag <boxId> <name>");
+      if (!boxId || !name) return fail("Usage: tent tag <boxId> <name>");
       await tagBox(env, boxId, name);
-      console.log(`✓ 已给 ${boxId} 打 tag: ${name}`);
+      console.log(`✓ Added tag to ${boxId}: ${name}`);
       break;
     }
     case "untag": {
       const [boxId, name] = args;
-      if (!boxId || !name) return fail("用法: tent untag <boxId> <name>");
+      if (!boxId || !name) return fail("Usage: tent untag <boxId> <name>");
       await untagBox(env, boxId, name);
-      console.log(`✓ 已从 ${boxId} 摘 tag: ${name}`);
+      console.log(`✓ Removed tag from ${boxId}: ${name}`);
       break;
     }
     case "tag-new": {
-      if (!args[0]) return fail("用法: tent tag-new <name>");
+      if (!args[0]) return fail("Usage: tent tag-new <name>");
       await createTag(env, args[0]);
-      console.log(`✓ 已登记 tag: ${args[0]}`);
+      console.log(`✓ Registered tag: ${args[0]}`);
       break;
     }
     case "tag-rm": {
       const [name, confirmation] = args;
-      if (!name) return fail("用法: tent tag-rm <name> --yes  或  tent tag-rm <name> <name>");
+      if (!name) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
       if (!args.includes("--yes") && confirmation !== name) {
-        return fail(`删除 tag 会从所有框级联剥离。请加 --yes,或重复输入 tag 名确认: tent tag-rm ${name} ${name}`);
+        return fail(`Deleting a tag removes it from every box. Add --yes or repeat the tag name to confirm: tent tag-rm ${name} ${name}`);
       }
       await deleteTag(env, name);
-      console.log(`✓ 已删除 tag 并级联剥离: ${name}`);
+      console.log(`✓ Deleted tag from registry and all boxes: ${name}`);
       break;
     }
     case "tags": {
       const registry = await loadTagRegistry(env.fs);
-      if (registry.tags.length === 0) console.log("(无 tag)");
+      if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
       break;
     }
     case "find": {
-      if (!args[0]) return fail("用法: tent find <name>");
+      if (!args[0]) return fail("Usage: tent find <name>");
       const tent = await loadTent(env.fs);
       const boxes = findBoxesByTag(tent, args[0]);
       if (boxes.length === 0) {
-        console.log("(无匹配)");
+        console.log("(no matches)");
         break;
       }
       for (const box of boxes) {
@@ -266,60 +266,60 @@ async function main() {
       break;
     }
     case "apply": {
-      if (!args[0]) return fail("用法: tent apply <proposal文件路径>");
+      if (!args[0]) return fail("Usage: tent apply <proposal-path>");
       const g = await startApply(env, args[0]);
       console.log(
-        `✓ proposal 可落地。目标:「${g.targetPath}」。请按合同修改。\n\n` +
-          `--- 要落地的改动 ---\n${g.instructions || "(proposal 正文为空,见原文)"}\n\n` +
-          `改完目标框的身份文件后,运行:tent apply-done ${args[0]}`
+        `✓ Proposal is ready to apply. Target: ${g.targetPath}\n\n` +
+          `--- Requested change ---\n${g.instructions || "(The proposal body is empty; see the source file.)"}\n\n` +
+          `After updating the target box note, run: tent apply-done ${args[0]}`
       );
       break;
     }
     case "apply-done": {
-      if (!args[0]) return fail("用法: tent apply-done <proposal文件路径>");
+      if (!args[0]) return fail("Usage: tent apply-done <proposal-path>");
       await finishApply(env, args[0]);
-      console.log(`✓ proposal 已转 applied。`);
+      console.log("✓ Proposal marked as applied.");
       break;
     }
     case "fork": {
-      if (!args[0]) return fail("用法: tent fork <boxId>");
+      if (!args[0]) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
-      console.log(`✓ 已 fork ${args[0]} → ${id}`);
+      console.log(`✓ Forked ${args[0]} → ${id}`);
       break;
     }
     case "handoff": {
       const [fromBoxId, targetId, targetRole, promptSource] = args;
       if (!fromBoxId || !targetId || !targetRole || !promptSource) {
-        return fail("用法: tent handoff <fromBoxId> <targetId> <targetRole> <prompt文件|->");
+        return fail("Usage: tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->");
       }
       const prompt = promptSource === "-"
         ? await readStdin()
         : await (await import("node:fs/promises")).readFile(path.resolve(promptSource), "utf8");
       const handoffPath = await handoff(env, fromBoxId, targetId, targetRole, prompt);
-      console.log(`✓ handoff 草稿: ${handoffPath}`);
+      console.log(`✓ Handoff written: ${handoffPath}`);
       break;
     }
     case "clean-temp": {
       await cleanTemp(env, args[0]);
-      console.log(`✓ 已清 temp/${args[0] || "(全部)"}`);
+      console.log(`✓ Cleared temp/${args[0] || "(all)"}`);
       break;
     }
     case "force-release": {
-      if (!args[0]) return fail("用法: tent force-release <boxId>");
+      if (!args[0]) return fail("Usage: tent force-release <boxId>");
       await forceRelease(env, args[0]);
-      console.log(`✓ 已强清 owner: ${args[0]}`);
+      console.log(`✓ Force-released owner: ${args[0]}`);
       break;
     }
     case "migrate-kind-to-type": {
       const touched = await migrateKindToType(env.fs);
-      if (touched.length === 0) console.log("✓ 无需迁移:未发现 legacy kind");
-      else console.log(`✓ 已迁移 legacy kind → type:\n${touched.map((p) => `- ${p}`).join("\n")}`);
+      if (touched.length === 0) console.log("✓ No migration needed: no legacy kind fields found");
+      else console.log(`✓ Migrated legacy kind → type:\n${touched.map((p) => `- ${p}`).join("\n")}`);
       break;
     }
     case "okf-sync": {
       const result = await syncOkfBundle(env.fs);
       console.log(
-        `✓ OKF 已同步\n` +
+        `✓ OKF synchronized\n` +
           `generated: ${result.generatedFiles.length}\n` +
           `projected: ${result.projectedFiles.length}\n` +
           `unresolved wiki links: ${result.unresolved.length}`
@@ -336,7 +336,7 @@ async function main() {
       const dir = flags.dir || defaultSkillInstallDir(target);
       const installed = await installSkills(dir, { force, target });
       console.log(
-        `✓ 已安装 ${target} skills 到 ${dir}\n` +
+        `✓ Installed ${target} skills in ${dir}\n` +
           installed.map((name) => `- ${name}`).join("\n")
       );
       break;
@@ -348,7 +348,7 @@ async function main() {
     }
     default:
       fail(
-        `未知命令: ${cmd || "(空)"}\n命令: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -369,7 +369,7 @@ function printBox(box: import("../core/types.js").Box, depth: number) {
   const owner = box.fm.owner ? ` ⚑${box.fm.owner}` : "";
   const type = box.type;
   const id = box.id || "missing-id";
-  const invalid = box.invalid ? ` invalid:${box.invalidReason || "失效"}` : "";
+  const invalid = box.invalid ? ` invalid:${box.invalidReason || "invalid"}` : "";
   console.log(`${ind}${box.name} [${type} ${id}] ${rw}${owner}${invalid}`);
   for (const c of box.children) printBox(c, depth + 1);
 }
@@ -408,7 +408,7 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Record<stri
 
 function defaultSkillInstallDir(target: string): string {
   if (target !== "claude") {
-    throw new Error("skill-install 目前仅支持 --target claude；Codex skill 格式不同，后续再适配。");
+    throw new Error("skill-install currently supports only --target claude; Codex uses a different skill format.");
   }
   return path.join(os.homedir(), ".claude", "skills");
 }
@@ -425,14 +425,14 @@ async function installSkills(
     if (!entry.isDirectory()) continue;
     if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
   }
-  if (skillNames.length === 0) throw new Error(`没有可安装的 skill:${sourceDir}`);
+  if (skillNames.length === 0) throw new Error(`No installable skills found in ${sourceDir}`);
 
   const conflicts: string[] = [];
   for (const name of skillNames) {
     if (await existsPath(path.join(targetDir, name))) conflicts.push(name);
   }
   if (conflicts.length > 0 && !options.force) {
-    throw new Error(`skill 已存在:${conflicts.join(", ")}。如需覆盖,加 --force。`);
+    throw new Error(`Skills already exist: ${conflicts.join(", ")}. Add --force to overwrite them.`);
   }
 
   await fs.mkdir(targetDir, { recursive: true });
@@ -459,7 +459,7 @@ function packageRoot(): string {
 function assertChildPath(parent: string, child: string): void {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`安装目标越界:${child}`);
+    throw new Error(`Install target escapes the destination directory: ${child}`);
   }
 }
 
@@ -478,7 +478,7 @@ async function packageVersion(): Promise<string> {
 }
 
 function helpText(): string {
-  return `Tent / 帷幄 CLI
+  return `Tent CLI
 
 Usage:
   tent <command> [args]
@@ -550,14 +550,14 @@ async function newTent(target: string, vault?: string): Promise<void> {
   // --vault 模式:target 当帐名,落到 vault 配置的 tentsRoot 下(绑 Obsidian 设置层)。
   if (vault) {
     if (target.includes("/") || target.includes("\\")) {
-      return fail(`--vault 模式下 <帐名> 不能含路径分隔符: ${target}`);
+      return fail(`In --vault mode, <name> cannot contain path separators: ${target}`);
     }
     pluginSettings = await readVaultPluginSettings(vault);
     target = path.join(path.resolve(vault), pluginSettings.tentsRoot, target);
   }
 
   const fsa = new NodeFs(target);
-  if (await fsa.exists(".tent")) return fail(`目标已是一顶帐: ${target}`);
+  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${target}`);
 
   await fsmod.mkdir(target, { recursive: true });
   const name = path.basename(path.resolve(target));
@@ -579,8 +579,8 @@ async function newTent(target: string, vault?: string): Promise<void> {
   }); // 无 boxes = 空骨架
 
   console.log(
-    `✓ 新帐已建: ${target}\n` +
-      `顶层为空(按 #C 不强制 zone);用面板的 ＋,或直接建“文件夹 + 同名 .md”添加真名节点。`
+    `✓ Created Tent: ${target}\n` +
+      `The root starts empty; add boxes in the panel or create a folder with a same-named Markdown note.`
   );
 }
 

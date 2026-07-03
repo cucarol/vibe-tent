@@ -2102,7 +2102,7 @@ async function main() {
     case "new": {
       const { positionals, flags } = parseFlags(args);
       if (!positionals[0]) {
-        return fail("\u7528\u6CD5: tent new <\u5E10\u8DEF\u5F84>  \u6216  tent new <\u5E10\u540D> --vault <vault\u8DEF\u5F84>");
+        return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       }
       await newTent(positionals[0], flags.vault);
       break;
@@ -2111,7 +2111,7 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("\u7528\u6CD5: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
@@ -2123,22 +2123,22 @@ async function main() {
         handoffPath: flags.handoff,
         workspace
       });
-      console.log(`\u2713 \u5DF2\u6D3E\u6D3B\u3002task: ${r.taskPath}
+      console.log(`\u2713 Dispatched. Task: ${r.taskPath}
 
---- \u6295\u9012 prompt ---
+--- Relay prompt ---
 ${r.relayPrompt}`);
       break;
     }
     case "role-init": {
       const roleName = args[0];
-      if (!roleName) return fail("\u7528\u6CD5: tent role-init <role>");
+      if (!roleName) return fail("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
         env.fs,
         () => ensureRoleInit(env.fs, role, env.tentName)
       );
-      console.log(`\u8BFB\u53D6 ${initPath} \u5B8C\u6210 role init\u3002`);
+      console.log(`Read ${initPath} to complete role initialization.`);
       break;
     }
     case "roles": {
@@ -2150,28 +2150,28 @@ ${r.relayPrompt}`);
       const { positionals, flags } = parseFlags(args);
       const [boxId, bodySource] = positionals;
       if (!boxId || !bodySource) {
-        return fail("\u7528\u6CD5: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
+        return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
       }
       const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
-      console.log(`\u2713 report \u5F85\u88C1: ${report.path}`);
+      console.log(`\u2713 Report ready for review: ${report.path}`);
       break;
     }
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("\u7528\u6CD5: tent complete <boxId> [--commits <sha,sha>]");
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
-      if (!box) return fail(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+      if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
       const refs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
-      if (refs.length > 0 && !owner) return fail("\u6709 workspace commits \u7684\u5B8C\u6210\u64CD\u4F5C\u9700\u8981 owner");
+      if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines = [];
       await completeClaim(env, boxId, refs.length === 0 ? void 0 : async () => {
         const workspacePath = resolveTentWorkspace(tent);
-        if (!workspacePath) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace output \u6307\u9488");
+        if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner);
         const integrated = await integrateWorkspaceCommits(contract, refs);
         integrationLines = integrated.map(
@@ -2179,92 +2179,92 @@ ${r.relayPrompt}`);
         );
       });
       for (const line of integrationLines) console.log(line);
-      console.log(`\u2713 \u5DF2\u786E\u8BA4\u5B8C\u6210 ${boxId}`);
+      console.log(`\u2713 Completed ${boxId}`);
       break;
     }
     case "stamp": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent stamp <boxId>");
+      if (!args[0]) return fail("Usage: tent stamp <boxId>");
       await stamp(env, args[0]);
-      console.log(`\u2713 \u5DF2\u76D6\u7AE0 ${args[0]}(done + \u6E05 owner)`);
+      console.log(`\u2713 Stamped ${args[0]} (done and owner cleared)`);
       break;
     }
     case "propose": {
       const [targetId, role, bodySource] = args;
-      if (!targetId || !role || !bodySource) return fail("\u7528\u6CD5: tent propose <targetId> <role> <bodyFile|->");
+      if (!targetId || !role || !bodySource) return fail("Usage: tent propose <targetId> <role> <bodyFile|->");
       const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
       const r = await propose(env, targetId, role, body);
-      console.log(`\u2713 proposal \u5DF2\u5199\u5165: ${r.proposalPath}`);
+      console.log(`\u2713 Proposal written: ${r.proposalPath}`);
       break;
     }
     case "proposal": {
       const [p, verb, ...noteParts] = args;
-      if (!p || verb !== "accept" && verb !== "reject") return fail("\u7528\u6CD5: tent proposal <path> accept|reject [note]");
+      if (!p || verb !== "accept" && verb !== "reject") return fail("Usage: tent proposal <path> accept|reject [note]");
       await applyProposal(env, p, verb === "accept", noteParts.join(" ") || void 0);
       console.log(`\u2713 proposal ${verb}: ${p}`);
       break;
     }
     case "grant-readable": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent grant-readable <boxId>");
+      if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
       console.log(`\u2713 ${args[0]} readable=true`);
       break;
     }
     case "new-box": {
       const [name, type, parentId] = args;
-      if (!name || !type) return fail("\u7528\u6CD5: tent new-box <name> <type> [parentId]");
+      if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
       let parentPath = "";
       if (parentId) {
         const tent = await loadTent(env.fs);
         const parent = tent.byId.get(parentId);
-        if (!parent) return fail(`\u627E\u4E0D\u5230\u7236\u6846 ${parentId}`);
+        if (!parent) return fail(`Parent box not found: ${parentId}`);
         parentPath = parent.path;
       }
       const id = await createBox(env, { parentPath, name, type });
-      console.log(`\u2713 \u5DF2\u5EFA\u6846 ${name} (${id})`);
+      console.log(`\u2713 Created box ${name} (${id})`);
       break;
     }
     case "tag": {
       const [boxId, name] = args;
-      if (!boxId || !name) return fail("\u7528\u6CD5: tent tag <boxId> <name>");
+      if (!boxId || !name) return fail("Usage: tent tag <boxId> <name>");
       await tagBox(env, boxId, name);
-      console.log(`\u2713 \u5DF2\u7ED9 ${boxId} \u6253 tag: ${name}`);
+      console.log(`\u2713 Added tag to ${boxId}: ${name}`);
       break;
     }
     case "untag": {
       const [boxId, name] = args;
-      if (!boxId || !name) return fail("\u7528\u6CD5: tent untag <boxId> <name>");
+      if (!boxId || !name) return fail("Usage: tent untag <boxId> <name>");
       await untagBox(env, boxId, name);
-      console.log(`\u2713 \u5DF2\u4ECE ${boxId} \u6458 tag: ${name}`);
+      console.log(`\u2713 Removed tag from ${boxId}: ${name}`);
       break;
     }
     case "tag-new": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent tag-new <name>");
+      if (!args[0]) return fail("Usage: tent tag-new <name>");
       await createTag(env, args[0]);
-      console.log(`\u2713 \u5DF2\u767B\u8BB0 tag: ${args[0]}`);
+      console.log(`\u2713 Registered tag: ${args[0]}`);
       break;
     }
     case "tag-rm": {
       const [name, confirmation] = args;
-      if (!name) return fail("\u7528\u6CD5: tent tag-rm <name> --yes  \u6216  tent tag-rm <name> <name>");
+      if (!name) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
       if (!args.includes("--yes") && confirmation !== name) {
-        return fail(`\u5220\u9664 tag \u4F1A\u4ECE\u6240\u6709\u6846\u7EA7\u8054\u5265\u79BB\u3002\u8BF7\u52A0 --yes,\u6216\u91CD\u590D\u8F93\u5165 tag \u540D\u786E\u8BA4: tent tag-rm ${name} ${name}`);
+        return fail(`Deleting a tag removes it from every box. Add --yes or repeat the tag name to confirm: tent tag-rm ${name} ${name}`);
       }
       await deleteTag(env, name);
-      console.log(`\u2713 \u5DF2\u5220\u9664 tag \u5E76\u7EA7\u8054\u5265\u79BB: ${name}`);
+      console.log(`\u2713 Deleted tag from registry and all boxes: ${name}`);
       break;
     }
     case "tags": {
       const registry = await loadTagRegistry(env.fs);
-      if (registry.tags.length === 0) console.log("(\u65E0 tag)");
+      if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
       break;
     }
     case "find": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent find <name>");
+      if (!args[0]) return fail("Usage: tent find <name>");
       const tent = await loadTent(env.fs);
       const boxes = findBoxesByTag(tent, args[0]);
       if (boxes.length === 0) {
-        console.log("(\u65E0\u5339\u914D)");
+        console.log("(no matches)");
         break;
       }
       for (const box of boxes) {
@@ -2274,62 +2274,62 @@ ${r.relayPrompt}`);
       break;
     }
     case "apply": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent apply <proposal\u6587\u4EF6\u8DEF\u5F84>");
+      if (!args[0]) return fail("Usage: tent apply <proposal-path>");
       const g = await startApply(env, args[0]);
       console.log(
-        `\u2713 proposal \u53EF\u843D\u5730\u3002\u76EE\u6807:\u300C${g.targetPath}\u300D\u3002\u8BF7\u6309\u5408\u540C\u4FEE\u6539\u3002
+        `\u2713 Proposal is ready to apply. Target: ${g.targetPath}
 
---- \u8981\u843D\u5730\u7684\u6539\u52A8 ---
-${g.instructions || "(proposal \u6B63\u6587\u4E3A\u7A7A,\u89C1\u539F\u6587)"}
+--- Requested change ---
+${g.instructions || "(The proposal body is empty; see the source file.)"}
 
-\u6539\u5B8C\u76EE\u6807\u6846\u7684\u8EAB\u4EFD\u6587\u4EF6\u540E,\u8FD0\u884C:tent apply-done ${args[0]}`
+After updating the target box note, run: tent apply-done ${args[0]}`
       );
       break;
     }
     case "apply-done": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent apply-done <proposal\u6587\u4EF6\u8DEF\u5F84>");
+      if (!args[0]) return fail("Usage: tent apply-done <proposal-path>");
       await finishApply(env, args[0]);
-      console.log(`\u2713 proposal \u5DF2\u8F6C applied\u3002`);
+      console.log("\u2713 Proposal marked as applied.");
       break;
     }
     case "fork": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent fork <boxId>");
+      if (!args[0]) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
-      console.log(`\u2713 \u5DF2 fork ${args[0]} \u2192 ${id}`);
+      console.log(`\u2713 Forked ${args[0]} \u2192 ${id}`);
       break;
     }
     case "handoff": {
       const [fromBoxId, targetId, targetRole, promptSource] = args;
       if (!fromBoxId || !targetId || !targetRole || !promptSource) {
-        return fail("\u7528\u6CD5: tent handoff <fromBoxId> <targetId> <targetRole> <prompt\u6587\u4EF6|->");
+        return fail("Usage: tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->");
       }
       const prompt = promptSource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(promptSource), "utf8");
       const handoffPath = await handoff(env, fromBoxId, targetId, targetRole, prompt);
-      console.log(`\u2713 handoff \u8349\u7A3F: ${handoffPath}`);
+      console.log(`\u2713 Handoff written: ${handoffPath}`);
       break;
     }
     case "clean-temp": {
       await cleanTemp(env, args[0]);
-      console.log(`\u2713 \u5DF2\u6E05 temp/${args[0] || "(\u5168\u90E8)"}`);
+      console.log(`\u2713 Cleared temp/${args[0] || "(all)"}`);
       break;
     }
     case "force-release": {
-      if (!args[0]) return fail("\u7528\u6CD5: tent force-release <boxId>");
+      if (!args[0]) return fail("Usage: tent force-release <boxId>");
       await forceRelease(env, args[0]);
-      console.log(`\u2713 \u5DF2\u5F3A\u6E05 owner: ${args[0]}`);
+      console.log(`\u2713 Force-released owner: ${args[0]}`);
       break;
     }
     case "migrate-kind-to-type": {
       const touched = await migrateKindToType(env.fs);
-      if (touched.length === 0) console.log("\u2713 \u65E0\u9700\u8FC1\u79FB:\u672A\u53D1\u73B0 legacy kind");
-      else console.log(`\u2713 \u5DF2\u8FC1\u79FB legacy kind \u2192 type:
+      if (touched.length === 0) console.log("\u2713 No migration needed: no legacy kind fields found");
+      else console.log(`\u2713 Migrated legacy kind \u2192 type:
 ${touched.map((p) => `- ${p}`).join("\n")}`);
       break;
     }
     case "okf-sync": {
       const result = await syncOkfBundle(env.fs);
       console.log(
-        `\u2713 OKF \u5DF2\u540C\u6B65
+        `\u2713 OKF synchronized
 generated: ${result.generatedFiles.length}
 projected: ${result.projectedFiles.length}
 unresolved wiki links: ${result.unresolved.length}`
@@ -2346,7 +2346,7 @@ unresolved wiki links: ${result.unresolved.length}`
       const dir = flags.dir || defaultSkillInstallDir(target);
       const installed = await installSkills(dir, { force, target });
       console.log(
-        `\u2713 \u5DF2\u5B89\u88C5 ${target} skills \u5230 ${dir}
+        `\u2713 Installed ${target} skills in ${dir}
 ` + installed.map((name) => `- ${name}`).join("\n")
       );
       break;
@@ -2358,8 +2358,8 @@ unresolved wiki links: ${result.unresolved.length}`
     }
     default:
       fail(
-        `\u672A\u77E5\u547D\u4EE4: ${cmd || "(\u7A7A)"}
-\u547D\u4EE4: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}
+Commands: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -2378,7 +2378,7 @@ function printBox(box, depth) {
   const owner = box.fm.owner ? ` \u2691${box.fm.owner}` : "";
   const type = box.type;
   const id = box.id || "missing-id";
-  const invalid = box.invalid ? ` invalid:${box.invalidReason || "\u5931\u6548"}` : "";
+  const invalid = box.invalid ? ` invalid:${box.invalidReason || "invalid"}` : "";
   console.log(`${ind}${box.name} [${type} ${id}] ${rw}${owner}${invalid}`);
   for (const c of box.children) printBox(c, depth + 1);
 }
@@ -2412,7 +2412,7 @@ function parseFlags(args) {
 }
 function defaultSkillInstallDir(target) {
   if (target !== "claude") {
-    throw new Error("skill-install \u76EE\u524D\u4EC5\u652F\u6301 --target claude\uFF1BCodex skill \u683C\u5F0F\u4E0D\u540C\uFF0C\u540E\u7EED\u518D\u9002\u914D\u3002");
+    throw new Error("skill-install currently supports only --target claude; Codex uses a different skill format.");
   }
   return path.join(os.homedir(), ".claude", "skills");
 }
@@ -2425,13 +2425,13 @@ async function installSkills(targetDir, options) {
     if (!entry.isDirectory()) continue;
     if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
   }
-  if (skillNames.length === 0) throw new Error(`\u6CA1\u6709\u53EF\u5B89\u88C5\u7684 skill:${sourceDir}`);
+  if (skillNames.length === 0) throw new Error(`No installable skills found in ${sourceDir}`);
   const conflicts = [];
   for (const name of skillNames) {
     if (await existsPath(path.join(targetDir, name))) conflicts.push(name);
   }
   if (conflicts.length > 0 && !options.force) {
-    throw new Error(`skill \u5DF2\u5B58\u5728:${conflicts.join(", ")}\u3002\u5982\u9700\u8986\u76D6,\u52A0 --force\u3002`);
+    throw new Error(`Skills already exist: ${conflicts.join(", ")}. Add --force to overwrite them.`);
   }
   await fs2.mkdir(targetDir, { recursive: true });
   const installed = [];
@@ -2455,7 +2455,7 @@ function packageRoot() {
 function assertChildPath(parent, child) {
   const rel = path.relative(path.resolve(parent), path.resolve(child));
   if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`\u5B89\u88C5\u76EE\u6807\u8D8A\u754C:${child}`);
+    throw new Error(`Install target escapes the destination directory: ${child}`);
   }
 }
 async function existsPath(target) {
@@ -2471,7 +2471,7 @@ async function packageVersion() {
   return String(pkg.version ?? "0.0.0");
 }
 function helpText() {
-  return `Tent / \u5E37\u5E44 CLI
+  return `Tent CLI
 
 Usage:
   tent <command> [args]
@@ -2525,13 +2525,13 @@ async function newTent(target, vault) {
   let pluginSettings;
   if (vault) {
     if (target.includes("/") || target.includes("\\")) {
-      return fail(`--vault \u6A21\u5F0F\u4E0B <\u5E10\u540D> \u4E0D\u80FD\u542B\u8DEF\u5F84\u5206\u9694\u7B26: ${target}`);
+      return fail(`In --vault mode, <name> cannot contain path separators: ${target}`);
     }
     pluginSettings = await readVaultPluginSettings(vault);
     target = path.join(path.resolve(vault), pluginSettings.tentsRoot, target);
   }
   const fsa = new NodeFs(target);
-  if (await fsa.exists(".tent")) return fail(`\u76EE\u6807\u5DF2\u662F\u4E00\u9876\u5E10: ${target}`);
+  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${target}`);
   await fsmod.mkdir(target, { recursive: true });
   const name = path.basename(path.resolve(target));
   const fallbackRules = `# ${name} \xB7 \u9879\u76EE\u7EA6\u5B9A
@@ -2551,8 +2551,8 @@ async function newTent(target, vault) {
     rolesRegistry: pluginSettings?.rolesRegistry
   });
   console.log(
-    `\u2713 \u65B0\u5E10\u5DF2\u5EFA: ${target}
-\u9876\u5C42\u4E3A\u7A7A(\u6309 #C \u4E0D\u5F3A\u5236 zone);\u7528\u9762\u677F\u7684 \uFF0B,\u6216\u76F4\u63A5\u5EFA\u201C\u6587\u4EF6\u5939 + \u540C\u540D .md\u201D\u6DFB\u52A0\u771F\u540D\u8282\u70B9\u3002`
+    `\u2713 Created Tent: ${target}
+The root starts empty; add boxes in the panel or create a folder with a same-named Markdown note.`
   );
 }
 function normalizeTemplateRoles(value) {
