@@ -1950,10 +1950,10 @@ __export(main_exports, {
   default: () => TentPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian4 = require("obsidian");
+var import_obsidian5 = require("obsidian");
 
 // src/plugin/view.ts
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 var nodePath3 = __toESM(require("node:path"), 1);
 
 // src/plugin/obsidian-fs.ts
@@ -2081,117 +2081,6 @@ function typeColorValue(color) {
 // src/plugin/view.ts
 init_tags();
 init_tree();
-
-// src/core/typeManagement.ts
-init_adapter();
-init_tree();
-init_frontmatter();
-init_typeRegistry();
-async function createType(fs, name, definition) {
-  await withTentMutation(fs, async () => {
-    assertTypeName(name);
-    if (definition.tier !== "modifier" && (typeof definition.readable !== "boolean" || typeof definition.writable !== "boolean")) {
-      throw new Error("base type \u5FC5\u987B\u6307\u5B9A readable \u548C writable");
-    }
-    const registry = await loadTypeRegistry(fs);
-    if (registry[name]) throw new Error(`\u7C7B\u578B\u5DF2\u5B58\u5728: ${name}`);
-    registry[name] = withDefaultColor(registry, definition);
-    await writeTypeRegistryUnlocked(fs, registry);
-  });
-}
-var createPrimaryType = createType;
-async function updateTypeMetadata(fs, level, name, patch) {
-  await withTentMutation(fs, async () => {
-    void level;
-    assertTypeName(name);
-    const registry = await loadTypeRegistry(fs);
-    const current = registry[name];
-    if (!current) throw new Error(`\u7C7B\u578B\u4E0D\u5B58\u5728: ${name}`);
-    if (patch.color !== void 0) {
-      const color = patch.color.trim();
-      if (color) current.color = color;
-      else delete current.color;
-    }
-    if (patch.description !== void 0) {
-      const description = patch.description.trim();
-      if (description) current.description = description;
-      else delete current.description;
-    }
-    updateAxis(current, "readable", patch.readable);
-    updateAxis(current, "writable", patch.writable);
-    await writeTypeRegistryUnlocked(fs, registry);
-  });
-}
-async function inspectTypeDeletion(fs, level, name) {
-  void level;
-  const tent = await loadTent(fs);
-  const registry = tent.typeRegistry;
-  const boxes = [...tent.byId.values()];
-  const referenced = boxes.filter((box) => {
-    const { base: base2, modifier } = splitType(box.type);
-    return box.type === name || base2 === name || modifier === name;
-  });
-  const ownerMap = /* @__PURE__ */ new Map();
-  for (const reference of referenced) {
-    for (const box of relatedBoxes(reference, boxes)) {
-      if (!box.fm.owner) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: box.fm.owner });
-    }
-  }
-  return {
-    level: "type",
-    name,
-    builtIn: name in DEFAULT_TYPE_REGISTRY,
-    exists: name in registry,
-    references: referenced.map(({ id, path, name: boxName }) => ({ id, path, name: boxName })),
-    activeOwners: [...ownerMap.values()]
-  };
-}
-async function deleteCustomType(fs, level, name, confirmation) {
-  return withTentMutation(fs, async () => {
-    if (confirmation !== name) throw new Error(`\u4E8C\u6B21\u786E\u8BA4\u4E0D\u5339\u914D;\u8BF7\u8F93\u5165\u7C7B\u578B\u540D ${name}`);
-    const inspection = await inspectTypeDeletion(fs, level, name);
-    if (!inspection.exists) throw new Error(`\u7C7B\u578B\u4E0D\u5B58\u5728: ${name}`);
-    if (inspection.builtIn) throw new Error(`\u5185\u7F6E\u7C7B\u578B\u4E0D\u53EF\u5220\u9664: ${name}`);
-    if (inspection.activeOwners.length > 0) {
-      throw new Error(`\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05: ${inspection.activeOwners.map((x) => x.path).join(", ")}`);
-    }
-    const registry = await loadTypeRegistry(fs);
-    delete registry[name];
-    await writeTypeRegistryUnlocked(fs, registry);
-    return inspection;
-  });
-}
-async function writeTypeRegistryUnlocked(fs, registry) {
-  if (!await fs.exists(".tent")) await fs.mkdir(".tent");
-  await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
-}
-function assertTypeName(name) {
-  if (!name.trim()) throw new Error("\u7C7B\u578B\u540D\u4E0D\u80FD\u4E3A\u7A7A");
-  if (name === "temp") throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u80FD\u4F5C\u4E3A type");
-}
-function updateAxis(definition, axis, value) {
-  if (value === void 0) return;
-  if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("base type \u7684 R/W \u4E0D\u80FD\u7EE7\u627F");
-    delete definition[axis];
-    return;
-  }
-  definition[axis] = value;
-}
-function relatedBoxes(reference, boxes) {
-  return boxes.filter(
-    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
-  );
-}
-function withDefaultColor(registry, definition) {
-  const color = definition.color?.trim();
-  if (color) return { ...definition, color };
-  const used = Object.keys(registry).length;
-  return { ...definition, color: TYPE_COLOR_PALETTE[used % TYPE_COLOR_PALETTE.length] };
-}
-
-// src/plugin/view.ts
 init_typeRegistry();
 init_skillRoleRegistry();
 init_claim();
@@ -2582,6 +2471,664 @@ function createChevronSelect(parent, options) {
   (0, import_obsidian2.setIcon)(icon, "chevron-down");
   return select;
 }
+function drawRwSegment(parent, key, declared, onChange, allowInherit = true, readonly = false) {
+  const segment = parent.createDiv({
+    cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "")
+  });
+  segment.createSpan({ cls: "tent-seg-key", text: key === "readable" ? "R" : "W" });
+  const states = allowInherit ? [
+    { label: "\u7EE7\u627F", value: void 0 },
+    { label: "\u5F00", value: true },
+    { label: "\u5173", value: false }
+  ] : [
+    { label: "\u5F00", value: true },
+    { label: "\u5173", value: false }
+  ];
+  for (const state of states) {
+    const option = segment.createDiv({
+      cls: "tent-status-segment-option" + (declared === state.value ? " is-active" : ""),
+      text: state.label
+    });
+    if (!readonly) option.onclick = () => onChange(state.value);
+  }
+}
+function roleColorValue(role) {
+  if (role.color) return typeColorValue(role.color);
+  const normalized = role.name.toLowerCase();
+  if (normalized.includes("planner")) return typeColorValue("purple");
+  if (normalized.includes("executor")) return typeColorValue("cyan");
+  if (normalized.includes("ui")) return typeColorValue("orange");
+  const hash = [...role.name].reduce((total, character) => total + character.charCodeAt(0), 0);
+  return typeColorValue(TYPE_COLORS[hash % TYPE_COLORS.length]);
+}
+
+// src/plugin/registry-pane.ts
+var import_obsidian3 = require("obsidian");
+init_skillRoleRegistry();
+
+// src/core/typeManagement.ts
+init_adapter();
+init_tree();
+init_frontmatter();
+init_typeRegistry();
+async function createType(fs, name, definition) {
+  await withTentMutation(fs, async () => {
+    assertTypeName(name);
+    if (definition.tier !== "modifier" && (typeof definition.readable !== "boolean" || typeof definition.writable !== "boolean")) {
+      throw new Error("base type \u5FC5\u987B\u6307\u5B9A readable \u548C writable");
+    }
+    const registry = await loadTypeRegistry(fs);
+    if (registry[name]) throw new Error(`\u7C7B\u578B\u5DF2\u5B58\u5728: ${name}`);
+    registry[name] = withDefaultColor(registry, definition);
+    await writeTypeRegistryUnlocked(fs, registry);
+  });
+}
+var createPrimaryType = createType;
+async function updateTypeMetadata(fs, level, name, patch) {
+  await withTentMutation(fs, async () => {
+    void level;
+    assertTypeName(name);
+    const registry = await loadTypeRegistry(fs);
+    const current = registry[name];
+    if (!current) throw new Error(`\u7C7B\u578B\u4E0D\u5B58\u5728: ${name}`);
+    if (patch.color !== void 0) {
+      const color = patch.color.trim();
+      if (color) current.color = color;
+      else delete current.color;
+    }
+    if (patch.description !== void 0) {
+      const description = patch.description.trim();
+      if (description) current.description = description;
+      else delete current.description;
+    }
+    updateAxis(current, "readable", patch.readable);
+    updateAxis(current, "writable", patch.writable);
+    await writeTypeRegistryUnlocked(fs, registry);
+  });
+}
+async function inspectTypeDeletion(fs, level, name) {
+  void level;
+  const tent = await loadTent(fs);
+  const registry = tent.typeRegistry;
+  const boxes = [...tent.byId.values()];
+  const referenced = boxes.filter((box) => {
+    const { base: base2, modifier } = splitType(box.type);
+    return box.type === name || base2 === name || modifier === name;
+  });
+  const ownerMap = /* @__PURE__ */ new Map();
+  for (const reference of referenced) {
+    for (const box of relatedBoxes(reference, boxes)) {
+      if (!box.fm.owner) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner: box.fm.owner });
+    }
+  }
+  return {
+    level: "type",
+    name,
+    builtIn: name in DEFAULT_TYPE_REGISTRY,
+    exists: name in registry,
+    references: referenced.map(({ id, path, name: boxName }) => ({ id, path, name: boxName })),
+    activeOwners: [...ownerMap.values()]
+  };
+}
+async function deleteCustomType(fs, level, name, confirmation) {
+  return withTentMutation(fs, async () => {
+    if (confirmation !== name) throw new Error(`\u4E8C\u6B21\u786E\u8BA4\u4E0D\u5339\u914D;\u8BF7\u8F93\u5165\u7C7B\u578B\u540D ${name}`);
+    const inspection = await inspectTypeDeletion(fs, level, name);
+    if (!inspection.exists) throw new Error(`\u7C7B\u578B\u4E0D\u5B58\u5728: ${name}`);
+    if (inspection.builtIn) throw new Error(`\u5185\u7F6E\u7C7B\u578B\u4E0D\u53EF\u5220\u9664: ${name}`);
+    if (inspection.activeOwners.length > 0) {
+      throw new Error(`\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05: ${inspection.activeOwners.map((x) => x.path).join(", ")}`);
+    }
+    const registry = await loadTypeRegistry(fs);
+    delete registry[name];
+    await writeTypeRegistryUnlocked(fs, registry);
+    return inspection;
+  });
+}
+async function writeTypeRegistryUnlocked(fs, registry) {
+  if (!await fs.exists(".tent")) await fs.mkdir(".tent");
+  await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+}
+function assertTypeName(name) {
+  if (!name.trim()) throw new Error("\u7C7B\u578B\u540D\u4E0D\u80FD\u4E3A\u7A7A");
+  if (name === "temp") throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u80FD\u4F5C\u4E3A type");
+}
+function updateAxis(definition, axis, value) {
+  if (value === void 0) return;
+  if (value === "inherit") {
+    if (definition.tier !== "modifier") throw new Error("base type \u7684 R/W \u4E0D\u80FD\u7EE7\u627F");
+    delete definition[axis];
+    return;
+  }
+  definition[axis] = value;
+}
+function relatedBoxes(reference, boxes) {
+  return boxes.filter(
+    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
+  );
+}
+function withDefaultColor(registry, definition) {
+  const color = definition.color?.trim();
+  if (color) return { ...definition, color };
+  const used = Object.keys(registry).length;
+  return { ...definition, color: TYPE_COLOR_PALETTE[used % TYPE_COLOR_PALETTE.length] };
+}
+
+// src/plugin/registry-pane.ts
+function createRegistryPaneState() {
+  return {
+    markedRoles: /* @__PURE__ */ new Set(),
+    markedTypes: /* @__PURE__ */ new Set(),
+    collapsed: { type: false, kind: false, roles: false },
+    typeCollapsed: false,
+    newFormOpen: null,
+    openEditor: null
+  };
+}
+function drawRegistryPane(host, context, state) {
+  host.createDiv({ cls: "registry-title", text: "\u7C7B\u578B / \u89D2\u8272 \u6CE8\u518C\u8868" });
+  const list = host.createDiv({ cls: "registry-list" });
+  const entries = Object.entries(context.registry);
+  const primary = entries.filter(([, definition]) => definition.tier !== "modifier");
+  const secondary = entries.filter(([, definition]) => definition.tier === "modifier");
+  drawVisibilityPanel(list, context, state, primary, secondary);
+  const typeBlock = list.createDiv({ cls: "reg-block" });
+  drawBlockHead(typeBlock, context, "\u7C7B\u578B", state.typeCollapsed, () => {
+    state.typeCollapsed = !state.typeCollapsed;
+  });
+  if (!state.typeCollapsed) {
+    drawTypeSection(typeBlock, context, state, "type", "base", "\u4E00\u7EA7", primary);
+    drawTypeSection(typeBlock, context, state, "kind", "modifier", "\u4E8C\u7EA7", secondary);
+  }
+  const roleBlock = list.createDiv({ cls: "reg-block" });
+  drawBlockHead(
+    roleBlock,
+    context,
+    "\u89D2\u8272",
+    state.collapsed.roles,
+    () => {
+      state.collapsed.roles = !state.collapsed.roles;
+    },
+    state,
+    "roles"
+  );
+  if (state.collapsed.roles) return;
+  const roleContent = roleBlock.createDiv({ cls: "group-content roles-list" });
+  if (state.newFormOpen === "roles") drawNewRoleForm(roleContent, context, state);
+  if (context.roles.length === 0) {
+    roleContent.createDiv({ cls: "registry-empty", text: "\u6682\u65E0 roles" });
+    return;
+  }
+  for (const role of context.roles) drawRoleRow(roleContent, context, state, role);
+}
+function drawVisibilityPanel(host, context, state, primary, secondary) {
+  const panel = host.createDiv({ cls: "reg-visibility" });
+  panel.createDiv({ cls: "reg-vis-title", text: "\u6811\u5185\u663E\u9690" });
+  const drawChip = (parent, label, enabled, color, toggle) => {
+    const chip = parent.createSpan({
+      cls: "tent-mark-chip" + (enabled ? " is-on" : ""),
+      text: label
+    });
+    chip.style.setProperty("--mark-color", color);
+    chip.onclick = () => {
+      toggle();
+      context.redraw();
+    };
+  };
+  const drawRow = (label, build) => {
+    const row = panel.createDiv({ cls: "reg-vis-row" });
+    row.createSpan({ cls: "reg-vis-label", text: label });
+    build(row.createDiv({ cls: "reg-vis-chips" }));
+  };
+  const drawTypeChips = (chips, definitions) => {
+    if (definitions.length === 0) {
+      chips.createSpan({ cls: "reg-vis-empty", text: "\u2014" });
+      return;
+    }
+    for (const [name, definition] of definitions) {
+      drawChip(
+        chips,
+        name,
+        state.markedTypes.has(name),
+        typeColorValue(definition.color),
+        () => toggleSetValue(state.markedTypes, name)
+      );
+    }
+  };
+  drawRow("\u4E00\u7EA7", (chips) => drawTypeChips(chips, primary));
+  drawRow("\u4E8C\u7EA7", (chips) => drawTypeChips(chips, secondary));
+  drawRow("\u89D2\u8272", (chips) => {
+    if (context.roles.length === 0) {
+      chips.createSpan({ cls: "reg-vis-empty", text: "\u2014" });
+      return;
+    }
+    for (const role of context.roles) {
+      drawChip(
+        chips,
+        role.name,
+        state.markedRoles.has(role.name),
+        roleColorValue(role),
+        () => toggleSetValue(state.markedRoles, role.name)
+      );
+    }
+  });
+}
+function drawBlockHead(block, context, title, collapsed, toggle, state, addKey) {
+  const head = block.createDiv({ cls: "reg-block-head" });
+  const chevron = head.createSpan({ cls: "reg-chev" });
+  (0, import_obsidian3.setIcon)(chevron, collapsed ? "chevron-right" : "chevron-down");
+  head.createSpan({ cls: "reg-block-title", text: title });
+  head.createSpan({ cls: "reg-head-rule" });
+  if (state && addKey) drawAddButton(head, context, state, addKey);
+  head.onclick = () => {
+    toggle();
+    context.redraw();
+  };
+}
+function drawTypeSection(block, context, state, key, tier, label, entries) {
+  const section = block.createDiv({ cls: "reg-sub" });
+  const collapsed = state.collapsed[key];
+  const head = section.createDiv({ cls: "reg-sub-head" });
+  const chevron = head.createSpan({ cls: "reg-chev reg-chev-sm" });
+  (0, import_obsidian3.setIcon)(chevron, collapsed ? "chevron-right" : "chevron-down");
+  head.createSpan({ cls: "reg-sub-label", text: label });
+  drawAddButton(head, context, state, key);
+  head.onclick = () => {
+    state.collapsed[key] = !state.collapsed[key];
+    context.redraw();
+  };
+  if (collapsed) return;
+  const content = section.createDiv({ cls: "group-content" });
+  if (state.newFormOpen === key) drawNewTypeForm(content, context, state, tier);
+  if (entries.length === 0) {
+    content.createDiv({
+      cls: "registry-empty",
+      text: tier === "modifier" ? "\u6682\u65E0\u4E8C\u7EA7" : "\u6682\u65E0\u4E00\u7EA7"
+    });
+    return;
+  }
+  for (const [name, definition] of entries) {
+    drawTypeRow(content, context, state, key, name, definition);
+  }
+}
+function drawAddButton(head, context, state, key) {
+  const add = head.createEl("button", {
+    cls: "registry-add-btn" + (state.newFormOpen === key ? " is-open" : "")
+  });
+  add.setAttr("type", "button");
+  (0, import_obsidian3.setIcon)(add.createSpan({ cls: "rab-ico" }), "plus");
+  add.setAttr("aria-label", "\u65B0\u5EFA");
+  addTooltip(add, "\u65B0\u5EFA");
+  add.onclick = (event) => {
+    event.stopPropagation();
+    state.newFormOpen = state.newFormOpen === key ? null : key;
+    if (state.newFormOpen === key) {
+      state.collapsed[key] = false;
+      if (key === "type" || key === "kind") state.typeCollapsed = false;
+    }
+    context.redraw();
+  };
+}
+function drawTypeRow(content, context, state, section, name, definition) {
+  const editKey = `${section}:${name}`;
+  const open2 = state.openEditor === editKey;
+  const wrapper = content.createDiv({
+    cls: "registry-item-wrapper" + (open2 ? " drawer-open" : "")
+  });
+  const row = wrapper.createDiv({ cls: "reg-card" });
+  row.style.setProperty("--accent-color", typeColorValue(definition.color));
+  row.createSpan({ cls: "item-name", text: name });
+  row.createSpan({ cls: "reg-desc", text: definition.description || "" });
+  const rightArea = row.createDiv({ cls: "row-right-area" });
+  drawRwCapsule(
+    rightArea.createDiv({ cls: "item-indicators" }),
+    definition.readable,
+    definition.writable
+  );
+  const actions = rightArea.createDiv({ cls: "row-actions" });
+  const edit = actions.createEl("button", {
+    cls: "registry-edit-btn" + (open2 ? " active" : "")
+  });
+  edit.setAttr("type", "button");
+  (0, import_obsidian3.setIcon)(edit, "settings");
+  addTooltip(edit, "\u7F16\u8F91\u989C\u8272 / \u8BFB\u5199");
+  edit.onclick = (event) => {
+    event.stopPropagation();
+    state.openEditor = open2 ? null : editKey;
+    context.redraw();
+  };
+  const deleteKey = `type:${section}:${name}`;
+  const deletePending = context.getPendingDelete() === deleteKey;
+  const remove = actions.createEl("button", {
+    cls: "registry-del-btn" + (deletePending ? " is-confirm" : "")
+  });
+  remove.setAttr("type", "button");
+  if (deletePending) remove.setText("\u786E\u8BA4\u5220\u9664");
+  else (0, import_obsidian3.setIcon)(remove, "trash-2");
+  addTooltip(remove, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
+  remove.onclick = async (event) => {
+    event.stopPropagation();
+    const inspection = await inspectTypeDeletion(context.fs, "type", name);
+    if (inspection.builtIn) {
+      new import_obsidian3.Notice(`\u5185\u7F6E\u7C7B\u578B\u300C${name}\u300D\u4E0D\u53EF\u5220\u9664`);
+      return;
+    }
+    if (inspection.activeOwners.length > 0) {
+      new import_obsidian3.Notice(
+        `\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05:${inspection.activeOwners.map((item) => item.path).join(", ")}`
+      );
+      return;
+    }
+    if (context.getPendingDelete() === deleteKey) {
+      await deleteCustomType(context.fs, "type", name, name);
+      await context.refresh();
+      return;
+    }
+    context.setPendingDelete(deleteKey);
+    context.redraw();
+  };
+  if (open2) drawTypeEditDrawer(wrapper, context, name, definition);
+}
+function drawRwCapsule(host, readable, writable) {
+  const capsule = host.createSpan({ cls: "rw-cap" });
+  const label = (state) => state === void 0 ? "\u7EE7\u627F" : state ? "\u5F00" : "\u5173";
+  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}`);
+  const drawPart = (key, value) => {
+    const className = value === void 0 ? "is-inherit" : value ? "is-on" : "is-off";
+    const symbol = value === void 0 ? "\u2014" : value ? "\u221A" : "\u2715";
+    const part = capsule.createSpan({ cls: `rw-part ${className}` });
+    part.createSpan({ cls: "rw-k", text: key });
+    part.createSpan({ cls: "rw-s", text: symbol });
+  };
+  drawPart("R", readable);
+  capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
+  drawPart("W", writable);
+}
+function drawPalette(host, selected, onSelect) {
+  const palette = host.createDiv({ cls: "tent-color-palette" });
+  for (const color of TYPE_COLORS) {
+    const swatch = palette.createEl("button", {
+      cls: "tent-color-swatch" + (color === selected ? " is-selected" : "")
+    });
+    swatch.setAttr("type", "button");
+    addTooltip(swatch, color);
+    swatch.style.setProperty("--tent-swatch-color", typeColorValue(color));
+    swatch.onclick = (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      palette.findAll(".tent-color-swatch").forEach((element) => {
+        element.removeClass("is-selected");
+      });
+      swatch.addClass("is-selected");
+      void onSelect(color);
+    };
+  }
+  return palette;
+}
+function drawLabelRow(host, label, extraClass = "") {
+  const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const row = host.createDiv({
+    cls: `tent-newform-row tent-newform-row-${normalized}${extraClass ? ` ${extraClass}` : ""}`
+  });
+  row.createSpan({ cls: "tent-newform-label", text: label });
+  return row;
+}
+function autoGrowTextarea(textarea) {
+  textarea.style.height = "auto";
+  textarea.style.height = `${textarea.scrollHeight}px`;
+}
+function drawTypeEditDrawer(wrapper, context, name, definition) {
+  const drawer = wrapper.createDiv({
+    cls: "registry-item-edit-drawer type-drawer"
+  });
+  const isModifier = definition.tier === "modifier";
+  drawPalette(drawLabelRow(drawer, "\u989C\u8272"), definition.color || "", async (color) => {
+    await updateTypeMetadata(context.fs, "type", name, { color });
+    await context.refresh();
+  });
+  const rw = drawLabelRow(drawer, "R/W").createDiv({ cls: "tent-drawer-rw" });
+  drawRwSegment(rw, "readable", definition.readable, async (value) => {
+    await updateTypeMetadata(context.fs, "type", name, {
+      readable: isModifier ? value ?? "inherit" : value ?? false
+    });
+    await context.refresh();
+  }, isModifier);
+  drawRwSegment(rw, "writable", definition.writable, async (value) => {
+    await updateTypeMetadata(context.fs, "type", name, {
+      writable: isModifier ? value ?? "inherit" : value ?? false
+    });
+    await context.refresh();
+  }, isModifier);
+  const description = drawLabelRow(drawer, "\u63CF\u8FF0").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
+    attr: { rows: "1" }
+  });
+  description.value = definition.description || "";
+  description.oninput = () => autoGrowTextarea(description);
+  description.onblur = async () => {
+    const value = description.value.trim();
+    if (value === (definition.description || "")) return;
+    await updateTypeMetadata(context.fs, "type", name, { description: value });
+    await context.refresh();
+  };
+  window.setTimeout(() => autoGrowTextarea(description), 0);
+}
+function drawNewTypeForm(section, context, state, tier) {
+  const card = section.createDiv({ cls: "tent-newform" });
+  const form = {
+    name: "",
+    description: "",
+    readable: tier === "modifier" ? void 0 : true,
+    writable: tier === "modifier" ? void 0 : false,
+    color: "gray"
+  };
+  const isModifier = tier === "modifier";
+  const name = drawLabelRow(card, "\u540D\u5B57").createEl("input", {
+    cls: "tent-newform-input",
+    attr: { type: "text" }
+  });
+  name.oninput = () => {
+    form.name = name.value.trim();
+  };
+  window.setTimeout(() => name.focus(), 0);
+  drawPalette(drawLabelRow(card, "\u989C\u8272"), form.color, (color) => {
+    form.color = color;
+  });
+  const rw = drawLabelRow(card, "R/W").createDiv({ cls: "tent-drawer-rw" });
+  drawRwSegment(rw, "readable", form.readable, (value) => {
+    form.readable = value;
+  }, isModifier);
+  drawRwSegment(rw, "writable", form.writable, (value) => {
+    form.writable = value;
+  }, isModifier);
+  const description = drawLabelRow(card, "\u63CF\u8FF0").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
+    attr: { rows: "1" }
+  });
+  description.oninput = () => {
+    form.description = description.value.trim();
+    autoGrowTextarea(description);
+  };
+  drawFormActions(card, context, state, async () => {
+    if (!form.name || form.name === "temp") {
+      new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6709\u6548\u7684 type \u540D");
+      return;
+    }
+    if (context.registry[form.name]) {
+      new import_obsidian3.Notice(`\u7C7B\u578B\u300C${form.name}\u300D\u5DF2\u5B58\u5728`);
+      return;
+    }
+    const definition = isModifier ? {
+      tier: "modifier",
+      ...form.readable !== void 0 ? { readable: form.readable } : {},
+      ...form.writable !== void 0 ? { writable: form.writable } : {}
+    } : {
+      tier: "base",
+      readable: form.readable,
+      writable: form.writable
+    };
+    if (form.color) definition.color = form.color;
+    if (form.description) definition.description = form.description;
+    await createPrimaryType(context.fs, form.name, definition);
+    state.newFormOpen = null;
+    await context.refresh();
+  });
+}
+function drawNewRoleForm(section, context, state) {
+  const card = section.createDiv({ cls: "tent-newform" });
+  const form = { name: "", description: "", prompt: "", color: "purple" };
+  const name = drawLabelRow(card, "\u540D\u5B57").createEl("input", {
+    cls: "tent-newform-input",
+    attr: { type: "text" }
+  });
+  name.oninput = () => {
+    form.name = name.value.trim();
+  };
+  window.setTimeout(() => name.focus(), 0);
+  drawPalette(drawLabelRow(card, "\u989C\u8272"), form.color, (color) => {
+    form.color = color;
+  });
+  const description = drawLabelRow(card, "\u63CF\u8FF0").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
+    attr: { rows: "1" }
+  });
+  description.oninput = () => {
+    form.description = description.value.trim();
+    autoGrowTextarea(description);
+  };
+  const prompt = drawLabelRow(card, "prompt", "tent-newform-textarea-row").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea",
+    attr: { rows: "2" }
+  });
+  prompt.oninput = () => {
+    form.prompt = prompt.value.trim();
+    autoGrowTextarea(prompt);
+  };
+  drawFormActions(card, context, state, async () => {
+    if (!form.name) {
+      new import_obsidian3.Notice("\u8BF7\u586B\u5199 role \u540D");
+      return;
+    }
+    const definition = { name: form.name };
+    if (form.description) definition.description = form.description;
+    if (form.prompt) definition.prompt = form.prompt;
+    if (form.color) definition.color = form.color;
+    await createRole(context.fs, definition);
+    state.newFormOpen = null;
+    await context.refresh();
+  });
+}
+function drawFormActions(card, context, state, submit) {
+  const actions = card.createDiv({ cls: "tent-newform-acts" });
+  const create = actions.createEl("button", { cls: "mod-cta", text: "\u65B0\u5EFA" });
+  create.setAttr("type", "button");
+  create.onclick = async (event) => {
+    event.preventDefault();
+    try {
+      await submit();
+    } catch (error) {
+      new import_obsidian3.Notice("\u65B0\u5EFA\u5931\u8D25:" + (error instanceof Error ? error.message : error));
+    }
+  };
+  const cancel = actions.createEl("button", { text: "\u53D6\u6D88" });
+  cancel.setAttr("type", "button");
+  cancel.onclick = (event) => {
+    event.preventDefault();
+    state.newFormOpen = null;
+    context.redraw();
+  };
+}
+function drawRoleRow(content, context, state, role) {
+  const editKey = `role:${role.name}`;
+  const open2 = state.openEditor === editKey;
+  const wrapper = content.createDiv({
+    cls: "registry-item-wrapper" + (open2 ? " drawer-open" : "")
+  });
+  const row = wrapper.createDiv({ cls: "reg-card role-row" });
+  row.style.setProperty("--accent-color", roleColorValue(role));
+  row.createSpan({ cls: "item-name", text: role.name });
+  row.createSpan({ cls: "reg-desc", text: role.description || "" });
+  const actions = row.createDiv({ cls: "row-right-area role-right" }).createDiv({ cls: "row-actions" });
+  const edit = actions.createEl("button", {
+    cls: "registry-edit-btn" + (open2 ? " active" : "")
+  });
+  edit.setAttr("type", "button");
+  (0, import_obsidian3.setIcon)(edit, "settings");
+  addTooltip(edit, "\u7F16\u8F91\u63CF\u8FF0 / prompt / \u989C\u8272");
+  edit.onclick = (event) => {
+    event.stopPropagation();
+    state.openEditor = open2 ? null : editKey;
+    context.redraw();
+  };
+  const deleteKey = `role:${role.name}`;
+  const deletePending = context.getPendingDelete() === deleteKey;
+  const remove = actions.createEl("button", {
+    cls: "registry-del-btn" + (deletePending ? " is-confirm" : "")
+  });
+  remove.setAttr("type", "button");
+  if (deletePending) remove.setText("\u786E\u8BA4\u5220\u9664");
+  else (0, import_obsidian3.setIcon)(remove, "trash-2");
+  addTooltip(remove, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
+  remove.onclick = async (event) => {
+    event.stopPropagation();
+    if (context.getPendingDelete() === deleteKey) {
+      await deleteRole(context.fs, role.name, role.name);
+      await context.refresh();
+      return;
+    }
+    context.setPendingDelete(deleteKey);
+    context.redraw();
+  };
+  if (open2) drawRoleEditDrawer(wrapper, context, role);
+}
+function drawRoleEditDrawer(wrapper, context, role) {
+  const drawer = wrapper.createDiv({
+    cls: "registry-item-edit-drawer role-drawer"
+  });
+  drawPalette(drawLabelRow(drawer, "\u989C\u8272"), role.color || "", async (color) => {
+    await updateRole(context.fs, role.name, { color });
+    await context.refresh();
+  });
+  const description = drawLabelRow(drawer, "\u63CF\u8FF0").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
+    attr: { rows: "1" }
+  });
+  description.value = role.description || "";
+  description.oninput = () => autoGrowTextarea(description);
+  description.onblur = async () => {
+    const value = description.value.trim();
+    if (value === (role.description || "")) return;
+    await updateRole(context.fs, role.name, { description: value });
+    await context.refresh();
+  };
+  window.setTimeout(() => autoGrowTextarea(description), 0);
+  const prompt = drawLabelRow(drawer, "prompt", "tent-newform-textarea-row").createEl("textarea", {
+    cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea",
+    attr: { rows: "2" }
+  });
+  prompt.value = role.prompt || "";
+  prompt.oninput = () => autoGrowTextarea(prompt);
+  prompt.onblur = async () => {
+    const value = prompt.value.trim();
+    if (value === (role.prompt || "")) return;
+    await updateRole(context.fs, role.name, { prompt: value });
+    await context.refresh();
+  };
+  window.setTimeout(() => autoGrowTextarea(prompt), 0);
+}
+function toggleSetValue(values, value) {
+  if (values.has(value)) values.delete(value);
+  else values.add(value);
+}
+function addTooltip(element, text) {
+  element.removeAttribute("title");
+  if (!text) return;
+  (0, import_obsidian3.setTooltip)(element, text, {
+    placement: "top",
+    delay: 150
+  });
+}
 
 // src/plugin/view.ts
 init_ops();
@@ -2591,7 +3138,7 @@ var MIN_TREE_COLUMN = 250;
 var MIN_PROPERTY_COLUMN = 320;
 var COLUMN_DIVIDER = 6;
 var GIT_UI_CACHE_TTL_MS = 6e3;
-var TentView = class extends import_obsidian3.ItemView {
+var TentView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -2608,21 +3155,13 @@ var TentView = class extends import_obsidian3.ItemView {
     this.bottomTab = "note";
     // 左树热切换:全部 / 只看有待处理(proposal 或 owner)的框
     this.treeFilter = "all";
-    // 常驻标记:选中的 role / type 会在所有匹配 box 上常驻显示标记(与聚焦无关)
-    this.markedRoles = /* @__PURE__ */ new Set();
-    this.markedTypes = /* @__PURE__ */ new Set();
+    this.registryUi = createRegistryPaneState();
     this.colRatio = 0.58;
     this.tentsCache = [];
     this.rightPane = "property";
-    this.registryCollapsed = { type: false, kind: false, roles: false };
-    this.regTypeCollapsed = false;
-    // 注册表「新建」内联表单:哪个 section 正展开新建卡(null=都收起)
-    this.newFormOpen = null;
     this.newBoxParentPath = null;
     // tags 行的内联挑选区是否展开
     this.tagPickerOpen = false;
-    // 注册表行的编辑抽屉:哪一条正展开(key=`${section}:${name}`),null=都收起
-    this.openRegEditor = null;
     // 属性面板:二级编辑区是否展开(一级=note+摘要;二级=可编辑控件)
     this.propEditExpanded = false;
     // 哪个条目正展开内联删除二次确认(就地,不弹居中浮层);key 唯一标识那条
@@ -2685,7 +3224,7 @@ var TentView = class extends import_obsidian3.ItemView {
     return this.plugin.settings.tentsRoot;
   }
   tentRootPath() {
-    return (0, import_obsidian3.normalizePath)(`${this.tentsRoot}/${this.tentName}`);
+    return (0, import_obsidian4.normalizePath)(`${this.tentsRoot}/${this.tentName}`);
   }
   env() {
     return {
@@ -2752,7 +3291,7 @@ var TentView = class extends import_obsidian3.ItemView {
   }
   async patchBoxIncremental(box, patch) {
     if (!this.tent) return;
-    const notePath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = (0, import_obsidian4.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2e3);
     try {
       await patchBox(this.env(), box.path, patch, this.tent);
@@ -2765,7 +3304,7 @@ var TentView = class extends import_obsidian3.ItemView {
   }
   async patchBodyIncremental(box, body) {
     if (!this.tent) return;
-    const notePath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = (0, import_obsidian4.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2e3);
     try {
       await patchBody(this.env(), box.path, body, this.tent);
@@ -2810,8 +3349,19 @@ var TentView = class extends import_obsidian3.ItemView {
     this.columnResizeObserver.observe(cols);
     this.wireDivider(cols, divider);
     this.drawTree(tree);
-    if (this.rightPane === "registry") this.drawRegistryPane(prop);
-    else this.drawProperty(prop);
+    if (this.rightPane === "registry") {
+      drawRegistryPane(prop, {
+        fs: this.env().fs,
+        registry: this.tent.typeRegistry,
+        roles: this.roles,
+        redraw: () => this.draw(),
+        refresh: () => this.refresh(),
+        getPendingDelete: () => this.pendingDelete,
+        setPendingDelete: (value) => {
+          this.pendingDelete = value;
+        }
+      }, this.registryUi);
+    } else this.drawProperty(prop);
   }
   wireDivider(cols, divider) {
     divider.onmousedown = (e) => {
@@ -2853,7 +3403,7 @@ var TentView = class extends import_obsidian3.ItemView {
     const right = bar.createDiv({ cls: "tent-topbar-right" });
     const typesBtn = right.createEl("button", { cls: "tent-types-btn" });
     typesBtn.setAttr("type", "button");
-    (0, import_obsidian3.setIcon)(typesBtn, "settings");
+    (0, import_obsidian4.setIcon)(typesBtn, "settings");
     tentTooltip(typesBtn, "\u7C7B\u578B\u7BA1\u7406");
     typesBtn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2864,7 +3414,7 @@ var TentView = class extends import_obsidian3.ItemView {
     const themeBtn = right.createEl("button", { cls: "tent-theme-btn" });
     themeBtn.setAttr("type", "button");
     const appearance = this.plugin.settings.appearance;
-    (0, import_obsidian3.setIcon)(themeBtn, appearance === "follow" ? "monitor" : appearance === "dark" ? "moon" : "sun");
+    (0, import_obsidian4.setIcon)(themeBtn, appearance === "follow" ? "monitor" : appearance === "dark" ? "moon" : "sun");
     tentTooltip(themeBtn, appearance === "follow" ? "\u8DDF\u968F Obsidian" : appearance === "dark" ? "\u6DF1\u8272" : "\u6D45\u8272");
     themeBtn.addEventListener("click", async (e) => {
       e.preventDefault();
@@ -2896,7 +3446,7 @@ var TentView = class extends import_obsidian3.ItemView {
     const control = parent.createDiv({ cls: "tent-account-control" });
     const select = control.createEl("select", { cls: "tent-select dropdown tent-account-select" });
     const icon = control.createSpan({ cls: "tent-account-chevron" });
-    (0, import_obsidian3.setIcon)(icon, "chevron-down");
+    (0, import_obsidian4.setIcon)(icon, "chevron-down");
     if (this.tentsCache.length === 0) {
       select.createEl("option", { text: "(\u65E0\u5E10)", value: "" });
     }
@@ -2917,7 +3467,7 @@ var TentView = class extends import_obsidian3.ItemView {
       this.selectedId = null;
       this.selectedSystem = null;
       this.tagPickerOpen = false;
-      this.newFormOpen = null;
+      this.registryUi.newFormOpen = null;
       this.newBoxParentPath = null;
       this.pendingDelete = null;
       await this.refresh();
@@ -2926,7 +3476,7 @@ var TentView = class extends import_obsidian3.ItemView {
   async copyGenesisPrompt() {
     const prompt = "\u8BF7\u4F7F\u7528 tent-genesis \u5E2E\u6211\u521B\u5EFA\u4E00\u9876\u65B0\u7684 Tent / \u5E37\u5E44\u5E10\u3002\u5148 grill \u6211:\u5E10\u540D\u3001\u76EE\u6807\u3001workspace \u6307\u9488\u3001\u9996\u6279\u9876\u5C42\u6846\u3001\u9996\u6279 role(name + prompt),\u7136\u540E scaffold \u5E10\u5E76\u521D\u59CB\u5316\u771F\u5B9E workspace\u3002Tent \u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002";
     await navigator.clipboard.writeText(prompt);
-    new import_obsidian3.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
+    new import_obsidian4.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
   }
   // ---- 树 ----
   drawTree(el) {
@@ -2941,7 +3491,7 @@ var TentView = class extends import_obsidian3.ItemView {
         this.drawInlineNewBoxForm(rows, "");
       } else {
         const addRow = rows.createDiv({ cls: "tent-add-top" });
-        (0, import_obsidian3.setIcon)(addRow.createSpan({ cls: "tent-add-top-ico" }), "plus");
+        (0, import_obsidian4.setIcon)(addRow.createSpan({ cls: "tent-add-top-ico" }), "plus");
         addRow.createSpan({ cls: "tent-add-top-label", text: "\u65B0\u5EFA\u9876\u5C42\u6846" });
         addRow.onclick = () => this.openNewBoxForm("");
       }
@@ -2968,55 +3518,6 @@ var TentView = class extends import_obsidian3.ItemView {
     };
     mk("all", "\u5168\u90E8");
     mk("pending", "\u5F85\u5904\u7406");
-  }
-  // 树内显隐 · 常驻面板(注册表页顶部):点击 chip 切换「在树节点上常驻显示」
-  drawVisibilityPanel(host, primary, secondary) {
-    const panel = host.createDiv({ cls: "reg-visibility" });
-    panel.createDiv({ cls: "reg-vis-title", text: "\u6811\u5185\u663E\u9690" });
-    const mkChip = (parent, label, on, color, toggle) => {
-      const chip = parent.createSpan({
-        cls: "tent-mark-chip" + (on ? " is-on" : ""),
-        text: label
-      });
-      chip.style.setProperty("--mark-color", color);
-      chip.onclick = () => {
-        toggle();
-        this.draw();
-      };
-    };
-    const row = (label, build) => {
-      const r = panel.createDiv({ cls: "reg-vis-row" });
-      r.createSpan({ cls: "reg-vis-label", text: label });
-      const chips = r.createDiv({ cls: "reg-vis-chips" });
-      build(chips);
-    };
-    const typeChips = (chips, entries) => {
-      if (entries.length === 0) {
-        chips.createSpan({ cls: "reg-vis-empty", text: "\u2014" });
-        return;
-      }
-      for (const [t, d] of entries) {
-        mkChip(chips, t, this.markedTypes.has(t), typeColorValue(d.color), () => {
-          if (this.markedTypes.has(t)) this.markedTypes.delete(t);
-          else this.markedTypes.add(t);
-        });
-      }
-    };
-    row("\u4E00\u7EA7", (c) => typeChips(c, primary));
-    row("\u4E8C\u7EA7", (c) => typeChips(c, secondary));
-    row("\u89D2\u8272", (chips) => {
-      if (this.roles.length === 0) {
-        chips.createSpan({ cls: "reg-vis-empty", text: "\u2014" });
-        return;
-      }
-      for (const role of this.roles) {
-        const o = role.name;
-        mkChip(chips, o, this.markedRoles.has(o), this.roleColorValue(role), () => {
-          if (this.markedRoles.has(o)) this.markedRoles.delete(o);
-          else this.markedRoles.add(o);
-        });
-      }
-    });
   }
   boxHasPending(box) {
     return (this.pendingByTarget.get(box.id) ?? 0) > 0 || !!box.fm.owner;
@@ -3080,7 +3581,7 @@ var TentView = class extends import_obsidian3.ItemView {
         await placeBox(this.env(), from, intent.parentPath, intent.position);
         await this.refresh();
       } catch (err) {
-        new import_obsidian3.Notice("\u79FB\u52A8\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+        new import_obsidian4.Notice("\u79FB\u52A8\u5931\u8D25:" + (err instanceof Error ? err.message : err));
       }
     });
     rows.addEventListener("dragend", () => {
@@ -3118,7 +3619,7 @@ var TentView = class extends import_obsidian3.ItemView {
     const isCollapsed = this.treeFilter === "pending" ? false : this.collapsed.has(box.id);
     if (hasKids) {
       const chev = row.createSpan({ cls: "tent-chev" });
-      (0, import_obsidian3.setIcon)(chev, isCollapsed ? "chevron-right" : "chevron-down");
+      (0, import_obsidian4.setIcon)(chev, isCollapsed ? "chevron-right" : "chevron-down");
       chev.onclick = (e) => {
         e.stopPropagation();
         if (isCollapsed) this.collapsed.delete(box.id);
@@ -3141,15 +3642,15 @@ var TentView = class extends import_obsidian3.ItemView {
     };
     row.createSpan({ cls: "tent-name", text: box.name });
     const split = splitType(box.type);
-    const showType = this.markedTypes.has(box.type) || this.markedTypes.has(split.base) || !!split.modifier && this.markedTypes.has(split.modifier) || box.id === this.selectedId;
+    const showType = this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.base) || !!split.modifier && this.registryUi.markedTypes.has(split.modifier) || box.id === this.selectedId;
     const owner = box.fm.owner;
-    const showRole = !!owner && (this.markedRoles.has(owner) || box.id === this.selectedId);
+    const showRole = !!owner && (this.registryUi.markedRoles.has(owner) || box.id === this.selectedId);
     if (showType || showRole) {
       const meta = row.createSpan({ cls: "tent-node-meta" });
       meta.createSpan({ cls: "tent-meta-sep", text: "\u2502" });
       if (showType) {
-        const showBase = box.id === this.selectedId || this.markedTypes.has(box.type) || this.markedTypes.has(split.base);
-        const showModifier = !!split.modifier && (box.id === this.selectedId || this.markedTypes.has(box.type) || this.markedTypes.has(split.modifier));
+        const showBase = box.id === this.selectedId || this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.base);
+        const showModifier = !!split.modifier && (box.id === this.selectedId || this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.modifier));
         if (showBase) {
           const baseDef = this.tent.typeRegistry[split.base];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.base });
@@ -3165,7 +3666,7 @@ var TentView = class extends import_obsidian3.ItemView {
       if (showRole && owner) {
         const role = this.roles.find((r) => r.name === owner);
         const rl = meta.createSpan({ cls: "tent-meta-role", text: owner });
-        rl.style.setProperty("--role-color", this.roleColorValue(role ?? { name: owner }));
+        rl.style.setProperty("--role-color", roleColorValue(role ?? { name: owner }));
       }
     }
     const slot = row.createSpan({ cls: "tent-slot" });
@@ -3179,18 +3680,18 @@ var TentView = class extends import_obsidian3.ItemView {
     if (box.invalid) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-invalid" });
       const ico = pill.createSpan();
-      (0, import_obsidian3.setIcon)(ico, "triangle-alert");
+      (0, import_obsidian4.setIcon)(ico, "triangle-alert");
       tentTooltip(pill, box.invalidReason || "\u5931\u6548\u6846");
     } else if (box.fm.owner) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-lock" });
       const ico = pill.createSpan();
-      (0, import_obsidian3.setIcon)(ico, "lock");
+      (0, import_obsidian4.setIcon)(ico, "lock");
       tentTooltip(pill, `\u9501\u5B9A:${box.fm.owner} \u8BA4\u9886\u4E2D`);
     } else if (st && st !== "todo") {
       const pill = rest.createSpan({ cls: `tent-slot-status tent-spill tent-spill-${st}` });
       const ico = pill.createSpan();
-      if (st === "doing") (0, import_obsidian3.setIcon)(ico, "circle-dashed");
-      else if (st === "done") (0, import_obsidian3.setIcon)(ico, "circle-check");
+      if (st === "doing") (0, import_obsidian4.setIcon)(ico, "circle-dashed");
+      else if (st === "done") (0, import_obsidian4.setIcon)(ico, "circle-check");
       tentTooltip(pill, st);
     }
     const actionBlocked = hasActiveOwnerInScope(box);
@@ -3199,14 +3700,14 @@ var TentView = class extends import_obsidian3.ItemView {
       if (actionBlocked) ops.addClass("is-disabled");
       if (box.archived) {
         const restoreBtn = ops.createSpan({ cls: "tent-slot-btn" });
-        (0, import_obsidian3.setIcon)(restoreBtn, "rotate-ccw");
+        (0, import_obsidian4.setIcon)(restoreBtn, "rotate-ccw");
         tentTooltip(restoreBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D" : "\u6062\u590D");
         restoreBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           try {
             if (actionBlocked) {
-              new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+              new import_obsidian4.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
               return;
             }
             const root = this.requireExplicitArchiveRoot(box, "\u6062\u590D");
@@ -3214,22 +3715,22 @@ var TentView = class extends import_obsidian3.ItemView {
             const { restoreBox: restoreBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await restoreBox2(this.env(), root.id);
             await this.refresh();
-            new import_obsidian3.Notice(`\u5DF2\u6062\u590D\u300C${root.name}\u300D`);
+            new import_obsidian4.Notice(`\u5DF2\u6062\u590D\u300C${root.name}\u300D`);
           } catch (err) {
-            new import_obsidian3.Notice("\u6062\u590D\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("\u6062\u590D\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         });
         const deleteKey = `box:${box.id}`;
         const deletePending = this.pendingDelete === deleteKey;
         const deleteBtn = ops.createSpan({ cls: "tent-slot-btn tent-slot-delete" + (deletePending ? " is-confirm" : "") });
         if (deletePending) deleteBtn.setText("\u786E\u8BA4\u5220\u9664");
-        else (0, import_obsidian3.setIcon)(deleteBtn, "trash-2");
+        else (0, import_obsidian4.setIcon)(deleteBtn, "trash-2");
         tentTooltip(deleteBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664" : deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u6C38\u4E45\u5220\u9664" : "\u6C38\u4E45\u5220\u9664");
         deleteBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           if (actionBlocked) {
-            new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+            new import_obsidian4.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
             return;
           }
           const root = this.requireExplicitArchiveRoot(box, "\u5220\u9664");
@@ -3239,7 +3740,7 @@ var TentView = class extends import_obsidian3.ItemView {
             const { deleteArchivedBox: deleteArchivedBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await deleteArchivedBox2(this.env(), root.id);
             await this.refresh();
-            new import_obsidian3.Notice(`\u5DF2\u5220\u9664\u300C${root.name}\u300D`);
+            new import_obsidian4.Notice(`\u5DF2\u5220\u9664\u300C${root.name}\u300D`);
             return;
           }
           this.pendingDelete = key;
@@ -3249,26 +3750,26 @@ var TentView = class extends import_obsidian3.ItemView {
         });
       } else {
         const archBtn = ops.createSpan({ cls: "tent-slot-btn" });
-        (0, import_obsidian3.setIcon)(archBtn, "archive");
+        (0, import_obsidian4.setIcon)(archBtn, "archive");
         tentTooltip(archBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863" : "\u5F52\u6863");
         archBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           if (actionBlocked) {
-            new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+            new import_obsidian4.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
             return;
           }
           try {
             const { archiveBox: archiveBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await archiveBox2(this.env(), box.id);
             await this.refresh();
-            new import_obsidian3.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
+            new import_obsidian4.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian3.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         });
         const plus = ops.createSpan({ cls: "tent-slot-btn tent-slot-plus" });
-        (0, import_obsidian3.setIcon)(plus, "plus");
+        (0, import_obsidian4.setIcon)(plus, "plus");
         tentTooltip(plus, "\u65B0\u5EFA\u5B50\u6846");
         plus.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -3301,7 +3802,7 @@ var TentView = class extends import_obsidian3.ItemView {
     row.createSpan({ cls: "tent-chip", text: "\u7CFB\u7EDF\u7BA1\u9053" });
     const slot = row.createSpan({ cls: "tent-slot" });
     const lock = slot.createSpan({ cls: "tent-slot-status tent-system-status" });
-    (0, import_obsidian3.setIcon)(lock, "lock");
+    (0, import_obsidian4.setIcon)(lock, "lock");
     tentTooltip(lock, "\u7CFB\u7EDF\u53EA\u8BFB\u7BA1\u9053");
     row.onclick = () => {
       this.selectedId = null;
@@ -3311,7 +3812,7 @@ var TentView = class extends import_obsidian3.ItemView {
   }
   nodeMenu(e, box) {
     e.preventDefault();
-    const menu = new import_obsidian3.Menu();
+    const menu = new import_obsidian4.Menu();
     menu.addItem((i) => i.setTitle("\u6253\u5F00\u7B14\u8BB0").setIcon("file-text").onClick(() => this.openBoxFile(box)));
     if (!box.archived && !box.invalid && box.fm.owner) {
       menu.addItem(
@@ -3339,9 +3840,9 @@ var TentView = class extends import_obsidian3.ItemView {
             this.selectedSystem = null;
             this.rightPane = "property";
             await this.refresh();
-            new import_obsidian3.Notice(`\u5DF2 Fork\u300C${box.name}\u300D`);
+            new import_obsidian4.Notice(`\u5DF2 Fork\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian3.Notice("Fork \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("Fork \u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         })
       );
@@ -3356,9 +3857,9 @@ var TentView = class extends import_obsidian3.ItemView {
             const { archiveBox: archiveBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await archiveBox2(this.env(), box.id);
             await this.refresh();
-            new import_obsidian3.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
+            new import_obsidian4.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian3.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         })
       );
@@ -3388,12 +3889,12 @@ var TentView = class extends import_obsidian3.ItemView {
     const ownerBadge = ownerWrap.createSpan({ cls: "owner-badge" + (ownerHas ? " active" : " empty") });
     if (ownerHas) {
       const role = this.roles.find((r) => r.name === box.fm.owner);
-      ownerBadge.style.setProperty("--role-color", this.roleColorValue(role ?? { name: box.fm.owner }));
+      ownerBadge.style.setProperty("--role-color", roleColorValue(role ?? { name: box.fm.owner }));
     }
     ownerBadge.setText(ownerHas ? box.fm.owner : "\u2014");
     const expandBtn = titleRow.createEl("button", { cls: "tent-prop-expand" });
     expandBtn.setAttr("type", "button");
-    (0, import_obsidian3.setIcon)(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
+    (0, import_obsidian4.setIcon)(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
     tentTooltip(expandBtn, this.propEditExpanded ? "\u6536\u8D77\u5C5E\u6027" : "\u5C55\u5F00\u5C5E\u6027");
     expandBtn.onclick = () => {
       this.propEditExpanded = !this.propEditExpanded;
@@ -3429,10 +3930,10 @@ var TentView = class extends import_obsidian3.ItemView {
       const rwItem = editor.createDiv({ cls: "tent-prop-item" });
       rwItem.createSpan({ cls: "tent-item-label", text: "R/W" });
       const rwWrap = rwItem.createDiv({ cls: "tent-rw-mini-wrap" });
-      this.drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
+      drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
         await this.patchBoxIncremental(box, { readable: v });
       });
-      this.drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
+      drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
         await this.patchBoxIncremental(box, { writable: v });
       });
       const soItem = editor.createDiv({ cls: "tent-prop-item" });
@@ -3450,26 +3951,6 @@ var TentView = class extends import_obsidian3.ItemView {
     }
     this.drawBottom(card, box);
   }
-  // 读写轴:段落控件(A 布局)+ 选中珊瑚浅底(B 高亮);R/W 前缀,三段 继承/开/关
-  drawRwSegment(parent, key, declared, on, allowInherit = true, readonly = false) {
-    const seg = parent.createDiv({ cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "") });
-    seg.createSpan({ cls: "tent-seg-key", text: key === "readable" ? "R" : "W" });
-    const states = allowInherit ? [
-      { w: "\u7EE7\u627F", v: void 0 },
-      { w: "\u5F00", v: true },
-      { w: "\u5173", v: false }
-    ] : [
-      { w: "\u5F00", v: true },
-      { w: "\u5173", v: false }
-    ];
-    for (const s of states) {
-      const opt = seg.createDiv({
-        cls: "tent-status-segment-option" + (declared === s.v ? " is-active" : ""),
-        text: s.w
-      });
-      if (!readonly) opt.onclick = () => on(s.v);
-    }
-  }
   withTentRootPointer(relayPrompt) {
     const abs = this.tentRootAbsolutePath();
     return abs ? relayPrompt.replace("\u8FD9\u9876\u5E10\u7684\u6839\u76EE\u5F55", `\u8FD9\u9876\u5E10\u7684\u6839\u76EE\u5F55(${abs})`) : relayPrompt;
@@ -3481,7 +3962,7 @@ var TentView = class extends import_obsidian3.ItemView {
   }
   tentRootAbsolutePath() {
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian3.FileSystemAdapter)) return null;
+    if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) return null;
     return nodePath3.join(adapter.getBasePath(), this.tentRootPath());
   }
   drawOutputSummary(el, box) {
@@ -3509,13 +3990,13 @@ var TentView = class extends import_obsidian3.ItemView {
   requireExplicitArchiveRoot(box, action) {
     const root = this.findExplicitArchiveRoot(box);
     if (!root) {
-      new import_obsidian3.Notice(`\u65E0\u6CD5${action}:\u627E\u4E0D\u5230\u663E\u5F0F\u5F52\u6863\u6839`);
+      new import_obsidian4.Notice(`\u65E0\u6CD5${action}:\u627E\u4E0D\u5230\u663E\u5F0F\u5F52\u6863\u6839`);
       return null;
     }
     if (root.id !== box.id) {
       this.selectedId = root.id;
       this.selectedSystem = null;
-      new import_obsidian3.Notice(`\u300C${box.name}\u300D\u7EE7\u627F\u81EA\u5F52\u6863\u6839\u300C${root.name}\u300D;\u8BF7\u5728\u5F52\u6863\u6839\u4E0A${action}`);
+      new import_obsidian4.Notice(`\u300C${box.name}\u300D\u7EE7\u627F\u81EA\u5F52\u6863\u6839\u300C${root.name}\u300D;\u8BF7\u5728\u5F52\u6863\u6839\u4E0A${action}`);
       this.draw();
       return null;
     }
@@ -3540,7 +4021,7 @@ var TentView = class extends import_obsidian3.ItemView {
       const chip = container.createSpan({ cls: "tent-tag-chip-selected" });
       chip.createSpan({ text: tag });
       const x = chip.createEl("i");
-      (0, import_obsidian3.setIcon)(x, "x");
+      (0, import_obsidian4.setIcon)(x, "x");
       tentTooltip(x, `\u79FB\u9664 #${tag}`);
       x.onclick = async (e) => {
         e.preventDefault();
@@ -3549,12 +4030,12 @@ var TentView = class extends import_obsidian3.ItemView {
           await removeTag(this.env().fs, box.id, tag);
           await this.refresh();
         } catch (err) {
-          new import_obsidian3.Notice("\u79FB\u9664 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+          new import_obsidian4.Notice("\u79FB\u9664 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
         }
       };
     }
     const trigger = container.createSpan({ cls: "tent-tag-trigger-btn" });
-    (0, import_obsidian3.setIcon)(trigger, this.tagPickerOpen ? "chevron-up" : "plus");
+    (0, import_obsidian4.setIcon)(trigger, this.tagPickerOpen ? "chevron-up" : "plus");
     trigger.createSpan({ text: this.tagPickerOpen ? "\u6536\u8D77" : "tag" });
     trigger.onclick = (e) => {
       e.preventDefault();
@@ -3584,7 +4065,7 @@ var TentView = class extends import_obsidian3.ItemView {
             this.pendingDelete = null;
             await this.refresh();
           } catch (err) {
-            new import_obsidian3.Notice("\u5220\u9664\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("\u5220\u9664\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         };
         chip.onclick = async (e) => {
@@ -3597,12 +4078,12 @@ var TentView = class extends import_obsidian3.ItemView {
             await addTag(this.env().fs, box.id, tag);
             await this.refresh();
           } catch (err) {
-            new import_obsidian3.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian4.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         };
         if (!pending) {
           const x = chip.createEl("i", { cls: "tent-tag-chip-del" });
-          (0, import_obsidian3.setIcon)(x, "x");
+          (0, import_obsidian4.setIcon)(x, "x");
           tentTooltip(x, `\u4ECE\u6CE8\u518C\u8868\u5220\u9664 #${tag}`);
           x.onclick = (e) => {
             e.preventDefault();
@@ -3623,7 +4104,7 @@ var TentView = class extends import_obsidian3.ItemView {
         await addTag(this.env().fs, box.id, name);
         await this.refresh();
       } catch (err) {
-        new import_obsidian3.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+        new import_obsidian4.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
       }
     };
     submit.onclick = (e) => {
@@ -3719,9 +4200,9 @@ var TentView = class extends import_obsidian3.ItemView {
         try {
           await rejectReport(this.env().fs, report.path);
           await this.refresh();
-          new import_obsidian3.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
+          new import_obsidian4.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
         } catch (e) {
-          new import_obsidian3.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          new import_obsidian4.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
@@ -3763,10 +4244,10 @@ var TentView = class extends import_obsidian3.ItemView {
           );
           this.clearGitUiCache();
           await this.refresh();
-          new import_obsidian3.Notice(report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)");
+          new import_obsidian4.Notice(report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)");
         } catch (e) {
           done.removeAttribute("disabled");
-          new import_obsidian3.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          new import_obsidian4.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
     } else if (owner) {
@@ -3802,7 +4283,7 @@ var TentView = class extends import_obsidian3.ItemView {
             await applyProposal3(this.env(), p.path, false);
             await this.refresh();
           } catch (e) {
-            new import_obsidian3.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+            new import_obsidian4.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
           }
         };
         const acc = acts.createEl("button", { cls: "mod-cta", text: "\u91C7\u7EB3" });
@@ -3817,9 +4298,9 @@ var TentView = class extends import_obsidian3.ItemView {
             else if (invalidReason) return;
             await applyProposal3(this.env(), p.path, true);
             await this.refresh();
-            new import_obsidian3.Notice("\u5DF2\u91C7\u7EB3");
+            new import_obsidian4.Notice("\u5DF2\u91C7\u7EB3");
           } catch (e) {
-            new import_obsidian3.Notice("\u91C7\u7EB3\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+            new import_obsidian4.Notice("\u91C7\u7EB3\u5931\u8D25:" + (e instanceof Error ? e.message : e));
           }
         };
       }
@@ -3950,26 +4431,26 @@ var TentView = class extends import_obsidian3.ItemView {
       const selectedHandoff = availableHandoffs.find((handoff3) => handoff3.path === handoffSelect?.value);
       const roleName = selectedHandoff?.targetRole || roleSelect.value.trim() || manualRole.value.trim();
       if (!roleName) {
-        new import_obsidian3.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
+        new import_obsidian4.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
         return;
       }
       const localPrompt = prompt.value.trim();
       const handoff2 = selectedHandoff?.path || "";
       if (!localPrompt && !handoff2) {
-        new import_obsidian3.Notice("\u8BF7\u586B\u5199 user prompt \u6216 handoff \u6307\u9488");
+        new import_obsidian4.Notice("\u8BF7\u586B\u5199 user prompt \u6216 handoff \u6307\u9488");
         return;
       }
       try {
         const r = await this.dispatchBox(box, roleName, localPrompt, handoff2 || void 0);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
           await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
-          new import_obsidian3.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
+          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
         } else {
-          new import_obsidian3.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
+          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
         }
         await this.refresh();
       } catch (e) {
-        new import_obsidian3.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+        new import_obsidian4.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
       }
     };
   }
@@ -4004,394 +4485,6 @@ var TentView = class extends import_obsidian3.ItemView {
       ta.selectionStart = ta.selectionEnd = s + rel.length;
       ta.focus();
     });
-  }
-  // ---- 面板内注册表 pane ----
-  drawRegistryPane(el) {
-    el.createDiv({ cls: "registry-title", text: "\u7C7B\u578B / \u89D2\u8272 \u6CE8\u518C\u8868" });
-    const list = el.createDiv({ cls: "registry-list" });
-    const reg = this.tent.typeRegistry;
-    const entries = Object.entries(reg);
-    const primary = entries.filter(([, d]) => d.tier !== "modifier");
-    const secondary = entries.filter(([, d]) => d.tier === "modifier");
-    this.drawVisibilityPanel(list, primary, secondary);
-    const typeBlock = list.createDiv({ cls: "reg-block" });
-    this.drawBlockHead(typeBlock, "\u7C7B\u578B", this.regTypeCollapsed, () => {
-      this.regTypeCollapsed = !this.regTypeCollapsed;
-    });
-    if (!this.regTypeCollapsed) {
-      this.drawTypeSub(typeBlock, "type", "base", "\u4E00\u7EA7", primary);
-      this.drawTypeSub(typeBlock, "kind", "modifier", "\u4E8C\u7EA7", secondary);
-    }
-    const roleBlock = list.createDiv({ cls: "reg-block" });
-    this.drawBlockHead(roleBlock, "\u89D2\u8272", this.registryCollapsed.roles, () => {
-      this.registryCollapsed.roles = !this.registryCollapsed.roles;
-    }, "roles");
-    if (!this.registryCollapsed.roles) {
-      const roleContent = roleBlock.createDiv({ cls: "group-content roles-list" });
-      if (this.newFormOpen === "roles") this.drawNewRoleForm(roleContent);
-      if (this.roles.length === 0) {
-        roleContent.createDiv({ cls: "registry-empty", text: "\u6682\u65E0 roles" });
-      } else {
-        for (const role of this.roles) this.drawRoleRow(roleContent, role);
-      }
-    }
-  }
-  // 大块标题(类型 / 角色):chevron + 标题 + 延伸线 + 可选 ＋
-  drawBlockHead(block, title, collapsed, toggle, addKey) {
-    const head = block.createDiv({ cls: "reg-block-head" });
-    const chev = head.createSpan({ cls: "reg-chev" });
-    (0, import_obsidian3.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
-    head.createSpan({ cls: "reg-block-title", text: title });
-    head.createSpan({ cls: "reg-head-rule" });
-    if (addKey) this.regAddBtn(head, addKey);
-    head.onclick = () => {
-      toggle();
-      this.draw();
-    };
-  }
-  // 类型子区(一级 / 二级):可折叠小标题 + ＋ + 表单 + 行
-  drawTypeSub(block, key, tier, label, entries) {
-    const sub = block.createDiv({ cls: "reg-sub" });
-    const collapsed = this.registryCollapsed[key];
-    const head = sub.createDiv({ cls: "reg-sub-head" });
-    const chev = head.createSpan({ cls: "reg-chev reg-chev-sm" });
-    (0, import_obsidian3.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
-    head.createSpan({ cls: "reg-sub-label", text: label });
-    this.regAddBtn(head, key);
-    head.onclick = () => {
-      this.registryCollapsed[key] = !this.registryCollapsed[key];
-      this.draw();
-    };
-    if (collapsed) return;
-    const content = sub.createDiv({ cls: "group-content" });
-    if (this.newFormOpen === key) this.drawNewTypeForm(content, tier);
-    if (entries.length === 0) {
-      content.createDiv({ cls: "registry-empty", text: tier === "modifier" ? "\u6682\u65E0\u4E8C\u7EA7" : "\u6682\u65E0\u4E00\u7EA7" });
-      return;
-    }
-    for (const [name, def] of entries) this.drawTypeRow(content, key, name, def);
-  }
-  // 注册表小标题的 ＋ 新建按钮
-  regAddBtn(head, key) {
-    const add = head.createEl("button", {
-      cls: "registry-add-btn" + (this.newFormOpen === key ? " is-open" : "")
-    });
-    add.setAttr("type", "button");
-    (0, import_obsidian3.setIcon)(add.createSpan({ cls: "rab-ico" }), "plus");
-    add.setAttr("aria-label", "\u65B0\u5EFA");
-    tentTooltip(add, "\u65B0\u5EFA");
-    add.onclick = (e) => {
-      e.stopPropagation();
-      this.newFormOpen = this.newFormOpen === key ? null : key;
-      if (this.newFormOpen === key) {
-        this.registryCollapsed[key] = false;
-        if (key === "type" || key === "kind") this.regTypeCollapsed = false;
-      }
-      this.draw();
-    };
-  }
-  // type/kind 行(图二风格):左强调条 + 同色名 + 紧凑 r√·w× 胶囊;hover 切到 ⚙编辑/🗑删除;
-  // 编辑抽屉 = 色板 + R/W；modifier 允许每轴继承 base。
-  drawTypeRow(content, section, name, def) {
-    const editKey = `${section}:${name}`;
-    const open2 = this.openRegEditor === editKey;
-    const wrapper = content.createDiv({ cls: "registry-item-wrapper" + (open2 ? " drawer-open" : "") });
-    const row = wrapper.createDiv({ cls: "reg-card" });
-    row.style.setProperty("--accent-color", typeColorValue(def.color));
-    row.createSpan({ cls: "item-name", text: name });
-    row.createSpan({ cls: "reg-desc", text: def.description || "" });
-    const rightArea = row.createDiv({ cls: "row-right-area" });
-    const indicators = rightArea.createDiv({ cls: "item-indicators" });
-    this.renderRwCapsule(indicators, def.readable, def.writable);
-    const actions = rightArea.createDiv({ cls: "row-actions" });
-    const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open2 ? " active" : "") });
-    editBtn.setAttr("type", "button");
-    (0, import_obsidian3.setIcon)(editBtn, "settings");
-    tentTooltip(editBtn, "\u7F16\u8F91\u989C\u8272 / \u8BFB\u5199");
-    editBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.openRegEditor = open2 ? null : editKey;
-      this.draw();
-    };
-    const deleteKey = `type:${section}:${name}`;
-    const deletePending = this.pendingDelete === deleteKey;
-    const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
-    delBtn.setAttr("type", "button");
-    if (deletePending) delBtn.setText("\u786E\u8BA4\u5220\u9664");
-    else (0, import_obsidian3.setIcon)(delBtn, "trash-2");
-    tentTooltip(delBtn, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
-    delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      const inspection = await inspectTypeDeletion(this.env().fs, "type", name);
-      if (inspection.builtIn) {
-        new import_obsidian3.Notice(`\u5185\u7F6E\u7C7B\u578B\u300C${name}\u300D\u4E0D\u53EF\u5220\u9664`);
-        return;
-      }
-      if (inspection.activeOwners.length > 0) {
-        new import_obsidian3.Notice(`\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05:${inspection.activeOwners.map((x) => x.path).join(", ")}`);
-        return;
-      }
-      if (this.pendingDelete === deleteKey) {
-        await deleteCustomType(this.env().fs, "type", name, name);
-        await this.refresh();
-        return;
-      }
-      this.pendingDelete = deleteKey;
-      this.draw();
-    };
-    if (open2) this.drawTypeEditDrawer(wrapper, name, def);
-  }
-  // 注册表行 RW 展示:非聚焦态的小胶囊 R√·W✕(开=√ 关=✕ 继承=—)
-  renderRwCapsule(host, readable, writable) {
-    const cap = host.createSpan({ cls: "rw-cap" });
-    const label = (s) => s === void 0 ? "\u7EE7\u627F" : s ? "\u5F00" : "\u5173";
-    tentTooltip(cap, `readable:${label(readable)} \xB7 writable:${label(writable)}`);
-    const mk = (k, state) => {
-      const cls = state === void 0 ? "is-inherit" : state ? "is-on" : "is-off";
-      const sym = state === void 0 ? "\u2014" : state ? "\u221A" : "\u2715";
-      const part = cap.createSpan({ cls: "rw-part " + cls });
-      part.createSpan({ cls: "rw-k", text: k });
-      part.createSpan({ cls: "rw-s", text: sym });
-    };
-    mk("R", readable);
-    cap.createSpan({ cls: "rw-dot", text: "\xB7" });
-    mk("W", writable);
-  }
-  // 色卡:恒定 2×5(CSS 控制),选中态描边环。三处新建/编辑共用。
-  buildPalette(host, selected, on) {
-    const palette = host.createDiv({ cls: "tent-color-palette" });
-    for (const color of TYPE_COLORS) {
-      const sw = palette.createEl("button", { cls: "tent-color-swatch" + (color === selected ? " is-selected" : "") });
-      sw.setAttr("type", "button");
-      tentTooltip(sw, color);
-      sw.style.setProperty("--tent-swatch-color", typeColorValue(color));
-      sw.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        palette.findAll(".tent-color-swatch").forEach((el) => el.removeClass("is-selected"));
-        sw.addClass("is-selected");
-        void on(color);
-      };
-    }
-    return palette;
-  }
-  // 一行 = 左标注(定宽 72px 对齐)+ 右控件;返回控件容器
-  labelRow(host, label, extraCls = "") {
-    const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    const row = host.createDiv({ cls: "tent-newform-row tent-newform-row-" + normalized + (extraCls ? " " + extraCls : "") });
-    row.createSpan({ cls: "tent-newform-label", text: label });
-    return row;
-  }
-  autoGrowTextarea(ta) {
-    ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  }
-  drawTypeEditDrawer(wrapper, name, def) {
-    const drawer = wrapper.createDiv({ cls: "registry-item-edit-drawer type-drawer" });
-    const isMod = def.tier === "modifier";
-    this.buildPalette(this.labelRow(drawer, "\u989C\u8272"), def.color || "", async (color) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { color });
-      await this.refresh();
-    });
-    const rwWrap = this.labelRow(drawer, "R/W").createDiv({ cls: "tent-drawer-rw" });
-    this.drawRwSegment(rwWrap, "readable", def.readable, async (v) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { readable: isMod ? v ?? "inherit" : v ?? false });
-      await this.refresh();
-    }, isMod);
-    this.drawRwSegment(rwWrap, "writable", def.writable, async (v) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { writable: isMod ? v ?? "inherit" : v ?? false });
-      await this.refresh();
-    }, isMod);
-    const descInput = this.labelRow(drawer, "\u63CF\u8FF0").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.value = def.description || "";
-    descInput.oninput = () => this.autoGrowTextarea(descInput);
-    descInput.onblur = async () => {
-      const description = descInput.value.trim();
-      if (description === (def.description || "")) return;
-      await updateTypeMetadata(this.env().fs, "type", name, { description });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(descInput), 0);
-  }
-  // —— 注册表内联表单:new type ——
-  drawNewTypeForm(section, tier) {
-    const card = section.createDiv({ cls: "tent-newform" });
-    const state = {
-      name: "",
-      description: "",
-      readable: tier === "modifier" ? void 0 : true,
-      writable: tier === "modifier" ? void 0 : false,
-      color: "gray"
-    };
-    const isMod = tier === "modifier";
-    const nameInput = this.labelRow(card, "\u540D\u5B57").createEl("input", { cls: "tent-newform-input", attr: { type: "text" } });
-    nameInput.oninput = () => state.name = nameInput.value.trim();
-    window.setTimeout(() => nameInput.focus(), 0);
-    this.buildPalette(this.labelRow(card, "\u989C\u8272"), state.color, (c) => {
-      state.color = c;
-    });
-    const rwWrap = this.labelRow(card, "R/W").createDiv({ cls: "tent-drawer-rw" });
-    this.drawRwSegment(rwWrap, "readable", state.readable, (v) => state.readable = v, isMod);
-    this.drawRwSegment(rwWrap, "writable", state.writable, (v) => state.writable = v, isMod);
-    const descInput = this.labelRow(card, "\u63CF\u8FF0").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.oninput = () => {
-      state.description = descInput.value.trim();
-      this.autoGrowTextarea(descInput);
-    };
-    this.formActions(card, async () => {
-      if (!state.name || state.name === "temp") {
-        new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6709\u6548\u7684 type \u540D");
-        return;
-      }
-      const reg = this.tent.typeRegistry;
-      if (reg[state.name]) {
-        new import_obsidian3.Notice(`\u7C7B\u578B\u300C${state.name}\u300D\u5DF2\u5B58\u5728`);
-        return;
-      }
-      const definition = tier === "modifier" ? {
-        tier: "modifier",
-        ...state.readable !== void 0 ? { readable: state.readable } : {},
-        ...state.writable !== void 0 ? { writable: state.writable } : {}
-      } : { tier: "base", readable: state.readable, writable: state.writable };
-      if (state.color) definition.color = state.color;
-      if (state.description) definition.description = state.description;
-      await createPrimaryType(this.env().fs, state.name, definition);
-      this.newFormOpen = null;
-      await this.refresh();
-    });
-  }
-  // —— 注册表内联表单:new role ——
-  // role = 名字 · prompt 多行 textarea · 新建/取消(无 placeholder)
-  drawNewRoleForm(section) {
-    const card = section.createDiv({ cls: "tent-newform" });
-    const state = { name: "", description: "", prompt: "", color: "purple" };
-    const nameInput = this.labelRow(card, "\u540D\u5B57").createEl("input", { cls: "tent-newform-input", attr: { type: "text" } });
-    nameInput.oninput = () => state.name = nameInput.value.trim();
-    window.setTimeout(() => nameInput.focus(), 0);
-    this.buildPalette(this.labelRow(card, "\u989C\u8272"), state.color, (c) => {
-      state.color = c;
-    });
-    const descInput = this.labelRow(card, "\u63CF\u8FF0").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.oninput = () => {
-      state.description = descInput.value.trim();
-      this.autoGrowTextarea(descInput);
-    };
-    const ta = this.labelRow(card, "prompt", "tent-newform-textarea-row").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea", attr: { rows: "2" } });
-    ta.oninput = () => {
-      state.prompt = ta.value.trim();
-      this.autoGrowTextarea(ta);
-    };
-    this.formActions(card, async () => {
-      if (!state.name) {
-        new import_obsidian3.Notice("\u8BF7\u586B\u5199 role \u540D");
-        return;
-      }
-      const def = { name: state.name };
-      if (state.description) def.description = state.description;
-      if (state.prompt) def.prompt = state.prompt;
-      if (state.color) def.color = state.color;
-      await createRole(this.env().fs, def);
-      this.newFormOpen = null;
-      await this.refresh();
-    });
-  }
-  formActions(card, submit) {
-    const acts = card.createDiv({ cls: "tent-newform-acts" });
-    const ok = acts.createEl("button", { cls: "mod-cta", text: "\u65B0\u5EFA" });
-    ok.setAttr("type", "button");
-    ok.onclick = async (e) => {
-      e.preventDefault();
-      try {
-        await submit();
-      } catch (err) {
-        new import_obsidian3.Notice("\u65B0\u5EFA\u5931\u8D25:" + (err instanceof Error ? err.message : err));
-      }
-    };
-    const cancel = acts.createEl("button", { text: "\u53D6\u6D88" });
-    cancel.setAttr("type", "button");
-    cancel.onclick = (e) => {
-      e.preventDefault();
-      this.newFormOpen = null;
-      this.newBoxParentPath = null;
-      this.draw();
-    };
-  }
-  // role 行(图二风格):左强调条(role 颜色)+ 名 + 一句话描述;
-  // hover 切到 ⚙编辑/🗑删除;抽屉 = 色板 + 描述 + prompt。
-  drawRoleRow(content, role) {
-    const editKey = `role:${role.name}`;
-    const open2 = this.openRegEditor === editKey;
-    const wrapper = content.createDiv({ cls: "registry-item-wrapper" + (open2 ? " drawer-open" : "") });
-    const row = wrapper.createDiv({ cls: "reg-card role-row" });
-    row.style.setProperty("--accent-color", this.roleColorValue(role));
-    row.createSpan({ cls: "item-name", text: role.name });
-    row.createSpan({ cls: "reg-desc", text: role.description || "" });
-    const rightArea = row.createDiv({ cls: "row-right-area role-right" });
-    const actions = rightArea.createDiv({ cls: "row-actions" });
-    const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open2 ? " active" : "") });
-    editBtn.setAttr("type", "button");
-    (0, import_obsidian3.setIcon)(editBtn, "settings");
-    tentTooltip(editBtn, "\u7F16\u8F91\u63CF\u8FF0 / prompt / \u989C\u8272");
-    editBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.openRegEditor = open2 ? null : editKey;
-      this.draw();
-    };
-    const deleteKey = `role:${role.name}`;
-    const deletePending = this.pendingDelete === deleteKey;
-    const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
-    delBtn.setAttr("type", "button");
-    if (deletePending) delBtn.setText("\u786E\u8BA4\u5220\u9664");
-    else (0, import_obsidian3.setIcon)(delBtn, "trash-2");
-    tentTooltip(delBtn, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
-    delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      if (this.pendingDelete === deleteKey) {
-        await deleteRole(this.env().fs, role.name, role.name);
-        await this.refresh();
-        return;
-      }
-      this.pendingDelete = deleteKey;
-      this.draw();
-    };
-    if (open2) this.drawRoleEditDrawer(wrapper, role);
-  }
-  drawRoleEditDrawer(wrapper, role) {
-    const drawer = wrapper.createDiv({ cls: "registry-item-edit-drawer role-drawer" });
-    this.buildPalette(this.labelRow(drawer, "\u989C\u8272"), role.color || "", async (color) => {
-      await updateRole(this.env().fs, role.name, { color });
-      await this.refresh();
-    });
-    const descInput = this.labelRow(drawer, "\u63CF\u8FF0").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.value = role.description || "";
-    descInput.oninput = () => this.autoGrowTextarea(descInput);
-    descInput.onblur = async () => {
-      const description = descInput.value.trim();
-      if (description === (role.description || "")) return;
-      await updateRole(this.env().fs, role.name, { description });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(descInput), 0);
-    const promptText = this.labelRow(drawer, "prompt", "tent-newform-textarea-row").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea", attr: { rows: "2" } });
-    promptText.value = role.prompt || "";
-    promptText.oninput = () => this.autoGrowTextarea(promptText);
-    promptText.onblur = async () => {
-      const prompt = promptText.value.trim();
-      if (prompt === (role.prompt || "")) return;
-      await updateRole(this.env().fs, role.name, { prompt });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(promptText), 0);
-  }
-  // role 强调色:显式 color 优先,否则按名字 hash 落到色板(planner/executor/ui 固定取色)。
-  roleColorValue(role) {
-    if (role.color) return typeColorValue(role.color);
-    const n = role.name.toLowerCase();
-    if (n.includes("planner")) return typeColorValue("purple");
-    if (n.includes("executor")) return typeColorValue("cyan");
-    if (n.includes("ui")) return typeColorValue("orange");
-    const hash = [...role.name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-    return typeColorValue(TYPE_COLORS[hash % TYPE_COLORS.length]);
   }
   // ---- 动作处理 ----
   openNewBoxForm(parentPath) {
@@ -4438,14 +4531,14 @@ var TentView = class extends import_obsidian3.ItemView {
     create.setAttr("type", "button");
     create.onclick = async () => {
       if (!state.name) {
-        new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6846\u540D");
+        new import_obsidian4.Notice("\u8BF7\u586B\u5199\u6846\u540D");
         return;
       }
       const type = joinType(state.base, state.kind || void 0);
       await createBox(this.env(), { parentPath, name: state.name, type });
       this.newBoxParentPath = null;
       await this.refresh();
-      new import_obsidian3.Notice(`\u5DF2\u5EFA\u6846\u300C${state.name}\u300D`);
+      new import_obsidian4.Notice(`\u5DF2\u5EFA\u6846\u300C${state.name}\u300D`);
     };
     const cancel = row.createEl("button", { text: "\u53D6\u6D88" });
     cancel.setAttr("type", "button");
@@ -4462,9 +4555,9 @@ var TentView = class extends import_obsidian3.ItemView {
       try {
         await forceRelease(this.env(), box.id);
         await this.refresh();
-        new import_obsidian3.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u5E76\u91CA\u653E owner`);
+        new import_obsidian4.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u5E76\u91CA\u653E owner`);
       } catch (error) {
-        new import_obsidian3.Notice("\u91CA\u653E\u5931\u8D25:" + (error instanceof Error ? error.message : error));
+        new import_obsidian4.Notice("\u91CA\u653E\u5931\u8D25:" + (error instanceof Error ? error.message : error));
       }
       return;
     }
@@ -4478,7 +4571,7 @@ var TentView = class extends import_obsidian3.ItemView {
   // ---- 白板:生成原生 .canvas 并打开 ----
   async openBoard() {
     if (!this.tent) {
-      new import_obsidian3.Notice("\u5148\u9009\u4E00\u4E2A\u5E10");
+      new import_obsidian4.Notice("\u5148\u9009\u4E00\u4E2A\u5E10");
       return;
     }
     const fs = this.env().fs;
@@ -4489,9 +4582,9 @@ var TentView = class extends import_obsidian3.ItemView {
       preservePositions(fresh, old, this.tent);
       await fs.writeFile(canvasRel, canvasToJson(fresh));
       await this.openVaultFile(canvasRel, 200);
-      new import_obsidian3.Notice("\u767D\u677F\u5DF2\u5237\u65B0");
+      new import_obsidian4.Notice("\u767D\u677F\u5DF2\u5237\u65B0");
     } catch (e) {
-      new import_obsidian3.Notice("\u751F\u6210\u767D\u677F\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+      new import_obsidian4.Notice("\u751F\u6210\u767D\u677F\u5931\u8D25:" + (e instanceof Error ? e.message : e));
     }
   }
   // ---- 打开文件 ----
@@ -4499,16 +4592,16 @@ var TentView = class extends import_obsidian3.ItemView {
     await this.openVaultFile(boxNotePath(box.path));
   }
   async openVaultFile(tentRelPath, retryMs = 0) {
-    const vaultPath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${tentRelPath}`);
+    const vaultPath = (0, import_obsidian4.normalizePath)(`${this.tentRootPath()}/${tentRelPath}`);
     let file = this.app.vault.getAbstractFileByPath(vaultPath);
     if (!file && retryMs > 0) {
       await new Promise((r) => window.setTimeout(r, retryMs));
       file = this.app.vault.getAbstractFileByPath(vaultPath);
     }
-    if (file instanceof import_obsidian3.TFile) {
+    if (file instanceof import_obsidian4.TFile) {
       await this.app.workspace.getLeaf("tab").openFile(file);
     } else {
-      new import_obsidian3.Notice("\u627E\u4E0D\u5230\u6587\u4EF6:" + vaultPath);
+      new import_obsidian4.Notice("\u627E\u4E0D\u5230\u6587\u4EF6:" + vaultPath);
     }
   }
 };
@@ -4527,7 +4620,7 @@ function subtreeHasOwner(box) {
 function tentTooltip(el, text, placement = "top") {
   el.removeAttribute("title");
   if (!text) return;
-  (0, import_obsidian3.setTooltip)(el, text, {
+  (0, import_obsidian4.setTooltip)(el, text, {
     placement,
     delay: 300,
     gap: 6,
@@ -4562,7 +4655,7 @@ var DEFAULT_SETTINGS = {
   }
 };
 var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
-var TentPlugin = class extends import_obsidian4.Plugin {
+var TentPlugin = class extends import_obsidian5.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4570,7 +4663,7 @@ var TentPlugin = class extends import_obsidian4.Plugin {
   }
   async onload() {
     await this.loadSettings();
-    (0, import_obsidian4.addIcon)("tent", TENT_ICON);
+    (0, import_obsidian5.addIcon)("tent", TENT_ICON);
     this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
     this.addRibbonIcon("tent", "\u6253\u5F00\u5E37\u5E44\u9762\u677F", () => this.activateView());
     this.addCommand({
@@ -4621,7 +4714,7 @@ var TentPlugin = class extends import_obsidian4.Plugin {
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian4.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
+      new import_obsidian5.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
     }
   }
   refreshStatusPreference() {
@@ -4639,7 +4732,7 @@ var TentPlugin = class extends import_obsidian4.Plugin {
     }
   }
 };
-var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
+var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4653,7 +4746,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     containerEl.addClass("tent-settings");
     containerEl.createEl("h2", { text: "\u5E37\u5E44 / Tent" });
     containerEl.createEl("h3", { text: "\u5E10" });
-    new import_obsidian4.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
+    new import_obsidian5.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
       (t) => t.setValue(this.plugin.settings.tentsRoot).onChange(async (v) => {
         this.plugin.settings.tentsRoot = v.trim() || "tents";
         await this.plugin.saveSettings();
@@ -4661,7 +4754,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     );
     this.drawNewTentDefaults(containerEl);
     containerEl.createEl("h3", { text: "\u5916\u89C2" });
-    new import_obsidian4.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
+    new import_obsidian5.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
       (dropdown) => dropdown.addOption("follow", "\u8DDF\u968F Obsidian").addOption("light", "\u6D45\u8272").addOption("dark", "\u6DF1\u8272").setValue(this.plugin.settings.appearance).onChange(async (value) => {
         this.plugin.settings.appearance = value;
         await this.plugin.saveSettings();
@@ -4669,13 +4762,13 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "\u4EA4\u4E92" });
-    new import_obsidian4.Setting(containerEl).setName("\u6D3E\u6D3B\u81EA\u52A8\u590D\u5236 prompt").setDesc("dispatch \u6210\u529F\u540E\u628A\u63A5\u529B prompt \u590D\u5236\u5230\u526A\u8D34\u677F\u3002").addToggle(
+    new import_obsidian5.Setting(containerEl).setName("\u6D3E\u6D3B\u81EA\u52A8\u590D\u5236 prompt").setDesc("dispatch \u6210\u529F\u540E\u628A\u63A5\u529B prompt \u590D\u5236\u5230\u526A\u8D34\u677F\u3002").addToggle(
       (t) => t.setValue(this.plugin.settings.dispatchPrefs.copyPromptToClipboard).onChange(async (v) => {
         this.plugin.settings.dispatchPrefs.copyPromptToClipboard = v;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian4.Setting(containerEl).setName("\u5F85\u88C1\u63D0\u9192").setDesc("\u63A7\u5236\u662F\u5426\u5728 Obsidian \u72B6\u6001\u680F\u663E\u793A\u5F85\u88C1\u6570\uFF0C\u4EE5\u53CA\u65B0\u589E\u5F85\u88C1\u65F6\u662F\u5426\u901A\u77E5\u3002").addDropdown(
+    new import_obsidian5.Setting(containerEl).setName("\u5F85\u88C1\u63D0\u9192").setDesc("\u63A7\u5236\u662F\u5426\u5728 Obsidian \u72B6\u6001\u680F\u663E\u793A\u5F85\u88C1\u6570\uFF0C\u4EE5\u53CA\u65B0\u589E\u5F85\u88C1\u65F6\u662F\u5426\u901A\u77E5\u3002").addDropdown(
       (dropdown) => dropdown.addOption("off", "\u5173\u95ED").addOption("status", "\u4EC5\u72B6\u6001\u680F").addOption("notice", "\u72B6\u6001\u680F\u4E0E\u901A\u77E5").setValue(this.plugin.settings.triageReminder).onChange(async (value) => {
         this.plugin.settings.triageReminder = value;
         await this.plugin.saveSettings();
@@ -4692,7 +4785,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
     parent.createEl("h4", { text: "\u9ED8\u8BA4 RULES.md" });
-    new import_obsidian4.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
+    new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
       textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
         this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
         await this.plugin.saveSettings();
@@ -4702,7 +4795,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawDefaultTypes(parent) {
     const registry = this.plugin.settings.newTentDefaults.typeRegistry;
-    const title = new import_obsidian4.Setting(parent).setName("\u9ED8\u8BA4 Type");
+    const title = new import_obsidian5.Setting(parent).setName("\u9ED8\u8BA4 Type");
     title.setDesc("\u5185\u7F6E\u540D\u79F0\u56FA\u5B9A\uFF1B\u989C\u8272\u3001R/W \u4E0E\u63CF\u8FF0\u53EF\u6539\u3002");
     title.addButton((button) => {
       const pending = this.pendingReset === "types";
@@ -4724,12 +4817,12 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawTypeTier(parent, registry, tier, label) {
     const section = parent.createDiv({ cls: "tent-settings-registry" });
-    new import_obsidian4.Setting(section).setName(label);
+    new import_obsidian5.Setting(section).setName(label);
     this.drawAddType(section, tier, label);
     for (const [name, definition] of Object.entries(registry)) {
       if ((definition.tier ?? "base") !== tier) continue;
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
-      const summary = new import_obsidian4.Setting(row).setName(name).setDesc(definition.description || "");
+      const summary = new import_obsidian5.Setting(row).setName(name).setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
       summary.controlEl.createSpan({
@@ -4747,7 +4840,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawTypeEditor(parent, name, definition) {
     const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new import_obsidian4.Setting(editor).setName("\u63CF\u8FF0").addText(
+    new import_obsidian5.Setting(editor).setName("\u63CF\u8FF0").addText(
       (text) => text.setValue(definition.description || "").onChange(async (value) => {
         setOptionalText(definition, "description", value);
         await this.plugin.saveSettings();
@@ -4760,7 +4853,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     });
     this.drawAxisControl(editor, definition);
     if (!BUILTIN_TYPES.has(name)) {
-      new import_obsidian4.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\u3002").addButton(
+      new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\u3002").addButton(
         (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
           delete this.plugin.settings.newTentDefaults.typeRegistry[name];
           this.openType = null;
@@ -4772,7 +4865,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawAxisControl(parent, definition) {
     const tier = definition.tier ?? "base";
-    const setting = new import_obsidian4.Setting(parent).setName("R/W");
+    const setting = new import_obsidian5.Setting(parent).setName("R/W");
     for (const [axis, label] of [["readable", "R"], ["writable", "W"]]) {
       setting.controlEl.createSpan({ cls: "tent-settings-axis-label", text: label });
       setting.addDropdown((dropdown) => {
@@ -4787,7 +4880,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawAddType(parent, tier, label) {
     let name = "";
-    const form = new import_obsidian4.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
@@ -4796,12 +4889,12 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
         if (!validRegistryName(normalized)) {
-          new import_obsidian4.Notice("type \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
+          new import_obsidian5.Notice("type \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
           return;
         }
         const registry = this.plugin.settings.newTentDefaults.typeRegistry;
         if (registry[normalized]) {
-          new import_obsidian4.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
+          new import_obsidian5.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
         registry[normalized] = tier === "base" ? { tier: "base", readable: true, writable: false, color: "gray" } : { tier: "modifier", color: "gray" };
@@ -4813,7 +4906,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawDefaultRoles(parent) {
     const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
-    const title = new import_obsidian4.Setting(parent).setName("\u9ED8\u8BA4 Role");
+    const title = new import_obsidian5.Setting(parent).setName("\u9ED8\u8BA4 Role");
     title.setDesc("\u65B0\u5E10\u521D\u59CB\u53EF\u7528\u7684 role\uFF1B\u540D\u79F0\u521B\u5EFA\u540E\u4E0D\u53EF\u4FEE\u6539\u3002");
     title.addButton((button) => {
       const pending = this.pendingReset === "roles";
@@ -4834,7 +4927,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     this.drawAddRole(section);
     for (const role of roles) {
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
-      const summary = new import_obsidian4.Setting(row).setName(role.name).setDesc(role.description || "");
+      const summary = new import_obsidian5.Setting(row).setName(role.name).setDesc(role.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(role.color);
       summary.addButton(
@@ -4848,7 +4941,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawRoleEditor(parent, role) {
     const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new import_obsidian4.Setting(editor).setName("\u63CF\u8FF0").addText(
+    new import_obsidian5.Setting(editor).setName("\u63CF\u8FF0").addText(
       (text) => text.setValue(role.description || "").onChange(async (value) => {
         setOptionalText(role, "description", value);
         await this.plugin.saveSettings();
@@ -4859,14 +4952,14 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
       await this.plugin.saveSettings();
       this.display();
     });
-    new import_obsidian4.Setting(editor).setName("prompt").addTextArea((textarea) => {
+    new import_obsidian5.Setting(editor).setName("prompt").addTextArea((textarea) => {
       textarea.setValue(role.prompt || "").onChange(async (value) => {
         setOptionalText(role, "prompt", value);
         await this.plugin.saveSettings();
       });
       textarea.inputEl.addClass("tent-settings-role-prompt");
     });
-    new import_obsidian4.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 role").addButton(
+    new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 role").addButton(
       (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
         const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
         this.plugin.settings.newTentDefaults.rolesRegistry.roles = roles.filter((item) => item.name !== role.name);
@@ -4878,7 +4971,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   }
   drawAddRole(parent) {
     let name = "";
-    const form = new import_obsidian4.Setting(parent).setName("\u65B0\u5EFA Role").setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    const form = new import_obsidian5.Setting(parent).setName("\u65B0\u5EFA Role").setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
@@ -4887,12 +4980,12 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
         if (!validRegistryName(normalized)) {
-          new import_obsidian4.Notice("role \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
+          new import_obsidian5.Notice("role \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
           return;
         }
         const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
         if (roles.some((role) => role.name === normalized)) {
-          new import_obsidian4.Notice(`role \u5DF2\u5B58\u5728\uFF1A${normalized}`);
+          new import_obsidian5.Notice(`role \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
         roles.push({ name: normalized, color: "gray" });
@@ -4903,7 +4996,7 @@ var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
     );
   }
   drawColorControl(parent, current, onChange) {
-    const setting = new import_obsidian4.Setting(parent).setName("\u989C\u8272");
+    const setting = new import_obsidian5.Setting(parent).setName("\u989C\u8272");
     const palette = setting.controlEl.createDiv({ cls: "tent-settings-palette" });
     for (const color of TYPE_COLOR_PALETTE) {
       const swatch = palette.createEl("button", {

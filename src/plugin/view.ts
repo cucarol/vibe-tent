@@ -5,25 +5,13 @@ import { ItemView, WorkspaceLeaf, Menu, Notice, TFile, normalizePath, setIcon, s
 import * as nodePath from "node:path";
 import type TentPlugin from "./main.js";
 import { ObsidianFs, SystemClock } from "./obsidian-fs.js";
-import { TYPE_COLORS, typeColorValue } from "./colors.js";
+import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
 import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
 import { Box, Status } from "../core/types.js";
-import {
-  createPrimaryType,
-  deleteCustomType,
-  inspectTypeDeletion,
-  updateTypeMetadata,
-} from "../core/typeManagement.js";
 import type { TypeLevel } from "../core/typeManagement.js";
-import type { TypeDefinition, TypeTier } from "../core/typeRegistry.js";
 import { splitType, joinType } from "../core/typeRegistry.js";
-import {
-  createRole,
-  deleteRole,
-  loadRolesRegistry,
-  updateRole,
-} from "../core/skillRoleRegistry.js";
+import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
 import { loadProposals, buildInbox, pendingCount, countByTarget, Proposal, InboxItem } from "../core/proposal.js";
@@ -39,7 +27,15 @@ import {
   readWorkspaceHead,
 } from "../core/workspace.js";
 import type { RoleCommit, WorkspaceHead } from "../core/workspace.js";
-import { createChevronSelect } from "./ui-controls.js";
+import {
+  createChevronSelect,
+  drawRwSegment,
+  roleColorValue,
+} from "./ui-controls.js";
+import {
+  createRegistryPaneState,
+  drawRegistryPane,
+} from "./registry-pane.js";
 import {
   OpsEnv,
   dispatch,
@@ -84,21 +80,13 @@ export class TentView extends ItemView {
   private bottomTab: "note" | "dispatch" | "triage" = "note";
   // 左树热切换:全部 / 只看有待处理(proposal 或 owner)的框
   private treeFilter: "all" | "pending" = "all";
-  // 常驻标记:选中的 role / type 会在所有匹配 box 上常驻显示标记(与聚焦无关)
-  private markedRoles = new Set<string>();
-  private markedTypes = new Set<string>();
+  private registryUi = createRegistryPaneState();
   private colRatio = 0.58;
   private tentsCache: string[] = [];
   private rightPane: "property" | "registry" = "property";
-  private registryCollapsed: Record<"type" | "kind" | "roles", boolean> = { type: false, kind: false, roles: false };
-  private regTypeCollapsed = false;
-  // 注册表「新建」内联表单:哪个 section 正展开新建卡(null=都收起)
-  private newFormOpen: "type" | "kind" | "roles" | null = null;
   private newBoxParentPath: string | null = null;
   // tags 行的内联挑选区是否展开
   private tagPickerOpen = false;
-  // 注册表行的编辑抽屉:哪一条正展开(key=`${section}:${name}`),null=都收起
-  private openRegEditor: string | null = null;
   // 属性面板:二级编辑区是否展开(一级=note+摘要;二级=可编辑控件)
   private propEditExpanded = false;
   // 哪个条目正展开内联删除二次确认(就地,不弹居中浮层);key 唯一标识那条
@@ -319,7 +307,19 @@ export class TentView extends ItemView {
     this.columnResizeObserver.observe(cols);
     this.wireDivider(cols, divider);
     this.drawTree(tree);
-    if (this.rightPane === "registry") this.drawRegistryPane(prop);
+    if (this.rightPane === "registry") {
+      drawRegistryPane(prop, {
+        fs: this.env().fs,
+        registry: this.tent.typeRegistry,
+        roles: this.roles,
+        redraw: () => this.draw(),
+        refresh: () => this.refresh(),
+        getPendingDelete: () => this.pendingDelete,
+        setPendingDelete: (value) => {
+          this.pendingDelete = value;
+        },
+      }, this.registryUi);
+    }
     else this.drawProperty(prop);
   }
 
@@ -441,7 +441,7 @@ export class TentView extends ItemView {
       this.selectedId = null;
       this.selectedSystem = null;
       this.tagPickerOpen = false;
-      this.newFormOpen = null;
+      this.registryUi.newFormOpen = null;
       this.newBoxParentPath = null;
       this.pendingDelete = null;
       await this.refresh();
@@ -498,66 +498,6 @@ export class TentView extends ItemView {
     };
     mk("all", "全部");
     mk("pending", "待处理");
-  }
-
-  // 树内显隐 · 常驻面板(注册表页顶部):点击 chip 切换「在树节点上常驻显示」
-  private drawVisibilityPanel(
-    host: HTMLElement,
-    primary: Array<[string, TypeDefinition]>,
-    secondary: Array<[string, TypeDefinition]>
-  ) {
-    const panel = host.createDiv({ cls: "reg-visibility" });
-    panel.createDiv({ cls: "reg-vis-title", text: "树内显隐" });
-    const mkChip = (
-      parent: HTMLElement,
-      label: string,
-      on: boolean,
-      color: string,
-      toggle: () => void
-    ) => {
-      const chip = parent.createSpan({
-        cls: "tent-mark-chip" + (on ? " is-on" : ""),
-        text: label,
-      });
-      chip.style.setProperty("--mark-color", color);
-      chip.onclick = () => {
-        toggle();
-        this.draw();
-      };
-    };
-    const row = (label: string, build: (chips: HTMLElement) => void) => {
-      const r = panel.createDiv({ cls: "reg-vis-row" });
-      r.createSpan({ cls: "reg-vis-label", text: label });
-      const chips = r.createDiv({ cls: "reg-vis-chips" });
-      build(chips);
-    };
-    const typeChips = (chips: HTMLElement, entries: Array<[string, TypeDefinition]>) => {
-      if (entries.length === 0) {
-        chips.createSpan({ cls: "reg-vis-empty", text: "—" });
-        return;
-      }
-      for (const [t, d] of entries) {
-        mkChip(chips, t, this.markedTypes.has(t), typeColorValue(d.color), () => {
-          if (this.markedTypes.has(t)) this.markedTypes.delete(t);
-          else this.markedTypes.add(t);
-        });
-      }
-    };
-    row("一级", (c) => typeChips(c, primary));
-    row("二级", (c) => typeChips(c, secondary));
-    row("角色", (chips) => {
-      if (this.roles.length === 0) {
-        chips.createSpan({ cls: "reg-vis-empty", text: "—" });
-        return;
-      }
-      for (const role of this.roles) {
-        const o = role.name;
-        mkChip(chips, o, this.markedRoles.has(o), this.roleColorValue(role), () => {
-          if (this.markedRoles.has(o)) this.markedRoles.delete(o);
-          else this.markedRoles.add(o);
-        });
-      }
-    });
   }
 
   private boxHasPending(box: Box): boolean {
@@ -714,18 +654,26 @@ export class TentView extends ItemView {
     // 名字后:type / role 标记。聚焦框显示；树内显隐标记可让匹配项常驻。
     const split = splitType(box.type);
     const showType =
-      this.markedTypes.has(box.type) ||
-      this.markedTypes.has(split.base) ||
-      (!!split.modifier && this.markedTypes.has(split.modifier)) ||
+      this.registryUi.markedTypes.has(box.type) ||
+      this.registryUi.markedTypes.has(split.base) ||
+      (!!split.modifier && this.registryUi.markedTypes.has(split.modifier)) ||
       box.id === this.selectedId;
     const owner = box.fm.owner;
-    const showRole = !!owner && (this.markedRoles.has(owner) || box.id === this.selectedId);
+    const showRole = !!owner && (
+      this.registryUi.markedRoles.has(owner) || box.id === this.selectedId
+    );
     if (showType || showRole) {
       const meta = row.createSpan({ cls: "tent-node-meta" });
       meta.createSpan({ cls: "tent-meta-sep", text: "│" });
       if (showType) {
-        const showBase = box.id === this.selectedId || this.markedTypes.has(box.type) || this.markedTypes.has(split.base);
-        const showModifier = !!split.modifier && (box.id === this.selectedId || this.markedTypes.has(box.type) || this.markedTypes.has(split.modifier));
+        const showBase = box.id === this.selectedId ||
+          this.registryUi.markedTypes.has(box.type) ||
+          this.registryUi.markedTypes.has(split.base);
+        const showModifier = !!split.modifier && (
+          box.id === this.selectedId ||
+          this.registryUi.markedTypes.has(box.type) ||
+          this.registryUi.markedTypes.has(split.modifier)
+        );
         if (showBase) {
           const baseDef = this.tent!.typeRegistry[split.base];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.base });
@@ -741,7 +689,7 @@ export class TentView extends ItemView {
       if (showRole && owner) {
         const role = this.roles.find((r) => r.name === owner);
         const rl = meta.createSpan({ cls: "tent-meta-role", text: owner });
-        rl.style.setProperty("--role-color", this.roleColorValue(role ?? { name: owner }));
+        rl.style.setProperty("--role-color", roleColorValue(role ?? { name: owner }));
       }
     }
 
@@ -1010,7 +958,7 @@ export class TentView extends ItemView {
     const ownerBadge = ownerWrap.createSpan({ cls: "owner-badge" + (ownerHas ? " active" : " empty") });
     if (ownerHas) {
       const role = this.roles.find((r) => r.name === box.fm.owner);
-      ownerBadge.style.setProperty("--role-color", this.roleColorValue(role ?? { name: box.fm.owner! }));
+      ownerBadge.style.setProperty("--role-color", roleColorValue(role ?? { name: box.fm.owner! }));
     }
     ownerBadge.setText(ownerHas ? box.fm.owner! : "—");
     const expandBtn = titleRow.createEl("button", { cls: "tent-prop-expand" });
@@ -1059,10 +1007,10 @@ export class TentView extends ItemView {
       const rwItem = editor.createDiv({ cls: "tent-prop-item" });
       rwItem.createSpan({ cls: "tent-item-label", text: "R/W" });
       const rwWrap = rwItem.createDiv({ cls: "tent-rw-mini-wrap" });
-      this.drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
+      drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
         await this.patchBoxIncremental(box, { readable: v });
       });
-      this.drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
+      drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
         await this.patchBoxIncremental(box, { writable: v });
       });
 
@@ -1085,36 +1033,6 @@ export class TentView extends ItemView {
 
     // 打开笔记 / 派活 / 待裁动作已并入底部 tab 的右上动作键
     this.drawBottom(card, box);
-  }
-
-  // 读写轴:段落控件(A 布局)+ 选中珊瑚浅底(B 高亮);R/W 前缀,三段 继承/开/关
-  private drawRwSegment(
-    parent: HTMLElement,
-    key: "readable" | "writable",
-    declared: boolean | undefined,
-    on: (v: boolean | undefined) => void,
-    allowInherit = true,
-    readonly = false
-  ) {
-    const seg = parent.createDiv({ cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "") });
-    seg.createSpan({ cls: "tent-seg-key", text: key === "readable" ? "R" : "W" });
-    const states: Array<{ w: string; v: boolean | undefined }> = allowInherit
-      ? [
-          { w: "继承", v: undefined },
-          { w: "开", v: true },
-          { w: "关", v: false },
-        ]
-      : [
-          { w: "开", v: true },
-          { w: "关", v: false },
-        ];
-    for (const s of states) {
-      const opt = seg.createDiv({
-        cls: "tent-status-segment-option" + (declared === s.v ? " is-active" : ""),
-        text: s.w,
-      });
-      if (!readonly) opt.onclick = () => on(s.v);
-    }
   }
 
   private withTentRootPointer(relayPrompt: string): string {
@@ -1697,477 +1615,6 @@ export class TentView extends ItemView {
       ta.selectionStart = ta.selectionEnd = s + rel.length;
       ta.focus();
     });
-  }
-
-  // ---- 面板内注册表 pane ----
-
-  private drawRegistryPane(el: HTMLElement) {
-    el.createDiv({ cls: "registry-title", text: "类型 / 角色 注册表" });
-    const list = el.createDiv({ cls: "registry-list" });
-
-    const reg = this.tent!.typeRegistry;
-    const entries = Object.entries(reg);
-    const primary = entries.filter(([, d]) => d.tier !== "modifier");
-    const secondary = entries.filter(([, d]) => d.tier === "modifier");
-
-    // ── 树内显隐 常驻面板 ──
-    this.drawVisibilityPanel(list, primary, secondary);
-
-    // ── 类型 大块(内含一级 / 二级)──
-    const typeBlock = list.createDiv({ cls: "reg-block" });
-    this.drawBlockHead(typeBlock, "类型", this.regTypeCollapsed, () => {
-      this.regTypeCollapsed = !this.regTypeCollapsed;
-    });
-    if (!this.regTypeCollapsed) {
-      this.drawTypeSub(typeBlock, "type", "base", "一级", primary);
-      this.drawTypeSub(typeBlock, "kind", "modifier", "二级", secondary);
-    }
-
-    // ── 角色 大块 ──
-    const roleBlock = list.createDiv({ cls: "reg-block" });
-    this.drawBlockHead(roleBlock, "角色", this.registryCollapsed.roles, () => {
-      this.registryCollapsed.roles = !this.registryCollapsed.roles;
-    }, "roles");
-    if (!this.registryCollapsed.roles) {
-      const roleContent = roleBlock.createDiv({ cls: "group-content roles-list" });
-      if (this.newFormOpen === "roles") this.drawNewRoleForm(roleContent);
-      if (this.roles.length === 0) {
-        roleContent.createDiv({ cls: "registry-empty", text: "暂无 roles" });
-      } else {
-        for (const role of this.roles) this.drawRoleRow(roleContent, role);
-      }
-    }
-  }
-
-  // 大块标题(类型 / 角色):chevron + 标题 + 延伸线 + 可选 ＋
-  private drawBlockHead(block: HTMLElement, title: string, collapsed: boolean, toggle: () => void, addKey?: "roles") {
-    const head = block.createDiv({ cls: "reg-block-head" });
-    const chev = head.createSpan({ cls: "reg-chev" });
-    setIcon(chev, collapsed ? "chevron-right" : "chevron-down");
-    head.createSpan({ cls: "reg-block-title", text: title });
-    head.createSpan({ cls: "reg-head-rule" });
-    if (addKey) this.regAddBtn(head, addKey);
-    head.onclick = () => {
-      toggle();
-      this.draw();
-    };
-  }
-
-  // 类型子区(一级 / 二级):可折叠小标题 + ＋ + 表单 + 行
-  private drawTypeSub(
-    block: HTMLElement,
-    key: "type" | "kind",
-    tier: TypeTier,
-    label: string,
-    entries: Array<[string, TypeDefinition]>
-  ) {
-    const sub = block.createDiv({ cls: "reg-sub" });
-    const collapsed = this.registryCollapsed[key];
-    const head = sub.createDiv({ cls: "reg-sub-head" });
-    const chev = head.createSpan({ cls: "reg-chev reg-chev-sm" });
-    setIcon(chev, collapsed ? "chevron-right" : "chevron-down");
-    head.createSpan({ cls: "reg-sub-label", text: label });
-    this.regAddBtn(head, key);
-    head.onclick = () => {
-      this.registryCollapsed[key] = !this.registryCollapsed[key];
-      this.draw();
-    };
-    if (collapsed) return;
-    const content = sub.createDiv({ cls: "group-content" });
-    if (this.newFormOpen === key) this.drawNewTypeForm(content, tier);
-    if (entries.length === 0) {
-      content.createDiv({ cls: "registry-empty", text: tier === "modifier" ? "暂无二级" : "暂无一级" });
-      return;
-    }
-    for (const [name, def] of entries) this.drawTypeRow(content, key, name, def);
-  }
-
-  // 注册表小标题的 ＋ 新建按钮
-  private regAddBtn(head: HTMLElement, key: "type" | "kind" | "roles") {
-    const add = head.createEl("button", {
-      cls: "registry-add-btn" + (this.newFormOpen === key ? " is-open" : ""),
-    });
-    add.setAttr("type", "button");
-    setIcon(add.createSpan({ cls: "rab-ico" }), "plus");
-    add.setAttr("aria-label", "新建");
-    tentTooltip(add, "新建");
-    add.onclick = (e) => {
-      e.stopPropagation();
-      this.newFormOpen = this.newFormOpen === key ? null : key;
-      if (this.newFormOpen === key) {
-        this.registryCollapsed[key] = false;
-        if (key === "type" || key === "kind") this.regTypeCollapsed = false;
-      }
-      this.draw();
-    };
-  }
-
-  // type/kind 行(图二风格):左强调条 + 同色名 + 紧凑 r√·w× 胶囊;hover 切到 ⚙编辑/🗑删除;
-  // 编辑抽屉 = 色板 + R/W；modifier 允许每轴继承 base。
-  private drawTypeRow(
-    content: HTMLElement,
-    section: "type" | "kind",
-    name: string,
-    def: TypeDefinition
-  ) {
-    const editKey = `${section}:${name}`;
-    const open = this.openRegEditor === editKey;
-    const wrapper = content.createDiv({ cls: "registry-item-wrapper" + (open ? " drawer-open" : "") });
-    const row = wrapper.createDiv({ cls: "reg-card" });
-    row.style.setProperty("--accent-color", typeColorValue(def.color));
-    row.createSpan({ cls: "item-name", text: name });
-    row.createSpan({ cls: "reg-desc", text: def.description || "" });
-
-    const rightArea = row.createDiv({ cls: "row-right-area" });
-    const indicators = rightArea.createDiv({ cls: "item-indicators" });
-    this.renderRwCapsule(indicators, def.readable, def.writable);
-
-    const actions = rightArea.createDiv({ cls: "row-actions" });
-    const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open ? " active" : "") });
-    editBtn.setAttr("type", "button");
-    setIcon(editBtn, "settings");
-    tentTooltip(editBtn, "编辑颜色 / 读写");
-    editBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.openRegEditor = open ? null : editKey;
-      this.draw();
-    };
-    const deleteKey = `type:${section}:${name}`;
-    const deletePending = this.pendingDelete === deleteKey;
-    const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
-    delBtn.setAttr("type", "button");
-    if (deletePending) delBtn.setText("确认删除");
-    else setIcon(delBtn, "trash-2");
-    tentTooltip(delBtn, deletePending ? "再次点击确认删除" : "删除");
-    delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      const inspection = await inspectTypeDeletion(this.env().fs, "type", name);
-      if (inspection.builtIn) {
-        new Notice(`内置类型「${name}」不可删除`);
-        return;
-      }
-      if (inspection.activeOwners.length > 0) {
-        new Notice(`关联范围仍有 owner,先盖章或强清:${inspection.activeOwners.map((x) => x.path).join(", ")}`);
-        return;
-      }
-      if (this.pendingDelete === deleteKey) {
-        await deleteCustomType(this.env().fs, "type", name, name);
-        await this.refresh();
-        return;
-      }
-      this.pendingDelete = deleteKey;
-      this.draw();
-    };
-
-    if (open) this.drawTypeEditDrawer(wrapper, name, def);
-  }
-
-  // 注册表行 RW 展示:非聚焦态的小胶囊 R√·W✕(开=√ 关=✕ 继承=—)
-  private renderRwCapsule(host: HTMLElement, readable: boolean | undefined, writable: boolean | undefined) {
-    const cap = host.createSpan({ cls: "rw-cap" });
-    const label = (s: boolean | undefined) => (s === undefined ? "继承" : s ? "开" : "关");
-    tentTooltip(cap, `readable:${label(readable)} · writable:${label(writable)}`);
-    const mk = (k: string, state: boolean | undefined) => {
-      const cls = state === undefined ? "is-inherit" : state ? "is-on" : "is-off";
-      const sym = state === undefined ? "—" : state ? "√" : "✕";
-      const part = cap.createSpan({ cls: "rw-part " + cls });
-      part.createSpan({ cls: "rw-k", text: k });
-      part.createSpan({ cls: "rw-s", text: sym });
-    };
-    mk("R", readable);
-    cap.createSpan({ cls: "rw-dot", text: "·" });
-    mk("W", writable);
-  }
-
-  // 色卡:恒定 2×5(CSS 控制),选中态描边环。三处新建/编辑共用。
-  private buildPalette(host: HTMLElement, selected: string, on: (c: string) => void | Promise<void>) {
-    const palette = host.createDiv({ cls: "tent-color-palette" });
-    for (const color of TYPE_COLORS) {
-      const sw = palette.createEl("button", { cls: "tent-color-swatch" + (color === selected ? " is-selected" : "") });
-      sw.setAttr("type", "button");
-      tentTooltip(sw, color);
-      sw.style.setProperty("--tent-swatch-color", typeColorValue(color));
-      sw.onclick = (e) => {
-        e.preventDefault();
-        e.stopPropagation();
-        palette.findAll(".tent-color-swatch").forEach((el) => el.removeClass("is-selected"));
-        sw.addClass("is-selected");
-        void on(color);
-      };
-    }
-    return palette;
-  }
-
-  // 一行 = 左标注(定宽 72px 对齐)+ 右控件;返回控件容器
-  private labelRow(host: HTMLElement, label: string, extraCls = "") {
-    const normalized =
-      label === "名字" ? "name" :
-      label === "颜色" ? "color" :
-      label === "描述" ? "description" :
-      label === "R/W" ? "r-w" :
-      label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
-    const row = host.createDiv({ cls: "tent-newform-row tent-newform-row-" + normalized + (extraCls ? " " + extraCls : "") });
-    row.createSpan({ cls: "tent-newform-label", text: label });
-    return row;
-  }
-
-  private autoGrowTextarea(ta: HTMLTextAreaElement) {
-    ta.style.height = "auto";
-    ta.style.height = `${ta.scrollHeight}px`;
-  }
-
-  private drawTypeEditDrawer(wrapper: HTMLElement, name: string, def: TypeDefinition) {
-    const drawer = wrapper.createDiv({ cls: "registry-item-edit-drawer type-drawer" });
-    const isMod = def.tier === "modifier";
-
-    // 颜色
-    this.buildPalette(this.labelRow(drawer, "颜色"), def.color || "", async (color) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { color });
-      await this.refresh();
-    });
-
-    // R/W
-    const rwWrap = this.labelRow(drawer, "R/W").createDiv({ cls: "tent-drawer-rw" });
-    this.drawRwSegment(rwWrap, "readable", def.readable, async (v) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { readable: isMod ? v ?? "inherit" : v ?? false });
-      await this.refresh();
-    }, isMod);
-    this.drawRwSegment(rwWrap, "writable", def.writable, async (v) => {
-      await updateTypeMetadata(this.env().fs, "type", name, { writable: isMod ? v ?? "inherit" : v ?? false });
-      await this.refresh();
-    }, isMod);
-
-    // 描述
-    const descInput = this.labelRow(drawer, "描述").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.value = def.description || "";
-    descInput.oninput = () => this.autoGrowTextarea(descInput);
-    descInput.onblur = async () => {
-      const description = descInput.value.trim();
-      if (description === (def.description || "")) return;
-      await updateTypeMetadata(this.env().fs, "type", name, { description });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(descInput), 0);
-  }
-
-  // —— 注册表内联表单:new type ——
-  private drawNewTypeForm(section: HTMLElement, tier: TypeTier) {
-    const card = section.createDiv({ cls: "tent-newform" });
-    const state: {
-      name: string;
-      description: string;
-      readable: boolean | undefined;
-      writable: boolean | undefined;
-      color: string;
-    } = {
-      name: "",
-      description: "",
-      readable: tier === "modifier" ? undefined : true,
-      writable: tier === "modifier" ? undefined : false,
-      color: "gray",
-    };
-    const isMod = tier === "modifier";
-
-    // 名字
-    const nameInput = this.labelRow(card, "名字").createEl("input", { cls: "tent-newform-input", attr: { type: "text" } });
-    nameInput.oninput = () => (state.name = nameInput.value.trim());
-    window.setTimeout(() => nameInput.focus(), 0);
-
-    // 颜色
-    this.buildPalette(this.labelRow(card, "颜色"), state.color, (c) => {
-      state.color = c;
-    });
-
-    // R/W(照搬属性面板段控件)
-    const rwWrap = this.labelRow(card, "R/W").createDiv({ cls: "tent-drawer-rw" });
-    this.drawRwSegment(rwWrap, "readable", state.readable, (v) => (state.readable = v), isMod);
-    this.drawRwSegment(rwWrap, "writable", state.writable, (v) => (state.writable = v), isMod);
-
-    // 描述
-    const descInput = this.labelRow(card, "描述").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.oninput = () => {
-      state.description = descInput.value.trim();
-      this.autoGrowTextarea(descInput);
-    };
-
-    this.formActions(card, async () => {
-      if (!state.name || state.name === "temp") {
-        new Notice("请填写有效的 type 名");
-        return;
-      }
-      const reg = this.tent!.typeRegistry;
-      if (reg[state.name]) {
-        new Notice(`类型「${state.name}」已存在`);
-        return;
-      }
-      const definition: TypeDefinition = tier === "modifier"
-        ? {
-            tier: "modifier",
-            ...(state.readable !== undefined ? { readable: state.readable } : {}),
-            ...(state.writable !== undefined ? { writable: state.writable } : {}),
-          }
-        : { tier: "base", readable: state.readable!, writable: state.writable! };
-      if (state.color) definition.color = state.color;
-      if (state.description) definition.description = state.description;
-      await createPrimaryType(this.env().fs, state.name, definition);
-      this.newFormOpen = null;
-      await this.refresh();
-    });
-  }
-
-  // —— 注册表内联表单:new role ——
-  // role = 名字 · prompt 多行 textarea · 新建/取消(无 placeholder)
-  private drawNewRoleForm(section: HTMLElement) {
-    const card = section.createDiv({ cls: "tent-newform" });
-    const state = { name: "", description: "", prompt: "", color: "purple" };
-
-    // 名字
-    const nameInput = this.labelRow(card, "名字").createEl("input", { cls: "tent-newform-input", attr: { type: "text" } });
-    nameInput.oninput = () => (state.name = nameInput.value.trim());
-    window.setTimeout(() => nameInput.focus(), 0);
-
-    // 颜色
-    this.buildPalette(this.labelRow(card, "颜色"), state.color, (c) => {
-      state.color = c;
-    });
-
-    // 描述
-    const descInput = this.labelRow(card, "描述").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.oninput = () => {
-      state.description = descInput.value.trim();
-      this.autoGrowTextarea(descInput);
-    };
-
-    // prompt
-    const ta = this.labelRow(card, "prompt", "tent-newform-textarea-row").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea", attr: { rows: "2" } });
-    ta.oninput = () => {
-      state.prompt = ta.value.trim();
-      this.autoGrowTextarea(ta);
-    };
-
-    this.formActions(card, async () => {
-      if (!state.name) {
-        new Notice("请填写 role 名");
-        return;
-      }
-      const def: RoleDefinition = { name: state.name };
-      if (state.description) def.description = state.description;
-      if (state.prompt) def.prompt = state.prompt;
-      if (state.color) def.color = state.color;
-      await createRole(this.env().fs, def);
-      this.newFormOpen = null;
-      await this.refresh();
-    });
-  }
-
-  private formActions(card: HTMLElement, submit: () => Promise<void>) {
-    const acts = card.createDiv({ cls: "tent-newform-acts" });
-    const ok = acts.createEl("button", { cls: "mod-cta", text: "新建" });
-    ok.setAttr("type", "button");
-    ok.onclick = async (e) => {
-      e.preventDefault();
-      try {
-        await submit();
-      } catch (err) {
-        new Notice("新建失败:" + (err instanceof Error ? err.message : err));
-      }
-    };
-    const cancel = acts.createEl("button", { text: "取消" });
-    cancel.setAttr("type", "button");
-    cancel.onclick = (e) => {
-      e.preventDefault();
-      this.newFormOpen = null;
-      this.newBoxParentPath = null;
-      this.draw();
-    };
-  }
-
-  // role 行(图二风格):左强调条(role 颜色)+ 名 + 一句话描述;
-  // hover 切到 ⚙编辑/🗑删除;抽屉 = 色板 + 描述 + prompt。
-  private drawRoleRow(content: HTMLElement, role: RoleDefinition) {
-    const editKey = `role:${role.name}`;
-    const open = this.openRegEditor === editKey;
-    const wrapper = content.createDiv({ cls: "registry-item-wrapper" + (open ? " drawer-open" : "") });
-    const row = wrapper.createDiv({ cls: "reg-card role-row" });
-    row.style.setProperty("--accent-color", this.roleColorValue(role));
-    row.createSpan({ cls: "item-name", text: role.name });
-    row.createSpan({ cls: "reg-desc", text: role.description || "" });
-
-    const rightArea = row.createDiv({ cls: "row-right-area role-right" });
-    const actions = rightArea.createDiv({ cls: "row-actions" });
-    const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open ? " active" : "") });
-    editBtn.setAttr("type", "button");
-    setIcon(editBtn, "settings");
-    tentTooltip(editBtn, "编辑描述 / prompt / 颜色");
-    editBtn.onclick = (e) => {
-      e.stopPropagation();
-      this.openRegEditor = open ? null : editKey;
-      this.draw();
-    };
-    const deleteKey = `role:${role.name}`;
-    const deletePending = this.pendingDelete === deleteKey;
-    const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
-    delBtn.setAttr("type", "button");
-    if (deletePending) delBtn.setText("确认删除");
-    else setIcon(delBtn, "trash-2");
-    tentTooltip(delBtn, deletePending ? "再次点击确认删除" : "删除");
-    delBtn.onclick = async (e) => {
-      e.stopPropagation();
-      if (this.pendingDelete === deleteKey) {
-        await deleteRole(this.env().fs, role.name, role.name);
-        await this.refresh();
-        return;
-      }
-      this.pendingDelete = deleteKey;
-      this.draw();
-    };
-
-    if (open) this.drawRoleEditDrawer(wrapper, role);
-  }
-
-  private drawRoleEditDrawer(wrapper: HTMLElement, role: RoleDefinition) {
-    const drawer = wrapper.createDiv({ cls: "registry-item-edit-drawer role-drawer" });
-
-    // 颜色(role 无 RW,无名字)
-    this.buildPalette(this.labelRow(drawer, "颜色"), role.color || "", async (color) => {
-      await updateRole(this.env().fs, role.name, { color });
-      await this.refresh();
-    });
-
-    // 描述
-    const descInput = this.labelRow(drawer, "描述").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea", attr: { rows: "1" } });
-    descInput.value = role.description || "";
-    descInput.oninput = () => this.autoGrowTextarea(descInput);
-    descInput.onblur = async () => {
-      const description = descInput.value.trim();
-      if (description === (role.description || "")) return;
-      await updateRole(this.env().fs, role.name, { description });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(descInput), 0);
-
-    // prompt
-    const promptText = this.labelRow(drawer, "prompt", "tent-newform-textarea-row").createEl("textarea", { cls: "tent-newform-input tent-newform-textarea tent-newform-prompt-textarea", attr: { rows: "2" } });
-    promptText.value = role.prompt || "";
-    promptText.oninput = () => this.autoGrowTextarea(promptText);
-    promptText.onblur = async () => {
-      const prompt = promptText.value.trim();
-      if (prompt === (role.prompt || "")) return;
-      await updateRole(this.env().fs, role.name, { prompt });
-      await this.refresh();
-    };
-    window.setTimeout(() => this.autoGrowTextarea(promptText), 0);
-  }
-
-  // role 强调色:显式 color 优先,否则按名字 hash 落到色板(planner/executor/ui 固定取色)。
-  private roleColorValue(role: RoleDefinition): string {
-    if (role.color) return typeColorValue(role.color);
-    const n = role.name.toLowerCase();
-    if (n.includes("planner")) return typeColorValue("purple");
-    if (n.includes("executor")) return typeColorValue("cyan");
-    if (n.includes("ui")) return typeColorValue("orange");
-    const hash = [...role.name].reduce((acc, ch) => acc + ch.charCodeAt(0), 0);
-    return typeColorValue(TYPE_COLORS[hash % TYPE_COLORS.length]);
   }
 
   // ---- 动作处理 ----
