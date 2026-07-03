@@ -1,7 +1,7 @@
 {
   "name": "vibe-tent",
   "version": "0.1.0",
-  "description": "Tent / 帷幄 — 一个把'和 agent 协作'当成'管理意志与上下文'的 Obsidian 插件 + 核心库",
+  "description": "Manage intent, context, permissions, and handoffs between users and coding agents with an Obsidian plugin and CLI.",
   "type": "module",
   "bin": {
     "tent": "./cli.mjs"
@@ -38,8 +38,13 @@
   },
   "keywords": [
     "obsidian",
+    "obsidian-plugin",
     "agent",
+    "coding-agents",
     "harness",
+    "cli",
+    "okf",
+    "open-knowledge-format",
     "context-engineering"
   ],
   "license": "MIT",

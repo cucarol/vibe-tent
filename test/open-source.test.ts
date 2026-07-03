@@ -52,6 +52,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.bugs.url, "https://github.com/cucarol/tent/issues");
   assert.equal(pkg.homepage, "https://github.com/cucarol/tent#readme");
   assert.equal(pkg.version, manifest.version, "npm 与 Obsidian 插件版本保持一致");
+  assert.match(pkg.description, /^[\x20-\x7E]+\.$/, "npm description 使用完整英文句子");
+  for (const keyword of ["obsidian", "cli", "okf", "coding-agents"]) {
+    assert.ok(pkg.keywords.includes(keyword), `npm keywords 包含 ${keyword}`);
+  }
   assert.equal(manifest.name, "Tent");
   assert.equal(manifest.authorUrl, "https://github.com/cucarol");
   assert.equal(
