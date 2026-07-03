@@ -73,16 +73,16 @@ export default class TentPlugin extends Plugin {
 
     this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
 
-    this.addRibbonIcon("tent", "打开帷幄面板", () => this.activateView());
+    this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
     this.addCommand({
       id: "open-tent-panel",
-      name: "打开帷幄面板",
+      name: "Open Tent panel",
       callback: () => this.activateView(),
     });
     // 白板搁置,仅留实验命令;以后再正式做(嵌套 B/C 取舍未定)。
     this.addCommand({
       id: "open-tent-board-experimental",
-      name: "打开/刷新白板(实验)",
+      name: "Open or refresh experimental board",
       callback: async () => {
         await this.activateView();
         const leaf = this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)[0];

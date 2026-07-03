@@ -1,9 +1,10 @@
 {
   "id": "tent",
-  "name": "Tent / 帷幄",
+  "name": "Tent",
   "version": "0.1.0",
   "minAppVersion": "1.5.0",
-  "description": "把'和 agent 协作'当成'管理意志与上下文'。帐内结构编辑器:可拖拽框树、frontmatter 遥控器、派活/盖章/批驳。",
+  "description": "Manage intent, context, and handoffs with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows.",
   "author": "cucarol",
+  "authorUrl": "https://github.com/cucarol",
   "isDesktopOnly": true
 }

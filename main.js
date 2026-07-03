@@ -4845,15 +4845,15 @@ var TentPlugin = class extends import_obsidian5.Plugin {
     await this.loadSettings();
     (0, import_obsidian5.addIcon)("tent", TENT_ICON);
     this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
-    this.addRibbonIcon("tent", "\u6253\u5F00\u5E37\u5E44\u9762\u677F", () => this.activateView());
+    this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
     this.addCommand({
       id: "open-tent-panel",
-      name: "\u6253\u5F00\u5E37\u5E44\u9762\u677F",
+      name: "Open Tent panel",
       callback: () => this.activateView()
     });
     this.addCommand({
       id: "open-tent-board-experimental",
-      name: "\u6253\u5F00/\u5237\u65B0\u767D\u677F(\u5B9E\u9A8C)",
+      name: "Open or refresh experimental board",
       callback: async () => {
         await this.activateView();
         const leaf = this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)[0];

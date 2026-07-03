@@ -44,6 +44,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
+  const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, manifest.author);
@@ -51,6 +52,17 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.bugs.url, "https://github.com/cucarol/tent/issues");
   assert.equal(pkg.homepage, "https://github.com/cucarol/tent#readme");
   assert.equal(pkg.version, manifest.version, "npm 与 Obsidian 插件版本保持一致");
+  assert.equal(manifest.name, "Tent");
+  assert.equal(manifest.authorUrl, "https://github.com/cucarol");
+  assert.equal(
+    manifest.description,
+    "Manage intent, context, and handoffs with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows."
+  );
+  assert.ok(manifest.description.length <= 250);
+  assert.match(manifest.description, /\.$/);
+  assert.match(pluginMain, /name: "Open Tent panel"/);
+  assert.match(pluginMain, /name: "Open or refresh experimental board"/);
+  assert.doesNotMatch(pluginMain, /name: "打开/);
   assert.equal(
     versions[manifest.version],
     manifest.minAppVersion,
