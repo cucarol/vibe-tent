@@ -124,28 +124,18 @@ test("listRoleCommitsFor:只读列举 role 分支 commits,不创建 worktree", a
 test("completeClaim:workspace 合入失败时不释放 owner 或写 done", async () => {
   const dir = await makeTent();
   const adapter = new NodeFs(dir);
-  const outputDir = path.join(dir, "goal", "挖新alpha", "写表达式", "交付记录");
-  await fs.mkdir(outputDir, { recursive: true });
-  await fs.writeFile(
-    path.join(outputDir, "交付记录.md"),
-    "---\nid: bx-failed-output\ntype: output\n---\n# 交付记录\n",
-  );
   const { completeClaim } = await import("../src/core/ops.js");
   await assert.rejects(
     () => completeClaim(
       { fs: adapter, clock: { now: () => "t" }, tentName: "x" },
       "bx-g2",
-      {
-        integrate: async () => {
-          throw new Error("conflict");
-        },
+      async () => {
+        throw new Error("conflict");
       }
     ),
     /conflict/
   );
-  const after = await loadTent(adapter);
-  const box = after.byId.get("bx-g2")!;
+  const box = (await loadTent(adapter)).byId.get("bx-g2")!;
   assert.equal(box.fm.owner, "executor");
   assert.equal(box.fm.status, "doing");
-  assert.equal(after.byId.get("bx-failed-output")!.fm.status, undefined);
 });

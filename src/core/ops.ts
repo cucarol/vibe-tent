@@ -10,7 +10,7 @@ import { Box, BoxType } from "./types.js";
 import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
 import { isUsableBox } from "./tree.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
-import { splitType, typeExists } from "./typeRegistry.js";
+import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
 import { ensureRoleInit, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
 import { validateDispatchHandoff } from "./handoff.js";
@@ -141,40 +141,27 @@ function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: strin
 
 // ---- stamp(盖章 = 验收)----
 
-export interface CompletionOptions {
-  cascadeOutputs?: boolean;
-}
-
-export interface CompleteClaimOptions extends CompletionOptions {
-  integrate?: () => Promise<void>;
-}
-
-export async function stamp(
-  env: OpsEnv,
-  boxId: string,
-  options: CompletionOptions = {}
-): Promise<void> {
-  await completeClaim(env, boxId, options);
+export async function stamp(env: OpsEnv, boxId: string): Promise<void> {
+  await completeClaim(env, boxId);
 }
 
 /** 验收动作：可先合入 workspace commits；合入失败时不改变 Tent 状态。 */
 export async function completeClaim(
   env: OpsEnv,
   boxId: string,
-  options: CompleteClaimOptions = {}
+  integrate?: () => Promise<void>
 ): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`找不到框 ${boxId}`);
-    const outputs = completionOutputRecords(box, options.cascadeOutputs !== false);
-    if (options.integrate) await options.integrate();
-    await markCompleted(env.fs, box, outputs);
+    if (integrate) await integrate();
+    await setOwner(env.fs, box, undefined, "done");
   });
 }
 
 /** 采纳一份完整 report：全部 commits 成功合入后才完成并清理临时 report。 */
-export interface AcceptReportOptions extends CompletionOptions {
+export interface AcceptReportOptions {
   commits?: string[];
   integrate?: (commits: string[]) => Promise<void>;
 }
@@ -191,37 +178,14 @@ export async function acceptReport(
     const box = tent.byId.get(report.boxId);
     if (!box) throw new Error(`找不到框 ${report.boxId}`);
     if (box.fm.owner !== report.role) throw new Error("report role 与当前 owner 不一致");
-    const outputs = completionOutputRecords(box, options.cascadeOutputs !== false);
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
       if (!options.integrate) throw new Error("report 含 commits,必须完成 workspace 合入");
       await options.integrate(commits);
     }
-    await markCompleted(env.fs, box, outputs);
+    await setOwner(env.fs, box, undefined, "done");
     await env.fs.remove(report.path);
   });
-}
-
-function completionOutputRecords(box: Box, cascade: boolean): Box[] {
-  if (!cascade) return [];
-  const outputs = box.children.filter(
-    (child) =>
-      !child.archived &&
-      !child.invalid &&
-      splitType(child.type).base === "output"
-  );
-  const occupied = outputs.find((child) => child.fm.owner);
-  if (occupied) {
-    throw new Error(`output 记录框 ${occupied.id} 已被 ${occupied.fm.owner} 认领`);
-  }
-  return outputs;
-}
-
-async function markCompleted(fs: FsAdapter, box: Box, outputs: Box[]): Promise<void> {
-  for (const output of outputs) {
-    if (output.fm.status !== "done") await setOwner(fs, output, undefined, "done");
-  }
-  await setOwner(fs, box, undefined, "done");
 }
 
 /** 翻可读:批准 asset 请求时顺手把目标框 readable 改 true(无需二段落地)。 */

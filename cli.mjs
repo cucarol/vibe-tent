@@ -1543,17 +1543,16 @@ function resolveDispatchClaim(tent, claimId, tentName) {
   if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
   return { root: false, id: box.id, name: box.name, box };
 }
-async function stamp(env, boxId, options = {}) {
-  await completeClaim(env, boxId, options);
+async function stamp(env, boxId) {
+  await completeClaim(env, boxId);
 }
-async function completeClaim(env, boxId, options = {}) {
+async function completeClaim(env, boxId, integrate) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
-    const outputs = completionOutputRecords(box, options.cascadeOutputs !== false);
-    if (options.integrate) await options.integrate();
-    await markCompleted(env.fs, box, outputs);
+    if (integrate) await integrate();
+    await setOwner(env.fs, box, void 0, "done");
   });
 }
 async function acceptReport(env, reportPath2, options = {}) {
@@ -1564,32 +1563,14 @@ async function acceptReport(env, reportPath2, options = {}) {
     const box = tent.byId.get(report.boxId);
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${report.boxId}`);
     if (box.fm.owner !== report.role) throw new Error("report role \u4E0E\u5F53\u524D owner \u4E0D\u4E00\u81F4");
-    const outputs = completionOutputRecords(box, options.cascadeOutputs !== false);
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
       if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
       await options.integrate(commits);
     }
-    await markCompleted(env.fs, box, outputs);
+    await setOwner(env.fs, box, void 0, "done");
     await env.fs.remove(report.path);
   });
-}
-function completionOutputRecords(box, cascade) {
-  if (!cascade) return [];
-  const outputs = box.children.filter(
-    (child) => !child.archived && !child.invalid && splitType(child.type).base === "output"
-  );
-  const occupied = outputs.find((child) => child.fm.owner);
-  if (occupied) {
-    throw new Error(`output \u8BB0\u5F55\u6846 ${occupied.id} \u5DF2\u88AB ${occupied.fm.owner} \u8BA4\u9886`);
-  }
-  return outputs;
-}
-async function markCompleted(fs3, box, outputs) {
-  for (const output of outputs) {
-    if (output.fm.status !== "done") await setOwner(fs3, output, void 0, "done");
-  }
-  await setOwner(fs3, box, void 0, "done");
 }
 async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
@@ -2231,9 +2212,7 @@ ${r.relayPrompt}`);
           integrate: refs.length > 0 ? integrate : void 0
         });
       } else {
-        await completeClaim(env, boxId, {
-          integrate: refs.length > 0 ? () => integrate(refs) : void 0
-        });
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0);
       }
       for (const line of integrationLines) console.log(line);
       console.log(`\u2713 Completed ${boxId}`);

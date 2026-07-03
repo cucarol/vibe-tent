@@ -186,9 +186,7 @@ async function main() {
           integrate: refs.length > 0 ? integrate : undefined,
         });
       } else {
-        await completeClaim(env, boxId, {
-          integrate: refs.length > 0 ? () => integrate(refs) : undefined,
-        });
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined);
       }
       for (const line of integrationLines) console.log(line);
       console.log(`✓ Completed ${boxId}`);
