@@ -11,6 +11,7 @@
     "cli.mjs",
     "main.js",
     "manifest.json",
+    "versions.json",
     "styles.css",
     "skills/",
     "scripts/seed-demo.mjs",

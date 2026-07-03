@@ -34,9 +34,22 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const pkg = JSON.parse(
     await fs.readFile(path.join(repoRoot, "package.json"), "utf8")
   );
+  const manifest = JSON.parse(
+    await fs.readFile(path.join(repoRoot, "manifest.json"), "utf8")
+  );
+  const versions = JSON.parse(
+    await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
+  );
   assert.equal(pkg.bin.tent, "./cli.mjs");
   assert.equal(pkg.bin["tent-seed"], "./scripts/seed-demo.mjs");
   assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.version, manifest.version, "npm 与 Obsidian 插件版本保持一致");
+  assert.equal(
+    versions[manifest.version],
+    manifest.minAppVersion,
+    "versions.json 记录当前插件所需的最低 Obsidian 版本"
+  );
+  assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
 });
 
