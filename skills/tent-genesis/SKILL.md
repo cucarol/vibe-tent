@@ -79,11 +79,11 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 3. 运行 `tent new <tent-name> --vault <vault-path>`。CLI 会读取 vault 的 `tentsRoot` 设置；不要硬编码 `_tents`，也不要把 Tent 放在 vault 根目录。若 user 明确给出独立路径，可用 `tent new <explicit-path>`。
 4. scaffold 只包含 `RULES.md`、`.tent/types.json`、`.tent/roles.json`、`.tent/tags.json`、`temp/`。不创建通用 zone，不初始化 Tent Git，不创建 `SPEC.md`、agent 配置文件或 `.gitignore`。
 5. 初始化或连接真实 workspace。如果 workspace 还不是 Git 仓库，创建目录并 `git init`，优先使用 `main`。如果它已经是仓库，保留历史和配置。
-6. 根据追问结果创建真实 box 树。每个 box 是文件夹加同名 Markdown 笔记，frontmatter 至少包含 `id: bx-<six random chars>` 和有意选择的 `type`。
+6. 根据追问结果创建真实 box 树。优先用 `tent new-box <name> <type> [parentId]` 创建——它生成防撞 id 并校验 type；创建后补写身份笔记正文。只有 CLI 不可用时才手写文件夹加同名笔记（frontmatter 至少含 `id: bx-<six random chars>` 与有意选择的 `type`）。
 7. box 名称创建后视为不可在 Tent 内重命名。不要创建 legacy `kind`。
 8. 创建一个 `output` box，把 Tent 映射到真实 workspace，写入 `workspace` 和可选当前 `ref`。一顶 Tent 不应指向多个 workspace。
 9. 写 `.tent/roles.json`，格式为 `{ "roles": [{ "name", "description"?, "prompt"?, "color"? }] }`。
-10. 把项目本地约定写入 `RULES.md`。机制规范属于 Tent 仓库文档，不复制进新 Tent。
+10. 把项目本地约定写入 `RULES.md`：workspace 路径、提交/命名约定、其他项目规矩。用追问出的实际值填写，不要留 `<填>` 之类的占位符——追问不出的条目写"暂无"并告知 user。机制规范属于 Tent 仓库文档，不复制进新 Tent。
 11. 只有当 genesis 创建或有意修改了真实 workspace 文件时，才 commit workspace。永远不要 commit Tent。
 
 不要创建 `.tent/skills.json`。不要创建 `for:` 链接。
