@@ -174,9 +174,9 @@ class TentSettingTab extends PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("tent-settings");
-    containerEl.createEl("h2", { text: "帷幄 / Tent" });
+    settingHeading(containerEl, "帷幄 / Tent");
 
-    containerEl.createEl("h3", { text: "帐" });
+    settingHeading(containerEl, "帐");
     new Setting(containerEl)
       .setName("帐根目录")
       .setDesc("vault 内存放各帐的文件夹。Tent 保存上下文与状态，本身不使用 Git。")
@@ -191,7 +191,7 @@ class TentSettingTab extends PluginSettingTab {
 
     this.drawNewTentDefaults(containerEl);
 
-    containerEl.createEl("h3", { text: "外观" });
+    settingHeading(containerEl, "外观");
     new Setting(containerEl)
       .setName("配色模式")
       .setDesc("跟随 Obsidian，或固定使用 Tent 的浅色 / 深色配色。")
@@ -208,7 +208,7 @@ class TentSettingTab extends PluginSettingTab {
           })
       );
 
-    containerEl.createEl("h3", { text: "交互" });
+    settingHeading(containerEl, "交互");
     new Setting(containerEl)
       .setName("派活自动复制 prompt")
       .setDesc("dispatch 成功后把接力 prompt 复制到剪贴板。")
@@ -237,7 +237,7 @@ class TentSettingTab extends PluginSettingTab {
   }
 
   private drawNewTentDefaults(parent: HTMLElement) {
-    parent.createEl("h3", { text: "新建 Tent 默认值" });
+    settingHeading(parent, "新建 Tent 默认值");
     parent.createEl("p", {
       cls: "setting-item-description tent-settings-intro",
       text: "用于之后新建的 Tent，不覆盖已有 Tent。",
@@ -245,7 +245,7 @@ class TentSettingTab extends PluginSettingTab {
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
 
-    parent.createEl("h4", { text: "默认 RULES.md" });
+    settingHeading(parent, "默认 RULES.md");
     new Setting(parent)
       .setName("规则模板")
       .setDesc("新建 Tent 时写入 RULES.md；{tent} 会替换为帐名。")
@@ -289,7 +289,7 @@ class TentSettingTab extends PluginSettingTab {
 
   private drawTypeTier(parent: HTMLElement, registry: TypeRegistry, tier: TypeTier, label: string) {
     const section = parent.createDiv({ cls: "tent-settings-registry" });
-    new Setting(section).setName(label);
+    settingHeading(section, label);
     this.drawAddType(section, tier, label);
 
     for (const [name, definition] of Object.entries(registry)) {
@@ -564,6 +564,10 @@ function setOptionalText<T extends object>(target: T, key: keyof T, value: strin
 
 function validRegistryName(name: string): boolean {
   return !!name && name !== "temp" && !/[\s/\\-]/.test(name);
+}
+
+function settingHeading(parent: HTMLElement, name: string): Setting {
+  return new Setting(parent).setName(name).setHeading();
 }
 
 function mergeSettings(raw: unknown): TentSettings {

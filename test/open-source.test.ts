@@ -67,6 +67,12 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(pluginMain, /name: "Open Tent panel"/);
   assert.match(pluginMain, /name: "Open or refresh experimental board"/);
   assert.doesNotMatch(pluginMain, /name: "打开/);
+  assert.doesNotMatch(
+    pluginMain,
+    /createEl\("h[1-4]"/,
+    "plugin settings should use Obsidian Setting headings instead of raw h1-h4 elements"
+  );
+  assert.match(pluginMain, /\.setHeading\(\)/);
   assert.equal(
     versions[manifest.version],
     manifest.minAppVersion,

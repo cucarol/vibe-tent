@@ -5087,8 +5087,8 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     const { containerEl } = this;
     containerEl.empty();
     containerEl.addClass("tent-settings");
-    containerEl.createEl("h2", { text: "\u5E37\u5E44 / Tent" });
-    containerEl.createEl("h3", { text: "\u5E10" });
+    settingHeading(containerEl, "\u5E37\u5E44 / Tent");
+    settingHeading(containerEl, "\u5E10");
     new import_obsidian5.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
       (t) => t.setValue(this.plugin.settings.tentsRoot).onChange(async (v) => {
         this.plugin.settings.tentsRoot = v.trim() || "tents";
@@ -5096,7 +5096,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       })
     );
     this.drawNewTentDefaults(containerEl);
-    containerEl.createEl("h3", { text: "\u5916\u89C2" });
+    settingHeading(containerEl, "\u5916\u89C2");
     new import_obsidian5.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
       (dropdown) => dropdown.addOption("follow", "\u8DDF\u968F Obsidian").addOption("light", "\u6D45\u8272").addOption("dark", "\u6DF1\u8272").setValue(this.plugin.settings.appearance).onChange(async (value) => {
         this.plugin.settings.appearance = value;
@@ -5104,7 +5104,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
         this.plugin.refreshViews();
       })
     );
-    containerEl.createEl("h3", { text: "\u4EA4\u4E92" });
+    settingHeading(containerEl, "\u4EA4\u4E92");
     new import_obsidian5.Setting(containerEl).setName("\u6D3E\u6D3B\u81EA\u52A8\u590D\u5236 prompt").setDesc("dispatch \u6210\u529F\u540E\u628A\u63A5\u529B prompt \u590D\u5236\u5230\u526A\u8D34\u677F\u3002").addToggle(
       (t) => t.setValue(this.plugin.settings.dispatchPrefs.copyPromptToClipboard).onChange(async (v) => {
         this.plugin.settings.dispatchPrefs.copyPromptToClipboard = v;
@@ -5120,14 +5120,14 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     );
   }
   drawNewTentDefaults(parent) {
-    parent.createEl("h3", { text: "\u65B0\u5EFA Tent \u9ED8\u8BA4\u503C" });
+    settingHeading(parent, "\u65B0\u5EFA Tent \u9ED8\u8BA4\u503C");
     parent.createEl("p", {
       cls: "setting-item-description tent-settings-intro",
       text: "\u7528\u4E8E\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\uFF0C\u4E0D\u8986\u76D6\u5DF2\u6709 Tent\u3002"
     });
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
-    parent.createEl("h4", { text: "\u9ED8\u8BA4 RULES.md" });
+    settingHeading(parent, "\u9ED8\u8BA4 RULES.md");
     new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
       textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
         this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
@@ -5160,7 +5160,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   }
   drawTypeTier(parent, registry, tier, label) {
     const section = parent.createDiv({ cls: "tent-settings-registry" });
-    new import_obsidian5.Setting(section).setName(label);
+    settingHeading(section, label);
     this.drawAddType(section, tier, label);
     for (const [name, definition] of Object.entries(registry)) {
       if ((definition.tier ?? "base") !== tier) continue;
@@ -5395,6 +5395,9 @@ function setOptionalText(target, key, value) {
 }
 function validRegistryName(name) {
   return !!name && name !== "temp" && !/[\s/\\-]/.test(name);
+}
+function settingHeading(parent, name) {
+  return new import_obsidian5.Setting(parent).setName(name).setHeading();
 }
 function mergeSettings(raw) {
   const saved = typeof raw === "object" && raw !== null ? raw : {};
