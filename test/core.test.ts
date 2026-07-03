@@ -240,17 +240,32 @@ test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const source = path.join(dir, "prompt", "表达式任务书", "表达式任务书.md");
+  await fs.mkdir(path.join(dir, "prompt", "space child"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "prompt", "space child", "space child.md"),
+    "---\nid: bx-space\ntype: prompt\n---\n# Space Child\n",
+  );
+  await fs.mkdir(path.join(dir, "space root"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "space root", "space root.md"),
+    "---\nid: bx-space-root\ntype: prompt\n---\n# Space Root\n",
+  );
   await fs.writeFile(
     source,
-    "---\nid: bx-p1\ntype: prompt\n---\n见 [[bx-g1|目标]] 和 ![[Pasted image.png]]。\n",
+    "---\nid: bx-p1\ntype: prompt\n---\n见 [[bx-g1|目标]]、[[bx-space|空格子框]] 和 ![[Pasted image.png]]。\n",
   );
 
   const result = await syncOkfBundle(fsa);
   const note = await fs.readFile(source, "utf8");
+  const rootIndex = await fs.readFile(path.join(dir, "index.md"), "utf8");
+  const childIndex = await fs.readFile(path.join(dir, "prompt", "space child", "index.md"), "utf8");
   assert.ok(result.generatedFiles.includes("index.md"));
   assert.ok(result.generatedFiles.includes("log.md"));
   assert.equal(result.unresolved.length, 0);
   assert.match(note, /\[目标\]\(\.\.\/\.\.\/goal\/挖新alpha\/挖新alpha\.md\)/);
+  assert.match(note, /\[空格子框\]\(<\.\.\/space child\/space child\.md>\)/);
+  assert.match(rootIndex, /\[space root\]\(<space root\/space root\.md>\)/);
+  assert.match(childIndex, /\[space child\]\(<space child\.md>\)/);
   assert.match(note, /!\[\[Pasted image\.png\]\]/);
 });
 

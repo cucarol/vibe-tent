@@ -79,7 +79,7 @@ export function projectMarkdownLinks(
     const label = (rawLabel ?? concept.name).trim();
     const href = relativeMarkdownPath(fromNotePath, concept.notePath);
     changed = true;
-    return `[${label}](${href})`;
+    return `[${label}](${markdownLinkDestination(href)})`;
   });
   return { body: next, unresolved, changed };
 }
@@ -120,7 +120,7 @@ async function writeIndexes(fs: FsAdapter, boxes: Box[]): Promise<string[]> {
     "index.md",
     serializeFrontmatter(
       { type: "index", okf_version: "0.1" },
-      "# Index\n\n" + roots.map((box) => `- [${box.name}](${boxNotePath(box.path)})`).join("\n") + "\n"
+      "# Index\n\n" + roots.map((box) => `- [${box.name}](${markdownLinkDestination(boxNotePath(box.path))})`).join("\n") + "\n"
     )
   );
   generated.add("index.md");
@@ -132,7 +132,7 @@ async function writeIndexes(fs: FsAdapter, boxes: Box[]): Promise<string[]> {
       indexPath,
       serializeFrontmatter(
         { type: "index" },
-        "# Index\n\n" + siblings.map((box) => `- [${box.name}](${box.name}.md)`).join("\n") + "\n"
+        "# Index\n\n" + siblings.map((box) => `- [${box.name}](${markdownLinkDestination(`${box.name}.md`)})`).join("\n") + "\n"
       )
     );
     generated.add(indexPath);
@@ -186,4 +186,9 @@ function relativeMarkdownPath(fromNotePath: string, toNotePath: string): string 
   const up = fromParts.map(() => "..");
   const rel = [...up, ...toParts].join("/");
   return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+function markdownLinkDestination(destination: string): string {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
