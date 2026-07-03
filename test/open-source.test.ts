@@ -258,16 +258,33 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
 test("npm 包冒烟:产物可安装、seed 并运行打包 CLI", async () => {
   const npmCli = process.env.npm_execpath;
   assert.ok(npmCli, "测试必须由 npm script 启动");
-  const packed = await run(process.execPath, [npmCli, "pack", "--ignore-scripts", "--json"], repoRoot);
+  const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pack-"));
+  const packed = await run(process.execPath, [
+    npmCli,
+    "pack",
+    "--ignore-scripts",
+    "--dry-run=false",
+    "--json",
+    "--pack-destination",
+    packDir,
+  ], repoRoot);
   const packageInfo = JSON.parse(packed.stdout)[0];
-  const tarball = path.join(repoRoot, packageInfo.filename);
+  const tarball = path.join(packDir, packageInfo.filename);
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-package-"));
   const prefix = path.join(parent, "install");
   const target = path.join(parent, "packed-tent");
 
   try {
     await fs.mkdir(prefix, { recursive: true });
-    await run(process.execPath, [npmCli, "install", "--ignore-scripts", "--prefix", prefix, tarball], repoRoot);
+    await run(process.execPath, [
+      npmCli,
+      "install",
+      "--ignore-scripts",
+      "--dry-run=false",
+      "--prefix",
+      prefix,
+      tarball,
+    ], repoRoot);
     const installed = path.join(prefix, "node_modules", packageInfo.name);
     const binDir = path.join(prefix, "node_modules", ".bin");
     const windows = process.platform === "win32";
