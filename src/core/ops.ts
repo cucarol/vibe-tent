@@ -12,7 +12,7 @@ import { isUsableBox } from "./tree.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
-import { ensureRoleInit, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
+import { ensureRoleInit, relayPromptForTask, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
 import { validateDispatchHandoff } from "./handoff.js";
 import { loadReport, removeReportsForBox } from "./report.js";
 import type { OpsEnv } from "./ops-context.js";
@@ -121,9 +121,12 @@ async function dispatchUnlocked(
     workspace: options.workspace,
   });
 
-  const relayPrompt =
-    `读取 ${taskPath} 并执行。若这是该 role 的新会话,先按 ${initPath} 完成 role init；` +
-    `是否复用旧会话由 user 决定。`;
+  const relayPrompt = relayPromptForTask({
+    path: taskPath,
+    role: roleName,
+    claims: taskClaims.map((taskClaim) => taskClaim.id),
+    manifest: manifestPath,
+  });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 

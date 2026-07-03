@@ -2,6 +2,11 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { typeColorValue } from "../src/plugin/colors.js";
 import { TimedCache } from "../src/plugin/timed-cache.js";
+import {
+  dispatchAckKey,
+  pendingDispatches,
+  rememberDispatchAck,
+} from "../src/plugin/pending-dispatch.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
   createRegistryPaneState,
@@ -77,6 +82,77 @@ test("plugin ui-model:collapsed rows include hidden descendant triage counts", (
   assert.equal(visibleTreeCount(root, false, direct), 1);
   assert.equal(visibleTreeCount(root, true, direct), 6);
   assert.equal(visibleTreeCount(child, true, direct), 5);
+});
+
+test("plugin pending dispatch:newest matching task wins and acknowledgement clears every claim", () => {
+  const tasks = [
+    {
+      path: "temp/executor/tasks/task-20260703T08000-bx-one.md",
+      role: "executor",
+      claims: ["bx-one"],
+      manifest: "temp/executor/manifest.yml",
+    },
+    {
+      path: "temp/executor/tasks/task-20260703T08100-bx-one.md",
+      role: "executor",
+      claims: ["bx-one", "bx-two", "root"],
+      manifest: "temp/executor/manifest.yml",
+    },
+    {
+      path: "temp/planner/tasks/task-20260703T08200-bx-three.md",
+      role: "planner",
+      claims: ["bx-three"],
+      manifest: "temp/planner/manifest.yml",
+    },
+    {
+      path: "temp/zeta/tasks/task-20260703T07000-bx-four.md",
+      role: "zeta",
+      claims: ["bx-four"],
+      manifest: "temp/zeta/manifest.yml",
+    },
+    {
+      path: "temp/alpha/tasks/task-20260703T09000-bx-four.md",
+      role: "alpha",
+      claims: ["bx-four"],
+      manifest: "temp/alpha/manifest.yml",
+    },
+  ];
+  const owners = new Map([
+    ["bx-one", "executor"],
+    ["bx-two", "executor"],
+    ["bx-three", "executor"],
+    ["bx-four", "alpha"],
+  ]);
+  const ownerFor = (boxId: string) => owners.get(boxId);
+
+  const pending = pendingDispatches(tasks, new Set(), ownerFor, "tent-dev");
+  assert.deepEqual(
+    pending
+      .map((item) => [item.boxId, item.task.path])
+      .sort(([a], [b]) => a.localeCompare(b)),
+    [
+      ["bx-four", tasks[4].path],
+      ["bx-one", tasks[1].path],
+      ["bx-two", tasks[1].path],
+    ],
+  );
+
+  const acknowledged = new Set([dispatchAckKey("tent-dev", tasks[1].path)]);
+  assert.deepEqual(
+    pendingDispatches(tasks, acknowledged, ownerFor, "tent-dev").map((item) => item.boxId),
+    ["bx-four"],
+  );
+});
+
+test("plugin pending dispatch:acknowledgements are deduplicated and bounded", () => {
+  assert.deepEqual(
+    rememberDispatchAck(["old", "same", "old"], "same", 2),
+    ["old", "same"],
+  );
+  assert.deepEqual(
+    rememberDispatchAck(["one", "two", "three"], "four", 3),
+    ["two", "three", "four"],
+  );
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

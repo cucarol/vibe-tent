@@ -10,6 +10,7 @@ import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
 import { submitReport } from "../src/core/report.js";
+import { loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
 import { makeTent } from "./helpers.js";
 
 test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 链接", async () => {
@@ -173,6 +174,36 @@ test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
   assert.match(second.manifestYaml, /claims: \[bx-p1, bx-o1\]/);
+});
+
+test("task envelopes:只读加载有效任务并重建 relay prompt", async () => {
+  const dir = await makeTent();
+  const env = {
+    fs: new NodeFs(dir),
+    clock: { now: () => "2026-07-03T08:10:00.000Z" },
+    tentName: "wqb",
+    rand: () => 0.5,
+  };
+  const { dispatch } = await import("../src/core/ops.js");
+  const first = await dispatch(env as any, "bx-p1", "analyst", "分析任务");
+  env.clock.now = () => "2026-07-03T08:11:00.000Z";
+  const second = await dispatch(env as any, "bx-o1", "reviewer", "审阅产出");
+  await fs.mkdir(path.join(dir, "temp", "broken", "tasks"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "temp", "broken", "tasks", "bad.md"),
+    "---\ntype: task\nrole: broken\nclaims: nope\n---\n",
+  );
+
+  const tasks = await loadTaskEnvelopes(env.fs);
+  assert.deepEqual(tasks.map((task) => task.path), [first.taskPath, second.taskPath]);
+  assert.deepEqual(tasks[0], {
+    path: first.taskPath,
+    role: "analyst",
+    claims: ["bx-p1"],
+    manifest: "temp/analyst/manifest.yml",
+  });
+  assert.match(relayPromptForTask(tasks[1]), new RegExp(second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
+  assert.match(relayPromptForTask(tasks[1]), /temp\/reviewer\/init\.md/);
 });
 
 test("dispatch:至少需要 user prompt 或 handoff pointer", async () => {

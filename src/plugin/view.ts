@@ -17,6 +17,7 @@ import { canClaim, isFrozen } from "../core/claim.js";
 import { loadProposals, buildInbox, pendingCount, countByTarget, Proposal, InboxItem } from "../core/proposal.js";
 import { loadHandoffs, type Handoff } from "../core/handoff.js";
 import { loadReports, rejectReport, type DeliveryReport } from "../core/report.js";
+import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
 import { parseOutputPointer } from "../core/output.js";
 import {
@@ -38,6 +39,10 @@ import {
 } from "./registry-pane.js";
 import { capturePaneScroll, restorePaneScroll, visibleTreeCount } from "./ui-model.js";
 import { TimedCache } from "./timed-cache.js";
+import {
+  pendingDispatches,
+  type PendingDispatch,
+} from "./pending-dispatch.js";
 import {
   OpsEnv,
   dispatch,
@@ -67,12 +72,15 @@ export class TentView extends ItemView {
   private proposals: Proposal[] = [];
   private handoffs: Handoff[] = [];
   private reports: DeliveryReport[] = [];
+  private tasks: TaskEnvelope[] = [];
   private inbox: InboxItem[] = [];
+  private pendingDispatchItems: PendingDispatch[] = [];
+  private pendingDispatchByBox = new Map<string, PendingDispatch[]>();
   private draggedPath: string | null = null;
   private collapsed = new Set<string>();
   private selectedSystem: "temp" | null = null;
   private bottomTab: "note" | "dispatch" | "triage" = "note";
-  // 左树热切换:全部 / 只看有待处理(proposal 或 owner)的框
+  // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 task)的框
   private treeFilter: "all" | "pending" = "all";
   private registryUi = createRegistryPaneState();
   private colRatio = 0.58;
@@ -87,7 +95,7 @@ export class TentView extends ItemView {
   private pendingDelete: string | null = null;
   private roles: RoleDefinition[] = [];
   private registryTags: string[] = [];
-  // 每个 box 的待裁数(open proposal 按 target 聚合),树行角标用
+  // 每个 box 的 open proposal 数；report / 待投递 task 在 boxTriageCount 合并。
   private pendingByTarget: Map<string, number> = new Map();
   private loadError: string | null = null;
   private refreshTimer: number | null = null;
@@ -191,6 +199,7 @@ export class TentView extends ItemView {
         this.proposals = await loadProposals(fs);
         this.handoffs = await loadHandoffs(fs);
         this.reports = await loadReports(fs);
+        this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(fs, this.tent, this.proposals);
         this.roles = (await loadRolesRegistry(fs)).roles;
         this.registryTags = (await loadTagRegistry(fs)).tags;
@@ -200,16 +209,48 @@ export class TentView extends ItemView {
         this.proposals = [];
         this.handoffs = [];
         this.reports = [];
+        this.tasks = [];
         this.inbox = [];
         this.roles = [];
         this.registryTags = [];
         this.loadError = e instanceof Error ? e.message : String(e);
       }
     }
+    this.rebuildPendingDispatches();
     this.plugin.updateStatus(
-      pendingCount(this.inbox) + this.reports.filter((report) => report.status === "ready").length
+      pendingCount(this.inbox) +
+      this.reports.filter((report) => report.status === "ready").length +
+      this.pendingDispatchItems.length
     );
     this.draw();
+  }
+
+  private rebuildPendingDispatches() {
+    const tent = this.tent;
+    if (!tent) {
+      this.pendingDispatchItems = [];
+      this.pendingDispatchByBox = new Map();
+      return;
+    }
+    const reportsByBox = new Set(this.reports.map((report) => report.boxId));
+    this.pendingDispatchItems = pendingDispatches(
+      this.tasks,
+      new Set(this.plugin.settings.dispatchPrefs.acknowledgedTasks),
+      (boxId) => {
+        const box = tent.byId.get(boxId);
+        if (!box || box.invalid || box.archived || box.fm.status === "done") return undefined;
+        if (reportsByBox.has(boxId)) return undefined;
+        return box.fm.owner;
+      },
+      this.tentName
+    );
+    const byBox = new Map<string, PendingDispatch[]>();
+    for (const item of this.pendingDispatchItems) {
+      const current = byBox.get(item.boxId) ?? [];
+      current.push(item);
+      byBox.set(item.boxId, current);
+    }
+    this.pendingDispatchByBox = byBox;
   }
 
   private async adoptNativeCopies(fs: import("../core/adapter.js").FsAdapter) {
@@ -1248,7 +1289,8 @@ export class TentView extends ItemView {
   private boxTriageCount(box: Box): number {
     const props = this.proposals.filter((p) => p.target === box.id && p.status === "open").length;
     const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
-    return props + reports;
+    const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
+    return props + reports + dispatches;
   }
 
   // 待裁 tab:本框的 proposal 待裁(采纳/驳回/打开)+ 完成待确认(中断释放 / 确认完成)
@@ -1261,6 +1303,7 @@ export class TentView extends ItemView {
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
+    const pendingDispatchItems = this.pendingDispatchByBox.get(box.id) ?? [];
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -1273,12 +1316,42 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposalItems.length === 0 && !owner && !report) {
+    if (proposalItems.length === 0 && !owner && !report && pendingDispatchItems.length === 0) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
     }
 
-    if (report) {
+    if (pendingDispatchItems.length > 0) {
+      const pendingDispatch = pendingDispatchItems[0];
+      body.createDiv({ cls: "tent-triage-sec", text: "等待投递" });
+      const item = body.createDiv({ cls: "tent-triage-item" });
+      const main = item.createDiv({ cls: "tent-triage-main" });
+      main.createDiv({
+        cls: "tent-triage-name",
+        text: `等待投递给 ${pendingDispatch.task.role}`,
+      });
+      main.createDiv({
+        cls: "tent-triage-meta",
+        text: `复制投递 prompt，粘贴到 ${pendingDispatch.task.role} 的 agent 会话即可开工。`,
+      });
+      const acts = item.createDiv({ cls: "tent-triage-acts" });
+      const copy = acts.createEl("button", { text: "复制投递 prompt" });
+      copy.setAttr("type", "button");
+      copy.onclick = async () => {
+        try {
+          const relayPrompt = relayPromptForTask(pendingDispatch.task);
+          await navigator.clipboard.writeText(this.withTentRootPointer(relayPrompt));
+          await this.plugin.acknowledgeDispatchTask(
+            this.tentName,
+            pendingDispatch.task.path
+          );
+          await this.refresh();
+          new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
+        } catch (e) {
+          new Notice("复制失败:" + (e instanceof Error ? e.message : e));
+        }
+      };
+    } else if (report) {
       body.createDiv({ cls: "tent-triage-sec", text: "待确认交付" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
@@ -1542,6 +1615,7 @@ export class TentView extends ItemView {
         const r = await this.dispatchBox(box, roleName, localPrompt, handoff || undefined);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
           await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
+          await this.plugin.acknowledgeDispatchTask(this.tentName, r.taskPath);
           new Notice("已派活。已复制接力 prompt,去目标 agent 会话粘贴。", 6000);
         } else {
           new Notice("已派活。接力 prompt 已生成。", 6000);

@@ -1127,6 +1127,117 @@ var init_report = __esm({
   }
 });
 
+// src/core/task.ts
+async function loadTaskEnvelopes(fs) {
+  const tasks = [];
+  if (!await fs.exists("temp")) return tasks;
+  for (const roleEntry of await fs.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    const taskDir = join2("temp", roleEntry.name, "tasks");
+    if (!await fs.exists(taskDir)) continue;
+    for (const entry of await fs.listDir(taskDir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path = join2(taskDir, entry.name);
+      try {
+        const { data } = parseFrontmatter(await fs.readFile(path));
+        if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
+          continue;
+        }
+        tasks.push({
+          path,
+          role: data.role,
+          claims: data.claims,
+          manifest: data.manifest
+        });
+      } catch {
+      }
+    }
+  }
+  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+function relayPromptForTask(task) {
+  const initPath = join2("temp", task.role, "init.md");
+  return `\u8BFB\u53D6 ${task.path} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+}
+async function ensureRoleInit(fs, role, tentName) {
+  const path = join2("temp", role.name, "init.md");
+  const body = `# Role Init
+
+- Tent: ${tentName}
+- Rules: RULES.md
+- Role registry: .tent/roles.json (or run \`tent roles\`)
+
+## Role Prompt
+
+${role.prompt?.trim() || "(\u65E0\u957F\u671F role prompt)"}
+
+## Operating Model
+
+Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\u5168\u6C99\u7BB1\u3002\u9047\u5230 prompt \u51B2\u7A81\u6216\u65E0\u6CD5\u9075\u5B88\u7684\u8FB9\u754C\u65F6\uFF0C\u505C\u6B62\u5E76\u8BE2\u95EE user\u3002
+`;
+  await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path;
+}
+async function writeTaskEnvelope(fs, clock, input) {
+  const userPrompt = input.userPrompt?.trim() || "";
+  const handoffPath = input.handoffPath?.trim() || "";
+  if (!userPrompt && !handoffPath) throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
+  const dir = join2("temp", input.role, "tasks");
+  await ensureDir(fs, dir);
+  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
+  const path = await uniqueMarkdownPath(fs, dir, stem);
+  const data = {
+    type: "task",
+    role: input.role,
+    claims: input.claims.map((claim) => claim.id),
+    manifest: input.manifestPath
+  };
+  if (handoffPath) data.handoff = handoffPath;
+  if (input.workspace) {
+    data.workspace = input.workspace.workspace;
+    data.worktree = input.workspace.worktree;
+    data.branch = input.workspace.branch;
+    data.targetBranch = input.workspace.targetBranch;
+  }
+  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
+  const body = `# Task
+
+## Context Pointers
+
+${pointers}
+
+- Manifest: ${input.manifestPath}
+` + (handoffPath ? `- Handoff: ${handoffPath}
+` : "") + (userPrompt ? `
+## User Prompt
+
+${userPrompt}
+` : "");
+  await fs.writeFile(path, serializeFrontmatter(data, body));
+  return path;
+}
+function taskStem(now, claimId) {
+  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
+  return `task-${stamp2}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
+}
+async function uniqueMarkdownPath(fs, dir, stem) {
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path = join2(dir, `${stem}${suffix}.md`);
+    if (!await fs.exists(path)) return path;
+  }
+}
+async function ensureDir(fs, path) {
+  if (!await fs.exists(path)) await fs.mkdir(path);
+}
+var init_task = __esm({
+  "src/core/task.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_tree();
+  }
+});
+
 // src/core/manifest.ts
 function buildManifest(tent, input) {
   const { role } = input;
@@ -1280,86 +1391,6 @@ var init_id = __esm({
   "src/core/id.ts"() {
     "use strict";
     ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-  }
-});
-
-// src/core/task.ts
-async function ensureRoleInit(fs, role, tentName) {
-  const path = join2("temp", role.name, "init.md");
-  const body = `# Role Init
-
-- Tent: ${tentName}
-- Rules: RULES.md
-- Role registry: .tent/roles.json (or run \`tent roles\`)
-
-## Role Prompt
-
-${role.prompt?.trim() || "(\u65E0\u957F\u671F role prompt)"}
-
-## Operating Model
-
-Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\u5168\u6C99\u7BB1\u3002\u9047\u5230 prompt \u51B2\u7A81\u6216\u65E0\u6CD5\u9075\u5B88\u7684\u8FB9\u754C\u65F6\uFF0C\u505C\u6B62\u5E76\u8BE2\u95EE user\u3002
-`;
-  await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path;
-}
-async function writeTaskEnvelope(fs, clock, input) {
-  const userPrompt = input.userPrompt?.trim() || "";
-  const handoffPath = input.handoffPath?.trim() || "";
-  if (!userPrompt && !handoffPath) throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
-  const dir = join2("temp", input.role, "tasks");
-  await ensureDir(fs, dir);
-  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path = await uniqueMarkdownPath(fs, dir, stem);
-  const data = {
-    type: "task",
-    role: input.role,
-    claims: input.claims.map((claim) => claim.id),
-    manifest: input.manifestPath
-  };
-  if (handoffPath) data.handoff = handoffPath;
-  if (input.workspace) {
-    data.workspace = input.workspace.workspace;
-    data.worktree = input.workspace.worktree;
-    data.branch = input.workspace.branch;
-    data.targetBranch = input.workspace.targetBranch;
-  }
-  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
-  const body = `# Task
-
-## Context Pointers
-
-${pointers}
-
-- Manifest: ${input.manifestPath}
-` + (handoffPath ? `- Handoff: ${handoffPath}
-` : "") + (userPrompt ? `
-## User Prompt
-
-${userPrompt}
-` : "");
-  await fs.writeFile(path, serializeFrontmatter(data, body));
-  return path;
-}
-function taskStem(now, claimId) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
-  return `task-${stamp2}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
-}
-async function uniqueMarkdownPath(fs, dir, stem) {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path = join2(dir, `${stem}${suffix}.md`);
-    if (!await fs.exists(path)) return path;
-  }
-}
-async function ensureDir(fs, path) {
-  if (!await fs.exists(path)) await fs.mkdir(path);
-}
-var init_task = __esm({
-  "src/core/task.ts"() {
-    "use strict";
-    init_frontmatter();
-    init_tree();
   }
 });
 
@@ -1765,7 +1796,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     handoffPath: resolvedHandoffPath || void 0,
     workspace: options.workspace
   });
-  const relayPrompt = `\u8BFB\u53D6 ${taskPath} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+  const relayPrompt = relayPromptForTask({
+    path: taskPath,
+    role: roleName,
+    claims: taskClaims.map((taskClaim) => taskClaim.id),
+    manifest: manifestPath
+  });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
@@ -2232,6 +2268,7 @@ init_claim();
 init_proposal();
 init_handoff();
 init_report();
+init_task();
 
 // src/core/canvas.ts
 init_tree();
@@ -3334,6 +3371,35 @@ var TimedCache = class {
   }
 };
 
+// src/plugin/pending-dispatch.ts
+function dispatchAckKey(tentName, taskPath) {
+  return `${tentName}\0${taskPath}`;
+}
+function rememberDispatchAck(acknowledged, key, limit = 500) {
+  const withoutCurrent = [...new Set(acknowledged)].filter((item) => item !== key);
+  return [...withoutCurrent, key].slice(-Math.max(0, limit));
+}
+function pendingDispatches(tasks, acknowledged, ownerFor, tentName) {
+  const latestByBox = /* @__PURE__ */ new Map();
+  for (const task of [...tasks].sort(compareTaskOrder)) {
+    for (const boxId of task.claims) {
+      if (boxId !== "root") latestByBox.set(boxId, task);
+    }
+  }
+  const pending = [];
+  for (const [boxId, task] of latestByBox) {
+    if (ownerFor(boxId) !== task.role) continue;
+    if (acknowledged.has(dispatchAckKey(tentName, task.path))) continue;
+    pending.push({ boxId, task });
+  }
+  return pending;
+}
+function compareTaskOrder(a, b) {
+  const aName = a.path.slice(a.path.lastIndexOf("/") + 1);
+  const bName = b.path.slice(b.path.lastIndexOf("/") + 1);
+  return aName.localeCompare(bName) || a.path.localeCompare(b.path);
+}
+
 // src/plugin/view.ts
 init_ops();
 var TENT_VIEW_TYPE = "tent-structure-editor";
@@ -3351,12 +3417,15 @@ var TentView = class extends import_obsidian4.ItemView {
     this.proposals = [];
     this.handoffs = [];
     this.reports = [];
+    this.tasks = [];
     this.inbox = [];
+    this.pendingDispatchItems = [];
+    this.pendingDispatchByBox = /* @__PURE__ */ new Map();
     this.draggedPath = null;
     this.collapsed = /* @__PURE__ */ new Set();
     this.selectedSystem = null;
     this.bottomTab = "note";
-    // 左树热切换:全部 / 只看有待处理(proposal 或 owner)的框
+    // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 task)的框
     this.treeFilter = "all";
     this.registryUi = createRegistryPaneState();
     this.colRatio = 0.58;
@@ -3371,7 +3440,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.pendingDelete = null;
     this.roles = [];
     this.registryTags = [];
-    // 每个 box 的待裁数(open proposal 按 target 聚合),树行角标用
+    // 每个 box 的 open proposal 数；report / 待投递 task 在 boxTriageCount 合并。
     this.pendingByTarget = /* @__PURE__ */ new Map();
     this.loadError = null;
     this.refreshTimer = null;
@@ -3457,6 +3526,7 @@ var TentView = class extends import_obsidian4.ItemView {
         this.proposals = await loadProposals(fs);
         this.handoffs = await loadHandoffs(fs);
         this.reports = await loadReports(fs);
+        this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(fs, this.tent, this.proposals);
         this.roles = (await loadRolesRegistry(fs)).roles;
         this.registryTags = (await loadTagRegistry(fs)).tags;
@@ -3466,16 +3536,45 @@ var TentView = class extends import_obsidian4.ItemView {
         this.proposals = [];
         this.handoffs = [];
         this.reports = [];
+        this.tasks = [];
         this.inbox = [];
         this.roles = [];
         this.registryTags = [];
         this.loadError = e instanceof Error ? e.message : String(e);
       }
     }
+    this.rebuildPendingDispatches();
     this.plugin.updateStatus(
-      pendingCount(this.inbox) + this.reports.filter((report) => report.status === "ready").length
+      pendingCount(this.inbox) + this.reports.filter((report) => report.status === "ready").length + this.pendingDispatchItems.length
     );
     this.draw();
+  }
+  rebuildPendingDispatches() {
+    const tent = this.tent;
+    if (!tent) {
+      this.pendingDispatchItems = [];
+      this.pendingDispatchByBox = /* @__PURE__ */ new Map();
+      return;
+    }
+    const reportsByBox = new Set(this.reports.map((report) => report.boxId));
+    this.pendingDispatchItems = pendingDispatches(
+      this.tasks,
+      new Set(this.plugin.settings.dispatchPrefs.acknowledgedTasks),
+      (boxId) => {
+        const box = tent.byId.get(boxId);
+        if (!box || box.invalid || box.archived || box.fm.status === "done") return void 0;
+        if (reportsByBox.has(boxId)) return void 0;
+        return box.fm.owner;
+      },
+      this.tentName
+    );
+    const byBox = /* @__PURE__ */ new Map();
+    for (const item of this.pendingDispatchItems) {
+      const current = byBox.get(item.boxId) ?? [];
+      current.push(item);
+      byBox.set(item.boxId, current);
+    }
+    this.pendingDispatchByBox = byBox;
   }
   async adoptNativeCopies(fs) {
     if (this.recentCreates.size === 0) return;
@@ -4358,7 +4457,8 @@ var TentView = class extends import_obsidian4.ItemView {
   boxTriageCount(box) {
     const props = this.proposals.filter((p) => p.target === box.id && p.status === "open").length;
     const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
-    return props + reports;
+    const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
+    return props + reports + dispatches;
   }
   // 待裁 tab:本框的 proposal 待裁(采纳/驳回/打开)+ 完成待确认(中断释放 / 确认完成)
   drawTriageInline(body, actSlot, box) {
@@ -4369,6 +4469,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
+    const pendingDispatchItems = this.pendingDispatchByBox.get(box.id) ?? [];
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -4381,11 +4482,41 @@ var TentView = class extends import_obsidian4.ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposalItems.length === 0 && !owner && !report) {
+    if (proposalItems.length === 0 && !owner && !report && pendingDispatchItems.length === 0) {
       body.createDiv({ cls: "tent-bottom-empty", text: "\u65E0\u5F85\u5904\u7406" });
       return;
     }
-    if (report) {
+    if (pendingDispatchItems.length > 0) {
+      const pendingDispatch = pendingDispatchItems[0];
+      body.createDiv({ cls: "tent-triage-sec", text: "\u7B49\u5F85\u6295\u9012" });
+      const item = body.createDiv({ cls: "tent-triage-item" });
+      const main = item.createDiv({ cls: "tent-triage-main" });
+      main.createDiv({
+        cls: "tent-triage-name",
+        text: `\u7B49\u5F85\u6295\u9012\u7ED9 ${pendingDispatch.task.role}`
+      });
+      main.createDiv({
+        cls: "tent-triage-meta",
+        text: `\u590D\u5236\u6295\u9012 prompt\uFF0C\u7C98\u8D34\u5230 ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u5373\u53EF\u5F00\u5DE5\u3002`
+      });
+      const acts = item.createDiv({ cls: "tent-triage-acts" });
+      const copy = acts.createEl("button", { text: "\u590D\u5236\u6295\u9012 prompt" });
+      copy.setAttr("type", "button");
+      copy.onclick = async () => {
+        try {
+          const relayPrompt = relayPromptForTask(pendingDispatch.task);
+          await navigator.clipboard.writeText(this.withTentRootPointer(relayPrompt));
+          await this.plugin.acknowledgeDispatchTask(
+            this.tentName,
+            pendingDispatch.task.path
+          );
+          await this.refresh();
+          new import_obsidian4.Notice(`\u5DF2\u590D\u5236\uFF0C\u53BB ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u7C98\u8D34\u5373\u53EF\u3002`);
+        } catch (e) {
+          new import_obsidian4.Notice("\u590D\u5236\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+        }
+      };
+    } else if (report) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u786E\u8BA4\u4EA4\u4ED8" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
@@ -4632,6 +4763,7 @@ var TentView = class extends import_obsidian4.ItemView {
         const r = await this.dispatchBox(box, roleName, localPrompt, handoff2 || void 0);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
           await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
+          await this.plugin.acknowledgeDispatchTask(this.tentName, r.taskPath);
           new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
         } else {
           new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
@@ -4833,7 +4965,8 @@ var DEFAULT_SETTINGS = {
   activeTent: "",
   appearance: "follow",
   dispatchPrefs: {
-    copyPromptToClipboard: true
+    copyPromptToClipboard: true,
+    acknowledgedTasks: []
   },
   triageReminder: "status",
   newTentDefaults: {
@@ -4913,6 +5046,14 @@ var TentPlugin = class extends import_obsidian5.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async acknowledgeDispatchTask(tentName, taskPath) {
+    const key = dispatchAckKey(tentName, taskPath);
+    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
+      this.settings.dispatchPrefs.acknowledgedTasks,
+      key
+    );
+    await this.saveSettings();
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {
@@ -5256,8 +5397,10 @@ function mergeSettings(raw) {
     activeTent: typeof saved.activeTent === "string" ? saved.activeTent : "",
     appearance,
     dispatchPrefs: {
-      ...DEFAULT_SETTINGS.dispatchPrefs,
-      ...saved.dispatchPrefs ?? {}
+      copyPromptToClipboard: typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean" ? saved.dispatchPrefs.copyPromptToClipboard : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
+      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks) ? saved.dispatchPrefs.acknowledgedTasks.filter(
+        (item) => typeof item === "string"
+      ).slice(-500) : []
     },
     triageReminder,
     newTentDefaults: {

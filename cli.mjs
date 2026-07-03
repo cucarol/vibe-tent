@@ -1006,6 +1006,10 @@ function isRecord3(value) {
 }
 
 // src/core/task.ts
+function relayPromptForTask(task) {
+  const initPath = join2("temp", task.role, "init.md");
+  return `\u8BFB\u53D6 ${task.path} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+}
 async function ensureRoleInit(fs3, role, tentName) {
   const path2 = join2("temp", role.name, "init.md");
   const body = `# Role Init
@@ -1533,7 +1537,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     handoffPath: resolvedHandoffPath || void 0,
     workspace: options.workspace
   });
-  const relayPrompt = `\u8BFB\u53D6 ${taskPath} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+  const relayPrompt = relayPromptForTask({
+    path: taskPath,
+    role: roleName,
+    claims: taskClaims.map((taskClaim) => taskClaim.id),
+    manifest: manifestPath
+  });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 function resolveDispatchClaim(tent, claimId, tentName) {

@@ -12,6 +12,7 @@ import {
 } from "../core/typeRegistry.js";
 import type { RoleDefinition, RolesRegistry } from "../core/skillRoleRegistry.js";
 import { typeColorValue } from "./colors.js";
+import { dispatchAckKey, rememberDispatchAck } from "./pending-dispatch.js";
 
 export type Appearance = "follow" | "light" | "dark";
 export type TriageReminder = "off" | "status" | "notice";
@@ -31,6 +32,7 @@ interface TentSettings {
   appearance: Appearance;
   dispatchPrefs: {
     copyPromptToClipboard: boolean;
+    acknowledgedTasks: string[];
   };
   triageReminder: TriageReminder;
   newTentDefaults: NewTentDefaults;
@@ -51,6 +53,7 @@ const DEFAULT_SETTINGS: TentSettings = {
   appearance: "follow",
   dispatchPrefs: {
     copyPromptToClipboard: true,
+    acknowledgedTasks: [],
   },
   triageReminder: "status",
   newTentDefaults: {
@@ -142,6 +145,14 @@ export default class TentPlugin extends Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
+  }
+  async acknowledgeDispatchTask(tentName: string, taskPath: string): Promise<void> {
+    const key = dispatchAckKey(tentName, taskPath);
+    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
+      this.settings.dispatchPrefs.acknowledgedTasks,
+      key
+    );
+    await this.saveSettings();
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {
@@ -585,8 +596,15 @@ function mergeSettings(raw: unknown): TentSettings {
     activeTent: typeof saved.activeTent === "string" ? saved.activeTent : "",
     appearance,
     dispatchPrefs: {
-      ...DEFAULT_SETTINGS.dispatchPrefs,
-      ...(saved.dispatchPrefs ?? {}),
+      copyPromptToClipboard:
+        typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean"
+          ? saved.dispatchPrefs.copyPromptToClipboard
+          : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
+      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks)
+        ? saved.dispatchPrefs.acknowledgedTasks.filter(
+            (item): item is string => typeof item === "string"
+          ).slice(-500)
+        : [],
     },
     triageReminder,
     newTentDefaults: {

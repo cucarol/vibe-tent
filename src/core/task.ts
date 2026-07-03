@@ -1,5 +1,5 @@
 import { Clock, FsAdapter } from "./adapter.js";
-import { serializeFrontmatter } from "./frontmatter.js";
+import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 
@@ -17,6 +17,56 @@ export interface TaskEnvelopeInput {
   userPrompt?: string;
   handoffPath?: string;
   workspace?: RoleWorkspaceContract;
+}
+
+export interface TaskEnvelope {
+  path: string;
+  role: string;
+  claims: string[];
+  manifest: string;
+}
+
+export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> {
+  const tasks: TaskEnvelope[] = [];
+  if (!(await fs.exists("temp"))) return tasks;
+  for (const roleEntry of await fs.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    const taskDir = join("temp", roleEntry.name, "tasks");
+    if (!(await fs.exists(taskDir))) continue;
+    for (const entry of await fs.listDir(taskDir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path = join(taskDir, entry.name);
+      try {
+        const { data } = parseFrontmatter(await fs.readFile(path));
+        if (
+          data.type !== "task" ||
+          typeof data.role !== "string" ||
+          typeof data.manifest !== "string" ||
+          !Array.isArray(data.claims) ||
+          !data.claims.every((claim) => typeof claim === "string")
+        ) {
+          continue;
+        }
+        tasks.push({
+          path,
+          role: data.role,
+          claims: data.claims,
+          manifest: data.manifest,
+        });
+      } catch {
+        // Invalid temp documents stay inspectable on disk but do not enter UI state.
+      }
+    }
+  }
+  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+export function relayPromptForTask(task: TaskEnvelope): string {
+  const initPath = join("temp", task.role, "init.md");
+  return (
+    `读取 ${task.path} 并执行。若这是该 role 的新会话,先按 ${initPath} 完成 role init；` +
+    `是否复用旧会话由 user 决定。`
+  );
 }
 
 export async function ensureRoleInit(
