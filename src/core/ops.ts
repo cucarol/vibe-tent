@@ -13,7 +13,6 @@ import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName 
 import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
 import { ensureRoleInit, relayPromptForTask, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
-import { validateDispatchHandoff } from "./handoff.js";
 import { loadReport, removeReportsForBox } from "./report.js";
 import type { OpsEnv } from "./ops-context.js";
 
@@ -21,7 +20,6 @@ export type { OpsEnv } from "./ops-context.js";
 export {
   applyProposal,
   finishApply,
-  handoff,
   propose,
   startApply,
   type ApplyGrant,
@@ -41,7 +39,6 @@ export interface DispatchResult {
 
 export interface DispatchOptions {
   userPrompt?: string;
-  handoffPath?: string;
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
 }
@@ -68,15 +65,7 @@ async function dispatchUnlocked(
     ? { userPrompt: promptOrOptions }
     : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
-  const handoffPath = options.handoffPath?.trim() || "";
-  let resolvedHandoffPath = handoffPath;
-  if (!userPrompt && !handoffPath) {
-    throw new Error("派活至少需要 user prompt 或 handoff prompt");
-  }
-  if (handoffPath) {
-    if (claim.root) throw new Error("handoff 必须派到其指定 box,不能派到帐根");
-    resolvedHandoffPath = (await validateDispatchHandoff(env.fs, handoffPath, claim.box.id, roleName)).path;
-  }
+  if (!userPrompt) throw new Error("派活必须提供 user prompt");
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -117,19 +106,21 @@ async function dispatchUnlocked(
     role: roleName,
     claims: taskClaims,
     manifestPath,
-    userPrompt: options.userPrompt,
-    handoffPath: resolvedHandoffPath || undefined,
+    userPrompt,
     workspace: options.workspace,
     dispatchedBy: options.dispatchedBy,
   });
 
-  const relayPrompt = relayPromptForTask({
-    path: taskPath,
-    role: roleName,
-    claims: taskClaims.map((taskClaim) => taskClaim.id),
-    manifest: manifestPath,
-    status: "pending",
-  });
+  const relayPrompt = relayPromptForTask(
+    {
+      path: taskPath,
+      role: roleName,
+      claims: taskClaims.map((taskClaim) => taskClaim.id),
+      manifest: manifestPath,
+      status: "pending",
+    },
+    env.tentRoot || env.tentName
+  );
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 

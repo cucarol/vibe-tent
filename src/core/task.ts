@@ -14,8 +14,7 @@ export interface TaskEnvelopeInput {
   role: string;
   claims: { id: string; path: string }[];
   manifestPath: string;
-  userPrompt?: string;
-  handoffPath?: string;
+  userPrompt: string;
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
 }
@@ -77,11 +76,14 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
 
-export function relayPromptForTask(task: TaskEnvelope): string {
+export function relayPromptForTask(task: TaskEnvelope, tentRoot: string): string {
   const initPath = join("temp", task.role, "init.md");
   return (
-    `读取 ${task.path} 并执行。若这是该 role 的新会话,先按 ${initPath} 完成 role init；` +
-    `是否复用旧会话由 user 决定。`
+    `Tent task dispatched to role ${task.role}.\n` +
+    `Tent root: ${tentRoot}\n` +
+    `1. Run \`tent task-ack ${task.path}\` to take this task.\n` +
+    `2. Read the envelope, then open the claimed box(es) — the box note is the task definition.\n` +
+    `3. If this is a new session for this role, complete role init first: ${initPath}.`
   );
 }
 
@@ -109,8 +111,7 @@ export async function writeTaskEnvelope(
   input: TaskEnvelopeInput
 ): Promise<string> {
   const userPrompt = input.userPrompt?.trim() || "";
-  const handoffPath = input.handoffPath?.trim() || "";
-  if (!userPrompt && !handoffPath) throw new Error("派活至少需要 user prompt 或 handoff prompt");
+  if (!userPrompt) throw new Error("派活必须提供 user prompt");
 
   const dir = join("temp", input.role, "tasks");
   await ensureDir(fs, dir);
@@ -124,7 +125,6 @@ export async function writeTaskEnvelope(
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
   };
-  if (handoffPath) data.handoff = handoffPath;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -137,8 +137,7 @@ export async function writeTaskEnvelope(
     `# Task\n\n` +
     `## Context Pointers\n\n${pointers}\n\n` +
     `- Manifest: ${input.manifestPath}\n` +
-    (handoffPath ? `- Handoff: ${handoffPath}\n` : "") +
-    (userPrompt ? `\n## User Prompt\n\n${userPrompt}\n` : "");
+    `\n## User Prompt\n\n${userPrompt}\n`;
   await fs.writeFile(path, serializeFrontmatter(data, body));
   return path;
 }

@@ -5,5 +5,7 @@ export interface OpsEnv {
   fs: FsAdapter;
   clock: Clock;
   tentName: string;
+  /** Absolute Tent root used in relay prompts by desktop and CLI clients. */
+  tentRoot?: string;
   rand?: RandomSource;
 }

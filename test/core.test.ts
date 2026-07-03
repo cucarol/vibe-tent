@@ -204,11 +204,15 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     status: "pending",
     dispatchedBy: "user",
   });
-  assert.match(relayPromptForTask(tasks[1]), new RegExp(second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
-  assert.match(relayPromptForTask(tasks[1]), /temp\/reviewer\/init\.md/);
+  const relay = relayPromptForTask(tasks[1], dir);
+  assert.match(relay, /^Tent task dispatched to role reviewer\./);
+  assert.match(relay, new RegExp(`Tent root: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(relay, new RegExp(`1\\. Run \`tent task-ack ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
+  assert.match(relay, /3\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
+  assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
 });
 
-test("dispatch:至少需要 user prompt 或 handoff pointer", async () => {
+test("dispatch:必须提供 user prompt", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -220,7 +224,7 @@ test("dispatch:至少需要 user prompt 或 handoff pointer", async () => {
   await dispatch(env as any, "bx-p1", "analyst", "旧意图");
   await assert.rejects(
     () => dispatch(env as any, "bx-o1", "analyst", ""),
-    /至少需要 user prompt 或 handoff prompt/,
+    /必须提供 user prompt/,
   );
 });
 

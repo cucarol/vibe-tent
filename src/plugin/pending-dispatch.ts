@@ -5,25 +5,7 @@ export interface PendingDispatch {
   task: TaskEnvelope;
 }
 
-export function dispatchAckKey(tentName: string, taskPath: string): string {
-  return `${tentName}\0${taskPath}`;
-}
-
-export function rememberDispatchAck(
-  acknowledged: string[],
-  key: string,
-  limit = 500
-): string[] {
-  const withoutCurrent = [...new Set(acknowledged)].filter((item) => item !== key);
-  return [...withoutCurrent, key].slice(-Math.max(0, limit));
-}
-
-export function pendingDispatches(
-  tasks: TaskEnvelope[],
-  ownerFor: (boxId: string) => string | undefined,
-  tentName?: string
-): PendingDispatch[] {
-  void tentName;
+export function pendingDispatches(tasks: TaskEnvelope[]): PendingDispatch[] {
   const latestByBox = new Map<string, TaskEnvelope>();
   for (const task of [...tasks].sort(compareTaskOrder)) {
     for (const boxId of task.claims) {
@@ -34,7 +16,6 @@ export function pendingDispatches(
   const pending: PendingDispatch[] = [];
   for (const [boxId, task] of latestByBox) {
     if (task.status === "taken") continue;
-    if (ownerFor(boxId) !== task.role) continue;
     pending.push({ boxId, task });
   }
   return pending;

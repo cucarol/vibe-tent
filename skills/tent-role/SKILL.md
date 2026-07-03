@@ -1,6 +1,6 @@
 ---
 name: tent-role
-description: 让 agent 进入现有 Tent 的长期 role session：读取稳定 init 与动态 task/manifest 指针，在真实 workspace 的 role worktree/branch 工作并提交，用 proposal、handoff、fork 协作，最后在聊天中报告 commit 等待 user 验收。
+description: 让 agent 进入现有 Tent 的长期 role session：从 task envelope 信箱接活，读取稳定 init 与动态 manifest，在真实 workspace 的 role worktree/branch 工作并提交，最后报告 commit 等待验收。
 ---
 
 # tent-role
@@ -37,8 +37,8 @@ description: 让 agent 进入现有 Tent 的长期 role session：读取稳定 i
 一级 type 通常表达 box 的主语义：
 
 - `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。不要把普通待办、检查项、问题记录都写成 goal。
-- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、handoff 意图，以及大多数 user/agent 协作文本。
-- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、handoff 文件、workspace 指针等，重点是它代表或指向某个交付物。
+- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
+- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、task envelope、workspace 指针等，重点是它代表或指向某个交付物。
 
 二级 type 通常是可选修饰，不是默认补全项。
 
@@ -66,7 +66,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 `output` 表示真实产出或产出指针。
 
 - 全局 workspace 指针可以作为顶层 output。
-- 具体代码、文档、release、npm 包、截图、构建物、handoff 文件等 output，优先创建在对应处理 box 的子级中。
+- 具体代码、文档、release、npm 包、截图、构建物等 output，优先创建在对应处理 box 的子级中。
 - output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
 - 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
 
@@ -74,20 +74,20 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 
 1. 确认工作目录就是 Tent 根目录，且包含 `RULES.md`、`.tent/`、`temp/`。否则停止并告诉 user。
 2. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。
-3. 读取 user 给你的 task Markdown 路径，再读其中指向的 manifest、box 指针、user prompt，以及 user 明确选择的 handoff 指针。
-4. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），照常工作：读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认，不要因为没有 task 文件而拒绝或自己发明一份。
-5. 如果 task 含 handoff 指针，读取那个文件作为 agent-authored task context。不要自己扫描 `temp/` 猜 handoff，也不要替 user 选择另一个 handoff。
+3. 每次唤醒或恢复 role 时，检查 `temp/<role>/tasks/*.md`。user 直接给了 task 路径时，以该路径为准；否则列出所有 `status: pending` 的 task，按 user 指定或既有优先级逐个处理，顺序不清楚时先问。
+4. 接任务后的第一步运行 `tent task-ack <taskPath>`。然后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件，只有 `task-ack` 会把任务改成 `taken`。
+5. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending task 时再按口头范围工作。读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
 6. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
 7. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
 8. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
 9. 协作命令：
-   - `tent roles`：读取共享 role 注册表，再选择 handoff 目标 role。
+   - `tent roles`：读取共享 role 注册表，再选择派活目标 role。
+   - `tent dispatch <boxId> <role> --prompt <text> [--as-sub --by <role>]`：认领目标并生成该 role 的 task envelope。user prompt 必填。
    - `tent new-box <name> <type> [parentId]`：创建 box 并获得防撞 id。CLI 只生成空身份笔记——建完立即补写正文（问题、方案、验收标准）和 `status`，不要留空壳框。
    - `tent propose <targetId> <role> <bodyFile|->`：给 readable target 写 agent-to-user 决策文本。
-   - `tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->`：创建不可变 agent-to-agent prompt 指针，携带目标 box 和目标 role。它不改变 owner，也不 dispatch。user 后续派活时选择这个 handoff。
    - `tent fork <boxId>`：复制子树，只改变根名称，重发 ids，并清 owner/status。
 10. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。报告只写你**实际验证过**的事实——测试贴运行结果，修复贴复现前后对比；命令打了 ✓ 不等于结果发生了，关键动作要回读状态确认。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
 
 不要自己把 box 标记完成。只有 user 确认后，交付才算完成。
 
-proposal 被采纳不会自动启动 agent。handoff 创建不会派活或转移 owner。`tent complete`、`tent stamp` 和 `tent force-release` 是 user 侧动作，除非 user 在会话中明确豁免。
+proposal 被采纳不会自动启动 agent。dispatch 只写入 envelope，不会唤醒目标 agent；由 user 或已授权的 orchestrator 唤醒目标会话。`tent complete`、`tent stamp` 和 `tent force-release` 是 user 侧动作，除非 user 在会话中明确豁免。

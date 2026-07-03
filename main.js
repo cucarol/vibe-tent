@@ -989,73 +989,6 @@ var init_proposal = __esm({
   }
 });
 
-// src/core/handoff.ts
-async function loadHandoffs(fs) {
-  const handoffs = [];
-  if (!await fs.exists("temp")) return handoffs;
-  const roleDirs = await fs.listDir("temp");
-  for (const roleDir of roleDirs) {
-    if (!roleDir.isDir) continue;
-    const dir = join2("temp", roleDir.name, "handoffs");
-    if (!await fs.exists(dir)) continue;
-    for (const entry of await fs.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path = join2(dir, entry.name);
-      const handoff2 = parseHandoff(path, await fs.readFile(path), roleDir.name);
-      if (handoff2) handoffs.push(handoff2);
-    }
-  }
-  return handoffs.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || "") || a.path.localeCompare(b.path));
-}
-async function loadHandoff(fs, inputPath) {
-  const path = normalizeHandoffPath(inputPath);
-  if (!await fs.exists(path)) throw new Error(`\u627E\u4E0D\u5230 handoff: ${path}`);
-  const sourceRole = path.split("/")[1] || "";
-  const handoff2 = parseHandoff(path, await fs.readFile(path), sourceRole);
-  if (!handoff2) throw new Error(`handoff \u683C\u5F0F\u65E0\u6548: ${path}`);
-  return handoff2;
-}
-async function validateDispatchHandoff(fs, inputPath, targetId, targetRole) {
-  const handoff2 = await loadHandoff(fs, inputPath);
-  if (handoff2.targetId !== targetId) {
-    throw new Error(`handoff \u76EE\u6807\u662F ${handoff2.targetId},\u4E0D\u80FD\u6D3E\u5230 ${targetId}`);
-  }
-  if (handoff2.targetRole !== targetRole) {
-    throw new Error(`handoff \u6307\u5B9A role ${handoff2.targetRole},\u4E0D\u80FD\u6D3E\u7ED9 ${targetRole}`);
-  }
-  return handoff2;
-}
-function parseHandoff(path, raw, sourceRole) {
-  const { data, body } = parseFrontmatter(raw);
-  if (data.type !== "handoff") return null;
-  if (typeof data.from !== "string" || typeof data.target !== "string" || typeof data.role !== "string") {
-    return null;
-  }
-  return {
-    path,
-    fromBoxId: data.from,
-    targetId: data.target,
-    targetRole: data.role,
-    fromRole: typeof data.by === "string" && data.by ? data.by : sourceRole,
-    timestamp: typeof data.ts === "string" ? data.ts : void 0,
-    body: body.trim()
-  };
-}
-function normalizeHandoffPath(input) {
-  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/handoffs\/[^/]+\.md$/.test(path)) {
-    throw new Error("handoff \u5FC5\u987B\u6307\u5411 temp/<role>/handoffs/*.md");
-  }
-  return path;
-}
-var init_handoff = __esm({
-  "src/core/handoff.ts"() {
-    "use strict";
-    init_frontmatter();
-    init_tree();
-  }
-});
-
 // src/core/report.ts
 async function loadReports(fs) {
   const reports = [];
@@ -1176,9 +1109,13 @@ async function loadTaskEnvelopes(fs) {
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-function relayPromptForTask(task) {
+function relayPromptForTask(task, tentRoot) {
   const initPath = join2("temp", task.role, "init.md");
-  return `\u8BFB\u53D6 ${task.path} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+  return `Tent task dispatched to role ${task.role}.
+Tent root: ${tentRoot}
+1. Run \`tent task-ack ${task.path}\` to take this task.
+2. Read the envelope, then open the claimed box(es) \u2014 the box note is the task definition.
+3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs, role, tentName) {
   const path = join2("temp", role.name, "init.md");
@@ -1201,8 +1138,7 @@ Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\
 }
 async function writeTaskEnvelope(fs, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
-  const handoffPath = input.handoffPath?.trim() || "";
-  if (!userPrompt && !handoffPath) throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
+  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
   const dir = join2("temp", input.role, "tasks");
   await ensureDir(fs, dir);
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
@@ -1215,7 +1151,6 @@ async function writeTaskEnvelope(fs, clock, input) {
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath
   };
-  if (handoffPath) data.handoff = handoffPath;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -1230,21 +1165,13 @@ async function writeTaskEnvelope(fs, clock, input) {
 ${pointers}
 
 - Manifest: ${input.manifestPath}
-` + (handoffPath ? `- Handoff: ${handoffPath}
-` : "") + (userPrompt ? `
+
 ## User Prompt
 
 ${userPrompt}
-` : "");
+`;
   await fs.writeFile(path, serializeFrontmatter(data, body));
   return path;
-}
-async function ackTaskEnvelope(fs, path) {
-  const raw = await fs.readFile(path);
-  const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`task envelope \u683C\u5F0F\u65E0\u6548: ${path}`);
-  data.status = "taken";
-  await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
 }
 function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
@@ -1281,7 +1208,7 @@ function buildManifest(tent, input) {
     }
   }
   readable.push({ path: ".tent/roles.json", note: "\u7CFB\u7EDF\u6CE8\u518C\u8868:\u53EF\u7528 role \u4E0E\u957F\u671F prompt" });
-  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EA4\u4ED8\u4E0E handoff" });
+  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EFB\u52A1\u3001\u63D0\u8BAE\u4E0E\u4EA4\u4ED8" });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
       writable.push({ id: box.id, path: box.path });
@@ -1513,46 +1440,6 @@ async function finishApply(env, proposalPath) {
     );
   });
 }
-async function handoff(env, fromBoxId, targetId, targetRole, prompt) {
-  return withTentMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const from = tent.byId.get(fromBoxId);
-    if (!from) throw new Error(`\u627E\u4E0D\u5230\u6846 ${fromBoxId}`);
-    if (!isUsableBox(from)) throw new Error("\u4EA4\u63A5\u6765\u6E90\u6846\u4E0D\u53EF\u7528");
-    const target = tent.byId.get(targetId);
-    if (!target) throw new Error(`\u627E\u4E0D\u5230\u6846 ${targetId}`);
-    if (!isUsableBox(target)) throw new Error("\u4EA4\u63A5\u76EE\u6807\u6846\u4E0D\u53EF\u7528");
-    const role = assertRoleName(targetRole);
-    const content = prompt.trim();
-    if (!content) throw new Error("handoff prompt \u4E0D\u80FD\u4E3A\u7A7A");
-    const fromRole = from.fm.owner || "_";
-    const dir = join2("temp", fromRole, "handoffs");
-    await ensureDir2(env.fs, dir);
-    const handoffPath = await uniqueHandoffPath(
-      env.fs,
-      dir,
-      targetId,
-      env.clock.now()
-    );
-    const data = {
-      type: "handoff",
-      from: fromBoxId,
-      target: targetId,
-      role,
-      by: from.fm.owner || "",
-      ts: env.clock.now()
-    };
-    await env.fs.writeFile(
-      handoffPath,
-      serializeFrontmatter(
-        data,
-        content + "\n",
-        ["type", "from", "target", "role", "by", "ts"]
-      )
-    );
-    return handoffPath;
-  });
-}
 async function ensureDir2(fs, path) {
   if (path && !await fs.exists(path)) await fs.mkdir(path);
 }
@@ -1573,15 +1460,6 @@ async function uniqueProposalPath(fs, dir, targetId, now) {
     const path = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
     if (!await fs.exists(path)) return path;
     index += 1;
-  }
-}
-async function uniqueHandoffPath(fs, dir, targetId, now) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  for (let index = 1; ; index += 1) {
-    const suffix = index === 1 ? "" : `-${index}`;
-    const path = join2(dir, `hf-${stamp2}-${safeTarget}${suffix}.md`);
-    if (!await fs.exists(path)) return path;
   }
 }
 var init_collaborationOps = __esm({
@@ -1762,7 +1640,6 @@ __export(ops_exports, {
   forceRelease: () => forceRelease,
   forkNode: () => forkNode,
   grantReadable: () => grantReadable,
-  handoff: () => handoff,
   patchBody: () => patchBody,
   patchBox: () => patchBox,
   placeBox: () => placeBox,
@@ -1782,15 +1659,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
-  const handoffPath = options.handoffPath?.trim() || "";
-  let resolvedHandoffPath = handoffPath;
-  if (!userPrompt && !handoffPath) {
-    throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
-  }
-  if (handoffPath) {
-    if (claim.root) throw new Error("handoff \u5FC5\u987B\u6D3E\u5230\u5176\u6307\u5B9A box,\u4E0D\u80FD\u6D3E\u5230\u5E10\u6839");
-    resolvedHandoffPath = (await validateDispatchHandoff(env.fs, handoffPath, claim.box.id, roleName)).path;
-  }
+  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -1822,18 +1691,20 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     role: roleName,
     claims: taskClaims,
     manifestPath,
-    userPrompt: options.userPrompt,
-    handoffPath: resolvedHandoffPath || void 0,
+    userPrompt,
     workspace: options.workspace,
     dispatchedBy: options.dispatchedBy
   });
-  const relayPrompt = relayPromptForTask({
-    path: taskPath,
-    role: roleName,
-    claims: taskClaims.map((taskClaim) => taskClaim.id),
-    manifest: manifestPath,
-    status: "pending"
-  });
+  const relayPrompt = relayPromptForTask(
+    {
+      path: taskPath,
+      role: roleName,
+      claims: taskClaims.map((taskClaim) => taskClaim.id),
+      manifest: manifestPath,
+      status: "pending"
+    },
+    env.tentRoot || env.tentName
+  );
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
@@ -2152,7 +2023,6 @@ var init_ops = __esm({
     init_typeRegistry();
     init_skillRoleRegistry();
     init_task();
-    init_handoff();
     init_report();
     init_collaborationOps();
     init_forkOps();
@@ -2300,7 +2170,6 @@ init_typeRegistry();
 init_skillRoleRegistry();
 init_claim();
 init_proposal();
-init_handoff();
 init_report();
 init_task();
 
@@ -2712,6 +2581,12 @@ function showsUnstampedState(node) {
 }
 function statuslessDirectChildren(node) {
   return node.children.filter((child) => child.fm.status === void 0);
+}
+function bottomTabCounts(input) {
+  return {
+    dispatch: input.pendingDispatches,
+    triage: input.openProposals + input.readyReports
+  };
 }
 function createRegistryPaneState() {
   return {
@@ -3454,8 +3329,7 @@ var TimedCache = class {
 };
 
 // src/plugin/pending-dispatch.ts
-function pendingDispatches(tasks, ownerFor, tentName) {
-  void tentName;
+function pendingDispatches(tasks) {
   const latestByBox = /* @__PURE__ */ new Map();
   for (const task of [...tasks].sort(compareTaskOrder)) {
     for (const boxId of task.claims) {
@@ -3465,7 +3339,6 @@ function pendingDispatches(tasks, ownerFor, tentName) {
   const pending = [];
   for (const [boxId, task] of latestByBox) {
     if (task.status === "taken") continue;
-    if (ownerFor(boxId) !== task.role) continue;
     pending.push({ boxId, task });
   }
   return pending;
@@ -3491,7 +3364,6 @@ var TentView = class extends import_obsidian4.ItemView {
     this.selectedId = null;
     this.tent = null;
     this.proposals = [];
-    this.handoffs = [];
     this.reports = [];
     this.tasks = [];
     this.inbox = [];
@@ -3579,6 +3451,7 @@ var TentView = class extends import_obsidian4.ItemView {
       fs: new ObsidianFs(this.app, this.tentRootPath()),
       clock: new SystemClock(),
       tentName: this.tentName,
+      tentRoot: this.tentRootAbsolutePath() ?? this.tentRootPath(),
       rand: Math.random
     };
   }
@@ -3600,7 +3473,6 @@ var TentView = class extends import_obsidian4.ItemView {
         await this.adoptNativeCopies(fs);
         this.tent = await loadTent(fs);
         this.proposals = await loadProposals(fs);
-        this.handoffs = await loadHandoffs(fs);
         this.reports = await loadReports(fs);
         this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(fs, this.tent, this.proposals);
@@ -3610,7 +3482,6 @@ var TentView = class extends import_obsidian4.ItemView {
       } catch (e) {
         this.tent = null;
         this.proposals = [];
-        this.handoffs = [];
         this.reports = [];
         this.tasks = [];
         this.inbox = [];
@@ -3632,17 +3503,7 @@ var TentView = class extends import_obsidian4.ItemView {
       this.pendingDispatchByBox = /* @__PURE__ */ new Map();
       return;
     }
-    const reportsByBox = new Set(this.reports.map((report) => report.boxId));
-    this.pendingDispatchItems = pendingDispatches(
-      this.tasks,
-      (boxId) => {
-        const box = tent.byId.get(boxId);
-        if (!box || box.invalid || box.archived || box.fm.status === "done") return void 0;
-        if (reportsByBox.has(boxId)) return void 0;
-        return box.fm.owner;
-      },
-      this.tentName
-    );
+    this.pendingDispatchItems = pendingDispatches(this.tasks);
     const byBox = /* @__PURE__ */ new Map();
     for (const item of this.pendingDispatchItems) {
       const current = byBox.get(item.boxId) ?? [];
@@ -4330,14 +4191,10 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     this.drawBottom(card, box);
   }
-  withTentRootPointer(relayPrompt) {
-    const abs = this.tentRootAbsolutePath();
-    return abs ? relayPrompt.replace("\u8FD9\u9876\u5E10\u7684\u6839\u76EE\u5F55", `\u8FD9\u9876\u5E10\u7684\u6839\u76EE\u5F55(${abs})`) : relayPrompt;
-  }
-  async dispatchBox(box, roleName, userPrompt, handoffPath) {
+  async dispatchBox(box, roleName, userPrompt) {
     const workspacePath = this.tent ? resolveTentWorkspace(this.tent) : void 0;
     const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, roleName) : void 0;
-    return dispatch(this.env(), box.id, roleName, { userPrompt, handoffPath, workspace });
+    return dispatch(this.env(), box.id, roleName, { userPrompt, workspace });
   }
   tentRootAbsolutePath() {
     const adapter = this.app.vault.adapter;
@@ -4508,17 +4365,22 @@ var TentView = class extends import_obsidian4.ItemView {
     const wrap = el.createDiv({ cls: "tent-bottom" });
     const head = wrap.createDiv({ cls: "tent-bottom-head" });
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
-    const mkTab = (key, label) => {
+    const counts = bottomTabCounts({
+      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
+      openProposals: this.proposals.filter((proposal) => proposal.target === box.id && proposal.status === "open").length,
+      readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length
+    });
+    const mkTab = (key, label, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
-      t.createSpan({ text: label });
+      t.createSpan({ text: count > 0 ? `${label} (${count})` : label });
       t.onclick = () => {
         this.bottomTab = key;
         this.draw();
       };
     };
     mkTab("note", "\u7B14\u8BB0");
-    mkTab("dispatch", "\u6D3E\u6D3B");
-    mkTab("triage", "\u5F85\u88C1");
+    mkTab("dispatch", "\u6D3E\u6D3B", counts.dispatch);
+    mkTab("triage", "\u5F85\u88C1", counts.triage);
     const actSlot = head.createDiv({ cls: "tent-bottom-act" });
     const body = wrap.createDiv({ cls: "tent-bottom-body" });
     if (this.bottomTab === "dispatch") {
@@ -4546,7 +4408,6 @@ var TentView = class extends import_obsidian4.ItemView {
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
-    const pendingDispatchItems = this.pendingDispatchByBox.get(box.id) ?? [];
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -4559,41 +4420,11 @@ var TentView = class extends import_obsidian4.ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposalItems.length === 0 && !owner && !report && pendingDispatchItems.length === 0) {
+    if (proposalItems.length === 0 && !owner && !report) {
       body.createDiv({ cls: "tent-bottom-empty", text: "\u65E0\u5F85\u5904\u7406" });
       return;
     }
-    if (pendingDispatchItems.length > 0) {
-      const pendingDispatch = pendingDispatchItems[0];
-      body.createDiv({ cls: "tent-triage-sec", text: "\u7B49\u5F85\u6295\u9012" });
-      const item = body.createDiv({ cls: "tent-triage-item" });
-      const main = item.createDiv({ cls: "tent-triage-main" });
-      main.createDiv({
-        cls: "tent-triage-name",
-        text: `\u7B49\u5F85\u6295\u9012\u7ED9 ${pendingDispatch.task.role}`
-      });
-      main.createDiv({
-        cls: "tent-triage-meta",
-        text: `\u590D\u5236\u6295\u9012 prompt\uFF0C\u7C98\u8D34\u5230 ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u5373\u53EF\u5F00\u5DE5\u3002`
-      });
-      const acts = item.createDiv({ cls: "tent-triage-acts" });
-      const copy = acts.createEl("button", { text: "\u590D\u5236\u6295\u9012 prompt" });
-      copy.setAttr("type", "button");
-      copy.onclick = async () => {
-        try {
-          const relayPrompt = relayPromptForTask(pendingDispatch.task);
-          await navigator.clipboard.writeText(this.withTentRootPointer(relayPrompt));
-          await this.plugin.acknowledgeDispatchTask(
-            this.tentName,
-            pendingDispatch.task.path
-          );
-          await this.refresh();
-          new import_obsidian4.Notice(`\u5DF2\u590D\u5236\uFF0C\u53BB ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u7C98\u8D34\u5373\u53EF\u3002`);
-        } catch (e) {
-          new import_obsidian4.Notice("\u590D\u5236\u5931\u8D25:" + (e instanceof Error ? e.message : e));
-        }
-      };
-    } else if (report) {
+    if (report) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u786E\u8BA4\u4EA4\u4ED8" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
@@ -4784,8 +4615,36 @@ var TentView = class extends import_obsidian4.ItemView {
     this.workspaceHeadCache.clear();
     this.roleCommitsCache.clear();
   }
-  // 派活内联:目标 role + user prompt + 可选 handoff 指针,右上「派活接力」执行
+  // 派活内联:待投递任务优先；空闲框显示目标 role + user prompt。
   drawDispatchInline(body, actSlot, box) {
+    const pendingDispatch = this.pendingDispatchByBox.get(box.id)?.[0];
+    if (pendingDispatch) {
+      body.createDiv({ cls: "tent-triage-sec", text: "\u7B49\u5F85\u6295\u9012" });
+      const item = body.createDiv({ cls: "tent-triage-item" });
+      const main = item.createDiv({ cls: "tent-triage-main" });
+      main.createDiv({
+        cls: "tent-triage-name",
+        text: `\u7B49\u5F85\u6295\u9012\u7ED9 ${pendingDispatch.task.role}`
+      });
+      main.createDiv({
+        cls: "tent-triage-meta",
+        text: "\u590D\u5236\u540E\u53EF\u65B0\u5F00\u6216\u590D\u7528\u76EE\u6807 role \u7684\u4F1A\u8BDD\uFF1B\u53EA\u6709 agent \u6267\u884C task-ack \u540E\uFF0C\u6B64\u6761\u76EE\u624D\u4F1A\u6E05\u9664\u3002"
+      });
+      const acts = item.createDiv({ cls: "tent-triage-acts" });
+      const copy = acts.createEl("button", { text: "\u590D\u5236\u6295\u9012 prompt" });
+      copy.setAttr("type", "button");
+      copy.onclick = async () => {
+        try {
+          const tentRoot = this.tentRootAbsolutePath();
+          if (!tentRoot) throw new Error("\u65E0\u6CD5\u89E3\u6790 Tent \u6839\u7EDD\u5BF9\u8DEF\u5F84");
+          await navigator.clipboard.writeText(relayPromptForTask(pendingDispatch.task, tentRoot));
+          new import_obsidian4.Notice(`\u5DF2\u590D\u5236\uFF0C\u53BB ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u7C98\u8D34\u5373\u53EF\u3002`);
+        } catch (e) {
+          new import_obsidian4.Notice("\u590D\u5236\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+        }
+      };
+      return;
+    }
     if (box.fm.owner) {
       const state = body.createDiv({ cls: "tent-content-intro is-stacked" });
       state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} \u6B63\u5728\u5904\u7406\u6B64\u6846` });
@@ -4819,65 +4678,26 @@ var TentView = class extends import_obsidian4.ItemView {
       prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
     };
     prompt.oninput = resizePrompt;
-    const handoffSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-handoff-row" });
-    const handoffTitle = handoffSection.createSpan({ cls: "tent-prop-key", text: "handoff" });
-    const handoffControl = handoffSection.createDiv({ cls: "tent-dispatch-control tent-dispatch-handoff-control" });
-    handoffControl.createSpan({ cls: "tent-dispatch-from", text: "from" });
-    const availableHandoffs = this.handoffs.filter((handoff2) => handoff2.targetId === box.id);
-    let handoffSelect = null;
-    if (availableHandoffs.length === 0) {
-      handoffControl.createSpan({ cls: "tent-dispatch-readonly", text: "\u2014" });
-    } else {
-      handoffSelect = createChevronSelect(handoffControl, {
-        cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-handoff-select",
-        options: [
-          { value: "", label: "(\u4E0D\u4F7F\u7528)" },
-          ...availableHandoffs.map((handoff2) => ({ value: handoff2.path, label: handoff2.fromRole }))
-        ]
-      });
-    }
-    const handoffPreview = handoffSection.createDiv({ cls: "tent-dispatch-handoff-preview is-hidden" });
-    const syncHandoffRole = () => {
-      const selected = availableHandoffs.find((handoff2) => handoff2.path === handoffSelect?.value);
-      handoffTitle.setText("handoff");
-      handoffPreview.setText(selected?.body || "");
-      handoffPreview.toggleClass("is-hidden", !selected);
-      roleSelect.disabled = !!selected;
-      manualRole.disabled = !!selected;
-      if (selected) {
-        const registered = this.roles.some((role) => role.name === selected.targetRole);
-        roleSelect.value = registered ? selected.targetRole : "";
-        manualRole.value = registered ? "" : selected.targetRole;
-        manualRole.toggleClass("is-hidden", registered);
-      } else {
-        manualRole.value = "";
-        manualRole.toggleClass("is-hidden", this.roles.length > 0);
-      }
-    };
-    if (handoffSelect) handoffSelect.onchange = syncHandoffRole;
     const claim = canClaim(box);
     const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "\u6D3E\u6D3B\u63A5\u529B" });
     run.setAttr("type", "button");
     run.disabled = !claim.ok;
     if (!claim.ok) tentTooltip(run, claim.reason || "");
     run.onclick = async () => {
-      const selectedHandoff = availableHandoffs.find((handoff3) => handoff3.path === handoffSelect?.value);
-      const roleName = selectedHandoff?.targetRole || roleSelect.value.trim() || manualRole.value.trim();
+      const roleName = roleSelect.value.trim() || manualRole.value.trim();
       if (!roleName) {
         new import_obsidian4.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
         return;
       }
       const localPrompt = prompt.value.trim();
-      const handoff2 = selectedHandoff?.path || "";
-      if (!localPrompt && !handoff2) {
-        new import_obsidian4.Notice("\u8BF7\u586B\u5199 user prompt \u6216 handoff \u6307\u9488");
+      if (!localPrompt) {
+        new import_obsidian4.Notice("\u8BF7\u586B\u5199 user prompt");
         return;
       }
       try {
-        const r = await this.dispatchBox(box, roleName, localPrompt, handoff2 || void 0);
+        const r = await this.dispatchBox(box, roleName, localPrompt);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
-          await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
-          await this.plugin.acknowledgeDispatchTask(this.tentName, r.taskPath);
+          await navigator.clipboard.writeText(r.relayPrompt);
           new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
         } else {
           new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
@@ -5049,8 +4869,7 @@ var DEFAULT_SETTINGS = {
   activeTent: "",
   appearance: "follow",
   dispatchPrefs: {
-    copyPromptToClipboard: true,
-    acknowledgedTasks: []
+    copyPromptToClipboard: true
   },
   triageReminder: "status",
   newTentDefaults: {
@@ -5098,10 +4917,7 @@ function mergeSettings(raw) {
     activeTent: typeof saved.activeTent === "string" ? saved.activeTent : "",
     appearance,
     dispatchPrefs: {
-      copyPromptToClipboard: typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean" ? saved.dispatchPrefs.copyPromptToClipboard : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
-      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks) ? saved.dispatchPrefs.acknowledgedTasks.filter(
-        (item) => typeof item === "string"
-      ).slice(-500) : []
+      copyPromptToClipboard: typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean" ? saved.dispatchPrefs.copyPromptToClipboard : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard
     },
     triageReminder,
     newTentDefaults: {
@@ -5417,8 +5233,6 @@ function settingHeading(parent, name) {
 }
 
 // src/plugin/main.ts
-init_task();
-init_adapter();
 var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 var TentPlugin = class extends import_obsidian6.Plugin {
   constructor() {
@@ -5475,11 +5289,11 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     this.statusEl.empty();
     this.statusEl.createSpan({ text: "\u26FA " });
     this.statusEl.createSpan({
-      text: pending > 0 ? `${pending} \u5F85\u88C1` : "\u5E10\u5185\u65E0\u4E8B",
+      text: pending > 0 ? `${pending} \u5F85\u5904\u7406` : "\u5E10\u5185\u65E0\u4E8B",
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian6.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
+      new import_obsidian6.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u5904\u7406`);
     }
   }
   refreshStatusPreference() {
@@ -5490,10 +5304,6 @@ var TentPlugin = class extends import_obsidian6.Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
-  }
-  async acknowledgeDispatchTask(tentName, taskPath) {
-    const fs = new ObsidianFs(this.app, `${this.settings.tentsRoot}/${tentName}`);
-    await withTentMutation(fs, () => ackTaskEnvelope(fs, taskPath));
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {

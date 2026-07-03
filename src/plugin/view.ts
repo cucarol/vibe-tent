@@ -15,7 +15,6 @@ import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
 import { loadProposals, buildInbox, pendingCount, countByTarget, Proposal, InboxItem } from "../core/proposal.js";
-import { loadHandoffs, type Handoff } from "../core/handoff.js";
 import { loadReports, rejectReport, type DeliveryReport } from "../core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
@@ -43,6 +42,7 @@ import {
 } from "./registry-pane.js";
 import {
   capturePaneScroll,
+  bottomTabCounts,
   restorePaneScroll,
   showsUnstampedState,
   statuslessDirectChildren,
@@ -81,7 +81,6 @@ export class TentView extends ItemView {
   private selectedId: string | null = null;
   private tent: LoadedTent | null = null;
   private proposals: Proposal[] = [];
-  private handoffs: Handoff[] = [];
   private reports: DeliveryReport[] = [];
   private tasks: TaskEnvelope[] = [];
   private inbox: InboxItem[] = [];
@@ -183,6 +182,7 @@ export class TentView extends ItemView {
       fs: new ObsidianFs(this.app, this.tentRootPath()),
       clock: new SystemClock(),
       tentName: this.tentName,
+      tentRoot: this.tentRootAbsolutePath() ?? this.tentRootPath(),
       rand: Math.random,
     };
   }
@@ -208,7 +208,6 @@ export class TentView extends ItemView {
         await this.adoptNativeCopies(fs);
         this.tent = await loadTent(fs);
         this.proposals = await loadProposals(fs);
-        this.handoffs = await loadHandoffs(fs);
         this.reports = await loadReports(fs);
         this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(fs, this.tent, this.proposals);
@@ -218,7 +217,6 @@ export class TentView extends ItemView {
       } catch (e) {
         this.tent = null;
         this.proposals = [];
-        this.handoffs = [];
         this.reports = [];
         this.tasks = [];
         this.inbox = [];
@@ -243,17 +241,7 @@ export class TentView extends ItemView {
       this.pendingDispatchByBox = new Map();
       return;
     }
-    const reportsByBox = new Set(this.reports.map((report) => report.boxId));
-    this.pendingDispatchItems = pendingDispatches(
-      this.tasks,
-      (boxId) => {
-        const box = tent.byId.get(boxId);
-        if (!box || box.invalid || box.archived || box.fm.status === "done") return undefined;
-        if (reportsByBox.has(boxId)) return undefined;
-        return box.fm.owner;
-      },
-      this.tentName
-    );
+    this.pendingDispatchItems = pendingDispatches(this.tasks);
     const byBox = new Map<string, PendingDispatch[]>();
     for (const item of this.pendingDispatchItems) {
       const current = byBox.get(item.boxId) ?? [];
@@ -1082,15 +1070,10 @@ export class TentView extends ItemView {
     this.drawBottom(card, box);
   }
 
-  private withTentRootPointer(relayPrompt: string): string {
-    const abs = this.tentRootAbsolutePath();
-    return abs ? relayPrompt.replace("这顶帐的根目录", `这顶帐的根目录(${abs})`) : relayPrompt;
-  }
-
-  private async dispatchBox(box: Box, roleName: string, userPrompt: string, handoffPath?: string) {
+  private async dispatchBox(box: Box, roleName: string, userPrompt: string) {
     const workspacePath = this.tent ? resolveTentWorkspace(this.tent) : undefined;
     const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, roleName) : undefined;
-    return dispatch(this.env(), box.id, roleName, { userPrompt, handoffPath, workspace });
+    return dispatch(this.env(), box.id, roleName, { userPrompt, workspace });
   }
 
   private tentRootAbsolutePath(): string | null {
@@ -1273,17 +1256,22 @@ export class TentView extends ItemView {
     const wrap = el.createDiv({ cls: "tent-bottom" });
     const head = wrap.createDiv({ cls: "tent-bottom-head" });
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
-    const mkTab = (key: "note" | "dispatch" | "triage", label: string) => {
+    const counts = bottomTabCounts({
+      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
+      openProposals: this.proposals.filter((proposal) => proposal.target === box.id && proposal.status === "open").length,
+      readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length,
+    });
+    const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
-      t.createSpan({ text: label });
+      t.createSpan({ text: count > 0 ? `${label} (${count})` : label });
       t.onclick = () => {
         this.bottomTab = key;
         this.draw();
       };
     };
     mkTab("note", "笔记");
-    mkTab("dispatch", "派活");
-    mkTab("triage", "待裁");
+    mkTab("dispatch", "派活", counts.dispatch);
+    mkTab("triage", "待裁", counts.triage);
     const actSlot = head.createDiv({ cls: "tent-bottom-act" });
     const body = wrap.createDiv({ cls: "tent-bottom-body" });
 
@@ -1315,7 +1303,6 @@ export class TentView extends ItemView {
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
-    const pendingDispatchItems = this.pendingDispatchByBox.get(box.id) ?? [];
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -1328,42 +1315,12 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposalItems.length === 0 && !owner && !report && pendingDispatchItems.length === 0) {
+    if (proposalItems.length === 0 && !owner && !report) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
     }
 
-    if (pendingDispatchItems.length > 0) {
-      const pendingDispatch = pendingDispatchItems[0];
-      body.createDiv({ cls: "tent-triage-sec", text: "等待投递" });
-      const item = body.createDiv({ cls: "tent-triage-item" });
-      const main = item.createDiv({ cls: "tent-triage-main" });
-      main.createDiv({
-        cls: "tent-triage-name",
-        text: `等待投递给 ${pendingDispatch.task.role}`,
-      });
-      main.createDiv({
-        cls: "tent-triage-meta",
-        text: `复制投递 prompt，粘贴到 ${pendingDispatch.task.role} 的 agent 会话即可开工。`,
-      });
-      const acts = item.createDiv({ cls: "tent-triage-acts" });
-      const copy = acts.createEl("button", { text: "复制投递 prompt" });
-      copy.setAttr("type", "button");
-      copy.onclick = async () => {
-        try {
-          const relayPrompt = relayPromptForTask(pendingDispatch.task);
-          await navigator.clipboard.writeText(this.withTentRootPointer(relayPrompt));
-          await this.plugin.acknowledgeDispatchTask(
-            this.tentName,
-            pendingDispatch.task.path
-          );
-          await this.refresh();
-          new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
-        } catch (e) {
-          new Notice("复制失败:" + (e instanceof Error ? e.message : e));
-        }
-      };
-    } else if (report) {
+    if (report) {
       body.createDiv({ cls: "tent-triage-sec", text: "待确认交付" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
@@ -1567,8 +1524,37 @@ export class TentView extends ItemView {
     this.roleCommitsCache.clear();
   }
 
-  // 派活内联:目标 role + user prompt + 可选 handoff 指针,右上「派活接力」执行
+  // 派活内联:待投递任务优先；空闲框显示目标 role + user prompt。
   private drawDispatchInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
+    const pendingDispatch = this.pendingDispatchByBox.get(box.id)?.[0];
+    if (pendingDispatch) {
+      body.createDiv({ cls: "tent-triage-sec", text: "等待投递" });
+      const item = body.createDiv({ cls: "tent-triage-item" });
+      const main = item.createDiv({ cls: "tent-triage-main" });
+      main.createDiv({
+        cls: "tent-triage-name",
+        text: `等待投递给 ${pendingDispatch.task.role}`,
+      });
+      main.createDiv({
+        cls: "tent-triage-meta",
+        text: "复制后可新开或复用目标 role 的会话；只有 agent 执行 task-ack 后，此条目才会清除。",
+      });
+      const acts = item.createDiv({ cls: "tent-triage-acts" });
+      const copy = acts.createEl("button", { text: "复制投递 prompt" });
+      copy.setAttr("type", "button");
+      copy.onclick = async () => {
+        try {
+          const tentRoot = this.tentRootAbsolutePath();
+          if (!tentRoot) throw new Error("无法解析 Tent 根绝对路径");
+          await navigator.clipboard.writeText(relayPromptForTask(pendingDispatch.task, tentRoot));
+          new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
+        } catch (e) {
+          new Notice("复制失败:" + (e instanceof Error ? e.message : e));
+        }
+      };
+      return;
+    }
+
     if (box.fm.owner) {
       const state = body.createDiv({ cls: "tent-content-intro is-stacked" });
       state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} 正在处理此框` });
@@ -1605,67 +1591,26 @@ export class TentView extends ItemView {
     };
     prompt.oninput = resizePrompt;
 
-    const handoffSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-handoff-row" });
-    const handoffTitle = handoffSection.createSpan({ cls: "tent-prop-key", text: "handoff" });
-    const handoffControl = handoffSection.createDiv({ cls: "tent-dispatch-control tent-dispatch-handoff-control" });
-    handoffControl.createSpan({ cls: "tent-dispatch-from", text: "from" });
-    const availableHandoffs = this.handoffs.filter((handoff) => handoff.targetId === box.id);
-    let handoffSelect: HTMLSelectElement | null = null;
-    if (availableHandoffs.length === 0) {
-      handoffControl.createSpan({ cls: "tent-dispatch-readonly", text: "—" });
-    } else {
-      handoffSelect = createChevronSelect(handoffControl, {
-        cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-handoff-select",
-        options: [
-          { value: "", label: "(不使用)" },
-          ...availableHandoffs.map((handoff) => ({ value: handoff.path, label: handoff.fromRole })),
-        ],
-      });
-    }
-    const handoffPreview = handoffSection.createDiv({ cls: "tent-dispatch-handoff-preview is-hidden" });
-
-    const syncHandoffRole = () => {
-      const selected = availableHandoffs.find((handoff) => handoff.path === handoffSelect?.value);
-      handoffTitle.setText("handoff");
-      handoffPreview.setText(selected?.body || "");
-      handoffPreview.toggleClass("is-hidden", !selected);
-      roleSelect.disabled = !!selected;
-      manualRole.disabled = !!selected;
-      if (selected) {
-        const registered = this.roles.some((role) => role.name === selected.targetRole);
-        roleSelect.value = registered ? selected.targetRole : "";
-        manualRole.value = registered ? "" : selected.targetRole;
-        manualRole.toggleClass("is-hidden", registered);
-      } else {
-        manualRole.value = "";
-        manualRole.toggleClass("is-hidden", this.roles.length > 0);
-      }
-    };
-    if (handoffSelect) handoffSelect.onchange = syncHandoffRole;
-
     const claim = canClaim(box);
     const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "派活接力" });
     run.setAttr("type", "button");
     run.disabled = !claim.ok;
     if (!claim.ok) tentTooltip(run, claim.reason || "");
     run.onclick = async () => {
-      const selectedHandoff = availableHandoffs.find((handoff) => handoff.path === handoffSelect?.value);
-      const roleName = selectedHandoff?.targetRole || roleSelect.value.trim() || manualRole.value.trim();
+      const roleName = roleSelect.value.trim() || manualRole.value.trim();
       if (!roleName) {
         new Notice("请选择或输入 role");
         return;
       }
       const localPrompt = prompt.value.trim();
-      const handoff = selectedHandoff?.path || "";
-      if (!localPrompt && !handoff) {
-        new Notice("请填写 user prompt 或 handoff 指针");
+      if (!localPrompt) {
+        new Notice("请填写 user prompt");
         return;
       }
       try {
-        const r = await this.dispatchBox(box, roleName, localPrompt, handoff || undefined);
+        const r = await this.dispatchBox(box, roleName, localPrompt);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
-          await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
-          await this.plugin.acknowledgeDispatchTask(this.tentName, r.taskPath);
+          await navigator.clipboard.writeText(r.relayPrompt);
           new Notice("已派活。已复制接力 prompt,去目标 agent 会话粘贴。", 6000);
         } else {
           new Notice("已派活。接力 prompt 已生成。", 6000);

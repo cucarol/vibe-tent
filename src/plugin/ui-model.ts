@@ -23,6 +23,12 @@ export interface PaneScrollPositions {
   property: number;
 }
 
+export interface BottomTabCountInput {
+  pendingDispatches: number;
+  openProposals: number;
+  readyReports: number;
+}
+
 export interface TreeCountNode {
   children: TreeCountNode[];
 }
@@ -74,6 +80,13 @@ export function showsUnstampedState(node: LifecycleNode): boolean {
 
 export function statuslessDirectChildren<T extends LifecycleTreeNode>(node: T): T["children"] {
   return node.children.filter((child) => child.fm.status === undefined) as T["children"];
+}
+
+export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
+  return {
+    dispatch: input.pendingDispatches,
+    triage: input.openProposals + input.readyReports,
+  };
 }
 
 export function createRegistryPaneState(): RegistryPaneState {
