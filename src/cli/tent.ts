@@ -58,7 +58,7 @@ import { parseOutputPointer } from "../core/output.js";
 import { migrateKindToType } from "../core/typeManagement.js";
 import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
-import { ensureRoleInit } from "../core/task.js";
+import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
 import { withTentMutation } from "../core/adapter.js";
@@ -103,19 +103,34 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>] [--as-sub --by <role>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
       const tent = await loadTent(env.fs);
       const workspacePath = resolveTentWorkspace(tent);
-      const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
+      const dispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
+      let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
+      if (flags["as-sub"]) {
+        if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
+        if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
+        workspace = { ...(workspace ?? await ensureRoleWorkspace(workspacePath, role)), targetBranch: dispatcherWorkspace.branch };
+      }
       const r = await dispatch(env, claimId, role, {
         userPrompt: localPrompt,
         handoffPath: flags.handoff,
         workspace,
+        dispatchedBy: dispatcher,
       });
       console.log(`✓ Dispatched. Task: ${r.taskPath}\n\n--- Relay prompt ---\n${r.relayPrompt}`);
+      break;
+    }
+    case "task-ack": {
+      const taskPath = args[0];
+      if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
+      await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
+      console.log(`✓ Task acknowledged: ${taskPath}`);
       break;
     }
     case "role-init": {
@@ -368,7 +383,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -408,7 +423,7 @@ function fail(msg: string) {
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
-  const booleanFlags = new Set(["force", "yes"]);
+  const booleanFlags = new Set(["force", "yes", "as-sub"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -511,6 +526,7 @@ Commands:
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
   dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
+  task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId>                   Confirm completion and release owner.
   force-release <boxId>              Release owner without accepting delivery.

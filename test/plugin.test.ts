@@ -7,6 +7,7 @@ import {
   pendingDispatches,
   rememberDispatchAck,
 } from "../src/plugin/pending-dispatch.js";
+import type { TaskEnvelope } from "../src/core/task.js";
 import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
@@ -86,36 +87,41 @@ test("plugin ui-model:collapsed rows include hidden descendant triage counts", (
 });
 
 test("plugin pending dispatch:newest matching task wins and acknowledgement clears every claim", () => {
-  const tasks = [
+  const tasks: TaskEnvelope[] = [
     {
       path: "temp/executor/tasks/task-20260703T08000-bx-one.md",
       role: "executor",
       claims: ["bx-one"],
       manifest: "temp/executor/manifest.yml",
+      status: "pending",
     },
     {
       path: "temp/executor/tasks/task-20260703T08100-bx-one.md",
       role: "executor",
       claims: ["bx-one", "bx-two", "root"],
       manifest: "temp/executor/manifest.yml",
+      status: "pending",
     },
     {
       path: "temp/planner/tasks/task-20260703T08200-bx-three.md",
       role: "planner",
       claims: ["bx-three"],
       manifest: "temp/planner/manifest.yml",
+      status: "pending",
     },
     {
       path: "temp/zeta/tasks/task-20260703T07000-bx-four.md",
       role: "zeta",
       claims: ["bx-four"],
       manifest: "temp/zeta/manifest.yml",
+      status: "pending",
     },
     {
       path: "temp/alpha/tasks/task-20260703T09000-bx-four.md",
       role: "alpha",
       claims: ["bx-four"],
       manifest: "temp/alpha/manifest.yml",
+      status: "pending",
     },
   ];
   const owners = new Map([
@@ -126,7 +132,7 @@ test("plugin pending dispatch:newest matching task wins and acknowledgement clea
   ]);
   const ownerFor = (boxId: string) => owners.get(boxId);
 
-  const pending = pendingDispatches(tasks, new Set(), ownerFor, "tent-dev");
+  const pending = pendingDispatches(tasks, ownerFor, "tent-dev");
   assert.deepEqual(
     pending
       .map((item) => [item.boxId, item.task.path])
@@ -138,9 +144,9 @@ test("plugin pending dispatch:newest matching task wins and acknowledgement clea
     ],
   );
 
-  const acknowledged = new Set([dispatchAckKey("tent-dev", tasks[1].path)]);
+  tasks[1].status = "taken";
   assert.deepEqual(
-    pendingDispatches(tasks, acknowledged, ownerFor, "tent-dev").map((item) => item.boxId),
+    pendingDispatches(tasks, ownerFor, "tent-dev").map((item) => item.boxId),
     ["bx-four"],
   );
 });
