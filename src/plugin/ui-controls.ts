@@ -1,6 +1,6 @@
 import { setIcon } from "obsidian";
-import type { RoleDefinition } from "../core/skillRoleRegistry.js";
-import { TYPE_COLORS, typeColorValue } from "./colors.js";
+import { rwSegmentStates } from "./ui-model.js";
+export { roleColorValue } from "./ui-model.js";
 
 export interface SelectOption {
   value: string;
@@ -35,31 +35,11 @@ export function drawRwSegment(
     cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : ""),
   });
   segment.createSpan({ cls: "tent-seg-key", text: key === "readable" ? "R" : "W" });
-  const states: Array<{ label: string; value: boolean | undefined }> = allowInherit
-    ? [
-        { label: "继承", value: undefined },
-        { label: "开", value: true },
-        { label: "关", value: false },
-      ]
-    : [
-        { label: "开", value: true },
-        { label: "关", value: false },
-      ];
-  for (const state of states) {
+  for (const state of rwSegmentStates(declared, allowInherit)) {
     const option = segment.createDiv({
-      cls: "tent-status-segment-option" + (declared === state.value ? " is-active" : ""),
+      cls: "tent-status-segment-option" + (state.active ? " is-active" : ""),
       text: state.label,
     });
     if (!readonly) option.onclick = () => onChange(state.value);
   }
-}
-
-export function roleColorValue(role: RoleDefinition): string {
-  if (role.color) return typeColorValue(role.color);
-  const normalized = role.name.toLowerCase();
-  if (normalized.includes("planner")) return typeColorValue("purple");
-  if (normalized.includes("executor")) return typeColorValue("cyan");
-  if (normalized.includes("ui")) return typeColorValue("orange");
-  const hash = [...role.name].reduce((total, character) => total + character.charCodeAt(0), 0);
-  return typeColorValue(TYPE_COLORS[hash % TYPE_COLORS.length]);
 }

@@ -15,17 +15,8 @@ import {
 import type { TypeDefinition, TypeRegistry, TypeTier } from "../core/typeRegistry.js";
 import { TYPE_COLORS, typeColorValue } from "./colors.js";
 import { drawRwSegment, roleColorValue } from "./ui-controls.js";
-
-type RegistrySection = "type" | "kind" | "roles";
-
-export interface RegistryPaneState {
-  markedRoles: Set<string>;
-  markedTypes: Set<string>;
-  collapsed: Record<RegistrySection, boolean>;
-  typeCollapsed: boolean;
-  newFormOpen: RegistrySection | null;
-  openEditor: string | null;
-}
+import type { RegistryPaneState, RegistrySection } from "./ui-model.js";
+export { createRegistryPaneState } from "./ui-model.js";
 
 export interface RegistryPaneContext {
   fs: FsAdapter;
@@ -35,17 +26,6 @@ export interface RegistryPaneContext {
   refresh(): Promise<void>;
   getPendingDelete(): string | null;
   setPendingDelete(value: string | null): void;
-}
-
-export function createRegistryPaneState(): RegistryPaneState {
-  return {
-    markedRoles: new Set<string>(),
-    markedTypes: new Set<string>(),
-    collapsed: { type: false, kind: false, roles: false },
-    typeCollapsed: false,
-    newFormOpen: null,
-    openEditor: null,
-  };
 }
 
 export function drawRegistryPane(
