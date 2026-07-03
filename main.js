@@ -1950,10 +1950,10 @@ __export(main_exports, {
   default: () => TentPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian3 = require("obsidian");
+var import_obsidian4 = require("obsidian");
 
 // src/plugin/view.ts
-var import_obsidian2 = require("obsidian");
+var import_obsidian3 = require("obsidian");
 var nodePath3 = __toESM(require("node:path"), 1);
 
 // src/plugin/obsidian-fs.ts
@@ -2569,6 +2569,20 @@ function git(cwd, args) {
   });
 }
 
+// src/plugin/ui-controls.ts
+var import_obsidian2 = require("obsidian");
+function createChevronSelect(parent, options) {
+  const wrap = parent.createDiv({ cls: "tent-select-wrap" });
+  const select = wrap.createEl("select", { cls: options.cls ?? "" });
+  for (const item of options.options) {
+    const opt = select.createEl("option", { text: item.label ?? item.value, value: item.value });
+    if (item.selected) opt.selected = true;
+  }
+  const icon = wrap.createSpan({ cls: "tent-select-chevron" });
+  (0, import_obsidian2.setIcon)(icon, "chevron-down");
+  return select;
+}
+
 // src/plugin/view.ts
 init_ops();
 var TENT_VIEW_TYPE = "tent-structure-editor";
@@ -2577,7 +2591,7 @@ var MIN_TREE_COLUMN = 250;
 var MIN_PROPERTY_COLUMN = 320;
 var COLUMN_DIVIDER = 6;
 var GIT_UI_CACHE_TTL_MS = 6e3;
-var TentView = class extends import_obsidian2.ItemView {
+var TentView = class extends import_obsidian3.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
     this.plugin = plugin;
@@ -2671,7 +2685,7 @@ var TentView = class extends import_obsidian2.ItemView {
     return this.plugin.settings.tentsRoot;
   }
   tentRootPath() {
-    return (0, import_obsidian2.normalizePath)(`${this.tentsRoot}/${this.tentName}`);
+    return (0, import_obsidian3.normalizePath)(`${this.tentsRoot}/${this.tentName}`);
   }
   env() {
     return {
@@ -2738,7 +2752,7 @@ var TentView = class extends import_obsidian2.ItemView {
   }
   async patchBoxIncremental(box, patch) {
     if (!this.tent) return;
-    const notePath = (0, import_obsidian2.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2e3);
     try {
       await patchBox(this.env(), box.path, patch, this.tent);
@@ -2751,7 +2765,7 @@ var TentView = class extends import_obsidian2.ItemView {
   }
   async patchBodyIncremental(box, body) {
     if (!this.tent) return;
-    const notePath = (0, import_obsidian2.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
+    const notePath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${boxNotePath(box.path)}`);
     this.ignoredVaultChanges.set(notePath, Date.now() + 2e3);
     try {
       await patchBody(this.env(), box.path, body, this.tent);
@@ -2839,7 +2853,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const right = bar.createDiv({ cls: "tent-topbar-right" });
     const typesBtn = right.createEl("button", { cls: "tent-types-btn" });
     typesBtn.setAttr("type", "button");
-    (0, import_obsidian2.setIcon)(typesBtn, "settings");
+    (0, import_obsidian3.setIcon)(typesBtn, "settings");
     tentTooltip(typesBtn, "\u7C7B\u578B\u7BA1\u7406");
     typesBtn.addEventListener("click", (e) => {
       e.preventDefault();
@@ -2850,7 +2864,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const themeBtn = right.createEl("button", { cls: "tent-theme-btn" });
     themeBtn.setAttr("type", "button");
     const appearance = this.plugin.settings.appearance;
-    (0, import_obsidian2.setIcon)(themeBtn, appearance === "follow" ? "monitor" : appearance === "dark" ? "moon" : "sun");
+    (0, import_obsidian3.setIcon)(themeBtn, appearance === "follow" ? "monitor" : appearance === "dark" ? "moon" : "sun");
     tentTooltip(themeBtn, appearance === "follow" ? "\u8DDF\u968F Obsidian" : appearance === "dark" ? "\u6DF1\u8272" : "\u6D45\u8272");
     themeBtn.addEventListener("click", async (e) => {
       e.preventDefault();
@@ -2882,7 +2896,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const control = parent.createDiv({ cls: "tent-account-control" });
     const select = control.createEl("select", { cls: "tent-select dropdown tent-account-select" });
     const icon = control.createSpan({ cls: "tent-account-chevron" });
-    (0, import_obsidian2.setIcon)(icon, "chevron-down");
+    (0, import_obsidian3.setIcon)(icon, "chevron-down");
     if (this.tentsCache.length === 0) {
       select.createEl("option", { text: "(\u65E0\u5E10)", value: "" });
     }
@@ -2912,7 +2926,7 @@ var TentView = class extends import_obsidian2.ItemView {
   async copyGenesisPrompt() {
     const prompt = "\u8BF7\u4F7F\u7528 tent-genesis \u5E2E\u6211\u521B\u5EFA\u4E00\u9876\u65B0\u7684 Tent / \u5E37\u5E44\u5E10\u3002\u5148 grill \u6211:\u5E10\u540D\u3001\u76EE\u6807\u3001workspace \u6307\u9488\u3001\u9996\u6279\u9876\u5C42\u6846\u3001\u9996\u6279 role(name + prompt),\u7136\u540E scaffold \u5E10\u5E76\u521D\u59CB\u5316\u771F\u5B9E workspace\u3002Tent \u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002";
     await navigator.clipboard.writeText(prompt);
-    new import_obsidian2.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
+    new import_obsidian3.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
   }
   // ---- 树 ----
   drawTree(el) {
@@ -2927,7 +2941,7 @@ var TentView = class extends import_obsidian2.ItemView {
         this.drawInlineNewBoxForm(rows, "");
       } else {
         const addRow = rows.createDiv({ cls: "tent-add-top" });
-        (0, import_obsidian2.setIcon)(addRow.createSpan({ cls: "tent-add-top-ico" }), "plus");
+        (0, import_obsidian3.setIcon)(addRow.createSpan({ cls: "tent-add-top-ico" }), "plus");
         addRow.createSpan({ cls: "tent-add-top-label", text: "\u65B0\u5EFA\u9876\u5C42\u6846" });
         addRow.onclick = () => this.openNewBoxForm("");
       }
@@ -3066,7 +3080,7 @@ var TentView = class extends import_obsidian2.ItemView {
         await placeBox(this.env(), from, intent.parentPath, intent.position);
         await this.refresh();
       } catch (err) {
-        new import_obsidian2.Notice("\u79FB\u52A8\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+        new import_obsidian3.Notice("\u79FB\u52A8\u5931\u8D25:" + (err instanceof Error ? err.message : err));
       }
     });
     rows.addEventListener("dragend", () => {
@@ -3104,7 +3118,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const isCollapsed = this.treeFilter === "pending" ? false : this.collapsed.has(box.id);
     if (hasKids) {
       const chev = row.createSpan({ cls: "tent-chev" });
-      (0, import_obsidian2.setIcon)(chev, isCollapsed ? "chevron-right" : "chevron-down");
+      (0, import_obsidian3.setIcon)(chev, isCollapsed ? "chevron-right" : "chevron-down");
       chev.onclick = (e) => {
         e.stopPropagation();
         if (isCollapsed) this.collapsed.delete(box.id);
@@ -3165,18 +3179,18 @@ var TentView = class extends import_obsidian2.ItemView {
     if (box.invalid) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-invalid" });
       const ico = pill.createSpan();
-      (0, import_obsidian2.setIcon)(ico, "triangle-alert");
+      (0, import_obsidian3.setIcon)(ico, "triangle-alert");
       tentTooltip(pill, box.invalidReason || "\u5931\u6548\u6846");
     } else if (box.fm.owner) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-lock" });
       const ico = pill.createSpan();
-      (0, import_obsidian2.setIcon)(ico, "lock");
+      (0, import_obsidian3.setIcon)(ico, "lock");
       tentTooltip(pill, `\u9501\u5B9A:${box.fm.owner} \u8BA4\u9886\u4E2D`);
     } else if (st && st !== "todo") {
       const pill = rest.createSpan({ cls: `tent-slot-status tent-spill tent-spill-${st}` });
       const ico = pill.createSpan();
-      if (st === "doing") (0, import_obsidian2.setIcon)(ico, "circle-dashed");
-      else if (st === "done") (0, import_obsidian2.setIcon)(ico, "circle-check");
+      if (st === "doing") (0, import_obsidian3.setIcon)(ico, "circle-dashed");
+      else if (st === "done") (0, import_obsidian3.setIcon)(ico, "circle-check");
       tentTooltip(pill, st);
     }
     const actionBlocked = hasActiveOwnerInScope(box);
@@ -3185,14 +3199,14 @@ var TentView = class extends import_obsidian2.ItemView {
       if (actionBlocked) ops.addClass("is-disabled");
       if (box.archived) {
         const restoreBtn = ops.createSpan({ cls: "tent-slot-btn" });
-        (0, import_obsidian2.setIcon)(restoreBtn, "rotate-ccw");
+        (0, import_obsidian3.setIcon)(restoreBtn, "rotate-ccw");
         tentTooltip(restoreBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D" : "\u6062\u590D");
         restoreBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           try {
             if (actionBlocked) {
-              new import_obsidian2.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+              new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u6062\u590D;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
               return;
             }
             const root = this.requireExplicitArchiveRoot(box, "\u6062\u590D");
@@ -3200,22 +3214,22 @@ var TentView = class extends import_obsidian2.ItemView {
             const { restoreBox: restoreBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await restoreBox2(this.env(), root.id);
             await this.refresh();
-            new import_obsidian2.Notice(`\u5DF2\u6062\u590D\u300C${root.name}\u300D`);
+            new import_obsidian3.Notice(`\u5DF2\u6062\u590D\u300C${root.name}\u300D`);
           } catch (err) {
-            new import_obsidian2.Notice("\u6062\u590D\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("\u6062\u590D\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         });
         const deleteKey = `box:${box.id}`;
         const deletePending = this.pendingDelete === deleteKey;
         const deleteBtn = ops.createSpan({ cls: "tent-slot-btn tent-slot-delete" + (deletePending ? " is-confirm" : "") });
         if (deletePending) deleteBtn.setText("\u786E\u8BA4\u5220\u9664");
-        else (0, import_obsidian2.setIcon)(deleteBtn, "trash-2");
+        else (0, import_obsidian3.setIcon)(deleteBtn, "trash-2");
         tentTooltip(deleteBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664" : deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u6C38\u4E45\u5220\u9664" : "\u6C38\u4E45\u5220\u9664");
         deleteBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           if (actionBlocked) {
-            new import_obsidian2.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+            new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5220\u9664;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
             return;
           }
           const root = this.requireExplicitArchiveRoot(box, "\u5220\u9664");
@@ -3225,7 +3239,7 @@ var TentView = class extends import_obsidian2.ItemView {
             const { deleteArchivedBox: deleteArchivedBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await deleteArchivedBox2(this.env(), root.id);
             await this.refresh();
-            new import_obsidian2.Notice(`\u5DF2\u5220\u9664\u300C${root.name}\u300D`);
+            new import_obsidian3.Notice(`\u5DF2\u5220\u9664\u300C${root.name}\u300D`);
             return;
           }
           this.pendingDelete = key;
@@ -3235,26 +3249,26 @@ var TentView = class extends import_obsidian2.ItemView {
         });
       } else {
         const archBtn = ops.createSpan({ cls: "tent-slot-btn" });
-        (0, import_obsidian2.setIcon)(archBtn, "archive");
+        (0, import_obsidian3.setIcon)(archBtn, "archive");
         tentTooltip(archBtn, actionBlocked ? "\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863" : "\u5F52\u6863");
         archBtn.addEventListener("click", async (e) => {
           e.stopPropagation();
           e.preventDefault();
           if (actionBlocked) {
-            new import_obsidian2.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
+            new import_obsidian3.Notice("\u8BA4\u9886\u8303\u56F4\u5185\u4E0D\u80FD\u5F52\u6863;\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05 owner");
             return;
           }
           try {
             const { archiveBox: archiveBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await archiveBox2(this.env(), box.id);
             await this.refresh();
-            new import_obsidian2.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
+            new import_obsidian3.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian2.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         });
         const plus = ops.createSpan({ cls: "tent-slot-btn tent-slot-plus" });
-        (0, import_obsidian2.setIcon)(plus, "plus");
+        (0, import_obsidian3.setIcon)(plus, "plus");
         tentTooltip(plus, "\u65B0\u5EFA\u5B50\u6846");
         plus.addEventListener("click", (e) => {
           e.stopPropagation();
@@ -3287,7 +3301,7 @@ var TentView = class extends import_obsidian2.ItemView {
     row.createSpan({ cls: "tent-chip", text: "\u7CFB\u7EDF\u7BA1\u9053" });
     const slot = row.createSpan({ cls: "tent-slot" });
     const lock = slot.createSpan({ cls: "tent-slot-status tent-system-status" });
-    (0, import_obsidian2.setIcon)(lock, "lock");
+    (0, import_obsidian3.setIcon)(lock, "lock");
     tentTooltip(lock, "\u7CFB\u7EDF\u53EA\u8BFB\u7BA1\u9053");
     row.onclick = () => {
       this.selectedId = null;
@@ -3297,7 +3311,7 @@ var TentView = class extends import_obsidian2.ItemView {
   }
   nodeMenu(e, box) {
     e.preventDefault();
-    const menu = new import_obsidian2.Menu();
+    const menu = new import_obsidian3.Menu();
     menu.addItem((i) => i.setTitle("\u6253\u5F00\u7B14\u8BB0").setIcon("file-text").onClick(() => this.openBoxFile(box)));
     if (!box.archived && !box.invalid && box.fm.owner) {
       menu.addItem(
@@ -3325,9 +3339,9 @@ var TentView = class extends import_obsidian2.ItemView {
             this.selectedSystem = null;
             this.rightPane = "property";
             await this.refresh();
-            new import_obsidian2.Notice(`\u5DF2 Fork\u300C${box.name}\u300D`);
+            new import_obsidian3.Notice(`\u5DF2 Fork\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian2.Notice("Fork \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("Fork \u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         })
       );
@@ -3342,9 +3356,9 @@ var TentView = class extends import_obsidian2.ItemView {
             const { archiveBox: archiveBox2 } = await Promise.resolve().then(() => (init_ops(), ops_exports));
             await archiveBox2(this.env(), box.id);
             await this.refresh();
-            new import_obsidian2.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
+            new import_obsidian3.Notice(`\u5DF2\u5F52\u6863\u300C${box.name}\u300D`);
           } catch (err) {
-            new import_obsidian2.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("\u5F52\u6863\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         })
       );
@@ -3379,7 +3393,7 @@ var TentView = class extends import_obsidian2.ItemView {
     ownerBadge.setText(ownerHas ? box.fm.owner : "\u2014");
     const expandBtn = titleRow.createEl("button", { cls: "tent-prop-expand" });
     expandBtn.setAttr("type", "button");
-    (0, import_obsidian2.setIcon)(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
+    (0, import_obsidian3.setIcon)(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
     tentTooltip(expandBtn, this.propEditExpanded ? "\u6536\u8D77\u5C5E\u6027" : "\u5C55\u5F00\u5C5E\u6027");
     expandBtn.onclick = () => {
       this.propEditExpanded = !this.propEditExpanded;
@@ -3398,19 +3412,18 @@ var TentView = class extends import_obsidian2.ItemView {
       const tItem = editor.createDiv({ cls: "tent-prop-item tent-type-item" });
       tItem.createSpan({ cls: "tent-item-label", text: "type" });
       const tCtrl = tItem.createDiv({ cls: "tent-type-ctrl" });
-      const baseSel = tCtrl.createEl("select", { cls: "dropdown tent-prop-select" });
-      for (const o of bases) {
-        const opt = baseSel.createEl("option", { text: o, value: o });
-        if (o === curBase) opt.selected = true;
-      }
+      const baseSel = createChevronSelect(tCtrl, {
+        cls: "dropdown tent-prop-select",
+        options: bases.map((o) => ({ value: o, selected: o === curBase }))
+      });
       tCtrl.createSpan({ cls: "tent-tk-dash", text: "\u2014" });
-      const modSel = tCtrl.createEl("select", { cls: "dropdown tent-prop-select" });
-      const noneOpt = modSel.createEl("option", { text: "\u65E0", value: "" });
-      if (!curMod) noneOpt.selected = true;
-      for (const o of mods) {
-        const opt = modSel.createEl("option", { text: o, value: o });
-        if (o === curMod) opt.selected = true;
-      }
+      const modSel = createChevronSelect(tCtrl, {
+        cls: "dropdown tent-prop-select",
+        options: [
+          { value: "", label: "\u65E0", selected: !curMod },
+          ...mods.map((o) => ({ value: o, selected: o === curMod }))
+        ]
+      });
       baseSel.onchange = () => applyType(baseSel.value, modSel.value);
       modSel.onchange = () => applyType(baseSel.value, modSel.value);
       const rwItem = editor.createDiv({ cls: "tent-prop-item" });
@@ -3468,7 +3481,7 @@ var TentView = class extends import_obsidian2.ItemView {
   }
   tentRootAbsolutePath() {
     const adapter = this.app.vault.adapter;
-    if (!(adapter instanceof import_obsidian2.FileSystemAdapter)) return null;
+    if (!(adapter instanceof import_obsidian3.FileSystemAdapter)) return null;
     return nodePath3.join(adapter.getBasePath(), this.tentRootPath());
   }
   drawOutputSummary(el, box) {
@@ -3496,13 +3509,13 @@ var TentView = class extends import_obsidian2.ItemView {
   requireExplicitArchiveRoot(box, action) {
     const root = this.findExplicitArchiveRoot(box);
     if (!root) {
-      new import_obsidian2.Notice(`\u65E0\u6CD5${action}:\u627E\u4E0D\u5230\u663E\u5F0F\u5F52\u6863\u6839`);
+      new import_obsidian3.Notice(`\u65E0\u6CD5${action}:\u627E\u4E0D\u5230\u663E\u5F0F\u5F52\u6863\u6839`);
       return null;
     }
     if (root.id !== box.id) {
       this.selectedId = root.id;
       this.selectedSystem = null;
-      new import_obsidian2.Notice(`\u300C${box.name}\u300D\u7EE7\u627F\u81EA\u5F52\u6863\u6839\u300C${root.name}\u300D;\u8BF7\u5728\u5F52\u6863\u6839\u4E0A${action}`);
+      new import_obsidian3.Notice(`\u300C${box.name}\u300D\u7EE7\u627F\u81EA\u5F52\u6863\u6839\u300C${root.name}\u300D;\u8BF7\u5728\u5F52\u6863\u6839\u4E0A${action}`);
       this.draw();
       return null;
     }
@@ -3527,7 +3540,7 @@ var TentView = class extends import_obsidian2.ItemView {
       const chip = container.createSpan({ cls: "tent-tag-chip-selected" });
       chip.createSpan({ text: tag });
       const x = chip.createEl("i");
-      (0, import_obsidian2.setIcon)(x, "x");
+      (0, import_obsidian3.setIcon)(x, "x");
       tentTooltip(x, `\u79FB\u9664 #${tag}`);
       x.onclick = async (e) => {
         e.preventDefault();
@@ -3536,12 +3549,12 @@ var TentView = class extends import_obsidian2.ItemView {
           await removeTag(this.env().fs, box.id, tag);
           await this.refresh();
         } catch (err) {
-          new import_obsidian2.Notice("\u79FB\u9664 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+          new import_obsidian3.Notice("\u79FB\u9664 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
         }
       };
     }
     const trigger = container.createSpan({ cls: "tent-tag-trigger-btn" });
-    (0, import_obsidian2.setIcon)(trigger, this.tagPickerOpen ? "chevron-up" : "plus");
+    (0, import_obsidian3.setIcon)(trigger, this.tagPickerOpen ? "chevron-up" : "plus");
     trigger.createSpan({ text: this.tagPickerOpen ? "\u6536\u8D77" : "tag" });
     trigger.onclick = (e) => {
       e.preventDefault();
@@ -3571,7 +3584,7 @@ var TentView = class extends import_obsidian2.ItemView {
             this.pendingDelete = null;
             await this.refresh();
           } catch (err) {
-            new import_obsidian2.Notice("\u5220\u9664\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("\u5220\u9664\u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         };
         chip.onclick = async (e) => {
@@ -3584,12 +3597,12 @@ var TentView = class extends import_obsidian2.ItemView {
             await addTag(this.env().fs, box.id, tag);
             await this.refresh();
           } catch (err) {
-            new import_obsidian2.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+            new import_obsidian3.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
           }
         };
         if (!pending) {
           const x = chip.createEl("i", { cls: "tent-tag-chip-del" });
-          (0, import_obsidian2.setIcon)(x, "x");
+          (0, import_obsidian3.setIcon)(x, "x");
           tentTooltip(x, `\u4ECE\u6CE8\u518C\u8868\u5220\u9664 #${tag}`);
           x.onclick = (e) => {
             e.preventDefault();
@@ -3610,7 +3623,7 @@ var TentView = class extends import_obsidian2.ItemView {
         await addTag(this.env().fs, box.id, name);
         await this.refresh();
       } catch (err) {
-        new import_obsidian2.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
+        new import_obsidian3.Notice("\u52A0 tag \u5931\u8D25:" + (err instanceof Error ? err.message : err));
       }
     };
     submit.onclick = (e) => {
@@ -3706,9 +3719,9 @@ var TentView = class extends import_obsidian2.ItemView {
         try {
           await rejectReport(this.env().fs, report.path);
           await this.refresh();
-          new import_obsidian2.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
+          new import_obsidian3.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
         } catch (e) {
-          new import_obsidian2.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          new import_obsidian3.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
@@ -3750,10 +3763,10 @@ var TentView = class extends import_obsidian2.ItemView {
           );
           this.clearGitUiCache();
           await this.refresh();
-          new import_obsidian2.Notice(report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)");
+          new import_obsidian3.Notice(report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)");
         } catch (e) {
           done.removeAttribute("disabled");
-          new import_obsidian2.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          new import_obsidian3.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
     } else if (owner) {
@@ -3789,7 +3802,7 @@ var TentView = class extends import_obsidian2.ItemView {
             await applyProposal3(this.env(), p.path, false);
             await this.refresh();
           } catch (e) {
-            new import_obsidian2.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+            new import_obsidian3.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
           }
         };
         const acc = acts.createEl("button", { cls: "mod-cta", text: "\u91C7\u7EB3" });
@@ -3804,9 +3817,9 @@ var TentView = class extends import_obsidian2.ItemView {
             else if (invalidReason) return;
             await applyProposal3(this.env(), p.path, true);
             await this.refresh();
-            new import_obsidian2.Notice("\u5DF2\u91C7\u7EB3");
+            new import_obsidian3.Notice("\u5DF2\u91C7\u7EB3");
           } catch (e) {
-            new import_obsidian2.Notice("\u91C7\u7EB3\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+            new import_obsidian3.Notice("\u91C7\u7EB3\u5931\u8D25:" + (e instanceof Error ? e.message : e));
           }
         };
       }
@@ -3869,9 +3882,13 @@ var TentView = class extends import_obsidian2.ItemView {
     const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
     roleRow.createSpan({ cls: "tent-prop-key", text: "\u76EE\u6807 role" });
     const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
-    const roleSelect = roleControl.createEl("select", { cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select" });
-    roleSelect.createEl("option", { text: this.roles.length ? "(\u9009\u62E9)" : "(\u624B\u52A8\u8F93\u5165)", value: "" });
-    for (const role of this.roles) roleSelect.createEl("option", { text: role.name, value: role.name });
+    const roleSelect = createChevronSelect(roleControl, {
+      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
+      options: [
+        { value: "", label: this.roles.length ? "(\u9009\u62E9)" : "(\u624B\u52A8\u8F93\u5165)" },
+        ...this.roles.map((role) => ({ value: role.name, label: role.name }))
+      ]
+    });
     const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
     manualRole.toggleClass("is-hidden", this.roles.length > 0);
     roleSelect.onchange = () => {
@@ -3897,16 +3914,13 @@ var TentView = class extends import_obsidian2.ItemView {
     if (availableHandoffs.length === 0) {
       handoffControl.createSpan({ cls: "tent-dispatch-readonly", text: "\u2014" });
     } else {
-      handoffSelect = handoffControl.createEl("select", {
-        cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-handoff-select"
+      handoffSelect = createChevronSelect(handoffControl, {
+        cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-handoff-select",
+        options: [
+          { value: "", label: "(\u4E0D\u4F7F\u7528)" },
+          ...availableHandoffs.map((handoff2) => ({ value: handoff2.path, label: handoff2.fromRole }))
+        ]
       });
-      handoffSelect.createEl("option", { text: "(\u4E0D\u4F7F\u7528)", value: "" });
-      for (const handoff2 of availableHandoffs) {
-        handoffSelect.createEl("option", {
-          text: handoff2.fromRole,
-          value: handoff2.path
-        });
-      }
     }
     const handoffPreview = handoffSection.createDiv({ cls: "tent-dispatch-handoff-preview is-hidden" });
     const syncHandoffRole = () => {
@@ -3936,26 +3950,26 @@ var TentView = class extends import_obsidian2.ItemView {
       const selectedHandoff = availableHandoffs.find((handoff3) => handoff3.path === handoffSelect?.value);
       const roleName = selectedHandoff?.targetRole || roleSelect.value.trim() || manualRole.value.trim();
       if (!roleName) {
-        new import_obsidian2.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
+        new import_obsidian3.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
         return;
       }
       const localPrompt = prompt.value.trim();
       const handoff2 = selectedHandoff?.path || "";
       if (!localPrompt && !handoff2) {
-        new import_obsidian2.Notice("\u8BF7\u586B\u5199 user prompt \u6216 handoff \u6307\u9488");
+        new import_obsidian3.Notice("\u8BF7\u586B\u5199 user prompt \u6216 handoff \u6307\u9488");
         return;
       }
       try {
         const r = await this.dispatchBox(box, roleName, localPrompt, handoff2 || void 0);
         if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
           await navigator.clipboard.writeText(this.withTentRootPointer(r.relayPrompt));
-          new import_obsidian2.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
+          new import_obsidian3.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
         } else {
-          new import_obsidian2.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
+          new import_obsidian3.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
         }
         await this.refresh();
       } catch (e) {
-        new import_obsidian2.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+        new import_obsidian3.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
       }
     };
   }
@@ -4026,7 +4040,7 @@ var TentView = class extends import_obsidian2.ItemView {
   drawBlockHead(block, title, collapsed, toggle, addKey) {
     const head = block.createDiv({ cls: "reg-block-head" });
     const chev = head.createSpan({ cls: "reg-chev" });
-    (0, import_obsidian2.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian3.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
     head.createSpan({ cls: "reg-block-title", text: title });
     head.createSpan({ cls: "reg-head-rule" });
     if (addKey) this.regAddBtn(head, addKey);
@@ -4041,7 +4055,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const collapsed = this.registryCollapsed[key];
     const head = sub.createDiv({ cls: "reg-sub-head" });
     const chev = head.createSpan({ cls: "reg-chev reg-chev-sm" });
-    (0, import_obsidian2.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
+    (0, import_obsidian3.setIcon)(chev, collapsed ? "chevron-right" : "chevron-down");
     head.createSpan({ cls: "reg-sub-label", text: label });
     this.regAddBtn(head, key);
     head.onclick = () => {
@@ -4063,7 +4077,7 @@ var TentView = class extends import_obsidian2.ItemView {
       cls: "registry-add-btn" + (this.newFormOpen === key ? " is-open" : "")
     });
     add.setAttr("type", "button");
-    (0, import_obsidian2.setIcon)(add.createSpan({ cls: "rab-ico" }), "plus");
+    (0, import_obsidian3.setIcon)(add.createSpan({ cls: "rab-ico" }), "plus");
     add.setAttr("aria-label", "\u65B0\u5EFA");
     tentTooltip(add, "\u65B0\u5EFA");
     add.onclick = (e) => {
@@ -4092,7 +4106,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const actions = rightArea.createDiv({ cls: "row-actions" });
     const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open2 ? " active" : "") });
     editBtn.setAttr("type", "button");
-    (0, import_obsidian2.setIcon)(editBtn, "settings");
+    (0, import_obsidian3.setIcon)(editBtn, "settings");
     tentTooltip(editBtn, "\u7F16\u8F91\u989C\u8272 / \u8BFB\u5199");
     editBtn.onclick = (e) => {
       e.stopPropagation();
@@ -4104,17 +4118,17 @@ var TentView = class extends import_obsidian2.ItemView {
     const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
     delBtn.setAttr("type", "button");
     if (deletePending) delBtn.setText("\u786E\u8BA4\u5220\u9664");
-    else (0, import_obsidian2.setIcon)(delBtn, "trash-2");
+    else (0, import_obsidian3.setIcon)(delBtn, "trash-2");
     tentTooltip(delBtn, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
     delBtn.onclick = async (e) => {
       e.stopPropagation();
       const inspection = await inspectTypeDeletion(this.env().fs, "type", name);
       if (inspection.builtIn) {
-        new import_obsidian2.Notice(`\u5185\u7F6E\u7C7B\u578B\u300C${name}\u300D\u4E0D\u53EF\u5220\u9664`);
+        new import_obsidian3.Notice(`\u5185\u7F6E\u7C7B\u578B\u300C${name}\u300D\u4E0D\u53EF\u5220\u9664`);
         return;
       }
       if (inspection.activeOwners.length > 0) {
-        new import_obsidian2.Notice(`\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05:${inspection.activeOwners.map((x) => x.path).join(", ")}`);
+        new import_obsidian3.Notice(`\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05:${inspection.activeOwners.map((x) => x.path).join(", ")}`);
         return;
       }
       if (this.pendingDelete === deleteKey) {
@@ -4226,12 +4240,12 @@ var TentView = class extends import_obsidian2.ItemView {
     };
     this.formActions(card, async () => {
       if (!state.name || state.name === "temp") {
-        new import_obsidian2.Notice("\u8BF7\u586B\u5199\u6709\u6548\u7684 type \u540D");
+        new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6709\u6548\u7684 type \u540D");
         return;
       }
       const reg = this.tent.typeRegistry;
       if (reg[state.name]) {
-        new import_obsidian2.Notice(`\u7C7B\u578B\u300C${state.name}\u300D\u5DF2\u5B58\u5728`);
+        new import_obsidian3.Notice(`\u7C7B\u578B\u300C${state.name}\u300D\u5DF2\u5B58\u5728`);
         return;
       }
       const definition = tier === "modifier" ? {
@@ -4269,7 +4283,7 @@ var TentView = class extends import_obsidian2.ItemView {
     };
     this.formActions(card, async () => {
       if (!state.name) {
-        new import_obsidian2.Notice("\u8BF7\u586B\u5199 role \u540D");
+        new import_obsidian3.Notice("\u8BF7\u586B\u5199 role \u540D");
         return;
       }
       const def = { name: state.name };
@@ -4290,7 +4304,7 @@ var TentView = class extends import_obsidian2.ItemView {
       try {
         await submit();
       } catch (err) {
-        new import_obsidian2.Notice("\u65B0\u5EFA\u5931\u8D25:" + (err instanceof Error ? err.message : err));
+        new import_obsidian3.Notice("\u65B0\u5EFA\u5931\u8D25:" + (err instanceof Error ? err.message : err));
       }
     };
     const cancel = acts.createEl("button", { text: "\u53D6\u6D88" });
@@ -4316,7 +4330,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const actions = rightArea.createDiv({ cls: "row-actions" });
     const editBtn = actions.createEl("button", { cls: "registry-edit-btn" + (open2 ? " active" : "") });
     editBtn.setAttr("type", "button");
-    (0, import_obsidian2.setIcon)(editBtn, "settings");
+    (0, import_obsidian3.setIcon)(editBtn, "settings");
     tentTooltip(editBtn, "\u7F16\u8F91\u63CF\u8FF0 / prompt / \u989C\u8272");
     editBtn.onclick = (e) => {
       e.stopPropagation();
@@ -4328,7 +4342,7 @@ var TentView = class extends import_obsidian2.ItemView {
     const delBtn = actions.createEl("button", { cls: "registry-del-btn" + (deletePending ? " is-confirm" : "") });
     delBtn.setAttr("type", "button");
     if (deletePending) delBtn.setText("\u786E\u8BA4\u5220\u9664");
-    else (0, import_obsidian2.setIcon)(delBtn, "trash-2");
+    else (0, import_obsidian3.setIcon)(delBtn, "trash-2");
     tentTooltip(delBtn, deletePending ? "\u518D\u6B21\u70B9\u51FB\u786E\u8BA4\u5220\u9664" : "\u5220\u9664");
     delBtn.onclick = async (e) => {
       e.stopPropagation();
@@ -4424,14 +4438,14 @@ var TentView = class extends import_obsidian2.ItemView {
     create.setAttr("type", "button");
     create.onclick = async () => {
       if (!state.name) {
-        new import_obsidian2.Notice("\u8BF7\u586B\u5199\u6846\u540D");
+        new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6846\u540D");
         return;
       }
       const type = joinType(state.base, state.kind || void 0);
       await createBox(this.env(), { parentPath, name: state.name, type });
       this.newBoxParentPath = null;
       await this.refresh();
-      new import_obsidian2.Notice(`\u5DF2\u5EFA\u6846\u300C${state.name}\u300D`);
+      new import_obsidian3.Notice(`\u5DF2\u5EFA\u6846\u300C${state.name}\u300D`);
     };
     const cancel = row.createEl("button", { text: "\u53D6\u6D88" });
     cancel.setAttr("type", "button");
@@ -4448,9 +4462,9 @@ var TentView = class extends import_obsidian2.ItemView {
       try {
         await forceRelease(this.env(), box.id);
         await this.refresh();
-        new import_obsidian2.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u5E76\u91CA\u653E owner`);
+        new import_obsidian3.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u5E76\u91CA\u653E owner`);
       } catch (error) {
-        new import_obsidian2.Notice("\u91CA\u653E\u5931\u8D25:" + (error instanceof Error ? error.message : error));
+        new import_obsidian3.Notice("\u91CA\u653E\u5931\u8D25:" + (error instanceof Error ? error.message : error));
       }
       return;
     }
@@ -4464,7 +4478,7 @@ var TentView = class extends import_obsidian2.ItemView {
   // ---- 白板:生成原生 .canvas 并打开 ----
   async openBoard() {
     if (!this.tent) {
-      new import_obsidian2.Notice("\u5148\u9009\u4E00\u4E2A\u5E10");
+      new import_obsidian3.Notice("\u5148\u9009\u4E00\u4E2A\u5E10");
       return;
     }
     const fs = this.env().fs;
@@ -4475,9 +4489,9 @@ var TentView = class extends import_obsidian2.ItemView {
       preservePositions(fresh, old, this.tent);
       await fs.writeFile(canvasRel, canvasToJson(fresh));
       await this.openVaultFile(canvasRel, 200);
-      new import_obsidian2.Notice("\u767D\u677F\u5DF2\u5237\u65B0");
+      new import_obsidian3.Notice("\u767D\u677F\u5DF2\u5237\u65B0");
     } catch (e) {
-      new import_obsidian2.Notice("\u751F\u6210\u767D\u677F\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+      new import_obsidian3.Notice("\u751F\u6210\u767D\u677F\u5931\u8D25:" + (e instanceof Error ? e.message : e));
     }
   }
   // ---- 打开文件 ----
@@ -4485,16 +4499,16 @@ var TentView = class extends import_obsidian2.ItemView {
     await this.openVaultFile(boxNotePath(box.path));
   }
   async openVaultFile(tentRelPath, retryMs = 0) {
-    const vaultPath = (0, import_obsidian2.normalizePath)(`${this.tentRootPath()}/${tentRelPath}`);
+    const vaultPath = (0, import_obsidian3.normalizePath)(`${this.tentRootPath()}/${tentRelPath}`);
     let file = this.app.vault.getAbstractFileByPath(vaultPath);
     if (!file && retryMs > 0) {
       await new Promise((r) => window.setTimeout(r, retryMs));
       file = this.app.vault.getAbstractFileByPath(vaultPath);
     }
-    if (file instanceof import_obsidian2.TFile) {
+    if (file instanceof import_obsidian3.TFile) {
       await this.app.workspace.getLeaf("tab").openFile(file);
     } else {
-      new import_obsidian2.Notice("\u627E\u4E0D\u5230\u6587\u4EF6:" + vaultPath);
+      new import_obsidian3.Notice("\u627E\u4E0D\u5230\u6587\u4EF6:" + vaultPath);
     }
   }
 };
@@ -4513,7 +4527,7 @@ function subtreeHasOwner(box) {
 function tentTooltip(el, text, placement = "top") {
   el.removeAttribute("title");
   if (!text) return;
-  (0, import_obsidian2.setTooltip)(el, text, {
+  (0, import_obsidian3.setTooltip)(el, text, {
     placement,
     delay: 300,
     gap: 6,
@@ -4548,7 +4562,7 @@ var DEFAULT_SETTINGS = {
   }
 };
 var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
-var TentPlugin = class extends import_obsidian3.Plugin {
+var TentPlugin = class extends import_obsidian4.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
@@ -4556,7 +4570,7 @@ var TentPlugin = class extends import_obsidian3.Plugin {
   }
   async onload() {
     await this.loadSettings();
-    (0, import_obsidian3.addIcon)("tent", TENT_ICON);
+    (0, import_obsidian4.addIcon)("tent", TENT_ICON);
     this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
     this.addRibbonIcon("tent", "\u6253\u5F00\u5E37\u5E44\u9762\u677F", () => this.activateView());
     this.addCommand({
@@ -4607,7 +4621,7 @@ var TentPlugin = class extends import_obsidian3.Plugin {
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian3.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
+      new import_obsidian4.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
     }
   }
   refreshStatusPreference() {
@@ -4625,7 +4639,7 @@ var TentPlugin = class extends import_obsidian3.Plugin {
     }
   }
 };
-var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
+var TentSettingTab = class extends import_obsidian4.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
     this.plugin = plugin;
@@ -4639,7 +4653,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     containerEl.addClass("tent-settings");
     containerEl.createEl("h2", { text: "\u5E37\u5E44 / Tent" });
     containerEl.createEl("h3", { text: "\u5E10" });
-    new import_obsidian3.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
+    new import_obsidian4.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
       (t) => t.setValue(this.plugin.settings.tentsRoot).onChange(async (v) => {
         this.plugin.settings.tentsRoot = v.trim() || "tents";
         await this.plugin.saveSettings();
@@ -4647,7 +4661,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
     this.drawNewTentDefaults(containerEl);
     containerEl.createEl("h3", { text: "\u5916\u89C2" });
-    new import_obsidian3.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
+    new import_obsidian4.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
       (dropdown) => dropdown.addOption("follow", "\u8DDF\u968F Obsidian").addOption("light", "\u6D45\u8272").addOption("dark", "\u6DF1\u8272").setValue(this.plugin.settings.appearance).onChange(async (value) => {
         this.plugin.settings.appearance = value;
         await this.plugin.saveSettings();
@@ -4655,13 +4669,13 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
       })
     );
     containerEl.createEl("h3", { text: "\u4EA4\u4E92" });
-    new import_obsidian3.Setting(containerEl).setName("\u6D3E\u6D3B\u81EA\u52A8\u590D\u5236 prompt").setDesc("dispatch \u6210\u529F\u540E\u628A\u63A5\u529B prompt \u590D\u5236\u5230\u526A\u8D34\u677F\u3002").addToggle(
+    new import_obsidian4.Setting(containerEl).setName("\u6D3E\u6D3B\u81EA\u52A8\u590D\u5236 prompt").setDesc("dispatch \u6210\u529F\u540E\u628A\u63A5\u529B prompt \u590D\u5236\u5230\u526A\u8D34\u677F\u3002").addToggle(
       (t) => t.setValue(this.plugin.settings.dispatchPrefs.copyPromptToClipboard).onChange(async (v) => {
         this.plugin.settings.dispatchPrefs.copyPromptToClipboard = v;
         await this.plugin.saveSettings();
       })
     );
-    new import_obsidian3.Setting(containerEl).setName("\u5F85\u88C1\u63D0\u9192").setDesc("\u63A7\u5236\u662F\u5426\u5728 Obsidian \u72B6\u6001\u680F\u663E\u793A\u5F85\u88C1\u6570\uFF0C\u4EE5\u53CA\u65B0\u589E\u5F85\u88C1\u65F6\u662F\u5426\u901A\u77E5\u3002").addDropdown(
+    new import_obsidian4.Setting(containerEl).setName("\u5F85\u88C1\u63D0\u9192").setDesc("\u63A7\u5236\u662F\u5426\u5728 Obsidian \u72B6\u6001\u680F\u663E\u793A\u5F85\u88C1\u6570\uFF0C\u4EE5\u53CA\u65B0\u589E\u5F85\u88C1\u65F6\u662F\u5426\u901A\u77E5\u3002").addDropdown(
       (dropdown) => dropdown.addOption("off", "\u5173\u95ED").addOption("status", "\u4EC5\u72B6\u6001\u680F").addOption("notice", "\u72B6\u6001\u680F\u4E0E\u901A\u77E5").setValue(this.plugin.settings.triageReminder).onChange(async (value) => {
         this.plugin.settings.triageReminder = value;
         await this.plugin.saveSettings();
@@ -4678,7 +4692,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
     parent.createEl("h4", { text: "\u9ED8\u8BA4 RULES.md" });
-    new import_obsidian3.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
+    new import_obsidian4.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
       textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
         this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
         await this.plugin.saveSettings();
@@ -4688,7 +4702,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawDefaultTypes(parent) {
     const registry = this.plugin.settings.newTentDefaults.typeRegistry;
-    const title = new import_obsidian3.Setting(parent).setName("\u9ED8\u8BA4 Type");
+    const title = new import_obsidian4.Setting(parent).setName("\u9ED8\u8BA4 Type");
     title.setDesc("\u5185\u7F6E\u540D\u79F0\u56FA\u5B9A\uFF1B\u989C\u8272\u3001R/W \u4E0E\u63CF\u8FF0\u53EF\u6539\u3002");
     title.addButton((button) => {
       const pending = this.pendingReset === "types";
@@ -4710,12 +4724,12 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawTypeTier(parent, registry, tier, label) {
     const section = parent.createDiv({ cls: "tent-settings-registry" });
-    new import_obsidian3.Setting(section).setName(label);
+    new import_obsidian4.Setting(section).setName(label);
     this.drawAddType(section, tier, label);
     for (const [name, definition] of Object.entries(registry)) {
       if ((definition.tier ?? "base") !== tier) continue;
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
-      const summary = new import_obsidian3.Setting(row).setName(name).setDesc(definition.description || "");
+      const summary = new import_obsidian4.Setting(row).setName(name).setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
       summary.controlEl.createSpan({
@@ -4733,7 +4747,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawTypeEditor(parent, name, definition) {
     const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new import_obsidian3.Setting(editor).setName("\u63CF\u8FF0").addText(
+    new import_obsidian4.Setting(editor).setName("\u63CF\u8FF0").addText(
       (text) => text.setValue(definition.description || "").onChange(async (value) => {
         setOptionalText(definition, "description", value);
         await this.plugin.saveSettings();
@@ -4746,7 +4760,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     });
     this.drawAxisControl(editor, definition);
     if (!BUILTIN_TYPES.has(name)) {
-      new import_obsidian3.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\u3002").addButton(
+      new import_obsidian4.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\u3002").addButton(
         (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
           delete this.plugin.settings.newTentDefaults.typeRegistry[name];
           this.openType = null;
@@ -4758,7 +4772,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawAxisControl(parent, definition) {
     const tier = definition.tier ?? "base";
-    const setting = new import_obsidian3.Setting(parent).setName("R/W");
+    const setting = new import_obsidian4.Setting(parent).setName("R/W");
     for (const [axis, label] of [["readable", "R"], ["writable", "W"]]) {
       setting.controlEl.createSpan({ cls: "tent-settings-axis-label", text: label });
       setting.addDropdown((dropdown) => {
@@ -4773,7 +4787,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawAddType(parent, tier, label) {
     let name = "";
-    const form = new import_obsidian3.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    const form = new import_obsidian4.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
@@ -4782,12 +4796,12 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
         if (!validRegistryName(normalized)) {
-          new import_obsidian3.Notice("type \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
+          new import_obsidian4.Notice("type \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
           return;
         }
         const registry = this.plugin.settings.newTentDefaults.typeRegistry;
         if (registry[normalized]) {
-          new import_obsidian3.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
+          new import_obsidian4.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
         registry[normalized] = tier === "base" ? { tier: "base", readable: true, writable: false, color: "gray" } : { tier: "modifier", color: "gray" };
@@ -4799,7 +4813,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawDefaultRoles(parent) {
     const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
-    const title = new import_obsidian3.Setting(parent).setName("\u9ED8\u8BA4 Role");
+    const title = new import_obsidian4.Setting(parent).setName("\u9ED8\u8BA4 Role");
     title.setDesc("\u65B0\u5E10\u521D\u59CB\u53EF\u7528\u7684 role\uFF1B\u540D\u79F0\u521B\u5EFA\u540E\u4E0D\u53EF\u4FEE\u6539\u3002");
     title.addButton((button) => {
       const pending = this.pendingReset === "roles";
@@ -4820,7 +4834,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     this.drawAddRole(section);
     for (const role of roles) {
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
-      const summary = new import_obsidian3.Setting(row).setName(role.name).setDesc(role.description || "");
+      const summary = new import_obsidian4.Setting(row).setName(role.name).setDesc(role.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(role.color);
       summary.addButton(
@@ -4834,7 +4848,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawRoleEditor(parent, role) {
     const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new import_obsidian3.Setting(editor).setName("\u63CF\u8FF0").addText(
+    new import_obsidian4.Setting(editor).setName("\u63CF\u8FF0").addText(
       (text) => text.setValue(role.description || "").onChange(async (value) => {
         setOptionalText(role, "description", value);
         await this.plugin.saveSettings();
@@ -4845,14 +4859,14 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
       await this.plugin.saveSettings();
       this.display();
     });
-    new import_obsidian3.Setting(editor).setName("prompt").addTextArea((textarea) => {
+    new import_obsidian4.Setting(editor).setName("prompt").addTextArea((textarea) => {
       textarea.setValue(role.prompt || "").onChange(async (value) => {
         setOptionalText(role, "prompt", value);
         await this.plugin.saveSettings();
       });
       textarea.inputEl.addClass("tent-settings-role-prompt");
     });
-    new import_obsidian3.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 role").addButton(
+    new import_obsidian4.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 role").addButton(
       (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
         const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
         this.plugin.settings.newTentDefaults.rolesRegistry.roles = roles.filter((item) => item.name !== role.name);
@@ -4864,7 +4878,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
   }
   drawAddRole(parent) {
     let name = "";
-    const form = new import_obsidian3.Setting(parent).setName("\u65B0\u5EFA Role").setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    const form = new import_obsidian4.Setting(parent).setName("\u65B0\u5EFA Role").setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
@@ -4873,12 +4887,12 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
         if (!validRegistryName(normalized)) {
-          new import_obsidian3.Notice("role \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
+          new import_obsidian4.Notice("role \u540D\u4E0D\u80FD\u4E3A\u7A7A\uFF0C\u4E14\u4E0D\u80FD\u5305\u542B\u7A7A\u683C\u6216\u8FDE\u5B57\u7B26");
           return;
         }
         const roles = this.plugin.settings.newTentDefaults.rolesRegistry.roles;
         if (roles.some((role) => role.name === normalized)) {
-          new import_obsidian3.Notice(`role \u5DF2\u5B58\u5728\uFF1A${normalized}`);
+          new import_obsidian4.Notice(`role \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
         roles.push({ name: normalized, color: "gray" });
@@ -4889,7 +4903,7 @@ var TentSettingTab = class extends import_obsidian3.PluginSettingTab {
     );
   }
   drawColorControl(parent, current, onChange) {
-    const setting = new import_obsidian3.Setting(parent).setName("\u989C\u8272");
+    const setting = new import_obsidian4.Setting(parent).setName("\u989C\u8272");
     const palette = setting.controlEl.createDiv({ cls: "tent-settings-palette" });
     for (const color of TYPE_COLOR_PALETTE) {
       const swatch = palette.createEl("button", {

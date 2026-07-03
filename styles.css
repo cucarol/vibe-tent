@@ -741,6 +741,37 @@
 /* type 控件靠右成组 */
 .tent-type-ctrl { display: inline-flex; align-items: center; gap: 8px; margin-left: auto; min-width: 0; }
 .tent-type-ctrl .tent-prop-select { flex: 0 1 130px; }
+.tent-select-wrap {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+.tent-select-wrap > select {
+  width: 100%;
+  appearance: none;
+  -webkit-appearance: none;
+  padding-right: 26px !important;
+}
+.tent-select-chevron {
+  position: absolute;
+  right: 7px;
+  top: 50%;
+  transform: translateY(-50%);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 14px;
+  height: 14px;
+  color: var(--text-muted);
+  pointer-events: none;
+}
+.tent-select-chevron svg {
+  width: 14px;
+  height: 14px;
+  stroke: currentColor !important;
+  fill: none !important;
+}
 
 /* 标题行 owner:更明显(role 色 active / muted empty)*/
 .tent-titlerow-owner .owner-label { font-size: var(--font-ui-smaller); color: var(--text-faint); font-weight: 500; }
@@ -798,7 +829,8 @@
 .tent-status-segment-option.is-active { background: var(--accent-soft); color: var(--accent-strong); font-weight: 500; }
 /* type 组 — 连接:两下拉均分,— 居中 */
 .tent-type-item { gap: 8px; }
-.tent-type-item .tent-prop-select { flex: 0 1 132px; }
+.tent-type-item .tent-select-wrap { flex: 0 0 86px; width: 86px; }
+.tent-type-item .tent-prop-select { flex: none; }
 .tent-type-item .tent-tk-dash { flex: none; color: var(--text-muted); font-weight: 600; }
 /* 属性面板的 type 行复用了 tent-type-item 类,但不要注册表那种整行 hover 染深(只控件框变深) */
 .tent-view .style-a-view .tent-type-item { display: flex; }
@@ -1476,6 +1508,9 @@
   width: 108px;
   max-width: 100%;
 }
+.tent-dispatch-control .tent-select-wrap {
+  width: 100%;
+}
 .tent-dispatch-select {
   width: 100%;
   height: 30px;
@@ -1532,6 +1567,10 @@
   font-size: var(--font-ui-smaller);
 }
 .tent-dispatch-handoff-select {
+  width: 108px;
+  flex: none;
+}
+.tent-dispatch-handoff-control .tent-select-wrap {
   width: 108px;
   flex: none;
 }
@@ -1759,10 +1798,7 @@
     margin-left: 0;
   }
 
-  .tent-type-ctrl {
-    width: calc(100% - 52px);
-    margin-left: 0;
-  }
+  .tent-type-ctrl { margin-left: auto; }
 
   .tent-rw-mini-wrap {
     width: calc(100% - 52px);

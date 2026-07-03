@@ -39,6 +39,7 @@ import {
   readWorkspaceHead,
 } from "../core/workspace.js";
 import type { RoleCommit, WorkspaceHead } from "../core/workspace.js";
+import { createChevronSelect } from "./ui-controls.js";
 import {
   OpsEnv,
   dispatch,
@@ -1039,19 +1040,18 @@ export class TentView extends ItemView {
       const tItem = editor.createDiv({ cls: "tent-prop-item tent-type-item" });
       tItem.createSpan({ cls: "tent-item-label", text: "type" });
       const tCtrl = tItem.createDiv({ cls: "tent-type-ctrl" });
-      const baseSel = tCtrl.createEl("select", { cls: "dropdown tent-prop-select" });
-      for (const o of bases) {
-        const opt = baseSel.createEl("option", { text: o, value: o });
-        if (o === curBase) opt.selected = true;
-      }
+      const baseSel = createChevronSelect(tCtrl, {
+        cls: "dropdown tent-prop-select",
+        options: bases.map((o) => ({ value: o, selected: o === curBase })),
+      });
       tCtrl.createSpan({ cls: "tent-tk-dash", text: "—" });
-      const modSel = tCtrl.createEl("select", { cls: "dropdown tent-prop-select" });
-      const noneOpt = modSel.createEl("option", { text: "无", value: "" });
-      if (!curMod) noneOpt.selected = true;
-      for (const o of mods) {
-        const opt = modSel.createEl("option", { text: o, value: o });
-        if (o === curMod) opt.selected = true;
-      }
+      const modSel = createChevronSelect(tCtrl, {
+        cls: "dropdown tent-prop-select",
+        options: [
+          { value: "", label: "无", selected: !curMod },
+          ...mods.map((o) => ({ value: o, selected: o === curMod })),
+        ],
+      });
       baseSel.onchange = () => applyType(baseSel.value, modSel.value);
       modSel.onchange = () => applyType(baseSel.value, modSel.value);
 
@@ -1568,9 +1568,13 @@ export class TentView extends ItemView {
     const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
     roleRow.createSpan({ cls: "tent-prop-key", text: "目标 role" });
     const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
-    const roleSelect = roleControl.createEl("select", { cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select" });
-    roleSelect.createEl("option", { text: this.roles.length ? "(选择)" : "(手动输入)", value: "" });
-    for (const role of this.roles) roleSelect.createEl("option", { text: role.name, value: role.name });
+    const roleSelect = createChevronSelect(roleControl, {
+      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
+      options: [
+        { value: "", label: this.roles.length ? "(选择)" : "(手动输入)" },
+        ...this.roles.map((role) => ({ value: role.name, label: role.name })),
+      ],
+    });
     const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
     manualRole.toggleClass("is-hidden", this.roles.length > 0);
     roleSelect.onchange = () => {
@@ -1598,16 +1602,13 @@ export class TentView extends ItemView {
     if (availableHandoffs.length === 0) {
       handoffControl.createSpan({ cls: "tent-dispatch-readonly", text: "—" });
     } else {
-      handoffSelect = handoffControl.createEl("select", {
+      handoffSelect = createChevronSelect(handoffControl, {
         cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-handoff-select",
+        options: [
+          { value: "", label: "(不使用)" },
+          ...availableHandoffs.map((handoff) => ({ value: handoff.path, label: handoff.fromRole })),
+        ],
       });
-      handoffSelect.createEl("option", { text: "(不使用)", value: "" });
-      for (const handoff of availableHandoffs) {
-        handoffSelect.createEl("option", {
-          text: handoff.fromRole,
-          value: handoff.path,
-        });
-      }
     }
     const handoffPreview = handoffSection.createDiv({ cls: "tent-dispatch-handoff-preview is-hidden" });
 
