@@ -99,6 +99,27 @@ test("OKF validator:angle-bracket markdown links may target filenames with space
   assert.equal(report.summary.warnings, 0);
 });
 
+test("vendored OKF deviations and upstream proposal are documented", async () => {
+  const localPatches = await fs.readFile(
+    path.join(repoRoot, "vendor", "okf-conformance", "LOCAL-PATCHES.md"),
+    "utf8",
+  );
+  assert.match(localPatches, /0116946/);
+  assert.match(localPatches, /okf-validate\.mjs/);
+  assert.match(localPatches, /okf-graph\.mjs/);
+  assert.match(localPatches, /GoogleCloudPlatform\/knowledge-catalog/);
+  assert.match(localPatches, /source provenance/i);
+
+  const upstreamDraft = await fs.readFile(
+    path.join(repoRoot, "docs", "upstream", "okf-commonmark-link-destination.md"),
+    "utf8",
+  );
+  assert.match(upstreamDraft, /CommonMark angle-bracket link destinations/);
+  assert.match(upstreamDraft, /space concept\.md/);
+  assert.match(upstreamDraft, /reference_agent\/viewer\/generator\.py/);
+  assert.match(upstreamDraft, /pull\/125/);
+});
+
 async function exists(target: string): Promise<boolean> {
   try {
     await fs.access(target);
