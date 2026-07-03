@@ -64,8 +64,14 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   assert.ok(manifest.description.length <= 250);
   assert.match(manifest.description, /\.$/);
-  assert.match(pluginMain, /name: "Open Tent panel"/);
+  assert.match(pluginMain, /addRibbonIcon\("tent", "Open Tent panel"/);
+  assert.match(pluginMain, /name: "Open panel"/);
   assert.match(pluginMain, /name: "Open or refresh experimental board"/);
+  assert.doesNotMatch(
+    pluginMain,
+    /name: "[^"]*Tent[^"]*"/,
+    "Obsidian command names should not repeat the plugin name"
+  );
   assert.doesNotMatch(pluginMain, /name: "打开/);
   assert.doesNotMatch(
     pluginMain,

@@ -79,7 +79,7 @@ export default class TentPlugin extends Plugin {
     this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
     this.addCommand({
       id: "open-tent-panel",
-      name: "Open Tent panel",
+      name: "Open panel",
       callback: () => this.activateView(),
     });
     // 白板搁置,仅留实验命令;以后再正式做(嵌套 B/C 取舍未定)。

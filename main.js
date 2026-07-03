@@ -5003,7 +5003,7 @@ var TentPlugin = class extends import_obsidian5.Plugin {
     this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
     this.addCommand({
       id: "open-tent-panel",
-      name: "Open Tent panel",
+      name: "Open panel",
       callback: () => this.activateView()
     });
     this.addCommand({
