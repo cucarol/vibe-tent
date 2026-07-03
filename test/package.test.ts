@@ -218,6 +218,32 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
   assert.equal(await fs.readFile(path.join(target, "RULES.md"), "utf8"), "# demo\n\n本机默认规则\n");
 });
 
+test("skill-install:安装内置 skills,重复执行需 --force", async () => {
+  const target = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-"));
+  const installed = await runCli(repoRoot, "skill-install", "--dir", target);
+  assert.match(installed.stdout, /tent-genesis/);
+  assert.match(installed.stdout, /tent-role/);
+  assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
+  assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
+
+  await assert.rejects(
+    () => runCli(repoRoot, "skill-install", "--dir", target),
+    /skill 已存在/,
+  );
+
+  await fs.writeFile(path.join(target, "tent-role", "SKILL.md"), "stale\n", "utf8");
+  await runCli(repoRoot, "skill-install", "--dir", target, "--force");
+  assert.match(
+    await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8"),
+    /name: tent-role/,
+  );
+
+  await assert.rejects(
+    () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
+    /目前仅支持 --target claude/,
+  );
+});
+
 async function makeWorkspace(parent: string): Promise<string> {
   const workspace = path.join(parent, "actual-workspace");
   await fs.mkdir(workspace, { recursive: true });

@@ -22,9 +22,13 @@
 //   tent force-release <boxId>
 //   tent migrate-kind-to-type
 //   tent okf-sync
+//   tent skill-install [--target claude] [--force]
 //   tent tree                          打印框树(调试)
 
 import * as path from "node:path";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import { fileURLToPath } from "node:url";
 import { NodeFs, SystemClock } from "../fs/node-fs.js";
 import { loadTent, boxNotePath } from "../core/tree.js";
 import {
@@ -316,6 +320,18 @@ async function main() {
       }
       break;
     }
+    case "skill-install": {
+      const { flags } = parseFlags(args);
+      const target = flags.target || "claude";
+      const force = flags.force === "true";
+      const dir = flags.dir || defaultSkillInstallDir(target);
+      const installed = await installSkills(dir, { force, target });
+      console.log(
+        `✓ 已安装 ${target} skills 到 ${dir}\n` +
+          installed.map((name) => `- ${name}`).join("\n")
+      );
+      break;
+    }
     case "tree": {
       const tent = await loadTent(env.fs);
       for (const r of tent.roots) printBox(r, 0);
@@ -323,7 +339,7 @@ async function main() {
     }
     default:
       fail(
-        `未知命令: ${cmd || "(空)"}\n命令: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync tree`
+        `未知命令: ${cmd || "(空)"}\n命令: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -363,16 +379,88 @@ function fail(msg: string) {
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
+  const booleanFlags = new Set(["force", "yes"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
-      flags[a.slice(2)] = args[i + 1] ?? "";
-      i++;
+      const name = a.slice(2);
+      if (booleanFlags.has(name)) {
+        flags[name] = "true";
+      } else {
+        flags[name] = args[i + 1] ?? "";
+        i++;
+      }
     } else {
       positionals.push(a);
     }
   }
   return { positionals, flags };
+}
+
+function defaultSkillInstallDir(target: string): string {
+  if (target !== "claude") {
+    throw new Error("skill-install 目前仅支持 --target claude；Codex skill 格式不同，后续再适配。");
+  }
+  return path.join(os.homedir(), ".claude", "skills");
+}
+
+async function installSkills(
+  targetDir: string,
+  options: { force: boolean; target: string }
+): Promise<string[]> {
+  if (options.target !== "claude") defaultSkillInstallDir(options.target);
+  const sourceDir = path.join(packageRoot(), "skills");
+  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
+  const skillNames: string[] = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
+  }
+  if (skillNames.length === 0) throw new Error(`没有可安装的 skill:${sourceDir}`);
+
+  const conflicts: string[] = [];
+  for (const name of skillNames) {
+    if (await existsPath(path.join(targetDir, name))) conflicts.push(name);
+  }
+  if (conflicts.length > 0 && !options.force) {
+    throw new Error(`skill 已存在:${conflicts.join(", ")}。如需覆盖,加 --force。`);
+  }
+
+  await fs.mkdir(targetDir, { recursive: true });
+  const installed: string[] = [];
+  for (const name of skillNames) {
+    const source = path.join(sourceDir, name);
+    const target = path.join(targetDir, name);
+    assertChildPath(targetDir, target);
+    if (options.force) await fs.rm(target, { recursive: true, force: true });
+    await fs.cp(source, target, { recursive: true, errorOnExist: true });
+    installed.push(name);
+  }
+  return installed.sort();
+}
+
+function packageRoot(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  if (path.basename(here) === "cli" && path.basename(path.dirname(here)) === "src") {
+    return path.resolve(here, "../..");
+  }
+  return here;
+}
+
+function assertChildPath(parent: string, child: string): void {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(`安装目标越界:${child}`);
+  }
+}
+
+async function existsPath(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
