@@ -1,5 +1,7 @@
 import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
 import * as fs from "node:fs/promises";
+import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
@@ -54,6 +56,28 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
+});
+
+test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-okf-space-"));
+  await fs.writeFile(
+    path.join(dir, "index.md"),
+    "---\ntype: index\n---\n# Index\n\n- [Space Concept](<space concept.md>)\n",
+  );
+  await fs.writeFile(
+    path.join(dir, "space concept.md"),
+    "---\ntype: concept\n---\n# Space Concept\n\nLinked from [Index](index.md).\n",
+  );
+
+  const validator = path.join(repoRoot, "vendor", "okf-conformance", "validator", "okf-validate.mjs");
+  const result = spawnSync(process.execPath, [validator, dir, "--json"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  const report = JSON.parse(result.stdout);
+  assert.equal(report.summary.errors, 0);
+  assert.equal(report.summary.warnings, 0);
 });
 
 async function exists(target: string): Promise<boolean> {

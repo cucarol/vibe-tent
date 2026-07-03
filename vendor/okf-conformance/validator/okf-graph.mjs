@@ -77,12 +77,12 @@ function stripQuotes(s) {
 function extractLinks(body, fileDir) {
   const edges = [];
   const unresolved = [];
-  const re = /\[[^\]]*\]\(([^)\s]+)[^)]*\)/g;
+  const re = /\[[^\]]*\]\(\s*(<[^>]*>|[^)\s]+)(?:\s+[^)]*)?\)/g;
   let m;
   while ((m = re.exec(body)) !== null) {
     // skip image embeds ![alt](src)
     if (m.index > 0 && body[m.index - 1] === "!") continue;
-    let target = m[1].split("#")[0].split("?")[0].trim();
+    let target = stripLinkDestination(m[1]).split("#")[0].split("?")[0].trim();
     if (!target) continue;
     if (/^[a-z]+:\/\//i.test(target) || target.startsWith("mailto:")) continue; // external
     if (!target.toLowerCase().endsWith(".md")) continue; // concept edges are .md links
@@ -91,6 +91,12 @@ function extractLinks(body, fileDir) {
     else unresolved.push(target);
   }
   return { edges, unresolved };
+}
+
+function stripLinkDestination(raw) {
+  const target = raw.trim();
+  if (target.startsWith("<") && target.endsWith(">")) return target.slice(1, -1);
+  return target;
 }
 
 // ---- build the graph -------------------------------------------------------
