@@ -244,6 +244,22 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
   );
 });
 
+test("CLI 表面:help 与 version 正常退出", async () => {
+  const help = await runCli(repoRoot, "--help");
+  assert.match(help.stdout, /Usage:/);
+  assert.match(help.stdout, /skill-install/);
+  assert.equal(help.stderr, "");
+
+  const helpCommand = await runCli(repoRoot, "help");
+  assert.match(helpCommand.stdout, /Tent \/ 帷幄 CLI/);
+
+  const pkg = JSON.parse(await fs.readFile(path.join(repoRoot, "package.json"), "utf8"));
+  const version = await runCli(repoRoot, "--version");
+  assert.equal(version.stdout.trim(), pkg.version);
+  const shortVersion = await runCli(repoRoot, "-v");
+  assert.equal(shortVersion.stdout.trim(), pkg.version);
+});
+
 async function makeWorkspace(parent: string): Promise<string> {
   const workspace = path.join(parent, "actual-workspace");
   await fs.mkdir(workspace, { recursive: true });

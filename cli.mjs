@@ -2088,6 +2088,14 @@ function makeEnv() {
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
   const env = makeEnv();
+  if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
+    console.log(helpText());
+    return;
+  }
+  if (cmd === "version" || cmd === "--version" || cmd === "-v") {
+    console.log(await packageVersion());
+    return;
+  }
   switch (cmd) {
     case "new": {
       const { positionals, flags } = parseFlags(args);
@@ -2455,6 +2463,43 @@ async function existsPath(target) {
   } catch {
     return false;
   }
+}
+async function packageVersion() {
+  const pkg = JSON.parse(await fs2.readFile(path.join(packageRoot(), "package.json"), "utf8"));
+  return String(pkg.version ?? "0.0.0");
+}
+function helpText() {
+  return `Tent / \u5E37\u5E44 CLI
+
+Usage:
+  tent <command> [args]
+
+Run commands from a Tent root unless noted.
+
+Commands:
+  new <path>                         Create an empty Tent.
+  new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
+  role-init <role>                   Prepare stable role init context.
+  roles                              Print the role registry.
+  dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
+  report <boxId> <file|->            Submit a delivery report for triage.
+  complete <boxId>                   Confirm completion and release owner.
+  force-release <boxId>              Release owner without accepting delivery.
+  new-box <name> <type> [parentId]   Create a box.
+  tag|untag <boxId> <tag>            Add or remove a tag.
+  tags | tag-new | tag-rm            Manage the tag registry.
+  find <tag>                         Find boxes by tag.
+  propose | proposal                 Create or review a proposal.
+  handoff <from> <target> <role>     Create an agent-to-agent handoff.
+  fork <boxId>                       Copy a box subtree with new ids.
+  okf-sync                           Regenerate OKF indexes and projected links.
+  skill-install [--force]            Install bundled Tent skills for Claude Code.
+  tree                               Print the box tree.
+
+Options:
+  -h, --help                         Show this help.
+  -v, --version                      Show the package version.
+`;
 }
 async function readVaultPluginSettings(vault) {
   const fsmod = await import("node:fs/promises");
