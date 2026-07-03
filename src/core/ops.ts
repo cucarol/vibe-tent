@@ -43,6 +43,7 @@ export interface DispatchOptions {
   userPrompt?: string;
   handoffPath?: string;
   workspace?: RoleWorkspaceContract;
+  dispatchedBy?: string;
 }
 
 export async function dispatch(
@@ -119,6 +120,7 @@ async function dispatchUnlocked(
     userPrompt: options.userPrompt,
     handoffPath: resolvedHandoffPath || undefined,
     workspace: options.workspace,
+    dispatchedBy: options.dispatchedBy,
   });
 
   const relayPrompt = relayPromptForTask({
@@ -126,6 +128,7 @@ async function dispatchUnlocked(
     role: roleName,
     claims: taskClaims.map((taskClaim) => taskClaim.id),
     manifest: manifestPath,
+    status: "pending",
   });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
@@ -152,14 +155,15 @@ export async function stamp(env: OpsEnv, boxId: string): Promise<void> {
 export async function completeClaim(
   env: OpsEnv,
   boxId: string,
-  integrate?: () => Promise<void>
+  integrate?: () => Promise<void>,
+  acceptedBy = "user"
 ): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`找不到框 ${boxId}`);
     if (integrate) await integrate();
-    await setOwner(env.fs, box, undefined, "done");
+    await setOwner(env.fs, box, undefined, "done", acceptedBy);
   });
 }
 
@@ -167,6 +171,7 @@ export async function completeClaim(
 export interface AcceptReportOptions {
   commits?: string[];
   integrate?: (commits: string[]) => Promise<void>;
+  acceptedBy?: string;
 }
 
 export async function acceptReport(
@@ -186,7 +191,7 @@ export async function acceptReport(
       if (!options.integrate) throw new Error("report 含 commits,必须完成 workspace 合入");
       await options.integrate(commits);
     }
-    await setOwner(env.fs, box, undefined, "done");
+    await setOwner(env.fs, box, undefined, "done", options.acceptedBy ?? "user");
     await env.fs.remove(report.path);
   });
 }
@@ -472,8 +477,16 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
 
 // ---- 内部工具 ----
 
-async function setOwner(fs: FsAdapter, box: Box, owner: string | undefined, status?: Box["fm"]["status"]): Promise<void> {
+async function setOwner(
+  fs: FsAdapter,
+  box: Box,
+  owner: string | undefined,
+  status?: Box["fm"]["status"],
+  acceptedBy?: string
+): Promise<void> {
   const patch: Record<string, unknown> = { owner: owner ?? undefined };
+  if (owner) patch.acceptedBy = undefined;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
   await patchFrontmatter(fs, box, patch);
 }
