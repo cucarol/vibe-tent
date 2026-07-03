@@ -2734,6 +2734,36 @@ function drawRwSegment(parent, key, declared, onChange, allowInherit = true, rea
     if (!readonly) option.onclick = () => onChange(state.value);
   }
 }
+function hasActiveOwnerInScope(box) {
+  let current = box;
+  while (current) {
+    if (current.fm.owner) return true;
+    current = current.parent;
+  }
+  return subtreeHasOwner(box);
+}
+function subtreeHasOwner(box) {
+  if (box.fm.owner) return true;
+  return box.children.some(subtreeHasOwner);
+}
+function tentTooltip(el, text, placement = "top") {
+  el.removeAttribute("title");
+  if (!text) return;
+  (0, import_obsidian2.setTooltip)(el, text, {
+    placement,
+    delay: 300,
+    gap: 6,
+    classes: ["tent-tooltip"]
+  });
+}
+function makeDragLabel(name) {
+  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
+  el.style.position = "absolute";
+  el.style.top = "-1000px";
+  el.style.left = "-1000px";
+  window.setTimeout(() => el.remove(), 0);
+  return el;
+}
 
 // src/plugin/registry-pane.ts
 var import_obsidian3 = require("obsidian");
@@ -4939,36 +4969,6 @@ var TentView = class extends import_obsidian4.ItemView {
     }
   }
 };
-function hasActiveOwnerInScope(box) {
-  let current = box;
-  while (current) {
-    if (current.fm.owner) return true;
-    current = current.parent;
-  }
-  return subtreeHasOwner(box);
-}
-function subtreeHasOwner(box) {
-  if (box.fm.owner) return true;
-  return box.children.some(subtreeHasOwner);
-}
-function tentTooltip(el, text, placement = "top") {
-  el.removeAttribute("title");
-  if (!text) return;
-  (0, import_obsidian4.setTooltip)(el, text, {
-    placement,
-    delay: 300,
-    gap: 6,
-    classes: ["tent-tooltip"]
-  });
-}
-function makeDragLabel(name) {
-  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
-  el.style.position = "absolute";
-  el.style.top = "-1000px";
-  el.style.left = "-1000px";
-  window.setTimeout(() => el.remove(), 0);
-  return el;
-}
 
 // src/plugin/settings-model.ts
 init_typeRegistry();

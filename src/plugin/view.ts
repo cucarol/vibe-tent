@@ -1,7 +1,7 @@
 // 结构编辑器视图:可拖拽框树 + 属性面板 + 顶栏收件箱下拉。
 // 一切动作落盘 = 文件夹操作 + frontmatter 改写。单框改动增量重载,结构改动全量刷新。
 
-import { ItemView, WorkspaceLeaf, Menu, Notice, TFile, normalizePath, setIcon, setTooltip, FileSystemAdapter } from "obsidian";
+import { ItemView, WorkspaceLeaf, Menu, Notice, TFile, normalizePath, setIcon, FileSystemAdapter } from "obsidian";
 import * as nodePath from "node:path";
 import type TentPlugin from "./main.js";
 import { ObsidianFs, SystemClock } from "./obsidian-fs.js";
@@ -31,7 +31,11 @@ import type { RoleCommit, WorkspaceHead } from "../core/workspace.js";
 import {
   createChevronSelect,
   drawRwSegment,
+  hasActiveOwnerInScope,
+  inspectionWarning,
+  makeDragLabel,
   roleColorValue,
+  tentTooltip,
 } from "./ui-controls.js";
 import {
   createRegistryPaneState,
@@ -1795,54 +1799,4 @@ export class TentView extends ItemView {
     }
   }
 
-}
-
-function inspectionWarning(
-  level: TypeLevel,
-  name: string,
-  boxes: Map<string, Box>
-): string {
-  void level;
-  const references = [...boxes.values()].filter((box) => box.type === name);
-  const label = "type";
-  if (references.length === 0) return `永久删除自定义 ${label}「${name}」,不可恢复。`;
-  return `永久删除自定义 ${label}「${name}」。${references.length} 个 node 会因引用悬空而失效隔离,需逐个改 type 救活。`;
-}
-
-function hasActiveOwnerInScope(box: Box): boolean {
-  let current: Box | null = box;
-  while (current) {
-    if (current.fm.owner) return true;
-    current = current.parent;
-  }
-  return subtreeHasOwner(box);
-}
-
-function subtreeHasOwner(box: Box): boolean {
-  if (box.fm.owner) return true;
-  return box.children.some(subtreeHasOwner);
-}
-
-function tentTooltip(el: HTMLElement, text: string, placement: "top" | "right" | "bottom" | "left" = "top") {
-  el.removeAttribute("title");
-  if (!text) return;
-  setTooltip(el, text, {
-    placement,
-    delay: 300,
-    gap: 6,
-    classes: ["tent-tooltip"],
-  });
-}
-
-// ---- 极简对话框(用原生 prompt 兜底,Obsidian 无内置文本输入弹窗 API)----
-
-// 自定义拖拽影像:一个干净的小标签,替掉浏览器默认的半透明整行重影。
-function makeDragLabel(name: string): HTMLElement {
-  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
-  el.style.position = "absolute";
-  el.style.top = "-1000px";
-  el.style.left = "-1000px";
-  // 拖拽开始后浏览器已截图,下一帧即可移除
-  window.setTimeout(() => el.remove(), 0);
-  return el;
 }

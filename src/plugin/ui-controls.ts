@@ -1,4 +1,6 @@
-import { setIcon } from "obsidian";
+import { setIcon, setTooltip } from "obsidian";
+import type { Box } from "../core/types.js";
+import type { TypeLevel } from "../core/typeManagement.js";
 import { rwSegmentStates } from "./ui-model.js";
 export { roleColorValue } from "./ui-model.js";
 
@@ -42,4 +44,56 @@ export function drawRwSegment(
     });
     if (!readonly) option.onclick = () => onChange(state.value);
   }
+}
+
+export function inspectionWarning(
+  level: TypeLevel,
+  name: string,
+  boxes: Map<string, Box>
+): string {
+  void level;
+  const references = [...boxes.values()].filter((box) => box.type === name);
+  const label = "type";
+  if (references.length === 0) return `永久删除自定义 ${label}「${name}」,不可恢复。`;
+  return `永久删除自定义 ${label}「${name}」。${references.length} 个 node 会因引用悬空而失效隔离,需逐个改 type 救活。`;
+}
+
+export function hasActiveOwnerInScope(box: Box): boolean {
+  let current: Box | null = box;
+  while (current) {
+    if (current.fm.owner) return true;
+    current = current.parent;
+  }
+  return subtreeHasOwner(box);
+}
+
+function subtreeHasOwner(box: Box): boolean {
+  if (box.fm.owner) return true;
+  return box.children.some(subtreeHasOwner);
+}
+
+export function tentTooltip(
+  el: HTMLElement,
+  text: string,
+  placement: "top" | "right" | "bottom" | "left" = "top"
+): void {
+  el.removeAttribute("title");
+  if (!text) return;
+  setTooltip(el, text, {
+    placement,
+    delay: 300,
+    gap: 6,
+    classes: ["tent-tooltip"],
+  });
+}
+
+// 自定义拖拽影像:一个干净的小标签,替掉浏览器默认的半透明整行重影。
+export function makeDragLabel(name: string): HTMLElement {
+  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
+  el.style.position = "absolute";
+  el.style.top = "-1000px";
+  el.style.left = "-1000px";
+  // 拖拽开始后浏览器已截图,下一帧即可移除
+  window.setTimeout(() => el.remove(), 0);
+  return el;
 }
