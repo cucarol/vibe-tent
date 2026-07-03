@@ -2197,7 +2197,8 @@ ${r.relayPrompt}`);
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--no-cascade]");
+      const cascadeOutputs = flags["no-cascade"] !== "true";
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -2228,11 +2229,13 @@ ${r.relayPrompt}`);
       if (readyReport) {
         await acceptReport(env, readyReport.path, {
           commits: refs,
-          integrate: refs.length > 0 ? integrate : void 0
+          integrate: refs.length > 0 ? integrate : void 0,
+          cascadeOutputs
         });
       } else {
         await completeClaim(env, boxId, {
-          integrate: refs.length > 0 ? () => integrate(refs) : void 0
+          integrate: refs.length > 0 ? () => integrate(refs) : void 0,
+          cascadeOutputs
         });
       }
       for (const line of integrationLines) console.log(line);
@@ -2240,9 +2243,13 @@ ${r.relayPrompt}`);
       break;
     }
     case "stamp": {
-      if (!args[0]) return fail("Usage: tent stamp <boxId>");
-      await stamp(env, args[0]);
-      console.log(`\u2713 Stamped ${args[0]} (done and owner cleared)`);
+      const { positionals, flags } = parseFlags(args);
+      const boxId = positionals[0];
+      if (!boxId) return fail("Usage: tent stamp <boxId> [--no-cascade]");
+      await stamp(env, boxId, {
+        cascadeOutputs: flags["no-cascade"] !== "true"
+      });
+      console.log(`\u2713 Stamped ${boxId} (done and owner cleared)`);
       break;
     }
     case "propose": {
@@ -2450,7 +2457,7 @@ function fail(msg) {
 function parseFlags(args) {
   const positionals = [];
   const flags = {};
-  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes"]);
+  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes", "no-cascade"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -2542,7 +2549,8 @@ Commands:
   roles                              Print the role registry.
   dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
   report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId>                   Confirm completion and release owner.
+  complete <boxId> [--no-cascade]    Confirm completion and release owner.
+  stamp <boxId> [--no-cascade]       Complete without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.

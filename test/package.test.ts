@@ -163,8 +163,10 @@ test("tent complete:defaults to ready report commits and consumes the report", a
   assert.equal((await fs.readFile(path.join(fixture.workspace, "delivered.txt"), "utf8")).trim(), "from report");
   assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), false);
   const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  const output = parseFrontmatter(await fs.readFile(fixture.outputNote, "utf8")).data;
   assert.equal(completed.status, "done");
   assert.equal(completed.owner, undefined);
+  assert.equal(output.status, "done");
 });
 
 test("tent complete:explicit commits override a ready report and still consume it", async () => {
@@ -188,8 +190,41 @@ test("tent complete:without a report remains a zero-integration stamp path", asy
   await runCli(fixture.tent, "complete", fixture.boxId);
 
   const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  const output = parseFrontmatter(await fs.readFile(fixture.outputNote, "utf8")).data;
   assert.equal(completed.status, "done");
   assert.equal(completed.owner, undefined);
+  assert.equal(output.status, "done");
+});
+
+test("tent complete:--no-cascade preserves direct output records", async () => {
+  const fixture = await makeCompletionFixture();
+
+  await runCli(fixture.tent, "complete", fixture.boxId, "--no-cascade");
+
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  const output = parseFrontmatter(await fs.readFile(fixture.outputNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(output.status, undefined);
+});
+
+test("tent stamp:defaults to output cascade and supports --no-cascade", async () => {
+  const cascading = await makeCompletionFixture();
+  await runCli(cascading.tent, "stamp", cascading.boxId);
+  assert.equal(
+    parseFrontmatter(await fs.readFile(cascading.outputNote, "utf8")).data.status,
+    "done",
+  );
+
+  const isolated = await makeCompletionFixture();
+  await runCli(isolated.tent, "stamp", isolated.boxId, "--no-cascade");
+  assert.equal(
+    parseFrontmatter(await fs.readFile(isolated.boxNote, "utf8")).data.status,
+    "done",
+  );
+  assert.equal(
+    parseFrontmatter(await fs.readFile(isolated.outputNote, "utf8")).data.status,
+    undefined,
+  );
 });
 
 test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", async () => {
@@ -325,10 +360,12 @@ async function makeCompletionFixture(): Promise<{
   roleWorktree: string;
   boxId: string;
   boxNote: string;
+  outputNote: string;
 }> {
   const tent = await makeSkeletonTent();
   const workspace = await makeWorkspace(path.dirname(tent));
   const deliveryId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
+  boxId(await runCli(tent, "new-box", "delivery output", "output-reference", deliveryId));
   const outputId = boxId(await runCli(tent, "new-box", "workspace", "output"));
   await fs.writeFile(
     path.join(tent, "workspace", "workspace.md"),
@@ -342,6 +379,7 @@ async function makeCompletionFixture(): Promise<{
     roleWorktree: path.join(path.dirname(workspace), `${path.basename(workspace)}-worktrees`, "reviewer"),
     boxId: deliveryId,
     boxNote: path.join(tent, "delivery", "delivery.md"),
+    outputNote: path.join(tent, "delivery", "delivery output", "delivery output.md"),
   };
 }
 
