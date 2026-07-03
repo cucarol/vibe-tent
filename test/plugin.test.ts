@@ -14,6 +14,8 @@ import {
   createRegistryPaneState,
   roleColorValue,
   rwSegmentStates,
+  showsUnstampedState,
+  statuslessDirectChildren,
   visibleTreeCount,
 } from "../src/plugin/ui-model.js";
 
@@ -84,6 +86,23 @@ test("plugin ui-model:collapsed rows include hidden descendant triage counts", (
   assert.equal(visibleTreeCount(root, false, direct), 1);
   assert.equal(visibleTreeCount(root, true, direct), 6);
   assert.equal(visibleTreeCount(child, true, direct), 5);
+});
+
+test("plugin ui-model:lifecycle warning only appears after entering the lifecycle", () => {
+  assert.equal(showsUnstampedState({ fm: {} }), false);
+  assert.equal(showsUnstampedState({ fm: { owner: "executor" } }), true);
+  assert.equal(showsUnstampedState({ fm: { status: "todo" } }), true);
+  assert.equal(showsUnstampedState({ fm: { status: "done" } }), true);
+});
+
+test("plugin ui-model:lifecycle batch candidates are statusless direct children only", () => {
+  const grandchild = { id: "grandchild", fm: {}, children: [] };
+  const statusless = { id: "statusless", fm: {}, children: [grandchild] };
+  const todo = { id: "todo", fm: { status: "todo" }, children: [] };
+  const done = { id: "done", fm: { status: "done" }, children: [] };
+  const parent = { id: "parent", fm: { status: "doing" }, children: [statusless, todo, done] };
+
+  assert.deepEqual(statuslessDirectChildren(parent).map((child) => child.id), ["statusless"]);
 });
 
 test("plugin pending dispatch:newest matching task wins and acknowledgement clears every claim", () => {

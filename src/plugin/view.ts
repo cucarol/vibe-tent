@@ -41,7 +41,13 @@ import {
   createRegistryPaneState,
   drawRegistryPane,
 } from "./registry-pane.js";
-import { capturePaneScroll, restorePaneScroll, visibleTreeCount } from "./ui-model.js";
+import {
+  capturePaneScroll,
+  restorePaneScroll,
+  showsUnstampedState,
+  statuslessDirectChildren,
+  visibleTreeCount,
+} from "./ui-model.js";
 import { TimedCache } from "./timed-cache.js";
 import {
   pendingDispatches,
@@ -60,6 +66,7 @@ import {
   patchBody,
   adoptCopiedSubtree,
   acceptReport,
+  stamp,
 } from "../core/ops.js";
 
 export const TENT_VIEW_TYPE = "tent-structure-editor";
@@ -1095,7 +1102,9 @@ export class TentView extends ItemView {
   private drawOutputSummary(el: HTMLElement, box: Box) {
     const pointer = parseOutputPointer(box.fm, box.body);
     const card = el.createDiv({ cls: "tent-output-summary" });
-    card.createSpan({ cls: "tent-output-pill", text: (box.fm.status || "todo") === "done" ? "已交付" : "未盖章" });
+    if (showsUnstampedState(box)) {
+      card.createSpan({ cls: "tent-output-pill", text: box.fm.status === "done" ? "已交付" : "未盖章" });
+    }
     card.createSpan({ cls: "tent-output-line", text: pointer.workspace ? `workspace: ${pointer.workspace}` : "workspace: 未记录" });
     const refLine = card.createSpan({
       cls: "tent-output-line",
@@ -1381,6 +1390,7 @@ export class TentView extends ItemView {
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "确认" });
       done.setAttr("type", "button");
+      const statuslessChildren = statuslessDirectChildren(box);
 
       if (report.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
@@ -1405,8 +1415,8 @@ export class TentView extends ItemView {
         });
       }
 
-      done.onclick = async () => {
-        done.setAttr("disabled", "true");
+      const accept = async (children: Box[], controls: HTMLButtonElement[] = [done]) => {
+        for (const control of controls) control.setAttr("disabled", "true");
         try {
           await acceptReport(
             this.env(),
@@ -1420,15 +1430,52 @@ export class TentView extends ItemView {
               },
             }
           );
+          for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
-          new Notice(report.commits.length
+          const childMessage = children.length > 0 ? `，并盖章 ${children.length} 个子级` : "";
+          new Notice((report.commits.length
             ? `已确认(合入 ${report.commits.length} commit + 清 owner)`
-            : "已确认(done + 清 owner)");
+            : "已确认(done + 清 owner)") + childMessage);
         } catch (e) {
-          done.removeAttribute("disabled");
+          for (const control of controls) control.removeAttribute("disabled");
           new Notice("确认失败:" + (e instanceof Error ? e.message : e));
         }
+      };
+      done.onclick = () => {
+        if (statuslessChildren.length === 0) {
+          void accept([]);
+          return;
+        }
+
+        done.setAttr("disabled", "true");
+        const prompt = body.createDiv({ cls: "tent-child-stamp" });
+        prompt.createDiv({
+          cls: "tent-child-stamp-title",
+          text: `同时盖章 ${statuslessChildren.length} 个直接子级？`,
+        });
+        const selected = new Set(statuslessChildren.map((child) => child.id));
+        for (const child of statuslessChildren) {
+          const row = prompt.createEl("label", { cls: "tent-child-stamp-row" });
+          const checkbox = row.createEl("input", { type: "checkbox" });
+          checkbox.checked = true;
+          row.createSpan({ text: child.name });
+          checkbox.onchange = () => {
+            if (checkbox.checked) selected.add(child.id);
+            else selected.delete(child.id);
+          };
+        }
+        const promptActions = prompt.createDiv({ cls: "tent-child-stamp-actions" });
+        const parentOnly = promptActions.createEl("button", { text: "仅盖父框" });
+        parentOnly.setAttr("type", "button");
+        const includeChildren = promptActions.createEl("button", { cls: "mod-cta", text: "同时盖章" });
+        includeChildren.setAttr("type", "button");
+        const controls = [parentOnly, includeChildren];
+        parentOnly.onclick = () => void accept([], controls);
+        includeChildren.onclick = () => {
+          const children = statuslessChildren.filter((child) => selected.has(child.id));
+          void accept(children, controls);
+        };
       };
     } else if (owner) {
       body.createDiv({ cls: "tent-triage-sec", text: "处理中" });
