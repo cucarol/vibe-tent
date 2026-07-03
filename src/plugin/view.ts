@@ -36,6 +36,7 @@ import {
   createRegistryPaneState,
   drawRegistryPane,
 } from "./registry-pane.js";
+import { capturePaneScroll, restorePaneScroll } from "./ui-model.js";
 import { TimedCache } from "./timed-cache.js";
 import {
   OpsEnv,
@@ -265,6 +266,7 @@ export class TentView extends ItemView {
 
   private draw() {
     const root = this.contentEl;
+    const paneScroll = capturePaneScroll(root);
     root.empty();
     root.addClass("tent-view");
     root.onclick = (event) => {
@@ -314,6 +316,7 @@ export class TentView extends ItemView {
       }, this.registryUi);
     }
     else this.drawProperty(prop);
+    restorePaneScroll(root, paneScroll);
   }
 
   private wireDivider(cols: HTMLElement, divider: HTMLElement) {

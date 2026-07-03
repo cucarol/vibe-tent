@@ -18,6 +18,29 @@ export interface RwSegmentState {
   active: boolean;
 }
 
+export interface PaneScrollPositions {
+  tree: number;
+  property: number;
+}
+
+interface ScrollPaneRoot {
+  querySelector(selector: string): { scrollTop: number } | null;
+}
+
+export function capturePaneScroll(root: ScrollPaneRoot): PaneScrollPositions {
+  return {
+    tree: root.querySelector(".tent-tree")?.scrollTop ?? 0,
+    property: root.querySelector(".tent-prop")?.scrollTop ?? 0,
+  };
+}
+
+export function restorePaneScroll(root: ScrollPaneRoot, positions: PaneScrollPositions): void {
+  const tree = root.querySelector(".tent-tree");
+  const property = root.querySelector(".tent-prop");
+  if (tree) tree.scrollTop = positions.tree;
+  if (property) property.scrollTop = positions.property;
+}
+
 export function createRegistryPaneState(): RegistryPaneState {
   return {
     markedRoles: new Set<string>(),
