@@ -1,42 +1,89 @@
 ---
 name: tent-genesis
-description: 创建全新的 Tent / 帷幄：grill 帐名、Obsidian vault、唯一真实 workspace、首批框与 role，scaffold 无 Git 的 Tent，并初始化或连接真实 workspace Git 仓库。
+description: 创建全新的 Tent / 帷幄：轻量追问帐名、Obsidian vault、唯一真实 workspace、首批框与 role，scaffold 无 Git 的 Tent，并初始化或连接真实 workspace Git 仓库。
 ---
 
 # tent-genesis
 
-Use when the user wants to create a Tent from scratch.
+当 user 要从零创建一顶新的 Tent / 帷幄时使用。
 
-## Protocol
+## 目标
 
-1. Grill for the Tent name, Obsidian vault path, one real workspace path, first
-   concrete outcome, initial boxes, and role names.
-2. For each new role, run a tiny `/grilling`-style calibration. Keep the feel
-   of `$grill-me`, but make it lightweight: ask one pointed question about what
-   the role should roughly handle, and at most one follow-up about what it
-   should avoid or when it must stop and ask the user. If the user says
-   "都可以", "你定", or otherwise delegates judgment, infer a practical role
-   from the Tent's goal. Draft a short `description`, `prompt`, and optional
-   `color`, show them to the user for confirmation, then write the role
-   definition. Stop as soon as the role is clear enough; do not introduce skill
-   slots, presets, complex permissions, or workflow theory.
-3. Run `tent new <tent-name> --vault <vault-path>`. The CLI reads the vault's
-   configured `tentsRoot`; do not hardcode it or place the Tent at vault root.
-   For a standalone Tent, `tent new <explicit-path>` is allowed.
-4. The scaffold contains `RULES.md`, `.tent/types.json`, `.tent/roles.json`,
-   `.tent/tags.json`, and `temp/`. It creates no generic zones and no Tent Git
-   repository. Do not create `SPEC.md`, agent config files, or `.gitignore`.
-5. Initialize the real workspace as a Git repository when needed. Prefer a
-   `main` target branch. If it already is a repository, preserve its history and
-   current configuration.
-6. Create the concrete box tree from the grill. Every box is a folder plus a
-   same-named Markdown note with `id: bx-<six random chars>` and `type`.
-   Names are immutable after creation. Do not create legacy `kind`.
-7. Create one output box that maps the Tent to the workspace with `workspace`
-   and optional current `ref`. A Tent must not point to multiple workspaces.
-8. Write `{ "roles": [{ "name", "description"?, "prompt"?, "color"? }] }` to
-   `.tent/roles.json` and put project-specific conventions in `RULES.md`.
-9. Commit the initial workspace only when genesis created or intentionally
-   changed workspace files. Never commit the Tent.
+轻量追问出足够信息，创建一顶能立刻工作的 Tent：
 
-Do not create `.tent/skills.json` or `for:` links.
+- Tent 名称与落点
+- Obsidian vault 路径或显式 Tent 路径
+- 唯一真实 workspace
+- 第一批真实 box
+- 第一批 role
+
+Tent 只保存上下文和状态，不使用 Git。真实 workspace 才使用 Git。
+
+## Role Init
+
+定义初始 role 时，做一次很轻量的追问校准。
+
+- 每个 role 只问一两个问题。
+- 先问：这个 role 大概负责什么？
+- 最多再追问一次：它明显不要做什么，或什么情况下必须停下来问 user？
+- 如果 user 说“都可以”“你定”或把判断交给你，就根据这顶 Tent 的目标草拟。
+- 草拟 `description`、`prompt`、可选 `color`，给 user 确认后再写 role 定义。
+- 不要引入 skill slots、预设、复杂权限或工作流理论。
+
+## Type 选择
+
+创建 box 时必须有意识地选择 type。不要把所有东西都默认塞进 `goal`，也不要机械地给所有待办补二级 type。
+
+最终以当前 Tent 的 `.tent/types.json` 为准。user 可以修改默认 type 的名称、R/W 和描述；下面是内置默认 type 的语义倾向，不是不可变枚举。
+
+一级 type 通常表达 box 的主语义：
+
+- `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。
+- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、handoff 意图，以及大多数 user/agent 协作文本。
+- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、handoff 文件、workspace 指针等。
+
+二级 type 通常是可选修饰，不是默认补全项。
+
+- 只有当当前注册表里的二级 type 符号语义真的重要，或需要它覆盖一级 type 的 R/W 默认值时，才写复合 type。
+- 不要因为“还没做完”就自动加 `open`。进度属于 `status`。
+- 不要因为“做完了”就自动加 `sealed`。`sealed` 是语义封存或隔离，不等于 done。
+- 不确定时，优先用合适的一级 type；必要时问 user。
+
+进度用 `status: todo | doing | done` 表达。type 表达语义和 R/W，不替代 status。
+
+## Tags 选择
+
+tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 box。它不替代 type，也不替代层级。
+
+- 初始化真实 box 树时，只给需要被横向检索的 box 打少量稳定主题 tag，通常 1-3 个。
+- 优先复用同一顶 Tent 里已有 tag；只有没有合适 tag 时才新建。
+- tag 应表达长期主题或检索入口，例如 `open-source`、`release`、`npm`、`ui`、`security`、`code-health`、`workspace`。
+- 不要把一次性短语、完整句子、临时任务名、过细文件名都做成 tag。
+- 如果多个 box 属于同一主题，复用同一个 tag；不要为了每个 box 都发明一个近义 tag。
+
+简化判断：type 表达主语义和 R/W，status 表达进度，层级表达归属关系，tags 表达横向检索主题。
+
+## Output 位置
+
+`output` 表示真实产出或产出指针。
+
+- 全局 workspace 指针可以作为顶层 output。
+- 具体代码、文档、release、npm 包、截图、构建物、handoff 文件等 output，优先创建在对应处理 box 的子级中。
+- output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
+- 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
+
+## 协议
+
+1. 轻量追问出 Tent 名称、Obsidian vault 路径、唯一真实 workspace、第一批具体目标/上下文/产出，以及初始 role 名称。
+2. 对每个初始 role 做轻量 role init 校准，并让 user 确认 `description`、`prompt`、可选 `color`。
+3. 运行 `tent new <tent-name> --vault <vault-path>`。CLI 会读取 vault 的 `tentsRoot` 设置；不要硬编码 `_tents`，也不要把 Tent 放在 vault 根目录。若 user 明确给出独立路径，可用 `tent new <explicit-path>`。
+4. scaffold 只包含 `RULES.md`、`.tent/types.json`、`.tent/roles.json`、`.tent/tags.json`、`temp/`。不创建通用 zone，不初始化 Tent Git，不创建 `SPEC.md`、agent 配置文件或 `.gitignore`。
+5. 初始化或连接真实 workspace。如果 workspace 还不是 Git 仓库，创建目录并 `git init`，优先使用 `main`。如果它已经是仓库，保留历史和配置。
+6. 根据追问结果创建真实 box 树。每个 box 是文件夹加同名 Markdown 笔记，frontmatter 至少包含 `id: bx-<six random chars>` 和有意选择的 `type`。
+7. box 名称创建后视为不可在 Tent 内重命名。不要创建 legacy `kind`。
+8. 创建一个 `output` box，把 Tent 映射到真实 workspace，写入 `workspace` 和可选当前 `ref`。一顶 Tent 不应指向多个 workspace。
+9. 写 `.tent/roles.json`，格式为 `{ "roles": [{ "name", "description"?, "prompt"?, "color"? }] }`。
+10. 把项目本地约定写入 `RULES.md`。机制规范属于 Tent 仓库文档，不复制进新 Tent。
+11. 只有当 genesis 创建或有意修改了真实 workspace 文件时，才 commit workspace。永远不要 commit Tent。
+
+不要创建 `.tent/skills.json`。不要创建 `for:` 链接。
