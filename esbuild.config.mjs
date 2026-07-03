@@ -30,28 +30,12 @@ const cliCtx = await esbuild.context({
   platform: "node",
 });
 
-const seedCtx = await esbuild.context({
-  entryPoints: ["src/cli/seed.ts"],
-  bundle: true,
-  external: ["node:*"],
-  format: "esm",
-  target: "es2021",
-  logLevel: "info",
-  sourcemap: false,
-  treeShaking: true,
-  outfile: "scripts/seed-demo.mjs",
-  platform: "node",
-});
-
 if (prod) {
   await pluginCtx.rebuild();
   await cliCtx.rebuild();
-  await seedCtx.rebuild();
   await pluginCtx.dispose();
   await cliCtx.dispose();
-  await seedCtx.dispose();
 } else {
   await pluginCtx.watch();
   await cliCtx.watch();
-  await seedCtx.watch();
 }

@@ -41,7 +41,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
   );
   assert.equal(pkg.bin.tent, "./cli.mjs");
-  assert.equal(pkg.bin["tent-seed"], "./scripts/seed-demo.mjs");
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, manifest.author);
   assert.equal(pkg.repository.url, "git+https://github.com/cucarol/tent.git");

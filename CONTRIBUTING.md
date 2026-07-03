@@ -17,7 +17,7 @@ npm ci
 npm run check
 ```
 
-For a focused core change, run `npm run test:core`. For seed, CLI, packaging, or portability work, also run `npm run test:integration`.
+For a focused core change, run `npm run test:core`. For CLI, packaging, or portability work, also run `npm run test:integration`.
 
 Pull requests should explain the behavior change, tests added, and any compatibility impact on existing Tent directories.
 

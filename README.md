@@ -21,7 +21,6 @@ The user remains the final decision maker. Agents receive deterministic readable
 | `src/cli/` | `tent` command for user-authority actions |
 | `src/plugin/` | Optional Obsidian structure editor |
 | `skills/` | Agent-side skills: `tent-genesis` (create a tent) + `tent-role` (orient an agent into a role) |
-| `scripts/seed-demo.mjs` | Creates a self-contained example Tent |
 
 Rules belong in core. Frontends render and invoke them; they must not invent their own permission semantics.
 
@@ -38,7 +37,7 @@ npm ci
 npm run check
 ```
 
-`npm run check` runs TypeScript validation, production builds for `main.js`, `cli.mjs`, and `scripts/seed-demo.mjs`, unit/integration tests, and the OKF conformance gate.
+`npm run check` runs TypeScript validation, production builds for `main.js` and `cli.mjs`, unit/integration tests, and the OKF conformance gate.
 
 Useful focused commands:
 
@@ -60,17 +59,17 @@ npm run build
 npm link
 ```
 
-Create an example Tent in any empty destination:
+Create a new Tent in any empty destination:
 
 ```bash
-tent-seed "<path-to-your-tent>"
+tent new "<path-to-your-tent>"
 cd "<path-to-your-tent>"
 tent tree
 ```
 
-Without `npm link`, the equivalent checkout-only command is `npm run seed -- "<path-to-your-tent>"`.
+Without `npm link`, the equivalent checkout-only command is `node ./cli.mjs new "<path-to-your-tent>"` after `npm run build`.
 
-The seed is self-contained: it includes `RULES.md`, `.tent/types.json`, `.tent/roles.json`, `.tent/tags.json`, demo boxes, and a temp pipeline. It does not initialize Git or copy the mechanism `SPEC.md` and agent configuration files into the Tent.
+The new Tent is a self-contained skeleton: `RULES.md`, `.tent/types.json`, `.tent/roles.json`, `.tent/tags.json`, and a temp pipeline. It does not initialize Git or copy the mechanism `SPEC.md` and agent configuration files into the Tent.
 
 ## Syncing
 
@@ -116,7 +115,7 @@ Then enable **Tent / 帷幄** in Obsidian's community plugin settings.
 
 ## Project Status
 
-- Core, CLI, seed, and the agent skills are implemented.
+- Core, CLI, and the agent skills are implemented.
 - The type system is a flat OKF-aligned registry with user-defined types.
 - Legacy `kind` is load-compatible and can be migrated with `tent migrate-kind-to-type`.
 - OKF index/log generation and wiki-link projection are available via `tent okf-sync`.

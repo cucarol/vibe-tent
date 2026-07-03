@@ -4,8 +4,7 @@
   "description": "Tent / 帷幄 — 一个把'和 agent 协作'当成'管理意志与上下文'的 Obsidian 插件 + 核心库",
   "type": "module",
   "bin": {
-    "tent": "./cli.mjs",
-    "tent-seed": "./scripts/seed-demo.mjs"
+    "tent": "./cli.mjs"
   },
   "files": [
     "cli.mjs",
@@ -14,7 +13,6 @@
     "versions.json",
     "styles.css",
     "skills/",
-    "scripts/seed-demo.mjs",
     "scripts/okf-check.mjs",
     "vendor/okf-conformance/",
     "docs/SPEC.md",
@@ -36,7 +34,6 @@
     "okf:check": "node scripts/okf-check.mjs",
     "okf:check:strict": "node scripts/okf-check.mjs --strict",
     "check": "npm run typecheck && npm run build && npm test && npm run okf:check",
-    "seed": "node scripts/seed-demo.mjs",
     "prepack": "npm run check"
   },
   "keywords": [
