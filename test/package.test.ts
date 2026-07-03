@@ -182,6 +182,24 @@ test("tent complete:explicit commits override a ready report and still consume i
   assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), false);
 });
 
+test("tent complete:already merged report commit is accepted as integrated", async () => {
+  const fixture = await makeCompletionFixture();
+  const ref = await commitRoleFile(fixture.roleWorktree, "merged.txt", "already merged\n", "merged delivery");
+  const body = path.join(path.dirname(fixture.tent), "report.md");
+  await fs.writeFile(body, "Delivery was merged before the Tent acceptance click.\n", "utf8");
+  await runCli(fixture.tent, "report", fixture.boxId, body, "--commits", ref);
+  await run("git", ["merge", "--ff-only", "tent-role/reviewer"], fixture.workspace);
+
+  const completed = await runCli(fixture.tent, "complete", fixture.boxId);
+
+  assert.match(completed.stdout, /\(already\)/);
+  assert.equal((await fs.readFile(path.join(fixture.workspace, "merged.txt"), "utf8")).trim(), "already merged");
+  assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), false);
+  const completedBox = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completedBox.status, "done");
+  assert.equal(completedBox.owner, undefined);
+});
+
 test("tent complete:without a report remains a zero-integration stamp path", async () => {
   const fixture = await makeCompletionFixture();
 
