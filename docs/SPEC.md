@@ -157,6 +157,13 @@ Only user confirmation completes delivery.
    owner, then remove the temporary report;
 3. if integration fails, leave Tent owner/status unchanged.
 
+By default, the same explicit completion action also marks eligible direct
+output records as `done`. An eligible record is an unarchived, valid, unowned
+direct child whose base type is `output`, including compound types such as
+`output-reference`. The cascade is not recursive and is not status inheritance.
+An owned output record rejects the complete operation instead of silently
+clearing another claim. CLI callers may opt out with `--no-cascade`.
+
 Rejecting a report performs no workspace integration, keeps the owner and
 `doing` state, and marks the temporary report rejected so the agent can replace
 it with a revised delivery.
@@ -254,8 +261,8 @@ tent role-init <role>
 tent roles
 tent dispatch <boxId> <role> [prompt...] [--handoff <path>]
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
-tent complete <boxId> [--commits <sha,sha>]
-tent stamp <boxId>
+tent complete <boxId> [--commits <sha,sha>] [--no-cascade]
+tent stamp <boxId> [--no-cascade]
 tent force-release <boxId>
 tent new-box <name> <type> [parentId]
 tent propose <targetId> <role> <bodyFile|->
