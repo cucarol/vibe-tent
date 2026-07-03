@@ -1,5 +1,5 @@
 // 极简 frontmatter 解析/序列化。零依赖:框身份文件(<box-name>.md)的 frontmatter 是扁平 key: value,
-// 不需要完整 YAML。只认标量(string/number/bool)和行注释。
+// 不需要完整 YAML。只认标量(string/number/bool)、流式数组、块序列和行注释。
 
 export interface ParsedFrontmatter {
   data: Record<string, unknown>;
@@ -27,7 +27,9 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
 
   const data: Record<string, unknown> = {};
   const keyOrder: string[] = [];
-  for (const line of fmBlock.split("\n")) {
+  const lines = fmBlock.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const colon = trimmed.indexOf(":");
@@ -36,7 +38,13 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     let valuePart = trimmed.slice(colon + 1).trim();
     // 砍掉行尾 ` # 注释`(简单实现:非引号内的 # 之后)
     valuePart = stripInlineComment(valuePart);
-    data[key] = coerce(valuePart);
+    if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
+      const { value, nextIndex } = readBlockSequence(lines, i + 1);
+      data[key] = normalizeValueForKey(key, value);
+      i = nextIndex - 1;
+    } else {
+      data[key] = normalizeValueForKey(key, coerce(valuePart));
+    }
     keyOrder.push(key);
   }
   return { data, body, keyOrder };
@@ -55,8 +63,11 @@ function coerce(v: string): unknown {
   if (v === "null" || v === "~") return null;
   if (/^-?\d+$/.test(v)) return parseInt(v, 10);
   if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
-  if ((v.startsWith('"') && v.endsWith('"')) || (v.startsWith("'") && v.endsWith("'"))) {
-    return v.slice(1, -1);
+  if (v.startsWith('"') && v.endsWith('"')) {
+    return parseDoubleQuoted(v);
+  }
+  if (v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1).replace(/''/g, "'");
   }
   // YAML 流式数组: [item1, item2, ...]
   if (v.startsWith("[") && v.endsWith("]")) {
@@ -65,6 +76,74 @@ function coerce(v: string): unknown {
     return splitFlowArray(inner).map((item) => coerce(item.trim()));
   }
   return v;
+}
+
+function isBlockSequenceStart(line: string | undefined): boolean {
+  return line !== undefined && /^\s*-\s*/.test(line);
+}
+
+function readBlockSequence(lines: string[], startIndex: number): { value: unknown[]; nextIndex: number } {
+  const value: unknown[] = [];
+  let i = startIndex;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(/^\s*-\s*(.*)$/);
+    if (!match) break;
+    const item = stripInlineComment(match[1].trim());
+    value.push(coerce(item));
+  }
+  return { value, nextIndex: i };
+}
+
+function parseDoubleQuoted(v: string): string {
+  try {
+    return JSON.parse(v) as string;
+  } catch {
+    return unescapeYamlDoubleQuoted(v.slice(1, -1));
+  }
+}
+
+function unescapeYamlDoubleQuoted(value: string): string {
+  const escapes: Record<string, string> = {
+    "0": "\0",
+    a: "\x07",
+    b: "\b",
+    t: "\t",
+    n: "\n",
+    v: "\v",
+    f: "\f",
+    r: "\r",
+    e: "\x1b",
+    '"': '"',
+    "/": "/",
+    "\\": "\\",
+  };
+  let out = "";
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch !== "\\" || i === value.length - 1) {
+      out += ch;
+      continue;
+    }
+    const next = value[++i];
+    out += escapes[next] ?? `\\${next}`;
+  }
+  return out;
+}
+
+function normalizeValueForKey(key: string, value: unknown): unknown {
+  if (key === "workspace" || key === "path" || key === "ref") {
+    return normalizeWindowsPathValue(value);
+  }
+  if (key === "paths" && Array.isArray(value)) {
+    return value.map((item) => normalizeWindowsPathValue(item));
+  }
+  return value;
+}
+
+function normalizeWindowsPathValue(value: unknown): unknown {
+  if (typeof value !== "string" || !/^[A-Za-z]:\\/.test(value)) return value;
+  return value.replace(/\\{2,}/g, "\\");
 }
 
 function splitFlowArray(inner: string): string[] {

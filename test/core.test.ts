@@ -102,6 +102,64 @@ test("tags frontmatter:数组往返且键序在 type 后", async () => {
   assert.equal(parsed.body, body);
 });
 
+test("frontmatter round-trip:quoted Windows path does not double escape", () => {
+  let raw = String.raw`---
+id: bx-path
+type: output
+workspace: "C:\\cucarol\\_code\\Tent"
+---
+# Workspace
+`;
+
+  for (let i = 0; i < 3; i++) {
+    const parsed = parseFrontmatter(raw);
+    assert.equal(parsed.data.workspace, String.raw`C:\cucarol\_code\Tent`);
+    raw = serializeFrontmatter(parsed.data, parsed.body, parsed.keyOrder);
+  }
+
+  assert.match(raw, /workspace: "C:\\\\cucarol\\\\_code\\\\Tent"/);
+  assert.doesNotMatch(raw, /workspace: "C:\\\\\\\\cucarol/);
+});
+
+test("frontmatter round-trip:Obsidian block sequences are preserved as arrays", () => {
+  const raw = String.raw`---
+id: bx-paths
+type: output
+paths:
+  - test/a.ts
+  - "C:\\cucarol\\_code\\Tent\\src\\core\\frontmatter.ts"
+custom: keep-me
+---
+# Paths
+`;
+  const parsed = parseFrontmatter(raw);
+  assert.deepEqual(parsed.data.paths, [
+    "test/a.ts",
+    String.raw`C:\cucarol\_code\Tent\src\core\frontmatter.ts`,
+  ]);
+  assert.equal(parsed.data.custom, "keep-me");
+
+  const out = serializeFrontmatter(
+    { ...parsed.data, type: "prompt" },
+    parsed.body,
+    parsed.keyOrder,
+  );
+  const reparsed = parseFrontmatter(out);
+  assert.deepEqual(reparsed.data.paths, parsed.data.paths);
+  assert.equal(reparsed.data.custom, "keep-me");
+  assert.equal(reparsed.data.type, "prompt");
+});
+
+test("frontmatter parse:previously doubled workspace paths are cleaned in memory", () => {
+  const parsed = parseFrontmatter(String.raw`---
+id: bx-damaged
+type: output
+workspace: "C:\\\\cucarol\\\\_code\\\\Tent"
+---
+`);
+  assert.equal(parsed.data.workspace, String.raw`C:\cucarol\_code\Tent`);
+});
+
 test("tags 注册表:自动登记、摘除、级联剥离与检索", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);

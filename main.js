@@ -191,7 +191,9 @@ function parseFrontmatter(raw) {
   const body = afterFence === -1 ? "" : text.slice(afterFence + 1);
   const data = {};
   const keyOrder = [];
-  for (const line of fmBlock.split("\n")) {
+  const lines = fmBlock.split("\n");
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
     const colon = trimmed.indexOf(":");
@@ -199,7 +201,13 @@ function parseFrontmatter(raw) {
     const key = trimmed.slice(0, colon).trim();
     let valuePart = trimmed.slice(colon + 1).trim();
     valuePart = stripInlineComment(valuePart);
-    data[key] = coerce(valuePart);
+    if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
+      const { value, nextIndex } = readBlockSequence(lines, i + 1);
+      data[key] = normalizeValueForKey(key, value);
+      i = nextIndex - 1;
+    } else {
+      data[key] = normalizeValueForKey(key, coerce(valuePart));
+    }
     keyOrder.push(key);
   }
   return { data, body, keyOrder };
@@ -216,8 +224,11 @@ function coerce(v) {
   if (v === "null" || v === "~") return null;
   if (/^-?\d+$/.test(v)) return parseInt(v, 10);
   if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
-  if (v.startsWith('"') && v.endsWith('"') || v.startsWith("'") && v.endsWith("'")) {
-    return v.slice(1, -1);
+  if (v.startsWith('"') && v.endsWith('"')) {
+    return parseDoubleQuoted(v);
+  }
+  if (v.startsWith("'") && v.endsWith("'")) {
+    return v.slice(1, -1).replace(/''/g, "'");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
@@ -225,6 +236,68 @@ function coerce(v) {
     return splitFlowArray(inner).map((item) => coerce(item.trim()));
   }
   return v;
+}
+function isBlockSequenceStart(line) {
+  return line !== void 0 && /^\s*-\s*/.test(line);
+}
+function readBlockSequence(lines, startIndex) {
+  const value = [];
+  let i = startIndex;
+  for (; i < lines.length; i++) {
+    const line = lines[i];
+    const match = line.match(/^\s*-\s*(.*)$/);
+    if (!match) break;
+    const item = stripInlineComment(match[1].trim());
+    value.push(coerce(item));
+  }
+  return { value, nextIndex: i };
+}
+function parseDoubleQuoted(v) {
+  try {
+    return JSON.parse(v);
+  } catch {
+    return unescapeYamlDoubleQuoted(v.slice(1, -1));
+  }
+}
+function unescapeYamlDoubleQuoted(value) {
+  const escapes = {
+    "0": "\0",
+    a: "\x07",
+    b: "\b",
+    t: "	",
+    n: "\n",
+    v: "\v",
+    f: "\f",
+    r: "\r",
+    e: "\x1B",
+    '"': '"',
+    "/": "/",
+    "\\": "\\"
+  };
+  let out = "";
+  for (let i = 0; i < value.length; i++) {
+    const ch = value[i];
+    if (ch !== "\\" || i === value.length - 1) {
+      out += ch;
+      continue;
+    }
+    const next = value[++i];
+    out += escapes[next] ?? `\\${next}`;
+  }
+  return out;
+}
+function normalizeValueForKey(key, value) {
+  if (key === "workspace" || key === "path" || key === "ref") {
+    return normalizeWindowsPathValue(value);
+  }
+  if (key === "paths" && Array.isArray(value)) {
+    return value.map((item) => normalizeWindowsPathValue(item));
+  }
+  return value;
+}
+function normalizeWindowsPathValue(value) {
+  if (typeof value !== "string" || !/^[A-Za-z]:\\/.test(value)) return value;
+  return value.replace(/\\{2,}/g, "\\");
 }
 function splitFlowArray(inner) {
   const items = [];
