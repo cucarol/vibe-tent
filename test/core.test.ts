@@ -201,6 +201,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     role: "analyst",
     claims: ["bx-p1"],
     manifest: "temp/analyst/manifest.yml",
+    status: "pending",
+    dispatchedBy: "user",
   });
   assert.match(relayPromptForTask(tasks[1]), new RegExp(second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.match(relayPromptForTask(tasks[1]), /temp\/reviewer\/init\.md/);

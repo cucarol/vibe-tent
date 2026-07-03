@@ -239,7 +239,6 @@ export class TentView extends ItemView {
     const reportsByBox = new Set(this.reports.map((report) => report.boxId));
     this.pendingDispatchItems = pendingDispatches(
       this.tasks,
-      new Set(this.plugin.settings.dispatchPrefs.acknowledgedTasks),
       (boxId) => {
         const box = tent.byId.get(boxId);
         if (!box || box.invalid || box.archived || box.fm.status === "done") return undefined;

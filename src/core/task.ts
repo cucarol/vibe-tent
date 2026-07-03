@@ -17,13 +17,22 @@ export interface TaskEnvelopeInput {
   userPrompt?: string;
   handoffPath?: string;
   workspace?: RoleWorkspaceContract;
+  dispatchedBy?: string;
 }
+
+export type TaskEnvelopeStatus = "pending" | "taken";
 
 export interface TaskEnvelope {
   path: string;
   role: string;
   claims: string[];
   manifest: string;
+  status: TaskEnvelopeStatus;
+  dispatchedBy?: string;
+  workspace?: string;
+  worktree?: string;
+  branch?: string;
+  targetBranch?: string;
 }
 
 export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> {
@@ -47,12 +56,19 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
         ) {
           continue;
         }
-        tasks.push({
+        const task: TaskEnvelope = {
           path,
           role: data.role,
           claims: data.claims,
           manifest: data.manifest,
-        });
+          status: data.status === "taken" ? "taken" : "pending",
+        };
+        if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+        if (typeof data.workspace === "string") task.workspace = data.workspace;
+        if (typeof data.worktree === "string") task.worktree = data.worktree;
+        if (typeof data.branch === "string") task.branch = data.branch;
+        if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+        tasks.push(task);
       } catch {
         // Invalid temp documents stay inspectable on disk but do not enter UI state.
       }
@@ -102,7 +118,9 @@ export async function writeTaskEnvelope(
   const path = await uniqueMarkdownPath(fs, dir, stem);
   const data: Record<string, unknown> = {
     type: "task",
+    status: "pending",
     role: input.role,
+    dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
   };
@@ -123,6 +141,14 @@ export async function writeTaskEnvelope(
     (userPrompt ? `\n## User Prompt\n\n${userPrompt}\n` : "");
   await fs.writeFile(path, serializeFrontmatter(data, body));
   return path;
+}
+
+export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
+  const raw = await fs.readFile(path);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  if (data.type !== "task") throw new Error(`task envelope 格式无效: ${path}`);
+  data.status = "taken";
+  await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
 }
 
 function taskStem(now: string, claimId: string): string {

@@ -1157,12 +1157,19 @@ async function loadTaskEnvelopes(fs) {
         if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
           continue;
         }
-        tasks.push({
+        const task = {
           path,
           role: data.role,
           claims: data.claims,
-          manifest: data.manifest
-        });
+          manifest: data.manifest,
+          status: data.status === "taken" ? "taken" : "pending"
+        };
+        if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+        if (typeof data.workspace === "string") task.workspace = data.workspace;
+        if (typeof data.worktree === "string") task.worktree = data.worktree;
+        if (typeof data.branch === "string") task.branch = data.branch;
+        if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+        tasks.push(task);
       } catch {
       }
     }
@@ -1202,7 +1209,9 @@ async function writeTaskEnvelope(fs, clock, input) {
   const path = await uniqueMarkdownPath(fs, dir, stem);
   const data = {
     type: "task",
+    status: "pending",
     role: input.role,
+    dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath
   };
@@ -1229,6 +1238,13 @@ ${userPrompt}
 ` : "");
   await fs.writeFile(path, serializeFrontmatter(data, body));
   return path;
+}
+async function ackTaskEnvelope(fs, path) {
+  const raw = await fs.readFile(path);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  if (data.type !== "task") throw new Error(`task envelope \u683C\u5F0F\u65E0\u6548: ${path}`);
+  data.status = "taken";
+  await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
 }
 function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
@@ -1808,13 +1824,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     manifestPath,
     userPrompt: options.userPrompt,
     handoffPath: resolvedHandoffPath || void 0,
-    workspace: options.workspace
+    workspace: options.workspace,
+    dispatchedBy: options.dispatchedBy
   });
   const relayPrompt = relayPromptForTask({
     path: taskPath,
     role: roleName,
     claims: taskClaims.map((taskClaim) => taskClaim.id),
-    manifest: manifestPath
+    manifest: manifestPath,
+    status: "pending"
   });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
@@ -1828,13 +1846,13 @@ function resolveDispatchClaim(tent, claimId, tentName) {
 async function stamp(env, boxId) {
   await completeClaim(env, boxId);
 }
-async function completeClaim(env, boxId, integrate) {
+async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
     if (integrate) await integrate();
-    await setOwner(env.fs, box, void 0, "done");
+    await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
 async function acceptReport(env, reportPath, options = {}) {
@@ -1850,7 +1868,7 @@ async function acceptReport(env, reportPath, options = {}) {
       if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
       await options.integrate(commits);
     }
-    await setOwner(env.fs, box, void 0, "done");
+    await setOwner(env.fs, box, void 0, "done", options.acceptedBy ?? "user");
     await env.fs.remove(report.path);
   });
 }
@@ -2051,8 +2069,10 @@ async function deleteArchivedBox(env, boxId) {
     await saveOrder(env.fs, order);
   });
 }
-async function setOwner(fs, box, owner, status) {
+async function setOwner(fs, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
+  if (owner) patch.acceptedBy = void 0;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
   await patchFrontmatter(fs, box, patch);
 }
@@ -3428,14 +3448,8 @@ var TimedCache = class {
 };
 
 // src/plugin/pending-dispatch.ts
-function dispatchAckKey(tentName, taskPath) {
-  return `${tentName}\0${taskPath}`;
-}
-function rememberDispatchAck(acknowledged, key, limit = 500) {
-  const withoutCurrent = [...new Set(acknowledged)].filter((item) => item !== key);
-  return [...withoutCurrent, key].slice(-Math.max(0, limit));
-}
-function pendingDispatches(tasks, acknowledged, ownerFor, tentName) {
+function pendingDispatches(tasks, ownerFor, tentName) {
+  void tentName;
   const latestByBox = /* @__PURE__ */ new Map();
   for (const task of [...tasks].sort(compareTaskOrder)) {
     for (const boxId of task.claims) {
@@ -3444,8 +3458,8 @@ function pendingDispatches(tasks, acknowledged, ownerFor, tentName) {
   }
   const pending = [];
   for (const [boxId, task] of latestByBox) {
+    if (task.status === "taken") continue;
     if (ownerFor(boxId) !== task.role) continue;
-    if (acknowledged.has(dispatchAckKey(tentName, task.path))) continue;
     pending.push({ boxId, task });
   }
   return pending;
@@ -3615,7 +3629,6 @@ var TentView = class extends import_obsidian4.ItemView {
     const reportsByBox = new Set(this.reports.map((report) => report.boxId));
     this.pendingDispatchItems = pendingDispatches(
       this.tasks,
-      new Set(this.plugin.settings.dispatchPrefs.acknowledgedTasks),
       (boxId) => {
         const box = tent.byId.get(boxId);
         if (!box || box.invalid || box.archived || box.fm.status === "done") return void 0;
@@ -5359,6 +5372,8 @@ function settingHeading(parent, name) {
 }
 
 // src/plugin/main.ts
+init_task();
+init_adapter();
 var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 var TentPlugin = class extends import_obsidian6.Plugin {
   constructor() {
@@ -5432,12 +5447,8 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     await this.saveData(this.settings);
   }
   async acknowledgeDispatchTask(tentName, taskPath) {
-    const key = dispatchAckKey(tentName, taskPath);
-    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
-      this.settings.dispatchPrefs.acknowledgedTasks,
-      key
-    );
-    await this.saveSettings();
+    const fs = new ObsidianFs(this.app, `${this.settings.tentsRoot}/${tentName}`);
+    await withTentMutation(fs, () => ackTaskEnvelope(fs, taskPath));
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {

@@ -2,13 +2,15 @@
 
 import { Plugin, WorkspaceLeaf, addIcon, Notice } from "obsidian";
 import { TentView, TENT_VIEW_TYPE } from "./view.js";
-import { dispatchAckKey, rememberDispatchAck } from "./pending-dispatch.js";
 import {
   DEFAULT_SETTINGS,
   mergeSettings,
   type TentSettings,
 } from "./settings-model.js";
 import { TentSettingTab } from "./settings.js";
+import { ackTaskEnvelope } from "../core/task.js";
+import { withTentMutation } from "../core/adapter.js";
+import { ObsidianFs } from "./obsidian-fs.js";
 
 const TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 
@@ -94,12 +96,8 @@ export default class TentPlugin extends Plugin {
     await this.saveData(this.settings);
   }
   async acknowledgeDispatchTask(tentName: string, taskPath: string): Promise<void> {
-    const key = dispatchAckKey(tentName, taskPath);
-    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
-      this.settings.dispatchPrefs.acknowledgedTasks,
-      key
-    );
-    await this.saveSettings();
+    const fs = new ObsidianFs(this.app, `${this.settings.tentsRoot}/${tentName}`);
+    await withTentMutation(fs, () => ackTaskEnvelope(fs, taskPath));
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {

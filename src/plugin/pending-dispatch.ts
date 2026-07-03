@@ -20,10 +20,10 @@ export function rememberDispatchAck(
 
 export function pendingDispatches(
   tasks: TaskEnvelope[],
-  acknowledged: ReadonlySet<string>,
   ownerFor: (boxId: string) => string | undefined,
-  tentName: string
+  tentName?: string
 ): PendingDispatch[] {
+  void tentName;
   const latestByBox = new Map<string, TaskEnvelope>();
   for (const task of [...tasks].sort(compareTaskOrder)) {
     for (const boxId of task.claims) {
@@ -33,8 +33,8 @@ export function pendingDispatches(
 
   const pending: PendingDispatch[] = [];
   for (const [boxId, task] of latestByBox) {
+    if (task.status === "taken") continue;
     if (ownerFor(boxId) !== task.role) continue;
-    if (acknowledged.has(dispatchAckKey(tentName, task.path))) continue;
     pending.push({ boxId, task });
   }
   return pending;

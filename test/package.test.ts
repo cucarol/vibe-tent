@@ -60,6 +60,12 @@ function boxId(result: RunResult): string {
   return id;
 }
 
+function taskPath(result: RunResult): string {
+  const task = result.stdout.match(/Task: (temp\/[^\s]+)/)?.[1];
+  assert.ok(task, `dispatch should print task path: ${result.stdout}`);
+  return task;
+}
+
 test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-temp", async () => {
   const tent = await makeSkeletonTent();
   const workspace = await makeWorkspace(path.dirname(tent));
@@ -145,10 +151,42 @@ test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-tem
   const stamped = parseFrontmatter(await fs.readFile(checkPath, "utf8"));
   assert.equal(stamped.data.status, "done");
   assert.equal(stamped.data.owner, undefined);
+  assert.equal(stamped.data.acceptedBy, "user");
 
   await runCli(tent, "clean-temp");
   assert.equal(await exists(path.join(tent, "temp")), true);
   assert.deepEqual(await fs.readdir(path.join(tent, "temp")), []);
+});
+
+test("tent dispatch:task ack lifecycle and sub target branch", async () => {
+  const tent = await makeSkeletonTent();
+  const workspace = await makeWorkspace(path.dirname(tent));
+  const peerId = boxId(await runCli(tent, "new-box", "peer", "prompt"));
+  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
+  const outputId = boxId(await runCli(tent, "new-box", "workspace", "output"));
+  await fs.writeFile(
+    path.join(tent, "workspace", "workspace.md"),
+    `---\nid: ${outputId}\ntype: output\nworkspace: ${workspace.replaceAll("\\", "/")}\n---\n`,
+    "utf8",
+  );
+
+  const peerTask = taskPath(await runCli(tent, "dispatch", peerId, "reviewer", "Peer task."));
+  const peerData = parseFrontmatter(await fs.readFile(path.join(tent, peerTask), "utf8")).data;
+  assert.equal(peerData.status, "pending");
+  assert.equal(peerData.dispatchedBy, "user");
+  assert.equal(peerData.targetBranch, "main");
+
+  await runCli(tent, "task-ack", peerTask);
+  await runCli(tent, "task-ack", peerTask);
+  const ackedData = parseFrontmatter(await fs.readFile(path.join(tent, peerTask), "utf8")).data;
+  assert.equal(ackedData.status, "taken");
+
+  const subTask = taskPath(await runCli(tent, "dispatch", subId, "executor", "Sub task.", "--as-sub", "--by", "planner"));
+  const subData = parseFrontmatter(await fs.readFile(path.join(tent, subTask), "utf8")).data;
+  assert.equal(subData.status, "pending");
+  assert.equal(subData.dispatchedBy, "planner");
+  assert.equal(subData.branch, "tent-role/executor");
+  assert.equal(subData.targetBranch, "tent-role/planner");
 });
 
 test("tent complete:defaults to ready report commits and consumes the report", async () => {
@@ -165,6 +203,7 @@ test("tent complete:defaults to ready report commits and consumes the report", a
   const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
   assert.equal(completed.status, "done");
   assert.equal(completed.owner, undefined);
+  assert.equal(completed.acceptedBy, "user");
 });
 
 test("tent complete:explicit commits override a ready report and still consume it", async () => {

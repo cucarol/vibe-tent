@@ -1053,7 +1053,9 @@ async function writeTaskEnvelope(fs3, clock, input) {
   const path2 = await uniqueMarkdownPath(fs3, dir, stem);
   const data = {
     type: "task",
+    status: "pending",
     role: input.role,
+    dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath
   };
@@ -1080,6 +1082,13 @@ ${userPrompt}
 ` : "");
   await fs3.writeFile(path2, serializeFrontmatter(data, body));
   return path2;
+}
+async function ackTaskEnvelope(fs3, path2) {
+  const raw = await fs3.readFile(path2);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  if (data.type !== "task") throw new Error(`task envelope \u683C\u5F0F\u65E0\u6548: ${path2}`);
+  data.status = "taken";
+  await fs3.writeFile(path2, serializeFrontmatter(data, body, keyOrder));
 }
 function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
@@ -1549,13 +1558,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     manifestPath,
     userPrompt: options.userPrompt,
     handoffPath: resolvedHandoffPath || void 0,
-    workspace: options.workspace
+    workspace: options.workspace,
+    dispatchedBy: options.dispatchedBy
   });
   const relayPrompt = relayPromptForTask({
     path: taskPath,
     role: roleName,
     claims: taskClaims.map((taskClaim) => taskClaim.id),
-    manifest: manifestPath
+    manifest: manifestPath,
+    status: "pending"
   });
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
@@ -1569,13 +1580,13 @@ function resolveDispatchClaim(tent, claimId, tentName) {
 async function stamp(env, boxId) {
   await completeClaim(env, boxId);
 }
-async function completeClaim(env, boxId, integrate) {
+async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
     if (integrate) await integrate();
-    await setOwner(env.fs, box, void 0, "done");
+    await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
 async function acceptReport(env, reportPath2, options = {}) {
@@ -1591,7 +1602,7 @@ async function acceptReport(env, reportPath2, options = {}) {
       if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
       await options.integrate(commits);
     }
-    await setOwner(env.fs, box, void 0, "done");
+    await setOwner(env.fs, box, void 0, "done", options.acceptedBy ?? "user");
     await env.fs.remove(report.path);
   });
 }
@@ -1658,8 +1669,10 @@ async function createBoxUnlocked(env, input) {
   await env.fs.writeFile(boxNotePath(path2), content);
   return id;
 }
-async function setOwner(fs3, box, owner, status) {
+async function setOwner(fs3, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
+  if (owner) patch.acceptedBy = void 0;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
   await patchFrontmatter(fs3, box, patch);
 }
@@ -2163,22 +2176,37 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>] [--as-sub --by <role>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
       const tent = await loadTent(env.fs);
       const workspacePath = resolveTentWorkspace(tent);
-      const workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
+      const dispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
+      let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
+      if (flags["as-sub"]) {
+        if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
+        if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
+        workspace = { ...workspace ?? await ensureRoleWorkspace(workspacePath, role), targetBranch: dispatcherWorkspace.branch };
+      }
       const r = await dispatch(env, claimId, role, {
         userPrompt: localPrompt,
         handoffPath: flags.handoff,
-        workspace
+        workspace,
+        dispatchedBy: dispatcher
       });
       console.log(`\u2713 Dispatched. Task: ${r.taskPath}
 
 --- Relay prompt ---
 ${r.relayPrompt}`);
+      break;
+    }
+    case "task-ack": {
+      const taskPath = args[0];
+      if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
+      await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
+      console.log(`\u2713 Task acknowledged: ${taskPath}`);
       break;
     }
     case "role-init": {
@@ -2430,7 +2458,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -2464,7 +2492,7 @@ function fail(msg) {
 function parseFlags(args) {
   const positionals = [];
   const flags = {};
-  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes"]);
+  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes", "as-sub"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -2555,6 +2583,7 @@ Commands:
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
   dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
+  task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId>                   Confirm completion and release owner.
   force-release <boxId>              Release owner without accepting delivery.
