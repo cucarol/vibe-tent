@@ -229,3 +229,44 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
     ),
   );
 });
+
+test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-cli-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, {
+    name: "demo",
+    rules: "# RULES\n",
+    rolesRegistry: {
+      roles: [
+        {
+          name: "planner",
+          cli: { command: "codex --ask-for-approval never", resume: "codex resume latest" },
+        },
+      ],
+    },
+  });
+
+  assert.deepEqual((await loadRolesRegistry(fsa)).roles[0].cli, {
+    command: "codex --ask-for-approval never",
+    resume: "codex resume latest",
+  });
+
+  await updateRole(fsa, "planner", { description: "规划者" });
+  assert.deepEqual((await loadRolesRegistry(fsa)).roles[0].cli, {
+    command: "codex --ask-for-approval never",
+    resume: "codex resume latest",
+  });
+
+  await createRole(fsa, {
+    name: "executor",
+    cli: { command: "claude" },
+  });
+  assert.deepEqual((await loadRolesRegistry(fsa)).roles.find((role) => role.name === "executor")?.cli, {
+    command: "claude",
+  });
+
+  await assert.rejects(
+    () => createRole(fsa, { name: "broken", cli: { command: "" } }),
+    /cli\.command/,
+  );
+});

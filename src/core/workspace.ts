@@ -24,6 +24,12 @@ export interface WorkspaceHead {
   branch: string;
 }
 
+export interface WorkspaceCheckResult {
+  command: string;
+  stdout: string;
+  stderr: string;
+}
+
 /** 一顶 Tent 只允许解析出一个真实 workspace。 */
 export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
   const workspaces = new Set<string>();
@@ -47,6 +53,15 @@ export async function readWorkspaceHead(workspace: string): Promise<WorkspaceHea
   const shortRef = (await git(root, ["rev-parse", "--short", ref])).trim();
   if (!ref || !shortRef) throw new Error("无法读取 workspace HEAD");
   return { ref, shortRef, branch };
+}
+
+/** Run an explicit user-supplied gate in the integration workspace before mutation. */
+export async function runWorkspaceCheck(workspace: string, command: string): Promise<WorkspaceCheckResult> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const script = command.trim();
+  if (!script) throw new Error("--require-check 必须提供非空命令");
+  return runShell(root, script);
 }
 
 export async function ensureRoleWorkspace(
@@ -274,5 +289,29 @@ function git(cwd: string, args: string[]): Promise<string> {
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
+  });
+}
+
+function runShell(cwd: string, command: string): Promise<WorkspaceCheckResult> {
+  return new Promise((resolve, reject) => {
+    const windows = process.platform === "win32";
+    const shell = windows ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
+    const args = windows ? ["/d", "/s", "/c", command] : ["-lc", command];
+    const child = spawn(shell, args, { cwd, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (data) => (stdout += data));
+    child.stderr.on("data", (data) => (stderr += data));
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve({ command, stdout, stderr });
+        return;
+      }
+      const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
+      reject(new Error(`require-check failed (${code}): ${command}\n${detail}`));
+    });
+    child.on("error", (error) => {
+      reject(new Error(`require-check failed to start: ${command}\n${error.message}`));
+    });
   });
 }

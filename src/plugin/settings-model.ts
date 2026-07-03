@@ -3,7 +3,7 @@ import {
   normalizeRegistry,
   type TypeRegistry,
 } from "../core/typeRegistry.js";
-import type { RoleDefinition, RolesRegistry } from "../core/skillRoleRegistry.js";
+import { normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 
 export type Appearance = "follow" | "light" | "dark";
 export type TriageReminder = "off" | "status" | "notice";
@@ -67,13 +67,8 @@ function normalizeRoles(value: unknown): RolesRegistry {
   const roles: RoleDefinition[] = [];
   for (const item of raw.roles) {
     if (typeof item !== "object" || item === null) continue;
-    const source = item as Record<string, unknown>;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    if (!name || roles.some((role) => role.name === name)) continue;
-    const role: RoleDefinition = { name };
-    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
-    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
-    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    const role = normalizeRoleDefinition(item as Record<string, unknown>);
+    if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
     roles.push(role);
   }
   return { roles };

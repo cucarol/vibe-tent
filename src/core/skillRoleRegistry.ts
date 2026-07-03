@@ -9,6 +9,13 @@ export interface RoleDefinition {
   description?: string;
   /** 色板色名(gray/red/.../brown);注册表行左侧强调条 + owner 取色用。 */
   color?: string;
+  /** Optional host-orchestrator hint. Tent records this but never spawns it. */
+  cli?: RoleCliConfig;
+}
+
+export interface RoleCliConfig {
+  command: string;
+  resume?: string;
 }
 
 export interface RolesRegistry {
@@ -69,7 +76,7 @@ function normalizeRolesRegistry(value: unknown): RolesRegistry {
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord(item)) continue;
-      const role = normalizeRole(item);
+      const role = normalizeRoleDefinition(item);
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       roles.push(role);
     }
@@ -78,13 +85,33 @@ function normalizeRolesRegistry(value: unknown): RolesRegistry {
   return { roles };
 }
 
-function normalizeRole(value: Partial<RoleDefinition> | Record<string, unknown>): RoleDefinition {
+export function normalizeRoleDefinition(value: Partial<RoleDefinition> | Record<string, unknown>): RoleDefinition {
   const name = typeof value.name === "string" ? value.name.trim() : "";
   const role: RoleDefinition = { name };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const cli = normalizeCliConfig(value.cli);
+  if (cli) role.cli = cli;
   return role;
+}
+
+function normalizeRole(value: Partial<RoleDefinition> | Record<string, unknown>): RoleDefinition {
+  return normalizeRoleDefinition(value);
+}
+
+function normalizeCliConfig(value: unknown): RoleCliConfig | undefined {
+  if (value === undefined) return undefined;
+  if (!isRecord(value)) throw new Error("role cli 必须是对象");
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!command) throw new Error("role cli.command 必须是非空字符串");
+  const cli: RoleCliConfig = { command };
+  if (value.resume !== undefined) {
+    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
+    if (!resume) throw new Error("role cli.resume 必须是非空字符串");
+    cli.resume = resume;
+  }
+  return cli;
 }
 
 function cloneDefaultRoles(): RolesRegistry {

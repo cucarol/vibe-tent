@@ -253,6 +253,74 @@ test("tent complete:without a report remains a zero-integration stamp path", asy
   assert.equal(completed.owner, undefined);
 });
 
+test("tent complete:--by records the accepting role", async () => {
+  const fixture = await makeCompletionFixture();
+
+  await runCli(fixture.tent, "complete", fixture.boxId, "--by", "planner");
+
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.owner, undefined);
+  assert.equal(completed.acceptedBy, "planner");
+});
+
+test("tent stamp:--by records the accepting role", async () => {
+  const fixture = await makeCompletionFixture();
+
+  await runCli(fixture.tent, "stamp", fixture.boxId, "--by", "planner");
+
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.owner, undefined);
+  assert.equal(completed.acceptedBy, "planner");
+});
+
+test("tent complete:--require-check green runs before completion and allows mutation", async () => {
+  const fixture = await makeCompletionFixture();
+  const check = "git --version";
+
+  await runCli(fixture.tent, "complete", fixture.boxId, "--require-check", check);
+
+  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(completed.status, "done");
+  assert.equal(completed.owner, undefined);
+});
+
+test("tent complete:--require-check red aborts before workspace and Tent mutation", async () => {
+  const fixture = await makeCompletionFixture();
+  const ref = await commitRoleFile(fixture.roleWorktree, "blocked.txt", "blocked\n", "blocked delivery");
+  const body = path.join(path.dirname(fixture.tent), "report.md");
+  await fs.writeFile(body, "Delivery guarded by a failing check.\n", "utf8");
+  await runCli(fixture.tent, "report", fixture.boxId, body, "--commits", ref);
+  const beforeBox = await fs.readFile(fixture.boxNote, "utf8");
+  const beforeHead = (await run("git", ["rev-parse", "HEAD"], fixture.workspace)).stdout.trim();
+  const check = "git tent-require-check-red";
+
+  await assert.rejects(
+    () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", check),
+    /require-check failed/,
+  );
+
+  assert.equal(await fs.readFile(fixture.boxNote, "utf8"), beforeBox);
+  assert.equal((await run("git", ["rev-parse", "HEAD"], fixture.workspace)).stdout.trim(), beforeHead);
+  assert.equal(await exists(path.join(fixture.workspace, "blocked.txt")), false);
+  assert.equal(await exists(path.join(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)), true);
+});
+
+test("tent complete:--require-check missing command reports an error", async () => {
+  const fixture = await makeCompletionFixture();
+  const command = `tent-definitely-missing-${Date.now()}`;
+
+  await assert.rejects(
+    () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", command),
+    /require-check failed/,
+  );
+
+  const stillDoing = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
+  assert.equal(stillDoing.status, "doing");
+  assert.equal(stillDoing.owner, "reviewer");
+});
+
 test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-"));
   const target = path.join(parent, "fresh-tent");

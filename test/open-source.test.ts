@@ -44,6 +44,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
+  const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
   const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
@@ -99,6 +100,14 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /Overlay Format Migrations/);
   assert.match(spec, /Any breaking overlay format change must ship with an idempotent/);
   assert.match(spec, /`tent migrate-\*` command/);
+  assert.match(spec, /`cli\.command` is required when `cli` exists/);
+  assert.match(spec, /The task envelope is the machine delivery state/);
+  assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
+  assert.doesNotMatch(spec, /handoff/i);
+  assert.match(roleSkill, /内容住 box，状态住 envelope/);
+  assert.match(roleSkill, /编排者手册/);
+  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> receive report -> review -> complete/);
+  assert.doesNotMatch(roleSkill, /tent handoff/i);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {

@@ -13,6 +13,7 @@ description: 让 agent 进入现有 Tent 的长期 role session：从 task envel
 - 一顶 Tent 只指向一个真实 workspace。真实代码、commit、branch、worktree 都发生在 workspace。
 - 一个 role 是一个长期 session，并复用一个 workspace `worktree + branch`。一个 role 可以处理多个 box。
 - 一个 box 是一个文件夹加同名 Markdown 身份笔记。`bx-` id 随移动保持稳定。层级表达服务关系。
+- box = 任务本体；envelope = 机器投递状态载体。一句话版：内容住 box，状态住 envelope。
 - `manifest.yml` 解析 claim、readable、writable。它是 honor contract，不是安全沙箱。若任务指令和 manifest 边界冲突，停止并询问 user。
 - report 首先是聊天回复。`tent report` 只是在 Tent 里放一份临时传输文本，供 user 在 UI 里验收；它没有持久 id，验收或中断后会清理。
 
@@ -76,17 +77,30 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 2. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。
 3. 每次唤醒或恢复 role 时，检查 `temp/<role>/tasks/*.md`。user 直接给了 task 路径时，以该路径为准；否则列出所有 `status: pending` 的 task，按 user 指定或既有优先级逐个处理，顺序不清楚时先问。
 4. 接任务后的第一步运行 `tent task-ack <taskPath>`。然后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件，只有 `task-ack` 会把任务改成 `taken`。
-5. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending task 时再按口头范围工作。读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
-6. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
-7. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
-8. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
-9. 协作命令：
+5. 粗 box 可以直接派活。task-ack 后先对齐任务：读 box 正文和必要子框；不清楚就问 user 或写 proposal；对齐结论写回 box 正文。box 的细节是在推进中长出来的，不是派活门槛。
+6. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending task 时再按口头范围工作。读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
+7. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
+8. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
+9. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
+10. 协作命令：
    - `tent roles`：读取共享 role 注册表，再选择派活目标 role。
    - `tent dispatch <boxId> <role> --prompt <text> [--as-sub --by <role>]`：认领目标并生成该 role 的 task envelope。user prompt 必填。
    - `tent new-box <name> <type> [parentId]`：创建 box 并获得防撞 id。CLI 只生成空身份笔记——建完立即补写正文（问题、方案、验收标准）和 `status`，不要留空壳框。
    - `tent propose <targetId> <role> <bodyFile|->`：给 readable target 写 agent-to-user 决策文本。
    - `tent fork <boxId>`：复制子树，只改变根名称，重发 ids，并清 owner/status。
-10. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。报告只写你**实际验证过**的事实——测试贴运行结果，修复贴复现前后对比；命令打了 ✓ 不等于结果发生了，关键动作要回读状态确认。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
+11. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。报告只写你**实际验证过**的事实——测试贴运行结果，修复贴复现前后对比；命令打了 ✓ 不等于结果发生了，关键动作要回读状态确认。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
+
+## 编排者手册
+
+编排不是另一个 A2A 专属 skill；仍然使用 tent-role。
+
+标准链路是：dispatch -> spawn/唤醒 -> receive report -> review -> complete。
+
+- dispatch：用 `tent dispatch` 写 owner/status、manifest 和 task envelope。
+- spawn/唤醒：把 relay prompt 交给目标 role 的新会话或旧会话。
+- receive report：等待目标 role 在聊天里报告，并在需要 UI 验收时写 `tent report`。
+- review：读 report、commit、diff 和必要上下文；不满意就 reject 或继续追问。
+- complete：user 或被明确授权的编排 role 执行 `tent complete` / `tent stamp`，必要时带 `--by <role>` 和 `--require-check <command>`。
 
 不要自己把 box 标记完成。只有 user 确认后，交付才算完成。
 

@@ -138,8 +138,8 @@ function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: strin
 
 // ---- stamp(盖章 = 验收)----
 
-export async function stamp(env: OpsEnv, boxId: string): Promise<void> {
-  await completeClaim(env, boxId);
+export async function stamp(env: OpsEnv, boxId: string, acceptedBy = "user"): Promise<void> {
+  await completeClaim(env, boxId, undefined, acceptedBy);
 }
 
 /** 验收动作：可先合入 workspace commits；合入失败时不改变 Tent 状态。 */

@@ -4,7 +4,7 @@
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent dispatch <claimId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
-//   tent stamp <boxId>                 盖章
+//   tent stamp <boxId> [--by <role>]   盖章
 //   tent propose <targetId> <role> <bodyFile|->
 //   tent proposal <path> accept|reject [note]
 //   tent grant-readable <boxId>
@@ -17,6 +17,7 @@
 //   tent find <name>
 //   tent fork <boxId>
 //   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
+//   tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 //   tent clean-temp [role]
 //   tent force-release <boxId>
 //   tent migrate-kind-to-type
@@ -57,13 +58,14 @@ import { migrateKindToType } from "../core/typeManagement.js";
 import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
-import { loadRolesRegistry, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
+import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
 import { withTentMutation } from "../core/adapter.js";
 import {
   ensureRoleWorkspace,
   integrateWorkspaceCommits,
   resolveTentWorkspace,
+  runWorkspaceCheck,
 } from "../core/workspace.js";
 
 function makeEnv(): OpsEnv {
@@ -165,7 +167,7 @@ async function main() {
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -184,8 +186,13 @@ async function main() {
       const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines: string[] = [];
+      const workspacePath = resolveTentWorkspace(tent);
+      if (flags["require-check"]) {
+        if (!workspacePath) return fail("--require-check requires a workspace output pointer");
+        await runWorkspaceCheck(workspacePath, flags["require-check"]);
+      }
+      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       const integrate = async (commitRefs: string[]) => {
-        const workspacePath = resolveTentWorkspace(tent);
         if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner!);
         const integrated = await integrateWorkspaceCommits(contract, commitRefs);
@@ -197,18 +204,21 @@ async function main() {
         await acceptReport(env, readyReport.path, {
           commits: refs,
           integrate: refs.length > 0 ? integrate : undefined,
+          acceptedBy,
         });
       } else {
-        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined);
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined, acceptedBy);
       }
       for (const line of integrationLines) console.log(line);
       console.log(`✓ Completed ${boxId}`);
       break;
     }
     case "stamp": {
-      if (!args[0]) return fail("Usage: tent stamp <boxId>");
-      await stamp(env, args[0]);
-      console.log(`✓ Stamped ${args[0]} (done and owner cleared)`);
+      const { positionals, flags } = parseFlags(args);
+      if (!positionals[0]) return fail("Usage: tent stamp <boxId> [--by <role>]");
+      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
+      await stamp(env, positionals[0], acceptedBy);
+      console.log(`✓ Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
     case "propose": {
@@ -514,7 +524,8 @@ Commands:
   dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId>                   Confirm completion and release owner.
+  complete <boxId> [options]         Confirm completion and release owner.
+  stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
@@ -612,13 +623,8 @@ function normalizeTemplateRoles(value: unknown): RolesRegistry {
   const roles: RoleDefinition[] = [];
   for (const item of raw.roles) {
     if (typeof item !== "object" || item === null) continue;
-    const source = item as Record<string, unknown>;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    if (!name || roles.some((role) => role.name === name)) continue;
-    const role: RoleDefinition = { name };
-    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
-    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
-    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    const role = normalizeRoleDefinition(item as Record<string, unknown>);
+    if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
     roles.push(role);
   }
   return { roles };

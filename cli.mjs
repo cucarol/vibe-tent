@@ -995,20 +995,35 @@ function normalizeRolesRegistry(value) {
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord3(item)) continue;
-      const role = normalizeRole(item);
+      const role = normalizeRoleDefinition(item);
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       roles.push(role);
     }
   }
   return { roles };
 }
-function normalizeRole(value) {
+function normalizeRoleDefinition(value) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
   const role = { name };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const cli = normalizeCliConfig(value.cli);
+  if (cli) role.cli = cli;
   return role;
+}
+function normalizeCliConfig(value) {
+  if (value === void 0) return void 0;
+  if (!isRecord3(value)) throw new Error("role cli \u5FC5\u987B\u662F\u5BF9\u8C61");
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!command) throw new Error("role cli.command \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+  const cli = { command };
+  if (value.resume !== void 0) {
+    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
+    if (!resume) throw new Error("role cli.resume \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+    cli.resume = resume;
+  }
+  return cli;
 }
 function cloneDefaultRoles() {
   return {
@@ -1480,8 +1495,8 @@ function resolveDispatchClaim(tent, claimId, tentName) {
   if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
   return { root: false, id: box.id, name: box.name, box };
 }
-async function stamp(env, boxId) {
-  await completeClaim(env, boxId);
+async function stamp(env, boxId, acceptedBy = "user") {
+  await completeClaim(env, boxId, void 0, acceptedBy);
 }
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
@@ -1889,6 +1904,13 @@ function resolveTentWorkspace(tent) {
   }
   return [...workspaces][0];
 }
+async function runWorkspaceCheck(workspace, command) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const script = command.trim();
+  if (!script) throw new Error("--require-check \u5FC5\u987B\u63D0\u4F9B\u975E\u7A7A\u547D\u4EE4");
+  return runShell(root, script);
+}
 async function ensureRoleWorkspace(workspace, role) {
   const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
@@ -2045,6 +2067,31 @@ function git(cwd, args) {
     child.on("error", reject);
   });
 }
+function runShell(cwd, command) {
+  return new Promise((resolve3, reject) => {
+    const windows = process.platform === "win32";
+    const shell = windows ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
+    const args = windows ? ["/d", "/s", "/c", command] : ["-lc", command];
+    const child = spawn(shell, args, { cwd, windowsHide: true });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (data) => stdout += data);
+    child.stderr.on("data", (data) => stderr += data);
+    child.on("close", (code) => {
+      if (code === 0) {
+        resolve3({ command, stdout, stderr });
+        return;
+      }
+      const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
+      reject(new Error(`require-check failed (${code}): ${command}
+${detail}`));
+    });
+    child.on("error", (error) => {
+      reject(new Error(`require-check failed to start: ${command}
+${error.message}`));
+    });
+  });
+}
 
 // src/cli/tent.ts
 function makeEnv() {
@@ -2144,7 +2191,7 @@ ${r.relayPrompt}`);
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -2163,8 +2210,13 @@ ${r.relayPrompt}`);
       const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines = [];
+      const workspacePath = resolveTentWorkspace(tent);
+      if (flags["require-check"]) {
+        if (!workspacePath) return fail("--require-check requires a workspace output pointer");
+        await runWorkspaceCheck(workspacePath, flags["require-check"]);
+      }
+      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       const integrate = async (commitRefs) => {
-        const workspacePath = resolveTentWorkspace(tent);
         if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner);
         const integrated = await integrateWorkspaceCommits(contract, commitRefs);
@@ -2175,19 +2227,22 @@ ${r.relayPrompt}`);
       if (readyReport) {
         await acceptReport(env, readyReport.path, {
           commits: refs,
-          integrate: refs.length > 0 ? integrate : void 0
+          integrate: refs.length > 0 ? integrate : void 0,
+          acceptedBy
         });
       } else {
-        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0);
+        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0, acceptedBy);
       }
       for (const line of integrationLines) console.log(line);
       console.log(`\u2713 Completed ${boxId}`);
       break;
     }
     case "stamp": {
-      if (!args[0]) return fail("Usage: tent stamp <boxId>");
-      await stamp(env, args[0]);
-      console.log(`\u2713 Stamped ${args[0]} (done and owner cleared)`);
+      const { positionals, flags } = parseFlags(args);
+      if (!positionals[0]) return fail("Usage: tent stamp <boxId> [--by <role>]");
+      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
+      await stamp(env, positionals[0], acceptedBy);
+      console.log(`\u2713 Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
     case "propose": {
@@ -2478,7 +2533,8 @@ Commands:
   dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId>                   Confirm completion and release owner.
+  complete <boxId> [options]         Confirm completion and release owner.
+  stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
@@ -2554,13 +2610,8 @@ function normalizeTemplateRoles(value) {
   const roles = [];
   for (const item of raw.roles) {
     if (typeof item !== "object" || item === null) continue;
-    const source = item;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    if (!name || roles.some((role2) => role2.name === name)) continue;
-    const role = { name };
-    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
-    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
-    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    const role = normalizeRoleDefinition(item);
+    if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
     roles.push(role);
   }
   return { roles };

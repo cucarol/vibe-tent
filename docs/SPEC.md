@@ -87,7 +87,7 @@ invariants, not semantic prompt authority.
 
 OKF covers the interoperable Markdown bundle. Tent's overlay is the data that
 only Tent understands: `.tent/` registries, `bx-` ids, owner/status semantics,
-temp manifests, reports, handoffs, and permission resolution.
+temp manifests, task envelopes, reports, and permission resolution.
 
 Any breaking overlay format change must ship with an idempotent
 `tent migrate-*` command. Migration commands must:
@@ -103,9 +103,30 @@ needed, provides an OKF-version migration anchored by `okf_version`.
 
 ## 4. Roles, Claims, And Dispatch
 
-A role is `name + optional stable prompt`. One role represents one long-lived
-agent session in a Tent. A role may own multiple non-overlapping boxes,
-including boxes under unrelated parents.
+A role is `name + optional stable prompt + optional host CLI hint`. One role
+represents one long-lived agent session in a Tent. A role may own multiple
+non-overlapping boxes, including boxes under unrelated parents.
+
+`.tent/roles.json` may include an optional `cli` object:
+
+```json
+{
+  "roles": [
+    {
+      "name": "planner",
+      "prompt": "Plan work and review reports.",
+      "cli": {
+        "command": "codex",
+        "resume": "codex resume"
+      }
+    }
+  ]
+}
+```
+
+`cli.command` is required when `cli` exists; `cli.resume` is optional. Tent
+stores and validates these fields but never spawns the process. They are read
+only hints for a user or external orchestrator.
 
 Each role gets one long-lived workspace lane:
 
@@ -130,6 +151,12 @@ Confirmed dispatch:
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.
 
+The task envelope is the machine delivery state. The claimed box remains the
+task truth: scope, background, decisions, and acceptance criteria belong in the
+box body or child boxes. A rough box may be dispatched; after `task-ack`, the
+agent aligns the task, asks or proposes when unclear, and writes confirmed
+conclusions back to the box.
+
 Role init is stable and cache-friendly:
 
 ```text
@@ -137,8 +164,8 @@ temp/<role>/init.md
 ```
 
 It contains only Tent identity, the `RULES.md` pointer, role prompt, and honor
-protocol. A task must contain a user prompt and/or a handoff pointer. Whether to
-reuse an existing session is controlled by the user, not Tent.
+protocol. A task envelope must contain the user prompt that caused dispatch.
+Whether to reuse an existing session is controlled by the user, not Tent.
 
 ## 5. Completion And Interruption
 
@@ -151,11 +178,14 @@ Only user confirmation completes delivery.
 
 **Complete**
 
-1. integrate every commit bound to the ready report into the workspace target branch
+1. if `--require-check <command>` is supplied, run it in the integration
+   workspace before any workspace or Tent mutation;
+2. integrate every commit bound to the ready report into the workspace target branch
    (normally `main`) using conflict-aware cherry-pick;
-2. if integration succeeds, set the accepted box to `done` and clear its direct
-   owner, then remove the temporary report;
-3. if integration fails, leave Tent owner/status unchanged.
+3. if integration succeeds, set the accepted box to `done`, clear its direct
+   owner, record `acceptedBy`, then remove the temporary report;
+4. if the required check or integration fails, leave workspace state and Tent
+   owner/status/report state unchanged.
 
 Rejecting a report performs no workspace integration, keeps the owner and
 `doing` state, and marks the temporary report rejected so the agent can replace
@@ -175,9 +205,9 @@ Repeated confirmation of the same `-x` cherry-pick is idempotent.
 Completion and interruption are distinct core actions even if a UI groups them
 under one release control.
 
-## 6. Proposal, Handoff, Report, And Fork
+## 6. Proposal, Report, And Fork
 
-Proposal and handoff are immutable temporary Markdown documents. Their path is
+Proposal documents are immutable temporary Markdown documents. Their path is
 their identity; they have no persistent id.
 
 Proposal:
@@ -186,13 +216,6 @@ Proposal:
 - targets a readable box;
 - state is `open -> accepted/rejected -> applied`;
 - acceptance changes proposal state only and does not trigger an agent.
-
-Handoff:
-
-- agent-authored dispatch prompt in `temp/<role>/handoffs/hf-*.md`;
-- may target any box and role;
-- does not transfer or mutate owner;
-- user confirmation performs the later dispatch using the handoff pointer.
 
 Report:
 
@@ -252,17 +275,17 @@ Run from a Tent root:
 ```text
 tent role-init <role>
 tent roles
-tent dispatch <boxId> <role> [prompt...] [--handoff <path>]
+tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
+tent task-ack <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
-tent complete <boxId> [--commits <sha,sha>]
-tent stamp <boxId>
+tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
+tent stamp <boxId> [--by <role>]
 tent force-release <boxId>
 tent new-box <name> <type> [parentId]
 tent propose <targetId> <role> <bodyFile|->
 tent proposal <path> accept|reject [note]
 tent apply <proposalPath>
 tent apply-done <proposalPath>
-tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->
 tent fork <boxId>
 tent clean-temp [role]
 tent migrate-kind-to-type
@@ -279,6 +302,12 @@ state mutation succeed. With no report and no explicit commits, `complete`
 remains equivalent to the zero-integration `stamp` path. A rejected report must
 be replaced before `complete` may proceed.
 
+`--require-check` is a user-supplied mechanical gate. It runs in the resolved
+workspace before cherry-pick, owner clearing, report deletion, or any other
+mutation. A non-zero exit or missing command aborts completion. `--by <role>`
+records the accepting role in `acceptedBy`; without it, acceptance is recorded
+as `user`.
+
 ## 10. UI Contract
 
 The UI renders core state and invokes core actions:
@@ -289,7 +318,8 @@ The UI renders core state and invokes core actions:
 - completion presents selected commit integration and only then releases owner;
 - interruption releases owner without integration;
 - proposal acceptance does not dispatch;
-- handoff creation does not transfer owner;
+- pending task envelopes are shown as delivery state; copying relay text does
+  not consume them, only `task-ack` does;
 - immutable names have no rename control;
 - errors are shown rather than silently repaired.
 

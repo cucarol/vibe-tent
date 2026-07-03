@@ -831,20 +831,38 @@ function normalizeRolesRegistry(value) {
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord3(item)) continue;
-      const role = normalizeRole(item);
+      const role = normalizeRoleDefinition(item);
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       roles.push(role);
     }
   }
   return { roles };
 }
-function normalizeRole(value) {
+function normalizeRoleDefinition(value) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
   const role = { name };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const cli = normalizeCliConfig(value.cli);
+  if (cli) role.cli = cli;
   return role;
+}
+function normalizeRole(value) {
+  return normalizeRoleDefinition(value);
+}
+function normalizeCliConfig(value) {
+  if (value === void 0) return void 0;
+  if (!isRecord3(value)) throw new Error("role cli \u5FC5\u987B\u662F\u5BF9\u8C61");
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!command) throw new Error("role cli.command \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+  const cli = { command };
+  if (value.resume !== void 0) {
+    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
+    if (!resume) throw new Error("role cli.resume \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+    cli.resume = resume;
+  }
+  return cli;
 }
 function cloneDefaultRoles() {
   return {
@@ -1714,8 +1732,8 @@ function resolveDispatchClaim(tent, claimId, tentName) {
   if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
   return { root: false, id: box.id, name: box.name, box };
 }
-async function stamp(env, boxId) {
-  await completeClaim(env, boxId);
+async function stamp(env, boxId, acceptedBy = "user") {
+  await completeClaim(env, boxId, void 0, acceptedBy);
 }
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
@@ -4870,6 +4888,7 @@ var TentView = class extends import_obsidian4.ItemView {
 
 // src/plugin/settings-model.ts
 init_typeRegistry();
+init_skillRoleRegistry();
 var DEFAULT_RULES_TEMPLATE = "# {tent} \xB7 \u9879\u76EE\u7EA6\u5B9A\n\n> \u8FD9\u9876\u5E10\u7684\u672C\u5730\u89C4\u77E9\uFF1B\u673A\u5236\u89C4\u8303\u7531 Tent \u4E0E tent-role skill \u63D0\u4F9B\u3002\n\n- \u4EA7\u51FA workspace\uFF1A<\u586B\u771F\u5B9E\u4EE3\u7801\u4ED3\u8DEF\u5F84>\n- \u63D0\u4EA4 / \u547D\u540D\u7EA6\u5B9A\uFF1A<\u586B>\n- \u5176\u4ED6\u9879\u76EE\u7EA6\u5B9A\uFF1A<\u586B>\n";
 var DEFAULT_ROLES_REGISTRY2 = { roles: [] };
 var DEFAULT_SETTINGS = {
@@ -4899,13 +4918,8 @@ function normalizeRoles(value) {
   const roles = [];
   for (const item of raw.roles) {
     if (typeof item !== "object" || item === null) continue;
-    const source = item;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    if (!name || roles.some((role2) => role2.name === name)) continue;
-    const role = { name };
-    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
-    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
-    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    const role = normalizeRoleDefinition(item);
+    if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
     roles.push(role);
   }
   return { roles };
