@@ -46,6 +46,15 @@
     "context-engineering"
   ],
   "license": "MIT",
+  "author": "cucarol",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/cucarol/tent.git"
+  },
+  "bugs": {
+    "url": "https://github.com/cucarol/tent/issues"
+  },
+  "homepage": "https://github.com/cucarol/tent#readme",
   "engines": {
     "node": ">=20"
   },

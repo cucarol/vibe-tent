@@ -43,6 +43,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(pkg.bin.tent, "./cli.mjs");
   assert.equal(pkg.bin["tent-seed"], "./scripts/seed-demo.mjs");
   assert.equal(pkg.license, "MIT");
+  assert.equal(pkg.author, manifest.author);
+  assert.equal(pkg.repository.url, "git+https://github.com/cucarol/tent.git");
+  assert.equal(pkg.bugs.url, "https://github.com/cucarol/tent/issues");
+  assert.equal(pkg.homepage, "https://github.com/cucarol/tent#readme");
   assert.equal(pkg.version, manifest.version, "npm 与 Obsidian 插件版本保持一致");
   assert.equal(
     versions[manifest.version],
