@@ -120,6 +120,35 @@ test("vendored OKF deviations and upstream proposal are documented", async () =>
   assert.match(upstreamDraft, /pull\/125/);
 });
 
+test("Tent OKF wrapper excludes the root temp pipeline from strict validation", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-okf-wrapper-"));
+  await fs.mkdir(path.join(dir, "temp", "role", "tasks"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "index.md"),
+    "---\ntype: index\n---\n# Index\n\n- [Concept](concept.md)\n",
+  );
+  await fs.writeFile(
+    path.join(dir, "concept.md"),
+    "---\ntype: concept\n---\n# Concept\n\nLinked from [Index](index.md).\n",
+  );
+  await fs.writeFile(
+    path.join(dir, "temp", "role", "tasks", "task.md"),
+    "---\ntype: task\n---\n# Runtime task\n",
+  );
+
+  const result = spawnSync(process.execPath, [path.join(repoRoot, "scripts", "okf-check.mjs")], {
+    cwd: repoRoot,
+    encoding: "utf8",
+    env: {
+      ...process.env,
+      TENT_OKF_BUNDLE: dir,
+      TENT_OKF_STRICT: "1",
+    },
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  assert.match(result.stdout, /\(strict\) 0 error\(s\), 0 warning\(s\)/);
+});
+
 async function exists(target: string): Promise<boolean> {
   try {
     await fs.access(target);

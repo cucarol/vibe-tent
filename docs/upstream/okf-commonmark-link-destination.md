@@ -76,9 +76,8 @@ cross-link validation.
 ## Tent-side scan observation
 
 Tent's `temp/` directory is an operational pipeline, not an OKF knowledge
-subtree. On the active development Tent, the vendored validator reported 31
-warnings when scanning the entire root; 22 came from `temp/`. A mirror excluding
-only root `temp/` produced 9 warnings. Tent should therefore filter `temp/` in
-its `scripts/okf-check.mjs` wrapper rather than add a Tent-specific exclusion to
-the vendored validator.
-
+subtree. After synchronizing the generated indexes in the active development
+Tent, the vendored validator reported 25 warnings when scanning the entire
+root; 22 came from `temp/`. Excluding only root `temp/` produced 3 warnings.
+Tent therefore filters `temp/` in its `scripts/okf-check.mjs` wrapper rather
+than adding a Tent-specific exclusion to the vendored validator.

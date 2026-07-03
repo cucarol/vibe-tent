@@ -11,41 +11,80 @@ const validator = path.join(repoRoot, "vendor", "okf-conformance", "validator", 
 const strict = process.argv.includes("--strict") || process.env.TENT_OKF_STRICT === "1";
 const bundle = resolveBundle();
 
-const args = [validator, bundle, "--json"];
-if (strict) args.push("--strict");
+process.exitCode = runValidation();
 
-const result = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: "utf8" });
-if (result.status === 2) {
-  process.stderr.write(result.stderr || result.stdout);
-  process.exit(2);
-}
+function runValidation() {
+  const validationView = createValidationView(bundle);
+  try {
+    const args = [validator, validationView.path, "--json"];
+    if (strict) args.push("--strict");
 
-let report;
-try {
-  report = JSON.parse(result.stdout);
-} catch {
-  process.stderr.write(result.stderr || result.stdout);
-  process.exit(result.status ?? 1);
-}
+    const result = spawnSync(process.execPath, args, { cwd: repoRoot, encoding: "utf8" });
+    if (result.status === 2) {
+      process.stderr.write(result.stderr || result.stdout);
+      return 2;
+    }
 
-const rel = path.relative(repoRoot, bundle) || ".";
-console.log(
-  `OKF conformance: ${rel} (${report.strict ? "strict" : "must"}) ` +
-    `${report.summary.errors} error(s), ${report.summary.warnings} warning(s)`
-);
+    let report;
+    try {
+      report = JSON.parse(result.stdout);
+    } catch {
+      process.stderr.write(result.stderr || result.stdout);
+      return result.status ?? 1;
+    }
 
-if (!report.conformant) {
-  for (const item of report.errors) console.error(`x [${item.rule}] ${item.file}: ${item.message}`);
-  if (report.strict) {
-    for (const item of report.warnings) console.error(`! [${item.rule}] ${item.file}: ${item.message}`);
+    const rel = path.relative(repoRoot, bundle) || ".";
+    console.log(
+      `OKF conformance: ${rel} (${report.strict ? "strict" : "must"}) ` +
+        `${report.summary.errors} error(s), ${report.summary.warnings} warning(s)`
+    );
+
+    if (!report.conformant) {
+      for (const item of report.errors) console.error(`x [${item.rule}] ${item.file}: ${item.message}`);
+      if (report.strict) {
+        for (const item of report.warnings) console.error(`! [${item.rule}] ${item.file}: ${item.message}`);
+      }
+      return 1;
+    }
+    return 0;
+  } finally {
+    if (validationView.temporary) {
+      fs.rmSync(validationView.path, { recursive: true, force: true });
+    }
   }
-  process.exit(1);
+}
+
+function createValidationView(source) {
+  if (!fs.existsSync(source) || !fs.statSync(source).isDirectory()) {
+    return { path: source, temporary: false };
+  }
+  const target = fs.mkdtempSync(path.join(os.tmpdir(), "tent-okf-view-"));
+  try {
+    copyMarkdownTree(source, target, true);
+    return { path: target, temporary: true };
+  } catch (error) {
+    fs.rmSync(target, { recursive: true, force: true });
+    throw error;
+  }
+}
+
+function copyMarkdownTree(source, target, root = false) {
+  fs.mkdirSync(target, { recursive: true });
+  for (const entry of fs.readdirSync(source, { withFileTypes: true })) {
+    if (root && entry.isDirectory() && entry.name === "temp") continue;
+    const from = path.join(source, entry.name);
+    const to = path.join(target, entry.name);
+    if (entry.isDirectory()) copyMarkdownTree(from, to);
+    else if (entry.isFile() && entry.name.toLowerCase().endsWith(".md")) {
+      fs.copyFileSync(from, to);
+    }
+  }
 }
 
 function resolveBundle() {
   if (process.env.TENT_OKF_BUNDLE) return path.resolve(process.env.TENT_OKF_BUNDLE);
 
-const localTentDev = path.join(os.homedir(), "Documents", "Obsidian Vault", "_tents", "tent-dev");
+  const localTentDev = path.join(os.homedir(), "Documents", "Obsidian Vault", "_tents", "tent-dev");
   if (fs.existsSync(localTentDev)) return localTentDev;
 
   const fixture = path.join(repoRoot, "test", "fixtures", "okf-bundle");
