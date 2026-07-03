@@ -7,6 +7,7 @@ import {
   createRegistryPaneState,
   roleColorValue,
   rwSegmentStates,
+  visibleTreeCount,
 } from "../src/plugin/ui-model.js";
 
 test("plugin ui-model:registry pane state starts expanded and isolated", () => {
@@ -60,6 +61,22 @@ test("plugin ui-model:captures and restores pane scroll positions across redraws
   restorePaneScroll(newRoot, positions);
   assert.equal(newTree.scrollTop, 360);
   assert.equal(newProperty.scrollTop, 140);
+});
+
+test("plugin ui-model:collapsed rows include hidden descendant triage counts", () => {
+  const grandchild = { id: "grandchild", children: [] };
+  const child = { id: "child", children: [grandchild] };
+  const root = { id: "root", children: [child] };
+  const counts = new Map([
+    ["root", 1],
+    ["child", 2],
+    ["grandchild", 3],
+  ]);
+  const direct = (box: { id: string }) => counts.get(box.id) ?? 0;
+
+  assert.equal(visibleTreeCount(root, false, direct), 1);
+  assert.equal(visibleTreeCount(root, true, direct), 6);
+  assert.equal(visibleTreeCount(child, true, direct), 5);
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

@@ -23,6 +23,10 @@ export interface PaneScrollPositions {
   property: number;
 }
 
+export interface TreeCountNode {
+  children: TreeCountNode[];
+}
+
 interface ScrollPaneRoot {
   querySelector(selector: string): { scrollTop: number } | null;
 }
@@ -39,6 +43,18 @@ export function restorePaneScroll(root: ScrollPaneRoot, positions: PaneScrollPos
   const property = root.querySelector(".tent-prop");
   if (tree) tree.scrollTop = positions.tree;
   if (property) property.scrollTop = positions.property;
+}
+
+export function visibleTreeCount<T extends TreeCountNode>(
+  node: T,
+  collapsed: boolean,
+  directCount: (node: T) => number
+): number {
+  if (!collapsed) return directCount(node);
+  const subtreeCount = (current: TreeCountNode): number =>
+    directCount(current as T) +
+    current.children.reduce((total, child) => total + subtreeCount(child), 0);
+  return subtreeCount(node);
 }
 
 export function createRegistryPaneState(): RegistryPaneState {

@@ -36,7 +36,7 @@ import {
   createRegistryPaneState,
   drawRegistryPane,
 } from "./registry-pane.js";
-import { capturePaneScroll, restorePaneScroll } from "./ui-model.js";
+import { capturePaneScroll, restorePaneScroll, visibleTreeCount } from "./ui-model.js";
 import { TimedCache } from "./timed-cache.js";
 import {
   OpsEnv,
@@ -694,10 +694,10 @@ export class TentView extends ItemView {
     const rest = slot.createSpan({ cls: "tent-slot-rest" });
 
     // 待裁数字角标(指向该 box 的 open proposal 数)
-    const pend = this.boxTriageCount(box);
+    const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
-      tentTooltip(nb, `${pend} 待裁`);
+      tentTooltip(nb, isCollapsed ? `${pend} 待裁（含子级）` : `${pend} 待裁`);
     }
 
     // 状态图标(无底色):doing/done,todo 不显

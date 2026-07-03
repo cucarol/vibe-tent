@@ -2619,6 +2619,11 @@ function restorePaneScroll(root, positions) {
   if (tree) tree.scrollTop = positions.tree;
   if (property) property.scrollTop = positions.property;
 }
+function visibleTreeCount(node, collapsed, directCount) {
+  if (!collapsed) return directCount(node);
+  const subtreeCount = (current) => directCount(current) + current.children.reduce((total, child) => total + subtreeCount(child), 0);
+  return subtreeCount(node);
+}
 function createRegistryPaneState() {
   return {
     markedRoles: /* @__PURE__ */ new Set(),
@@ -3871,10 +3876,10 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     const slot = row.createSpan({ cls: "tent-slot" });
     const rest = slot.createSpan({ cls: "tent-slot-rest" });
-    const pend = this.boxTriageCount(box);
+    const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
-      tentTooltip(nb, `${pend} \u5F85\u88C1`);
+      tentTooltip(nb, isCollapsed ? `${pend} \u5F85\u88C1\uFF08\u542B\u5B50\u7EA7\uFF09` : `${pend} \u5F85\u88C1`);
     }
     const st = box.fm.status;
     if (box.invalid) {
