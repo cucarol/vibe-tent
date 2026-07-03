@@ -5,7 +5,6 @@ import * as path from "node:path";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
-import { loadHandoffs } from "../src/core/handoff.js";
 import { loadReport, loadReports, rejectReport, submitReport } from "../src/core/report.js";
 import { makeTent } from "./helpers.js";
 test("propose:只允许 readable target,写入 temp/<role>/proposals", async () => {
@@ -97,100 +96,6 @@ test("apply-proposal 落地:accepted → startApply → finishApply → applied"
   const { parseFrontmatter } = await import("../src/core/frontmatter.js");
   const after = parseFrontmatter(await fs.readFile(pp, "utf8"));
   assert.equal(after.data.status, "applied", "转 applied");
-});
-
-test("handoff:写入无 id 的不可变 prompt 指针,不改 owner/status", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    clock: { now: () => "2026-06-21T00:00:00.000Z" },
-    tentName: "wqb",
-  };
-  const { handoff } = await import("../src/core/ops.js");
-  const handoffPath = await handoff(
-    env as any,
-    "bx-g2",
-    "bx-p1",
-    "planner",
-    "请接到任务书继续",
-  );
-
-  assert.match(handoffPath, /^temp\/executor\/handoffs\/hf-/);
-  const record = parseFrontmatter(await fsa.readFile(handoffPath));
-  assert.equal(record.data.id, undefined);
-  assert.equal(record.data.type, "handoff");
-  assert.equal(record.data.from, "bx-g2");
-  assert.equal(record.data.target, "bx-p1");
-  assert.equal(record.data.role, "planner");
-  assert.equal(record.data.by, "executor");
-  assert.equal(record.data.ts, "2026-06-21T00:00:00.000Z");
-  assert.match(record.body, /请接到任务书继续/);
-  const tent = await loadTent(fsa);
-  assert.equal(tent.byId.get("bx-g2")!.fm.owner, "executor");
-  assert.equal(tent.byId.get("bx-g2")!.fm.status, "doing");
-});
-
-test("handoff:可聚合读取,dispatch 只接受匹配的 target 与 role", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    clock: { now: () => "2026-06-21T00:00:00.000Z" },
-    tentName: "wqb",
-  };
-  const { dispatch, handoff } = await import("../src/core/ops.js");
-  const handoffPath = await handoff(env as any, "bx-g2", "bx-p1", "planner", "请接手");
-
-  const records = await loadHandoffs(fsa);
-  assert.equal(records.length, 1);
-  assert.deepEqual(
-    {
-      path: records[0].path,
-      fromBoxId: records[0].fromBoxId,
-      targetId: records[0].targetId,
-      targetRole: records[0].targetRole,
-      fromRole: records[0].fromRole,
-      body: records[0].body,
-    },
-    {
-      path: handoffPath,
-      fromBoxId: "bx-g2",
-      targetId: "bx-p1",
-      targetRole: "planner",
-      fromRole: "executor",
-      body: "请接手",
-    },
-  );
-
-  await assert.rejects(
-    dispatch(env as any, "bx-p1", "executor", { handoffPath }),
-    /handoff 指定 role planner/,
-  );
-  assert.equal((await loadTent(fsa)).byId.get("bx-p1")!.fm.owner, undefined);
-
-  const result = await dispatch(env as any, "bx-p1", "planner", { handoffPath });
-  const task = parseFrontmatter(await fsa.readFile(result.taskPath));
-  assert.equal(task.data.handoff, handoffPath);
-  assert.equal((await loadTent(fsa)).byId.get("bx-p1")!.fm.owner, "planner");
-});
-
-test("dispatch:错误 handoff target 在写 owner 前失败", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    clock: { now: () => "2026-06-21T00:00:00.000Z" },
-    tentName: "wqb",
-  };
-  const { dispatch, handoff } = await import("../src/core/ops.js");
-  const handoffPath = await handoff(env as any, "bx-g2", "bx-p1", "planner", "请接手");
-
-  await assert.rejects(
-    dispatch(env as any, "bx-o1", "planner", { handoffPath }),
-    /handoff 目标是 bx-p1/,
-  );
-  assert.equal((await loadTent(fsa)).byId.get("bx-o1")!.fm.owner, undefined);
 });
 
 test("report:驳回保留 owner,重新交付后整份确认并清理临时文件", async () => {

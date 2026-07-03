@@ -3,7 +3,7 @@
 // 用法(cwd = 帐根,new 例外):
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
-//   tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-]  派活,打印接力 prompt
+//   tent dispatch <claimId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
 //   tent stamp <boxId>                 盖章
 //   tent propose <targetId> <role> <bodyFile|->
 //   tent proposal <path> accept|reject [note]
@@ -16,7 +16,6 @@
 //   tent tags
 //   tent find <name>
 //   tent fork <boxId>
-//   tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->
 //   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 //   tent clean-temp [role]
 //   tent force-release <boxId>
@@ -45,7 +44,6 @@ import {
   startApply,
   finishApply,
   forkNode,
-  handoff,
   createBox,
   tagBox,
   untagBox,
@@ -74,6 +72,7 @@ function makeEnv(): OpsEnv {
     fs: new NodeFs(root),
     clock: new SystemClock(),
     tentName: path.basename(root),
+    tentRoot: root,
   };
 }
 
@@ -103,7 +102,7 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>] [--as-sub --by <role>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
@@ -119,7 +118,6 @@ async function main() {
       }
       const r = await dispatch(env, claimId, role, {
         userPrompt: localPrompt,
-        handoffPath: flags.handoff,
         workspace,
         dispatchedBy: dispatcher,
       });
@@ -322,18 +320,6 @@ async function main() {
       console.log(`✓ Forked ${args[0]} → ${id}`);
       break;
     }
-    case "handoff": {
-      const [fromBoxId, targetId, targetRole, promptSource] = args;
-      if (!fromBoxId || !targetId || !targetRole || !promptSource) {
-        return fail("Usage: tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->");
-      }
-      const prompt = promptSource === "-"
-        ? await readStdin()
-        : await (await import("node:fs/promises")).readFile(path.resolve(promptSource), "utf8");
-      const handoffPath = await handoff(env, fromBoxId, targetId, targetRole, prompt);
-      console.log(`✓ Handoff written: ${handoffPath}`);
-      break;
-    }
     case "clean-temp": {
       await cleanTemp(env, args[0]);
       console.log(`✓ Cleared temp/${args[0] || "(all)"}`);
@@ -383,7 +369,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -525,7 +511,7 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
+  dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId>                   Confirm completion and release owner.
@@ -535,7 +521,6 @@ Commands:
   tags | tag-new | tag-rm            Manage the tag registry.
   find <tag>                         Find boxes by tag.
   propose | proposal                 Create or review a proposal.
-  handoff <from> <target> <role>     Create an agent-to-agent handoff.
   fork <boxId>                       Copy a box subtree with new ids.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.

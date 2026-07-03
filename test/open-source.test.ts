@@ -61,7 +61,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(manifest.authorUrl, "https://github.com/cucarol");
   assert.equal(
     manifest.description,
-    "Manage intent, context, and handoffs with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows."
+    "Manage intent, context, and delegated tasks with coding agents: a draggable box tree, frontmatter controls, and dispatch/approval workflows."
   );
   assert.ok(manifest.description.length <= 250);
   assert.match(manifest.description, /\.$/);

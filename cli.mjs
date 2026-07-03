@@ -696,7 +696,7 @@ function buildManifest(tent, input) {
     }
   }
   readable.push({ path: ".tent/roles.json", note: "\u7CFB\u7EDF\u6CE8\u518C\u8868:\u53EF\u7528 role \u4E0E\u957F\u671F prompt" });
-  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EA4\u4ED8\u4E0E handoff" });
+  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EFB\u52A1\u3001\u63D0\u8BAE\u4E0E\u4EA4\u4ED8" });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
       writable.push({ id: box.id, path: box.path });
@@ -1020,9 +1020,13 @@ function isRecord3(value) {
 }
 
 // src/core/task.ts
-function relayPromptForTask(task) {
+function relayPromptForTask(task, tentRoot) {
   const initPath = join2("temp", task.role, "init.md");
-  return `\u8BFB\u53D6 ${task.path} \u5E76\u6267\u884C\u3002\u82E5\u8FD9\u662F\u8BE5 role \u7684\u65B0\u4F1A\u8BDD,\u5148\u6309 ${initPath} \u5B8C\u6210 role init\uFF1B\u662F\u5426\u590D\u7528\u65E7\u4F1A\u8BDD\u7531 user \u51B3\u5B9A\u3002`;
+  return `Tent task dispatched to role ${task.role}.
+Tent root: ${tentRoot}
+1. Run \`tent task-ack ${task.path}\` to take this task.
+2. Read the envelope, then open the claimed box(es) \u2014 the box note is the task definition.
+3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs3, role, tentName) {
   const path2 = join2("temp", role.name, "init.md");
@@ -1045,8 +1049,7 @@ Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\
 }
 async function writeTaskEnvelope(fs3, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
-  const handoffPath = input.handoffPath?.trim() || "";
-  if (!userPrompt && !handoffPath) throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
+  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
   const dir = join2("temp", input.role, "tasks");
   await ensureDir(fs3, dir);
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
@@ -1059,7 +1062,6 @@ async function writeTaskEnvelope(fs3, clock, input) {
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath
   };
-  if (handoffPath) data.handoff = handoffPath;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -1074,12 +1076,11 @@ async function writeTaskEnvelope(fs3, clock, input) {
 ${pointers}
 
 - Manifest: ${input.manifestPath}
-` + (handoffPath ? `- Handoff: ${handoffPath}
-` : "") + (userPrompt ? `
+
 ## User Prompt
 
 ${userPrompt}
-` : "");
+`;
   await fs3.writeFile(path2, serializeFrontmatter(data, body));
   return path2;
 }
@@ -1103,49 +1104,6 @@ async function uniqueMarkdownPath(fs3, dir, stem) {
 }
 async function ensureDir(fs3, path2) {
   if (!await fs3.exists(path2)) await fs3.mkdir(path2);
-}
-
-// src/core/handoff.ts
-async function loadHandoff(fs3, inputPath) {
-  const path2 = normalizeHandoffPath(inputPath);
-  if (!await fs3.exists(path2)) throw new Error(`\u627E\u4E0D\u5230 handoff: ${path2}`);
-  const sourceRole = path2.split("/")[1] || "";
-  const handoff2 = parseHandoff(path2, await fs3.readFile(path2), sourceRole);
-  if (!handoff2) throw new Error(`handoff \u683C\u5F0F\u65E0\u6548: ${path2}`);
-  return handoff2;
-}
-async function validateDispatchHandoff(fs3, inputPath, targetId, targetRole) {
-  const handoff2 = await loadHandoff(fs3, inputPath);
-  if (handoff2.targetId !== targetId) {
-    throw new Error(`handoff \u76EE\u6807\u662F ${handoff2.targetId},\u4E0D\u80FD\u6D3E\u5230 ${targetId}`);
-  }
-  if (handoff2.targetRole !== targetRole) {
-    throw new Error(`handoff \u6307\u5B9A role ${handoff2.targetRole},\u4E0D\u80FD\u6D3E\u7ED9 ${targetRole}`);
-  }
-  return handoff2;
-}
-function parseHandoff(path2, raw, sourceRole) {
-  const { data, body } = parseFrontmatter(raw);
-  if (data.type !== "handoff") return null;
-  if (typeof data.from !== "string" || typeof data.target !== "string" || typeof data.role !== "string") {
-    return null;
-  }
-  return {
-    path: path2,
-    fromBoxId: data.from,
-    targetId: data.target,
-    targetRole: data.role,
-    fromRole: typeof data.by === "string" && data.by ? data.by : sourceRole,
-    timestamp: typeof data.ts === "string" ? data.ts : void 0,
-    body: body.trim()
-  };
-}
-function normalizeHandoffPath(input) {
-  const path2 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/handoffs\/[^/]+\.md$/.test(path2)) {
-    throw new Error("handoff \u5FC5\u987B\u6307\u5411 temp/<role>/handoffs/*.md");
-  }
-  return path2;
 }
 
 // src/core/report.ts
@@ -1349,46 +1307,6 @@ async function finishApply(env, proposalPath) {
     );
   });
 }
-async function handoff(env, fromBoxId, targetId, targetRole, prompt) {
-  return withTentMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const from = tent.byId.get(fromBoxId);
-    if (!from) throw new Error(`\u627E\u4E0D\u5230\u6846 ${fromBoxId}`);
-    if (!isUsableBox(from)) throw new Error("\u4EA4\u63A5\u6765\u6E90\u6846\u4E0D\u53EF\u7528");
-    const target = tent.byId.get(targetId);
-    if (!target) throw new Error(`\u627E\u4E0D\u5230\u6846 ${targetId}`);
-    if (!isUsableBox(target)) throw new Error("\u4EA4\u63A5\u76EE\u6807\u6846\u4E0D\u53EF\u7528");
-    const role = assertRoleName(targetRole);
-    const content = prompt.trim();
-    if (!content) throw new Error("handoff prompt \u4E0D\u80FD\u4E3A\u7A7A");
-    const fromRole = from.fm.owner || "_";
-    const dir = join2("temp", fromRole, "handoffs");
-    await ensureDir3(env.fs, dir);
-    const handoffPath = await uniqueHandoffPath(
-      env.fs,
-      dir,
-      targetId,
-      env.clock.now()
-    );
-    const data = {
-      type: "handoff",
-      from: fromBoxId,
-      target: targetId,
-      role,
-      by: from.fm.owner || "",
-      ts: env.clock.now()
-    };
-    await env.fs.writeFile(
-      handoffPath,
-      serializeFrontmatter(
-        data,
-        content + "\n",
-        ["type", "from", "target", "role", "by", "ts"]
-      )
-    );
-    return handoffPath;
-  });
-}
 async function ensureDir3(fs3, path2) {
   if (path2 && !await fs3.exists(path2)) await fs3.mkdir(path2);
 }
@@ -1409,15 +1327,6 @@ async function uniqueProposalPath(fs3, dir, targetId, now) {
     const path2 = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
     if (!await fs3.exists(path2)) return path2;
     index += 1;
-  }
-}
-async function uniqueHandoffPath(fs3, dir, targetId, now) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  for (let index = 1; ; index += 1) {
-    const suffix = index === 1 ? "" : `-${index}`;
-    const path2 = join2(dir, `hf-${stamp2}-${safeTarget}${suffix}.md`);
-    if (!await fs3.exists(path2)) return path2;
   }
 }
 
@@ -1516,15 +1425,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
-  const handoffPath = options.handoffPath?.trim() || "";
-  let resolvedHandoffPath = handoffPath;
-  if (!userPrompt && !handoffPath) {
-    throw new Error("\u6D3E\u6D3B\u81F3\u5C11\u9700\u8981 user prompt \u6216 handoff prompt");
-  }
-  if (handoffPath) {
-    if (claim.root) throw new Error("handoff \u5FC5\u987B\u6D3E\u5230\u5176\u6307\u5B9A box,\u4E0D\u80FD\u6D3E\u5230\u5E10\u6839");
-    resolvedHandoffPath = (await validateDispatchHandoff(env.fs, handoffPath, claim.box.id, roleName)).path;
-  }
+  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -1556,18 +1457,20 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     role: roleName,
     claims: taskClaims,
     manifestPath,
-    userPrompt: options.userPrompt,
-    handoffPath: resolvedHandoffPath || void 0,
+    userPrompt,
     workspace: options.workspace,
     dispatchedBy: options.dispatchedBy
   });
-  const relayPrompt = relayPromptForTask({
-    path: taskPath,
-    role: roleName,
-    claims: taskClaims.map((taskClaim) => taskClaim.id),
-    manifest: manifestPath,
-    status: "pending"
-  });
+  const relayPrompt = relayPromptForTask(
+    {
+      path: taskPath,
+      role: roleName,
+      claims: taskClaims.map((taskClaim) => taskClaim.id),
+      manifest: manifestPath,
+      status: "pending"
+    },
+    env.tentRoot || env.tentName
+  );
   return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
@@ -2137,7 +2040,8 @@ function makeEnv() {
   return {
     fs: new NodeFs(root),
     clock: new SystemClock(),
-    tentName: path.basename(root)
+    tentName: path.basename(root),
+    tentRoot: root
   };
 }
 async function main() {
@@ -2164,7 +2068,7 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--handoff <path>] [--as-sub --by <role>]");
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
@@ -2180,7 +2084,6 @@ async function main() {
       }
       const r = await dispatch(env, claimId, role, {
         userPrompt: localPrompt,
-        handoffPath: flags.handoff,
         workspace,
         dispatchedBy: dispatcher
       });
@@ -2385,16 +2288,6 @@ After updating the target box note, run: tent apply-done ${args[0]}`
       console.log(`\u2713 Forked ${args[0]} \u2192 ${id}`);
       break;
     }
-    case "handoff": {
-      const [fromBoxId, targetId, targetRole, promptSource] = args;
-      if (!fromBoxId || !targetId || !targetRole || !promptSource) {
-        return fail("Usage: tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->");
-      }
-      const prompt = promptSource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(promptSource), "utf8");
-      const handoffPath = await handoff(env, fromBoxId, targetId, targetRole, prompt);
-      console.log(`\u2713 Handoff written: ${handoffPath}`);
-      break;
-    }
     case "clean-temp": {
       await cleanTemp(env, args[0]);
       console.log(`\u2713 Cleared temp/${args[0] || "(all)"}`);
@@ -2446,7 +2339,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork handoff clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -2570,7 +2463,7 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
+  dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId>                   Confirm completion and release owner.
@@ -2580,7 +2473,6 @@ Commands:
   tags | tag-new | tag-rm            Manage the tag registry.
   find <tag>                         Find boxes by tag.
   propose | proposal                 Create or review a proposal.
-  handoff <from> <target> <role>     Create an agent-to-agent handoff.
   fork <boxId>                       Copy a box subtree with new ids.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.
