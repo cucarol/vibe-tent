@@ -2409,6 +2409,11 @@ async function integrateWorkspaceCommits(contract, refs) {
   const results = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+    if (ancestor) {
+      results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+      continue;
+    }
     const prior = await findCherryPick(root, sourceRef);
     if (prior) {
       results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
@@ -2486,6 +2491,13 @@ async function findCherryPick(root, sourceRef) {
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     if (parts[i + 1].includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+async function findAncestorIntegration(root, sourceRef, targetBranch) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, targetRef])) {
+    return (await git(root, ["rev-parse", targetRef])).trim();
   }
   return void 0;
 }
