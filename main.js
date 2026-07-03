@@ -2576,6 +2576,12 @@ function visibleTreeCount(node, collapsed, directCount) {
   const subtreeCount = (current) => directCount(current) + current.children.reduce((total, child) => total + subtreeCount(child), 0);
   return subtreeCount(node);
 }
+function showsUnstampedState(node) {
+  return node.fm.status !== void 0 || !!node.fm.owner;
+}
+function statuslessDirectChildren(node) {
+  return node.children.filter((child) => child.fm.status === void 0);
+}
 function bottomTabCounts(input) {
   return {
     dispatch: input.pendingDispatches,
@@ -4198,7 +4204,9 @@ var TentView = class extends import_obsidian4.ItemView {
   drawOutputSummary(el, box) {
     const pointer = parseOutputPointer(box.fm, box.body);
     const card = el.createDiv({ cls: "tent-output-summary" });
-    card.createSpan({ cls: "tent-output-pill", text: (box.fm.status || "todo") === "done" ? "\u5DF2\u4EA4\u4ED8" : "\u672A\u76D6\u7AE0" });
+    if (showsUnstampedState(box)) {
+      card.createSpan({ cls: "tent-output-pill", text: box.fm.status === "done" ? "\u5DF2\u4EA4\u4ED8" : "\u672A\u76D6\u7AE0" });
+    }
     card.createSpan({ cls: "tent-output-line", text: pointer.workspace ? `workspace: ${pointer.workspace}` : "workspace: \u672A\u8BB0\u5F55" });
     const refLine = card.createSpan({
       cls: "tent-output-line",
@@ -4443,6 +4451,7 @@ var TentView = class extends import_obsidian4.ItemView {
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
       done.setAttr("type", "button");
+      const statuslessChildren = statuslessDirectChildren(box);
       if (report.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
         pick.createDiv({ cls: "tent-commit-note", text: "\u8BFB\u53D6 report commits\u2026" });
@@ -4465,8 +4474,8 @@ var TentView = class extends import_obsidian4.ItemView {
           }
         });
       }
-      done.onclick = async () => {
-        done.setAttr("disabled", "true");
+      const accept = async (children, controls = [done]) => {
+        for (const control of controls) control.setAttr("disabled", "true");
         try {
           await acceptReport(
             this.env(),
@@ -4480,13 +4489,49 @@ var TentView = class extends import_obsidian4.ItemView {
               }
             }
           );
+          for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
-          new import_obsidian4.Notice(report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)");
+          const childMessage = children.length > 0 ? `\uFF0C\u5E76\u76D6\u7AE0 ${children.length} \u4E2A\u5B50\u7EA7` : "";
+          new import_obsidian4.Notice((report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)") + childMessage);
         } catch (e) {
-          done.removeAttribute("disabled");
+          for (const control of controls) control.removeAttribute("disabled");
           new import_obsidian4.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
+      };
+      done.onclick = () => {
+        if (statuslessChildren.length === 0) {
+          void accept([]);
+          return;
+        }
+        done.setAttr("disabled", "true");
+        const prompt = body.createDiv({ cls: "tent-child-stamp" });
+        prompt.createDiv({
+          cls: "tent-child-stamp-title",
+          text: `\u540C\u65F6\u76D6\u7AE0 ${statuslessChildren.length} \u4E2A\u76F4\u63A5\u5B50\u7EA7\uFF1F`
+        });
+        const selected = new Set(statuslessChildren.map((child) => child.id));
+        for (const child of statuslessChildren) {
+          const row = prompt.createEl("label", { cls: "tent-child-stamp-row" });
+          const checkbox = row.createEl("input", { type: "checkbox" });
+          checkbox.checked = true;
+          row.createSpan({ text: child.name });
+          checkbox.onchange = () => {
+            if (checkbox.checked) selected.add(child.id);
+            else selected.delete(child.id);
+          };
+        }
+        const promptActions = prompt.createDiv({ cls: "tent-child-stamp-actions" });
+        const parentOnly = promptActions.createEl("button", { text: "\u4EC5\u76D6\u7236\u6846" });
+        parentOnly.setAttr("type", "button");
+        const includeChildren = promptActions.createEl("button", { cls: "mod-cta", text: "\u540C\u65F6\u76D6\u7AE0" });
+        includeChildren.setAttr("type", "button");
+        const controls = [parentOnly, includeChildren];
+        parentOnly.onclick = () => void accept([], controls);
+        includeChildren.onclick = () => {
+          const children = statuslessChildren.filter((child) => selected.has(child.id));
+          void accept(children, controls);
+        };
       };
     } else if (owner) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5904\u7406\u4E2D" });
