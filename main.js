@@ -3284,6 +3284,38 @@ function addTooltip(element, text) {
   });
 }
 
+// src/plugin/timed-cache.ts
+var GIT_UI_CACHE_TTL_MS = 6e3;
+var TimedCache = class {
+  constructor(ttlMs = GIT_UI_CACHE_TTL_MS, now = () => Date.now()) {
+    this.ttlMs = ttlMs;
+    this.now = now;
+    this.entries = /* @__PURE__ */ new Map();
+  }
+  get(key, loader) {
+    const now = this.now();
+    const hit = this.entries.get(key);
+    if (hit?.hasValue && hit.expiresAt > now) return Promise.resolve(hit.value);
+    if (hit?.promise) return hit.promise;
+    const promise = loader().then((value) => {
+      this.entries.set(key, {
+        value,
+        hasValue: true,
+        expiresAt: this.now() + this.ttlMs
+      });
+      return value;
+    }).catch((error) => {
+      this.entries.delete(key);
+      throw error;
+    });
+    this.entries.set(key, { expiresAt: now + this.ttlMs, hasValue: false, promise });
+    return promise;
+  }
+  clear() {
+    this.entries.clear();
+  }
+};
+
 // src/plugin/view.ts
 init_ops();
 var TENT_VIEW_TYPE = "tent-structure-editor";
@@ -3291,7 +3323,6 @@ var STATUSES = ["todo", "doing", "done"];
 var MIN_TREE_COLUMN = 250;
 var MIN_PROPERTY_COLUMN = 320;
 var COLUMN_DIVIDER = 6;
-var GIT_UI_CACHE_TTL_MS = 6e3;
 var TentView = class extends import_obsidian4.ItemView {
   constructor(leaf, plugin) {
     super(leaf);
@@ -3329,8 +3360,8 @@ var TentView = class extends import_obsidian4.ItemView {
     this.ignoredVaultChanges = /* @__PURE__ */ new Map();
     this.recentCreates = /* @__PURE__ */ new Set();
     this.columnResizeObserver = null;
-    this.workspaceHeadCache = /* @__PURE__ */ new Map();
-    this.roleCommitsCache = /* @__PURE__ */ new Map();
+    this.workspaceHeadCache = new TimedCache();
+    this.roleCommitsCache = new TimedCache();
   }
   getViewType() {
     return TENT_VIEW_TYPE;
@@ -4462,7 +4493,7 @@ var TentView = class extends import_obsidian4.ItemView {
   }
   loadWorkspaceHead(workspace) {
     const key = nodePath3.resolve(workspace);
-    return this.loadCached(this.workspaceHeadCache, key, async () => {
+    return this.workspaceHeadCache.get(key, async () => {
       try {
         return await readWorkspaceHead(key);
       } catch {
@@ -4480,26 +4511,7 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     if (!wp) return null;
     const workspace = nodePath3.resolve(wp);
-    return this.loadCached(this.roleCommitsCache, `${workspace}\0${owner}`, () => listRoleCommitsFor(workspace, owner));
-  }
-  loadCached(cache, key, loader) {
-    const now = Date.now();
-    const hit = cache.get(key);
-    if (hit?.hasValue && hit.expiresAt > now) return Promise.resolve(hit.value);
-    if (hit?.promise) return hit.promise;
-    const promise = loader().then((value) => {
-      cache.set(key, {
-        value,
-        hasValue: true,
-        expiresAt: Date.now() + GIT_UI_CACHE_TTL_MS
-      });
-      return value;
-    }).catch((error) => {
-      cache.delete(key);
-      throw error;
-    });
-    cache.set(key, { expiresAt: now + GIT_UI_CACHE_TTL_MS, hasValue: false, promise });
-    return promise;
+    return this.roleCommitsCache.get(`${workspace}\0${owner}`, () => listRoleCommitsFor(workspace, owner));
   }
   clearGitUiCache() {
     this.workspaceHeadCache.clear();

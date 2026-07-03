@@ -36,6 +36,7 @@ import {
   createRegistryPaneState,
   drawRegistryPane,
 } from "./registry-pane.js";
+import { TimedCache } from "./timed-cache.js";
 import {
   OpsEnv,
   dispatch,
@@ -57,14 +58,6 @@ const STATUSES: Status[] = ["todo", "doing", "done"];
 const MIN_TREE_COLUMN = 250;
 const MIN_PROPERTY_COLUMN = 320;
 const COLUMN_DIVIDER = 6;
-const GIT_UI_CACHE_TTL_MS = 6_000;
-
-interface TimedCacheEntry<T> {
-  expiresAt: number;
-  hasValue: boolean;
-  value?: T;
-  promise?: Promise<T>;
-}
 
 export class TentView extends ItemView {
   private tentName = "";
@@ -100,8 +93,8 @@ export class TentView extends ItemView {
   private ignoredVaultChanges = new Map<string, number>();
   private recentCreates = new Set<string>();
   private columnResizeObserver: ResizeObserver | null = null;
-  private workspaceHeadCache = new Map<string, TimedCacheEntry<WorkspaceHead | null>>();
-  private roleCommitsCache = new Map<string, TimedCacheEntry<RoleCommit[] | null>>();
+  private workspaceHeadCache = new TimedCache<WorkspaceHead | null>();
+  private roleCommitsCache = new TimedCache<RoleCommit[] | null>();
 
   constructor(leaf: WorkspaceLeaf, private plugin: TentPlugin) {
     super(leaf);
@@ -1419,7 +1412,7 @@ export class TentView extends ItemView {
 
   private loadWorkspaceHead(workspace: string): Promise<WorkspaceHead | null> {
     const key = nodePath.resolve(workspace);
-    return this.loadCached(this.workspaceHeadCache, key, async () => {
+    return this.workspaceHeadCache.get(key, async () => {
       try {
         return await readWorkspaceHead(key);
       } catch {
@@ -1438,34 +1431,7 @@ export class TentView extends ItemView {
     }
     if (!wp) return null;
     const workspace = nodePath.resolve(wp);
-    return this.loadCached(this.roleCommitsCache, `${workspace}\0${owner}`, () => listRoleCommitsFor(workspace, owner));
-  }
-
-  private loadCached<T>(
-    cache: Map<string, TimedCacheEntry<T>>,
-    key: string,
-    loader: () => Promise<T>
-  ): Promise<T> {
-    const now = Date.now();
-    const hit = cache.get(key);
-    if (hit?.hasValue && hit.expiresAt > now) return Promise.resolve(hit.value as T);
-    if (hit?.promise) return hit.promise;
-
-    const promise = loader()
-      .then((value) => {
-        cache.set(key, {
-          value,
-          hasValue: true,
-          expiresAt: Date.now() + GIT_UI_CACHE_TTL_MS,
-        });
-        return value;
-      })
-      .catch((error) => {
-        cache.delete(key);
-        throw error;
-      });
-    cache.set(key, { expiresAt: now + GIT_UI_CACHE_TTL_MS, hasValue: false, promise });
-    return promise;
+    return this.roleCommitsCache.get(`${workspace}\0${owner}`, () => listRoleCommitsFor(workspace, owner));
   }
 
   private clearGitUiCache() {
