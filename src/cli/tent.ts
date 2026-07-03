@@ -152,8 +152,7 @@ async function main() {
     case "complete": {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--no-cascade]");
-      const cascadeOutputs = flags["no-cascade"] !== "true";
+      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -185,12 +184,10 @@ async function main() {
         await acceptReport(env, readyReport.path, {
           commits: refs,
           integrate: refs.length > 0 ? integrate : undefined,
-          cascadeOutputs,
         });
       } else {
         await completeClaim(env, boxId, {
           integrate: refs.length > 0 ? () => integrate(refs) : undefined,
-          cascadeOutputs,
         });
       }
       for (const line of integrationLines) console.log(line);
@@ -198,13 +195,9 @@ async function main() {
       break;
     }
     case "stamp": {
-      const { positionals, flags } = parseFlags(args);
-      const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent stamp <boxId> [--no-cascade]");
-      await stamp(env, boxId, {
-        cascadeOutputs: flags["no-cascade"] !== "true",
-      });
-      console.log(`✓ Stamped ${boxId} (done and owner cleared)`);
+      if (!args[0]) return fail("Usage: tent stamp <boxId>");
+      await stamp(env, args[0]);
+      console.log(`✓ Stamped ${args[0]} (done and owner cleared)`);
       break;
     }
     case "propose": {
@@ -417,7 +410,7 @@ function fail(msg: string) {
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
-  const booleanFlags = new Set(["force", "yes", "no-cascade"]);
+  const booleanFlags = new Set(["force", "yes"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -521,8 +514,7 @@ Commands:
   roles                              Print the role registry.
   dispatch <boxId> <role> [prompt]   Claim a box and create a task pointer.
   report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId> [--no-cascade]    Confirm completion and release owner.
-  stamp <boxId> [--no-cascade]       Complete without workspace commits.
+  complete <boxId>                   Confirm completion and release owner.
   force-release <boxId>              Release owner without accepting delivery.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
