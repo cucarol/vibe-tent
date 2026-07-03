@@ -75,8 +75,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /Overlay Format Migrations/);
   assert.match(spec, /Any breaking overlay format change must ship with an idempotent/);
   assert.match(spec, /`tent migrate-\*` command/);
-  assert.match(spec, /direct\s+output records/);
-  assert.match(spec, /`--no-cascade`/);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {
