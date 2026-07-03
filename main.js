@@ -2145,7 +2145,7 @@ __export(main_exports, {
   default: () => TentPlugin
 });
 module.exports = __toCommonJS(main_exports);
-var import_obsidian5 = require("obsidian");
+var import_obsidian6 = require("obsidian");
 
 // src/plugin/view.ts
 var import_obsidian4 = require("obsidian");
@@ -4970,7 +4970,7 @@ function makeDragLabel(name) {
   return el;
 }
 
-// src/plugin/main.ts
+// src/plugin/settings-model.ts
 init_typeRegistry();
 var DEFAULT_RULES_TEMPLATE = "# {tent} \xB7 \u9879\u76EE\u7EA6\u5B9A\n\n> \u8FD9\u9876\u5E10\u7684\u672C\u5730\u89C4\u77E9\uFF1B\u673A\u5236\u89C4\u8303\u7531 Tent \u4E0E tent-role skill \u63D0\u4F9B\u3002\n\n- \u4EA7\u51FA workspace\uFF1A<\u586B\u771F\u5B9E\u4EE3\u7801\u4ED3\u8DEF\u5F84>\n- \u63D0\u4EA4 / \u547D\u540D\u7EA6\u5B9A\uFF1A<\u586B>\n- \u5176\u4ED6\u9879\u76EE\u7EA6\u5B9A\uFF1A<\u586B>\n";
 var DEFAULT_ROLES_REGISTRY2 = { roles: [] };
@@ -4989,92 +4989,62 @@ var DEFAULT_SETTINGS = {
     rulesTemplate: DEFAULT_RULES_TEMPLATE
   }
 };
-var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
-var TentPlugin = class extends import_obsidian5.Plugin {
-  constructor() {
-    super(...arguments);
-    this.settings = DEFAULT_SETTINGS;
-    this.lastPending = null;
+function cloneTypeRegistry(registry) {
+  return Object.fromEntries(Object.entries(registry).map(([name, definition]) => [name, { ...definition }]));
+}
+function cloneRolesRegistry(registry) {
+  return { roles: registry.roles.map((role) => ({ ...role })) };
+}
+function normalizeRoles(value) {
+  if (typeof value !== "object" || value === null) return cloneRolesRegistry(DEFAULT_ROLES_REGISTRY2);
+  const raw = value;
+  if (!Array.isArray(raw.roles)) return cloneRolesRegistry(DEFAULT_ROLES_REGISTRY2);
+  const roles = [];
+  for (const item of raw.roles) {
+    if (typeof item !== "object" || item === null) continue;
+    const source = item;
+    const name = typeof source.name === "string" ? source.name.trim() : "";
+    if (!name || roles.some((role2) => role2.name === name)) continue;
+    const role = { name };
+    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
+    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
+    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
+    roles.push(role);
   }
-  async onload() {
-    await this.loadSettings();
-    (0, import_obsidian5.addIcon)("tent", TENT_ICON);
-    this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
-    this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
-    this.addCommand({
-      id: "open-panel",
-      name: "Open panel",
-      callback: () => this.activateView()
-    });
-    this.addCommand({
-      id: "open-board-experimental",
-      name: "Open or refresh experimental board",
-      callback: async () => {
-        await this.activateView();
-        const leaf = this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)[0];
-        const view = leaf?.view;
-        if (view) await view.openBoard();
-      }
-    });
-    this.statusEl = this.addStatusBarItem();
-    this.statusEl.addClass("tent-status");
-    this.statusEl.onClickEvent(() => this.activateView());
-    this.updateStatus(0);
-    this.addSettingTab(new TentSettingTab(this.app, this));
-  }
-  onunload() {
-  }
-  async activateView() {
-    const { workspace } = this.app;
-    let leaf = workspace.getLeavesOfType(TENT_VIEW_TYPE)[0] ?? null;
-    if (!leaf) {
-      leaf = workspace.getLeaf("tab");
-      await leaf.setViewState({ type: TENT_VIEW_TYPE, active: true });
+  return { roles };
+}
+function mergeSettings(raw) {
+  const saved = typeof raw === "object" && raw !== null ? raw : {};
+  const appearance = saved.appearance === "follow" || saved.appearance === "light" || saved.appearance === "dark" ? saved.appearance : saved.appearance === "warm" ? "light" : DEFAULT_SETTINGS.appearance;
+  const legacyDefaults = saved.newTentTemplate;
+  const defaults = saved.newTentDefaults;
+  const typeRegistry = normalizeRegistry(defaults?.typeRegistry ?? legacyDefaults?.typeRegistry ?? DEFAULT_TYPE_REGISTRY);
+  const rolesRegistry = normalizeRoles(defaults?.rolesRegistry ?? legacyDefaults?.rolesRegistry ?? DEFAULT_ROLES_REGISTRY2);
+  const rulesCandidate = defaults?.rulesTemplate ?? legacyDefaults?.rulesTemplate;
+  const rulesTemplate = typeof rulesCandidate === "string" && rulesCandidate.trim() ? rulesCandidate : DEFAULT_RULES_TEMPLATE;
+  const triageReminder = saved.triageReminder === "off" || saved.triageReminder === "status" || saved.triageReminder === "notice" ? saved.triageReminder : DEFAULT_SETTINGS.triageReminder;
+  return {
+    tentsRoot: typeof saved.tentsRoot === "string" && saved.tentsRoot.trim() ? saved.tentsRoot : DEFAULT_SETTINGS.tentsRoot,
+    activeTent: typeof saved.activeTent === "string" ? saved.activeTent : "",
+    appearance,
+    dispatchPrefs: {
+      copyPromptToClipboard: typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean" ? saved.dispatchPrefs.copyPromptToClipboard : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
+      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks) ? saved.dispatchPrefs.acknowledgedTasks.filter(
+        (item) => typeof item === "string"
+      ).slice(-500) : []
+    },
+    triageReminder,
+    newTentDefaults: {
+      typeRegistry,
+      rolesRegistry,
+      rulesTemplate
     }
-    workspace.revealLeaf(leaf);
-  }
-  updateStatus(pending) {
-    if (!this.statusEl) return;
-    const previous = this.lastPending;
-    this.lastPending = pending;
-    if (this.settings.triageReminder === "off") {
-      this.statusEl.hide();
-      return;
-    }
-    this.statusEl.show();
-    this.statusEl.empty();
-    this.statusEl.createSpan({ text: "\u26FA " });
-    this.statusEl.createSpan({
-      text: pending > 0 ? `${pending} \u5F85\u88C1` : "\u5E10\u5185\u65E0\u4E8B",
-      cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
-    });
-    if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian5.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
-    }
-  }
-  refreshStatusPreference() {
-    this.updateStatus(this.lastPending ?? 0);
-  }
-  async loadSettings() {
-    this.settings = mergeSettings(await this.loadData());
-  }
-  async saveSettings() {
-    await this.saveData(this.settings);
-  }
-  async acknowledgeDispatchTask(tentName, taskPath) {
-    const key = dispatchAckKey(tentName, taskPath);
-    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
-      this.settings.dispatchPrefs.acknowledgedTasks,
-      key
-    );
-    await this.saveSettings();
-  }
-  refreshViews() {
-    for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {
-      leaf.view.refreshAppearance();
-    }
-  }
-};
+  };
+}
+
+// src/plugin/settings.ts
+var import_obsidian5 = require("obsidian");
+init_typeRegistry();
 var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   constructor(app, plugin) {
     super(app, plugin);
@@ -5352,30 +5322,6 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   }
 };
 var BUILTIN_TYPES = new Set(Object.keys(DEFAULT_TYPE_REGISTRY));
-function cloneTypeRegistry(registry) {
-  return Object.fromEntries(Object.entries(registry).map(([name, definition]) => [name, { ...definition }]));
-}
-function cloneRolesRegistry(registry) {
-  return { roles: registry.roles.map((role) => ({ ...role })) };
-}
-function normalizeRoles(value) {
-  if (typeof value !== "object" || value === null) return cloneRolesRegistry(DEFAULT_ROLES_REGISTRY2);
-  const raw = value;
-  if (!Array.isArray(raw.roles)) return cloneRolesRegistry(DEFAULT_ROLES_REGISTRY2);
-  const roles = [];
-  for (const item of raw.roles) {
-    if (typeof item !== "object" || item === null) continue;
-    const source = item;
-    const name = typeof source.name === "string" ? source.name.trim() : "";
-    if (!name || roles.some((role2) => role2.name === name)) continue;
-    const role = { name };
-    if (typeof source.color === "string" && source.color.trim()) role.color = source.color.trim();
-    if (typeof source.description === "string" && source.description.trim()) role.description = source.description.trim();
-    if (typeof source.prompt === "string" && source.prompt.trim()) role.prompt = source.prompt.trim();
-    roles.push(role);
-  }
-  return { roles };
-}
 function axisSummary(label, value) {
   return `${label}${value === void 0 ? "\u7EE7\u627F" : value ? "\u5F00" : "\u5173"}`;
 }
@@ -5399,31 +5345,91 @@ function validRegistryName(name) {
 function settingHeading(parent, name) {
   return new import_obsidian5.Setting(parent).setName(name).setHeading();
 }
-function mergeSettings(raw) {
-  const saved = typeof raw === "object" && raw !== null ? raw : {};
-  const appearance = saved.appearance === "follow" || saved.appearance === "light" || saved.appearance === "dark" ? saved.appearance : saved.appearance === "warm" ? "light" : DEFAULT_SETTINGS.appearance;
-  const legacyDefaults = saved.newTentTemplate;
-  const defaults = saved.newTentDefaults;
-  const typeRegistry = normalizeRegistry(defaults?.typeRegistry ?? legacyDefaults?.typeRegistry ?? DEFAULT_TYPE_REGISTRY);
-  const rolesRegistry = normalizeRoles(defaults?.rolesRegistry ?? legacyDefaults?.rolesRegistry ?? DEFAULT_ROLES_REGISTRY2);
-  const rulesCandidate = defaults?.rulesTemplate ?? legacyDefaults?.rulesTemplate;
-  const rulesTemplate = typeof rulesCandidate === "string" && rulesCandidate.trim() ? rulesCandidate : DEFAULT_RULES_TEMPLATE;
-  const triageReminder = saved.triageReminder === "off" || saved.triageReminder === "status" || saved.triageReminder === "notice" ? saved.triageReminder : DEFAULT_SETTINGS.triageReminder;
-  return {
-    tentsRoot: typeof saved.tentsRoot === "string" && saved.tentsRoot.trim() ? saved.tentsRoot : DEFAULT_SETTINGS.tentsRoot,
-    activeTent: typeof saved.activeTent === "string" ? saved.activeTent : "",
-    appearance,
-    dispatchPrefs: {
-      copyPromptToClipboard: typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean" ? saved.dispatchPrefs.copyPromptToClipboard : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
-      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks) ? saved.dispatchPrefs.acknowledgedTasks.filter(
-        (item) => typeof item === "string"
-      ).slice(-500) : []
-    },
-    triageReminder,
-    newTentDefaults: {
-      typeRegistry,
-      rolesRegistry,
-      rulesTemplate
+
+// src/plugin/main.ts
+var TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
+var TentPlugin = class extends import_obsidian6.Plugin {
+  constructor() {
+    super(...arguments);
+    this.settings = DEFAULT_SETTINGS;
+    this.lastPending = null;
+  }
+  async onload() {
+    await this.loadSettings();
+    (0, import_obsidian6.addIcon)("tent", TENT_ICON);
+    this.registerView(TENT_VIEW_TYPE, (leaf) => new TentView(leaf, this));
+    this.addRibbonIcon("tent", "Open Tent panel", () => this.activateView());
+    this.addCommand({
+      id: "open-panel",
+      name: "Open panel",
+      callback: () => this.activateView()
+    });
+    this.addCommand({
+      id: "open-board-experimental",
+      name: "Open or refresh experimental board",
+      callback: async () => {
+        await this.activateView();
+        const leaf = this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)[0];
+        const view = leaf?.view;
+        if (view) await view.openBoard();
+      }
+    });
+    this.statusEl = this.addStatusBarItem();
+    this.statusEl.addClass("tent-status");
+    this.statusEl.onClickEvent(() => this.activateView());
+    this.updateStatus(0);
+    this.addSettingTab(new TentSettingTab(this.app, this));
+  }
+  onunload() {
+  }
+  async activateView() {
+    const { workspace } = this.app;
+    let leaf = workspace.getLeavesOfType(TENT_VIEW_TYPE)[0] ?? null;
+    if (!leaf) {
+      leaf = workspace.getLeaf("tab");
+      await leaf.setViewState({ type: TENT_VIEW_TYPE, active: true });
     }
-  };
-}
+    workspace.revealLeaf(leaf);
+  }
+  updateStatus(pending) {
+    if (!this.statusEl) return;
+    const previous = this.lastPending;
+    this.lastPending = pending;
+    if (this.settings.triageReminder === "off") {
+      this.statusEl.hide();
+      return;
+    }
+    this.statusEl.show();
+    this.statusEl.empty();
+    this.statusEl.createSpan({ text: "\u26FA " });
+    this.statusEl.createSpan({
+      text: pending > 0 ? `${pending} \u5F85\u88C1` : "\u5E10\u5185\u65E0\u4E8B",
+      cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
+    });
+    if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
+      new import_obsidian6.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u88C1`);
+    }
+  }
+  refreshStatusPreference() {
+    this.updateStatus(this.lastPending ?? 0);
+  }
+  async loadSettings() {
+    this.settings = mergeSettings(await this.loadData());
+  }
+  async saveSettings() {
+    await this.saveData(this.settings);
+  }
+  async acknowledgeDispatchTask(tentName, taskPath) {
+    const key = dispatchAckKey(tentName, taskPath);
+    this.settings.dispatchPrefs.acknowledgedTasks = rememberDispatchAck(
+      this.settings.dispatchPrefs.acknowledgedTasks,
+      key
+    );
+    await this.saveSettings();
+  }
+  refreshViews() {
+    for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {
+      leaf.view.refreshAppearance();
+    }
+  }
+};

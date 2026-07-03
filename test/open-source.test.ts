@@ -45,6 +45,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
+  const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
   assert.equal(pkg.license, "MIT");
   assert.equal(pkg.author, manifest.author);
@@ -81,11 +82,11 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   assert.doesNotMatch(pluginMain, /name: "打开/);
   assert.doesNotMatch(
-    pluginMain,
+    pluginSettings,
     /createEl\("h[1-4]"/,
     "plugin settings should use Obsidian Setting headings instead of raw h1-h4 elements"
   );
-  assert.match(pluginMain, /\.setHeading\(\)/);
+  assert.match(pluginSettings, /\.setHeading\(\)/);
   assert.equal(
     versions[manifest.version],
     manifest.minAppVersion,

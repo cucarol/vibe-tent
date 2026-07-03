@@ -7,6 +7,7 @@ import {
   pendingDispatches,
   rememberDispatchAck,
 } from "../src/plugin/pending-dispatch.js";
+import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
   createRegistryPaneState,
@@ -153,6 +154,44 @@ test("plugin pending dispatch:acknowledgements are deduplicated and bounded", ()
     rememberDispatchAck(["one", "two", "three"], "four", 3),
     ["two", "three", "four"],
   );
+});
+
+test("plugin settings:migrates legacy defaults and bounds acknowledgements", () => {
+  const settings = mergeSettings({
+    tentsRoot: "vault-tents",
+    appearance: "warm",
+    newTentTemplate: {
+      typeRegistry: {
+        note: { tier: "base", readable: true, writable: false, color: "blue" },
+      },
+      rolesRegistry: {
+        roles: [
+          { name: "planner", color: "purple", description: "Plan" },
+          { name: "planner", color: "orange" },
+          { name: " ", color: "gray" },
+        ],
+      },
+      rulesTemplate: "# Custom",
+    },
+    dispatchPrefs: {
+      copyPromptToClipboard: false,
+      acknowledgedTasks: Array.from({ length: 505 }, (_, index) => `task-${index}`),
+    },
+  });
+
+  assert.equal(settings.tentsRoot, "vault-tents");
+  assert.equal(settings.appearance, "light");
+  assert.equal(settings.dispatchPrefs.copyPromptToClipboard, false);
+  assert.equal(settings.dispatchPrefs.acknowledgedTasks.length, 500);
+  assert.equal(settings.dispatchPrefs.acknowledgedTasks[0], "task-5");
+  assert.equal(settings.newTentDefaults.typeRegistry.note.description, undefined);
+  assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
+  assert.deepEqual(settings.newTentDefaults.rolesRegistry.roles[0], {
+    name: "planner",
+    color: "purple",
+    description: "Plan",
+  });
+  assert.equal(settings.newTentDefaults.rulesTemplate, "# Custom");
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {
