@@ -125,54 +125,6 @@ export async function finishApply(
   });
 }
 
-export async function handoff(
-  env: OpsEnv,
-  fromBoxId: string,
-  targetId: string,
-  targetRole: string,
-  prompt: string
-): Promise<string> {
-  return withTentMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const from = tent.byId.get(fromBoxId);
-    if (!from) throw new Error(`找不到框 ${fromBoxId}`);
-    if (!isUsableBox(from)) throw new Error("交接来源框不可用");
-    const target = tent.byId.get(targetId);
-    if (!target) throw new Error(`找不到框 ${targetId}`);
-    if (!isUsableBox(target)) throw new Error("交接目标框不可用");
-
-    const role = assertRoleName(targetRole);
-    const content = prompt.trim();
-    if (!content) throw new Error("handoff prompt 不能为空");
-    const fromRole = from.fm.owner || "_";
-    const dir = join("temp", fromRole, "handoffs");
-    await ensureDir(env.fs, dir);
-    const handoffPath = await uniqueHandoffPath(
-      env.fs,
-      dir,
-      targetId,
-      env.clock.now()
-    );
-    const data: Record<string, unknown> = {
-      type: "handoff",
-      from: fromBoxId,
-      target: targetId,
-      role,
-      by: from.fm.owner || "",
-      ts: env.clock.now(),
-    };
-    await env.fs.writeFile(
-      handoffPath,
-      serializeFrontmatter(
-        data,
-        content + "\n",
-        ["type", "from", "target", "role", "by", "ts"]
-      )
-    );
-    return handoffPath;
-  });
-}
-
 async function ensureDir(fs: FsAdapter, path: string): Promise<void> {
   if (path && !(await fs.exists(path))) await fs.mkdir(path);
 }
@@ -200,20 +152,5 @@ async function uniqueProposalPath(
     const path = join(dir, `pr-${stamp}-${safeTarget}${suffix}.md`);
     if (!(await fs.exists(path))) return path;
     index += 1;
-  }
-}
-
-async function uniqueHandoffPath(
-  fs: FsAdapter,
-  dir: string,
-  targetId: string,
-  now: string
-): Promise<string> {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "handoff";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  for (let index = 1; ; index += 1) {
-    const suffix = index === 1 ? "" : `-${index}`;
-    const path = join(dir, `hf-${stamp}-${safeTarget}${suffix}.md`);
-    if (!(await fs.exists(path))) return path;
   }
 }

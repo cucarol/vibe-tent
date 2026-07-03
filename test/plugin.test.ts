@@ -3,15 +3,14 @@ import assert from "node:assert/strict";
 import { typeColorValue } from "../src/plugin/colors.js";
 import { TimedCache } from "../src/plugin/timed-cache.js";
 import {
-  dispatchAckKey,
   pendingDispatches,
-  rememberDispatchAck,
 } from "../src/plugin/pending-dispatch.js";
 import type { TaskEnvelope } from "../src/core/task.js";
 import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
   createRegistryPaneState,
+  bottomTabCounts,
   roleColorValue,
   rwSegmentStates,
   visibleTreeCount,
@@ -86,7 +85,18 @@ test("plugin ui-model:collapsed rows include hidden descendant triage counts", (
   assert.equal(visibleTreeCount(child, true, direct), 5);
 });
 
-test("plugin pending dispatch:newest matching task wins and acknowledgement clears every claim", () => {
+test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
+  assert.deepEqual(
+    bottomTabCounts({
+      pendingDispatches: 2,
+      openProposals: 3,
+      readyReports: 1,
+    }),
+    { dispatch: 2, triage: 4 },
+  );
+});
+
+test("plugin pending dispatch:only taken status clears the newest task claims", () => {
   const tasks: TaskEnvelope[] = [
     {
       path: "temp/executor/tasks/task-20260703T08000-bx-one.md",
@@ -124,15 +134,7 @@ test("plugin pending dispatch:newest matching task wins and acknowledgement clea
       status: "pending",
     },
   ];
-  const owners = new Map([
-    ["bx-one", "executor"],
-    ["bx-two", "executor"],
-    ["bx-three", "executor"],
-    ["bx-four", "alpha"],
-  ]);
-  const ownerFor = (boxId: string) => owners.get(boxId);
-
-  const pending = pendingDispatches(tasks, ownerFor, "tent-dev");
+  const pending = pendingDispatches(tasks);
   assert.deepEqual(
     pending
       .map((item) => [item.boxId, item.task.path])
@@ -140,29 +142,19 @@ test("plugin pending dispatch:newest matching task wins and acknowledgement clea
     [
       ["bx-four", tasks[4].path],
       ["bx-one", tasks[1].path],
+      ["bx-three", tasks[2].path],
       ["bx-two", tasks[1].path],
     ],
   );
 
   tasks[1].status = "taken";
   assert.deepEqual(
-    pendingDispatches(tasks, ownerFor, "tent-dev").map((item) => item.boxId),
-    ["bx-four"],
+    pendingDispatches(tasks).map((item) => item.boxId),
+    ["bx-four", "bx-three"],
   );
 });
 
-test("plugin pending dispatch:acknowledgements are deduplicated and bounded", () => {
-  assert.deepEqual(
-    rememberDispatchAck(["old", "same", "old"], "same", 2),
-    ["old", "same"],
-  );
-  assert.deepEqual(
-    rememberDispatchAck(["one", "two", "three"], "four", 3),
-    ["two", "three", "four"],
-  );
-});
-
-test("plugin settings:migrates legacy defaults and bounds acknowledgements", () => {
+test("plugin settings:migrates legacy defaults", () => {
   const settings = mergeSettings({
     tentsRoot: "vault-tents",
     appearance: "warm",
@@ -181,15 +173,12 @@ test("plugin settings:migrates legacy defaults and bounds acknowledgements", () 
     },
     dispatchPrefs: {
       copyPromptToClipboard: false,
-      acknowledgedTasks: Array.from({ length: 505 }, (_, index) => `task-${index}`),
     },
   });
 
   assert.equal(settings.tentsRoot, "vault-tents");
   assert.equal(settings.appearance, "light");
   assert.equal(settings.dispatchPrefs.copyPromptToClipboard, false);
-  assert.equal(settings.dispatchPrefs.acknowledgedTasks.length, 500);
-  assert.equal(settings.dispatchPrefs.acknowledgedTasks[0], "task-5");
   assert.equal(settings.newTentDefaults.typeRegistry.note.description, undefined);
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   assert.deepEqual(settings.newTentDefaults.rolesRegistry.roles[0], {

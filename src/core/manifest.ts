@@ -36,7 +36,7 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
     }
   }
   readable.push({ path: ".tent/roles.json", note: "系统注册表:可用 role 与长期 prompt" });
-  readable.push({ path: "temp/", note: "系统管道:可读全部角色交付与 handoff" });
+  readable.push({ path: "temp/", note: "系统管道:可读全部角色任务、提议与交付" });
 
   // 可写集:认领子树里 writable=true 的框
   for (const box of claimScope) {

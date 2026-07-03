@@ -8,9 +8,6 @@ import {
   type TentSettings,
 } from "./settings-model.js";
 import { TentSettingTab } from "./settings.js";
-import { ackTaskEnvelope } from "../core/task.js";
-import { withTentMutation } from "../core/adapter.js";
-import { ObsidianFs } from "./obsidian-fs.js";
 
 const TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 
@@ -77,11 +74,11 @@ export default class TentPlugin extends Plugin {
     this.statusEl.empty();
     this.statusEl.createSpan({ text: "⛺ " });
     this.statusEl.createSpan({
-      text: pending > 0 ? `${pending} 待裁` : "帐内无事",
+      text: pending > 0 ? `${pending} 待处理` : "帐内无事",
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm",
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new Notice(`Tent 新增 ${pending - previous} 项待裁`);
+      new Notice(`Tent 新增 ${pending - previous} 项待处理`);
     }
   }
 
@@ -94,10 +91,6 @@ export default class TentPlugin extends Plugin {
   }
   async saveSettings() {
     await this.saveData(this.settings);
-  }
-  async acknowledgeDispatchTask(tentName: string, taskPath: string): Promise<void> {
-    const fs = new ObsidianFs(this.app, `${this.settings.tentsRoot}/${tentName}`);
-    await withTentMutation(fs, () => ackTaskEnvelope(fs, taskPath));
   }
   refreshViews() {
     for (const leaf of this.app.workspace.getLeavesOfType(TENT_VIEW_TYPE)) {

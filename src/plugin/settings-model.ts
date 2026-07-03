@@ -23,7 +23,6 @@ export interface TentSettings {
   appearance: Appearance;
   dispatchPrefs: {
     copyPromptToClipboard: boolean;
-    acknowledgedTasks: string[];
   };
   triageReminder: TriageReminder;
   newTentDefaults: NewTentDefaults;
@@ -44,7 +43,6 @@ export const DEFAULT_SETTINGS: TentSettings = {
   appearance: "follow",
   dispatchPrefs: {
     copyPromptToClipboard: true,
-    acknowledgedTasks: [],
   },
   triageReminder: "status",
   newTentDefaults: {
@@ -115,11 +113,6 @@ export function mergeSettings(raw: unknown): TentSettings {
         typeof saved.dispatchPrefs?.copyPromptToClipboard === "boolean"
           ? saved.dispatchPrefs.copyPromptToClipboard
           : DEFAULT_SETTINGS.dispatchPrefs.copyPromptToClipboard,
-      acknowledgedTasks: Array.isArray(saved.dispatchPrefs?.acknowledgedTasks)
-        ? saved.dispatchPrefs.acknowledgedTasks.filter(
-            (item): item is string => typeof item === "string"
-          ).slice(-500)
-        : [],
     },
     triageReminder,
     newTentDefaults: {

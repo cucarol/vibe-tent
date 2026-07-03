@@ -39,8 +39,8 @@ Tent 只保存上下文和状态，不使用 Git。真实 workspace 才使用 Gi
 一级 type 通常表达 box 的主语义：
 
 - `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。
-- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、handoff 意图，以及大多数 user/agent 协作文本。
-- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、handoff 文件、workspace 指针等。
+- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
+- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、task envelope、workspace 指针等。
 
 二级 type 通常是可选修饰，不是默认补全项。
 
@@ -68,7 +68,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 `output` 表示真实产出或产出指针。
 
 - 全局 workspace 指针可以作为顶层 output。
-- 具体代码、文档、release、npm 包、截图、构建物、handoff 文件等 output，优先创建在对应处理 box 的子级中。
+- 具体代码、文档、release、npm 包、截图、构建物等 output，优先创建在对应处理 box 的子级中。
 - output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
 - 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
 

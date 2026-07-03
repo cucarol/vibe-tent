@@ -23,6 +23,12 @@ export interface PaneScrollPositions {
   property: number;
 }
 
+export interface BottomTabCountInput {
+  pendingDispatches: number;
+  openProposals: number;
+  readyReports: number;
+}
+
 export interface TreeCountNode {
   children: TreeCountNode[];
 }
@@ -55,6 +61,13 @@ export function visibleTreeCount<T extends TreeCountNode>(
     directCount(current as T) +
     current.children.reduce((total, child) => total + subtreeCount(child), 0);
   return subtreeCount(node);
+}
+
+export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
+  return {
+    dispatch: input.pendingDispatches,
+    triage: input.openProposals + input.readyReports,
+  };
 }
 
 export function createRegistryPaneState(): RegistryPaneState {

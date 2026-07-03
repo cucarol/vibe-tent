@@ -1,6 +1,6 @@
 # Tent / 帷幄
 
-Tent is an open-source harness for managing intent, context, permissions, and handoffs between a user and coding agents. A Tent is an OKF v0.1 bundle with a governance overlay; the Obsidian plugin and CLI are two clients of the same core rules.
+Tent is an open-source harness for managing intent, context, permissions, and task delegation between a user and coding agents. A Tent is an OKF v0.1 bundle with a governance overlay; the Obsidian plugin and CLI are two clients of the same core rules.
 
 The project is early (`0.1.x`) and the data format may still evolve. The behavioral contract lives in [`docs/SPEC.md`](docs/SPEC.md).
 
@@ -82,7 +82,8 @@ Run commands from the Tent root:
 ```text
 tent role-init <role>
 tent roles
-tent dispatch <claimId> <role> [prompt...] [--handoff <path>]
+tent dispatch <claimId> <role> <prompt...> [--as-sub --by <role>]
+tent task-ack <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 tent complete <boxId> [--commits <sha,sha>]
 tent stamp <boxId>
@@ -93,7 +94,6 @@ tent grant-readable <boxId>
 tent apply <proposalPath>
 tent apply-done <proposalPath>
 tent fork <boxId>
-tent handoff <fromBoxId> <targetId> <targetRole> <promptFile|->
 tent clean-temp [role]
 tent force-release <boxId>
 tent migrate-kind-to-type

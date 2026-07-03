@@ -170,11 +170,15 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
     "utf8",
   );
 
-  const peerTask = taskPath(await runCli(tent, "dispatch", peerId, "reviewer", "Peer task."));
+  const peerDispatch = await runCli(tent, "dispatch", peerId, "reviewer", "Peer task.");
+  const peerTask = taskPath(peerDispatch);
   const peerData = parseFrontmatter(await fs.readFile(path.join(tent, peerTask), "utf8")).data;
   assert.equal(peerData.status, "pending");
   assert.equal(peerData.dispatchedBy, "user");
   assert.equal(peerData.targetBranch, "main");
+  assert.equal(peerData.handoff, undefined);
+  assert.match(peerDispatch.stdout, new RegExp(`Tent root: ${tent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(peerDispatch.stdout, new RegExp(`1\\. Run \`tent task-ack ${peerTask.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
 
   await runCli(tent, "task-ack", peerTask);
   await runCli(tent, "task-ack", peerTask);
@@ -306,6 +310,9 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
   assert.match(installed.stdout, /tent-role/);
   assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
   assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
+  const installedRoleSkill = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
+  assert.match(installedRoleSkill, /tent task-ack <taskPath>/);
+  assert.doesNotMatch(installedRoleSkill, /tent handoff/);
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--dir", target),
@@ -329,6 +336,8 @@ test("CLI 表面:help 与 version 正常退出", async () => {
   const help = await runCli(repoRoot, "--help");
   assert.match(help.stdout, /Usage:/);
   assert.match(help.stdout, /skill-install/);
+  assert.match(help.stdout, /task-ack/);
+  assert.doesNotMatch(help.stdout, /handoff/i);
   assert.equal(help.stderr, "");
 
   const helpCommand = await runCli(repoRoot, "help");
