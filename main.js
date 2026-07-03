@@ -202,11 +202,11 @@ function parseFrontmatter(raw) {
     let valuePart = trimmed.slice(colon + 1).trim();
     valuePart = stripInlineComment(valuePart);
     if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
-      const { value, nextIndex } = readBlockSequence(lines, i + 1);
+      const { value, nextIndex } = readBlockSequence(lines, i + 1, key);
       data[key] = normalizeValueForKey(key, value);
       i = nextIndex - 1;
     } else {
-      data[key] = normalizeValueForKey(key, coerce(valuePart));
+      data[key] = normalizeValueForKey(key, coerceForKey(key, valuePart));
     }
     keyOrder.push(key);
   }
@@ -240,7 +240,7 @@ function coerce(v) {
 function isBlockSequenceStart(line) {
   return line !== void 0 && /^\s*-\s*/.test(line);
 }
-function readBlockSequence(lines, startIndex) {
+function readBlockSequence(lines, startIndex, key) {
   const value = [];
   let i = startIndex;
   for (; i < lines.length; i++) {
@@ -248,9 +248,21 @@ function readBlockSequence(lines, startIndex) {
     const match = line.match(/^\s*-\s*(.*)$/);
     if (!match) break;
     const item = stripInlineComment(match[1].trim());
-    value.push(coerce(item));
+    value.push(coerceForKey(key, item));
   }
   return { value, nextIndex: i };
+}
+function coerceForKey(key, raw) {
+  if (key !== "commits") return coerce(raw);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1).trim();
+    if (!inner) return [];
+    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+  }
+  return coerceCommitItem(raw);
+}
+function coerceCommitItem(raw) {
+  return /^\d+$/.test(raw) ? raw : coerce(raw);
 }
 function parseDoubleQuoted(v) {
   try {
@@ -363,7 +375,9 @@ function emit(v) {
     return "[" + v.map((item) => emit(item)).join(", ") + "]";
   }
   const s = String(v);
-  if (/[:,#\[\]]/.test(s) || s !== s.trim() || s === "") return JSON.stringify(s);
+  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]]/.test(s) || s !== s.trim() || s === "") {
+    return JSON.stringify(s);
+  }
   return s;
 }
 var FENCE, BOX_FRONTMATTER_KEY_ORDER;

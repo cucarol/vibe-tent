@@ -6,7 +6,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { loadHandoffs } from "../src/core/handoff.js";
-import { loadReports, rejectReport, submitReport } from "../src/core/report.js";
+import { loadReport, loadReports, rejectReport, submitReport } from "../src/core/report.js";
 import { makeTent } from "./helpers.js";
 test("propose:只允许 readable target,写入 temp/<role>/proposals", async () => {
   const dir = await makeTent();
@@ -222,6 +222,32 @@ test("report:驳回保留 owner,重新交付后整份确认并清理临时文件
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, "done");
   assert.equal(await fsa.exists(revised.path), false);
+});
+
+test("report:纯数字 commit ref 保持字符串且兼容旧文件", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const clock = { now: () => "2026-07-03T08:35:00.000Z" };
+  const refs = [
+    "2297910",
+    "0001234",
+    "1234567890123456789012345678901234567890",
+  ];
+
+  const report = await submitReport(fsa, clock, "bx-g2", "数字 ref", refs);
+  const raw = await fsa.readFile(report.path);
+  assert.match(raw, /commits: \["2297910", "0001234", "1234567890123456789012345678901234567890"\]/);
+  assert.deepEqual((await loadReport(fsa, report.path)).commits, refs);
+
+  await fsa.writeFile(
+    report.path,
+    "---\ntype: report\nbox: bx-g2\nrole: executor\nstatus: ready\n" +
+      "commits: [08a83cd, 2297910, 0001234, 1234567890123456789012345678901234567890]\n---\n旧 report\n",
+  );
+  assert.deepEqual(
+    (await loadReport(fsa, report.path)).commits,
+    ["08a83cd", ...refs],
+  );
 });
 
 test("apply-proposal:未 accepted 不许落地", async () => {

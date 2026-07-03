@@ -39,11 +39,11 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     // 砍掉行尾 ` # 注释`(简单实现:非引号内的 # 之后)
     valuePart = stripInlineComment(valuePart);
     if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
-      const { value, nextIndex } = readBlockSequence(lines, i + 1);
+      const { value, nextIndex } = readBlockSequence(lines, i + 1, key);
       data[key] = normalizeValueForKey(key, value);
       i = nextIndex - 1;
     } else {
-      data[key] = normalizeValueForKey(key, coerce(valuePart));
+      data[key] = normalizeValueForKey(key, coerceForKey(key, valuePart));
     }
     keyOrder.push(key);
   }
@@ -82,7 +82,11 @@ function isBlockSequenceStart(line: string | undefined): boolean {
   return line !== undefined && /^\s*-\s*/.test(line);
 }
 
-function readBlockSequence(lines: string[], startIndex: number): { value: unknown[]; nextIndex: number } {
+function readBlockSequence(
+  lines: string[],
+  startIndex: number,
+  key: string
+): { value: unknown[]; nextIndex: number } {
   const value: unknown[] = [];
   let i = startIndex;
   for (; i < lines.length; i++) {
@@ -90,9 +94,23 @@ function readBlockSequence(lines: string[], startIndex: number): { value: unknow
     const match = line.match(/^\s*-\s*(.*)$/);
     if (!match) break;
     const item = stripInlineComment(match[1].trim());
-    value.push(coerce(item));
+    value.push(coerceForKey(key, item));
   }
   return { value, nextIndex: i };
+}
+
+function coerceForKey(key: string, raw: string): unknown {
+  if (key !== "commits") return coerce(raw);
+  if (raw.startsWith("[") && raw.endsWith("]")) {
+    const inner = raw.slice(1, -1).trim();
+    if (!inner) return [];
+    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+  }
+  return coerceCommitItem(raw);
+}
+
+function coerceCommitItem(raw: string): unknown {
+  return /^\d+$/.test(raw) ? raw : coerce(raw);
 }
 
 function parseDoubleQuoted(v: string): string {
@@ -220,6 +238,13 @@ function emit(v: unknown): string {
   }
   const s = String(v);
   // 需要引号的情况:含 YAML/flow 标点或首尾空白
-  if (/[:,#\[\]]/.test(s) || s !== s.trim() || s === "") return JSON.stringify(s);
+  if (
+    /^-?(?:\d+|\d*\.\d+)$/.test(s) ||
+    /[:,#\[\]]/.test(s) ||
+    s !== s.trim() ||
+    s === ""
+  ) {
+    return JSON.stringify(s);
+  }
   return s;
 }
