@@ -199,6 +199,12 @@ test("report:驳回保留 owner,重新交付后整份确认并清理临时文件
   const clock = { now: () => "2026-07-01T00:00:00.000Z" };
   const env = { fs: fsa, clock, tentName: "wqb" };
   const { acceptReport } = await import("../src/core/ops.js");
+  const outputDir = path.join(dir, "goal", "挖新alpha", "写表达式", "交付记录");
+  await fs.mkdir(outputDir, { recursive: true });
+  await fs.writeFile(
+    path.join(outputDir, "交付记录.md"),
+    "---\nid: bx-report-output\ntype: output\n---\n# 交付记录\n",
+  );
 
   const first = await submitReport(fsa, clock, "bx-g2", "完成第一版", ["aaa", "bbb", "aaa"]);
   assert.equal(first.path, "temp/executor/reports/bx-g2.md");
@@ -221,6 +227,7 @@ test("report:驳回保留 owner,重新交付后整份确认并清理临时文件
   const box = (await loadTent(fsa)).byId.get("bx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, "done");
+  assert.equal((await loadTent(fsa)).byId.get("bx-report-output")!.fm.status, "done");
   assert.equal(await fsa.exists(revised.path), false);
 });
 
