@@ -1,7 +1,7 @@
 // Tent 状态动作的统一入口，供 CLI 与插件共同调用。
 
 import { FsAdapter, withTentMutation } from "./adapter.js";
-import { loadTent, join, dirName, boxNotePath, baseName, LoadedTent } from "./tree.js";
+import { loadTent, join, dirName, boxNotePath, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
 import { makeUniqueBoxId } from "./id.js";
 import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
@@ -27,6 +27,7 @@ export {
   type ApplyGrant,
   type ProposeResult,
 } from "./collaborationOps.js";
+export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
 
 // ---- dispatch ----
 
@@ -190,128 +191,6 @@ export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
     if (!isUsableBox(box)) throw new Error("失效或归档框不能翻可读");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
-}
-
-// ---- fork ----
-
-export async function forkNode(env: OpsEnv, boxId: string): Promise<string> {
-  return withMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
-}
-
-async function forkNodeUnlocked(env: OpsEnv, boxId: string): Promise<string> {
-  const tent = await loadTent(env.fs);
-  const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`找不到框 ${boxId}`);
-  if (!isUsableBox(source)) throw new Error("失效或归档框不能 fork");
-
-  const parentPath = dirName(source.path);
-  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
-  await copyTree(env.fs, source.path, forkPath);
-
-  const sourceBoxes = collectSubtree(source);
-  const usedIds = new Set(tent.byId.keys());
-  const idMap = new Map<string, string>();
-  for (const box of sourceBoxes) {
-    const nextId = makeUniqueBoxId(usedIds, env.rand);
-    usedIds.add(nextId);
-    idMap.set(box.id, nextId);
-  }
-
-  const forkRootId = idMap.get(source.id)!;
-  for (const box of sourceBoxes) {
-    const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join(forkPath, rel) : forkPath;
-    const notePath = boxNotePath(nextPath);
-    await ensureIdentityFileName(env.fs, nextPath, box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(box.id)!;
-    delete data.owner;
-    delete data.status;
-    delete data.forkOf;
-    delete data.forkBase;
-    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
-  }
-
-  const order = await loadOrder(env.fs);
-  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
-  const idx = siblings.indexOf(source.id);
-  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
-  order[parentKey] = siblings;
-  for (const box of sourceBoxes) {
-    const oldChildren = order[box.id];
-    const newId = idMap.get(box.id);
-    if (oldChildren && newId) {
-      order[newId] = oldChildren
-        .map((id) => idMap.get(id))
-        .filter((id): id is string => !!id);
-    }
-  }
-  await saveOrder(env.fs, order);
-
-  return forkRootId;
-}
-
-/** Obsidian 原生复制后的收编：复制树保留名字/内容，重发 id 并清 owner/status。 */
-export async function adoptCopiedSubtree(env: OpsEnv, boxPath: string): Promise<string[]> {
-  return withMutation(env.fs, async () => {
-    await normalizeCopiedRootIdentity(env.fs, boxPath);
-    const tent = await loadTent(env.fs);
-    const root = tent.byPath.get(boxPath);
-    if (!root) throw new Error(`找不到复制框 ${boxPath}`);
-    const copied = collectSubtree(root);
-    const copiedPaths = new Set(copied.map((box) => box.path));
-    const outsideIds = new Set(
-      [...tent.byPath.values()]
-        .filter((box) => !copiedPaths.has(box.path) && box.id)
-        .map((box) => box.id)
-    );
-    const hasDuplicate = copied.some((box) => outsideIds.has(box.id));
-    if (!hasDuplicate) return [];
-
-    const idMap = new Map<string, string>();
-    for (const box of copied) {
-      const next = makeUniqueBoxId(outsideIds, env.rand);
-      outsideIds.add(next);
-      idMap.set(box.id, next);
-    }
-    for (const box of copied) {
-      const path = boxNotePath(box.path);
-      const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(path));
-      data.id = idMap.get(box.id)!;
-      delete data.owner;
-      delete data.status;
-      delete data.forkOf;
-      delete data.forkBase;
-      await env.fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
-    }
-
-    const order = await loadOrder(env.fs);
-    for (const box of copied) {
-      const children = order[box.id];
-      const nextId = idMap.get(box.id);
-      if (children && nextId) {
-        order[nextId] = children.map((id) => idMap.get(id)).filter((id): id is string => !!id);
-      }
-    }
-    await saveOrder(env.fs, order);
-    return copied.map((box) => idMap.get(box.id)!);
-  });
-}
-
-async function normalizeCopiedRootIdentity(fs: FsAdapter, boxPath: string): Promise<void> {
-  const expected = boxNotePath(boxPath);
-  if (await fs.exists(expected) || !(await fs.exists(boxPath))) return;
-  const candidates: string[] = [];
-  for (const entry of await fs.listDir(boxPath)) {
-    if (entry.isDir || !entry.name.endsWith(".md") || entry.name === "index.md") continue;
-    const candidate = join(boxPath, entry.name);
-    const { data } = parseFrontmatter(await fs.readFile(candidate));
-    if (typeof data.id === "string" && data.id.startsWith("bx-") && typeof data.type === "string") {
-      candidates.push(candidate);
-    }
-  }
-  if (candidates.length === 1) await fs.move(candidates[0], expected);
 }
 
 // ---- clean-temp ----
@@ -659,43 +538,4 @@ function ownerCovering(box: Box): Box | undefined {
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {
   return withTentMutation(fs, action);
-}
-
-async function uniqueSiblingPath(fs: FsAdapter, parentPath: string, base: string): Promise<string> {
-  let n = 1;
-  while (true) {
-    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join(parentPath, name);
-    if (!(await fs.exists(candidate))) return candidate;
-    n += 1;
-  }
-}
-
-async function copyTree(fs: FsAdapter, from: string, to: string): Promise<void> {
-  await fs.mkdir(to);
-  for (const entry of await fs.listDir(from)) {
-    const src = join(from, entry.name);
-    const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs, src, dst);
-    else await fs.writeFile(dst, await fs.readFile(src));
-  }
-}
-
-function collectSubtree(box: Box, out: Box[] = []): Box[] {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
-  return out;
-}
-
-function relativePath(root: string, child: string): string {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-
-async function ensureIdentityFileName(fs: FsAdapter, newBoxPath: string, oldBoxPath: string): Promise<void> {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs.exists(expected)) return;
-  const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join(newBoxPath, oldName);
-  if (await fs.exists(copied)) await fs.move(copied, expected);
 }

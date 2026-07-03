@@ -1394,6 +1394,91 @@ async function uniqueHandoffPath(fs3, dir, targetId, now) {
   }
 }
 
+// src/core/forkOps.ts
+async function forkNode(env, boxId) {
+  return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
+}
+async function forkNodeUnlocked(env, boxId) {
+  const tent = await loadTent(env.fs);
+  const source = tent.byId.get(boxId);
+  if (!source) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+  if (!isUsableBox(source)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD fork");
+  const parentPath = dirName(source.path);
+  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
+  await copyTree(env.fs, source.path, forkPath);
+  const sourceBoxes = collectSubtree(source);
+  const usedIds = new Set(tent.byId.keys());
+  const idMap = /* @__PURE__ */ new Map();
+  for (const box of sourceBoxes) {
+    const nextId = makeUniqueBoxId(usedIds, env.rand);
+    usedIds.add(nextId);
+    idMap.set(box.id, nextId);
+  }
+  const forkRootId = idMap.get(source.id);
+  for (const box of sourceBoxes) {
+    const rel = relativePath(source.path, box.path);
+    const nextPath = rel ? join2(forkPath, rel) : forkPath;
+    const notePath = boxNotePath(nextPath);
+    await ensureIdentityFileName(env.fs, nextPath, box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+    data.id = idMap.get(box.id);
+    delete data.owner;
+    delete data.status;
+    delete data.forkOf;
+    delete data.forkBase;
+    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
+  }
+  const order = await loadOrder(env.fs);
+  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
+  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
+  const idx = siblings.indexOf(source.id);
+  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
+  order[parentKey] = siblings;
+  for (const box of sourceBoxes) {
+    const oldChildren = order[box.id];
+    const newId = idMap.get(box.id);
+    if (oldChildren && newId) {
+      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
+    }
+  }
+  await saveOrder(env.fs, order);
+  return forkRootId;
+}
+async function uniqueSiblingPath(fs3, parentPath, base) {
+  let n = 1;
+  while (true) {
+    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
+    const candidate = join2(parentPath, name);
+    if (!await fs3.exists(candidate)) return candidate;
+    n += 1;
+  }
+}
+async function copyTree(fs3, from, to) {
+  await fs3.mkdir(to);
+  for (const entry of await fs3.listDir(from)) {
+    const src = join2(from, entry.name);
+    const dst = join2(to, entry.name);
+    if (entry.isDir) await copyTree(fs3, src, dst);
+    else await fs3.writeFile(dst, await fs3.readFile(src));
+  }
+}
+function collectSubtree(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree(child, out);
+  return out;
+}
+function relativePath(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName(fs3, newBoxPath, oldBoxPath) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs3.exists(expected)) return;
+  const oldName = `${baseName(oldBoxPath)}.md`;
+  const copied = join2(newBoxPath, oldName);
+  if (await fs3.exists(copied)) await fs3.move(copied, expected);
+}
+
 // src/core/ops.ts
 async function dispatch(env, claimId, role, promptOrOptions) {
   return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
@@ -1478,55 +1563,6 @@ async function grantReadable(env, boxId) {
     if (!isUsableBox(box)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD\u7FFB\u53EF\u8BFB");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
-}
-async function forkNode(env, boxId) {
-  return withMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
-}
-async function forkNodeUnlocked(env, boxId) {
-  const tent = await loadTent(env.fs);
-  const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
-  if (!isUsableBox(source)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD fork");
-  const parentPath = dirName(source.path);
-  const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
-  await copyTree(env.fs, source.path, forkPath);
-  const sourceBoxes = collectSubtree(source);
-  const usedIds = new Set(tent.byId.keys());
-  const idMap = /* @__PURE__ */ new Map();
-  for (const box of sourceBoxes) {
-    const nextId = makeUniqueBoxId(usedIds, env.rand);
-    usedIds.add(nextId);
-    idMap.set(box.id, nextId);
-  }
-  const forkRootId = idMap.get(source.id);
-  for (const box of sourceBoxes) {
-    const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join2(forkPath, rel) : forkPath;
-    const notePath = boxNotePath(nextPath);
-    await ensureIdentityFileName(env.fs, nextPath, box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-    data.id = idMap.get(box.id);
-    delete data.owner;
-    delete data.status;
-    delete data.forkOf;
-    delete data.forkBase;
-    await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder));
-  }
-  const order = await loadOrder(env.fs);
-  const parentKey = source.parent ? source.parent.id : ROOT_KEY;
-  const siblings = (source.parent ? source.parent.children : tent.roots).map((box) => box.id);
-  const idx = siblings.indexOf(source.id);
-  siblings.splice(idx === -1 ? siblings.length : idx + 1, 0, forkRootId);
-  order[parentKey] = siblings;
-  for (const box of sourceBoxes) {
-    const oldChildren = order[box.id];
-    const newId = idMap.get(box.id);
-    if (oldChildren && newId) {
-      order[newId] = oldChildren.map((id) => idMap.get(id)).filter((id) => !!id);
-    }
-  }
-  await saveOrder(env.fs, order);
-  return forkRootId;
 }
 async function cleanTemp(env, role) {
   await withMutation(env.fs, async () => {
@@ -1627,40 +1663,6 @@ function ownerCovering(box) {
 }
 async function withMutation(fs3, action) {
   return withTentMutation(fs3, action);
-}
-async function uniqueSiblingPath(fs3, parentPath, base) {
-  let n = 1;
-  while (true) {
-    const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join2(parentPath, name);
-    if (!await fs3.exists(candidate)) return candidate;
-    n += 1;
-  }
-}
-async function copyTree(fs3, from, to) {
-  await fs3.mkdir(to);
-  for (const entry of await fs3.listDir(from)) {
-    const src = join2(from, entry.name);
-    const dst = join2(to, entry.name);
-    if (entry.isDir) await copyTree(fs3, src, dst);
-    else await fs3.writeFile(dst, await fs3.readFile(src));
-  }
-}
-function collectSubtree(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree(child, out);
-  return out;
-}
-function relativePath(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-async function ensureIdentityFileName(fs3, newBoxPath, oldBoxPath) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs3.exists(expected)) return;
-  const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join2(newBoxPath, oldName);
-  if (await fs3.exists(copied)) await fs3.move(copied, expected);
 }
 
 // src/core/scaffold.ts
