@@ -1634,6 +1634,7 @@
   font-size: var(--font-ui-small) !important;
   line-height: 1 !important;
   border-radius: var(--radius-s) !important;
+  cursor: pointer !important;
 }
 
 .tent-view button.tent-bottom-action.tent-bottom-danger {
@@ -1641,6 +1642,7 @@
   color: var(--text-error) !important;
   border: 1px solid color-mix(in srgb, var(--text-error) 24%, transparent) !important;
   box-shadow: none !important;
+  cursor: pointer !important;
 }
 .tent-view button.tent-bottom-action.tent-bottom-danger:hover {
   background: var(--text-error) !important;
