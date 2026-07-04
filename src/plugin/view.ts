@@ -1049,6 +1049,9 @@ export class TentView extends ItemView {
       drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
         await this.patchBoxIncremental(box, { writable: v });
       });
+      if (box.fm.owner) {
+        editor.createDiv({ cls: "tent-prop-snapshot-note", text: "不影响已发出的 manifest,需重新 dispatch" });
+      }
 
       // status:四段可视切换(非下拉),深底,靠右(owner 已移到标题行)
       const soItem = editor.createDiv({ cls: "tent-prop-item" });

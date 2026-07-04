@@ -151,6 +151,11 @@ Confirmed dispatch:
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.
 
+`temp/<role>/manifest.yml` is a snapshot from dispatch time. Changing a box's
+`readable`, `writable`, or `type` after dispatch does not affect already issued
+manifests; dispatch the concrete box again after release if the role needs a
+fresh contract.
+
 The task envelope is the machine delivery state. The claimed box remains the
 task truth: scope, background, decisions, and acceptance criteria belong in the
 box body or child boxes. A rough box may be dispatched; after `task-ack`, the

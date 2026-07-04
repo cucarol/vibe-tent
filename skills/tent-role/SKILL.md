@@ -97,6 +97,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 标准链路是：dispatch -> spawn/唤醒 -> receive report -> review -> complete。
 
 - dispatch：用 `tent dispatch` 写 owner/status、manifest 和 task envelope。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
+- manifest 是 dispatch 时刻的快照；派活后修改 box 的 readable、writable 或 type 不影响已发出的 manifest，需要释放后重新 dispatch 才刷新。
 - spawn/唤醒：把 relay prompt 交给目标 role 的新会话或旧会话。
 - receive report：等待目标 role 在聊天里报告，并在需要 UI 验收时写 `tent report`。
 - review：读 report、commit、diff 和必要上下文；不满意就 reject 或继续追问。
