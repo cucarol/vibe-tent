@@ -1514,7 +1514,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) return { root: true, id: "root", name: "\u5E10\u6839" };
+  if (id === "." || id === "root" || id === tentName) {
+    throw new Error("\u6574\u5E10\u4E0D\u53EF\u76F4\u63A5\u6D3E\u6D3B,\u8BF7\u6D3E\u5177\u4F53\u6846(claimId \u4E0D\u80FD\u662F . / root / \u5E10\u540D)");
+  }
   const box = tent.byId.get(id);
   if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
   return { root: false, id: box.id, name: box.name, box };
@@ -2639,6 +2641,8 @@ Commands:
   find <tag>                         Find boxes by tag.
   propose | proposal                 Create or review a proposal.
   fork <boxId>                       Copy a box subtree with new ids.
+  clean-temp [role]                  Remove temp state for one role or all roles.
+  migrate-kind-to-type               Rewrite legacy kind fields to type.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.
   tree                               Print the box tree.

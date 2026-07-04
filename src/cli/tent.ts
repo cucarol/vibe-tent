@@ -549,6 +549,8 @@ Commands:
   find <tag>                         Find boxes by tag.
   propose | proposal                 Create or review a proposal.
   fork <boxId>                       Copy a box subtree with new ids.
+  clean-temp [role]                  Remove temp state for one role or all roles.
+  migrate-kind-to-type               Rewrite legacy kind fields to type.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.
   tree                               Print the box tree.

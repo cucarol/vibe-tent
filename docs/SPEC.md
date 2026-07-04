@@ -135,17 +135,17 @@ branch:   tent-role/<safe-role-name>
 worktree: <workspace-parent>/<workspace-name>-worktrees/<safe-role-name>
 ```
 
-Unicode role names are allowed after filesystem/Git-invalid characters are
-sanitized. The lane is reused across dispatches. Agents split workspace commits
-by logical delivery/box; boxes do not create branches.
+Unicode role names are allowed, but filesystem/Git-invalid characters such as
+`/` are rejected. The lane is reused across dispatches. Agents split workspace
+commits by logical delivery/box; boxes do not create branches.
 
 Confirmed dispatch:
 
 1. validates owner overlap;
-2. writes `owner` and `status: doing` on a newly claimed root;
+2. writes `owner` and `status: doing` on a newly claimed box;
 3. updates `temp/<role>/manifest.yml` with all current claims;
 4. creates/reuses the role workspace lane;
-5. writes an immutable task envelope under `temp/<role>/tasks/`;
+5. writes a task envelope under `temp/<role>/tasks/`;
 6. returns the task pointer for delivery to the agent session.
 
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
@@ -156,11 +156,12 @@ workspace lane. Dynamic claim/task data never enters role init.
 manifests; dispatch the concrete box again after release if the role needs a
 fresh contract.
 
-The task envelope is the machine delivery state. The claimed box remains the
-task truth: scope, background, decisions, and acceptance criteria belong in the
-box body or child boxes. A rough box may be dispatched; after `task-ack`, the
-agent aligns the task, asks or proposes when unclear, and writes confirmed
-conclusions back to the box.
+The task envelope is the machine delivery state. Its prompt body is immutable;
+its `status` field flips one way from `pending` to `taken` when `task-ack`
+claims delivery. The claimed box remains the task truth: scope, background,
+decisions, and acceptance criteria belong in the box body or child boxes. A
+rough box may be dispatched; after `task-ack`, the agent aligns the task, asks
+or proposes when unclear, and writes confirmed conclusions back to the box.
 
 Role init is stable and cache-friendly:
 
@@ -194,9 +195,10 @@ Only user confirmation completes delivery.
 4. if the required check or integration fails, leave workspace state and Tent
    owner/status/report state unchanged.
 
-Rejecting a report performs no workspace integration, keeps the owner and
-`doing` state, and marks the temporary report rejected so the agent can replace
-it with a revised delivery.
+A report can be rejected by manually setting the temporary report `status` to
+`rejected` (or by UI affordances that do the same). This performs no workspace
+integration, keeps the owner and `doing` state, and lets the agent replace it
+with a revised delivery.
 
 The workspace target branch must be checked out and clean. A cherry-pick batch
 is atomic: Tent records the original target tip and resets the workspace to it
