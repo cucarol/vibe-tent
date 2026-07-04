@@ -197,9 +197,19 @@ async function assertGitWorkspace(root: string): Promise<void> {
     nodeFs.realpath(nodePath.resolve(top)),
     nodeFs.realpath(root),
   ]);
-  if (realTop.toLowerCase() !== realRoot.toLowerCase()) {
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
     throw new Error(`workspace 必须是 Git 根目录: ${root}`);
   }
+}
+
+export function isSameWorkspaceRoot(
+  realTop: string,
+  realRoot: string,
+  platform: NodeJS.Platform = process.platform,
+): boolean {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
 }
 
 async function resolveTargetBranch(root: string): Promise<string> {

@@ -20,6 +20,13 @@ test("workspaceCheckShell:POSIX require-check uses portable sh -c", async () => 
   });
 });
 
+test("isSameWorkspaceRoot:non-Windows preserves case-sensitive path comparison", async () => {
+  const { isSameWorkspaceRoot } = await import("../src/core/workspace.js");
+
+  assert.equal(isSameWorkspaceRoot("/tmp/Repo", "/tmp/repo", "linux"), false);
+  assert.equal(isSameWorkspaceRoot("C:\\Repo", "c:\\repo", "win32"), true);
+});
+
 test("workspace Git:中文 role 复用单一 worktree/branch,验收 commit 合入 main", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-"));
   const workspace = path.join(parent, "repo");
