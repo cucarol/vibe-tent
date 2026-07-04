@@ -345,9 +345,7 @@ function git(cwd: string, args: string[]): Promise<string> {
 
 function runShell(cwd: string, command: string): Promise<WorkspaceCheckResult> {
   return new Promise((resolve, reject) => {
-    const windows = process.platform === "win32";
-    const shell = windows ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
-    const args = windows ? ["/d", "/s", "/c", command] : ["-lc", command];
+    const { shell, args } = workspaceCheckShell(command);
     const child = spawn(shell, args, { cwd, windowsHide: true });
     let stdout = "";
     let stderr = "";
@@ -365,4 +363,16 @@ function runShell(cwd: string, command: string): Promise<WorkspaceCheckResult> {
       reject(new Error(`require-check failed to start: ${command}\n${error.message}`));
     });
   });
+}
+
+export function workspaceCheckShell(
+  command: string,
+  platform: NodeJS.Platform = process.platform,
+  comSpec = process.env.ComSpec,
+): { shell: string; args: string[] } {
+  const windows = platform === "win32";
+  return {
+    shell: windows ? comSpec || "cmd.exe" : "/bin/sh",
+    args: windows ? ["/d", "/s", "/c", command] : ["-c", command],
+  };
 }

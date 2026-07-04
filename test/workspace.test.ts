@@ -7,6 +7,19 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { configureTestGitIdentity, git, makeTent } from "./helpers.js";
 
+test("workspaceCheckShell:POSIX require-check uses portable sh -c", async () => {
+  const { workspaceCheckShell } = await import("../src/core/workspace.js");
+
+  assert.deepEqual(workspaceCheckShell("echo ok", "linux"), {
+    shell: "/bin/sh",
+    args: ["-c", "echo ok"],
+  });
+  assert.deepEqual(workspaceCheckShell("echo ok", "win32", "C:\\Windows\\System32\\cmd.exe"), {
+    shell: "C:\\Windows\\System32\\cmd.exe",
+    args: ["/d", "/s", "/c", "echo ok"],
+  });
+});
+
 test("workspace Git:中文 role 复用单一 worktree/branch,验收 commit 合入 main", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-"));
   const workspace = path.join(parent, "repo");
