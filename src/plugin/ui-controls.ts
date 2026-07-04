@@ -88,11 +88,8 @@ export function tentTooltip(
 }
 
 // 自定义拖拽影像:一个干净的小标签,替掉浏览器默认的半透明整行重影。
-export function makeDragLabel(name: string): HTMLElement {
-  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
-  el.style.position = "absolute";
-  el.style.top = "-1000px";
-  el.style.left = "-1000px";
+export function makeDragLabel(parent: HTMLElement, name: string): HTMLElement {
+  const el = parent.createDiv({ cls: "tent-drag-label tent-drag-label-preview", text: name });
   // 拖拽开始后浏览器已截图,下一帧即可移除
   window.setTimeout(() => el.remove(), 0);
   return el;

@@ -184,6 +184,11 @@
   white-space: nowrap;
   pointer-events: none;
 }
+.tent-drag-label-preview {
+  position: absolute;
+  top: -1000px;
+  left: -1000px;
+}
 .tent-name { flex: 0 1 auto; min-width: 0; color: var(--text-normal); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
 .tent-chip {
