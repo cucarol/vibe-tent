@@ -180,8 +180,10 @@ Only user confirmation completes delivery.
 
 1. if `--require-check <command>` is supplied, run it in the integration
    workspace before any workspace or Tent mutation;
-2. integrate every commit bound to the ready report into the workspace target branch
-   (normally `main`) using conflict-aware cherry-pick;
+2. integrate every commit bound to the ready report into the workspace target
+   branch (normally `main`): fast-forward when the selected commits are exactly
+   the complete `target..last` interval, otherwise use conflict-aware
+   cherry-pick;
 3. if integration succeeds, set the accepted box to `done`, clear its direct
    owner, record `acceptedBy`, then remove the temporary report;
 4. if the required check or integration fails, leave workspace state and Tent
@@ -191,8 +193,10 @@ Rejecting a report performs no workspace integration, keeps the owner and
 `doing` state, and marks the temporary report rejected so the agent can replace
 it with a revised delivery.
 
-The workspace target branch must be checked out and clean. Tent never pushes.
-Repeated confirmation of the same `-x` cherry-pick is idempotent.
+The workspace target branch must be checked out and clean. A cherry-pick batch
+is atomic: Tent records the original target tip and resets the workspace to it
+if any selected commit fails. Tent never pushes. Repeated confirmation of the
+same `-x` cherry-pick is idempotent.
 
 **Interrupt / force release**
 

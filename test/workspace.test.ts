@@ -81,6 +81,73 @@ test("workspace Git:中文 role 复用单一 worktree/branch,验收 commit 合�
   assert.equal(again.integratedRef, integrated.integratedRef);
 });
 
+test("workspace integration:second cherry-pick conflict rolls the whole batch back", async () => {
+  const workspace = await makeGitWorkspace("tent-workspace-rollback-");
+  await fs.writeFile(path.join(workspace, "conflict.txt"), "base\n");
+  await git(workspace, "add", "conflict.txt");
+  await git(workspace, "commit", "-q", "-m", "add conflict base");
+
+  const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "reviewer");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
+  await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
+  await git(contract.worktree, "add", "conflict.txt");
+  await git(contract.worktree, "commit", "-q", "-m", "conflicting delivery");
+  const secondRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+
+  await fs.writeFile(path.join(workspace, "conflict.txt"), "main\n");
+  await git(workspace, "add", "conflict.txt");
+  await git(workspace, "commit", "-q", "-m", "main conflict");
+  const beforeHead = (await git(workspace, "rev-parse", "HEAD")).trim();
+
+  await assert.rejects(
+    () => integrateWorkspaceCommits(contract, [firstRef, secondRef]),
+    /workspace 合入冲突,已回滚/,
+  );
+
+  assert.equal((await git(workspace, "rev-parse", "HEAD")).trim(), beforeHead);
+  assert.equal((await git(workspace, "reflog", "show", "-1", "--format=%H", "main")).trim(), beforeHead);
+  assert.equal((await git(workspace, "status", "--porcelain")).trim(), "");
+  assert.equal(await pathExists(path.join(workspace, "first.txt")), false);
+  assert.equal(normalizeLf(await fs.readFile(path.join(workspace, "conflict.txt"), "utf8")), "main\n");
+});
+
+test("workspace integration:complete descendant interval fast-forwards without changing shas", async () => {
+  const workspace = await makeGitWorkspace("tent-workspace-ff-");
+  const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "reviewer");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
+  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last delivery");
+
+  const integrated = await integrateWorkspaceCommits(contract, [firstRef, lastRef]);
+
+  assert.equal((await git(workspace, "rev-parse", "main")).trim(), lastRef);
+  assert.deepEqual(
+    integrated.map((item) => item.integratedRef),
+    [firstRef, lastRef],
+  );
+  assert.ok(integrated.every((item) => item.alreadyIntegrated === false));
+});
+
+test("workspace integration:commit gaps keep the cherry-pick path", async () => {
+  const workspace = await makeGitWorkspace("tent-workspace-gap-");
+  const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "reviewer");
+  const firstRef = await commitFile(contract.worktree, "first.txt", "first\n", "first delivery");
+  await commitFile(contract.worktree, "middle.txt", "middle\n", "middle delivery");
+  const lastRef = await commitFile(contract.worktree, "last.txt", "last\n", "last delivery");
+
+  const integrated = await integrateWorkspaceCommits(contract, [firstRef, lastRef]);
+  const mainRef = (await git(workspace, "rev-parse", "main")).trim();
+
+  assert.notEqual(mainRef, lastRef, "gap prevents a fast-forward to the role commit");
+  assert.notEqual(integrated[0].integratedRef, firstRef);
+  assert.notEqual(integrated[1].integratedRef, lastRef);
+  assert.equal(await pathExists(path.join(workspace, "middle.txt")), false);
+  assert.equal(normalizeLf(await fs.readFile(path.join(workspace, "first.txt"), "utf8")), "first\n");
+  assert.equal(normalizeLf(await fs.readFile(path.join(workspace, "last.txt"), "utf8")), "last\n");
+});
+
 test("listRoleCommitsFor:只读列举 role 分支 commits,不创建 worktree", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-commit-list-"));
   const workspace = path.join(parent, "repo");
@@ -139,3 +206,40 @@ test("completeClaim:workspace 合入失败时不释放 owner 或写 done", async
   assert.equal(box.fm.owner, "executor");
   assert.equal(box.fm.status, "doing");
 });
+
+async function makeGitWorkspace(prefix: string): Promise<string> {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const workspace = path.join(parent, "repo");
+  await fs.mkdir(workspace);
+  await git(workspace, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(workspace);
+  await fs.writeFile(path.join(workspace, "README.md"), "# repo\n");
+  await git(workspace, "add", "README.md");
+  await git(workspace, "commit", "-q", "-m", "init");
+  return workspace;
+}
+
+async function commitFile(
+  workspace: string,
+  filename: string,
+  contents: string,
+  message: string,
+): Promise<string> {
+  await fs.writeFile(path.join(workspace, filename), contents);
+  await git(workspace, "add", filename);
+  await git(workspace, "commit", "-q", "-m", message);
+  return (await git(workspace, "rev-parse", "HEAD")).trim();
+}
+
+async function pathExists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function normalizeLf(value: string): string {
+  return value.replace(/\r\n/g, "\n");
+}

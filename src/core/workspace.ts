@@ -111,27 +111,45 @@ export async function integrateWorkspaceCommits(
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
   if (dirty) throw new Error("workspace 有未提交改动,不能验收合入");
 
-  const results: IntegrationResult[] = [];
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const resolved = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
-    const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
-    if (ancestor) {
-      results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
-      continue;
-    }
-    const prior = await findCherryPick(root, sourceRef);
-    if (prior) {
-      results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
-      continue;
-    }
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  if (fastForwardRef) {
     try {
-      await git(root, ["cherry-pick", "-x", sourceRef]);
+      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false,
+      }));
     } catch (error) {
-      await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-      throw new Error(`workspace 合入冲突: ${error instanceof Error ? error.message : String(error)}`);
+      await rollbackIntegration(root, originalRef, error);
     }
-    const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
-    results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+  }
+
+  const results: IntegrationResult[] = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(root, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(root, originalRef, error);
   }
   return results;
 }
@@ -223,6 +241,39 @@ async function findAncestorIntegration(
     return (await git(root, ["rev-parse", targetRef])).trim();
   }
   return undefined;
+}
+
+async function completeFastForwardRef(
+  root: string,
+  targetRef: string,
+  commits: string[]
+): Promise<string | undefined> {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return undefined;
+  if (!(await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef]))) return undefined;
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`]))
+    .split(/\r?\n/)
+    .map((ref) => ref.trim())
+    .filter(Boolean);
+  if (range.length !== commits.length) return undefined;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : undefined;
+}
+
+async function rollbackIntegration(root: string, originalRef: string, cause: unknown): Promise<never> {
+  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  try {
+    await git(root, ["reset", "--hard", originalRef]);
+  } catch (rollbackError) {
+    throw new Error(
+      `workspace 合入失败且回滚失败: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+    );
+  }
+  throw new Error(`workspace 合入冲突,已回滚: ${errorMessage(cause)}`);
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function contractRange(): string {

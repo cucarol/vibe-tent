@@ -2424,27 +2424,44 @@ async function integrateWorkspaceCommits(contract, refs) {
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
   if (dirty) throw new Error("workspace \u6709\u672A\u63D0\u4EA4\u6539\u52A8,\u4E0D\u80FD\u9A8C\u6536\u5408\u5165");
-  const results = [];
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const resolved = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
-    const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
-    if (ancestor) {
-      results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
-      continue;
-    }
-    const prior = await findCherryPick(root, sourceRef);
-    if (prior) {
-      results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
-      continue;
-    }
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  if (fastForwardRef) {
     try {
-      await git(root, ["cherry-pick", "-x", sourceRef]);
+      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false
+      }));
     } catch (error) {
-      await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-      throw new Error(`workspace \u5408\u5165\u51B2\u7A81: ${error instanceof Error ? error.message : String(error)}`);
+      await rollbackIntegration(root, originalRef, error);
     }
-    const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
-    results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+  }
+  const results = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(root, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(root, originalRef, error);
   }
   return results;
 }
@@ -2518,6 +2535,29 @@ async function findAncestorIntegration(root, sourceRef, targetBranch) {
     return (await git(root, ["rev-parse", targetRef])).trim();
   }
   return void 0;
+}
+async function completeFastForwardRef(root, targetRef, commits) {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return void 0;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  if (range.length !== commits.length) return void 0;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
+}
+async function rollbackIntegration(root, originalRef, cause) {
+  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  try {
+    await git(root, ["reset", "--hard", originalRef]);
+  } catch (rollbackError) {
+    throw new Error(
+      `workspace \u5408\u5165\u5931\u8D25\u4E14\u56DE\u6EDA\u5931\u8D25: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+    );
+  }
+  throw new Error(`workspace \u5408\u5165\u51B2\u7A81,\u5DF2\u56DE\u6EDA: ${errorMessage(cause)}`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
 }
 function contractRange() {
   return "-n1000";

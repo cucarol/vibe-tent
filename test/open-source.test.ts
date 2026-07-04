@@ -103,6 +103,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine delivery state/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
+  assert.match(spec, /A cherry-pick batch\s+is atomic/);
+  assert.match(spec, /fast-forward when the selected commits are exactly/);
   assert.doesNotMatch(spec, /handoff/i);
   assert.match(roleSkill, /内容住 box，状态住 envelope/);
   assert.match(roleSkill, /编排者手册/);
