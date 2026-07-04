@@ -79,7 +79,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 4. 接任务后的第一步运行 `tent task-ack <taskPath>`。然后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件，只有 `task-ack` 会把任务改成 `taken`。
 5. 粗 box 可以直接派活。task-ack 后先对齐任务：读 box 正文和必要子框；不清楚就问 user 或写 proposal；对齐结论写回 box 正文。box 的细节是在推进中长出来的，不是派活门槛。
 6. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending task 时再按口头范围工作。读 `RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
-7. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。
+7. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。这三个字段由 dispatch CLI 自动生成：从 Tent 唯一的 workspace 指针框解析 workspace，按 `tent-role/<role>` 与 `<workspace>-worktrees/<role>` 命名并实际创建 worktree——派活者不手填，接活者不自建。若 envelope 没有这些字段，说明该 Tent 没有 workspace 指针框：这是合法的纯 Tent 任务（只做 Tent 侧工作，不碰代码仓），不是派活出错。
 8. 读取 `RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
 9. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
 10. 协作命令：
@@ -96,7 +96,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 
 标准链路是：dispatch -> spawn/唤醒 -> receive report -> review -> complete。
 
-- dispatch：用 `tent dispatch` 写 owner/status、manifest 和 task envelope。
+- dispatch：用 `tent dispatch` 写 owner/status、manifest 和 task envelope。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
 - spawn/唤醒：把 relay prompt 交给目标 role 的新会话或旧会话。
 - receive report：等待目标 role 在聊天里报告，并在需要 UI 验收时写 `tent report`。
 - review：读 report、commit、diff 和必要上下文；不满意就 reject 或继续追问。
