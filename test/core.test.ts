@@ -199,6 +199,28 @@ test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", 
   assert.match(second.manifestYaml, /claims: \[bx-p1, bx-o1\]/);
 });
 
+test("dispatch:roles registry failure rolls back owner and temp residue", async () => {
+  const dir = await makeTent();
+  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
+  await fs.writeFile(path.join(dir, ".tent", "roles.json"), "{not-json", "utf8");
+  const env = {
+    fs: new NodeFs(dir),
+    clock: { now: () => "2026-06-29T01:02:03.000Z" },
+    tentName: "wqb",
+  };
+  const { dispatch } = await import("../src/core/ops.js");
+
+  await assert.rejects(
+    () => dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。"),
+    /roles\.json 损坏/,
+  );
+
+  const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
+  assert.equal(box.owner, undefined);
+  assert.equal(box.status, undefined);
+  assert.equal(await exists(path.join(dir, "temp", "analyst")), false);
+});
+
 test("task envelopes:只读加载有效任务并重建 relay prompt", async () => {
   const dir = await makeTent();
   const env = {

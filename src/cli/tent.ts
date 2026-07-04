@@ -106,11 +106,19 @@ async function main() {
       if (!claimId || !role) {
         return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
+      if (isUnsafeRoleSegment(role)) return fail(`Invalid role for dispatch: ${role}`);
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
       if (localPrompt === "-") localPrompt = await readStdin();
+      const requestedDispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE;
+      if (flags["as-sub"]) {
+        if (!requestedDispatcher) return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        if (isUnsafeRoleSegment(requestedDispatcher)) {
+          return fail(`Invalid dispatching role for --as-sub: ${requestedDispatcher}`);
+        }
+      }
       const tent = await loadTent(env.fs);
       const workspacePath = resolveTentWorkspace(tent);
-      const dispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
+      const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
       if (!workspacePath) {
         console.log("Note: this tent has no workspace pointer box — the envelope carries no workspace contract (Tent-only task).");

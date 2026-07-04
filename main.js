@@ -1678,6 +1678,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
+  const previousOwner = claim.root ? void 0 : claim.box.fm.owner;
+  const previousStatus = claim.root ? void 0 : claim.box.fm.status;
+  const previousAcceptedBy = claim.root ? void 0 : claim.box.fm.acceptedBy;
+  const roleTempPath = join2("temp", roleName);
+  const roleTempExisted = await env.fs.exists(roleTempPath);
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -1694,36 +1699,49 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     claim.box.fm.owner = roleName;
     claim.box.fm.status = "doing";
   }
-  const ownedClaims = claim.root ? [] : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
-  const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
-  const manifest = buildManifest(tent, input);
-  const yaml = manifestToYaml(manifest);
-  const manifestPath = join2("temp", roleName, "manifest.yml");
-  await ensureDir3(env.fs, dirName(manifestPath));
-  await env.fs.writeFile(manifestPath, yaml);
-  const registry = await loadRolesRegistry(env.fs);
-  const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
-  const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
-  const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
-  const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-    role: roleName,
-    claims: taskClaims,
-    manifestPath,
-    userPrompt,
-    workspace: options.workspace,
-    dispatchedBy: options.dispatchedBy
-  });
-  const relayPrompt = relayPromptForTask(
-    {
-      path: taskPath,
+  try {
+    const ownedClaims = claim.root ? [] : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
+    const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
+    const manifest = buildManifest(tent, input);
+    const yaml = manifestToYaml(manifest);
+    const manifestPath = join2("temp", roleName, "manifest.yml");
+    await ensureDir3(env.fs, dirName(manifestPath));
+    await env.fs.writeFile(manifestPath, yaml);
+    const registry = await loadRolesRegistry(env.fs);
+    const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
+    const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: roleName,
-      claims: taskClaims.map((taskClaim) => taskClaim.id),
-      manifest: manifestPath,
-      status: "pending"
-    },
-    env.tentRoot || env.tentName
-  );
-  return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+      claims: taskClaims,
+      manifestPath,
+      userPrompt,
+      workspace: options.workspace,
+      dispatchedBy: options.dispatchedBy
+    });
+    const relayPrompt = relayPromptForTask(
+      {
+        path: taskPath,
+        role: roleName,
+        claims: taskClaims.map((taskClaim) => taskClaim.id),
+        manifest: manifestPath,
+        status: "pending"
+      },
+      env.tentRoot || env.tentName
+    );
+    return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+  } catch (error) {
+    if (!claim.root) {
+      await restoreOwnerState(env.fs, claim.box, previousOwner, previousStatus, previousAcceptedBy);
+      claim.box.fm.owner = previousOwner;
+      claim.box.fm.status = previousStatus;
+      claim.box.fm.acceptedBy = previousAcceptedBy;
+    }
+    if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
+      await env.fs.remove(roleTempPath);
+    }
+    throw error;
+  }
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
@@ -1975,6 +1993,13 @@ async function setOwner(fs, box, owner, status, acceptedBy) {
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
   await patchFrontmatter(fs, box, patch);
+}
+async function restoreOwnerState(fs, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs, box, {
+    owner: owner ?? void 0,
+    status: status ?? void 0,
+    acceptedBy: acceptedBy ?? void 0
+  });
 }
 async function patchFrontmatter(fs, box, patch) {
   const boxFile = boxNotePath(box.path);

@@ -202,6 +202,36 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(subData.targetBranch, "tent-role/planner");
 });
 
+test("tent dispatch --as-sub:missing dispatcher fails before workspace side effects", async () => {
+  const tent = await makeSkeletonTent();
+  const workspace = await makeWorkspace(path.dirname(tent));
+  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
+  const outputId = boxId(await runCli(tent, "new-box", "workspace", "output"));
+  await fs.writeFile(
+    path.join(tent, "workspace", "workspace.md"),
+    `---\nid: ${outputId}\ntype: output\nworkspace: ${workspace.replaceAll("\\", "/")}\n---\n`,
+    "utf8",
+  );
+  const previousTentRole = process.env.TENT_ROLE;
+  delete process.env.TENT_ROLE;
+  try {
+    await assert.rejects(
+      () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub"),
+      /--as-sub requires --by <dispatching-role> or TENT_ROLE/,
+    );
+  } finally {
+    if (previousTentRole === undefined) delete process.env.TENT_ROLE;
+    else process.env.TENT_ROLE = previousTentRole;
+  }
+
+  const branch = await run("git", ["branch", "--list", "tent-role/reviewer"], workspace);
+  assert.equal(branch.stdout.trim(), "");
+  assert.equal(
+    await exists(path.join(path.dirname(workspace), `${path.basename(workspace)}-worktrees`, "reviewer")),
+    false,
+  );
+});
+
 test("tent clean-temp:rejects traversal role names and preserves root siblings", async () => {
   const tent = await makeSkeletonTent();
   const victim = path.join(path.dirname(tent), "victim");

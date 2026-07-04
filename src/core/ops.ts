@@ -66,6 +66,11 @@ async function dispatchUnlocked(
     : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("派活必须提供 user prompt");
+  const previousOwner = claim.root ? undefined : claim.box.fm.owner;
+  const previousStatus = claim.root ? undefined : claim.box.fm.status;
+  const previousAcceptedBy = claim.root ? undefined : claim.box.fm.acceptedBy;
+  const roleTempPath = join("temp", roleName);
+  const roleTempExisted = await env.fs.exists(roleTempPath);
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -83,45 +88,58 @@ async function dispatchUnlocked(
     claim.box.fm.status = "doing";
   }
 
-  const ownedClaims = claim.root
-    ? []
-    : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
-  const input: DispatchInput = claim.root
-    ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace }
-    : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
-  const manifest = buildManifest(tent, input);
-  const yaml = manifestToYaml(manifest);
+  try {
+    const ownedClaims = claim.root
+      ? []
+      : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
+    const input: DispatchInput = claim.root
+      ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace }
+      : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
+    const manifest = buildManifest(tent, input);
+    const yaml = manifestToYaml(manifest);
 
-  // manifest 是 role 当前全部 claims 的动态合同；task 文档不可变。
-  const manifestPath = join("temp", roleName, "manifest.yml");
-  await ensureDir(env.fs, dirName(manifestPath));
-  await env.fs.writeFile(manifestPath, yaml);
-  const registry = await loadRolesRegistry(env.fs);
-  const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
-  const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
-  const taskClaims = claim.root
-    ? [{ id: "root", path: "./" }]
-    : [{ id: claim.box.id, path: claim.box.path }];
-  const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-    role: roleName,
-    claims: taskClaims,
-    manifestPath,
-    userPrompt,
-    workspace: options.workspace,
-    dispatchedBy: options.dispatchedBy,
-  });
-
-  const relayPrompt = relayPromptForTask(
-    {
-      path: taskPath,
+    // manifest 是 role 当前全部 claims 的动态合同；task 文档不可变。
+    const manifestPath = join("temp", roleName, "manifest.yml");
+    await ensureDir(env.fs, dirName(manifestPath));
+    await env.fs.writeFile(manifestPath, yaml);
+    const registry = await loadRolesRegistry(env.fs);
+    const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
+    const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    const taskClaims = claim.root
+      ? [{ id: "root", path: "./" }]
+      : [{ id: claim.box.id, path: claim.box.path }];
+    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: roleName,
-      claims: taskClaims.map((taskClaim) => taskClaim.id),
-      manifest: manifestPath,
-      status: "pending",
-    },
-    env.tentRoot || env.tentName
-  );
-  return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+      claims: taskClaims,
+      manifestPath,
+      userPrompt,
+      workspace: options.workspace,
+      dispatchedBy: options.dispatchedBy,
+    });
+
+    const relayPrompt = relayPromptForTask(
+      {
+        path: taskPath,
+        role: roleName,
+        claims: taskClaims.map((taskClaim) => taskClaim.id),
+        manifest: manifestPath,
+        status: "pending",
+      },
+      env.tentRoot || env.tentName
+    );
+    return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+  } catch (error) {
+    if (!claim.root) {
+      await restoreOwnerState(env.fs, claim.box, previousOwner, previousStatus, previousAcceptedBy);
+      claim.box.fm.owner = previousOwner;
+      claim.box.fm.status = previousStatus;
+      claim.box.fm.acceptedBy = previousAcceptedBy;
+    }
+    if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
+      await env.fs.remove(roleTempPath);
+    }
+    throw error;
+  }
 }
 
 type DispatchClaim =
@@ -491,6 +509,20 @@ async function setOwner(
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
   await patchFrontmatter(fs, box, patch);
+}
+
+async function restoreOwnerState(
+  fs: FsAdapter,
+  box: Box,
+  owner: string | undefined,
+  status: Box["fm"]["status"] | undefined,
+  acceptedBy: unknown
+): Promise<void> {
+  await patchFrontmatter(fs, box, {
+    owner: owner ?? undefined,
+    status: status ?? undefined,
+    acceptedBy: acceptedBy ?? undefined,
+  });
 }
 
 async function patchFrontmatter(fs: FsAdapter, box: Box, patch: Record<string, unknown>): Promise<void> {
