@@ -273,7 +273,7 @@ test("dispatch:必须提供 user prompt", async () => {
   );
 });
 
-test("dispatch:支持帐根 claim 但有任何 owner 时拒绝", async () => {
+test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -281,15 +281,13 @@ test("dispatch:支持帐根 claim 但有任何 owner 时拒绝", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), /帐根下已有认领/);
+  const message = /整帐不可直接派活,请派具体框\(claimId 不能是 \. \/ root \/ 帐名\)/;
+  await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
+  await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
+  await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
 
-  const g2 = path.join(dir, "goal", "挖新alpha", "写表达式", "写表达式.md");
-  const parsed = parseFrontmatter(await fs.readFile(g2, "utf8"));
-  delete parsed.data.owner;
-  await fs.writeFile(g2, serializeFrontmatter(parsed.data, parsed.body, parsed.keyOrder));
-  const result = await dispatch(env as any, ".", "architect", "接管全帐");
-  assert.match(result.manifestYaml, /claims: \[root\]/);
-  assert.match(result.manifestYaml, /path: \.\//);
+  const result = await dispatch(env as any, "bx-p1", "architect", "处理具体框");
+  assert.match(result.manifestYaml, /claims: \[bx-p1\]/);
 });
 
 test("Tent 动作不初始化 Tent Git", async () => {

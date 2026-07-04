@@ -148,7 +148,9 @@ type DispatchClaim =
 
 function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: string): DispatchClaim {
   const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) return { root: true, id: "root", name: "帐根" };
+  if (id === "." || id === "root" || id === tentName) {
+    throw new Error("整帐不可直接派活,请派具体框(claimId 不能是 . / root / 帐名)");
+  }
   const box = tent.byId.get(id);
   if (!box) throw new Error(`找不到框 ${claimId}`);
   return { root: false, id: box.id, name: box.name, box };
