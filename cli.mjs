@@ -2175,6 +2175,9 @@ async function main() {
       const workspacePath = resolveTentWorkspace(tent);
       const dispatcher = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
+      if (!workspacePath) {
+        console.log("Note: this tent has no workspace pointer box \u2014 the envelope carries no workspace contract (Tent-only task).");
+      }
       if (flags["as-sub"]) {
         if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
