@@ -2038,9 +2038,14 @@ async function assertGitWorkspace(root) {
     nodeFs.realpath(nodePath2.resolve(top)),
     nodeFs.realpath(root)
   ]);
-  if (realTop.toLowerCase() !== realRoot.toLowerCase()) {
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
     throw new Error(`workspace \u5FC5\u987B\u662F Git \u6839\u76EE\u5F55: ${root}`);
   }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
 }
 async function resolveTargetBranch(root) {
   for (const name of ["main", "master"]) {
@@ -2153,9 +2158,7 @@ function git(cwd, args) {
 }
 function runShell(cwd, command) {
   return new Promise((resolve4, reject) => {
-    const windows = process.platform === "win32";
-    const shell = windows ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
-    const args = windows ? ["/d", "/s", "/c", command] : ["-lc", command];
+    const { shell, args } = workspaceCheckShell(command);
     const child = spawn(shell, args, { cwd, windowsHide: true });
     let stdout = "";
     let stderr = "";
@@ -2175,6 +2178,13 @@ ${detail}`));
 ${error.message}`));
     });
   });
+}
+function workspaceCheckShell(command, platform = process.platform, comSpec = process.env.ComSpec) {
+  const windows = platform === "win32";
+  return {
+    shell: windows ? comSpec || "cmd.exe" : "/bin/sh",
+    args: windows ? ["/d", "/s", "/c", command] : ["-c", command]
+  };
 }
 
 // src/cli/tent.ts

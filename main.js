@@ -2544,9 +2544,14 @@ async function assertGitWorkspace(root) {
     nodeFs2.realpath(nodePath2.resolve(top)),
     nodeFs2.realpath(root)
   ]);
-  if (realTop.toLowerCase() !== realRoot.toLowerCase()) {
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
     throw new Error(`workspace \u5FC5\u987B\u662F Git \u6839\u76EE\u5F55: ${root}`);
   }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
 }
 async function resolveTargetBranch(root) {
   for (const name of ["main", "master"]) {
@@ -2778,11 +2783,8 @@ function tentTooltip(el, text, placement = "top") {
     classes: ["tent-tooltip"]
   });
 }
-function makeDragLabel(name) {
-  const el = document.body.createDiv({ cls: "tent-drag-label", text: name });
-  el.style.position = "absolute";
-  el.style.top = "-1000px";
-  el.style.left = "-1000px";
+function makeDragLabel(parent, name) {
+  const el = parent.createDiv({ cls: "tent-drag-label tent-drag-label-preview", text: name });
   window.setTimeout(() => el.remove(), 0);
   return el;
 }
@@ -3504,6 +3506,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.ignoredVaultChanges = /* @__PURE__ */ new Map();
     this.recentCreates = /* @__PURE__ */ new Set();
     this.columnResizeObserver = null;
+    this.columnResizeDrag = null;
     this.workspaceHeadCache = new TimedCache();
     this.roleCommitsCache = new TimedCache();
   }
@@ -3519,6 +3522,9 @@ var TentView = class extends import_obsidian4.ItemView {
   async onOpen() {
     this.tentName = this.plugin.settings.activeTent || await this.firstTent() || "";
     this.register(() => this.columnResizeObserver?.disconnect());
+    this.register(() => this.clearRefreshTimer());
+    this.registerDomEvent(document, "mousemove", (event) => this.onColumnResizeMove(event));
+    this.registerDomEvent(document, "mouseup", () => this.stopColumnResize());
     this.registerEvent(this.app.vault.on("modify", (f) => this.onVaultChange(f.path)));
     this.registerEvent(this.app.vault.on("create", (f) => {
       this.recentCreates.add(f.path);
@@ -3542,7 +3548,7 @@ var TentView = class extends import_obsidian4.ItemView {
     if (active instanceof HTMLElement && this.contentEl.contains(active) && (active.tagName === "TEXTAREA" || active.tagName === "INPUT")) {
       return;
     }
-    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.clearRefreshTimer();
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
       void this.refresh();
@@ -3717,19 +3723,30 @@ var TentView = class extends import_obsidian4.ItemView {
       e.preventDefault();
       const rect = cols.getBoundingClientRect();
       const style = getComputedStyle(cols);
-      const horizontalPadding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const paddingLeft = parseFloat(style.paddingLeft);
+      const horizontalPadding = paddingLeft + parseFloat(style.paddingRight);
       const available = Math.max(0, rect.width - horizontalPadding - COLUMN_DIVIDER);
-      const onMove = (ev) => {
-        const rawTreeWidth = ev.clientX - rect.left - parseFloat(style.paddingLeft);
-        this.applyColumnRatio(cols, available > 0 ? rawTreeWidth / available : this.colRatio);
+      this.columnResizeDrag = {
+        cols,
+        rectLeft: rect.left,
+        paddingLeft,
+        available
       };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
     };
+  }
+  onColumnResizeMove(ev) {
+    if (!this.columnResizeDrag) return;
+    const { cols, rectLeft, paddingLeft, available } = this.columnResizeDrag;
+    const rawTreeWidth = ev.clientX - rectLeft - paddingLeft;
+    this.applyColumnRatio(cols, available > 0 ? rawTreeWidth / available : this.colRatio);
+  }
+  stopColumnResize() {
+    this.columnResizeDrag = null;
+  }
+  clearRefreshTimer() {
+    if (this.refreshTimer === null) return;
+    window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
   }
   applyColumnRatio(cols, desiredRatio) {
     if (getComputedStyle(cols).display !== "grid") return;
@@ -3986,7 +4003,7 @@ var TentView = class extends import_obsidian4.ItemView {
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/tent", box.path);
-        e.dataTransfer.setDragImage(makeDragLabel(box.name), 8, 8);
+        e.dataTransfer.setDragImage(makeDragLabel(this.contentEl, box.name), 8, 8);
       }
     };
     row.createSpan({ cls: "tent-name", text: box.name });
@@ -5377,6 +5394,7 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     this.addSettingTab(new TentSettingTab(this.app, this));
   }
   onunload() {
+    this.app.workspace.detachLeavesOfType(TENT_VIEW_TYPE);
   }
   async activateView() {
     const { workspace } = this.app;
