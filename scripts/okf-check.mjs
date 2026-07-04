@@ -84,9 +84,6 @@ function copyMarkdownTree(source, target, root = false) {
 function resolveBundle() {
   if (process.env.TENT_OKF_BUNDLE) return path.resolve(process.env.TENT_OKF_BUNDLE);
 
-  const localTentDev = path.join(os.homedir(), "Documents", "Obsidian Vault", "_tents", "tent-dev");
-  if (fs.existsSync(localTentDev)) return localTentDev;
-
   const fixture = path.join(repoRoot, "test", "fixtures", "okf-bundle");
   if (fs.existsSync(fixture)) return fixture;
 
