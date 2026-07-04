@@ -113,6 +113,12 @@ export class TentView extends ItemView {
   private ignoredVaultChanges = new Map<string, number>();
   private recentCreates = new Set<string>();
   private columnResizeObserver: ResizeObserver | null = null;
+  private columnResizeDrag: {
+    cols: HTMLElement;
+    rectLeft: number;
+    paddingLeft: number;
+    available: number;
+  } | null = null;
   private workspaceHeadCache = new TimedCache<WorkspaceHead | null>();
   private roleCommitsCache = new TimedCache<RoleCommit[] | null>();
 
@@ -133,6 +139,9 @@ export class TentView extends ItemView {
   async onOpen() {
     this.tentName = this.plugin.settings.activeTent || (await this.firstTent()) || "";
     this.register(() => this.columnResizeObserver?.disconnect());
+    this.register(() => this.clearRefreshTimer());
+    this.registerDomEvent(document, "mousemove", (event) => this.onColumnResizeMove(event));
+    this.registerDomEvent(document, "mouseup", () => this.stopColumnResize());
     // 外部变动(agent 改身份文件 / 写 temp / commit)→ debounce 重载重绘
     this.registerEvent(this.app.vault.on("modify", (f) => this.onVaultChange(f.path)));
     this.registerEvent(this.app.vault.on("create", (f) => {
@@ -162,7 +171,7 @@ export class TentView extends ItemView {
     ) {
       return; // 别打断正在编辑;外部变动留到下次交互吸收
     }
-    if (this.refreshTimer !== null) window.clearTimeout(this.refreshTimer);
+    this.clearRefreshTimer();
     this.refreshTimer = window.setTimeout(() => {
       this.refreshTimer = null;
       void this.refresh();
@@ -364,19 +373,33 @@ export class TentView extends ItemView {
       e.preventDefault();
       const rect = cols.getBoundingClientRect();
       const style = getComputedStyle(cols);
-      const horizontalPadding = parseFloat(style.paddingLeft) + parseFloat(style.paddingRight);
+      const paddingLeft = parseFloat(style.paddingLeft);
+      const horizontalPadding = paddingLeft + parseFloat(style.paddingRight);
       const available = Math.max(0, rect.width - horizontalPadding - COLUMN_DIVIDER);
-      const onMove = (ev: MouseEvent) => {
-        const rawTreeWidth = ev.clientX - rect.left - parseFloat(style.paddingLeft);
-        this.applyColumnRatio(cols, available > 0 ? rawTreeWidth / available : this.colRatio);
+      this.columnResizeDrag = {
+        cols,
+        rectLeft: rect.left,
+        paddingLeft,
+        available,
       };
-      const onUp = () => {
-        document.removeEventListener("mousemove", onMove);
-        document.removeEventListener("mouseup", onUp);
-      };
-      document.addEventListener("mousemove", onMove);
-      document.addEventListener("mouseup", onUp);
     };
+  }
+
+  private onColumnResizeMove(ev: MouseEvent) {
+    if (!this.columnResizeDrag) return;
+    const { cols, rectLeft, paddingLeft, available } = this.columnResizeDrag;
+    const rawTreeWidth = ev.clientX - rectLeft - paddingLeft;
+    this.applyColumnRatio(cols, available > 0 ? rawTreeWidth / available : this.colRatio);
+  }
+
+  private stopColumnResize() {
+    this.columnResizeDrag = null;
+  }
+
+  private clearRefreshTimer() {
+    if (this.refreshTimer === null) return;
+    window.clearTimeout(this.refreshTimer);
+    this.refreshTimer = null;
   }
 
   private applyColumnRatio(cols: HTMLElement, desiredRatio: number) {
@@ -680,7 +703,7 @@ export class TentView extends ItemView {
       if (e.dataTransfer) {
         e.dataTransfer.effectAllowed = "move";
         e.dataTransfer.setData("text/tent", box.path);
-        e.dataTransfer.setDragImage(makeDragLabel(box.name), 8, 8);
+        e.dataTransfer.setDragImage(makeDragLabel(this.contentEl, box.name), 8, 8);
       }
     };
 

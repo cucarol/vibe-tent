@@ -49,7 +49,7 @@ export default class TentPlugin extends Plugin {
   }
 
   onunload() {
-    // Obsidian 自动 detach view
+    this.app.workspace.detachLeavesOfType(TENT_VIEW_TYPE);
   }
 
   async activateView() {
