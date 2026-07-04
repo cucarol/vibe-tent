@@ -334,6 +334,7 @@ async function main() {
       break;
     }
     case "clean-temp": {
+      if (args[0] && isUnsafeRoleSegment(args[0])) return fail(`Invalid role for clean-temp: ${args[0]}`);
       await cleanTemp(env, args[0]);
       console.log(`✓ Cleared temp/${args[0] || "(all)"}`);
       break;
@@ -416,6 +417,10 @@ function outputPointer(fm: import("../core/types.js").BoxFrontmatter, body: stri
 function fail(msg: string) {
   console.error(msg);
   process.exitCode = 1;
+}
+
+function isUnsafeRoleSegment(value: string): boolean {
+  return value.includes("..") || value.includes("/") || value.includes("\\");
 }
 
 /** 解析 args 里的 --flag <value>,其余作为位置参数。 */

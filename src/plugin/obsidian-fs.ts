@@ -8,13 +8,25 @@ import * as nodeFs from "node:fs/promises";
 import { FsAdapter, Clock } from "../core/adapter.js";
 
 export class ObsidianFs implements FsAdapter {
-  constructor(private app: App, private tentRoot: string) {}
+  private tentRoot: string;
+  private resolvedTentRoot: string;
+
+  constructor(private app: App, tentRoot: string) {
+    this.tentRoot = normalizeVaultPath(tentRoot);
+    this.resolvedTentRoot = nodePath.posix.resolve("/", this.tentRoot);
+  }
 
   private get a() {
     return this.app.vault.adapter;
   }
   private vp(p: string): string {
-    return p ? `${this.tentRoot}/${p}` : this.tentRoot;
+    const resolved = nodePath.posix.resolve(this.resolvedTentRoot, normalizeVaultPath(p || "."));
+    const inside =
+      this.resolvedTentRoot === "/" ||
+      resolved === this.resolvedTentRoot ||
+      resolved.startsWith(`${this.resolvedTentRoot}/`);
+    if (!inside) throw new Error(`Path escapes Tent root: ${p}`);
+    return resolved.slice(1);
   }
 
   async listDir(dir: string): Promise<{ name: string; isDir: boolean }[]> {
@@ -110,4 +122,8 @@ function base(p: string): string {
 function parentOf(p: string): string {
   const i = p.lastIndexOf("/");
   return i === -1 ? "" : p.slice(0, i);
+}
+
+function normalizeVaultPath(p: string): string {
+  return p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }

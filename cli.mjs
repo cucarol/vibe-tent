@@ -11,10 +11,16 @@ import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 var NodeFs = class {
   constructor(root) {
-    this.root = root;
+    this.root = nodePath.resolve(root);
   }
   abs(p) {
-    return nodePath.join(this.root, p);
+    const resolved = nodePath.resolve(this.root, p);
+    const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
+    const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (candidate !== root && !candidate.startsWith(root + nodePath.sep)) {
+      throw new Error(`Path escapes Tent root: ${p}`);
+    }
+    return resolved;
   }
   async listDir(dir) {
     const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
@@ -452,7 +458,7 @@ function isRecord(value) {
 // src/core/tree.ts
 var ZONE_NAMES = ["goal", "prompt", "output"];
 function boxNotePath(boxPath) {
-  return join2(boxPath, baseName(boxPath) + ".md");
+  return join(boxPath, baseName(boxPath) + ".md");
 }
 async function loadTent(fs3) {
   const byId = /* @__PURE__ */ new Map();
@@ -535,7 +541,7 @@ async function loadBox(fs3, path2, parent, registry) {
   const sub = await fs3.listDir(path2);
   for (const entry of sub) {
     if (!entry.isDir) continue;
-    await loadBoxInto(fs3, join2(path2, entry.name), box, registry, box.children);
+    await loadBoxInto(fs3, join(path2, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -578,7 +584,7 @@ async function loadBoxInto(fs3, path2, parent, registry, target) {
   const sub = await fs3.listDir(path2);
   for (const entry of sub) {
     if (!entry.isDir) continue;
-    await loadBoxInto(fs3, join2(path2, entry.name), parent, registry, target);
+    await loadBoxInto(fs3, join(path2, entry.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -666,7 +672,7 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
   byPath.set(box.path, box);
   for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
 }
-function join2(...parts) {
+function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
 function baseName(path2) {
@@ -708,7 +714,7 @@ function buildManifest(tent, input) {
   for (const box of claimScope) {
     writable.push({ id: box.id, path: `${box.path}/`, note: "\u7ED3\u6784\u6743:\u53EF\u5728\u6B64\u6846\u4E0B\u521B\u5EFA/\u79FB\u52A8/\u5220\u9664\u5B50\u6846" });
   }
-  writable.push({ path: join2("temp", role) + "/" });
+  writable.push({ path: join("temp", role) + "/" });
   return {
     tent: input.tentName,
     role,
@@ -1036,7 +1042,7 @@ function isRecord3(value) {
 
 // src/core/task.ts
 function relayPromptForTask(task, tentRoot) {
-  const initPath = join2("temp", task.role, "init.md");
+  const initPath = join("temp", task.role, "init.md");
   return `Tent task dispatched to role ${task.role}.
 Tent root: ${tentRoot}
 1. Run \`tent task-ack ${task.path}\` to take this task.
@@ -1044,7 +1050,7 @@ Tent root: ${tentRoot}
 3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs3, role, tentName) {
-  const path2 = join2("temp", role.name, "init.md");
+  const path2 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1065,7 +1071,7 @@ Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\
 async function writeTaskEnvelope(fs3, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
-  const dir = join2("temp", input.role, "tasks");
+  const dir = join("temp", input.role, "tasks");
   await ensureDir(fs3, dir);
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path2 = await uniqueMarkdownPath(fs3, dir, stem);
@@ -1113,7 +1119,7 @@ function taskStem(now, claimId) {
 async function uniqueMarkdownPath(fs3, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path2 = join2(dir, `${stem}${suffix}.md`);
+    const path2 = join(dir, `${stem}${suffix}.md`);
     if (!await fs3.exists(path2)) return path2;
   }
 }
@@ -1147,7 +1153,7 @@ async function submitReportUnlocked(fs3, clock, boxId, body, commits) {
     timestamp: clock.now(),
     body: text
   };
-  await ensureDir2(fs3, join2("temp", role, "reports"));
+  await ensureDir2(fs3, join("temp", role, "reports"));
   await writeReport(fs3, report);
   return report;
 }
@@ -1156,11 +1162,11 @@ async function loadReports(fs3) {
   if (!await fs3.exists("temp")) return reports;
   for (const roleDir of await fs3.listDir("temp")) {
     if (!roleDir.isDir) continue;
-    const dir = join2("temp", roleDir.name, "reports");
+    const dir = join("temp", roleDir.name, "reports");
     if (!await fs3.exists(dir)) continue;
     for (const entry of await fs3.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path2 = join2(dir, entry.name);
+      const path2 = join(dir, entry.name);
       try {
         reports.push(await loadReport(fs3, path2));
       } catch {
@@ -1193,7 +1199,7 @@ async function removeReportsForBox(fs3, boxId) {
   }
 }
 function reportPath(role, boxId) {
-  return join2("temp", role, "reports", `${boxId}.md`);
+  return join("temp", role, "reports", `${boxId}.md`);
 }
 function normalizeReportPath(input) {
   const path2 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -1242,7 +1248,7 @@ async function propose(env, targetId, role, body) {
     if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
     const content = body.trim();
     if (!content) throw new Error("proposal \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
-    const dir = join2("temp", roleName, "proposals");
+    const dir = join("temp", roleName, "proposals");
     await ensureDir3(env.fs, dir);
     const proposalPath = await uniqueProposalPath(
       env.fs,
@@ -1339,7 +1345,7 @@ async function uniqueProposalPath(fs3, dir, targetId, now) {
   let index = 1;
   while (true) {
     const suffix = index === 1 ? "" : `-${index}`;
-    const path2 = join2(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
+    const path2 = join(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
     if (!await fs3.exists(path2)) return path2;
     index += 1;
   }
@@ -1368,7 +1374,7 @@ async function forkNodeUnlocked(env, boxId) {
   const forkRootId = idMap.get(source.id);
   for (const box of sourceBoxes) {
     const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join2(forkPath, rel) : forkPath;
+    const nextPath = rel ? join(forkPath, rel) : forkPath;
     const notePath = boxNotePath(nextPath);
     await ensureIdentityFileName(env.fs, nextPath, box.path);
     const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
@@ -1399,7 +1405,7 @@ async function uniqueSiblingPath(fs3, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join2(parentPath, name);
+    const candidate = join(parentPath, name);
     if (!await fs3.exists(candidate)) return candidate;
     n += 1;
   }
@@ -1407,8 +1413,8 @@ async function uniqueSiblingPath(fs3, parentPath, base) {
 async function copyTree(fs3, from, to) {
   await fs3.mkdir(to);
   for (const entry of await fs3.listDir(from)) {
-    const src = join2(from, entry.name);
-    const dst = join2(to, entry.name);
+    const src = join(from, entry.name);
+    const dst = join(to, entry.name);
     if (entry.isDir) await copyTree(fs3, src, dst);
     else await fs3.writeFile(dst, await fs3.readFile(src));
   }
@@ -1426,7 +1432,7 @@ async function ensureIdentityFileName(fs3, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
   if (await fs3.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join2(newBoxPath, oldName);
+  const copied = join(newBoxPath, oldName);
   if (await fs3.exists(copied)) await fs3.move(copied, expected);
 }
 
@@ -1461,7 +1467,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
   const manifest = buildManifest(tent, input);
   const yaml = manifestToYaml(manifest);
-  const manifestPath = join2("temp", roleName, "manifest.yml");
+  const manifestPath = join("temp", roleName, "manifest.yml");
   await ensureDir4(env.fs, dirName(manifestPath));
   await env.fs.writeFile(manifestPath, yaml);
   const registry = await loadRolesRegistry(env.fs);
@@ -1535,7 +1541,7 @@ async function grantReadable(env, boxId) {
 }
 async function cleanTemp(env, role) {
   await withMutation(env.fs, async () => {
-    const target = role ? join2("temp", role) : "temp";
+    const target = role ? join("temp", role) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
@@ -1577,7 +1583,7 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
-  const path2 = join2(input.parentPath, input.name);
+  const path2 = join(input.parentPath, input.name);
   assertNotTempPath(path2);
   await ensureDir4(env.fs, path2);
   const fm = { id, type: input.type };
@@ -1841,7 +1847,7 @@ async function writeIndexes(fs3, boxes) {
   generated.add("index.md");
   for (const [dir, siblings] of byDir.entries()) {
     if (!dir) continue;
-    const indexPath = join2(dir, "index.md");
+    const indexPath = join(dir, "index.md");
     await fs3.writeFile(
       indexPath,
       serializeFrontmatter(
@@ -2105,21 +2111,21 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve3(out);
+      if (code === 0) resolve4(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
   });
 }
 function runShell(cwd, command) {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     const windows = process.platform === "win32";
     const shell = windows ? process.env.ComSpec || "cmd.exe" : "/bin/sh";
     const args = windows ? ["/d", "/s", "/c", command] : ["-lc", command];
@@ -2130,7 +2136,7 @@ function runShell(cwd, command) {
     child.stderr.on("data", (data) => stderr += data);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve3({ command, stdout, stderr });
+        resolve4({ command, stdout, stderr });
         return;
       }
       const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
@@ -2410,6 +2416,7 @@ After updating the target box note, run: tent apply-done ${args[0]}`
       break;
     }
     case "clean-temp": {
+      if (args[0] && isUnsafeRoleSegment(args[0])) return fail(`Invalid role for clean-temp: ${args[0]}`);
       await cleanTemp(env, args[0]);
       console.log(`\u2713 Cleared temp/${args[0] || "(all)"}`);
       break;
@@ -2465,11 +2472,11 @@ Commands: new role-init roles dispatch task-ack report complete stamp propose pr
   }
 }
 function readStdin() {
-  return new Promise((resolve3, reject) => {
+  return new Promise((resolve4, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve3(data));
+    process.stdin.on("end", () => resolve4(data));
     process.stdin.on("error", reject);
   });
 }
@@ -2490,6 +2497,9 @@ function outputPointer(fm, body) {
 function fail(msg) {
   console.error(msg);
   process.exitCode = 1;
+}
+function isUnsafeRoleSegment(value) {
+  return value.includes("..") || value.includes("/") || value.includes("\\");
 }
 function parseFlags(args) {
   const positionals = [];

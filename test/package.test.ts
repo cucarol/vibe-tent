@@ -202,6 +202,27 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(subData.targetBranch, "tent-role/planner");
 });
 
+test("tent clean-temp:rejects traversal role names and preserves root siblings", async () => {
+  const tent = await makeSkeletonTent();
+  const victim = path.join(path.dirname(tent), "victim");
+  await fs.mkdir(victim, { recursive: true });
+  await fs.writeFile(path.join(victim, "keep.txt"), "keep\n", "utf8");
+
+  await fs.mkdir(path.join(tent, "temp", "reviewer", "tasks"), { recursive: true });
+  await fs.writeFile(path.join(tent, "temp", "reviewer", "tasks", "task.md"), "task\n", "utf8");
+  await runCli(tent, "clean-temp", "reviewer");
+  assert.equal(await exists(path.join(tent, "temp", "reviewer")), false);
+
+  for (const badRole of ["../../victim", "..\\..\\victim"]) {
+    await fs.mkdir(path.join(tent, "temp", "reviewer"), { recursive: true });
+    await assert.rejects(
+      () => runCli(tent, "clean-temp", badRole),
+      /Invalid role for clean-temp/,
+    );
+    assert.equal(await exists(path.join(victim, "keep.txt")), true);
+  }
+});
+
 test("tent complete:defaults to ready report commits and consumes the report", async () => {
   const fixture = await makeCompletionFixture();
   const ref = await commitRoleFile(fixture.roleWorktree, "delivered.txt", "from report\n", "report delivery");

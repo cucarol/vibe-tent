@@ -13,6 +13,20 @@ import { submitReport } from "../src/core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
 import { makeTent } from "./helpers.js";
 
+test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-nodefs-"));
+  const root = path.join(parent, "tent");
+  const victim = path.join(parent, "victim");
+  await fs.mkdir(root, { recursive: true });
+  await fs.mkdir(victim, { recursive: true });
+  await fs.writeFile(path.join(victim, "keep.txt"), "keep\n", "utf8");
+  const fsa = new NodeFs(root);
+
+  await assert.rejects(() => fsa.remove("../victim"), /Path escapes Tent root/);
+
+  assert.equal(await exists(path.join(victim, "keep.txt")), true);
+});
+
 test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 链接", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
@@ -45,6 +59,15 @@ test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 
   assert.match(childIndex, /\[space child\]\(<space child\.md>\)/);
   assert.match(note, /!\[\[Pasted image\.png\]\]/);
 });
+
+async function exists(target: string): Promise<boolean> {
+  try {
+    await fs.access(target);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 test("认领不重叠:祖先/子孙被占则挡", async () => {
   const dir = await makeTent();

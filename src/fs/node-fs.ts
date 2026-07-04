@@ -6,10 +6,20 @@ import * as nodePath from "node:path";
 import { FsAdapter, Clock } from "../core/adapter.js";
 
 export class NodeFs implements FsAdapter {
-  constructor(private root: string) {}
+  private root: string;
+
+  constructor(root: string) {
+    this.root = nodePath.resolve(root);
+  }
 
   private abs(p: string): string {
-    return nodePath.join(this.root, p);
+    const resolved = nodePath.resolve(this.root, p);
+    const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
+    const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (candidate !== root && !candidate.startsWith(root + nodePath.sep)) {
+      throw new Error(`Path escapes Tent root: ${p}`);
+    }
+    return resolved;
   }
 
   async listDir(dir: string): Promise<{ name: string; isDir: boolean }[]> {

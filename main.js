@@ -2077,13 +2077,17 @@ var nodeFs = __toESM(require("node:fs/promises"), 1);
 var ObsidianFs = class {
   constructor(app, tentRoot) {
     this.app = app;
-    this.tentRoot = tentRoot;
+    this.tentRoot = normalizeVaultPath(tentRoot);
+    this.resolvedTentRoot = nodePath.posix.resolve("/", this.tentRoot);
   }
   get a() {
     return this.app.vault.adapter;
   }
   vp(p) {
-    return p ? `${this.tentRoot}/${p}` : this.tentRoot;
+    const resolved = nodePath.posix.resolve(this.resolvedTentRoot, normalizeVaultPath(p || "."));
+    const inside = this.resolvedTentRoot === "/" || resolved === this.resolvedTentRoot || resolved.startsWith(`${this.resolvedTentRoot}/`);
+    if (!inside) throw new Error(`Path escapes Tent root: ${p}`);
+    return resolved.slice(1);
   }
   async listDir(dir) {
     const listing = await this.a.list(this.vp(dir));
@@ -2168,6 +2172,9 @@ function base(p) {
 function parentOf(p) {
   const i = p.lastIndexOf("/");
   return i === -1 ? "" : p.slice(0, i);
+}
+function normalizeVaultPath(p) {
+  return p.replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
 }
 
 // src/plugin/colors.ts
