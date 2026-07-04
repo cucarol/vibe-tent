@@ -66,6 +66,10 @@ function taskPath(result: RunResult): string {
   return task;
 }
 
+async function readOrder(tent: string): Promise<Record<string, string[]>> {
+  return JSON.parse(await fs.readFile(path.join(tent, ".tent", "order.json"), "utf8"));
+}
+
 test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-temp", async () => {
   const tent = await makeSkeletonTent();
   const workspace = await makeWorkspace(path.dirname(tent));
@@ -86,11 +90,16 @@ test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-tem
   assert.doesNotMatch(tree.stdout, /legacy-temp/);
 
   const topId = boxId(await runCli(tent, "new-box", "新线索", "goal"));
+  let order = await readOrder(tent);
+  assert.ok(order.__root__.includes(topId), "new top-level box should be registered in root order");
+  assert.equal(new Set(order.__root__).size, order.__root__.length, "root order should not contain duplicate ids");
   let newBoxRaw = await fs.readFile(path.join(tent, "新线索", "新线索.md"), "utf8");
   assert.equal(parseFrontmatter(newBoxRaw).data.id, topId);
   assert.equal(parseFrontmatter(newBoxRaw).data.type, "goal");
 
   const childId = boxId(await runCli(tent, "new-box", "子任务", "prompt", topId));
+  order = await readOrder(tent);
+  assert.deepEqual(order[topId], [childId], "new child box should be registered under its parent order");
   newBoxRaw = await fs.readFile(path.join(tent, "新线索", "子任务", "子任务.md"), "utf8");
   assert.equal(parseFrontmatter(newBoxRaw).data.id, childId);
   assert.equal(parseFrontmatter(newBoxRaw).data.type, "prompt");

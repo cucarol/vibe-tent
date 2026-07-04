@@ -270,6 +270,17 @@ async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<strin
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `\n# ${input.name}\n`, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path), content);
+  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : undefined;
+  const parentKey = parent ? parent.id : ROOT_KEY;
+  try {
+    const order = await loadOrder(env.fs);
+    const siblings = order[parentKey] ?? [];
+    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await env.fs.remove(path);
+    throw error;
+  }
   return id;
 }
 

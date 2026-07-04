@@ -1572,8 +1572,8 @@ async function createBoxUnlocked(env, input) {
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`\u672A\u77E5 type: ${input.type}`);
   if (input.parentPath) {
-    const parent = tent.byPath.get(input.parentPath);
-    if (!parent || !isUsableBox(parent)) throw new Error("\u76EE\u6807\u7236\u6846\u5931\u6548\u6216\u5DF2\u5F52\u6863");
+    const parent2 = tent.byPath.get(input.parentPath);
+    if (!parent2 || !isUsableBox(parent2)) throw new Error("\u76EE\u6807\u7236\u6846\u5931\u6548\u6216\u5DF2\u5F52\u6863");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
@@ -1585,6 +1585,17 @@ async function createBoxUnlocked(env, input) {
 # ${input.name}
 `, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path2), content);
+  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
+  const parentKey = parent ? parent.id : ROOT_KEY;
+  try {
+    const order = await loadOrder(env.fs);
+    const siblings = order[parentKey] ?? [];
+    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await env.fs.remove(path2);
+    throw error;
+  }
   return id;
 }
 async function setOwner(fs3, box, owner, status, acceptedBy) {
