@@ -29,27 +29,33 @@ resolution, and adds a regression test.
 
 ### Source provenance
 
-The conformance subtree entered Tent in release commit `e8fe92d`; that import
-did not record an upstream repository and commit. The presumed project,
-`GoogleCloudPlatform/knowledge-catalog`, currently has no
-`CONFORMANCE.md`, `okf-validate.mjs`, or `okf-graph.mjs` on `main`, and those
-paths do not appear in its reachable Git history. Its current implementation is
-Python-based. This provenance gap must be resolved before treating a future
-vendor refresh as a mechanical upstream sync.
+Upstream: **WitsCode's OKF Conformance suite** — <https://witscode.com/okf-conformance>.
+Licensed MIT, Copyright (c) 2026 WitsCode (see `LICENSE` in this directory).
+The `CONFORMANCE.md` / `okf-validate.mjs` / `okf-graph.mjs` bundle here is a
+vendored snapshot of that suite.
 
-The same parsing limitation does exist in the current upstream Python viewer at
-`okf/src/reference_agent/viewer/generator.py`. A proposed issue and pull-request
-description live in
-`docs/upstream/okf-commonmark-link-destination.md`. Upstream pull request
+The snapshot entered Tent in release commit `e8fe92d`, which imported the whole
+repository in a single commit and therefore did **not** record an exact upstream
+commit or tag. The source project is nonetheless identified: the file voice
+(the "two oracles" model, the `okf-validate` / `okf graph` tools, and the
+"conformance buys interoperability, not correctness" framing) matches WitsCode's
+published suite. A future mechanical refresh still needs an exact upstream
+ref pinned from WitsCode; until then treat refreshes as manual re-vendoring.
+
+Note: this bundle is **not** from `GoogleCloudPlatform/knowledge-catalog`. That
+project's OKF reference implementation is Python-based and its viewer at
+`okf/src/reference_agent/viewer/generator.py` has the same CommonMark
+angle-bracket parsing limitation; a proposed upstream fix lives in
+`docs/upstream/okf-commonmark-link-destination.md`. Its PR
 [#125](https://github.com/GoogleCloudPlatform/knowledge-catalog/pull/125)
-adds a Python conformance command, but it does not validate cross-links and is
-not the source of these JavaScript files.
+adds a Python conformance command but does not validate cross-links and is not
+the source of these JavaScript files.
 
 ### Removal
 
 Remove this entry only after:
 
-1. the JavaScript conformance bundle's actual source provenance is recorded;
+1. an exact upstream ref (commit or tag) is pinned from WitsCode's suite;
 2. that source accepts CommonMark angle-bracket destinations with a regression
    test; and
 3. Tent refreshes the complete vendor snapshot from that source.
