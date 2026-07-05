@@ -101,18 +101,19 @@ export class TentSettingTab extends PluginSettingTab {
     this.drawDefaultRoles(parent);
 
     settingHeading(parent, "默认 RULES.md");
-    new Setting(parent)
+    const rules = new Setting(parent)
       .setName("规则模板")
-      .setDesc("新建帐时写入 RULES.md；{tent} 会替换为帐名。")
-      .addTextArea((textarea) => {
-        textarea
-          .setValue(this.plugin.settings.newTentDefaults.rulesTemplate)
-          .onChange(async (value) => {
-            this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
-            await this.plugin.saveSettings();
-          });
-        textarea.inputEl.addClass("tent-settings-rules");
-      });
+      .setDesc("新建帐时写入 RULES.md；{tent} 会替换为帐名。");
+    rules.settingEl.addClass("tent-settings-rules-row");
+    rules.addTextArea((textarea) => {
+      textarea
+        .setValue(this.plugin.settings.newTentDefaults.rulesTemplate)
+        .onChange(async (value) => {
+          this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
+          await this.plugin.saveSettings();
+        });
+      textarea.inputEl.addClass("tent-settings-rules");
+    });
   }
 
   private drawDefaultTypes(parent: HTMLElement) {

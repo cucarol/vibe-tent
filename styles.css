@@ -1777,6 +1777,27 @@
   min-height: 180px;
 }
 
+.tent-settings-rules-row {
+  flex-direction: column;
+  align-items: stretch;
+}
+
+.tent-settings-rules-row .setting-item-info {
+  width: 100%;
+}
+
+.tent-settings-rules-row .setting-item-control {
+  width: 100%;
+  justify-content: stretch;
+}
+
+.tent-settings-rules-row .tent-settings-rules {
+  width: 100%;
+  max-width: 100%;
+  min-width: 0;
+  box-sizing: border-box;
+}
+
 /* 右栏压到约 1/3 时，控件在栏内换行，不再向外溢出。 */
 @container tent-property (max-width: 380px) {
   .tent-prop-titlerow {

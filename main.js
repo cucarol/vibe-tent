@@ -5018,7 +5018,9 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
     settingHeading(parent, "\u9ED8\u8BA4 RULES.md");
-    new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA\u5E10\u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
+    const rules = new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA\u5E10\u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002");
+    rules.settingEl.addClass("tent-settings-rules-row");
+    rules.addTextArea((textarea) => {
       textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
         this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
         await this.plugin.saveSettings();
