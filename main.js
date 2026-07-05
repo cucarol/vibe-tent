@@ -2076,10 +2076,10 @@ var ObsidianFs = class {
           await nodeFs.rm(lockPath, { force: true });
           continue;
         }
-        throw new Error("Tent \u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u5199\u64CD\u4F5C,\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+        throw new Error("\u5E10\u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u5199\u64CD\u4F5C,\u8BF7\u7A0D\u540E\u91CD\u8BD5");
       }
     }
-    if (!handle) throw new Error("\u65E0\u6CD5\u83B7\u53D6 Tent mutation lock");
+    if (!handle) throw new Error("\u65E0\u6CD5\u83B7\u53D6\u5E10 mutation lock");
     try {
       await handle.writeFile(JSON.stringify({ createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
       return await action();
@@ -4674,7 +4674,7 @@ var TentView = class extends import_obsidian4.ItemView {
       copy.onclick = async () => {
         try {
           const tentRoot = this.tentRootAbsolutePath();
-          if (!tentRoot) throw new Error("\u65E0\u6CD5\u89E3\u6790 Tent \u6839\u7EDD\u5BF9\u8DEF\u5F84");
+          if (!tentRoot) throw new Error("\u65E0\u6CD5\u89E3\u6790\u5E10\u6839\u7EDD\u5BF9\u8DEF\u5F84");
           await navigator.clipboard.writeText(relayPromptForTask(pendingDispatch.task, tentRoot));
           new import_obsidian4.Notice(`\u5DF2\u590D\u5236\uFF0C\u53BB ${pendingDispatch.task.role} \u7684 agent \u4F1A\u8BDD\u7C98\u8D34\u5373\u53EF\u3002`);
         } catch (e) {
@@ -4979,7 +4979,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     containerEl.addClass("tent-settings");
     settingHeading(containerEl, "\u5E37\u5E44 / Tent");
     settingHeading(containerEl, "\u5E10");
-    new import_obsidian5.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002Tent \u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
+    new import_obsidian5.Setting(containerEl).setName("\u5E10\u6839\u76EE\u5F55").setDesc("vault \u5185\u5B58\u653E\u5404\u5E10\u7684\u6587\u4EF6\u5939\u3002\u5E10\u4FDD\u5B58\u4E0A\u4E0B\u6587\u4E0E\u72B6\u6001\uFF0C\u672C\u8EAB\u4E0D\u4F7F\u7528 Git\u3002").addText(
       (t) => t.setValue(this.plugin.settings.tentsRoot).onChange(async (v) => {
         this.plugin.settings.tentsRoot = v.trim() || "tents";
         await this.plugin.saveSettings();
@@ -4987,7 +4987,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     );
     this.drawNewTentDefaults(containerEl);
     settingHeading(containerEl, "\u5916\u89C2");
-    new import_obsidian5.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528 Tent \u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
+    new import_obsidian5.Setting(containerEl).setName("\u914D\u8272\u6A21\u5F0F").setDesc("\u8DDF\u968F Obsidian\uFF0C\u6216\u56FA\u5B9A\u4F7F\u7528\u5E10\u7684\u6D45\u8272 / \u6DF1\u8272\u914D\u8272\u3002").addDropdown(
       (dropdown) => dropdown.addOption("follow", "\u8DDF\u968F Obsidian").addOption("light", "\u6D45\u8272").addOption("dark", "\u6DF1\u8272").setValue(this.plugin.settings.appearance).onChange(async (value) => {
         this.plugin.settings.appearance = value;
         await this.plugin.saveSettings();
@@ -5010,15 +5010,15 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     );
   }
   drawNewTentDefaults(parent) {
-    settingHeading(parent, "\u65B0\u5EFA Tent \u9ED8\u8BA4\u503C");
+    settingHeading(parent, "\u65B0\u5EFA\u5E10\u9ED8\u8BA4\u503C");
     parent.createEl("p", {
       cls: "setting-item-description tent-settings-intro",
-      text: "\u7528\u4E8E\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\uFF0C\u4E0D\u8986\u76D6\u5DF2\u6709 Tent\u3002"
+      text: "\u7528\u4E8E\u4E4B\u540E\u65B0\u5EFA\u7684\u5E10\uFF0C\u4E0D\u8986\u76D6\u5DF2\u6709\u5E10\u3002"
     });
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
     settingHeading(parent, "\u9ED8\u8BA4 RULES.md");
-    new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA Tent \u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
+    new import_obsidian5.Setting(parent).setName("\u89C4\u5219\u6A21\u677F").setDesc("\u65B0\u5EFA\u5E10\u65F6\u5199\u5165 RULES.md\uFF1B{tent} \u4F1A\u66FF\u6362\u4E3A\u5E10\u540D\u3002").addTextArea((textarea) => {
       textarea.setValue(this.plugin.settings.newTentDefaults.rulesTemplate).onChange(async (value) => {
         this.plugin.settings.newTentDefaults.rulesTemplate = value || DEFAULT_RULES_TEMPLATE;
         await this.plugin.saveSettings();
@@ -5086,7 +5086,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
     this.drawAxisControl(editor, definition);
     if (!BUILTIN_TYPES.has(name)) {
-      new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684 Tent\u3002").addButton(
+      new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684\u5E10\u3002").addButton(
         (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
           delete this.plugin.settings.newTentDefaults.typeRegistry[name];
           this.openType = null;
@@ -5328,7 +5328,7 @@ var TentPlugin = class extends import_obsidian6.Plugin {
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian6.Notice(`Tent \u65B0\u589E ${pending - previous} \u9879\u5F85\u5904\u7406`);
+      new import_obsidian6.Notice(`\u5E10\u5185\u65B0\u589E ${pending - previous} \u9879\u5F85\u5904\u7406`);
     }
   }
   refreshStatusPreference() {

@@ -34,7 +34,7 @@ export class TentSettingTab extends PluginSettingTab {
     settingHeading(containerEl, "帐");
     new Setting(containerEl)
       .setName("帐根目录")
-      .setDesc("vault 内存放各帐的文件夹。Tent 保存上下文与状态，本身不使用 Git。")
+      .setDesc("vault 内存放各帐的文件夹。帐保存上下文与状态，本身不使用 Git。")
       .addText((t) =>
         t
           .setValue(this.plugin.settings.tentsRoot)
@@ -49,7 +49,7 @@ export class TentSettingTab extends PluginSettingTab {
     settingHeading(containerEl, "外观");
     new Setting(containerEl)
       .setName("配色模式")
-      .setDesc("跟随 Obsidian，或固定使用 Tent 的浅色 / 深色配色。")
+      .setDesc("跟随 Obsidian，或固定使用帐的浅色 / 深色配色。")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("follow", "跟随 Obsidian")
@@ -92,10 +92,10 @@ export class TentSettingTab extends PluginSettingTab {
   }
 
   private drawNewTentDefaults(parent: HTMLElement) {
-    settingHeading(parent, "新建 Tent 默认值");
+    settingHeading(parent, "新建帐默认值");
     parent.createEl("p", {
       cls: "setting-item-description tent-settings-intro",
-      text: "用于之后新建的 Tent，不覆盖已有 Tent。",
+      text: "用于之后新建的帐，不覆盖已有帐。",
     });
     this.drawDefaultTypes(parent);
     this.drawDefaultRoles(parent);
@@ -103,7 +103,7 @@ export class TentSettingTab extends PluginSettingTab {
     settingHeading(parent, "默认 RULES.md");
     new Setting(parent)
       .setName("规则模板")
-      .setDesc("新建 Tent 时写入 RULES.md；{tent} 会替换为帐名。")
+      .setDesc("新建帐时写入 RULES.md；{tent} 会替换为帐名。")
       .addTextArea((textarea) => {
         textarea
           .setValue(this.plugin.settings.newTentDefaults.rulesTemplate)
@@ -192,7 +192,7 @@ export class TentSettingTab extends PluginSettingTab {
     if (!BUILTIN_TYPES.has(name)) {
       new Setting(editor)
         .setName("删除默认 type")
-        .setDesc("只影响之后新建的 Tent。")
+        .setDesc("只影响之后新建的帐。")
         .addButton((button) =>
           button.setButtonText("删除").setWarning().onClick(async () => {
             delete this.plugin.settings.newTentDefaults.typeRegistry[name];

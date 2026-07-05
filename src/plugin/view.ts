@@ -1560,7 +1560,7 @@ export class TentView extends ItemView {
       copy.onclick = async () => {
         try {
           const tentRoot = this.tentRootAbsolutePath();
-          if (!tentRoot) throw new Error("无法解析 Tent 根绝对路径");
+          if (!tentRoot) throw new Error("无法解析帐根绝对路径");
           await navigator.clipboard.writeText(relayPromptForTask(pendingDispatch.task, tentRoot));
           new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
         } catch (e) {

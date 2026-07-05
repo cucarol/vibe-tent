@@ -95,10 +95,10 @@ export class ObsidianFs implements FsAdapter {
           await nodeFs.rm(lockPath, { force: true });
           continue;
         }
-        throw new Error("Tent 正在执行另一个写操作,请稍后重试");
+        throw new Error("帐正在执行另一个写操作,请稍后重试");
       }
     }
-    if (!handle) throw new Error("无法获取 Tent mutation lock");
+    if (!handle) throw new Error("无法获取帐 mutation lock");
     try {
       await handle.writeFile(JSON.stringify({ createdAt: new Date().toISOString() }), "utf8");
       return await action();

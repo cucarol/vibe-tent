@@ -78,7 +78,7 @@ export default class TentPlugin extends Plugin {
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm",
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new Notice(`Tent 新增 ${pending - previous} 项待处理`);
+      new Notice(`帐内新增 ${pending - previous} 项待处理`);
     }
   }
 
