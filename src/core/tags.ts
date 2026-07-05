@@ -4,6 +4,7 @@ import { boxNotePath, loadTent } from "./tree.js";
 import type { Box } from "./types.js";
 
 export const TAGS_REGISTRY_PATH = ".tent/tags.json";
+export const DEFAULT_TAG_REGISTRY: TagRegistry = { tags: ["decision"] };
 
 export interface TagRegistry {
   tags: string[];

@@ -4,7 +4,7 @@ import { DEFAULT_TYPE_REGISTRY, TYPE_REGISTRY_PATH } from "./typeRegistry.js";
 import type { TypeRegistry } from "./typeRegistry.js";
 import { ROLES_REGISTRY_PATH } from "./skillRoleRegistry.js";
 import type { RolesRegistry } from "./skillRoleRegistry.js";
-import { TAGS_REGISTRY_PATH } from "./tags.js";
+import { DEFAULT_TAG_REGISTRY, TAGS_REGISTRY_PATH } from "./tags.js";
 import { boxNotePath } from "./tree.js";
 import { makeUniqueBoxId } from "./id.js";
 
@@ -51,7 +51,7 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
 
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
   await fs.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
-  await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify({ tags: [] }, null, 2) + "\n");
+  await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
   await fs.writeFile("RULES.md", options.rules);
 }
 

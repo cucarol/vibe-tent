@@ -71,6 +71,30 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 - output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
 - 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
 
+## 向 user 提 PR / 决策点
+
+向 user 提 PR / 决策点是罕见动作，只在两种情形使用：
+
+- user 明显错得离谱，继续做会造成实质偏差或损失。
+- 遇到真正需要 user 拍板的决策点，类似 plan mode 需要给 2-4 个选项。
+
+不要为琐碎命名、局部实现偏好、可以自行判断的工程细节创建决策点。
+
+提决策点时，在相关框附近新建一个 box：
+
+- `type: prompt`
+- `tags: [decision]`
+- `status: todo`
+
+正文必须写清：
+
+- 问题
+- 2-4 个选项
+- 你的推荐
+- 影响
+
+user 读完选定后，把选择写回该 decision box 或直接按选择行动，然后对该 decision box 执行 `tent stamp <boxId>` 解消。`report` 是交付待验收，`dispatch` 是派活，`decision` 是请 user 拍板。
+
 ## 协议
 
 1. 确认工作目录就是 Tent 根目录，且包含 `RULES.md`、`.tent/`、`temp/`。否则停止并告诉 user。

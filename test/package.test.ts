@@ -390,7 +390,7 @@ test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", asyn
   assert.deepEqual(Object.keys(registry).sort(), ["asset", "goal", "open", "output", "prompt", "reference", "sealed"]);
   assert.equal(await exists(path.join(target, ".tent", "roles.json")), true);
   assert.equal(await exists(path.join(target, ".tent", "skills.json")), false);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(target, ".tent", "tags.json"), "utf8")), { tags: [] });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(target, ".tent", "tags.json"), "utf8")), { tags: ["decision"] });
 
   // 不生成 agent 配置层文件。
   assert.equal(await exists(path.join(target, ".claude")), false);
