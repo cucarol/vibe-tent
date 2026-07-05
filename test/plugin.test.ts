@@ -16,6 +16,8 @@ import {
   roleColorValue,
   rwSegmentStates,
   showsUnstampedState,
+  statusBarText,
+  statusIncreaseNoticeText,
   statuslessDirectChildren,
   visibleTreeCount,
 } from "../src/plugin/ui-model.js";
@@ -115,6 +117,12 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
     }),
     { dispatch: 2, triage: 4 },
   );
+});
+
+test("plugin ui-model:status bar uses triage wording", () => {
+  assert.equal(statusBarText(0), "帐内无事");
+  assert.equal(statusBarText(3), "3 待裁");
+  assert.equal(statusIncreaseNoticeText(2), "帐内新增 2 项待裁");
 });
 
 test("plugin ui-model:tab count is a stable part separate from its label", () => {

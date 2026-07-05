@@ -2146,9 +2146,6 @@ async function buildInbox(tent) {
   }
   return items;
 }
-function pendingCount(_items) {
-  return 0;
-}
 
 // src/plugin/view.ts
 init_report();
@@ -2613,6 +2610,12 @@ function bottomTabCounts(input) {
     dispatch: input.pendingDispatches,
     triage: input.pendingDecisions + input.readyReports
   };
+}
+function statusBarText(pending) {
+  return pending > 0 ? `${pending} \u5F85\u88C1` : "\u5E10\u5185\u65E0\u4E8B";
+}
+function statusIncreaseNoticeText(increase) {
+  return `\u5E10\u5185\u65B0\u589E ${increase} \u9879\u5F85\u88C1`;
 }
 function hasTreePending(input) {
   return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
@@ -3525,9 +3528,12 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     this.rebuildPendingDispatches();
     const decisions = this.pendingDecisionBoxes();
-    this.plugin.updateStatus(
-      pendingCount(this.inbox) + decisions.length + this.reports.filter((report) => report.status === "ready").length + this.pendingDispatchItems.length
-    );
+    const statusCounts = bottomTabCounts({
+      pendingDispatches: this.pendingDispatchItems.length,
+      pendingDecisions: decisions.length,
+      readyReports: this.reports.filter((report) => report.status === "ready").length
+    });
+    this.plugin.updateStatus(statusCounts.triage);
     this.draw();
   }
   rebuildPendingDispatches() {
@@ -5333,11 +5339,11 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     this.statusEl.empty();
     this.statusEl.createSpan({ text: "\u26FA " });
     this.statusEl.createSpan({
-      text: pending > 0 ? `${pending} \u5F85\u5904\u7406` : "\u5E10\u5185\u65E0\u4E8B",
+      text: statusBarText(pending),
       cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
     });
     if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian6.Notice(`\u5E10\u5185\u65B0\u589E ${pending - previous} \u9879\u5F85\u5904\u7406`);
+      new import_obsidian6.Notice(statusIncreaseNoticeText(pending - previous));
     }
   }
   refreshStatusPreference() {

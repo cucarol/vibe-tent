@@ -13,7 +13,7 @@ import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
-import { buildInbox, pendingCount, InboxItem } from "../core/inbox.js";
+import { buildInbox, InboxItem } from "../core/inbox.js";
 import { loadReports, rejectReport, type DeliveryReport } from "../core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
@@ -231,12 +231,12 @@ export class TentView extends ItemView {
     }
     this.rebuildPendingDispatches();
     const decisions = this.pendingDecisionBoxes();
-    this.plugin.updateStatus(
-      pendingCount(this.inbox) +
-      decisions.length +
-      this.reports.filter((report) => report.status === "ready").length +
-      this.pendingDispatchItems.length
-    );
+    const statusCounts = bottomTabCounts({
+      pendingDispatches: this.pendingDispatchItems.length,
+      pendingDecisions: decisions.length,
+      readyReports: this.reports.filter((report) => report.status === "ready").length,
+    });
+    this.plugin.updateStatus(statusCounts.triage);
     this.draw();
   }
 

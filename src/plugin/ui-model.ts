@@ -95,6 +95,14 @@ export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number;
   };
 }
 
+export function statusBarText(pending: number): string {
+  return pending > 0 ? `${pending} 待裁` : "帐内无事";
+}
+
+export function statusIncreaseNoticeText(increase: number): string {
+  return `帐内新增 ${increase} 项待裁`;
+}
+
 export function hasTreePending(input: TreePendingInput): boolean {
   return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
 }
