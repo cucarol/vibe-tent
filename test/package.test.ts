@@ -23,6 +23,10 @@ interface RunResult {
   stderr: string;
 }
 
+interface RunExitResult extends RunResult {
+  code: number | null;
+}
+
 function run(command: string, args: string[], cwd: string): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -42,6 +46,22 @@ function run(command: string, args: string[], cwd: string): Promise<RunResult> {
   });
 }
 
+function runWithExit(command: string, args: string[], cwd: string): Promise<RunExitResult> {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, {
+      cwd,
+      env: { ...process.env, ...gitIdentity },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => (stdout += chunk));
+    child.stderr.on("data", (chunk) => (stderr += chunk));
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
+  });
+}
+
 async function makeSkeletonTent(): Promise<string> {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-open-source-"));
   const target = path.join(parent, "example-tent");
@@ -51,6 +71,10 @@ async function makeSkeletonTent(): Promise<string> {
 
 function runCli(cwd: string, ...args: string[]): Promise<RunResult> {
   return run(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
+}
+
+function runCliWithExit(cwd: string, ...args: string[]): Promise<RunExitResult> {
+  return runWithExit(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
 }
 
 function boxId(result: RunResult): string {
@@ -189,6 +213,33 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(subData.dispatchedBy, "planner");
   assert.equal(subData.branch, "tent-role/executor");
   assert.equal(subData.targetBranch, "tent-role/planner");
+});
+
+test("tent status:prints decisions, pending tasks, active claims, and rejects non-Tent dirs", async () => {
+  const tent = await makeSkeletonTent();
+  const decisionId = boxId(await runCli(tent, "new-box", "Choose release lane", "prompt"));
+  await runCli(tent, "tag", decisionId, "decision");
+  const claimId = boxId(await runCli(tent, "new-box", "Implement release notes", "prompt"));
+
+  const dispatched = await runCli(tent, "dispatch", claimId, "reviewer", "Draft release notes.");
+  const task = path.posix.basename(taskPath(dispatched));
+  const status = await runCli(tent, "status");
+
+  assert.match(status.stdout, new RegExp(`Tent: ${escapeRegExp(path.resolve(tent))}`));
+  assert.match(status.stdout, /Workspace: \(none\)/);
+  assert.match(status.stdout, /Pending decisions:/);
+  assert.match(status.stdout, new RegExp(`- ${decisionId}: Choose release lane`));
+  assert.match(status.stdout, /Pending tasks \(task-ack\):/);
+  assert.match(status.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
+  assert.match(status.stdout, /Active claims:/);
+  assert.match(status.stdout, new RegExp(`- ${claimId}: Implement release notes \\(owner: reviewer, status: doing\\)`));
+  assert.equal(status.stderr, "");
+
+  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-"));
+  const failed = await runCliWithExit(outside, "status");
+  assert.equal(failed.code, 1);
+  assert.equal(failed.stdout, "");
+  assert.match(failed.stderr, /Not inside a Tent \(no \.tent\/RULES\.md found\)\./);
 });
 
 test("tent dispatch --as-sub:missing dispatcher fails before workspace side effects", async () => {
@@ -471,6 +522,7 @@ test("CLI 表面:help 与 version 正常退出", async () => {
   const help = await runCli(repoRoot, "--help");
   assert.match(help.stdout, /Usage:/);
   assert.match(help.stdout, /skill-install/);
+  assert.match(help.stdout, /status/);
   assert.match(help.stdout, /task-ack/);
   assert.match(help.stdout, /clean-temp/);
   assert.match(help.stdout, /migrate-kind-to-type/);
@@ -502,6 +554,10 @@ async function makeWorkspace(parent: string): Promise<string> {
   await run("git", ["add", "README.md"], workspace);
   await run("git", ["commit", "-q", "-m", "init workspace"], workspace);
   return workspace;
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function makeCompletionFixture(): Promise<{

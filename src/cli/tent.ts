@@ -16,6 +16,7 @@
 //   tent fork <boxId>
 //   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 //   tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
+//   tent status
 //   tent clean-temp [role]
 //   tent force-release <boxId>
 //   tent migrate-kind-to-type
@@ -54,6 +55,7 @@ import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeReg
 import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
+import { NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
 import {
   ensureRoleWorkspace,
@@ -226,6 +228,15 @@ async function main() {
       console.log(`✓ Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
+    case "status": {
+      try {
+        process.stdout.write(await renderTentStatus(process.cwd(), process.env.TENT_ROLE));
+      } catch (error) {
+        if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail(error.message);
+        throw error;
+      }
+      break;
+    }
     case "grant-readable": {
       if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
@@ -352,7 +363,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -503,6 +514,7 @@ Commands:
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
+  status                             Print a read-only Tent status summary.
   force-release <boxId>              Release owner without accepting delivery.
   grant-readable <boxId>             Mark a box readable.
   new-box <name> <type> [parentId]   Create a box.
