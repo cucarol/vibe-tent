@@ -4,6 +4,7 @@
 // 只为"被 user 拖动过的父级"留条目,其余按名字自然排,sidecar 保持稀疏。
 
 import { FsAdapter } from "./adapter.js";
+import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
 export type OrderMap = Record<string, string[]>;
 export const ROOT_KEY = "__root__";
@@ -14,6 +15,9 @@ export async function loadOrder(fs: FsAdapter): Promise<OrderMap> {
   try {
     return JSON.parse(await fs.readFile(ORDER_PATH));
   } catch {
+    const backupPath = await backupCorruptRegistry(fs, ORDER_PATH);
+    await saveOrder(fs, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }

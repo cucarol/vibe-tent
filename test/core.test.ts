@@ -199,7 +199,7 @@ test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", 
   assert.match(second.manifestYaml, /claims: \[bx-p1, bx-o1\]/);
 });
 
-test("dispatch:roles registry failure rolls back owner and temp residue", async () => {
+test("dispatch:corrupt roles registry is backed up, reset, and dispatch continues", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
   await fs.writeFile(path.join(dir, ".tent", "roles.json"), "{not-json", "utf8");
@@ -210,15 +210,14 @@ test("dispatch:roles registry failure rolls back owner and temp residue", async 
   };
   const { dispatch } = await import("../src/core/ops.js");
 
-  await assert.rejects(
-    () => dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。"),
-    /roles\.json is corrupt/,
-  );
+  await dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。");
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
-  assert.equal(box.owner, undefined);
-  assert.equal(box.status, undefined);
-  assert.equal(await exists(path.join(dir, "temp", "analyst")), false);
+  assert.equal(box.owner, "analyst");
+  assert.equal(box.status, "doing");
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, ".tent", "roles.json"), "utf8")), { roles: [] });
+  assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("roles.json.corrupt-")), true);
+  assert.equal(await exists(path.join(dir, "temp", "analyst")), true);
 });
 
 test("task envelopes:只读加载有效任务并重建 relay prompt", async () => {

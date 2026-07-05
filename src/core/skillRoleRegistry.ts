@@ -1,4 +1,5 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
+import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
 export const ROLES_REGISTRY_PATH = ".tent/roles.json";
 
@@ -31,9 +32,17 @@ export async function loadRolesRegistry(fs: FsAdapter): Promise<RolesRegistry> {
   try {
     const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH)) as unknown;
     return normalizeRolesRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`roles.json is corrupt: ${detail}.`);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
 }
 

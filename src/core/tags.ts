@@ -1,6 +1,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { boxNotePath, loadTent } from "./tree.js";
+import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 import type { Box } from "./types.js";
 
 export const TAGS_REGISTRY_PATH = ".tent/tags.json";
@@ -15,7 +16,11 @@ export async function loadTagRegistry(fs: FsAdapter): Promise<TagRegistry> {
   try {
     return normalizeRegistry(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    return { tags: [] };
+    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs);
+    await saveTagRegistryUnlocked(fs, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
 }
 
@@ -110,6 +115,15 @@ function normalizeRegistry(value: unknown): TagRegistry {
     } catch {
       // tag registry 不是承重件;忽略坏条目而不是让整顶帐 fail-loud。
     }
+  }
+  return { tags: uniqueSorted(tags) };
+}
+
+async function recoverTagRegistryFromBoxes(fs: FsAdapter): Promise<TagRegistry> {
+  const tent = await loadTent(fs);
+  const tags: string[] = [];
+  for (const box of tent.byPath.values()) {
+    tags.push(...box.tags);
   }
   return { tags: uniqueSorted(tags) };
 }
