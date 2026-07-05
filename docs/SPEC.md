@@ -218,6 +218,14 @@ under one release control.
 
 ## 6. Report And Fork
 
+Decision boxes are ordinary `prompt` boxes tagged `decision`. They are used
+only for agent-to-user decision points that genuinely need the user to choose.
+The body states the question, 2-4 options, the agent's recommendation, and the
+impact. The decision remains pending while its `status` is not `done`; after
+the user chooses, the choice is written back to the box or acted on directly,
+then the user stamps the decision box to resolve it. No separate core
+lifecycle exists for decisions.
+
 Report:
 
 - agent-to-user delivery text plus an all-or-nothing commit list;
@@ -312,6 +320,7 @@ The UI renders core state and invokes core actions:
 - property edits and drag/drop update files immediately;
 - native copy is adopted as fork;
 - report text stays in the conversation layer;
+- decision points are ordinary boxes resolved by stamping;
 - completion presents selected commit integration and only then releases owner;
 - interruption releases owner without integration;
 - pending task envelopes are shown as delivery state; copying relay text does

@@ -876,6 +876,7 @@ function collect(box, out) {
 
 // src/core/tags.ts
 var TAGS_REGISTRY_PATH = ".tent/tags.json";
+var DEFAULT_TAG_REGISTRY = { tags: ["decision"] };
 async function loadTagRegistry(fs3) {
   if (!await fs3.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
@@ -1230,127 +1231,6 @@ function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
 }
 
-// src/core/proposal.ts
-function validateProposalTarget(tent, targetId) {
-  const target = tent.byId.get(targetId);
-  if (!target) return { ok: false, reason: `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}` };
-  if (target.invalid || target.archived) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u63D0 proposal:${target.invalidReason || "\u5DF2\u5F52\u6863"}` };
-  if (!target.readable.value) return { ok: false, reason: `\u76EE\u6807\u6846\u4E0D\u53EF\u8BFB,\u4E0D\u80FD\u63D0 proposal: ${targetId}` };
-  return { ok: true, target };
-}
-
-// src/core/collaborationOps.ts
-async function propose(env, targetId, role, body) {
-  return withTentMutation(env.fs, async () => {
-    const roleName = assertRoleName(role);
-    const tent = await loadTent(env.fs);
-    const check = validateProposalTarget(tent, targetId);
-    if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
-    const content = body.trim();
-    if (!content) throw new Error("proposal \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
-    const dir = join("temp", roleName, "proposals");
-    await ensureDir3(env.fs, dir);
-    const proposalPath = await uniqueProposalPath(
-      env.fs,
-      dir,
-      targetId,
-      env.clock.now()
-    );
-    const data = {
-      type: "proposal",
-      target: targetId,
-      status: "open",
-      from: roleName
-    };
-    await env.fs.writeFile(
-      proposalPath,
-      serializeFrontmatter(
-        data,
-        content + "\n",
-        ["type", "target", "status", "from", "note"]
-      )
-    );
-    return { proposalPath };
-  });
-}
-async function applyProposal(env, proposalPath, accept, note) {
-  await withTentMutation(env.fs, async () => {
-    const raw = await env.fs.readFile(proposalPath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (accept) {
-      const targetId = typeof data.target === "string" ? data.target : String(data.target || "");
-      const check = validateProposalTarget(await loadTent(env.fs), targetId);
-      if (!check.ok) throw new Error(check.reason || "proposal target \u4E0D\u53EF\u7528");
-    }
-    data.status = accept ? "accepted" : "rejected";
-    if (note) data.note = note;
-    await env.fs.writeFile(
-      proposalPath,
-      serializeFrontmatter(data, body, keyOrder)
-    );
-  });
-}
-async function startApply(env, proposalPath) {
-  const { data, body } = parseFrontmatter(await env.fs.readFile(proposalPath));
-  if (data.status !== "accepted") {
-    throw new Error(
-      `proposal \u4E0D\u662F accepted \u72B6\u6001(\u5F53\u524D ${data.status});\u53EA\u6709 user \u6279\u51C6\u8FC7\u7684\u624D\u80FD\u843D\u5730`
-    );
-  }
-  const targetId = String(data.target);
-  const tent = await loadTent(env.fs);
-  const check = validateProposalTarget(tent, targetId);
-  if (!check.ok || !check.target) {
-    throw new Error(check.reason || `\u627E\u4E0D\u5230\u76EE\u6807\u6846 ${targetId}`);
-  }
-  const target = check.target;
-  if (!isUsableBox(target)) {
-    throw new Error(`\u76EE\u6807\u6846\u4E0D\u53EF\u843D\u5730:${target.invalidReason || "\u5DF2\u5F52\u6863"}`);
-  }
-  return {
-    targetId,
-    targetPath: target.path,
-    instructions: body.trim()
-  };
-}
-async function finishApply(env, proposalPath) {
-  await withTentMutation(env.fs, async () => {
-    const { data, body, keyOrder } = parseFrontmatter(
-      await env.fs.readFile(proposalPath)
-    );
-    if (data.status !== "accepted") {
-      throw new Error("proposal \u4E0D\u662F accepted \u72B6\u6001,\u65E0\u6CD5\u6536\u5C3E");
-    }
-    data.status = "applied";
-    await env.fs.writeFile(
-      proposalPath,
-      serializeFrontmatter(data, body, keyOrder)
-    );
-  });
-}
-async function ensureDir3(fs3, path2) {
-  if (path2 && !await fs3.exists(path2)) await fs3.mkdir(path2);
-}
-function assertRoleName(role) {
-  const name = role.trim();
-  if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
-  if (/[\/\\\r\n]/.test(name)) {
-    throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
-  }
-  return name;
-}
-async function uniqueProposalPath(fs3, dir, targetId, now) {
-  const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 18) || "proposal";
-  const safeTarget = targetId.replace(/[^0-9A-Za-z_-]+/g, "-") || "target";
-  let index = 1;
-  while (true) {
-    const suffix = index === 1 ? "" : `-${index}`;
-    const path2 = join(dir, `pr-${stamp2}-${safeTarget}${suffix}.md`);
-    if (!await fs3.exists(path2)) return path2;
-    index += 1;
-  }
-}
-
 // src/core/forkOps.ts
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
@@ -1442,7 +1322,7 @@ async function dispatch(env, claimId, role, promptOrOptions) {
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
-  const roleName = assertRoleName2(role);
+  const roleName = assertRoleName(role);
   const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
@@ -1474,7 +1354,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const manifestPath = join("temp", roleName, "manifest.yml");
-    await ensureDir4(env.fs, dirName(manifestPath));
+    await ensureDir3(env.fs, dirName(manifestPath));
     await env.fs.writeFile(manifestPath, yaml);
     const registry = await loadRolesRegistry(env.fs);
     const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
@@ -1565,7 +1445,7 @@ async function cleanTemp(env, role) {
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!role) await ensureDir4(env.fs, "temp");
+    if (!role) await ensureDir3(env.fs, "temp");
   });
 }
 async function forceRelease(env, boxId) {
@@ -1605,7 +1485,7 @@ async function createBoxUnlocked(env, input) {
   const id = makeUniqueBoxId(existing, env.rand);
   const path2 = join(input.parentPath, input.name);
   assertNotTempPath(path2);
-  await ensureDir4(env.fs, path2);
+  await ensureDir3(env.fs, path2);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${input.name}
@@ -1647,7 +1527,7 @@ async function patchFrontmatter(fs3, box, patch) {
   }
   await fs3.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
-async function ensureDir4(fs3, path2) {
+async function ensureDir3(fs3, path2) {
   if (path2 && !await fs3.exists(path2)) await fs3.mkdir(path2);
 }
 function boxKeyOrder2(existing) {
@@ -1661,7 +1541,7 @@ function assertNotTempPath(path2) {
     throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u5141\u8BB8\u521B\u5EFA\u6216\u79FB\u52A8 typed box");
   }
 }
-function assertRoleName2(role) {
+function assertRoleName(role) {
   const name = role.trim();
   if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
   if (/[\/\\\r\n]/.test(name)) throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
@@ -1703,7 +1583,7 @@ async function scaffoldTent(fs3, options) {
   await fs3.mkdir(".tent");
   await fs3.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
   await fs3.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
-  await fs3.writeFile(TAGS_REGISTRY_PATH, JSON.stringify({ tags: [] }, null, 2) + "\n");
+  await fs3.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
   await fs3.writeFile("RULES.md", options.rules);
 }
 async function writeBox(fs3, path2, frontmatter, body) {
@@ -2350,21 +2230,6 @@ ${r.relayPrompt}`);
       console.log(`\u2713 Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
-    case "propose": {
-      const [targetId, role, bodySource] = args;
-      if (!targetId || !role || !bodySource) return fail("Usage: tent propose <targetId> <role> <bodyFile|->");
-      const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
-      const r = await propose(env, targetId, role, body);
-      console.log(`\u2713 Proposal written: ${r.proposalPath}`);
-      break;
-    }
-    case "proposal": {
-      const [p, verb, ...noteParts] = args;
-      if (!p || verb !== "accept" && verb !== "reject") return fail("Usage: tent proposal <path> accept|reject [note]");
-      await applyProposal(env, p, verb === "accept", noteParts.join(" ") || void 0);
-      console.log(`\u2713 proposal ${verb}: ${p}`);
-      break;
-    }
     case "grant-readable": {
       if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
@@ -2435,25 +2300,6 @@ ${r.relayPrompt}`);
       }
       break;
     }
-    case "apply": {
-      if (!args[0]) return fail("Usage: tent apply <proposal-path>");
-      const g = await startApply(env, args[0]);
-      console.log(
-        `\u2713 Proposal is ready to apply. Target: ${g.targetPath}
-
---- Requested change ---
-${g.instructions || "(The proposal body is empty; see the source file.)"}
-
-After updating the target box note, run: tent apply-done ${args[0]}`
-      );
-      break;
-    }
-    case "apply-done": {
-      if (!args[0]) return fail("Usage: tent apply-done <proposal-path>");
-      await finishApply(env, args[0]);
-      console.log("\u2713 Proposal marked as applied.");
-      break;
-    }
     case "fork": {
       if (!args[0]) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
@@ -2512,7 +2358,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack report complete stamp grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -2645,11 +2491,11 @@ Commands:
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
+  grant-readable <boxId>             Mark a box readable.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
   tags | tag-new | tag-rm            Manage the tag registry.
   find <tag>                         Find boxes by tag.
-  propose | proposal                 Create or review a proposal.
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   migrate-kind-to-type               Rewrite legacy kind fields to type.

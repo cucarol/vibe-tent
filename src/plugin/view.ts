@@ -88,7 +88,7 @@ export class TentView extends ItemView {
   private collapsed = new Set<string>();
   private selectedSystem: "temp" | null = null;
   private bottomTab: "note" | "dispatch" | "triage" = "note";
-  // 左树热切换:全部 / 只看有待处理(owner 或待投递 task)的框
+  // 左树热切换:全部 / 只看有待处理(decision、owner 或待投递 task)的框
   private treeFilter: "all" | "pending" = "all";
   private registryUi = createRegistryPaneState();
   private colRatio = 0.58;
@@ -103,7 +103,7 @@ export class TentView extends ItemView {
   private pendingDelete: string | null = null;
   private roles: RoleDefinition[] = [];
   private registryTags: string[] = [];
-  // 每个 box 的待裁计数；report / 待投递 task 在 boxTriageCount 合并。
+  // 每个 box 的未决 decision 数；report / 待投递 task 在 boxTriageCount 合并。
   private pendingByTarget: Map<string, number> = new Map();
   private loadError: string | null = null;
   private refreshTimer: number | null = null;
@@ -231,8 +231,10 @@ export class TentView extends ItemView {
       }
     }
     this.rebuildPendingDispatches();
+    const decisions = this.pendingDecisionBoxes();
     this.plugin.updateStatus(
       pendingCount(this.inbox) +
+      decisions.length +
       this.reports.filter((report) => report.status === "ready").length +
       this.pendingDispatchItems.length
     );
@@ -512,7 +514,7 @@ export class TentView extends ItemView {
   // ---- 树 ----
 
   private drawTree(el: HTMLElement) {
-    this.pendingByTarget = new Map();
+    this.pendingByTarget = this.countPendingDecisionsByBox();
     const rows = el.createDiv({ cls: "tent-rows" });
     if (this.treeFilter === "pending") rows.addClass("is-pending-filter");
     for (const r of this.tent!.roots) {
@@ -755,7 +757,7 @@ export class TentView extends ItemView {
     const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
-      tentTooltip(nb, isCollapsed ? `${pend} 待裁（含子级）` : `${pend} 待裁`);
+      tentTooltip(nb, isCollapsed ? `${pend} 待裁决策点（含子级）` : `${pend} 待裁决策点`);
     }
 
     // 状态图标(无底色):doing/done,todo 不显
@@ -1280,7 +1282,7 @@ export class TentView extends ItemView {
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
-      pendingDecisions: 0,
+      pendingDecisions: this.isPendingDecisionBox(box) ? 1 : 0,
       readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length,
     });
     const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
@@ -1311,13 +1313,15 @@ export class TentView extends ItemView {
   }
 
   private boxTriageCount(box: Box): number {
+    const decisions = this.isPendingDecisionBox(box) ? 1 : 0;
     const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
-    return reports + dispatches;
+    return decisions + reports + dispatches;
   }
 
-  // 待裁 tab:完成待确认(中断释放 / 确认完成)
+  // 待裁 tab:未决 decision + 完成待确认(中断释放 / 确认完成)
   private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
+    const isDecision = this.isPendingDecisionBox(box);
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
@@ -1333,9 +1337,35 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (!owner && !report) {
+    if (!isDecision && !owner && !report) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
+    }
+
+    if (isDecision) {
+      body.createDiv({ cls: "tent-triage-sec", text: "待你裁决的决策点" });
+      const item = body.createDiv({ cls: "tent-triage-item" });
+      const main = item.createDiv({ cls: "tent-triage-main" });
+      const first = box.body.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) || box.name;
+      main.createDiv({ cls: "tent-triage-name", text: first });
+      main.createDiv({ cls: "tent-triage-meta", text: "decision · user 选择后盖章解消" });
+      const acts = item.createDiv({ cls: "tent-triage-acts" });
+      const open = acts.createEl("button", { text: "打开" });
+      open.setAttr("type", "button");
+      open.onclick = () => this.openBoxFile(box);
+      const done = acts.createEl("button", { cls: "mod-cta", text: "盖章" });
+      done.setAttr("type", "button");
+      done.onclick = async () => {
+        done.setAttr("disabled", "true");
+        try {
+          await stamp(this.env(), box.id);
+          await this.refresh();
+          new Notice("决策点已解消");
+        } catch (e) {
+          done.removeAttribute("disabled");
+          new Notice("盖章失败:" + (e instanceof Error ? e.message : e));
+        }
+      };
     }
 
     if (report) {
@@ -1463,6 +1493,23 @@ export class TentView extends ItemView {
       });
     }
 
+  }
+
+  private pendingDecisionBoxes(): Box[] {
+    if (!this.tent) return [];
+    return [...this.tent.byId.values()].filter((box) => this.isPendingDecisionBox(box));
+  }
+
+  private isPendingDecisionBox(box: Box): boolean {
+    return box.tags.includes("decision") && box.fm.status !== "done";
+  }
+
+  private countPendingDecisionsByBox(): Map<string, number> {
+    const counts = new Map<string, number>();
+    for (const box of this.pendingDecisionBoxes()) {
+      counts.set(box.id, (counts.get(box.id) ?? 0) + 1);
+    }
+    return counts;
   }
 
   private loadWorkspaceHead(workspace: string): Promise<WorkspaceHead | null> {
