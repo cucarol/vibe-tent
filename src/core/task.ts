@@ -143,6 +143,7 @@ export async function writeTaskEnvelope(
 }
 
 export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
+  if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path}.`);

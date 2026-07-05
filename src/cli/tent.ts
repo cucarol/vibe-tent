@@ -94,6 +94,7 @@ async function main() {
       if (!positionals[0]) {
         return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       }
+      if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       await newTent(positionals[0], flags.vault);
       break;
     }
@@ -101,6 +102,9 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const [claimId, role, ...promptParts] = positionals;
       if (!claimId || !role) {
+        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
+      }
+      if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
         return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       if (isUnsafeRoleSegment(role)) return fail(`Invalid role for dispatch: ${role}`);
@@ -137,6 +141,7 @@ async function main() {
     case "task-ack": {
       const taskPath = args[0];
       if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
+      if (args.length > 1) return fail("Usage: tent task-ack <taskPath>");
       await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
       console.log(`✓ Task acknowledged: ${taskPath}`);
       break;
@@ -144,6 +149,7 @@ async function main() {
     case "role-init": {
       const roleName = args[0];
       if (!roleName) return fail("Usage: tent role-init <role>");
+      if (args.length > 1) return fail("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
@@ -154,6 +160,7 @@ async function main() {
       break;
     }
     case "roles": {
+      if (args.length > 0) return fail("Usage: tent roles");
       const registry = await loadRolesRegistry(env.fs);
       console.log(JSON.stringify(registry, null, 2));
       break;
@@ -164,9 +171,10 @@ async function main() {
       if (!boxId || !bodySource) {
         return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
       }
+      if (positionals.length > 2) return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
       const body = bodySource === "-"
         ? await readStdin()
-        : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
+        : await readBodyFile(bodySource);
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
       console.log(`✓ Report ready for review: ${report.path}`);
@@ -176,6 +184,7 @@ async function main() {
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
       if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
+      if (positionals.length > 1) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -224,12 +233,14 @@ async function main() {
     case "stamp": {
       const { positionals, flags } = parseFlags(args);
       if (!positionals[0]) return fail("Usage: tent stamp <boxId> [--by <role>]");
+      if (positionals.length > 1) return fail("Usage: tent stamp <boxId> [--by <role>]");
       const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       await stamp(env, positionals[0], acceptedBy);
       console.log(`✓ Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
     case "status": {
+      if (args.length > 0) return fail("Usage: tent status");
       try {
         process.stdout.write(await renderTentStatus(process.cwd(), process.env.TENT_ROLE));
       } catch (error) {
@@ -240,6 +251,7 @@ async function main() {
     }
     case "grant-readable": {
       if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
+      if (args.length > 1) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
       console.log(`✓ ${args[0]} readable=true`);
       break;
@@ -247,6 +259,7 @@ async function main() {
     case "new-box": {
       const [name, type, parentId] = args;
       if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
+      if (args.length > 3) return fail("Usage: tent new-box <name> <type> [parentId]");
       try {
         validateBoxName(name);
       } catch (error) {
@@ -266,6 +279,7 @@ async function main() {
     case "tag": {
       const [boxId, name] = args;
       if (!boxId || !name) return fail("Usage: tent tag <boxId> <name>");
+      if (args.length > 2) return fail("Usage: tent tag <boxId> <name>");
       await tagBox(env, boxId, name);
       console.log(`✓ Added tag to ${boxId}: ${name}`);
       break;
@@ -273,20 +287,24 @@ async function main() {
     case "untag": {
       const [boxId, name] = args;
       if (!boxId || !name) return fail("Usage: tent untag <boxId> <name>");
+      if (args.length > 2) return fail("Usage: tent untag <boxId> <name>");
       await untagBox(env, boxId, name);
       console.log(`✓ Removed tag from ${boxId}: ${name}`);
       break;
     }
     case "tag-new": {
       if (!args[0]) return fail("Usage: tent tag-new <name>");
+      if (args.length > 1) return fail("Usage: tent tag-new <name>");
       await createTag(env, args[0]);
       console.log(`✓ Registered tag: ${args[0]}`);
       break;
     }
     case "tag-rm": {
-      const [name, confirmation] = args;
+      const { positionals, flags } = parseFlags(args);
+      const [name, confirmation] = positionals;
       if (!name) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
-      if (!args.includes("--yes") && confirmation !== name) {
+      if (positionals.length > 2) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
+      if (!flags.yes && confirmation !== name) {
         return fail(`Deleting a tag removes it from every box. Add --yes or repeat the tag name to confirm: tent tag-rm ${name} ${name}`);
       }
       await deleteTag(env, name);
@@ -294,6 +312,7 @@ async function main() {
       break;
     }
     case "tags": {
+      if (args.length > 0) return fail("Usage: tent tags");
       const registry = await loadTagRegistry(env.fs);
       if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
@@ -301,6 +320,7 @@ async function main() {
     }
     case "find": {
       if (!args[0]) return fail("Usage: tent find <name>");
+      if (args.length > 1) return fail("Usage: tent find <name>");
       try {
         normalizeTagName(args[0]);
       } catch (error) {
@@ -320,11 +340,13 @@ async function main() {
     }
     case "fork": {
       if (!args[0]) return fail("Usage: tent fork <boxId>");
+      if (args.length > 1) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
       console.log(`✓ Forked ${args[0]} → ${id}`);
       break;
     }
     case "clean-temp": {
+      if (args.length > 1) return fail("Usage: tent clean-temp [role]");
       if (args[0] && isUnsafeRoleSegment(args[0])) return fail(`Invalid role for clean-temp: ${args[0]}`);
       await cleanTemp(env, args[0]);
       console.log(`✓ Cleared temp/${args[0] || "(all)"}`);
@@ -332,17 +354,20 @@ async function main() {
     }
     case "force-release": {
       if (!args[0]) return fail("Usage: tent force-release <boxId>");
+      if (args.length > 1) return fail("Usage: tent force-release <boxId>");
       await forceRelease(env, args[0]);
       console.log(`✓ Force-released owner: ${args[0]}`);
       break;
     }
     case "migrate-kind-to-type": {
+      if (args.length > 0) return fail("Usage: tent migrate-kind-to-type");
       const touched = await migrateKindToType(env.fs);
       if (touched.length === 0) console.log("✓ No migration needed: no legacy kind fields found");
       else console.log(`✓ Migrated legacy kind → type:\n${touched.map((p) => `- ${p}`).join("\n")}`);
       break;
     }
     case "okf-sync": {
+      if (args.length > 0) return fail("Usage: tent okf-sync");
       const result = await syncOkfBundle(env.fs);
       console.log(
         `✓ OKF synchronized\n` +
@@ -356,7 +381,8 @@ async function main() {
       break;
     }
     case "skill-install": {
-      const { flags } = parseFlags(args);
+      const { positionals, flags } = parseFlags(args);
+      if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
       const target = flags.target || "claude";
       const force = flags.force === "true";
       const dir = flags.dir || defaultSkillInstallDir(target);
@@ -368,6 +394,7 @@ async function main() {
       break;
     }
     case "tree": {
+      if (args.length > 0) return fail("Usage: tent tree");
       const tent = await loadTent(env.fs);
       for (const r of tent.roots) printBox(r, 0);
       break;
@@ -387,6 +414,12 @@ function readStdin(): Promise<string> {
     process.stdin.on("end", () => resolve(data));
     process.stdin.on("error", reject);
   });
+}
+
+async function readBodyFile(bodySource: string): Promise<string> {
+  const resolved = path.resolve(bodySource);
+  if (!(await existsPath(resolved))) throw new Error(`Body file not found: ${bodySource}.`);
+  return fs.readFile(resolved, "utf8");
 }
 
 function printBox(box: import("../core/types.js").Box, depth: number) {

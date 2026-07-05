@@ -1,6 +1,6 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { boxNotePath, loadTent } from "./tree.js";
+import { boxNotePath, isUsableBox, loadTent } from "./tree.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 import type { Box } from "./types.js";
 
@@ -50,8 +50,10 @@ export async function addTag(fs: FsAdapter, boxId: string, name: string): Promis
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await addRegistryTagUnlocked(fs, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs, box, tags);
@@ -62,8 +64,10 @@ export async function removeTag(fs: FsAdapter, boxId: string, name: string): Pro
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await writeBoxTags(fs, box, box.tags.filter((item) => item !== tag));
   });
 }

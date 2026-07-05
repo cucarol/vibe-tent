@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { pathToFileURL } from "node:url";
 
 export async function makeTent(): Promise<string> {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-"));
@@ -65,6 +66,31 @@ export function git(dir: string, ...args: string[]): Promise<string> {
       if (code === 0) resolve(stdout);
       else reject(new Error(stderr || `git ${args.join(" ")} exit ${code}`));
     });
+  });
+}
+
+export function cli(dir: string, ...args: string[]): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  return new Promise((resolve, reject) => {
+    const tsxLoader = path.join(process.cwd(), "node_modules", "tsx", "dist", "loader.mjs");
+    const cliPath = path.join(process.cwd(), "src", "cli", "tent.ts");
+    const child = spawn(process.execPath, ["--import", pathToFileURL(tsxLoader).href, cliPath, ...args], {
+      cwd: dir,
+      env: {
+        ...process.env,
+        TENT_HOME: path.join(dir, ".tent-test-home"),
+      },
+      windowsHide: true,
+    });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.on("data", (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on("data", (chunk) => {
+      stderr += chunk;
+    });
+    child.on("error", reject);
+    child.on("close", (code) => resolve({ code, stdout, stderr }));
   });
 }
 

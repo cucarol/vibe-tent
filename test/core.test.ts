@@ -11,7 +11,7 @@ import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
 import { submitReport } from "../src/core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
-import { makeTent } from "./helpers.js";
+import { cli, makeTent } from "./helpers.js";
 
 test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-nodefs-"));
@@ -254,6 +254,15 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(relay, new RegExp(`1\\. Run \`tent task-ack ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
   assert.match(relay, /3\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
+});
+
+test("task-ack missing envelope reports a clean error", async () => {
+  const dir = await makeTent();
+  const { ackTaskEnvelope } = await import("../src/core/task.js");
+  await assert.rejects(
+    () => ackTaskEnvelope(new NodeFs(dir), "temp/analyst/tasks/nope.md"),
+    /Task envelope not found: temp\/analyst\/tasks\/nope\.md\./,
+  );
 });
 
 test("dispatch:必须提供 user prompt", async () => {
@@ -551,7 +560,7 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
     clock: { now: () => "t" },
     tentName: "x",
   };
-  const { archiveBox, restoreBox } = await import("../src/core/ops.js");
+  const { archiveBox, restoreBox, tagBox } = await import("../src/core/ops.js");
 
   await archiveBox(env as any, "bx-p1");
   let tent = await loadTent(fsa);
@@ -569,6 +578,10 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
   });
   assert.ok(
     !manifest.readable.some((x) => x.path.startsWith("prompt/表达式任务书")),
+  );
+  await assert.rejects(
+    () => tagBox(env as any, "bx-p1", "decision"),
+    /Invalid or archived boxes cannot be tagged\./,
   );
 
   await restoreBox(env as any, "bx-p1");
@@ -598,6 +611,23 @@ test("永久删除:node 必须先归档,删除父级会删除整棵子树", asyn
   const tent = await loadTent(fsa);
   assert.equal(tent.byId.has("bx-p1"), false);
   assert.equal(tent.byId.has("bx-p2"), false);
+});
+
+test("CLI rejects unexpected positional args and missing report body cleanly", async () => {
+  const dir = await makeTent();
+
+  let result = await cli(dir, "new-box", "Extra", "goal", "parent", "ignored");
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Usage: tent new-box <name> <type> \[parentId\]/);
+
+  result = await cli(dir, "tag-new", "decision", "ignored");
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Usage: tent tag-new <name>/);
+
+  result = await cli(dir, "report", "bx-p1", path.join(dir, "missing-report.txt"));
+  assert.notEqual(result.code, 0);
+  assert.match(result.stderr, /Body file not found:/);
+  assert.doesNotMatch(result.stderr, /ENOENT/);
 });
 
 test("原生复制收编:重复 id 先失效,再整树重发 id 并清 owner/status", async () => {
@@ -646,6 +676,43 @@ test("无法识别为新复制的重复 id 会显式失效,不会覆盖索引", 
   assert.equal(tent.byId.has("bx-p1"), false);
   assert.equal(tent.byPath.get("prompt/表达式任务书")?.invalid, true);
   assert.equal(tent.byPath.get("另一个任务")?.invalid, true);
+});
+
+test("duplicate box id direct operations report duplicate id", async () => {
+  const dir = await makeTent();
+  const duplicate = path.join(dir, "另一个任务");
+  await fs.mkdir(duplicate);
+  await fs.writeFile(
+    path.join(duplicate, "另一个任务.md"),
+    "---\nid: bx-p1\ntype: prompt\n---\n",
+  );
+  const env = {
+    fs: new NodeFs(dir),
+    clock: { now: () => "t" },
+    tentName: "wqb",
+  };
+  const { dispatch, grantReadable } = await import("../src/core/ops.js");
+  await assert.rejects(
+    () => dispatch(env as any, "bx-p1", "analyst", "work"),
+    /Duplicate box id 'bx-p1'/,
+  );
+  await assert.rejects(
+    () => grantReadable(env as any, "bx-p1"),
+    /Duplicate box id 'bx-p1'/,
+  );
+});
+
+test("malformed box frontmatter is marked invalid with parse detail", async () => {
+  const dir = await makeTent();
+  await fs.writeFile(
+    path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"),
+    "---\nid: [unterminated\ntype: prompt\n---\n# Bad\n",
+  );
+  const tent = await loadTent(new NodeFs(dir));
+  const box = tent.byPath.get("prompt/表达式任务书")!;
+  assert.equal(box.invalid, true);
+  assert.match(box.invalidReason || "", /Invalid frontmatter: Invalid frontmatter YAML: unterminated flow array\./);
+  assert.equal(tent.byId.has("bx-p1"), false);
 });
 
 test("Tent mutation lock:并发写入被短期互斥,释放后可继续", async () => {

@@ -27,6 +27,7 @@ export interface LoadedTent {
   byId: Map<string, Box>;
   /** path → Box 索引。 */
   byPath: Map<string, Box>;
+  duplicateIds: Set<string>;
   typeRegistry: TypeRegistry;
 }
 
@@ -55,7 +56,7 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
 
-  return { roots: sortedRoots, byId, byPath, typeRegistry };
+  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
 
 function findDuplicateIds(roots: Box[]): Set<string> {
@@ -121,7 +122,15 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     return null;
   }
   const raw = await fs.readFile(boxFile);
-  const { data, body } = parseFrontmatter(raw);
+  let parsed: ReturnType<typeof parseFrontmatter>;
+  let parseError: string | undefined;
+  try {
+    parsed = parseFrontmatter(raw);
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : String(error);
+    parsed = { data: {}, body: raw, keyOrder: [] };
+  }
+  const { data, body } = parsed;
   const name = baseName(path);
   const zone = parent ? parent.zone : zoneOf(name);
 
@@ -132,7 +141,7 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     kind: fm.kind,
     tags,
     archived: false,
-    invalid: false,
+    invalid: !!parseError,
     path,
     name,
     fm,
@@ -144,6 +153,10 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" },
   };
+  if (parseError) {
+    box.invalidRootId = path;
+    box.invalidReason = `Invalid frontmatter: ${parseError}`;
+  }
 
   const sub = await fs.listDir(path);
   for (const entry of sub) {
@@ -215,7 +228,9 @@ function resolveSubtree(
   inheritedInvalid?: { rootId: string; reason: string },
   inheritedArchived = false
 ): void {
-  const directInvalid = invalidTypeReference(box, registry);
+  const directInvalid = box.invalid
+    ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." }
+    : invalidTypeReference(box, registry);
   const invalid = inheritedInvalid || directInvalid;
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;

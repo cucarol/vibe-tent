@@ -63,13 +63,22 @@ function coerce(v: string): unknown {
   if (v === "null" || v === "~") return null;
   if (/^-?\d+$/.test(v)) return parseInt(v, 10);
   if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if (v.startsWith('"') && !v.endsWith('"')) {
+    throw new Error("Invalid frontmatter YAML: unterminated double-quoted string.");
+  }
   if (v.startsWith('"') && v.endsWith('"')) {
     return parseDoubleQuoted(v);
+  }
+  if (v.startsWith("'") && !v.endsWith("'")) {
+    throw new Error("Invalid frontmatter YAML: unterminated single-quoted string.");
   }
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
   }
   // YAML 流式数组: [item1, item2, ...]
+  if (v.startsWith("[") && !v.endsWith("]")) {
+    throw new Error("Invalid frontmatter YAML: unterminated flow array.");
+  }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
     if (!inner) return [];

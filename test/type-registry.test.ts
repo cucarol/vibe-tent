@@ -112,6 +112,21 @@ test("migrateKindToType:移除 legacy kind 并写成单层 type registry", async
   assert.equal(registry.secondary, undefined);
 });
 
+test("migrateKindToType:no legacy kind leaves registry untouched", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
+  const registryPath = path.join(dir, ".tent", "types.json");
+  await fs.writeFile(registryPath, JSON.stringify({ custom: { tier: "base", readable: true, writable: false } }, null, 2));
+  const before = await fs.stat(registryPath);
+
+  const touched = await migrateKindToType(fsa);
+  const after = await fs.stat(registryPath);
+
+  assert.deepEqual(touched, []);
+  assert.equal(after.mtimeMs, before.mtimeMs);
+});
+
 test("显式 R/W 只作用本框:不再沿祖先下流", async () => {
   const dir = await makeTent();
   const parentFile = path.join(

@@ -12,6 +12,7 @@ export async function forkNode(env: OpsEnv, boxId: string): Promise<string> {
 
 async function forkNodeUnlocked(env: OpsEnv, boxId: string): Promise<string> {
   const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");

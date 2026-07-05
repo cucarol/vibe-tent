@@ -35,6 +35,7 @@ async function submitReportUnlocked(
   const text = body.trim();
   if (!text) throw new Error("Report body cannot be empty.");
   const tent = await loadTent(fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   const role = box.fm.owner;

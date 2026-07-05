@@ -144,8 +144,7 @@ function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: strin
   if (id === "." || id === "root" || id === tentName) {
     throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
   }
-  const box = tent.byId.get(id);
-  if (!box) throw new Error(`Box not found: ${claimId}.`);
+  const box = requireBoxById(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
 
@@ -164,8 +163,7 @@ export async function completeClaim(
 ): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (integrate) await integrate();
     await setOwner(env.fs, box, undefined, "done", acceptedBy);
   });
@@ -187,8 +185,7 @@ export async function acceptReport(
     const report = await loadReport(env.fs, reportPath);
     if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(report.boxId);
-    if (!box) throw new Error(`Box not found: ${report.boxId}.`);
+    const box = requireBoxById(tent, report.boxId);
     if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
@@ -204,8 +201,7 @@ export async function acceptReport(
 export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
@@ -229,8 +225,7 @@ export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {
 export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, undefined, "todo");
     await removeReportsForBox(env.fs, box.id);
@@ -455,8 +450,7 @@ async function patchBodyUnlocked(
 export async function archiveBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or already archived boxes cannot be archived.");
     if (isFrozen(box)) throw new Error("Claimed ranges cannot be archived; stamp or force-release the owner first.");
     await patchFrontmatter(env.fs, box, { archived: true });
@@ -466,8 +460,7 @@ export async function archiveBox(env: OpsEnv, boxId: string): Promise<void> {
 export async function restoreBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (box.fm.archived !== true) throw new Error("Only an explicit archive root can restore the subtree.");
     await patchFrontmatter(env.fs, box, { archived: undefined });
   });
@@ -476,8 +469,7 @@ export async function restoreBox(env: OpsEnv, boxId: string): Promise<void> {
 export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (box.fm.archived !== true) throw new Error("Node must be archived before permanent deletion.");
     if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
 
@@ -587,6 +579,15 @@ function ownerCovering(box: Box): Box | undefined {
     parent = parent.parent;
   }
   return undefined;
+}
+
+function requireBoxById(tent: LoadedTent, boxId: string): Box {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
 }
 
 async function withMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {

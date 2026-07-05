@@ -170,6 +170,7 @@ export async function migrateKindToType(fs: FsAdapter): Promise<string[]> {
       await fs.writeFile(path, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
       touched.push(path);
     }
+    if (touched.length === 0) return touched;
     const registry = await loadTypeRegistry(fs);
     await writeTypeRegistryUnlocked(fs, registry);
     touched.push(TYPE_REGISTRY_PATH);
