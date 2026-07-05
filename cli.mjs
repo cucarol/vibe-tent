@@ -143,11 +143,20 @@ function coerce(v) {
   if (v === "null" || v === "~") return null;
   if (/^-?\d+$/.test(v)) return parseInt(v, 10);
   if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if (v.startsWith('"') && !v.endsWith('"')) {
+    throw new Error("Invalid frontmatter YAML: unterminated double-quoted string.");
+  }
   if (v.startsWith('"') && v.endsWith('"')) {
     return parseDoubleQuoted(v);
   }
+  if (v.startsWith("'") && !v.endsWith("'")) {
+    throw new Error("Invalid frontmatter YAML: unterminated single-quoted string.");
+  }
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
+  }
+  if (v.startsWith("[") && !v.endsWith("]")) {
+    throw new Error("Invalid frontmatter YAML: unterminated flow array.");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
@@ -300,6 +309,21 @@ function emit(v) {
   return s;
 }
 
+// src/core/registryRecovery.ts
+async function backupCorruptRegistry(fs4, path3) {
+  const backupPath = `${path3}.corrupt-${timestamp()}`;
+  await fs4.writeFile(backupPath, await fs4.readFile(path3));
+  return backupPath;
+}
+function warnRegistryRecovered(path3, backupPath, action, extra = "") {
+  console.error(
+    `WARNING: ${path3} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+  );
+}
+function timestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+}
+
 // src/core/order.ts
 var ROOT_KEY = "__root__";
 var ORDER_PATH = ".tent/order.json";
@@ -308,6 +332,9 @@ async function loadOrder(fs4) {
   try {
     return JSON.parse(await fs4.readFile(ORDER_PATH));
   } catch {
+    const backupPath = await backupCorruptRegistry(fs4, ORDER_PATH);
+    await saveOrder(fs4, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
@@ -339,7 +366,7 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: false,
     color: "blue",
     tier: "base",
-    description: "Define goals, intent, and acceptance direction."
+    description: "Define goals, intent, and acceptance criteria."
   },
   prompt: {
     readable: true,
@@ -353,7 +380,7 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: true,
     color: "cyan",
     tier: "base",
-    description: "Map real deliverables and workspace."
+    description: "Map real deliverables to a workspace."
   },
   open: {
     readable: true,
@@ -479,7 +506,7 @@ async function loadTent(fs4) {
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
   resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
-  return { roots: sortedRoots, byId, byPath, typeRegistry };
+  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
 function findDuplicateIds(roots) {
   const counts = /* @__PURE__ */ new Map();
@@ -516,7 +543,15 @@ async function loadBox(fs4, path3, parent, registry) {
     return null;
   }
   const raw = await fs4.readFile(boxFile);
-  const { data, body } = parseFrontmatter(raw);
+  let parsed;
+  let parseError;
+  try {
+    parsed = parseFrontmatter(raw);
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : String(error);
+    parsed = { data: {}, body: raw, keyOrder: [] };
+  }
+  const { data, body } = parsed;
   const name = baseName(path3);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
@@ -526,7 +561,7 @@ async function loadBox(fs4, path3, parent, registry) {
     kind: fm.kind,
     tags,
     archived: false,
-    invalid: false,
+    invalid: !!parseError,
     path: path3,
     name,
     fm,
@@ -538,6 +573,10 @@ async function loadBox(fs4, path3, parent, registry) {
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" }
   };
+  if (parseError) {
+    box.invalidRootId = path3;
+    box.invalidReason = `Invalid frontmatter: ${parseError}`;
+  }
   const sub = await fs4.listDir(path3);
   for (const entry of sub) {
     if (!entry.isDir) continue;
@@ -591,7 +630,7 @@ function zoneOf(name) {
   return ZONE_NAMES.includes(name) ? name : null;
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
-  const directInvalid = invalidTypeReference(box, registry);
+  const directInvalid = box.invalid ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." } : invalidTypeReference(box, registry);
   const invalid = inheritedInvalid || directInvalid;
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;
@@ -702,17 +741,17 @@ function buildManifest(tent, input) {
     }
   }
   readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
-  readable.push({ path: "temp/", note: "System pipe: read all role tasks, proposals, and deliveries." });
+  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
       writable.push({ id: box.id, path: box.path });
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structure permission: may create/move top-level boxes at the Tent root." });
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
   }
   for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structure permission: may create/move/delete child boxes under this box." });
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
   }
   writable.push({ path: join("temp", role) + "/" });
   return {
@@ -882,7 +921,11 @@ async function loadTagRegistry(fs4) {
   try {
     return normalizeRegistry2(JSON.parse(await fs4.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    return { tags: [] };
+    const backupPath = await backupCorruptRegistry(fs4, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs4);
+    await saveTagRegistryUnlocked(fs4, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
 }
 async function saveTagRegistryUnlocked(fs4, registry) {
@@ -904,8 +947,10 @@ async function addTag(fs4, boxId, name) {
   await withTentMutation(fs4, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs4);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await addRegistryTagUnlocked(fs4, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs4, box, tags);
@@ -915,8 +960,10 @@ async function removeTag(fs4, boxId, name) {
   await withTentMutation(fs4, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs4);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await writeBoxTags(fs4, box, box.tags.filter((item) => item !== tag));
   });
 }
@@ -934,12 +981,7 @@ async function removeRegistryTag(fs4, name) {
   });
 }
 function findBoxesByTag(tent, name) {
-  let tag;
-  try {
-    tag = normalizeTagName(name);
-  } catch {
-    return [];
-  }
+  const tag = normalizeTagName(name);
   return [...tent.byId.values()].filter((box) => box.tags.includes(tag)).sort((a, b) => a.path.localeCompare(b.path));
 }
 function normalizeTagName(name) {
@@ -968,6 +1010,14 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
+async function recoverTagRegistryFromBoxes(fs4) {
+  const tent = await loadTent(fs4);
+  const tags = [];
+  for (const box of tent.byPath.values()) {
+    tags.push(...box.tags);
+  }
+  return { tags: uniqueSorted(tags) };
+}
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
@@ -991,9 +1041,17 @@ async function loadRolesRegistry(fs4) {
   try {
     const parsed = JSON.parse(await fs4.readFile(ROLES_REGISTRY_PATH));
     return normalizeRolesRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`roles.json is corrupt: ${detail}.`);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs4, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
 }
 function normalizeRolesRegistry(value) {
@@ -1021,13 +1079,13 @@ function normalizeRoleDefinition(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role cli must be an object.");
+  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role cli.command must be a non-empty string.");
+  if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
   if (value.resume !== void 0) {
     const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role cli.resume must be a non-empty string.");
+    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
     cli.resume = resume;
   }
   return cli;
@@ -1036,6 +1094,10 @@ function cloneDefaultRoles() {
   return {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
+}
+async function writeJson(fs4, path3, value) {
+  if (!await fs4.exists(".tent")) await fs4.mkdir(".tent");
+  await fs4.writeFile(path3, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1078,10 +1140,10 @@ async function loadTaskEnvelopes(fs4) {
 }
 function relayPromptForTask(task, tentRoot) {
   const initPath = join("temp", task.role, "init.md");
-  return `Tent task dispatched to role ${task.role}.
+  return `A Tent task has been dispatched to role ${task.role}.
 Tent root: ${tentRoot}
 1. Run \`tent task-ack ${task.path}\` to take this task.
-2. Read the envelope, then open the claimed box(es) \u2014 the box note is the task definition.
+2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
 3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs4, role, tentName) {
@@ -1098,7 +1160,7 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 
 ## Operating Model
 
-Manifest readable/writable entries are an honor contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 `;
   await fs4.writeFile(path3, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path3;
@@ -1141,6 +1203,7 @@ ${userPrompt}
   return path3;
 }
 async function ackTaskEnvelope(fs4, path3) {
+  if (!await fs4.exists(path3)) throw new Error(`Task envelope not found: ${path3}.`);
   const raw = await fs4.readFile(path3);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path3}.`);
@@ -1170,6 +1233,7 @@ async function submitReportUnlocked(fs4, clock, boxId, body, commits) {
   const text = body.trim();
   if (!text) throw new Error("Report body cannot be empty.");
   const tent = await loadTent(fs4);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   const role = box.fm.owner;
@@ -1265,12 +1329,52 @@ function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
 }
 
+// src/core/scaffold.ts
+async function scaffoldTent(fs4, options) {
+  const name = options.name.trim();
+  if (!name) throw new Error("Tent name cannot be empty.");
+  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
+  const usedIds = /* @__PURE__ */ new Set();
+  for (const box of options.boxes ?? []) {
+    const boxName = validateBoxName(box.name);
+    const type = box.kind?.trim() || box.type.trim();
+    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
+    const id = box.id?.trim() || makeUniqueBoxId(usedIds);
+    usedIds.add(id);
+    const frontmatter = { id, type };
+    await writeBox(fs4, boxName, frontmatter, box.body ?? `# ${boxName}
+`);
+  }
+  await fs4.mkdir("temp");
+  await fs4.mkdir(".tent");
+  await fs4.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
+  await fs4.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
+  await fs4.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
+  await fs4.writeFile("RULES.md", options.rules);
+}
+function validateBoxName(value) {
+  const name = value.trim();
+  if (!name) throw new Error("Box name cannot be empty.");
+  if (name.length > 200) throw new Error("Box name cannot be longer than 200 characters.");
+  if (/[\/\\]/.test(name)) throw new Error("Box name cannot contain path separators.");
+  if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
+  return name;
+}
+async function writeBox(fs4, path3, frontmatter, body) {
+  await fs4.mkdir(path3);
+  await fs4.writeFile(boxNotePath(path3), serializeFrontmatter(frontmatter, `
+${body}
+`, BOX_FRONTMATTER_KEY_ORDER));
+}
+
 // src/core/forkOps.ts
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
 }
 async function forkNodeUnlocked(env, boxId) {
   const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
@@ -1429,10 +1533,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
   }
-  const box = tent.byId.get(id);
-  if (!box) throw new Error(`Box not found: ${claimId}.`);
+  const box = requireBoxById(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
 async function stamp(env, boxId, acceptedBy = "user") {
@@ -1441,8 +1544,7 @@ async function stamp(env, boxId, acceptedBy = "user") {
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (integrate) await integrate();
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
@@ -1452,8 +1554,7 @@ async function acceptReport(env, reportPath2, options = {}) {
     const report = await loadReport(env.fs, reportPath2);
     if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(report.boxId);
-    if (!box) throw new Error(`Box not found: ${report.boxId}.`);
+    const box = requireBoxById(tent, report.boxId);
     if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
@@ -1467,26 +1568,25 @@ async function acceptReport(env, reportPath2, options = {}) {
 async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
 }
 async function cleanTemp(env, role) {
+  const roleName = role === void 0 ? void 0 : assertRoleName(role);
   await withMutation(env.fs, async () => {
-    const target = role ? join("temp", role) : "temp";
+    const target = roleName ? join("temp", roleName) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!role) await ensureDir3(env.fs, "temp");
+    if (!roleName) await ensureDir3(env.fs, "temp");
   });
 }
 async function forceRelease(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
     await removeReportsForBox(env.fs, box.id);
@@ -1509,6 +1609,7 @@ async function createBox(env, input) {
 }
 async function createBoxUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
+  const name = validateBoxName(input.name);
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
@@ -1517,12 +1618,12 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
-  const path3 = join(input.parentPath, input.name);
+  const path3 = join(input.parentPath, name);
   assertNotTempPath(path3);
   await ensureDir3(env.fs, path3);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
-# ${input.name}
+# ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path3), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
@@ -1572,7 +1673,7 @@ function boxKeyOrder2(existing) {
 }
 function assertNotTempPath(path3) {
   if (path3 === "temp" || path3.startsWith("temp/")) {
-    throw new Error("temp is a system pipe; typed boxes cannot be created or moved there.");
+    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
 function assertRoleName(role) {
@@ -1590,41 +1691,16 @@ function ownerCovering(box) {
   }
   return void 0;
 }
+function requireBoxById(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
 async function withMutation(fs4, action) {
   return withTentMutation(fs4, action);
-}
-
-// src/core/scaffold.ts
-async function scaffoldTent(fs4, options) {
-  const name = options.name.trim();
-  if (!name) throw new Error("Tent name cannot be empty.");
-  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
-  const usedIds = /* @__PURE__ */ new Set();
-  for (const box of options.boxes ?? []) {
-    const boxName = box.name.trim();
-    if (!boxName || boxName.includes("/") || boxName.includes("\\")) {
-      throw new Error(`Invalid box name: ${box.name}.`);
-    }
-    const type = box.kind?.trim() || box.type.trim();
-    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
-    const id = box.id?.trim() || makeUniqueBoxId(usedIds);
-    usedIds.add(id);
-    const frontmatter = { id, type };
-    await writeBox(fs4, boxName, frontmatter, box.body ?? `# ${boxName}
-`);
-  }
-  await fs4.mkdir("temp");
-  await fs4.mkdir(".tent");
-  await fs4.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
-  await fs4.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
-  await fs4.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
-  await fs4.writeFile("RULES.md", options.rules);
-}
-async function writeBox(fs4, path3, frontmatter, body) {
-  await fs4.mkdir(path3);
-  await fs4.writeFile(boxNotePath(path3), serializeFrontmatter(frontmatter, `
-${body}
-`, BOX_FRONTMATTER_KEY_ORDER));
 }
 
 // src/core/output.ts
@@ -1681,6 +1757,7 @@ async function migrateKindToType(fs4) {
       await fs4.writeFile(path3, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
       touched.push(path3);
     }
+    if (touched.length === 0) return touched;
     const registry = await loadTypeRegistry(fs4);
     await writeTypeRegistryUnlocked(fs4, registry);
     touched.push(TYPE_REGISTRY_PATH);
@@ -1905,10 +1982,10 @@ async function integrateWorkspaceCommits(contract, refs) {
   const root = contract.workspace;
   const current = (await git(root, ["branch", "--show-current"])).trim();
   if (current !== contract.targetBranch) {
-    throw new Error(`workspace must check out ${contract.targetBranch}; current is ${current || "(detached)"}.`);
+    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("workspace has uncommitted changes; cannot accept integration.");
+  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
@@ -1957,7 +2034,7 @@ async function assertGitWorkspace(root) {
     nodeFs.realpath(root)
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`workspace must be a Git root: ${root}.`);
+    throw new Error(`Workspace must be a Git root: ${root}.`);
   }
 }
 function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
@@ -2013,10 +2090,10 @@ async function rollbackIntegration(root, originalRef, cause) {
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {
     throw new Error(
-      `workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
     );
   }
-  throw new Error(`workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -2088,11 +2165,11 @@ function runShell(cwd, command) {
         return;
       }
       const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
-      reject(new Error(`require-check failed (${code}): ${command}
+      reject(new Error(`--require-check failed (${code}): ${command}
 ${detail}`));
     });
     child.on("error", (error) => {
-      reject(new Error(`require-check failed to start: ${command}
+      reject(new Error(`--require-check failed to start: ${command}
 ${error.message}`));
     });
   });
@@ -2125,7 +2202,7 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
     lines.push("Pending decisions:");
     for (const box of decisions) lines.push(`- ${box.id}: ${box.name}`);
   }
-  const tasks = (await loadTaskEnvelopes(fsAdapter)).filter((task) => task.status === "pending").filter((task) => !role || task.role === role);
+  const tasks = (await loadTaskEnvelopes(fsAdapter)).filter((task) => task.status === "pending").filter((task) => hasUndoneClaim(tent, task.claims)).filter((task) => !role || task.role === role);
   lines.push("");
   if (tasks.length === 0) {
     lines.push("Pending tasks (task-ack): none");
@@ -2164,6 +2241,10 @@ function pendingDecisionBoxes(tent) {
 function activeClaimBoxes(tent) {
   return [...tent.byId.values()].filter((box) => !!box.fm.owner).sort((a, b) => a.path.localeCompare(b.path));
 }
+function hasUndoneClaim(tent, claims) {
+  if (claims.length === 0 || claims.includes("root")) return true;
+  return claims.some((claim) => tent.byId.get(claim)?.fm.status !== "done");
+}
 
 // src/cli/tent.ts
 function makeEnv() {
@@ -2192,14 +2273,18 @@ async function main() {
       if (!positionals[0]) {
         return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       }
+      if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
       await newTent(positionals[0], flags.vault);
       break;
     }
     case "dispatch": {
       const { positionals, flags } = parseFlags(args);
-      const [claimId, role, ...promptParts] = positionals;
-      if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
+      const [boxId, role, ...promptParts] = positionals;
+      if (!boxId || !role) {
+        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
+      }
+      if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
+        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       if (isUnsafeRoleSegment(role)) return fail(`Invalid role for dispatch: ${role}`);
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
@@ -2216,7 +2301,7 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
       if (!workspacePath) {
-        console.log("Note: this tent has no workspace pointer box \u2014 the envelope carries no workspace contract (Tent-only task).");
+        console.log("Note: this Tent has no workspace output box; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
@@ -2224,7 +2309,7 @@ async function main() {
         const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
         workspace = { ...workspace ?? await ensureRoleWorkspace(workspacePath, role), targetBranch: dispatcherWorkspace.branch };
       }
-      const r = await dispatch(env, claimId, role, {
+      const r = await dispatch(env, boxId, role, {
         userPrompt: localPrompt,
         workspace,
         dispatchedBy: dispatcher
@@ -2238,6 +2323,7 @@ ${r.relayPrompt}`);
     case "task-ack": {
       const taskPath = args[0];
       if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
+      if (args.length > 1) return fail("Usage: tent task-ack <taskPath>");
       await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
       console.log(`\u2713 Task acknowledged: ${taskPath}`);
       break;
@@ -2245,6 +2331,7 @@ ${r.relayPrompt}`);
     case "role-init": {
       const roleName = args[0];
       if (!roleName) return fail("Usage: tent role-init <role>");
+      if (args.length > 1) return fail("Usage: tent role-init <role>");
       const roles = await loadRolesRegistry(env.fs);
       const role = roles.roles.find((item) => item.name === roleName) ?? { name: roleName };
       const initPath = await withTentMutation(
@@ -2255,6 +2342,7 @@ ${r.relayPrompt}`);
       break;
     }
     case "roles": {
+      if (args.length > 0) return fail("Usage: tent roles");
       const registry = await loadRolesRegistry(env.fs);
       console.log(JSON.stringify(registry, null, 2));
       break;
@@ -2265,7 +2353,8 @@ ${r.relayPrompt}`);
       if (!boxId || !bodySource) {
         return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
       }
-      const body = bodySource === "-" ? await readStdin() : await (await import("node:fs/promises")).readFile(path2.resolve(bodySource), "utf8");
+      if (positionals.length > 2) return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
+      const body = bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
       console.log(`\u2713 Report ready for review: ${report.path}`);
@@ -2275,6 +2364,7 @@ ${r.relayPrompt}`);
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
       if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
+      if (positionals.length > 1) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
       const tent = await loadTent(env.fs);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
@@ -2323,12 +2413,14 @@ ${r.relayPrompt}`);
     case "stamp": {
       const { positionals, flags } = parseFlags(args);
       if (!positionals[0]) return fail("Usage: tent stamp <boxId> [--by <role>]");
+      if (positionals.length > 1) return fail("Usage: tent stamp <boxId> [--by <role>]");
       const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       await stamp(env, positionals[0], acceptedBy);
       console.log(`\u2713 Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
     case "status": {
+      if (args.length > 0) return fail("Usage: tent status");
       try {
         process.stdout.write(await renderTentStatus(process.cwd(), process.env.TENT_ROLE));
       } catch (error) {
@@ -2339,6 +2431,7 @@ ${r.relayPrompt}`);
     }
     case "grant-readable": {
       if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
+      if (args.length > 1) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
       console.log(`\u2713 ${args[0]} readable=true`);
       break;
@@ -2346,6 +2439,12 @@ ${r.relayPrompt}`);
     case "new-box": {
       const [name, type, parentId] = args;
       if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
+      if (args.length > 3) return fail("Usage: tent new-box <name> <type> [parentId]");
+      try {
+        validateBoxName(name);
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
       let parentPath = "";
       if (parentId) {
         const tent = await loadTent(env.fs);
@@ -2360,6 +2459,7 @@ ${r.relayPrompt}`);
     case "tag": {
       const [boxId, name] = args;
       if (!boxId || !name) return fail("Usage: tent tag <boxId> <name>");
+      if (args.length > 2) return fail("Usage: tent tag <boxId> <name>");
       await tagBox(env, boxId, name);
       console.log(`\u2713 Added tag to ${boxId}: ${name}`);
       break;
@@ -2367,20 +2467,24 @@ ${r.relayPrompt}`);
     case "untag": {
       const [boxId, name] = args;
       if (!boxId || !name) return fail("Usage: tent untag <boxId> <name>");
+      if (args.length > 2) return fail("Usage: tent untag <boxId> <name>");
       await untagBox(env, boxId, name);
       console.log(`\u2713 Removed tag from ${boxId}: ${name}`);
       break;
     }
     case "tag-new": {
       if (!args[0]) return fail("Usage: tent tag-new <name>");
+      if (args.length > 1) return fail("Usage: tent tag-new <name>");
       await createTag(env, args[0]);
       console.log(`\u2713 Registered tag: ${args[0]}`);
       break;
     }
     case "tag-rm": {
-      const [name, confirmation] = args;
+      const { positionals, flags } = parseFlags(args);
+      const [name, confirmation] = positionals;
       if (!name) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
-      if (!args.includes("--yes") && confirmation !== name) {
+      if (positionals.length > 2) return fail("Usage: tent tag-rm <name> --yes OR tent tag-rm <name> <name>");
+      if (!flags.yes && confirmation !== name) {
         return fail(`Deleting a tag removes it from every box. Add --yes or repeat the tag name to confirm: tent tag-rm ${name} ${name}`);
       }
       await deleteTag(env, name);
@@ -2388,6 +2492,7 @@ ${r.relayPrompt}`);
       break;
     }
     case "tags": {
+      if (args.length > 0) return fail("Usage: tent tags");
       const registry = await loadTagRegistry(env.fs);
       if (registry.tags.length === 0) console.log("(no tags)");
       else for (const tag of registry.tags) console.log(tag);
@@ -2395,6 +2500,12 @@ ${r.relayPrompt}`);
     }
     case "find": {
       if (!args[0]) return fail("Usage: tent find <name>");
+      if (args.length > 1) return fail("Usage: tent find <name>");
+      try {
+        normalizeTagName(args[0]);
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
       const tent = await loadTent(env.fs);
       const boxes = findBoxesByTag(tent, args[0]);
       if (boxes.length === 0) {
@@ -2409,11 +2520,13 @@ ${r.relayPrompt}`);
     }
     case "fork": {
       if (!args[0]) return fail("Usage: tent fork <boxId>");
+      if (args.length > 1) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
       console.log(`\u2713 Forked ${args[0]} \u2192 ${id}`);
       break;
     }
     case "clean-temp": {
+      if (args.length > 1) return fail("Usage: tent clean-temp [role]");
       if (args[0] && isUnsafeRoleSegment(args[0])) return fail(`Invalid role for clean-temp: ${args[0]}`);
       await cleanTemp(env, args[0]);
       console.log(`\u2713 Cleared temp/${args[0] || "(all)"}`);
@@ -2421,11 +2534,13 @@ ${r.relayPrompt}`);
     }
     case "force-release": {
       if (!args[0]) return fail("Usage: tent force-release <boxId>");
+      if (args.length > 1) return fail("Usage: tent force-release <boxId>");
       await forceRelease(env, args[0]);
       console.log(`\u2713 Force-released owner: ${args[0]}`);
       break;
     }
     case "migrate-kind-to-type": {
+      if (args.length > 0) return fail("Usage: tent migrate-kind-to-type");
       const touched = await migrateKindToType(env.fs);
       if (touched.length === 0) console.log("\u2713 No migration needed: no legacy kind fields found");
       else console.log(`\u2713 Migrated legacy kind \u2192 type:
@@ -2433,6 +2548,7 @@ ${touched.map((p) => `- ${p}`).join("\n")}`);
       break;
     }
     case "okf-sync": {
+      if (args.length > 0) return fail("Usage: tent okf-sync");
       const result = await syncOkfBundle(env.fs);
       console.log(
         `\u2713 OKF synchronized
@@ -2446,7 +2562,8 @@ unresolved wiki links: ${result.unresolved.length}`
       break;
     }
     case "skill-install": {
-      const { flags } = parseFlags(args);
+      const { positionals, flags } = parseFlags(args);
+      if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
       const target = flags.target || "claude";
       const force = flags.force === "true";
       const dir = flags.dir || defaultSkillInstallDir(target);
@@ -2458,6 +2575,7 @@ unresolved wiki links: ${result.unresolved.length}`
       break;
     }
     case "tree": {
+      if (args.length > 0) return fail("Usage: tent tree");
       const tent = await loadTent(env.fs);
       for (const r of tent.roots) printBox(r, 0);
       break;
@@ -2478,6 +2596,11 @@ function readStdin() {
     process.stdin.on("error", reject);
   });
 }
+async function readBodyFile(bodySource) {
+  const resolved = path2.resolve(bodySource);
+  if (!await existsPath(resolved)) throw new Error(`Body file not found: ${bodySource}.`);
+  return fs3.readFile(resolved, "utf8");
+}
 function printBox(box, depth) {
   const ind = "  ".repeat(depth);
   const rw = `R${box.readable.value ? "\u2713" : "\u2717"}/W${box.writable.value ? "\u2713" : "\u2717"}`;
@@ -2497,7 +2620,7 @@ function fail(msg) {
   process.exitCode = 1;
 }
 function isUnsafeRoleSegment(value) {
-  return value.includes("..") || value.includes("/") || value.includes("\\");
+  return value.includes("..") || /[\/\\\r\n]/.test(value);
 }
 function parseFlags(args) {
   const positionals = [];
@@ -2592,7 +2715,7 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
+  dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId> [options]         Confirm completion and release owner.
@@ -2649,7 +2772,7 @@ async function newTent(target, vault) {
   const name = path2.basename(path2.resolve(target));
   const fallbackRules = `# ${name} - Project Rules
 
-> Local rules for this Tent (global rules): created by genesis; edit freely.
+> Local project rules for this Tent. Created by tent-genesis; edit freely.
 > Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.
 
 - Output workspace: <real code repository path>
@@ -2665,7 +2788,7 @@ async function newTent(target, vault) {
   });
   console.log(
     `\u2713 Created Tent: ${target}
-The root starts empty; add boxes in the panel or create a folder with a same-named Markdown note.`
+The root starts empty; add boxes in the panel or create a folder that contains a same-named Markdown note.`
   );
 }
 function normalizeTemplateRoles(value) {

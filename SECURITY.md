@@ -10,6 +10,6 @@ Tent controls which project context an agent may read or write. Permission-bound
 
 ## Reporting a Vulnerability
 
-Please report suspected vulnerabilities through GitHub private vulnerability reporting, using the repository's GitHub Security Advisories "Report a vulnerability" private entry. Do not open a public issue for security reports.
+Please use GitHub private vulnerability reporting: open the repository's Security Advisories page and choose "Report a vulnerability." Do not open a public issue for security reports.
 
-Include a minimal reproduction, affected version or commit, and the expected versus actual readable/writable scope. Do not include real vault contents, credentials, manifests, or private workspace paths in a report.
+Include a minimal reproduction, affected version or commit, and the expected and actual readable/writable scope. Do not include real vault contents, credentials, manifests, or private workspace paths in a report.

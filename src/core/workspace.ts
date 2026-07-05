@@ -106,10 +106,10 @@ export async function integrateWorkspaceCommits(
   const root = contract.workspace;
   const current = (await git(root, ["branch", "--show-current"])).trim();
   if (current !== contract.targetBranch) {
-    throw new Error(`workspace must check out ${contract.targetBranch}; current is ${current || "(detached)"}.`);
+    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("workspace has uncommitted changes; cannot accept integration.");
+  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
 
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
   const resolved = [];
@@ -198,7 +198,7 @@ async function assertGitWorkspace(root: string): Promise<void> {
     nodeFs.realpath(root),
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`workspace must be a Git root: ${root}.`);
+    throw new Error(`Workspace must be a Git root: ${root}.`);
   }
 }
 
@@ -276,10 +276,10 @@ async function rollbackIntegration(root: string, originalRef: string, cause: unk
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {
     throw new Error(
-      `workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
     );
   }
-  throw new Error(`workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
 
 function errorMessage(error: unknown): string {
@@ -367,10 +367,10 @@ function runShell(cwd: string, command: string): Promise<WorkspaceCheckResult> {
         return;
       }
       const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
-      reject(new Error(`require-check failed (${code}): ${command}\n${detail}`));
+      reject(new Error(`--require-check failed (${code}): ${command}\n${detail}`));
     });
     child.on("error", (error) => {
-      reject(new Error(`require-check failed to start: ${command}\n${error.message}`));
+      reject(new Error(`--require-check failed to start: ${command}\n${error.message}`));
     });
   });
 }

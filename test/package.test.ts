@@ -235,6 +235,11 @@ test("tent status:prints decisions, pending tasks, active claims, and rejects no
   assert.match(status.stdout, new RegExp(`- ${claimId}: Implement release notes \\(owner: reviewer, status: doing\\)`));
   assert.equal(status.stderr, "");
 
+  await runCli(tent, "stamp", claimId);
+  const doneStatus = await runCli(tent, "status");
+  assert.match(doneStatus.stdout, /Pending tasks \(task-ack\): none/);
+  assert.doesNotMatch(doneStatus.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
+
   const outside = await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-"));
   const failed = await runCliWithExit(outside, "status");
   assert.equal(failed.code, 1);

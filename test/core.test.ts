@@ -146,7 +146,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   const claim = tent.byId.get("bx-p1")!;
   const leafManifest = buildManifest(tent, { tentName: "wqb", role: "executor", claimBoxes: [claim] });
   assert.ok(
-    leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structure permission/.test(e.note || "")),
+    leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structural permission/.test(e.note || "")),
     "认领框本身有创建/移动/删除子框的结构权",
   );
   assert.ok(
@@ -249,7 +249,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
     dispatchedBy: "user",
   });
   const relay = relayPromptForTask(tasks[1], dir);
-  assert.match(relay, /^Tent task dispatched to role reviewer\./);
+  assert.match(relay, /^A Tent task has been dispatched to role reviewer\./);
   assert.match(relay, new RegExp(`Tent root: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(relay, new RegExp(`1\\. Run \`tent task-ack ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
   assert.match(relay, /3\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
@@ -289,7 +289,7 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const message = /Cannot dispatch the whole Tent directly; dispatch a specific box \(claimId cannot be \., root, or the Tent name\)\./;
+  const message = /Cannot dispatch the whole Tent directly; dispatch a specific box \(boxId cannot be \., root, or the Tent name\)\./;
   await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);

@@ -142,7 +142,7 @@ type DispatchClaim =
 function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: string): DispatchClaim {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
   }
   const box = requireBoxById(tent, id);
   return { root: false, id: box.id, name: box.name, box };
@@ -393,12 +393,12 @@ async function patchBoxUnlocked(
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
   const reserved = ["id", "owner", "archived", "kind"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields must use dedicated core APIs: ${reserved.join(", ")}.`);
+  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
   if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
   if (box.invalid) {
     const keys = Object.keys(patch);
     if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
-      throw new Error("Invalid subtrees can only be rescued by changing type at the invalid root.");
+      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
     }
   }
   if ("type" in patch) {
@@ -408,7 +408,7 @@ async function patchBoxUnlocked(
   if ("status" in patch) {
     if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
     if (patch.status !== undefined && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("status must be todo, doing, or done.");
+      throw new Error("Status must be todo, doing, or done.");
     }
   }
   if ("tags" in patch) {
@@ -470,7 +470,7 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
-    if (box.fm.archived !== true) throw new Error("Node must be archived before permanent deletion.");
+    if (box.fm.archived !== true) throw new Error("Box must be archived before permanent deletion.");
     if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
 
     const removedIds = collectSubtreeIds(box);
@@ -530,10 +530,10 @@ async function ensureDir(fs: FsAdapter, path: string): Promise<void> {
 
 function normalizeTagPatch(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value)) throw new Error("tags must be a string array.");
+  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
   const tags: string[] = [];
   for (const item of value) {
-    if (typeof item !== "string") throw new Error("tags must be a string array.");
+    if (typeof item !== "string") throw new Error("Tags must be a string array.");
     const tag = normalizeTagName(item);
     if (!tags.includes(tag)) tags.push(tag);
   }
@@ -549,7 +549,7 @@ function boxKeyOrder(existing: string[]): string[] {
 
 function assertNotTempPath(path: string): void {
   if (path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp is a system pipe; typed boxes cannot be created or moved there.");
+    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
 

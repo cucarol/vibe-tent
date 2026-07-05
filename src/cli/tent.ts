@@ -3,7 +3,7 @@
 // 用法(cwd = 帐根,new 例外):
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
-//   tent dispatch <claimId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
+//   tent dispatch <boxId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
 //   tent stamp <boxId> [--by <role>]   盖章
 //   tent grant-readable <boxId>
 //   tent new-box <name> <type> [parentId]
@@ -100,12 +100,12 @@ async function main() {
     }
     case "dispatch": {
       const { positionals, flags } = parseFlags(args);
-      const [claimId, role, ...promptParts] = positionals;
-      if (!claimId || !role) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
+      const [boxId, role, ...promptParts] = positionals;
+      if (!boxId || !role) {
+        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
-        return fail("Usage: tent dispatch <claimId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
+        return fail("Usage: tent dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>]");
       }
       if (isUnsafeRoleSegment(role)) return fail(`Invalid role for dispatch: ${role}`);
       let localPrompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
@@ -122,7 +122,7 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
       if (!workspacePath) {
-        console.log("Note: this tent has no workspace pointer box — the envelope carries no workspace contract (Tent-only task).");
+        console.log("Note: this Tent has no workspace output box; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
@@ -130,7 +130,7 @@ async function main() {
         const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
         workspace = { ...(workspace ?? await ensureRoleWorkspace(workspacePath, role)), targetBranch: dispatcherWorkspace.branch };
       }
-      const r = await dispatch(env, claimId, role, {
+      const r = await dispatch(env, boxId, role, {
         userPrompt: localPrompt,
         workspace,
         dispatchedBy: dispatcher,
@@ -553,7 +553,7 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> <prompt>   Claim a box and create a task pointer.
+  dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
   complete <boxId> [options]         Confirm completion and release owner.
@@ -630,7 +630,7 @@ async function newTent(target: string, vault?: string): Promise<void> {
   const name = path.basename(path.resolve(target));
   const fallbackRules =
     `# ${name} - Project Rules\n\n` +
-    `> Local rules for this Tent (global rules): created by genesis; edit freely.\n` +
+      `> Local project rules for this Tent. Created by tent-genesis; edit freely.\n` +
     `> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.\n\n` +
     `- Output workspace: <real code repository path>\n` +
     `- Commit / naming conventions: <fill in>\n` +
@@ -647,7 +647,7 @@ async function newTent(target: string, vault?: string): Promise<void> {
 
   console.log(
     `✓ Created Tent: ${target}\n` +
-      `The root starts empty; add boxes in the panel or create a folder with a same-named Markdown note.`
+      `The root starts empty; add boxes in the panel or create a folder that contains a same-named Markdown note.`
   );
 }
 

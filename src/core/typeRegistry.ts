@@ -35,7 +35,7 @@ export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
     writable: false,
     color: "blue",
     tier: "base",
-    description: "Define goals, intent, and acceptance direction.",
+    description: "Define goals, intent, and acceptance criteria.",
   },
   prompt: {
     readable: true,
@@ -49,7 +49,7 @@ export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
     writable: true,
     color: "cyan",
     tier: "base",
-    description: "Map real deliverables and workspace.",
+    description: "Map real deliverables to a workspace.",
   },
   open: {
     readable: true,

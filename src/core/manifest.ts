@@ -36,7 +36,7 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
     }
   }
   readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
-  readable.push({ path: "temp/", note: "System pipe: read all role tasks, proposals, and deliveries." });
+  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
   // 可写集:认领子树里 writable=true 的框
   for (const box of claimScope) {
@@ -45,10 +45,10 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structure permission: may create/move top-level boxes at the Tent root." });
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
   }
   for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structure permission: may create/move/delete child boxes under this box." });
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
   }
   // 角色 temp 格(总是可写)
   writable.push({ path: join("temp", role) + "/" });

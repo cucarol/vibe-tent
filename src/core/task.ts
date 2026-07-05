@@ -79,10 +79,10 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
 export function relayPromptForTask(task: TaskEnvelope, tentRoot: string): string {
   const initPath = join("temp", task.role, "init.md");
   return (
-    `Tent task dispatched to role ${task.role}.\n` +
+    `A Tent task has been dispatched to role ${task.role}.\n` +
     `Tent root: ${tentRoot}\n` +
     `1. Run \`tent task-ack ${task.path}\` to take this task.\n` +
-    `2. Read the envelope, then open the claimed box(es) — the box note is the task definition.\n` +
+    `2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.\n` +
     `3. If this is a new session for this role, complete role init first: ${initPath}.`
   );
 }
@@ -100,7 +100,7 @@ export async function ensureRoleInit(
     `- Role registry: .tent/roles.json (or run \`tent roles\`)\n\n` +
     `## Role Prompt\n\n${role.prompt?.trim() || "(no persistent role prompt)"}\n\n` +
     `## Operating Model\n\n` +
-    `Manifest readable/writable entries are an honor contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.\n`;
+    `Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.\n`;
   await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path;
 }

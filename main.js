@@ -120,7 +120,7 @@ var init_typeRegistry = __esm({
         writable: false,
         color: "blue",
         tier: "base",
-        description: "Define goals, intent, and acceptance direction."
+        description: "Define goals, intent, and acceptance criteria."
       },
       prompt: {
         readable: true,
@@ -134,7 +134,7 @@ var init_typeRegistry = __esm({
         writable: true,
         color: "cyan",
         tier: "base",
-        description: "Map real deliverables and workspace."
+        description: "Map real deliverables to a workspace."
       },
       open: {
         readable: true,
@@ -224,11 +224,20 @@ function coerce(v) {
   if (v === "null" || v === "~") return null;
   if (/^-?\d+$/.test(v)) return parseInt(v, 10);
   if (/^-?\d*\.\d+$/.test(v)) return parseFloat(v);
+  if (v.startsWith('"') && !v.endsWith('"')) {
+    throw new Error("Invalid frontmatter YAML: unterminated double-quoted string.");
+  }
   if (v.startsWith('"') && v.endsWith('"')) {
     return parseDoubleQuoted(v);
   }
+  if (v.startsWith("'") && !v.endsWith("'")) {
+    throw new Error("Invalid frontmatter YAML: unterminated single-quoted string.");
+  }
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
+  }
+  if (v.startsWith("[") && !v.endsWith("]")) {
+    throw new Error("Invalid frontmatter YAML: unterminated flow array.");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
@@ -389,12 +398,35 @@ var init_frontmatter = __esm({
   }
 });
 
+// src/core/registryRecovery.ts
+async function backupCorruptRegistry(fs, path) {
+  const backupPath = `${path}.corrupt-${timestamp()}`;
+  await fs.writeFile(backupPath, await fs.readFile(path));
+  return backupPath;
+}
+function warnRegistryRecovered(path, backupPath, action, extra = "") {
+  console.error(
+    `WARNING: ${path} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+  );
+}
+function timestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+}
+var init_registryRecovery = __esm({
+  "src/core/registryRecovery.ts"() {
+    "use strict";
+  }
+});
+
 // src/core/order.ts
 async function loadOrder(fs) {
   if (!await fs.exists(ORDER_PATH)) return {};
   try {
     return JSON.parse(await fs.readFile(ORDER_PATH));
   } catch {
+    const backupPath = await backupCorruptRegistry(fs, ORDER_PATH);
+    await saveOrder(fs, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
@@ -421,6 +453,7 @@ var ROOT_KEY, ORDER_PATH;
 var init_order = __esm({
   "src/core/order.ts"() {
     "use strict";
+    init_registryRecovery();
     ROOT_KEY = "__root__";
     ORDER_PATH = ".tent/order.json";
   }
@@ -449,7 +482,7 @@ async function loadTent(fs) {
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
   resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
-  return { roots: sortedRoots, byId, byPath, typeRegistry };
+  return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
 function findDuplicateIds(roots) {
   const counts = /* @__PURE__ */ new Map();
@@ -501,7 +534,15 @@ async function loadBox(fs, path, parent, registry) {
     return null;
   }
   const raw = await fs.readFile(boxFile);
-  const { data, body } = parseFrontmatter(raw);
+  let parsed;
+  let parseError;
+  try {
+    parsed = parseFrontmatter(raw);
+  } catch (error) {
+    parseError = error instanceof Error ? error.message : String(error);
+    parsed = { data: {}, body: raw, keyOrder: [] };
+  }
+  const { data, body } = parsed;
   const name = baseName(path);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
@@ -511,7 +552,7 @@ async function loadBox(fs, path, parent, registry) {
     kind: fm.kind,
     tags,
     archived: false,
-    invalid: false,
+    invalid: !!parseError,
     path,
     name,
     fm,
@@ -523,6 +564,10 @@ async function loadBox(fs, path, parent, registry) {
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" }
   };
+  if (parseError) {
+    box.invalidRootId = path;
+    box.invalidReason = `Invalid frontmatter: ${parseError}`;
+  }
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
@@ -576,7 +621,7 @@ function zoneOf(name) {
   return ZONE_NAMES.includes(name) ? name : null;
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
-  const directInvalid = invalidTypeReference(box, registry);
+  const directInvalid = box.invalid ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." } : invalidTypeReference(box, registry);
   const invalid = inheritedInvalid || directInvalid;
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;
@@ -685,7 +730,11 @@ async function loadTagRegistry(fs) {
   try {
     return normalizeRegistry2(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    return { tags: [] };
+    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs);
+    await saveTagRegistryUnlocked(fs, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
 }
 async function saveTagRegistryUnlocked(fs, registry) {
@@ -707,8 +756,10 @@ async function addTag(fs, boxId, name) {
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await addRegistryTagUnlocked(fs, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs, box, tags);
@@ -718,8 +769,10 @@ async function removeTag(fs, boxId, name) {
   await withTentMutation(fs, async () => {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     await writeBoxTags(fs, box, box.tags.filter((item) => item !== tag));
   });
 }
@@ -762,6 +815,14 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
+async function recoverTagRegistryFromBoxes(fs) {
+  const tent = await loadTent(fs);
+  const tags = [];
+  for (const box of tent.byPath.values()) {
+    tags.push(...box.tags);
+  }
+  return { tags: uniqueSorted(tags) };
+}
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
@@ -781,6 +842,7 @@ var init_tags = __esm({
     init_adapter();
     init_frontmatter();
     init_tree();
+    init_registryRecovery();
     TAGS_REGISTRY_PATH = ".tent/tags.json";
   }
 });
@@ -791,9 +853,17 @@ async function loadRolesRegistry(fs) {
   try {
     const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH));
     return normalizeRolesRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`roles.json is corrupt: ${detail}.`);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
 }
 async function createRole(fs, definition) {
@@ -853,13 +923,13 @@ function normalizeRole(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role cli must be an object.");
+  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role cli.command must be a non-empty string.");
+  if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
   if (value.resume !== void 0) {
     const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role cli.resume must be a non-empty string.");
+    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
     cli.resume = resume;
   }
   return cli;
@@ -881,6 +951,7 @@ var init_skillRoleRegistry = __esm({
   "src/core/skillRoleRegistry.ts"() {
     "use strict";
     init_adapter();
+    init_registryRecovery();
     ROLES_REGISTRY_PATH = ".tent/roles.json";
     DEFAULT_ROLES_REGISTRY = {
       roles: []
@@ -1060,10 +1131,10 @@ async function loadTaskEnvelopes(fs) {
 }
 function relayPromptForTask(task, tentRoot) {
   const initPath = join2("temp", task.role, "init.md");
-  return `Tent task dispatched to role ${task.role}.
+  return `A Tent task has been dispatched to role ${task.role}.
 Tent root: ${tentRoot}
 1. Run \`tent task-ack ${task.path}\` to take this task.
-2. Read the envelope, then open the claimed box(es) \u2014 the box note is the task definition.
+2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
 3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs, role, tentName) {
@@ -1080,7 +1151,7 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 
 ## Operating Model
 
-Manifest readable/writable entries are an honor contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 `;
   await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path;
@@ -1157,17 +1228,17 @@ function buildManifest(tent, input) {
     }
   }
   readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
-  readable.push({ path: "temp/", note: "System pipe: read all role tasks, proposals, and deliveries." });
+  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
       writable.push({ id: box.id, path: box.path });
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structure permission: may create/move top-level boxes at the Tent root." });
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
   }
   for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structure permission: may create/move/delete child boxes under this box." });
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
   }
   writable.push({ path: join2("temp", role) + "/" });
   return {
@@ -1300,12 +1371,35 @@ var init_id = __esm({
   }
 });
 
+// src/core/scaffold.ts
+function validateBoxName(value) {
+  const name = value.trim();
+  if (!name) throw new Error("Box name cannot be empty.");
+  if (name.length > 200) throw new Error("Box name cannot be longer than 200 characters.");
+  if (/[\/\\]/.test(name)) throw new Error("Box name cannot contain path separators.");
+  if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
+  return name;
+}
+var init_scaffold = __esm({
+  "src/core/scaffold.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_typeRegistry();
+    init_skillRoleRegistry();
+    init_tags();
+    init_tree();
+    init_id();
+  }
+});
+
 // src/core/forkOps.ts
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
 }
 async function forkNodeUnlocked(env, boxId) {
   const tent = await loadTent(env.fs);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
@@ -1552,10 +1646,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
   }
-  const box = tent.byId.get(id);
-  if (!box) throw new Error(`Box not found: ${claimId}.`);
+  const box = requireBoxById(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
 async function stamp(env, boxId, acceptedBy = "user") {
@@ -1564,8 +1657,7 @@ async function stamp(env, boxId, acceptedBy = "user") {
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (integrate) await integrate();
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
@@ -1575,8 +1667,7 @@ async function acceptReport(env, reportPath, options = {}) {
     const report = await loadReport(env.fs, reportPath);
     if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(report.boxId);
-    if (!box) throw new Error(`Box not found: ${report.boxId}.`);
+    const box = requireBoxById(tent, report.boxId);
     if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
@@ -1590,26 +1681,25 @@ async function acceptReport(env, reportPath, options = {}) {
 async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
 }
 async function cleanTemp(env, role) {
+  const roleName = role === void 0 ? void 0 : assertRoleName(role);
   await withMutation(env.fs, async () => {
-    const target = role ? join2("temp", role) : "temp";
+    const target = roleName ? join2("temp", roleName) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!role) await ensureDir2(env.fs, "temp");
+    if (!roleName) await ensureDir2(env.fs, "temp");
   });
 }
 async function forceRelease(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
     await removeReportsForBox(env.fs, box.id);
@@ -1632,6 +1722,7 @@ async function createBox(env, input) {
 }
 async function createBoxUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
+  const name = validateBoxName(input.name);
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
@@ -1640,12 +1731,12 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
-  const path = join2(input.parentPath, input.name);
+  const path = join2(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir2(env.fs, path);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
-# ${input.name}
+# ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
@@ -1719,12 +1810,12 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
   const reserved = ["id", "owner", "archived", "kind"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields must use dedicated core APIs: ${reserved.join(", ")}.`);
+  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
   if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
   if (box.invalid) {
     const keys = Object.keys(patch);
     if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
-      throw new Error("Invalid subtrees can only be rescued by changing type at the invalid root.");
+      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
     }
   }
   if ("type" in patch) {
@@ -1734,7 +1825,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   if ("status" in patch) {
     if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
     if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("status must be todo, doing, or done.");
+      throw new Error("Status must be todo, doing, or done.");
     }
   }
   if ("tags" in patch) {
@@ -1762,8 +1853,7 @@ async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
 async function archiveBox(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or already archived boxes cannot be archived.");
     if (isFrozen(box)) throw new Error("Claimed ranges cannot be archived; stamp or force-release the owner first.");
     await patchFrontmatter(env.fs, box, { archived: true });
@@ -1772,8 +1862,7 @@ async function archiveBox(env, boxId) {
 async function restoreBox(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    const box = requireBoxById(tent, boxId);
     if (box.fm.archived !== true) throw new Error("Only an explicit archive root can restore the subtree.");
     await patchFrontmatter(env.fs, box, { archived: void 0 });
   });
@@ -1781,9 +1870,8 @@ async function restoreBox(env, boxId) {
 async function deleteArchivedBox(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`Box not found: ${boxId}.`);
-    if (box.fm.archived !== true) throw new Error("Node must be archived before permanent deletion.");
+    const box = requireBoxById(tent, boxId);
+    if (box.fm.archived !== true) throw new Error("Box must be archived before permanent deletion.");
     if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
     const removedIds = collectSubtreeIds(box);
     await env.fs.remove(box.path);
@@ -1823,10 +1911,10 @@ async function ensureDir2(fs, path) {
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
-  if (!Array.isArray(value)) throw new Error("tags must be a string array.");
+  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
   const tags = [];
   for (const item of value) {
-    if (typeof item !== "string") throw new Error("tags must be a string array.");
+    if (typeof item !== "string") throw new Error("Tags must be a string array.");
     const tag = normalizeTagName(item);
     if (!tags.includes(tag)) tags.push(tag);
   }
@@ -1840,7 +1928,7 @@ function boxKeyOrder2(existing) {
 }
 function assertNotTempPath(path) {
   if (path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp is a system pipe; typed boxes cannot be created or moved there.");
+    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
 function hasOwnerInSubtree(box) {
@@ -1867,6 +1955,14 @@ function ownerCovering(box) {
   }
   return void 0;
 }
+function requireBoxById(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
 async function withMutation(fs, action) {
   return withTentMutation(fs, action);
 }
@@ -1886,6 +1982,7 @@ var init_ops = __esm({
     init_skillRoleRegistry();
     init_task();
     init_report();
+    init_scaffold();
     init_forkOps();
   }
 });
@@ -2286,10 +2383,10 @@ async function integrateWorkspaceCommits(contract, refs) {
   const root = contract.workspace;
   const current = (await git(root, ["branch", "--show-current"])).trim();
   if (current !== contract.targetBranch) {
-    throw new Error(`workspace must check out ${contract.targetBranch}; current is ${current || "(detached)"}.`);
+    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("workspace has uncommitted changes; cannot accept integration.");
+  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
@@ -2366,7 +2463,7 @@ async function assertGitWorkspace(root) {
     nodeFs2.realpath(root)
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`workspace must be a Git root: ${root}.`);
+    throw new Error(`Workspace must be a Git root: ${root}.`);
   }
 }
 function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
@@ -2422,10 +2519,10 @@ async function rollbackIntegration(root, originalRef, cause) {
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {
     throw new Error(
-      `workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
     );
   }
-  throw new Error(`workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -2700,12 +2797,12 @@ async function writeTypeRegistryUnlocked(fs, registry) {
 }
 function assertTypeName(name) {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
-  if (name === "temp") throw new Error("temp is a system pipe and cannot be used as a type.");
+  if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
 }
 function updateAxis(definition, axis, value) {
   if (value === void 0) return;
   if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("Base type R/W cannot inherit.");
+    if (definition.tier !== "modifier") throw new Error("Base types cannot inherit readable/writable settings.");
     delete definition[axis];
     return;
   }

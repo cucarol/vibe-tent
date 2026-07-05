@@ -31,6 +31,7 @@ export async function renderTentStatus(cwd = process.cwd(), role = process.env.T
 
   const tasks = (await loadTaskEnvelopes(fsAdapter))
     .filter((task) => task.status === "pending")
+    .filter((task) => hasUndoneClaim(tent, task.claims))
     .filter((task) => !role || task.role === role);
   lines.push("");
   if (tasks.length === 0) {
@@ -79,4 +80,9 @@ function activeClaimBoxes(tent: LoadedTent): Box[] {
   return [...tent.byId.values()]
     .filter((box) => !!box.fm.owner)
     .sort((a, b) => a.path.localeCompare(b.path));
+}
+
+function hasUndoneClaim(tent: LoadedTent, claims: string[]): boolean {
+  if (claims.length === 0 || claims.includes("root")) return true;
+  return claims.some((claim) => tent.byId.get(claim)?.fm.status !== "done");
 }

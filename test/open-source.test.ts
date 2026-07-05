@@ -101,7 +101,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /Any breaking overlay format change must ship with an idempotent/);
   assert.match(spec, /`tent migrate-\*` command/);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
-  assert.match(spec, /The task envelope is the machine delivery state/);
+  assert.match(spec, /The task envelope is the machine-readable delivery record/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
   assert.match(spec, /A cherry-pick batch\s+is atomic/);
   assert.match(spec, /fast-forward when the selected commits are exactly/);

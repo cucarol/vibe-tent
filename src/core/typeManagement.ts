@@ -185,7 +185,7 @@ async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry):
 
 function assertTypeName(name: string): void {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
-  if (name === "temp") throw new Error("temp is a system pipe and cannot be used as a type.");
+  if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
 }
 
 function updateAxis(
@@ -195,7 +195,7 @@ function updateAxis(
 ): void {
   if (value === undefined) return;
   if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("Base type R/W cannot inherit.");
+    if (definition.tier !== "modifier") throw new Error("Base types cannot inherit readable/writable settings.");
     delete definition[axis];
     return;
   }

@@ -9,7 +9,7 @@ The project is early (`0.1.x`) and the data format may still evolve. The behavio
 A project is split into two spaces:
 
 - **Code workspace**: source code and real deliverables.
-- **Tent**: goals, prompts, box state, manifests, proposals, and temporary task pointers.
+- **Tent**: goals, prompts, box state, manifests, reports, and task envelopes.
 
 The user remains the final decision maker. Agents receive deterministic readable/writable scopes and work in role-specific branches/worktrees. Their chat report and workspace commits are accepted only when the user confirms completion.
 
@@ -49,7 +49,7 @@ npm run okf:check
 npm run okf:check:strict
 ```
 
-## Use From A Checkout
+## Use from a Checkout
 
 Build and expose the CLI on your PATH:
 
@@ -123,9 +123,9 @@ Then enable **Tent / 帷幄** in Obsidian's community plugin settings.
 - OKF index/log generation and wiki-link projection are available via `tent okf-sync`.
 - `temp/` is a system pipeline, not a semantic node or type.
 - The Obsidian UI is under active iteration.
-- Package publication and Obsidian community-store submission have not happened yet.
+- Package publication and Obsidian community plugin submission have not happened yet.
 
-## Contributing And Security
+## Contributing and Security
 
 See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development rules and [`SECURITY.md`](SECURITY.md) for private vulnerability reporting guidance.
 

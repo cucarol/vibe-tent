@@ -111,13 +111,13 @@ function normalizeRole(value: Partial<RoleDefinition> | Record<string, unknown>)
 
 function normalizeCliConfig(value: unknown): RoleCliConfig | undefined {
   if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("role cli must be an object.");
+  if (!isRecord(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role cli.command must be a non-empty string.");
+  if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli: RoleCliConfig = { command };
   if (value.resume !== undefined) {
     const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role cli.resume must be a non-empty string.");
+    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
     cli.resume = resume;
   }
   return cli;

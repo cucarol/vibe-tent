@@ -7,8 +7,8 @@ The Obsidian plugin and CLI are clients of the same core rules.
 
 A Tent points to exactly one real workspace:
 
-- **Tent** stores intent, context, box state, role contracts, and temporary prompt
-  pointers. It is plain files and does not use Git.
+- **Tent** stores intent, context, box state, role contracts, and task
+  envelopes. It consists of plain files and does not use Git.
 - **Workspace** stores code and real deliverables. It must use Git.
 
 `output` is an ordinary box type, not a synonym for every delivery. An output
@@ -21,7 +21,7 @@ workspace: C:/path/to/workspace
 ref: 0123abcd
 ```
 
-`ref` is a workspace commit. A Tent with multiple distinct workspace pointers
+`ref` is a workspace commit. A Tent with multiple distinct workspace output boxes
 is invalid for dispatch/integration.
 
 ## 2. Boxes And Identity
@@ -51,7 +51,7 @@ status: doing
 
 - Only boxes have persistent ids: `bx-` plus six random collision-checked
   characters.
-- A box name is chosen at creation. Tent has no rename operation.
+- A box name is chosen at creation. A Tent has no rename operation.
 - Native moves are supported; paths may change while ids stay stable.
 - Native renames are unsupported.
 - `status` is `todo`, `doing`, or `done`.
@@ -67,7 +67,7 @@ cleared. Any duplicate that cannot be identified as a fresh copy is invalid.
 `.tent/types.json` is a flat OKF-aligned type map. Built-ins are `goal`,
 `prompt`, `output`, `open`, `reference`, `asset`, and `sealed`.
 
-A type is either a base or modifier. A compound type such as `goal-draft`
+A type is either a base type or a modifier. A compound type such as `goal-draft`
 combines a base with a modifier. Each permission axis resolves independently:
 
 1. invalid subtree forces false;
@@ -76,8 +76,8 @@ combines a base with a modifier. Each permission axis resolves independently:
 4. modifier value when present;
 5. base default, otherwise false.
 
-Permission axes do not inherit from ancestors. Hierarchy expresses service
-relationships. Legacy `kind` is read-compatible but new writes use only
+Permission axes do not inherit from ancestors. Hierarchy expresses organization
+and containment, not permission inheritance. Legacy `kind` is read-compatible but new writes use only
 `type`; `tent migrate-kind-to-type` performs the migration.
 
 Manifest R/W is an honor contract, not an OS sandbox. Core enforces mechanical
@@ -125,8 +125,8 @@ non-overlapping boxes, including boxes under unrelated parents.
 ```
 
 `cli.command` is required when `cli` exists; `cli.resume` is optional. Tent
-stores and validates these fields but never spawns the process. They are read
-only hints for a user or external orchestrator.
+stores and validates these fields but never spawns the process. They are read-only
+hints for a user or external orchestrator.
 
 Each role gets one long-lived workspace lane:
 
@@ -146,7 +146,7 @@ Confirmed dispatch:
 3. updates `temp/<role>/manifest.yml` with all current claims;
 4. creates/reuses the role workspace lane;
 5. writes a task envelope under `temp/<role>/tasks/`;
-6. returns the task pointer for delivery to the agent session.
+6. returns the relay prompt for delivery to the agent session.
 
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.
@@ -156,11 +156,11 @@ workspace lane. Dynamic claim/task data never enters role init.
 manifests; dispatch the concrete box again after release if the role needs a
 fresh contract.
 
-The task envelope is the machine delivery state. Its prompt body is immutable;
+The task envelope is the machine-readable delivery record. Its prompt body is immutable;
 its `status` field flips one way from `pending` to `taken` when `task-ack`
-claims delivery. The claimed box remains the task truth: scope, background,
+acknowledges the task. The claimed box remains the task truth: scope, background,
 decisions, and acceptance criteria belong in the box body or child boxes. A
-rough box may be dispatched; after `task-ack`, the agent aligns the task, asks
+draft or incomplete box may be dispatched; after `task-ack`, the agent aligns the task, asks
 when unclear, and writes confirmed conclusions back to the box.
 
 Role init is stable and cache-friendly:
@@ -230,7 +230,7 @@ Report:
 
 - agent-to-user delivery text plus an all-or-nothing commit list;
 - deterministic temporary path, no id and no archive;
-- lifecycle is `ready -> rejected -> ready` until user confirmation removes it;
+- the lifecycle is `ready -> rejected -> ready` until user confirmation removes it;
 - only a ready report enables completion in the UI.
 
 Fork:
@@ -242,12 +242,12 @@ Fork:
 - clears copied owner/status;
 - records no permanent lineage or A/B selection history.
 
-Fork is available through Tent and through automatic adoption of a native
+Forking is available through the CLI/UI and through automatic adoption of a native
 Obsidian subtree copy.
 
 ## 7. Mutation And Conflict Rules
 
-Every Tent mutation uses a short global per-Tent lock at
+Every Tent mutation uses a short-lived per-Tent global lock at
 `.tent/mutation.lock`. This serializes file writes from the CLI and Obsidian
 without restricting agent work in workspace worktrees.
 
@@ -256,7 +256,7 @@ Core fails loudly on:
 - duplicate ids that are not adopted copies;
 - owner overlap on confirmed dispatch;
 - stale/active mutation lock;
-- multiple workspace pointers;
+- multiple workspace output boxes;
 - dirty or wrong workspace target branch;
 - Git integration conflict;
 - invalid order/type state.
@@ -325,9 +325,9 @@ The UI renders core state and invokes core actions:
 - native copy is adopted as fork;
 - report text stays in the conversation layer;
 - decision points are ordinary boxes resolved by stamping;
-- completion presents selected commit integration and only then releases owner;
+- completion presents the selected commit-integration step and releases the owner only after integration;
 - interruption releases owner without integration;
-- pending task envelopes are shown as delivery state; copying relay text does
+- pending task envelopes are shown as task envelopes; copying relay text does
   not consume them, only `task-ack` does;
 - immutable names have no rename control;
 - errors are shown rather than silently repaired.
