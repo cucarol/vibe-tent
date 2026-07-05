@@ -184,6 +184,7 @@ test("tags 注册表:自动登记、摘除、级联剥离与检索", async () =>
   tent = await loadTent(fsa);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["alpha", "zeta"]);
   assert.deepEqual(findBoxesByTag(tent, "backend-hardening"), []);
+  assert.throws(() => findBoxesByTag(tent, "bad\ntag"), /Tag name cannot contain path separators or newlines\./);
   assert.equal(tent.byId.get("bx-o1")?.tags.length, 0);
   const raw = await fs.readFile(path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"), "utf8");
   assert.doesNotMatch(raw, /^tags:/m);

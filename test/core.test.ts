@@ -506,6 +506,43 @@ test("temp 系统管道:不进框树、禁止 typed box、全清后重建", asyn
   assert.equal(await fsa.exists("temp/temp.md"), false);
 });
 
+test("createBox and cleanTemp reject unsafe names before filesystem writes", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const env = {
+    fs: fsa,
+    git: { run: async () => "" },
+    clock: { now: () => "t" },
+    tentName: "wqb",
+  };
+  const { createBox, cleanTemp } = await import("../src/core/ops.js");
+
+  await assert.rejects(
+    () => createBox(env as any, { parentPath: "", name: "a/b", type: "goal" }),
+    /Box name cannot contain path separators\./,
+  );
+  await assert.rejects(
+    () => createBox(env as any, { parentPath: "", name: "a\\b", type: "goal" }),
+    /Box name cannot contain path separators\./,
+  );
+  await assert.rejects(
+    () => createBox(env as any, { parentPath: "", name: "Line\nBreak", type: "goal" }),
+    /Box name cannot contain newlines\./,
+  );
+  await assert.rejects(
+    () => createBox(env as any, { parentPath: "", name: "x".repeat(201), type: "goal" }),
+    /Box name cannot be longer than 200 characters\./,
+  );
+  assert.equal(await fsa.exists("a"), false);
+  assert.equal(await fsa.exists("Line\nBreak"), false);
+
+  await assert.rejects(
+    () => cleanTemp(env as any, "bad\nrole"),
+    /Role name cannot contain path separators or newlines\./,
+  );
+  assert.equal(await fsa.exists("temp/bad\nrole"), false);
+});
+
 test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);

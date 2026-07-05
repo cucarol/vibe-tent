@@ -34,10 +34,7 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
 
   const usedIds = new Set<string>();
   for (const box of options.boxes ?? []) {
-    const boxName = box.name.trim();
-    if (!boxName || boxName.includes("/") || boxName.includes("\\")) {
-      throw new Error(`Invalid box name: ${box.name}.`);
-    }
+    const boxName = validateBoxName(box.name);
     const type = (box.kind?.trim() || box.type.trim());
     if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
     const id = box.id?.trim() || makeUniqueBoxId(usedIds);
@@ -53,6 +50,16 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
   await fs.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
   await fs.writeFile("RULES.md", options.rules);
+}
+
+export function validateBoxName(value: string): string {
+  const name = value.trim();
+  if (!name) throw new Error("Box name cannot be empty.");
+  if (name.length > 200) throw new Error("Box name cannot be longer than 200 characters.");
+  if (/[\/\\]/.test(name)) throw new Error("Box name cannot contain path separators.");
+  if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
+  if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
+  return name;
 }
 
 async function writeBox(

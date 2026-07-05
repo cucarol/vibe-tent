@@ -78,12 +78,7 @@ export async function removeRegistryTag(fs: FsAdapter, name: string): Promise<vo
 }
 
 export function findBoxesByTag(tent: { byId: Map<string, Box> }, name: string): Box[] {
-  let tag: string;
-  try {
-    tag = normalizeTagName(name);
-  } catch {
-    return [];
-  }
+  const tag = normalizeTagName(name);
   return [...tent.byId.values()]
     .filter((box) => box.tags.includes(tag))
     .sort((a, b) => a.path.localeCompare(b.path));

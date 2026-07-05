@@ -14,6 +14,7 @@ import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
 import { ensureRoleInit, relayPromptForTask, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
 import { loadReport, removeReportsForBox } from "./report.js";
+import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
 
 export type { OpsEnv } from "./ops-context.js";
@@ -213,12 +214,13 @@ export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
 // ---- clean-temp ----
 
 export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {
+  const roleName = role === undefined ? undefined : assertRoleName(role);
   await withMutation(env.fs, async () => {
-    const target = role ? join("temp", role) : "temp";
+    const target = roleName ? join("temp", roleName) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!role) await ensureDir(env.fs, "temp");
+    if (!roleName) await ensureDir(env.fs, "temp");
   });
 }
 
@@ -268,6 +270,7 @@ export async function createBox(env: OpsEnv, input: NewBoxInput): Promise<string
 
 async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<string> {
   assertNotTempPath(input.parentPath);
+  const name = validateBoxName(input.name);
   const tent = await loadTent(env.fs);
   if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
@@ -276,11 +279,11 @@ async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<strin
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
-  const path = join(input.parentPath, input.name);
+  const path = join(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir(env.fs, path);
   const fm = { id, type: input.type };
-  const content = serializeFrontmatter(fm, `\n# ${input.name}\n`, BOX_FRONTMATTER_KEY_ORDER);
+  const content = serializeFrontmatter(fm, `\n# ${name}\n`, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : undefined;
   const parentKey = parent ? parent.id : ROOT_KEY;

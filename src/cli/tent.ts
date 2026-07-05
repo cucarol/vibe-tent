@@ -47,7 +47,7 @@ import {
   deleteTag,
 } from "../core/ops.js";
 import { scaffoldTent } from "../core/scaffold.js";
-import { findBoxesByTag, loadTagRegistry } from "../core/tags.js";
+import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
 import { migrateKindToType } from "../core/typeManagement.js";
 import { syncOkfBundle } from "../core/okf.js";
@@ -57,6 +57,7 @@ import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type R
 import { loadReports, submitReport } from "../core/report.js";
 import { NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
+import { validateBoxName } from "../core/scaffold.js";
 import {
   ensureRoleWorkspace,
   integrateWorkspaceCommits,
@@ -246,6 +247,11 @@ async function main() {
     case "new-box": {
       const [name, type, parentId] = args;
       if (!name || !type) return fail("Usage: tent new-box <name> <type> [parentId]");
+      try {
+        validateBoxName(name);
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
       let parentPath = "";
       if (parentId) {
         const tent = await loadTent(env.fs);
@@ -295,6 +301,11 @@ async function main() {
     }
     case "find": {
       if (!args[0]) return fail("Usage: tent find <name>");
+      try {
+        normalizeTagName(args[0]);
+      } catch (error) {
+        return fail(error instanceof Error ? error.message : String(error));
+      }
       const tent = await loadTent(env.fs);
       const boxes = findBoxesByTag(tent, args[0]);
       if (boxes.length === 0) {
@@ -400,7 +411,7 @@ function fail(msg: string) {
 }
 
 function isUnsafeRoleSegment(value: string): boolean {
-  return value.includes("..") || value.includes("/") || value.includes("\\");
+  return value.includes("..") || /[\/\\\r\n]/.test(value);
 }
 
 /** 解析 args 里的 --flag <value>,其余作为位置参数。 */
