@@ -42,6 +42,7 @@ import {
   capturePaneScroll,
   bottomTabCounts,
   bottomTabParts,
+  hasTreePending,
   restorePaneScroll,
   showsUnstampedState,
   statuslessDirectChildren,
@@ -555,7 +556,11 @@ export class TentView extends ItemView {
   }
 
   private boxHasPending(box: Box): boolean {
-    return (this.pendingByTarget.get(box.id) ?? 0) > 0 || !!box.fm.owner;
+    return hasTreePending({
+      pendingDecisions: this.pendingByTarget.get(box.id) ?? 0,
+      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
+      owner: box.fm.owner,
+    });
   }
 
   private subtreeHasPending(box: Box): boolean {

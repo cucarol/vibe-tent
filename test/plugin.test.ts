@@ -12,6 +12,7 @@ import {
   createRegistryPaneState,
   bottomTabCounts,
   bottomTabParts,
+  hasTreePending,
   roleColorValue,
   rwSegmentStates,
   showsUnstampedState,
@@ -119,6 +120,13 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
 test("plugin ui-model:tab count is a stable part separate from its label", () => {
   assert.deepEqual(bottomTabParts("派活", 1), { label: "派活", count: "(1)" });
   assert.deepEqual(bottomTabParts("待裁", 0), { label: "待裁", count: "" });
+});
+
+test("plugin ui-model:tree pending filter includes pending dispatches", () => {
+  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 1 }), true);
+  assert.equal(hasTreePending({ pendingDecisions: 1, pendingDispatches: 0 }), true);
+  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 0, owner: "executor" }), true);
+  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 0 }), false);
 });
 
 test("plugin pending dispatch:only taken status clears the newest task claims", () => {

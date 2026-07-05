@@ -2614,6 +2614,9 @@ function bottomTabCounts(input) {
     triage: input.pendingDecisions + input.readyReports
   };
 }
+function hasTreePending(input) {
+  return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
+}
 function bottomTabParts(label, count) {
   return {
     label,
@@ -3802,7 +3805,11 @@ var TentView = class extends import_obsidian4.ItemView {
     mk("pending", "\u5F85\u5904\u7406");
   }
   boxHasPending(box) {
-    return (this.pendingByTarget.get(box.id) ?? 0) > 0 || !!box.fm.owner;
+    return hasTreePending({
+      pendingDecisions: this.pendingByTarget.get(box.id) ?? 0,
+      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
+      owner: box.fm.owner
+    });
   }
   subtreeHasPending(box) {
     if (this.boxHasPending(box)) return true;

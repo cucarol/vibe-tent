@@ -29,6 +29,12 @@ export interface BottomTabCountInput {
   readyReports: number;
 }
 
+export interface TreePendingInput {
+  pendingDecisions: number;
+  pendingDispatches: number;
+  owner?: string;
+}
+
 export interface TreeCountNode {
   children: TreeCountNode[];
 }
@@ -87,6 +93,10 @@ export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number;
     dispatch: input.pendingDispatches,
     triage: input.pendingDecisions + input.readyReports,
   };
+}
+
+export function hasTreePending(input: TreePendingInput): boolean {
+  return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
 }
 
 export function bottomTabParts(label: string, count: number): { label: string; count: string } {
