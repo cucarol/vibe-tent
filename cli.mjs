@@ -366,47 +366,47 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: false,
     color: "blue",
     tier: "base",
-    description: "Define goals, intent, and acceptance criteria."
+    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
   },
   prompt: {
     readable: true,
     writable: true,
     color: "purple",
     tier: "base",
-    description: "Provide task instructions and work context."
+    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
   },
   output: {
     readable: true,
     writable: true,
     color: "cyan",
     tier: "base",
-    description: "Map real deliverables to a workspace."
+    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
   },
   open: {
     readable: true,
     writable: true,
     color: "green",
     tier: "modifier",
-    description: "In progress and still actionable."
+    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
   },
   reference: {
     readable: true,
     color: "blue",
     tier: "modifier",
-    description: "Background material for reference and citation."
+    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
   },
   asset: {
     writable: true,
     color: "purple",
     tier: "modifier",
-    description: "Actual deliverables or reusable assets."
+    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
   },
   sealed: {
     readable: false,
     writable: false,
     color: "red",
     tier: "modifier",
-    description: "Archived and no longer part of active work."
+    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
   }
 };
 function splitType(type) {
