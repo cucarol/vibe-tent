@@ -109,7 +109,7 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
   assert.deepEqual(
     bottomTabCounts({
       pendingDispatches: 2,
-      openProposals: 3,
+      pendingDecisions: 3,
       readyReports: 1,
     }),
     { dispatch: 2, triage: 4 },

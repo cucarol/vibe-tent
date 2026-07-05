@@ -161,7 +161,7 @@ its `status` field flips one way from `pending` to `taken` when `task-ack`
 claims delivery. The claimed box remains the task truth: scope, background,
 decisions, and acceptance criteria belong in the box body or child boxes. A
 rough box may be dispatched; after `task-ack`, the agent aligns the task, asks
-or proposes when unclear, and writes confirmed conclusions back to the box.
+when unclear, and writes confirmed conclusions back to the box.
 
 Role init is stable and cache-friendly:
 
@@ -216,17 +216,7 @@ same `-x` cherry-pick is idempotent.
 Completion and interruption are distinct core actions even if a UI groups them
 under one release control.
 
-## 6. Proposal, Report, And Fork
-
-Proposal documents are immutable temporary Markdown documents. Their path is
-their identity; they have no persistent id.
-
-Proposal:
-
-- agent-to-user decision text in `temp/<role>/proposals/`;
-- targets a readable box;
-- state is `open -> accepted/rejected -> applied`;
-- acceptance changes proposal state only and does not trigger an agent.
+## 6. Report And Fork
 
 Report:
 
@@ -293,10 +283,6 @@ tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <r
 tent stamp <boxId> [--by <role>]
 tent force-release <boxId>
 tent new-box <name> <type> [parentId]
-tent propose <targetId> <role> <bodyFile|->
-tent proposal <path> accept|reject [note]
-tent apply <proposalPath>
-tent apply-done <proposalPath>
 tent fork <boxId>
 tent clean-temp [role]
 tent migrate-kind-to-type
@@ -328,7 +314,6 @@ The UI renders core state and invokes core actions:
 - report text stays in the conversation layer;
 - completion presents selected commit integration and only then releases owner;
 - interruption releases owner without integration;
-- proposal acceptance does not dispatch;
 - pending task envelopes are shown as delivery state; copying relay text does
   not consume them, only `task-ack` does;
 - immutable names have no rename control;

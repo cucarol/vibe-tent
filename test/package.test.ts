@@ -70,7 +70,7 @@ async function readOrder(tent: string): Promise<Record<string, string[]>> {
   return JSON.parse(await fs.readFile(path.join(tent, ".tent", "order.json"), "utf8"));
 }
 
-test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-temp", async () => {
+test("CLI 全链路:tree → dispatch → stamp → clean-temp", async () => {
   const tent = await makeSkeletonTent();
   const workspace = await makeWorkspace(path.dirname(tent));
 
@@ -142,19 +142,8 @@ test("CLI 全链路:tree → dispatch → proposal/apply → stamp → clean-tem
   let goalRaw = await fs.readFile(checkPath, "utf8");
   assert.equal(parseFrontmatter(goalRaw).data.owner, "reviewer");
 
-  const proposalBody = path.join(path.dirname(tent), "proposal-body.md");
-  await fs.writeFile(proposalBody, "建议给检查项补一条集成测试说明。\n", "utf8");
-  const proposed = await runCli(tent, "propose", checkId, "planner", proposalBody);
-  const proposal = proposed.stdout.match(/temp\/\S+\.md/)?.[0];
-  assert.ok(proposal, `propose 应打印 proposal 路径:${proposed.stdout}`);
-  await runCli(tent, "proposal", proposal, "accept", "integration-test");
-  await runCli(tent, "apply", proposal);
   goalRaw += "\n集成测试已落地。\n";
   await fs.writeFile(checkPath, goalRaw);
-  await runCli(tent, "apply-done", proposal);
-
-  const applied = parseFrontmatter(await fs.readFile(path.join(tent, proposal), "utf8"));
-  assert.equal(applied.data.status, "applied");
 
   await runCli(tent, "stamp", checkId);
   const stamped = parseFrontmatter(await fs.readFile(checkPath, "utf8"));

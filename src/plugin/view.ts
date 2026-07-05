@@ -14,7 +14,7 @@ import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
-import { loadProposals, buildInbox, pendingCount, countByTarget, Proposal, InboxItem } from "../core/proposal.js";
+import { buildInbox, pendingCount, InboxItem } from "../core/inbox.js";
 import { loadReports, rejectReport, type DeliveryReport } from "../core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
@@ -57,8 +57,6 @@ import {
 import {
   OpsEnv,
   dispatch,
-  applyProposal,
-  grantReadable,
   forceRelease,
   createBox,
   placeBox,
@@ -81,7 +79,6 @@ export class TentView extends ItemView {
   private tentName = "";
   private selectedId: string | null = null;
   private tent: LoadedTent | null = null;
-  private proposals: Proposal[] = [];
   private reports: DeliveryReport[] = [];
   private tasks: TaskEnvelope[] = [];
   private inbox: InboxItem[] = [];
@@ -91,7 +88,7 @@ export class TentView extends ItemView {
   private collapsed = new Set<string>();
   private selectedSystem: "temp" | null = null;
   private bottomTab: "note" | "dispatch" | "triage" = "note";
-  // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 task)的框
+  // 左树热切换:全部 / 只看有待处理(owner 或待投递 task)的框
   private treeFilter: "all" | "pending" = "all";
   private registryUi = createRegistryPaneState();
   private colRatio = 0.58;
@@ -106,7 +103,7 @@ export class TentView extends ItemView {
   private pendingDelete: string | null = null;
   private roles: RoleDefinition[] = [];
   private registryTags: string[] = [];
-  // 每个 box 的 open proposal 数；report / 待投递 task 在 boxTriageCount 合并。
+  // 每个 box 的待裁计数；report / 待投递 task 在 boxTriageCount 合并。
   private pendingByTarget: Map<string, number> = new Map();
   private loadError: string | null = null;
   private refreshTimer: number | null = null;
@@ -217,16 +214,14 @@ export class TentView extends ItemView {
         const fs = this.env().fs;
         await this.adoptNativeCopies(fs);
         this.tent = await loadTent(fs);
-        this.proposals = await loadProposals(fs);
         this.reports = await loadReports(fs);
         this.tasks = await loadTaskEnvelopes(fs);
-        this.inbox = await buildInbox(fs, this.tent, this.proposals);
+        this.inbox = await buildInbox(this.tent);
         this.roles = (await loadRolesRegistry(fs)).roles;
         this.registryTags = (await loadTagRegistry(fs)).tags;
         this.loadError = null;
       } catch (e) {
         this.tent = null;
-        this.proposals = [];
         this.reports = [];
         this.tasks = [];
         this.inbox = [];
@@ -517,7 +512,7 @@ export class TentView extends ItemView {
   // ---- 树 ----
 
   private drawTree(el: HTMLElement) {
-    this.pendingByTarget = countByTarget(this.proposals);
+    this.pendingByTarget = new Map();
     const rows = el.createDiv({ cls: "tent-rows" });
     if (this.treeFilter === "pending") rows.addClass("is-pending-filter");
     for (const r of this.tent!.roots) {
@@ -756,7 +751,7 @@ export class TentView extends ItemView {
     const slot = row.createSpan({ cls: "tent-slot" });
     const rest = slot.createSpan({ cls: "tent-slot-rest" });
 
-    // 待裁数字角标(指向该 box 的 open proposal 数)
+    // 待裁数字角标(指向该 box 的待处理项数)
     const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
@@ -1285,7 +1280,7 @@ export class TentView extends ItemView {
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
-      openProposals: this.proposals.filter((proposal) => proposal.target === box.id && proposal.status === "open").length,
+      pendingDecisions: 0,
       readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length,
     });
     const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
@@ -1316,19 +1311,13 @@ export class TentView extends ItemView {
   }
 
   private boxTriageCount(box: Box): number {
-    const props = this.proposals.filter((p) => p.target === box.id && p.status === "open").length;
     const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
-    return props + reports + dispatches;
+    return reports + dispatches;
   }
 
-  // 待裁 tab:本框的 proposal 待裁(采纳/驳回/打开)+ 完成待确认(中断释放 / 确认完成)
+  // 待裁 tab:完成待确认(中断释放 / 确认完成)
   private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
-    type ProposalInboxItem = Extract<InboxItem, { kind: "proposal" | "invalid-proposal" }>;
-    const proposalItems = this.inbox.filter((item): item is ProposalInboxItem => {
-      if (item.kind !== "proposal" && item.kind !== "invalid-proposal") return false;
-      return item.proposal.target === box.id;
-    });
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
@@ -1344,7 +1333,7 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposalItems.length === 0 && !owner && !report) {
+    if (!owner && !report) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
     }
@@ -1474,54 +1463,6 @@ export class TentView extends ItemView {
       });
     }
 
-    if (proposalItems.length > 0) {
-      body.createDiv({ cls: "tent-triage-sec", text: "待裁提议" });
-      for (const itemData of proposalItems) {
-        const p = itemData.proposal;
-        const invalidReason = itemData.kind === "invalid-proposal" ? itemData.reason : "";
-        const item = body.createDiv({ cls: "tent-triage-item" });
-        const main = item.createDiv({ cls: "tent-triage-main" });
-        const first = p.body.split("\n").map((l: string) => l.trim()).find((l: string) => l && !l.startsWith("#")) || "(无说明)";
-        main.createDiv({ cls: "tent-triage-name", text: `${invalidReason ? "⚠ " : ""}${first}` });
-        main.createDiv({ cls: "tent-triage-meta", text: `${p.from} 提交` });
-        if (invalidReason) main.createDiv({ cls: "tent-triage-meta is-warn", text: invalidReason });
-        const acts = item.createDiv({ cls: "tent-triage-acts" });
-        const open = acts.createEl("button", { text: "打开" });
-        open.setAttr("type", "button");
-        open.onclick = () => this.openVaultFile(p.path);
-        const rej = acts.createEl("button", { text: "驳回" });
-        rej.setAttr("type", "button");
-        rej.onclick = async () => {
-          try {
-            const { applyProposal } = await import("../core/ops.js");
-            await applyProposal(this.env(), p.path, false);
-            await this.refresh();
-          } catch (e) {
-            new Notice("驳回失败:" + (e instanceof Error ? e.message : e));
-          }
-        };
-        const acc = acts.createEl("button", { cls: "mod-cta", text: "采纳" });
-        acc.setAttr("type", "button");
-        const canGrantReadable =
-          !!invalidReason &&
-          (box.type === "asset" || splitType(box.type).modifier === "asset") &&
-          /不可读/.test(invalidReason);
-        acc.disabled = !!invalidReason && !canGrantReadable;
-        tentTooltip(acc, canGrantReadable ? "采纳并翻可读" : invalidReason ? "目标不可用,只能驳回" : "采纳");
-        acc.onclick = async () => {
-          try {
-            const { applyProposal } = await import("../core/ops.js");
-            if (canGrantReadable) await grantReadable(this.env(), box.id);
-            else if (invalidReason) return;
-            await applyProposal(this.env(), p.path, true);
-            await this.refresh();
-            new Notice("已采纳");
-          } catch (e) {
-            new Notice("采纳失败:" + (e instanceof Error ? e.message : e));
-          }
-        };
-      }
-    }
   }
 
   private loadWorkspaceHead(workspace: string): Promise<WorkspaceHead | null> {

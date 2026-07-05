@@ -17,14 +17,6 @@ import { loadReport, removeReportsForBox } from "./report.js";
 import type { OpsEnv } from "./ops-context.js";
 
 export type { OpsEnv } from "./ops-context.js";
-export {
-  applyProposal,
-  finishApply,
-  propose,
-  startApply,
-  type ApplyGrant,
-  type ProposeResult,
-} from "./collaborationOps.js";
 export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
 
 // ---- dispatch ----

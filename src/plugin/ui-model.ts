@@ -25,7 +25,7 @@ export interface PaneScrollPositions {
 
 export interface BottomTabCountInput {
   pendingDispatches: number;
-  openProposals: number;
+  pendingDecisions: number;
   readyReports: number;
 }
 
@@ -85,7 +85,7 @@ export function statuslessDirectChildren<T extends LifecycleTreeNode>(node: T): 
 export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
   return {
     dispatch: input.pendingDispatches,
-    triage: input.openProposals + input.readyReports,
+    triage: input.pendingDecisions + input.readyReports,
   };
 }
 

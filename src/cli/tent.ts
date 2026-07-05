@@ -5,8 +5,6 @@
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent dispatch <claimId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
 //   tent stamp <boxId> [--by <role>]   盖章
-//   tent propose <targetId> <role> <bodyFile|->
-//   tent proposal <path> accept|reject [note]
 //   tent grant-readable <boxId>
 //   tent new-box <name> <type> [parentId]
 //   tent tag <boxId> <name>
@@ -37,13 +35,9 @@ import {
   stamp,
   completeClaim,
   acceptReport,
-  propose,
-  applyProposal,
   grantReadable,
   cleanTemp,
   forceRelease,
-  startApply,
-  finishApply,
   forkNode,
   createBox,
   tagBox,
@@ -232,23 +226,6 @@ async function main() {
       console.log(`✓ Stamped ${positionals[0]} (done and owner cleared)`);
       break;
     }
-    case "propose": {
-      const [targetId, role, bodySource] = args;
-      if (!targetId || !role || !bodySource) return fail("Usage: tent propose <targetId> <role> <bodyFile|->");
-      const body = bodySource === "-"
-        ? await readStdin()
-        : await (await import("node:fs/promises")).readFile(path.resolve(bodySource), "utf8");
-      const r = await propose(env, targetId, role, body);
-      console.log(`✓ Proposal written: ${r.proposalPath}`);
-      break;
-    }
-    case "proposal": {
-      const [p, verb, ...noteParts] = args;
-      if (!p || (verb !== "accept" && verb !== "reject")) return fail("Usage: tent proposal <path> accept|reject [note]");
-      await applyProposal(env, p, verb === "accept", noteParts.join(" ") || undefined);
-      console.log(`✓ proposal ${verb}: ${p}`);
-      break;
-    }
     case "grant-readable": {
       if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
       await grantReadable(env, args[0]);
@@ -319,22 +296,6 @@ async function main() {
       }
       break;
     }
-    case "apply": {
-      if (!args[0]) return fail("Usage: tent apply <proposal-path>");
-      const g = await startApply(env, args[0]);
-      console.log(
-        `✓ Proposal is ready to apply. Target: ${g.targetPath}\n\n` +
-          `--- Requested change ---\n${g.instructions || "(The proposal body is empty; see the source file.)"}\n\n` +
-          `After updating the target box note, run: tent apply-done ${args[0]}`
-      );
-      break;
-    }
-    case "apply-done": {
-      if (!args[0]) return fail("Usage: tent apply-done <proposal-path>");
-      await finishApply(env, args[0]);
-      console.log("✓ Proposal marked as applied.");
-      break;
-    }
     case "fork": {
       if (!args[0]) return fail("Usage: tent fork <boxId>");
       const id = await forkNode(env, args[0]);
@@ -391,7 +352,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp propose proposal grant-readable new-box tag untag tag-new tag-rm tags find apply apply-done fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -543,11 +504,11 @@ Commands:
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
+  grant-readable <boxId>             Mark a box readable.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
   tags | tag-new | tag-rm            Manage the tag registry.
   find <tag>                         Find boxes by tag.
-  propose | proposal                 Create or review a proposal.
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   migrate-kind-to-type               Rewrite legacy kind fields to type.

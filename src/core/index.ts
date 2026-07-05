@@ -10,7 +10,7 @@ export * from "./frontmatter.js";
 export * from "./tree.js";
 export * from "./claim.js";
 export * from "./manifest.js";
-export * from "./proposal.js";
+export * from "./inbox.js";
 export * from "./output.js";
 export * from "./okf.js";
 export * from "./order.js";
