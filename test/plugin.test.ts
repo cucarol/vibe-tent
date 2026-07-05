@@ -17,6 +17,8 @@ import {
   rwSegmentStates,
   showsUnstampedState,
   statusBarText,
+  statusBarTotal,
+  statusIncreaseNoticeDelta,
   statusIncreaseNoticeText,
   statuslessDirectChildren,
   visibleTreeCount,
@@ -119,10 +121,18 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
   );
 });
 
-test("plugin ui-model:status bar uses triage wording", () => {
+test("plugin ui-model:status bar summarizes active work", () => {
   assert.equal(statusBarText(0), "帐内无事");
-  assert.equal(statusBarText(3), "3 待裁");
+  assert.equal(statusBarText(3), "3 在办");
+  assert.equal(statusBarTotal({ triage: 2, dispatch: 3 }), 5);
   assert.equal(statusIncreaseNoticeText(2), "帐内新增 2 项待裁");
+});
+
+test("plugin ui-model:status notice increase follows triage only", () => {
+  assert.equal(statusIncreaseNoticeDelta(null, 2), null);
+  assert.equal(statusIncreaseNoticeDelta(2, 2), null);
+  assert.equal(statusIncreaseNoticeDelta(2, 1), null);
+  assert.equal(statusIncreaseNoticeDelta(2, 5), 3);
 });
 
 test("plugin ui-model:tab count is a stable part separate from its label", () => {

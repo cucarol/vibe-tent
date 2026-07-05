@@ -29,6 +29,11 @@ export interface BottomTabCountInput {
   readyReports: number;
 }
 
+export interface StatusCountInput {
+  triage: number;
+  dispatch: number;
+}
+
 export interface TreePendingInput {
   pendingDecisions: number;
   pendingDispatches: number;
@@ -95,8 +100,16 @@ export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number;
   };
 }
 
-export function statusBarText(pending: number): string {
-  return pending > 0 ? `${pending} 待裁` : "帐内无事";
+export function statusBarText(total: number): string {
+  return total > 0 ? `${total} 在办` : "帐内无事";
+}
+
+export function statusBarTotal(input: StatusCountInput): number {
+  return input.triage + input.dispatch;
+}
+
+export function statusIncreaseNoticeDelta(previousTriage: number | null, triage: number): number | null {
+  return previousTriage !== null && triage > previousTriage ? triage - previousTriage : null;
 }
 
 export function statusIncreaseNoticeText(increase: number): string {

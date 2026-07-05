@@ -2611,8 +2611,14 @@ function bottomTabCounts(input) {
     triage: input.pendingDecisions + input.readyReports
   };
 }
-function statusBarText(pending) {
-  return pending > 0 ? `${pending} \u5F85\u88C1` : "\u5E10\u5185\u65E0\u4E8B";
+function statusBarText(total) {
+  return total > 0 ? `${total} \u5728\u529E` : "\u5E10\u5185\u65E0\u4E8B";
+}
+function statusBarTotal(input) {
+  return input.triage + input.dispatch;
+}
+function statusIncreaseNoticeDelta(previousTriage, triage) {
+  return previousTriage !== null && triage > previousTriage ? triage - previousTriage : null;
 }
 function statusIncreaseNoticeText(increase) {
   return `\u5E10\u5185\u65B0\u589E ${increase} \u9879\u5F85\u88C1`;
@@ -3533,7 +3539,10 @@ var TentView = class extends import_obsidian4.ItemView {
       pendingDecisions: decisions.length,
       readyReports: this.reports.filter((report) => report.status === "ready").length
     });
-    this.plugin.updateStatus(statusCounts.triage);
+    this.plugin.updateStatus({
+      triage: statusCounts.triage,
+      dispatch: statusCounts.dispatch
+    });
     this.draw();
   }
   rebuildPendingDispatches() {
@@ -5287,7 +5296,7 @@ var TentPlugin = class extends import_obsidian6.Plugin {
   constructor() {
     super(...arguments);
     this.settings = DEFAULT_SETTINGS;
-    this.lastPending = null;
+    this.lastStatusCounts = null;
   }
   async onload() {
     await this.loadSettings();
@@ -5312,7 +5321,7 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("tent-status");
     this.statusEl.onClickEvent(() => this.activateView());
-    this.updateStatus(0);
+    this.updateStatus({ triage: 0, dispatch: 0 });
     this.addSettingTab(new TentSettingTab(this.app, this));
   }
   onunload() {
@@ -5327,10 +5336,11 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     }
     workspace.revealLeaf(leaf);
   }
-  updateStatus(pending) {
+  updateStatus(counts) {
     if (!this.statusEl) return;
-    const previous = this.lastPending;
-    this.lastPending = pending;
+    const previousTriage = this.lastStatusCounts?.triage ?? null;
+    this.lastStatusCounts = counts;
+    const total = statusBarTotal(counts);
     if (this.settings.triageReminder === "off") {
       this.statusEl.hide();
       return;
@@ -5339,15 +5349,16 @@ var TentPlugin = class extends import_obsidian6.Plugin {
     this.statusEl.empty();
     this.statusEl.createSpan({ text: "\u26FA " });
     this.statusEl.createSpan({
-      text: statusBarText(pending),
-      cls: pending > 0 ? "tent-status-hot" : "tent-status-calm"
+      text: statusBarText(total),
+      cls: total > 0 ? "tent-status-hot" : "tent-status-calm"
     });
-    if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new import_obsidian6.Notice(statusIncreaseNoticeText(pending - previous));
+    const noticeIncrease = statusIncreaseNoticeDelta(previousTriage, counts.triage);
+    if (this.settings.triageReminder === "notice" && noticeIncrease !== null) {
+      new import_obsidian6.Notice(statusIncreaseNoticeText(noticeIncrease));
     }
   }
   refreshStatusPreference() {
-    this.updateStatus(this.lastPending ?? 0);
+    this.updateStatus(this.lastStatusCounts ?? { triage: 0, dispatch: 0 });
   }
   async loadSettings() {
     this.settings = mergeSettings(await this.loadData());

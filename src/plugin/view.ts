@@ -236,7 +236,10 @@ export class TentView extends ItemView {
       pendingDecisions: decisions.length,
       readyReports: this.reports.filter((report) => report.status === "ready").length,
     });
-    this.plugin.updateStatus(statusCounts.triage);
+    this.plugin.updateStatus({
+      triage: statusCounts.triage,
+      dispatch: statusCounts.dispatch,
+    });
     this.draw();
   }
 

@@ -8,14 +8,20 @@ import {
   type TentSettings,
 } from "./settings-model.js";
 import { TentSettingTab } from "./settings.js";
-import { statusBarText, statusIncreaseNoticeText } from "./ui-model.js";
+import {
+  statusBarText,
+  statusBarTotal,
+  statusIncreaseNoticeDelta,
+  statusIncreaseNoticeText,
+  type StatusCountInput,
+} from "./ui-model.js";
 
 const TENT_ICON = `<svg viewBox="0 0 100 100" fill="none" stroke="currentColor" stroke-width="7" stroke-linecap="round" stroke-linejoin="round"><path d="M50 14 88 82H12L50 14Z"/><path d="M50 14v68"/><path d="M50 82 35 56"/><path d="M50 82l15-26"/><path d="M22 82h56"/><circle cx="50" cy="14" r="4" fill="currentColor" stroke="none"/><circle cx="22" cy="82" r="4" fill="currentColor" stroke="none"/><circle cx="78" cy="82" r="4" fill="currentColor" stroke="none"/></svg>`;
 
 export default class TentPlugin extends Plugin {
   settings: TentSettings = DEFAULT_SETTINGS;
   statusEl?: HTMLElement;
-  private lastPending: number | null = null;
+  private lastStatusCounts: StatusCountInput | null = null;
 
   async onload() {
     await this.loadSettings();
@@ -44,7 +50,7 @@ export default class TentPlugin extends Plugin {
     this.statusEl = this.addStatusBarItem();
     this.statusEl.addClass("tent-status");
     this.statusEl.onClickEvent(() => this.activateView());
-    this.updateStatus(0);
+    this.updateStatus({ triage: 0, dispatch: 0 });
 
     this.addSettingTab(new TentSettingTab(this.app, this));
   }
@@ -63,10 +69,11 @@ export default class TentPlugin extends Plugin {
     workspace.revealLeaf(leaf);
   }
 
-  updateStatus(pending: number) {
+  updateStatus(counts: StatusCountInput) {
     if (!this.statusEl) return;
-    const previous = this.lastPending;
-    this.lastPending = pending;
+    const previousTriage = this.lastStatusCounts?.triage ?? null;
+    this.lastStatusCounts = counts;
+    const total = statusBarTotal(counts);
     if (this.settings.triageReminder === "off") {
       this.statusEl.hide();
       return;
@@ -75,16 +82,17 @@ export default class TentPlugin extends Plugin {
     this.statusEl.empty();
     this.statusEl.createSpan({ text: "⛺ " });
     this.statusEl.createSpan({
-      text: statusBarText(pending),
-      cls: pending > 0 ? "tent-status-hot" : "tent-status-calm",
+      text: statusBarText(total),
+      cls: total > 0 ? "tent-status-hot" : "tent-status-calm",
     });
-    if (this.settings.triageReminder === "notice" && previous !== null && pending > previous) {
-      new Notice(statusIncreaseNoticeText(pending - previous));
+    const noticeIncrease = statusIncreaseNoticeDelta(previousTriage, counts.triage);
+    if (this.settings.triageReminder === "notice" && noticeIncrease !== null) {
+      new Notice(statusIncreaseNoticeText(noticeIncrease));
     }
   }
 
   refreshStatusPreference() {
-    this.updateStatus(this.lastPending ?? 0);
+    this.updateStatus(this.lastStatusCounts ?? { triage: 0, dispatch: 0 });
   }
 
   async loadSettings() {
