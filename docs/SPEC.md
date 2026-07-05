@@ -289,6 +289,7 @@ tent task-ack <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 tent stamp <boxId> [--by <role>]
+tent status
 tent force-release <boxId>
 tent new-box <name> <type> [parentId]
 tent fork <boxId>
@@ -306,6 +307,9 @@ it. A successful `complete` consumes the ready report after integration and
 state mutation succeed. With no report and no explicit commits, `complete`
 remains equivalent to the zero-integration `stamp` path. A rejected report must
 be replaced before `complete` may proceed.
+
+`status` is a read-only status view for quick orientation: Tent root, workspace,
+pending decisions, pending task envelopes, and active claims.
 
 `--require-check` is a user-supplied mechanical gate. It runs in the resolved
 workspace before cherry-pick, owner clearing, report deletion, or any other
