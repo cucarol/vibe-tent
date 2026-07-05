@@ -9,7 +9,6 @@ import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
 import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
 import { Box, Status } from "../core/types.js";
-import type { TypeLevel } from "../core/typeManagement.js";
 import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
@@ -31,7 +30,6 @@ import {
   createChevronSelect,
   drawRwSegment,
   hasActiveOwnerInScope,
-  inspectionWarning,
   makeDragLabel,
   roleColorValue,
   tentTooltip,
@@ -212,7 +210,7 @@ export class TentView extends ItemView {
     if (this.tentName) {
       try {
         const fs = this.env().fs;
-        await this.adoptNativeCopies(fs);
+        await this.adoptNativeCopies();
         this.tent = await loadTent(fs);
         this.reports = await loadReports(fs);
         this.tasks = await loadTaskEnvelopes(fs);
@@ -258,7 +256,7 @@ export class TentView extends ItemView {
     this.pendingDispatchByBox = byBox;
   }
 
-  private async adoptNativeCopies(fs: import("../core/adapter.js").FsAdapter) {
+  private async adoptNativeCopies() {
     if (this.recentCreates.size === 0) return;
     const root = this.tentRootPath();
     const candidates = [...this.recentCreates]

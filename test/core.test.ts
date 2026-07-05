@@ -7,7 +7,7 @@ import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { canClaim, isFrozen } from "../src/core/claim.js";
 import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
-import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
+import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
 import { submitReport } from "../src/core/report.js";
 import { loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";

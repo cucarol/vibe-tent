@@ -6,7 +6,6 @@ import { FsAdapter } from "./adapter.js";
 import {
   Box,
   BoxFrontmatter,
-  BoxType,
   ResolvedAxis,
   ZoneType,
 } from "./types.js";

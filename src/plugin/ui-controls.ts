@@ -1,6 +1,5 @@
 import { setIcon, setTooltip } from "obsidian";
 import type { Box } from "../core/types.js";
-import type { TypeLevel } from "../core/typeManagement.js";
 import { rwSegmentStates } from "./ui-model.js";
 export { roleColorValue } from "./ui-model.js";
 
@@ -44,18 +43,6 @@ export function drawRwSegment(
     });
     if (!readonly) option.onclick = () => onChange(state.value);
   }
-}
-
-export function inspectionWarning(
-  level: TypeLevel,
-  name: string,
-  boxes: Map<string, Box>
-): string {
-  void level;
-  const references = [...boxes.values()].filter((box) => box.type === name);
-  const label = "type";
-  if (references.length === 0) return `永久删除自定义 ${label}「${name}」,不可恢复。`;
-  return `永久删除自定义 ${label}「${name}」。${references.length} 个 node 会因引用悬空而失效隔离,需逐个改 type 救活。`;
 }
 
 export function hasActiveOwnerInScope(box: Box): boolean {

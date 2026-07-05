@@ -177,10 +177,6 @@ export async function migrateKindToType(fs: FsAdapter): Promise<string[]> {
   });
 }
 
-export async function writeTypeRegistry(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
-  await withTentMutation(fs, async () => writeTypeRegistryUnlocked(fs, registry));
-}
-
 async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
   if (!(await fs.exists(".tent"))) await fs.mkdir(".tent");
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");

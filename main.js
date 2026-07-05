@@ -3405,7 +3405,7 @@ var TentView = class extends import_obsidian4.ItemView {
     if (this.tentName) {
       try {
         const fs = this.env().fs;
-        await this.adoptNativeCopies(fs);
+        await this.adoptNativeCopies();
         this.tent = await loadTent(fs);
         this.reports = await loadReports(fs);
         this.tasks = await loadTaskEnvelopes(fs);
@@ -3446,7 +3446,7 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     this.pendingDispatchByBox = byBox;
   }
-  async adoptNativeCopies(fs) {
+  async adoptNativeCopies() {
     if (this.recentCreates.size === 0) return;
     const root = this.tentRootPath();
     const candidates = [...this.recentCreates].map((path) => path.startsWith(root + "/") ? path.slice(root.length + 1) : "").filter(Boolean).map((path) => path.endsWith(".md") ? path.slice(0, path.lastIndexOf("/")) : path);

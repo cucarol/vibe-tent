@@ -28,7 +28,7 @@ import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { NodeFs, SystemClock } from "../fs/node-fs.js";
-import { loadTent, boxNotePath } from "../core/tree.js";
+import { loadTent } from "../core/tree.js";
 import {
   OpsEnv,
   dispatch,
