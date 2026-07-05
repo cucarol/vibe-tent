@@ -10,3 +10,9 @@ test_script.js
 Thumbs.db
 .claude/settings.local.json
 .zed/settings.json
+
+# Internal AI-agent planning/design scaffolding (Codex "superpowers", design drafts).
+# Kept locally, not published. See docs/SPEC.md for the public spec.
+docs/superpowers/
+docs/plans/
+docs/shelved-ideas.md
