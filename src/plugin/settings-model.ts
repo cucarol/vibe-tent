@@ -29,11 +29,11 @@ export interface TentSettings {
 }
 
 export const DEFAULT_RULES_TEMPLATE =
-  "# {tent} · 项目约定\n\n" +
-  "> 这顶帐的本地规矩；机制规范由 Tent 与 tent-role skill 提供。\n\n" +
-  "- 产出 workspace：<填真实代码仓路径>\n" +
-  "- 提交 / 命名约定：<填>\n" +
-  "- 其他项目约定：<填>\n";
+  "# {tent} - Project Rules\n\n" +
+  "> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-role skill.\n\n" +
+  "- Output workspace: <real code repository path>\n" +
+  "- Commit / naming conventions: <fill in>\n" +
+  "- Other project rules: <fill in>\n";
 
 const DEFAULT_ROLES_REGISTRY: RolesRegistry = { roles: [] };
 

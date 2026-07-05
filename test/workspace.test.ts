@@ -122,7 +122,7 @@ test("workspace integration:second cherry-pick conflict rolls the whole batch ba
 
   await assert.rejects(
     () => integrateWorkspaceCommits(contract, [firstRef, secondRef]),
-    /workspace 合入冲突,已回滚/,
+    /workspace integration conflicted and was rolled back/,
   );
 
   assert.equal((await git(workspace, "rev-parse", "HEAD")).trim(), beforeHead);

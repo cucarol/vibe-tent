@@ -275,7 +275,7 @@ export class TentView extends ItemView {
       try {
         await adoptCopiedSubtree(this.env(), path);
       } catch (error) {
-        if (!(error instanceof Error) || !error.message.startsWith("找不到复制框")) throw error;
+        if (!(error instanceof Error) || !error.message.startsWith("Copied box not found")) throw error;
       }
     }
   }
@@ -506,7 +506,7 @@ export class TentView extends ItemView {
 
   private async copyGenesisPrompt() {
     const prompt =
-      "请使用 tent-genesis 帮我创建一顶新的 Tent / 帷幄帐。先 grill 我:帐名、目标、workspace 指针、首批顶层框、首批 role(name + prompt),然后 scaffold 帐并初始化真实 workspace。Tent 本身不使用 Git。";
+      "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace pointer, initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent and initialize the real workspace. Tent itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
     new Notice("已复制 tent-genesis 起手 prompt");
   }

@@ -13,16 +13,16 @@ export interface ClaimCheck {
 
 /** 能否把 box 认领给某角色?检查 box 自身、祖先、子孙是否已被占。 */
 export function canClaim(box: Box): ClaimCheck {
-  if (box.invalid) return { ok: false, blocker: box, reason: `失效子树:${box.invalidReason || "类型定义缺失"}` };
-  if (box.archived) return { ok: false, blocker: box, reason: "归档子树不可认领" };
+  if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
+  if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (box.fm.owner) {
-    return { ok: false, blocker: box, reason: `已被 ${box.fm.owner} 认领` };
+    return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
   // 祖先被占?
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
-      return { ok: false, blocker: anc, reason: `祖先「${anc.name}」已被 ${anc.fm.owner} 认领` };
+      return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;
   }
@@ -32,7 +32,7 @@ export function canClaim(box: Box): ClaimCheck {
     return {
       ok: false,
       blocker: occupiedChild,
-      reason: `子孙「${occupiedChild.name}」已被 ${occupiedChild.fm.owner} 认领`,
+      reason: `Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`,
     };
   }
   return { ok: true };

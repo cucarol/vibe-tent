@@ -57,7 +57,7 @@ async function dispatchUnlocked(
     ? { userPrompt: promptOrOptions }
     : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("派活必须提供 user prompt");
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const previousOwner = claim.root ? undefined : claim.box.fm.owner;
   const previousStatus = claim.root ? undefined : claim.box.fm.status;
   const previousAcceptedBy = claim.root ? undefined : claim.box.fm.acceptedBy;
@@ -66,15 +66,15 @@ async function dispatchUnlocked(
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
-      throw new Error(`不能派活:帐根下已有认领「${occupied[0].name}」(${occupied[0].fm.owner})`);
+      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
     }
   } else {
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
-      throw new Error(`不能派活:${existingOwner.name} 已被 ${existingOwner.fm.owner} 认领`);
+      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
     }
     const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`不能派活:${claimable.reason || "框不可认领"}`);
+    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
     await setOwner(env.fs, claim.box, roleName, "doing");
     claim.box.fm.owner = roleName;
     claim.box.fm.status = "doing";
@@ -141,10 +141,10 @@ type DispatchClaim =
 function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: string): DispatchClaim {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
-    throw new Error("整帐不可直接派活,请派具体框(claimId 不能是 . / root / 帐名)");
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
   }
   const box = tent.byId.get(id);
-  if (!box) throw new Error(`找不到框 ${claimId}`);
+  if (!box) throw new Error(`Box not found: ${claimId}.`);
   return { root: false, id: box.id, name: box.name, box };
 }
 
@@ -164,7 +164,7 @@ export async function completeClaim(
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (integrate) await integrate();
     await setOwner(env.fs, box, undefined, "done", acceptedBy);
   });
@@ -184,14 +184,14 @@ export async function acceptReport(
 ): Promise<void> {
   await withMutation(env.fs, async () => {
     const report = await loadReport(env.fs, reportPath);
-    if (report.status !== "ready") throw new Error("只有 ready report 可以确认");
+    if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(report.boxId);
-    if (!box) throw new Error(`找不到框 ${report.boxId}`);
-    if (box.fm.owner !== report.role) throw new Error("report role 与当前 owner 不一致");
+    if (!box) throw new Error(`Box not found: ${report.boxId}.`);
+    if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
-      if (!options.integrate) throw new Error("report 含 commits,必须完成 workspace 合入");
+      if (!options.integrate) throw new Error("Report contains commits; workspace integration is required.");
       await options.integrate(commits);
     }
     await setOwner(env.fs, box, undefined, "done", options.acceptedBy ?? "user");
@@ -204,8 +204,8 @@ export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
-    if (!isUsableBox(box)) throw new Error("失效或归档框不能翻可读");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
 }
@@ -228,8 +228,8 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
-    if (!box.fm.owner) throw new Error("只能中断直接带 owner 的认领根");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, undefined, "todo");
     await removeReportsForBox(env.fs, box.id);
   });
@@ -269,10 +269,10 @@ export async function createBox(env: OpsEnv, input: NewBoxInput): Promise<string
 async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<string> {
   assertNotTempPath(input.parentPath);
   const tent = await loadTent(env.fs);
-  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`未知 type: ${input.type}`);
+  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
     const parent = tent.byPath.get(input.parentPath);
-    if (!parent || !isUsableBox(parent)) throw new Error("目标父框失效或已归档");
+    if (!parent || !isUsableBox(parent)) throw new Error("Target parent box is invalid or archived.");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
@@ -322,17 +322,17 @@ async function placeBoxUnlocked(
   assertNotTempPath(newParentPath);
   const before = await loadTent(env.fs);
   const moved = before.byPath.get(fromPath);
-  if (!moved) throw new Error(`找不到框 ${fromPath}`);
-  if (!isUsableBox(moved)) throw new Error("失效或归档框不可移动");
-  if (isFrozen(moved)) throw new Error("认领范围不能移动;先盖章或强清 owner");
+  if (!moved) throw new Error(`Box not found: ${fromPath}.`);
+  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  if (isFrozen(moved)) throw new Error("Claimed ranges cannot be moved; stamp or force-release the owner first.");
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
 
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
-  if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("目标父框失效或已归档");
-  if (parentBox && isFrozen(parentBox)) throw new Error("不能移入认领范围;先盖章或强清 owner");
+  if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
+  if (parentBox && isFrozen(parentBox)) throw new Error("Cannot move into a claimed range; stamp or force-release the owner first.");
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
-    throw new Error("不能把框移入自己的子树");
+    throw new Error("Cannot move a box into its own subtree.");
   }
   const parentKey = parentBox ? parentBox.id : ROOT_KEY;
   const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
@@ -365,7 +365,7 @@ async function placeBoxUnlocked(
       try {
         await env.fs.move(destination, fromPath);
       } catch {
-        throw new Error(`移动后 order 保存失败,且回滚失败: ${error instanceof Error ? error.message : String(error)}`);
+        throw new Error(`Failed to save order after move, and rollback also failed: ${error instanceof Error ? error.message : String(error)}`);
       }
       throw error;
     }
@@ -393,24 +393,24 @@ async function patchBoxUnlocked(
 ): Promise<void> {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`找不到框 ${boxPath}`);
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
   const reserved = ["id", "owner", "archived", "kind"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`保留字段只能走专用 core API: ${reserved.join(", ")}`);
-  if (box.archived) throw new Error("归档框只能恢复或永久删除");
+  if (reserved.length > 0) throw new Error(`Reserved fields must use dedicated core APIs: ${reserved.join(", ")}.`);
+  if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
   if (box.invalid) {
     const keys = Object.keys(patch);
     if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
-      throw new Error("失效子树只允许在失效根修改 type 以救活");
+      throw new Error("Invalid subtrees can only be rescued by changing type at the invalid root.");
     }
   }
   if ("type" in patch) {
-    if (typeof patch.type !== "string" || !patch.type) throw new Error("一级 type 不允许清空");
-    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`未知 type: ${patch.type}`);
+    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
+    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
   }
   if ("status" in patch) {
-    if (box.fm.owner) throw new Error("认领中的 status 只能通过完成或中断动作修改");
+    if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
     if (patch.status !== undefined && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("status 必须是 todo/doing/done");
+      throw new Error("status must be todo, doing, or done.");
     }
   }
   if ("tags" in patch) {
@@ -443,7 +443,7 @@ async function patchBodyUnlocked(
 ): Promise<void> {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
-  if (!box || !isUsableBox(box)) throw new Error("失效或归档框不可编辑正文");
+  if (!box || !isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
   const boxFile = boxNotePath(boxPath);
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
@@ -453,9 +453,9 @@ export async function archiveBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
-    if (!isUsableBox(box)) throw new Error("失效或已归档框不能归档");
-    if (isFrozen(box)) throw new Error("认领范围不能归档;先盖章或强清 owner");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or already archived boxes cannot be archived.");
+    if (isFrozen(box)) throw new Error("Claimed ranges cannot be archived; stamp or force-release the owner first.");
     await patchFrontmatter(env.fs, box, { archived: true });
   });
 }
@@ -464,8 +464,8 @@ export async function restoreBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
-    if (box.fm.archived !== true) throw new Error("只能从显式归档根恢复整棵子树");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (box.fm.archived !== true) throw new Error("Only an explicit archive root can restore the subtree.");
     await patchFrontmatter(env.fs, box, { archived: undefined });
   });
 }
@@ -474,9 +474,9 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
-    if (box.fm.archived !== true) throw new Error("node 必须先归档才能永久删除");
-    if (hasOwnerInSubtree(box)) throw new Error("归档子树仍有 owner,不能删除");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (box.fm.archived !== true) throw new Error("Node must be archived before permanent deletion.");
+    if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
 
     const removedIds = collectSubtreeIds(box);
     await env.fs.remove(box.path);
@@ -535,10 +535,10 @@ async function ensureDir(fs: FsAdapter, path: string): Promise<void> {
 
 function normalizeTagPatch(value: unknown): string[] | undefined {
   if (value === undefined) return undefined;
-  if (!Array.isArray(value)) throw new Error("tags 必须是字符串数组");
+  if (!Array.isArray(value)) throw new Error("tags must be a string array.");
   const tags: string[] = [];
   for (const item of value) {
-    if (typeof item !== "string") throw new Error("tags 必须是字符串数组");
+    if (typeof item !== "string") throw new Error("tags must be a string array.");
     const tag = normalizeTagName(item);
     if (!tags.includes(tag)) tags.push(tag);
   }
@@ -554,7 +554,7 @@ function boxKeyOrder(existing: string[]): string[] {
 
 function assertNotTempPath(path: string): void {
   if (path === "temp" || path.startsWith("temp/")) {
-    throw new Error("temp 是系统管道,不允许创建或移动 typed box");
+    throw new Error("temp is a system pipe; typed boxes cannot be created or moved there.");
   }
 }
 
@@ -571,8 +571,8 @@ function collectSubtreeIds(box: Box, ids = new Set<string>()): Set<string> {
 
 function assertRoleName(role: string): string {
   const name = role.trim();
-  if (!name) throw new Error("role 名不能为空");
-  if (/[\/\\\r\n]/.test(name)) throw new Error("role 名不能包含路径分隔符或换行");
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
   return name;
 }
 

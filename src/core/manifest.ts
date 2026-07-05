@@ -35,8 +35,8 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
-  readable.push({ path: ".tent/roles.json", note: "系统注册表:可用 role 与长期 prompt" });
-  readable.push({ path: "temp/", note: "系统管道:可读全部角色任务、提议与交付" });
+  readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "temp/", note: "System pipe: read all role tasks, proposals, and deliveries." });
 
   // 可写集:认领子树里 writable=true 的框
   for (const box of claimScope) {
@@ -45,10 +45,10 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "结构权:可在帐根创建/移动顶层框" });
+    writable.push({ path: "./", note: "Structure permission: may create/move top-level boxes at the Tent root." });
   }
   for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "结构权:可在此框下创建/移动/删除子框" });
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structure permission: may create/move/delete child boxes under this box." });
   }
   // 角色 temp 格(总是可写)
   writable.push({ path: join("temp", role) + "/" });
@@ -119,7 +119,7 @@ function buildPreloaded(tent: LoadedTent): string[] {
       if (type !== 0) return type;
       return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
     })
-    .map((box) => `${box.path} 正文`);
+    .map((box) => `${box.path} body`);
   return ["RULES.md", ...entries];
 }
 
@@ -155,7 +155,7 @@ function subtree(box: Box): Box[] {
 }
 
 function requireClaimBoxes(input: DispatchInput): Box[] {
-  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("缺少认领框");
+  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
   return input.claimBoxes;
 }
 

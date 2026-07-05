@@ -98,9 +98,9 @@ export async function ensureRoleInit(
     `- Tent: ${tentName}\n` +
     `- Rules: RULES.md\n` +
     `- Role registry: .tent/roles.json (or run \`tent roles\`)\n\n` +
-    `## Role Prompt\n\n${role.prompt?.trim() || "(无长期 role prompt)"}\n\n` +
+    `## Role Prompt\n\n${role.prompt?.trim() || "(no persistent role prompt)"}\n\n` +
     `## Operating Model\n\n` +
-    `Manifest 的 readable/writable 是 honor contract，不是安全沙箱。遇到 prompt 冲突或无法遵守的边界时，停止并询问 user。\n`;
+    `Manifest readable/writable entries are an honor contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.\n`;
   await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path;
 }
@@ -111,7 +111,7 @@ export async function writeTaskEnvelope(
   input: TaskEnvelopeInput
 ): Promise<string> {
   const userPrompt = input.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("派活必须提供 user prompt");
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
 
   const dir = join("temp", input.role, "tasks");
   await ensureDir(fs, dir);
@@ -145,7 +145,7 @@ export async function writeTaskEnvelope(
 export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
   const raw = await fs.readFile(path);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`task envelope 格式无效: ${path}`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path}.`);
   data.status = "taken";
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
 }

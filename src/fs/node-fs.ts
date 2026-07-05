@@ -71,11 +71,11 @@ export class NodeFs implements FsAdapter {
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
-        if (!stale || attempt > 0) throw new Error("Tent 正在执行另一个写操作,请稍后重试");
+        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
         await fs.rm(lockPath, { force: true });
       }
     }
-    if (!handle) throw new Error("无法获取 Tent mutation lock");
+    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
     try {
       await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), "utf8");
       return await action();

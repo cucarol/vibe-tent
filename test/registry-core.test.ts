@@ -72,7 +72,7 @@ test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS
   );
   await assert.rejects(
     () => scaffoldTent(new NodeFs(invalidDir), { name: "", rules: "# RULES" }),
-    /帐名不能为空/,
+    /Tent name cannot be empty\./,
   );
 });
 
@@ -163,7 +163,7 @@ test("tags 注册表:自动登记、摘除、级联剥离与检索", async () =>
 
   await addRegistryTag(fsa, "alpha");
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["alpha", "backend-hardening", "zeta"]);
-  await assert.rejects(() => addRegistryTag(fsa, "bad/name"), /路径分隔符/);
+  await assert.rejects(() => addRegistryTag(fsa, "bad/name"), /path separators/);
 
   await addTag(fsa, "bx-p1", "backend-hardening");
   await addTag(fsa, "bx-o1", "backend-hardening");

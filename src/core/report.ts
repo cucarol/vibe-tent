@@ -33,17 +33,17 @@ async function submitReportUnlocked(
   commits: string[]
 ): Promise<DeliveryReport> {
   const text = body.trim();
-  if (!text) throw new Error("report 正文不能为空");
+  if (!text) throw new Error("Report body cannot be empty.");
   const tent = await loadTent(fs);
   const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`找不到框 ${boxId}`);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
   const role = box.fm.owner;
-  if (!role) throw new Error("只有直接带 owner 的认领框可以提交 report");
+  if (!role) throw new Error("Only claimed boxes with a direct owner can submit reports.");
 
   const path = reportPath(role, box.id);
   if (await fs.exists(path)) {
     const current = await loadReport(fs, path);
-    if (current.status === "ready") throw new Error("已有待裁 report;需先由 user 确认或驳回");
+    if (current.status === "ready") throw new Error("A report is already pending triage; the user must confirm or reject it first.");
   }
 
   const report: DeliveryReport = {
@@ -82,7 +82,7 @@ export async function loadReports(fs: FsAdapter): Promise<DeliveryReport[]> {
 
 export async function loadReport(fs: FsAdapter, inputPath: string): Promise<DeliveryReport> {
   const path = normalizeReportPath(inputPath);
-  if (!(await fs.exists(path))) throw new Error(`找不到 report: ${path}`);
+  if (!(await fs.exists(path))) throw new Error(`Report not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
   if (
     data.type !== "report" ||
@@ -90,7 +90,7 @@ export async function loadReport(fs: FsAdapter, inputPath: string): Promise<Deli
     typeof data.role !== "string" ||
     (data.status !== "ready" && data.status !== "rejected")
   ) {
-    throw new Error(`report 格式无效: ${path}`);
+    throw new Error(`Invalid report format: ${path}.`);
   }
   return {
     path,
@@ -109,9 +109,9 @@ export async function loadReport(fs: FsAdapter, inputPath: string): Promise<Deli
 export async function rejectReport(fs: FsAdapter, inputPath: string, review?: string): Promise<void> {
   await withTentMutation(fs, async () => {
     const report = await loadReport(fs, inputPath);
-    if (report.status !== "ready") throw new Error("只有 ready report 可以驳回");
+    if (report.status !== "ready") throw new Error("Only ready reports can be rejected.");
     report.status = "rejected";
-    report.review = review?.trim() || "user 驳回，等待重新交付";
+    report.review = review?.trim() || "User rejected; waiting for resubmission.";
     await writeReport(fs, report);
   });
 }
@@ -129,7 +129,7 @@ function reportPath(role: string, boxId: string): string {
 function normalizeReportPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path)) {
-    throw new Error("report 必须指向 temp/<role>/reports/<boxId>.md");
+    throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
   return path;
 }

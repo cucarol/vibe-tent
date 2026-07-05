@@ -75,7 +75,7 @@ function applyDuplicateInvalid(
   inherited?: { rootId: string; reason: string }
 ): void {
   const direct = duplicateIds.has(box.id)
-    ? { rootId: box.id, reason: `重复 id: ${box.id};原生复制需转为 fork` }
+    ? { rootId: box.id, reason: `Duplicate id: ${box.id}; native copies must be converted to forks.` }
     : undefined;
   const invalid = inherited || direct;
   if (invalid) {
@@ -91,10 +91,10 @@ function applyDuplicateInvalid(
 /** 单框内容落盘后的增量重载。结构与 id 不变时避免重扫整顶帐。 */
 export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: string): Promise<Box> {
   const box = tent.byPath.get(path);
-  if (!box) throw new Error(`找不到框 ${path}`);
+  if (!box) throw new Error(`Box not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(boxNotePath(path)));
   const identity = normalizeIdentity(data);
-  if (identity.fm.id !== box.id) throw new Error("增量重载不允许修改 box id");
+  if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
   box.type = identity.fm.type;
   box.kind = identity.fm.kind;
   box.tags = identity.tags;
@@ -296,10 +296,10 @@ function invalidTypeReference(
   registry: TypeRegistry
 ): { rootId: string; reason: string } | undefined {
   if (!box.id) {
-    return { rootId: box.path, reason: "缺少 id:疑似手工创建的孤儿框,请用 tent new-box 或 repair" };
+    return { rootId: box.path, reason: "Missing id: likely a manually created orphan box; use tent new-box or repair." };
   }
   if (!typeExists(box.type, registry)) {
-    return { rootId: box.id, reason: `未知 type: ${box.type}` };
+    return { rootId: box.id, reason: `Unknown type: ${box.type}.` };
   }
   return undefined;
 }

@@ -33,16 +33,16 @@ export async function loadRolesRegistry(fs: FsAdapter): Promise<RolesRegistry> {
     return normalizeRolesRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`roles.json 损坏: ${detail}`);
+    throw new Error(`roles.json is corrupt: ${detail}.`);
   }
 }
 
 export async function createRole(fs: FsAdapter, definition: RoleDefinition): Promise<void> {
   await withTentMutation(fs, async () => {
     const role = normalizeRole(definition);
-    if (!role.name) throw new Error("role 名不能为空");
+    if (!role.name) throw new Error("Role name cannot be empty.");
     const registry = await loadRolesRegistry(fs);
-    if (registry.roles.some((item) => item.name === role.name)) throw new Error(`role 已存在: ${role.name}`);
+    if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
     registry.roles.push(role);
     await writeJson(fs, ROLES_REGISTRY_PATH, registry);
   });
@@ -52,7 +52,7 @@ export async function updateRole(fs: FsAdapter, name: string, patch: Partial<Rol
   await withTentMutation(fs, async () => {
     const registry = await loadRolesRegistry(fs);
     const index = registry.roles.findIndex((role) => role.name === name);
-    if (index === -1) throw new Error(`role 不存在: ${name}`);
+    if (index === -1) throw new Error(`Role does not exist: ${name}.`);
     const next = normalizeRole({ ...registry.roles[index], ...patch, name });
     registry.roles[index] = next;
     await writeJson(fs, ROLES_REGISTRY_PATH, registry);
@@ -61,10 +61,10 @@ export async function updateRole(fs: FsAdapter, name: string, patch: Partial<Rol
 
 export async function deleteRole(fs: FsAdapter, name: string, confirmation: string): Promise<void> {
   await withTentMutation(fs, async () => {
-    if (confirmation !== name) throw new Error(`二次确认不匹配;请输入 role 名 ${name}`);
+    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the role name ${name}.`);
     const registry = await loadRolesRegistry(fs);
     const next = registry.roles.filter((role) => role.name !== name);
-    if (next.length === registry.roles.length) throw new Error(`role 不存在: ${name}`);
+    if (next.length === registry.roles.length) throw new Error(`Role does not exist: ${name}.`);
     await writeJson(fs, ROLES_REGISTRY_PATH, { roles: next });
   });
 }
@@ -102,13 +102,13 @@ function normalizeRole(value: Partial<RoleDefinition> | Record<string, unknown>)
 
 function normalizeCliConfig(value: unknown): RoleCliConfig | undefined {
   if (value === undefined) return undefined;
-  if (!isRecord(value)) throw new Error("role cli 必须是对象");
+  if (!isRecord(value)) throw new Error("role cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role cli.command 必须是非空字符串");
+  if (!command) throw new Error("role cli.command must be a non-empty string.");
   const cli: RoleCliConfig = { command };
   if (value.resume !== undefined) {
     const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role cli.resume 必须是非空字符串");
+    if (!resume) throw new Error("role cli.resume must be a non-empty string.");
     cli.resume = resume;
   }
   return cli;

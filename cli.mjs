@@ -62,11 +62,11 @@ var NodeFs = class {
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
-        if (!stale || attempt > 0) throw new Error("Tent \u6B63\u5728\u6267\u884C\u53E6\u4E00\u4E2A\u5199\u64CD\u4F5C,\u8BF7\u7A0D\u540E\u91CD\u8BD5");
+        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
         await fs.rm(lockPath, { force: true });
       }
     }
-    if (!handle) throw new Error("\u65E0\u6CD5\u83B7\u53D6 Tent mutation lock");
+    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
     try {
       await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
       return await action();
@@ -339,47 +339,47 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: false,
     color: "blue",
     tier: "base",
-    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
+    description: "Define goals, intent, and acceptance direction."
   },
   prompt: {
     readable: true,
     writable: true,
     color: "purple",
     tier: "base",
-    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
+    description: "Provide task instructions and work context."
   },
   output: {
     readable: true,
     writable: true,
     color: "cyan",
     tier: "base",
-    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
+    description: "Map real deliverables and workspace."
   },
   open: {
     readable: true,
     writable: true,
     color: "green",
     tier: "modifier",
-    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
+    description: "In progress and still actionable."
   },
   reference: {
     readable: true,
     color: "blue",
     tier: "modifier",
-    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
+    description: "Background material for reference and citation."
   },
   asset: {
     writable: true,
     color: "purple",
     tier: "modifier",
-    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
+    description: "Actual deliverables or reusable assets."
   },
   sealed: {
     readable: false,
     writable: false,
     color: "red",
     tier: "modifier",
-    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
+    description: "Archived and no longer part of active work."
   }
 };
 function splitType(type) {
@@ -410,7 +410,7 @@ async function loadTypeRegistry(fs3) {
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json \u635F\u574F: ${detail}`);
+    throw new Error(`types.json is corrupt: ${detail}.`);
   }
 }
 function normalizeRegistry(value) {
@@ -491,7 +491,7 @@ function findDuplicateIds(roots) {
   return new Set([...counts].filter(([, count]) => count > 1).map(([id]) => id));
 }
 function applyDuplicateInvalid(box, duplicateIds, inherited) {
-  const direct = duplicateIds.has(box.id) ? { rootId: box.id, reason: `\u91CD\u590D id: ${box.id};\u539F\u751F\u590D\u5236\u9700\u8F6C\u4E3A fork` } : void 0;
+  const direct = duplicateIds.has(box.id) ? { rootId: box.id, reason: `Duplicate id: ${box.id}; native copies must be converted to forks.` } : void 0;
   const invalid = inherited || direct;
   if (invalid) {
     box.invalid = true;
@@ -657,10 +657,10 @@ function resolveAxis(box, axis, registry) {
 }
 function invalidTypeReference(box, registry) {
   if (!box.id) {
-    return { rootId: box.path, reason: "\u7F3A\u5C11 id:\u7591\u4F3C\u624B\u5DE5\u521B\u5EFA\u7684\u5B64\u513F\u6846,\u8BF7\u7528 tent new-box \u6216 repair" };
+    return { rootId: box.path, reason: "Missing id: likely a manually created orphan box; use tent new-box or repair." };
   }
   if (!typeExists(box.type, registry)) {
-    return { rootId: box.id, reason: `\u672A\u77E5 type: ${box.type}` };
+    return { rootId: box.id, reason: `Unknown type: ${box.type}.` };
   }
   return void 0;
 }
@@ -701,18 +701,18 @@ function buildManifest(tent, input) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
-  readable.push({ path: ".tent/roles.json", note: "\u7CFB\u7EDF\u6CE8\u518C\u8868:\u53EF\u7528 role \u4E0E\u957F\u671F prompt" });
-  readable.push({ path: "temp/", note: "\u7CFB\u7EDF\u7BA1\u9053:\u53EF\u8BFB\u5168\u90E8\u89D2\u8272\u4EFB\u52A1\u3001\u63D0\u8BAE\u4E0E\u4EA4\u4ED8" });
+  readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "temp/", note: "System pipe: read all role tasks, proposals, and deliveries." });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
       writable.push({ id: box.id, path: box.path });
     }
   }
   if (input.claimRoot) {
-    writable.push({ path: "./", note: "\u7ED3\u6784\u6743:\u53EF\u5728\u5E10\u6839\u521B\u5EFA/\u79FB\u52A8\u9876\u5C42\u6846" });
+    writable.push({ path: "./", note: "Structure permission: may create/move top-level boxes at the Tent root." });
   }
   for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "\u7ED3\u6784\u6743:\u53EF\u5728\u6B64\u6846\u4E0B\u521B\u5EFA/\u79FB\u52A8/\u5220\u9664\u5B50\u6846" });
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structure permission: may create/move/delete child boxes under this box." });
   }
   writable.push({ path: join("temp", role) + "/" });
   return {
@@ -770,7 +770,7 @@ function buildPreloaded(tent) {
     const type = preloadTypeRank(a) - preloadTypeRank(b);
     if (type !== 0) return type;
     return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
-  }).map((box) => `${box.path} \u6B63\u6587`);
+  }).map((box) => `${box.path} body`);
   return ["RULES.md", ...entries];
 }
 function preloadStabilityRank(box) {
@@ -801,7 +801,7 @@ function subtree(box) {
   return out;
 }
 function requireClaimBoxes(input) {
-  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("\u7F3A\u5C11\u8BA4\u9886\u6846");
+  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
   return input.claimBoxes;
 }
 function dedupe(entries) {
@@ -834,15 +834,15 @@ function makeUniqueBoxId(existing, rand = Math.random) {
 
 // src/core/claim.ts
 function canClaim(box) {
-  if (box.invalid) return { ok: false, blocker: box, reason: `\u5931\u6548\u5B50\u6811:${box.invalidReason || "\u7C7B\u578B\u5B9A\u4E49\u7F3A\u5931"}` };
-  if (box.archived) return { ok: false, blocker: box, reason: "\u5F52\u6863\u5B50\u6811\u4E0D\u53EF\u8BA4\u9886" };
+  if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
+  if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (box.fm.owner) {
-    return { ok: false, blocker: box, reason: `\u5DF2\u88AB ${box.fm.owner} \u8BA4\u9886` };
+    return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
-      return { ok: false, blocker: anc, reason: `\u7956\u5148\u300C${anc.name}\u300D\u5DF2\u88AB ${anc.fm.owner} \u8BA4\u9886` };
+      return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;
   }
@@ -851,7 +851,7 @@ function canClaim(box) {
     return {
       ok: false,
       blocker: occupiedChild,
-      reason: `\u5B50\u5B59\u300C${occupiedChild.name}\u300D\u5DF2\u88AB ${occupiedChild.fm.owner} \u8BA4\u9886`
+      reason: `Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
     };
   }
   return { ok: true };
@@ -905,7 +905,7 @@ async function addTag(fs3, boxId, name) {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs3);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     await addRegistryTagUnlocked(fs3, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs3, box, tags);
@@ -916,7 +916,7 @@ async function removeTag(fs3, boxId, name) {
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs3);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     await writeBoxTags(fs3, box, box.tags.filter((item) => item !== tag));
   });
 }
@@ -944,8 +944,8 @@ function findBoxesByTag(tent, name) {
 }
 function normalizeTagName(name) {
   const tag = name.trim();
-  if (!tag) throw new Error("tag \u540D\u4E0D\u80FD\u4E3A\u7A7A");
-  if (/[\/\\\r\n]/.test(tag)) throw new Error("tag \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
+  if (!tag) throw new Error("Tag name cannot be empty.");
+  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
 async function writeBoxTags(fs3, box, tags) {
@@ -993,7 +993,7 @@ async function loadRolesRegistry(fs3) {
     return normalizeRolesRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`roles.json \u635F\u574F: ${detail}`);
+    throw new Error(`roles.json is corrupt: ${detail}.`);
   }
 }
 function normalizeRolesRegistry(value) {
@@ -1021,13 +1021,13 @@ function normalizeRoleDefinition(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role cli \u5FC5\u987B\u662F\u5BF9\u8C61");
+  if (!isRecord3(value)) throw new Error("role cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role cli.command \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+  if (!command) throw new Error("role cli.command must be a non-empty string.");
   const cli = { command };
   if (value.resume !== void 0) {
     const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role cli.resume \u5FC5\u987B\u662F\u975E\u7A7A\u5B57\u7B26\u4E32");
+    if (!resume) throw new Error("role cli.resume must be a non-empty string.");
     cli.resume = resume;
   }
   return cli;
@@ -1060,18 +1060,18 @@ async function ensureRoleInit(fs3, role, tentName) {
 
 ## Role Prompt
 
-${role.prompt?.trim() || "(\u65E0\u957F\u671F role prompt)"}
+${role.prompt?.trim() || "(no persistent role prompt)"}
 
 ## Operating Model
 
-Manifest \u7684 readable/writable \u662F honor contract\uFF0C\u4E0D\u662F\u5B89\u5168\u6C99\u7BB1\u3002\u9047\u5230 prompt \u51B2\u7A81\u6216\u65E0\u6CD5\u9075\u5B88\u7684\u8FB9\u754C\u65F6\uFF0C\u505C\u6B62\u5E76\u8BE2\u95EE user\u3002
+Manifest readable/writable entries are an honor contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 `;
   await fs3.writeFile(path2, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path2;
 }
 async function writeTaskEnvelope(fs3, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const dir = join("temp", input.role, "tasks");
   await ensureDir(fs3, dir);
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
@@ -1109,7 +1109,7 @@ ${userPrompt}
 async function ackTaskEnvelope(fs3, path2) {
   const raw = await fs3.readFile(path2);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`task envelope \u683C\u5F0F\u65E0\u6548: ${path2}`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path2}.`);
   data.status = "taken";
   await fs3.writeFile(path2, serializeFrontmatter(data, body, keyOrder));
 }
@@ -1134,16 +1134,16 @@ async function submitReport(fs3, clock, boxId, body, commits) {
 }
 async function submitReportUnlocked(fs3, clock, boxId, body, commits) {
   const text = body.trim();
-  if (!text) throw new Error("report \u6B63\u6587\u4E0D\u80FD\u4E3A\u7A7A");
+  if (!text) throw new Error("Report body cannot be empty.");
   const tent = await loadTent(fs3);
   const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
   const role = box.fm.owner;
-  if (!role) throw new Error("\u53EA\u6709\u76F4\u63A5\u5E26 owner \u7684\u8BA4\u9886\u6846\u53EF\u4EE5\u63D0\u4EA4 report");
+  if (!role) throw new Error("Only claimed boxes with a direct owner can submit reports.");
   const path2 = reportPath(role, box.id);
   if (await fs3.exists(path2)) {
     const current = await loadReport(fs3, path2);
-    if (current.status === "ready") throw new Error("\u5DF2\u6709\u5F85\u88C1 report;\u9700\u5148\u7531 user \u786E\u8BA4\u6216\u9A73\u56DE");
+    if (current.status === "ready") throw new Error("A report is already pending triage; the user must confirm or reject it first.");
   }
   const report = {
     path: path2,
@@ -1178,10 +1178,10 @@ async function loadReports(fs3) {
 }
 async function loadReport(fs3, inputPath) {
   const path2 = normalizeReportPath(inputPath);
-  if (!await fs3.exists(path2)) throw new Error(`\u627E\u4E0D\u5230 report: ${path2}`);
+  if (!await fs3.exists(path2)) throw new Error(`Report not found: ${path2}.`);
   const { data, body } = parseFrontmatter(await fs3.readFile(path2));
   if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`report \u683C\u5F0F\u65E0\u6548: ${path2}`);
+    throw new Error(`Invalid report format: ${path2}.`);
   }
   return {
     path: path2,
@@ -1205,7 +1205,7 @@ function reportPath(role, boxId) {
 function normalizeReportPath(input) {
   const path2 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path2)) {
-    throw new Error("report \u5FC5\u987B\u6307\u5411 temp/<role>/reports/<boxId>.md");
+    throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
   return path2;
 }
@@ -1238,8 +1238,8 @@ async function forkNode(env, boxId) {
 async function forkNodeUnlocked(env, boxId) {
   const tent = await loadTent(env.fs);
   const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
-  if (!isUsableBox(source)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD fork");
+  if (!source) throw new Error(`Box not found: ${boxId}.`);
+  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
   await copyTree(env.fs, source.path, forkPath);
@@ -1326,7 +1326,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("\u6D3E\u6D3B\u5FC5\u987B\u63D0\u4F9B user prompt");
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const previousOwner = claim.root ? void 0 : claim.box.fm.owner;
   const previousStatus = claim.root ? void 0 : claim.box.fm.status;
   const previousAcceptedBy = claim.root ? void 0 : claim.box.fm.acceptedBy;
@@ -1335,15 +1335,15 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
-      throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:\u5E10\u6839\u4E0B\u5DF2\u6709\u8BA4\u9886\u300C${occupied[0].name}\u300D(${occupied[0].fm.owner})`);
+      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
     }
   } else {
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
-      throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:${existingOwner.name} \u5DF2\u88AB ${existingOwner.fm.owner} \u8BA4\u9886`);
+      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
     }
     const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`\u4E0D\u80FD\u6D3E\u6D3B:${claimable.reason || "\u6846\u4E0D\u53EF\u8BA4\u9886"}`);
+    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
     await setOwner(env.fs, claim.box, roleName, "doing");
     claim.box.fm.owner = roleName;
     claim.box.fm.status = "doing";
@@ -1395,10 +1395,10 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
-    throw new Error("\u6574\u5E10\u4E0D\u53EF\u76F4\u63A5\u6D3E\u6D3B,\u8BF7\u6D3E\u5177\u4F53\u6846(claimId \u4E0D\u80FD\u662F . / root / \u5E10\u540D)");
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (claimId cannot be ., root, or the Tent name).");
   }
   const box = tent.byId.get(id);
-  if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${claimId}`);
+  if (!box) throw new Error(`Box not found: ${claimId}.`);
   return { root: false, id: box.id, name: box.name, box };
 }
 async function stamp(env, boxId, acceptedBy = "user") {
@@ -1408,7 +1408,7 @@ async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (integrate) await integrate();
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
@@ -1416,14 +1416,14 @@ async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
 async function acceptReport(env, reportPath2, options = {}) {
   await withMutation(env.fs, async () => {
     const report = await loadReport(env.fs, reportPath2);
-    if (report.status !== "ready") throw new Error("\u53EA\u6709 ready report \u53EF\u4EE5\u786E\u8BA4");
+    if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(report.boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${report.boxId}`);
-    if (box.fm.owner !== report.role) throw new Error("report role \u4E0E\u5F53\u524D owner \u4E0D\u4E00\u81F4");
+    if (!box) throw new Error(`Box not found: ${report.boxId}.`);
+    if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
-      if (!options.integrate) throw new Error("report \u542B commits,\u5FC5\u987B\u5B8C\u6210 workspace \u5408\u5165");
+      if (!options.integrate) throw new Error("Report contains commits; workspace integration is required.");
       await options.integrate(commits);
     }
     await setOwner(env.fs, box, void 0, "done", options.acceptedBy ?? "user");
@@ -1434,8 +1434,8 @@ async function grantReadable(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
-    if (!isUsableBox(box)) throw new Error("\u5931\u6548\u6216\u5F52\u6863\u6846\u4E0D\u80FD\u7FFB\u53EF\u8BFB");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
 }
@@ -1452,8 +1452,8 @@ async function forceRelease(env, boxId) {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`\u627E\u4E0D\u5230\u6846 ${boxId}`);
-    if (!box.fm.owner) throw new Error("\u53EA\u80FD\u4E2D\u65AD\u76F4\u63A5\u5E26 owner \u7684\u8BA4\u9886\u6839");
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
     await removeReportsForBox(env.fs, box.id);
   });
@@ -1476,10 +1476,10 @@ async function createBox(env, input) {
 async function createBoxUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
   const tent = await loadTent(env.fs);
-  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`\u672A\u77E5 type: ${input.type}`);
+  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
   if (input.parentPath) {
     const parent2 = tent.byPath.get(input.parentPath);
-    if (!parent2 || !isUsableBox(parent2)) throw new Error("\u76EE\u6807\u7236\u6846\u5931\u6548\u6216\u5DF2\u5F52\u6863");
+    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueBoxId(existing, env.rand);
@@ -1538,13 +1538,13 @@ function boxKeyOrder2(existing) {
 }
 function assertNotTempPath(path2) {
   if (path2 === "temp" || path2.startsWith("temp/")) {
-    throw new Error("temp \u662F\u7CFB\u7EDF\u7BA1\u9053,\u4E0D\u5141\u8BB8\u521B\u5EFA\u6216\u79FB\u52A8 typed box");
+    throw new Error("temp is a system pipe; typed boxes cannot be created or moved there.");
   }
 }
 function assertRoleName(role) {
   const name = role.trim();
-  if (!name) throw new Error("role \u540D\u4E0D\u80FD\u4E3A\u7A7A");
-  if (/[\/\\\r\n]/.test(name)) throw new Error("role \u540D\u4E0D\u80FD\u5305\u542B\u8DEF\u5F84\u5206\u9694\u7B26\u6216\u6362\u884C");
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
   return name;
 }
 function ownerCovering(box) {
@@ -1563,16 +1563,16 @@ async function withMutation(fs3, action) {
 // src/core/scaffold.ts
 async function scaffoldTent(fs3, options) {
   const name = options.name.trim();
-  if (!name) throw new Error("\u5E10\u540D\u4E0D\u80FD\u4E3A\u7A7A");
-  if (!options.rules.trim()) throw new Error("RULES.md \u5185\u5BB9\u4E0D\u80FD\u4E3A\u7A7A");
+  if (!name) throw new Error("Tent name cannot be empty.");
+  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
   const usedIds = /* @__PURE__ */ new Set();
   for (const box of options.boxes ?? []) {
     const boxName = box.name.trim();
     if (!boxName || boxName.includes("/") || boxName.includes("\\")) {
-      throw new Error(`\u65E0\u6548\u6846\u540D: ${box.name}`);
+      throw new Error(`Invalid box name: ${box.name}.`);
     }
     const type = box.kind?.trim() || box.type.trim();
-    if (!type) throw new Error(`\u6846\u300C${boxName}\u300D\u7F3A\u4E00\u7EA7 type`);
+    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
     const id = box.id?.trim() || makeUniqueBoxId(usedIds);
     usedIds.add(id);
     const frontmatter = { id, type };
@@ -1824,7 +1824,7 @@ function resolveTentWorkspace(tent) {
     if (workspace) workspaces.add(nodePath2.resolve(workspace));
   }
   if (workspaces.size > 1) {
-    throw new Error(`\u4E00\u9876 Tent \u53EA\u80FD\u5BF9\u5E94\u4E00\u4E2A workspace,\u5F53\u524D\u53D1\u73B0: ${[...workspaces].join(", ")}`);
+    throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
   }
   return [...workspaces][0];
 }
@@ -1832,7 +1832,7 @@ async function runWorkspaceCheck(workspace, command) {
   const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
   const script = command.trim();
-  if (!script) throw new Error("--require-check \u5FC5\u987B\u63D0\u4F9B\u975E\u7A7A\u547D\u4EE4");
+  if (!script) throw new Error("--require-check requires a non-empty command.");
   return runShell(root, script);
 }
 async function ensureRoleWorkspace(workspace, role) {
@@ -1851,7 +1851,7 @@ async function ensureRoleWorkspace(workspace, role) {
     return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
   }
   if (await pathExists(worktree)) {
-    throw new Error(`role worktree \u8DEF\u5F84\u5DF2\u5B58\u5728\u4F46\u672A\u767B\u8BB0\u7ED9 ${branch}: ${worktree}`);
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
   }
   const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
   if (branchExists) {
@@ -1867,10 +1867,10 @@ async function integrateWorkspaceCommits(contract, refs) {
   const root = contract.workspace;
   const current = (await git(root, ["branch", "--show-current"])).trim();
   if (current !== contract.targetBranch) {
-    throw new Error(`workspace \u5FC5\u987B checkout ${contract.targetBranch},\u5F53\u524D\u662F ${current || "(detached)"}`);
+    throw new Error(`workspace must check out ${contract.targetBranch}; current is ${current || "(detached)"}.`);
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("workspace \u6709\u672A\u63D0\u4EA4\u6539\u52A8,\u4E0D\u80FD\u9A8C\u6536\u5408\u5165");
+  if (dirty) throw new Error("workspace has uncommitted changes; cannot accept integration.");
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
@@ -1919,7 +1919,7 @@ async function assertGitWorkspace(root) {
     nodeFs.realpath(root)
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`workspace \u5FC5\u987B\u662F Git \u6839\u76EE\u5F55: ${root}`);
+    throw new Error(`workspace must be a Git root: ${root}.`);
   }
 }
 function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
@@ -1932,7 +1932,7 @@ async function resolveTargetBranch(root) {
     if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
   }
   const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (!current) throw new Error("\u65E0\u6CD5\u8BC6\u522B workspace \u6B63\u5F0F\u5206\u652F");
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
   return current;
 }
 async function worktreeForBranch(root, branch) {
@@ -1975,10 +1975,10 @@ async function rollbackIntegration(root, originalRef, cause) {
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {
     throw new Error(
-      `workspace \u5408\u5165\u5931\u8D25\u4E14\u56DE\u6EDA\u5931\u8D25: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
     );
   }
-  throw new Error(`workspace \u5408\u5165\u51B2\u7A81,\u5DF2\u56DE\u6EDA: ${errorMessage(cause)}`);
+  throw new Error(`workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
@@ -2539,14 +2539,14 @@ async function newTent(target, vault) {
   if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${target}`);
   await fsmod.mkdir(target, { recursive: true });
   const name = path.basename(path.resolve(target));
-  const fallbackRules = `# ${name} \xB7 \u9879\u76EE\u7EA6\u5B9A
+  const fallbackRules = `# ${name} - Project Rules
 
-> \u8FD9\u9876\u5E10\u7684\u672C\u5730\u89C4\u77E9(global rule):genesis \u5EFA\u3001\u968F\u4FBF\u6539\u3002
-> \u673A\u5236\u89C4\u8303\u4E0D\u5728\u8FD9(\u89C1 Tent \u4ED3\u5E93 docs/SPEC.md);agent \u7684\u64CD\u4F5C\u534F\u8BAE\u5728 tent-role skill\u3002
+> Local rules for this Tent (global rules): created by genesis; edit freely.
+> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.
 
-- \u4EA7\u51FA workspace:<\u586B\u771F\u5B9E\u4EE3\u7801\u4ED3\u8DEF\u5F84>
-- \u63D0\u4EA4 / \u547D\u540D\u7EA6\u5B9A:<\u586B>
-- \u5176\u5B83\u672C\u9879\u76EE\u89C4\u77E9:<\u586B>
+- Output workspace: <real code repository path>
+- Commit / naming conventions: <fill in>
+- Other project rules: <fill in>
 `;
   const rules = pluginSettings?.rulesTemplate ? pluginSettings.rulesTemplate.replaceAll("{tent}", name) : fallbackRules;
   await scaffoldTent(fsa, {

@@ -46,7 +46,7 @@ export async function addTag(fs: FsAdapter, boxId: string, name: string): Promis
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     await addRegistryTagUnlocked(fs, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs, box, tags);
@@ -58,7 +58,7 @@ export async function removeTag(fs: FsAdapter, boxId: string, name: string): Pro
     const tag = normalizeTagName(name);
     const tent = await loadTent(fs);
     const box = tent.byId.get(boxId);
-    if (!box) throw new Error(`找不到框 ${boxId}`);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
     await writeBoxTags(fs, box, box.tags.filter((item) => item !== tag));
   });
 }
@@ -91,8 +91,8 @@ export function findBoxesByTag(tent: { byId: Map<string, Box> }, name: string): 
 
 export function normalizeTagName(name: string): string {
   const tag = name.trim();
-  if (!tag) throw new Error("tag 名不能为空");
-  if (/[\/\\\r\n]/.test(tag)) throw new Error("tag 名不能包含路径分隔符或换行");
+  if (!tag) throw new Error("Tag name cannot be empty.");
+  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
 

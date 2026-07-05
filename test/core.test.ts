@@ -128,8 +128,8 @@ test("manifest:可读集=全帐 readable,可写集=认领子树 writable + temp 
   assert.ok(yaml.includes("role: executor"));
   assert.equal(m.preloaded[0], "RULES.md", "RULES 固定在预灌前缀");
   assert.ok(
-    m.preloaded.indexOf("prompt/表达式任务书 正文") <
-      m.preloaded.indexOf("prompt/表达式任务书/草稿 正文"),
+    m.preloaded.indexOf("prompt/表达式任务书 body") <
+      m.preloaded.indexOf("prompt/表达式任务书/草稿 body"),
     "稳定任务书排在易变 scratch 前",
   );
   assert.deepEqual(
@@ -146,7 +146,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   const claim = tent.byId.get("bx-p1")!;
   const leafManifest = buildManifest(tent, { tentName: "wqb", role: "executor", claimBoxes: [claim] });
   assert.ok(
-    leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /结构权/.test(e.note || "")),
+    leafManifest.writable.some((e) => e.path === "prompt/表达式任务书/" && /Structure permission/.test(e.note || "")),
     "认领框本身有创建/移动/删除子框的结构权",
   );
   assert.ok(
@@ -190,7 +190,7 @@ test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", 
 
   await assert.rejects(
     () => dispatch(env as any, "bx-p1", "analyst", "重复派活"),
-    /已被 analyst 认领/,
+    /is already claimed by analyst\./,
     "即使是同一 role，也必须先完成或释放",
   );
 
@@ -212,7 +212,7 @@ test("dispatch:roles registry failure rolls back owner and temp residue", async 
 
   await assert.rejects(
     () => dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。"),
-    /roles\.json 损坏/,
+    /roles\.json is corrupt/,
   );
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
@@ -269,7 +269,7 @@ test("dispatch:必须提供 user prompt", async () => {
   await dispatch(env as any, "bx-p1", "analyst", "旧意图");
   await assert.rejects(
     () => dispatch(env as any, "bx-o1", "analyst", ""),
-    /必须提供 user prompt/,
+    /Dispatch requires a user prompt\./,
   );
 });
 
@@ -281,7 +281,7 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
     tentName: "wqb",
   };
   const { dispatch } = await import("../src/core/ops.js");
-  const message = /整帐不可直接派活,请派具体框\(claimId 不能是 \. \/ root \/ 帐名\)/;
+  const message = /Cannot dispatch the whole Tent directly; dispatch a specific box \(claimId cannot be \., root, or the Tent name\)\./;
   await assert.rejects(() => dispatch(env as any, ".", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "root", "architect", "接管全帐"), message);
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
@@ -361,11 +361,11 @@ test("placeBox:不能移动或移入认领冻结范围", async () => {
   const { placeBox } = await import("../src/core/ops.js");
   await assert.rejects(
     () => placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" }),
-    /认领范围不能移动/,
+    /Claimed ranges cannot be moved/,
   );
   await assert.rejects(
     () => placeBox(env as any, "prompt/旧站资料", "goal/挖新alpha", { mode: "inside" }),
-    /不能移入认领范围/,
+    /Cannot move into a claimed range/,
   );
 });
 
@@ -394,7 +394,7 @@ test("orphan box:同名 md 缺 id 时进入 invalid 态且不进 byId", async ()
   const tent = await loadTent(new NodeFs(dir));
   const orphan = tent.byPath.get("orphan")!;
   assert.equal(orphan.invalid, true);
-  assert.match(orphan.invalidReason || "", /缺少 id/);
+  assert.match(orphan.invalidReason || "", /Missing id/);
   assert.equal(tent.byId.has(""), false);
 });
 
@@ -494,12 +494,12 @@ test("temp 系统管道:不进框树、禁止 typed box、全清后重建", asyn
         name: "scratch",
         type: "output",
       }),
-    /系统管道/,
+    /system pipe/,
   );
   await assert.rejects(
     () =>
       createBox(env as any, { parentPath: "", name: "temp", type: "output" }),
-    /系统管道/,
+    /system pipe/,
   );
   await cleanTemp(env as any);
   assert.equal(await fsa.exists("temp"), true, "清空后系统目录仍存在");
@@ -555,7 +555,7 @@ test("永久删除:node 必须先归档,删除父级会删除整棵子树", asyn
     tentName: "x",
   };
   const { archiveBox, deleteArchivedBox } = await import("../src/core/ops.js");
-  await assert.rejects(() => deleteArchivedBox(env as any, "bx-p1"), /先归档/);
+  await assert.rejects(() => deleteArchivedBox(env as any, "bx-p1"), /must be archived/);
   await archiveBox(env as any, "bx-p1");
   await deleteArchivedBox(env as any, "bx-p1");
   assert.equal(await fsa.exists("prompt/表达式任务书"), false);
@@ -624,7 +624,7 @@ test("Tent mutation lock:并发写入被短期互斥,释放后可继续", async 
   }
   await assert.rejects(
     () => second.withLock!(".tent/mutation.lock", async () => undefined),
-    /另一个写操作/,
+    /already running another write operation/,
   );
   release();
   await active;

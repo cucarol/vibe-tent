@@ -13,8 +13,8 @@ export async function forkNode(env: OpsEnv, boxId: string): Promise<string> {
 async function forkNodeUnlocked(env: OpsEnv, boxId: string): Promise<string> {
   const tent = await loadTent(env.fs);
   const source = tent.byId.get(boxId);
-  if (!source) throw new Error(`找不到框 ${boxId}`);
-  if (!isUsableBox(source)) throw new Error("失效或归档框不能 fork");
+  if (!source) throw new Error(`Box not found: ${boxId}.`);
+  if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
 
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
@@ -70,7 +70,7 @@ export async function adoptCopiedSubtree(env: OpsEnv, boxPath: string): Promise<
     await normalizeCopiedRootIdentity(env.fs, boxPath);
     const tent = await loadTent(env.fs);
     const root = tent.byPath.get(boxPath);
-    if (!root) throw new Error(`找不到复制框 ${boxPath}`);
+    if (!root) throw new Error(`Copied box not found: ${boxPath}.`);
     const copied = collectSubtree(root);
     const copiedPaths = new Set(copied.map((box) => box.path));
     const outsideIds = new Set(

@@ -195,7 +195,7 @@ test("删除自定义 type:二次确认后关联 node 与整棵子树失效,修�
   assert.equal(inspection.references.length, 1);
   await assert.rejects(
     () => deleteCustomType(fsa, "type", "research", "wrong"),
-    /二次确认/,
+    /Confirmation mismatch/,
   );
   await deleteCustomType(fsa, "type", "research", "research");
 
@@ -226,7 +226,7 @@ test("删除自定义 type:二次确认后关联 node 与整棵子树失效,修�
   const { patchBox } = await import("../src/core/ops.js");
   await assert.rejects(
     () => patchBox(env as any, "research/child", { type: "goal" }),
-    /失效根/,
+    /invalid root/,
   );
   await patchBox(env as any, "research", { type: "goal" });
   tent = await loadTent(fsa);
@@ -256,11 +256,11 @@ test("删除自定义 type:关联认领范围会阻止整次删除", async () =>
   );
   await assert.rejects(
     () => deleteCustomType(fsa, "type", "secret", "secret"),
-    /先盖章或强清/,
+    /stamp or force-release/,
   );
   await assert.rejects(
     () => deleteCustomType(fsa, "type", "asset", "asset"),
-    /内置类型/,
+    /Built-in types/,
   );
 });
 
@@ -282,16 +282,16 @@ test("R1 patchBox 上锁:保留字段与空 type 不能绕过专用 API", async 
   ]) {
     await assert.rejects(
       () => patchBox(env as any, "prompt/旧站资料", patch),
-      /保留字段/,
+      /Reserved fields/,
     );
   }
   await assert.rejects(
     () => patchBox(env as any, "prompt/旧站资料", { type: undefined }),
-    /不允许清空/,
+    /cannot be cleared/,
   );
   await assert.rejects(
     () => patchBox(env as any, "prompt/旧站资料", { type: "missing" }),
-    /未知 type/,
+    /Unknown type/,
   );
 });
 
@@ -316,15 +316,15 @@ test("R3 注册表创建 API:校验名称、跨级重名并写入定义", async 
   assert.equal(registry.reviewed.writable, false);
   await assert.rejects(
     () => createSecondaryType(fsa, "research", {}),
-    /已存在/,
+    /already exists/,
   );
   await assert.rejects(
     () => createPrimaryType(fsa, "temp", { readable: true, writable: true }),
-    /系统管道/,
+    /system pipe/,
   );
   await assert.rejects(
     () => updateTypeMetadata(fsa, "type", "missing", { color: "blue" }),
-    /类型不存在/,
+    /Type does not exist/,
   );
 });
 
@@ -405,7 +405,7 @@ test("R4 types.json 损坏 fail-loud,文件缺省仍用内置默认", async () =
 
   await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
   await fs.writeFile(path.join(dir, ".tent", "types.json"), "{ broken json");
-  await assert.rejects(() => loadTent(fsa), /types\.json 损坏/);
+  await assert.rejects(() => loadTent(fsa), /types\.json is corrupt/);
 });
 
 test("patchBox 改 type 不污染其他字段", async () => {
@@ -448,6 +448,6 @@ test("patchBox 拒绝新写 kind", async () => {
   const { patchBox } = await import("../src/core/ops.js");
   await assert.rejects(
     () => patchBox(env as any, "prompt/表达式任务书/草稿", { kind: "draft" }),
-    /保留字段/,
+    /Reserved fields/,
   );
 });

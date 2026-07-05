@@ -48,10 +48,10 @@ export async function createType(
       definition.tier !== "modifier" &&
       (typeof definition.readable !== "boolean" || typeof definition.writable !== "boolean")
     ) {
-      throw new Error("base type 必须指定 readable 和 writable");
+      throw new Error("Base type must specify readable and writable.");
     }
     const registry = await loadTypeRegistry(fs);
-    if (registry[name]) throw new Error(`类型已存在: ${name}`);
+    if (registry[name]) throw new Error(`Type already exists: ${name}.`);
     registry[name] = withDefaultColor(registry, definition);
     await writeTypeRegistryUnlocked(fs, registry);
   });
@@ -84,7 +84,7 @@ export async function updateTypeMetadata(
     assertTypeName(name);
     const registry = await loadTypeRegistry(fs);
     const current = registry[name];
-    if (!current) throw new Error(`类型不存在: ${name}`);
+    if (!current) throw new Error(`Type does not exist: ${name}.`);
 
     if (patch.color !== undefined) {
       const color = patch.color.trim();
@@ -141,12 +141,12 @@ export async function deleteCustomType(
   confirmation: string
 ): Promise<TypeDeletionInspection> {
   return withTentMutation(fs, async () => {
-    if (confirmation !== name) throw new Error(`二次确认不匹配;请输入类型名 ${name}`);
+    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
     const inspection = await inspectTypeDeletion(fs, level, name);
-    if (!inspection.exists) throw new Error(`类型不存在: ${name}`);
-    if (inspection.builtIn) throw new Error(`内置类型不可删除: ${name}`);
+    if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
+    if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.activeOwners.length > 0) {
-      throw new Error(`关联范围仍有 owner,先盖章或强清: ${inspection.activeOwners.map((x) => x.path).join(", ")}`);
+      throw new Error(`Referenced range still has an owner; stamp or force-release first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`);
     }
     const registry = await loadTypeRegistry(fs);
     delete registry[name];
@@ -187,8 +187,8 @@ async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry):
 }
 
 function assertTypeName(name: string): void {
-  if (!name.trim()) throw new Error("类型名不能为空");
-  if (name === "temp") throw new Error("temp 是系统管道,不能作为 type");
+  if (!name.trim()) throw new Error("Type name cannot be empty.");
+  if (name === "temp") throw new Error("temp is a system pipe and cannot be used as a type.");
 }
 
 function updateAxis(
@@ -198,7 +198,7 @@ function updateAxis(
 ): void {
   if (value === undefined) return;
   if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("base type 的 R/W 不能继承");
+    if (definition.tier !== "modifier") throw new Error("Base type R/W cannot inherit.");
     delete definition[axis];
     return;
   }

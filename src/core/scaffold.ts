@@ -29,17 +29,17 @@ export interface ScaffoldTentOptions {
 
 export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions): Promise<void> {
   const name = options.name.trim();
-  if (!name) throw new Error("帐名不能为空");
-  if (!options.rules.trim()) throw new Error("RULES.md 内容不能为空");
+  if (!name) throw new Error("Tent name cannot be empty.");
+  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
 
   const usedIds = new Set<string>();
   for (const box of options.boxes ?? []) {
     const boxName = box.name.trim();
     if (!boxName || boxName.includes("/") || boxName.includes("\\")) {
-      throw new Error(`无效框名: ${box.name}`);
+      throw new Error(`Invalid box name: ${box.name}.`);
     }
     const type = (box.kind?.trim() || box.type.trim());
-    if (!type) throw new Error(`框「${boxName}」缺一级 type`);
+    if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
     const id = box.id?.trim() || makeUniqueBoxId(usedIds);
     usedIds.add(id);
     const frontmatter: Record<string, unknown> = { id, type };

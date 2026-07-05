@@ -573,12 +573,12 @@ async function newTent(target: string, vault?: string): Promise<void> {
   await fsmod.mkdir(target, { recursive: true });
   const name = path.basename(path.resolve(target));
   const fallbackRules =
-    `# ${name} · 项目约定\n\n` +
-    `> 这顶帐的本地规矩(global rule):genesis 建、随便改。\n` +
-    `> 机制规范不在这(见 Tent 仓库 docs/SPEC.md);agent 的操作协议在 tent-role skill。\n\n` +
-    `- 产出 workspace:<填真实代码仓路径>\n` +
-    `- 提交 / 命名约定:<填>\n` +
-    `- 其它本项目规矩:<填>\n`;
+    `# ${name} - Project Rules\n\n` +
+    `> Local rules for this Tent (global rules): created by genesis; edit freely.\n` +
+    `> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.\n\n` +
+    `- Output workspace: <real code repository path>\n` +
+    `- Commit / naming conventions: <fill in>\n` +
+    `- Other project rules: <fill in>\n`;
   const rules = pluginSettings?.rulesTemplate
     ? pluginSettings.rulesTemplate.replaceAll("{tent}", name)
     : fallbackRules;

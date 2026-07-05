@@ -39,7 +39,7 @@ export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
     if (workspace) workspaces.add(nodePath.resolve(workspace));
   }
   if (workspaces.size > 1) {
-    throw new Error(`一顶 Tent 只能对应一个 workspace,当前发现: ${[...workspaces].join(", ")}`);
+    throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
   }
   return [...workspaces][0];
 }
@@ -51,7 +51,7 @@ export async function readWorkspaceHead(workspace: string): Promise<WorkspaceHea
   const branch = await resolveTargetBranch(root);
   const ref = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
   const shortRef = (await git(root, ["rev-parse", "--short", ref])).trim();
-  if (!ref || !shortRef) throw new Error("无法读取 workspace HEAD");
+  if (!ref || !shortRef) throw new Error("Cannot read workspace HEAD.");
   return { ref, shortRef, branch };
 }
 
@@ -60,7 +60,7 @@ export async function runWorkspaceCheck(workspace: string, command: string): Pro
   const root = nodePath.resolve(workspace);
   await assertGitWorkspace(root);
   const script = command.trim();
-  if (!script) throw new Error("--require-check 必须提供非空命令");
+  if (!script) throw new Error("--require-check requires a non-empty command.");
   return runShell(root, script);
 }
 
@@ -84,7 +84,7 @@ export async function ensureRoleWorkspace(
     return { workspace: root, worktree: await nodeFs.realpath(nodePath.resolve(existing)), branch, targetBranch };
   }
   if (await pathExists(worktree)) {
-    throw new Error(`role worktree 路径已存在但未登记给 ${branch}: ${worktree}`);
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
   }
 
   const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
@@ -106,10 +106,10 @@ export async function integrateWorkspaceCommits(
   const root = contract.workspace;
   const current = (await git(root, ["branch", "--show-current"])).trim();
   if (current !== contract.targetBranch) {
-    throw new Error(`workspace 必须 checkout ${contract.targetBranch},当前是 ${current || "(detached)"}`);
+    throw new Error(`workspace must check out ${contract.targetBranch}; current is ${current || "(detached)"}.`);
   }
   const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("workspace 有未提交改动,不能验收合入");
+  if (dirty) throw new Error("workspace has uncommitted changes; cannot accept integration.");
 
   const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
   const resolved = [];
@@ -198,7 +198,7 @@ async function assertGitWorkspace(root: string): Promise<void> {
     nodeFs.realpath(root),
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`workspace 必须是 Git 根目录: ${root}`);
+    throw new Error(`workspace must be a Git root: ${root}.`);
   }
 }
 
@@ -217,7 +217,7 @@ async function resolveTargetBranch(root: string): Promise<string> {
     if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
   }
   const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (!current) throw new Error("无法识别 workspace 正式分支");
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
   return current;
 }
 
@@ -276,10 +276,10 @@ async function rollbackIntegration(root: string, originalRef: string, cause: unk
     await git(root, ["reset", "--hard", originalRef]);
   } catch (rollbackError) {
     throw new Error(
-      `workspace 合入失败且回滚失败: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+      `workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
     );
   }
-  throw new Error(`workspace 合入冲突,已回滚: ${errorMessage(cause)}`);
+  throw new Error(`workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
 }
 
 function errorMessage(error: unknown): string {

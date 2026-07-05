@@ -377,7 +377,7 @@ test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", asyn
 
   // 帐内是项目规则文件,不是机制 SPEC
   const rules = await fs.readFile(path.join(target, "RULES.md"), "utf8");
-  assert.match(rules, /项目约定/);
+  assert.match(rules, /Project Rules/);
   assert.equal(await exists(path.join(target, "SPEC.md")), false);
   assert.equal(await exists(path.join(target, "CLAUDE.md")), false);
   assert.equal(await exists(path.join(target, "AGENTS.md")), false);

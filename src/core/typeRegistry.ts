@@ -35,47 +35,47 @@ export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
     writable: false,
     color: "blue",
     tier: "base",
-    description: "定义目标、意图与验收方向",
+    description: "Define goals, intent, and acceptance direction.",
   },
   prompt: {
     readable: true,
     writable: true,
     color: "purple",
     tier: "base",
-    description: "提供任务说明与工作上下文",
+    description: "Provide task instructions and work context.",
   },
   output: {
     readable: true,
     writable: true,
     color: "cyan",
     tier: "base",
-    description: "映射真实交付物与 workspace",
+    description: "Map real deliverables and workspace.",
   },
   open: {
     readable: true,
     writable: true,
     color: "green",
     tier: "modifier",
-    description: "仍在推进、可继续处理",
+    description: "In progress and still actionable.",
   },
   reference: {
     readable: true,
     color: "blue",
     tier: "modifier",
-    description: "作为背景资料供查阅与引用",
+    description: "Background material for reference and citation.",
   },
   asset: {
     writable: true,
     color: "purple",
     tier: "modifier",
-    description: "作为实际产物或可复用资源",
+    description: "Actual deliverables or reusable assets.",
   },
   sealed: {
     readable: false,
     writable: false,
     color: "red",
     tier: "modifier",
-    description: "已封存，不再参与后续处理",
+    description: "Archived and no longer part of active work.",
   },
 };
 
@@ -120,7 +120,7 @@ export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json 损坏: ${detail}`);
+    throw new Error(`types.json is corrupt: ${detail}.`);
   }
 }
 
