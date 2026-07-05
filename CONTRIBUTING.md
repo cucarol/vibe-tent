@@ -23,4 +23,4 @@ Pull requests should explain the behavior change, tests added, and any compatibi
 
 ## Design Changes
 
-Changes to the data model, permission resolution, lifecycle actions, or manifest contracts should start as a documented proposal. Implementation should follow an explicit decision rather than silently redefining the format in a frontend.
+Changes to the data model, permission resolution, lifecycle actions, or manifest contracts should start as a design note or issue discussion. Implementation should follow an explicit decision rather than silently redefining the format in a frontend.
