@@ -18,6 +18,7 @@
 //   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 //   tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 //   tent status
+//   tent task-cancel <taskPath>
 //   tent clean-temp [role]
 //   tent force-release <boxId>
 //   tent okf-sync
@@ -38,6 +39,7 @@ import {
   acceptReport,
   grantReadable,
   cleanTemp,
+  cancelPendingTask,
   forceRelease,
   forkNode,
   createBox,
@@ -45,13 +47,14 @@ import {
   untagBox,
   createTag,
   deleteTag,
+  taskAck,
 } from "../core/ops.js";
 import { scaffoldTent } from "../core/scaffold.js";
 import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
 import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
-import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
+import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
 import { submitProposal } from "../core/proposal.js";
@@ -142,8 +145,16 @@ async function main() {
       const taskPath = args[0];
       if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
       if (args.length > 1) return fail("Usage: tent task-ack <taskPath>");
-      await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
+      await taskAck(env, taskPath);
       console.log(`✓ Task acknowledged: ${taskPath}`);
+      break;
+    }
+    case "task-cancel": {
+      const taskPath = args[0];
+      if (!taskPath) return fail("Usage: tent task-cancel <taskPath>");
+      if (args.length > 1) return fail("Usage: tent task-cancel <taskPath>");
+      await cancelPendingTask(env, taskPath);
+      console.log(`✓ Task cancelled: ${taskPath}`);
       break;
     }
     case "role-init": {
@@ -410,7 +421,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
       );
   }
 }
@@ -562,8 +573,9 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
-  task-ack <taskPath>                Mark a task envelope as taken.
+  dispatch <boxId> <role> <prompt>   Create a pending task envelope.
+  task-ack <taskPath>                Mark a task taken and claim its box.
+  task-cancel <taskPath>             Delete a pending task envelope.
   report <boxId> <file|->            Submit a delivery report for triage.
   propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.

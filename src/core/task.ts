@@ -76,6 +76,33 @@ export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> 
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
 
+export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
+  if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
+  const { data } = parseFrontmatter(await fs.readFile(path));
+  if (
+    data.type !== "task" ||
+    typeof data.role !== "string" ||
+    typeof data.manifest !== "string" ||
+    !Array.isArray(data.claims) ||
+    !data.claims.every((claim) => typeof claim === "string")
+  ) {
+    throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+  const task: TaskEnvelope = {
+    path,
+    role: data.role,
+    claims: data.claims,
+    manifest: data.manifest,
+    status: data.status === "taken" ? "taken" : "pending",
+  };
+  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (typeof data.workspace === "string") task.workspace = data.workspace;
+  if (typeof data.worktree === "string") task.worktree = data.worktree;
+  if (typeof data.branch === "string") task.branch = data.branch;
+  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  return task;
+}
+
 export function relayPromptForTask(task: TaskEnvelope, tentRoot: string): string {
   const initPath = join("temp", task.role, "init.md");
   return (
@@ -149,6 +176,12 @@ export async function ackTaskEnvelope(fs: FsAdapter, path: string): Promise<void
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path}.`);
   data.status = "taken";
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
+}
+
+export async function cancelTaskEnvelope(fs: FsAdapter, path: string): Promise<void> {
+  const task = await loadTaskEnvelope(fs, path);
+  if (task.status === "taken") throw new Error("Only pending task envelopes can be cancelled.");
+  await fs.remove(path);
 }
 
 function taskStem(now: string, claimId: string): string {

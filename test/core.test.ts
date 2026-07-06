@@ -10,7 +10,7 @@ import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
 import { submitReport } from "../src/core/report.js";
-import { loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
+import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
 
 test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
@@ -160,7 +160,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
 });
 
-test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", async () => {
+test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活拓扑门", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -185,18 +185,39 @@ test("dispatch:稳定 role init + 不可变 task 指针 + 多 claims manifest", 
   assert.equal(result.manifestYaml.includes("preloaded:"), true);
   assert.match(result.manifestYaml, /claims: \[bx-p1\]/);
   let claimed = (await loadTent(env.fs)).byId.get("bx-p1")!;
-  assert.equal(claimed.fm.owner, "analyst");
-  assert.equal(claimed.fm.status, "doing", "首次派活自动进入 doing");
+  assert.equal(claimed.fm.owner, undefined);
+  assert.equal(claimed.fm.status, undefined, "dispatch 不占用,只留下 pending envelope");
+  assert.equal((await loadTaskEnvelope(env.fs, result.taskPath)).status, "pending");
 
   await assert.rejects(
     () => dispatch(env as any, "bx-p1", "analyst", "重复派活"),
-    /is already claimed by analyst\./,
-    "即使是同一 role，也必须先完成或释放",
+    /already awaiting delivery to analyst\./,
+    "同一框 pending envelope 也算占位",
+  );
+  await assert.rejects(
+    () => dispatch(env as any, "bx-p2", "analyst", "对子孙重复派活"),
+    /Ancestor 表达式任务书 is awaiting delivery to analyst\./,
+    "pending envelope 挡住子孙",
+  );
+  await assert.rejects(
+    () => dispatch(env as any, "bx-promptzone", "analyst", "对祖先重复派活"),
+    /Descendant 表达式任务书 is awaiting delivery to analyst\./,
+    "pending envelope 挡住祖先",
   );
 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
   assert.match(second.manifestYaml, /claims: \[bx-p1, bx-o1\]/);
+
+  const { cancelPendingTask, taskAck } = await import("../src/core/ops.js");
+  await cancelPendingTask(env as any, result.taskPath);
+  assert.equal(await env.fs.exists(result.taskPath), false, "未 ack 的投递可直接取消");
+
+  await taskAck(env as any, second.taskPath);
+  claimed = (await loadTent(env.fs)).byId.get("bx-o1")!;
+  assert.equal(claimed.fm.owner, "analyst");
+  assert.equal(claimed.fm.status, "doing", "task-ack 才进入 doing");
+  assert.equal((await loadTaskEnvelope(env.fs, second.taskPath)).status, "taken");
 });
 
 test("dispatch:corrupt roles registry is backed up, reset, and dispatch continues", async () => {
@@ -213,8 +234,8 @@ test("dispatch:corrupt roles registry is backed up, reset, and dispatch continue
   await dispatch(env as any, "bx-p1", "analyst", "请只处理表达式任务书。");
 
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
-  assert.equal(box.owner, "analyst");
-  assert.equal(box.status, "doing");
+  assert.equal(box.owner, undefined);
+  assert.equal(box.status, undefined);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, ".tent", "roles.json"), "utf8")), { roles: [] });
   assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("roles.json.corrupt-")), true);
   assert.equal(await exists(path.join(dir, "temp", "analyst")), true);

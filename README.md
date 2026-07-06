@@ -84,6 +84,7 @@ tent role-init <role>
 tent roles
 tent dispatch <claimId> <role> <prompt...> [--as-sub --by <role>]
 tent task-ack <taskPath>
+tent task-cancel <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 tent propose <boxId> <bodyFile|->
 tent complete <boxId> [--commits <sha,sha>]

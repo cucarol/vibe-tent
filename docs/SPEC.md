@@ -122,12 +122,12 @@ commits by logical delivery/box; boxes do not create branches.
 
 Confirmed dispatch:
 
-1. validates owner overlap;
-2. writes `owner` and `status: doing` on a newly claimed box;
-3. updates `temp/<role>/manifest.yml` with all current claims;
-4. creates/reuses the role workspace lane;
-5. writes a task envelope under `temp/<role>/tasks/`;
-6. returns the relay prompt for delivery to the agent session.
+1. validates owner and pending-envelope overlap;
+2. updates `temp/<role>/manifest.yml` with current active claims plus pending
+   claims for that role;
+3. creates/reuses the role workspace lane;
+4. writes a pending task envelope under `temp/<role>/tasks/`;
+5. returns the relay prompt for delivery to the agent session.
 
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.
@@ -139,10 +139,14 @@ fresh contract.
 
 The task envelope is the machine-readable delivery record. Its prompt body is immutable;
 its `status` field flips one way from `pending` to `taken` when `task-ack`
-acknowledges the task. The claimed box remains the task truth: scope, background,
-context, and acceptance criteria belong in the box body or child boxes. A
-draft or incomplete box may be dispatched; after `task-ack`, the agent aligns the task, asks
-when unclear, and writes confirmed conclusions back to the box.
+acknowledges the task. Dispatch itself does not write box `owner` or
+`status: doing`; `task-ack` writes `owner` to the task role and marks the box
+`status: doing`. Until then, the pending envelope is the dispatch placeholder
+and blocks dispatch of the same box or any overlapping ancestor/descendant
+subtree. The claimed box remains the task truth: scope, background, context,
+and acceptance criteria belong in the box body or child boxes. A draft or
+incomplete box may be dispatched; after `task-ack`, the agent aligns the task,
+asks when unclear, and writes confirmed conclusions back to the box.
 
 Role init is stable and cache-friendly:
 
@@ -236,7 +240,7 @@ without restricting agent work in workspace worktrees.
 Core fails loudly on:
 
 - duplicate ids that are not adopted copies;
-- owner overlap on confirmed dispatch;
+- owner or pending-envelope overlap on confirmed dispatch;
 - stale/active mutation lock;
 - multiple workspace output boxes;
 - dirty or wrong workspace target branch;
@@ -268,6 +272,7 @@ tent role-init <role>
 tent roles
 tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
 tent task-ack <taskPath>
+tent task-cancel <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 tent stamp <boxId> [--by <role>]
@@ -310,6 +315,8 @@ The UI renders core state and invokes core actions:
 - interruption releases owner without integration;
 - pending task envelopes are shown as task envelopes; copying relay text does
   not consume them, only `task-ack` does;
+- pending task envelopes may be cancelled without force-release; taken tasks
+  require the interruption path because the box is already claimed;
 - immutable names have no rename control;
 - errors are shown rather than silently repaired.
 

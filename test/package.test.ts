@@ -157,7 +157,7 @@ test("CLI 全链路:tree → dispatch → stamp → clean-temp", async () => {
   tagFind = await runCli(tent, "find", "backend-hardening");
   assert.match(tagFind.stdout, /\(no matches\)/);
 
-  await runCli(tent, "dispatch", checkId, "reviewer", "请重点检查发布说明。");
+  const checkDispatch = await runCli(tent, "dispatch", checkId, "reviewer", "请重点检查发布说明。");
   const manifest = await fs.readFile(path.join(tent, "temp", "reviewer", "manifest.yml"), "utf8");
   assert.match(manifest, /role: reviewer/);
   assert.match(manifest, /branch: tent-role\/reviewer/);
@@ -167,6 +167,7 @@ test("CLI 全链路:tree → dispatch → stamp → clean-temp", async () => {
   assert.match(localPrompt, /重点检查发布说明/);
   assert.equal(await exists(path.join(path.dirname(workspace), `${path.basename(workspace)}-worktrees`, "reviewer")), true);
   const checkPath = path.join(tent, "挖掘目标", "检查项", "检查项.md");
+  await runCli(tent, "task-ack", taskPath(checkDispatch));
   let goalRaw = await fs.readFile(checkPath, "utf8");
   assert.equal(parseFrontmatter(goalRaw).data.owner, "reviewer");
 
@@ -205,11 +206,18 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(peerData.handoff, undefined);
   assert.match(peerDispatch.stdout, new RegExp(`Tent root: ${tent.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
   assert.match(peerDispatch.stdout, new RegExp(`1\\. Run \`tent task-ack ${peerTask.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
+  const peerBoxPath = path.join(tent, "peer", "peer.md");
+  let peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
+  assert.equal(peerBox.owner, undefined);
+  assert.equal(peerBox.status, undefined);
 
   await runCli(tent, "task-ack", peerTask);
   await runCli(tent, "task-ack", peerTask);
   const ackedData = parseFrontmatter(await fs.readFile(path.join(tent, peerTask), "utf8")).data;
   assert.equal(ackedData.status, "taken");
+  peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
+  assert.equal(peerBox.owner, "reviewer");
+  assert.equal(peerBox.status, "doing");
 
   const subTask = taskPath(await runCli(tent, "dispatch", subId, "executor", "Sub task.", "--as-sub", "--by", "planner"));
   const subData = parseFrontmatter(await fs.readFile(path.join(tent, subTask), "utf8")).data;
@@ -238,9 +246,14 @@ test("tent status:prints proposals, pending tasks, active claims, and rejects no
   assert.match(status.stdout, new RegExp(`- ${proposalId}: Choose release lane \\(planner\\) - 建议选择低风险发布路径`));
   assert.match(status.stdout, /Pending tasks \(task-ack\):/);
   assert.match(status.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
-  assert.match(status.stdout, /Active claims:/);
-  assert.match(status.stdout, new RegExp(`- ${claimId}: Implement release notes \\(owner: reviewer, status: doing\\)`));
+  assert.match(status.stdout, /Active claims: none/);
   assert.equal(status.stderr, "");
+
+  await runCli(tent, "task-ack", taskPath(dispatched));
+  const ackedStatus = await runCli(tent, "status");
+  assert.match(ackedStatus.stdout, /Pending tasks \(task-ack\): none/);
+  assert.match(ackedStatus.stdout, /Active claims:/);
+  assert.match(ackedStatus.stdout, new RegExp(`- ${claimId}: Implement release notes \\(owner: reviewer, status: doing\\)`));
 
   await runCli(tent, "stamp", claimId);
   const doneStatus = await runCli(tent, "status");
@@ -587,7 +600,8 @@ async function makeCompletionFixture(): Promise<{
     `---\nid: ${outputId}\ntype: output\nworkspace: ${workspace.replaceAll("\\", "/")}\n---\n`,
     "utf8",
   );
-  await runCli(tent, "dispatch", deliveryId, "reviewer", "Implement the delivery.");
+  const dispatched = await runCli(tent, "dispatch", deliveryId, "reviewer", "Implement the delivery.");
+  await runCli(tent, "task-ack", taskPath(dispatched));
   return {
     tent,
     workspace,

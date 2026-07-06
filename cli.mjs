@@ -1130,6 +1130,26 @@ async function loadTaskEnvelopes(fs4) {
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
+async function loadTaskEnvelope(fs4, path3) {
+  if (!await fs4.exists(path3)) throw new Error(`Task envelope not found: ${path3}.`);
+  const { data } = parseFrontmatter(await fs4.readFile(path3));
+  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
+    throw new Error(`Invalid task envelope format: ${path3}.`);
+  }
+  const task = {
+    path: path3,
+    role: data.role,
+    claims: data.claims,
+    manifest: data.manifest,
+    status: data.status === "taken" ? "taken" : "pending"
+  };
+  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (typeof data.workspace === "string") task.workspace = data.workspace;
+  if (typeof data.worktree === "string") task.worktree = data.worktree;
+  if (typeof data.branch === "string") task.branch = data.branch;
+  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  return task;
+}
 function relayPromptForTask(task, tentRoot) {
   const initPath = join("temp", task.role, "init.md");
   return `A Tent task has been dispatched to role ${task.role}.
@@ -1201,6 +1221,11 @@ async function ackTaskEnvelope(fs4, path3) {
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path3}.`);
   data.status = "taken";
   await fs4.writeFile(path3, serializeFrontmatter(data, body, keyOrder));
+}
+async function cancelTaskEnvelope(fs4, path3) {
+  const task = await loadTaskEnvelope(fs4, path3);
+  if (task.status === "taken") throw new Error("Only pending task envelopes can be cancelled.");
+  await fs4.remove(path3);
 }
 function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
@@ -1457,9 +1482,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const previousOwner = claim.root ? void 0 : claim.box.fm.owner;
-  const previousStatus = claim.root ? void 0 : claim.box.fm.status;
-  const previousAcceptedBy = claim.root ? void 0 : claim.box.fm.acceptedBy;
+  const tasks = await loadTaskEnvelopes(env.fs);
   const roleTempPath = join("temp", roleName);
   const roleTempExisted = await env.fs.exists(roleTempPath);
   if (claim.root) {
@@ -1474,13 +1497,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     }
     const claimable = canClaim(claim.box);
     if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    await setOwner(env.fs, claim.box, roleName, "doing");
-    claim.box.fm.owner = roleName;
-    claim.box.fm.status = "doing";
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
   try {
-    const ownedClaims = claim.root ? [] : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
-    const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
+    const roleClaims = claim.root ? [] : roleManifestClaims(tent, roleName, claim.box, tasks);
+    const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const manifestPath = join("temp", roleName, "manifest.yml");
@@ -1510,17 +1532,49 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     );
     return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
   } catch (error) {
-    if (!claim.root) {
-      await restoreOwnerState(env.fs, claim.box, previousOwner, previousStatus, previousAcceptedBy);
-      claim.box.fm.owner = previousOwner;
-      claim.box.fm.status = previousStatus;
-      claim.box.fm.acceptedBy = previousAcceptedBy;
-    }
     if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
       await env.fs.remove(roleTempPath);
     }
     throw error;
   }
+}
+async function taskAck(env, taskPath) {
+  await withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.status === "taken") {
+      await ackTaskEnvelope(env.fs, taskPath);
+      return;
+    }
+    const tent = await loadTent(env.fs);
+    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
+    const previous = claimedBoxes.map((box) => ({
+      box,
+      owner: box.fm.owner,
+      status: box.fm.status,
+      acceptedBy: box.fm.acceptedBy
+    }));
+    for (const box of claimedBoxes) {
+      const claimable = canClaim(box);
+      if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    try {
+      for (const box of claimedBoxes) {
+        await setOwner(env.fs, box, task.role, "doing");
+        box.fm.owner = task.role;
+        box.fm.status = "doing";
+        box.fm.acceptedBy = void 0;
+      }
+      await ackTaskEnvelope(env.fs, taskPath);
+    } catch (error) {
+      for (const item of previous) {
+        await restoreOwnerState(env.fs, item.box, item.owner, item.status, item.acceptedBy);
+      }
+      throw error;
+    }
+  });
+}
+async function cancelPendingTask(env, taskPath) {
+  await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
@@ -1682,6 +1736,51 @@ function ownerCovering(box) {
     parent = parent.parent;
   }
   return void 0;
+}
+function pendingClaimCovering(tent, box, tasks) {
+  for (const task of tasks) {
+    if (task.status !== "pending") continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
+      }
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (claimed.id === box.id) {
+        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(claimed, box)) {
+        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(box, claimed)) {
+        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+    }
+  }
+  return void 0;
+}
+function roleManifestClaims(tent, role, current, tasks) {
+  const claims = /* @__PURE__ */ new Map();
+  for (const box of tent.byPath.values()) {
+    if (box.fm.owner === role) claims.set(box.id, box);
+  }
+  for (const task of tasks) {
+    if (task.status !== "pending" || task.role !== role) continue;
+    for (const claimId of task.claims) {
+      const box = tent.byId.get(claimId);
+      if (box) claims.set(box.id, box);
+    }
+  }
+  claims.set(current.id, current);
+  return [...claims.values()];
+}
+function isAncestor(ancestor, child) {
+  let parent = child.parent;
+  while (parent) {
+    if (parent.id === ancestor.id) return true;
+    parent = parent.parent;
+  }
+  return false;
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -2379,8 +2478,16 @@ ${r.relayPrompt}`);
       const taskPath = args[0];
       if (!taskPath) return fail("Usage: tent task-ack <taskPath>");
       if (args.length > 1) return fail("Usage: tent task-ack <taskPath>");
-      await withTentMutation(env.fs, () => ackTaskEnvelope(env.fs, taskPath));
+      await taskAck(env, taskPath);
       console.log(`\u2713 Task acknowledged: ${taskPath}`);
+      break;
+    }
+    case "task-cancel": {
+      const taskPath = args[0];
+      if (!taskPath) return fail("Usage: tent task-cancel <taskPath>");
+      if (args.length > 1) return fail("Usage: tent task-cancel <taskPath>");
+      await cancelPendingTask(env, taskPath);
+      console.log(`\u2713 Task cancelled: ${taskPath}`);
       break;
     }
     case "role-init": {
@@ -2644,7 +2751,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
       );
   }
 }
@@ -2776,8 +2883,9 @@ Commands:
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
-  dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
-  task-ack <taskPath>                Mark a task envelope as taken.
+  dispatch <boxId> <role> <prompt>   Create a pending task envelope.
+  task-ack <taskPath>                Mark a task taken and claim its box.
+  task-cancel <taskPath>             Delete a pending task envelope.
   report <boxId> <file|->            Submit a delivery report for triage.
   propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.

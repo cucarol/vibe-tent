@@ -56,6 +56,7 @@ import {
 } from "./pending-dispatch.js";
 import {
   OpsEnv,
+  cancelPendingTask,
   dispatch,
   forceRelease,
   createBox,
@@ -1586,6 +1587,20 @@ export class TentView extends ItemView {
           new Notice(`已复制，去 ${pendingDispatch.task.role} 的 agent 会话粘贴即可。`);
         } catch (e) {
           new Notice("复制失败:" + (e instanceof Error ? e.message : e));
+        }
+      };
+      const cancel = acts.createEl("button", { text: "取消投递" });
+      cancel.setAttr("type", "button");
+      cancel.onclick = async () => {
+        cancel.setAttr("disabled", "true");
+        try {
+          await cancelPendingTask(this.env(), pendingDispatch.task.path);
+          await this.refresh();
+          new Notice("已取消投递");
+        } catch (e) {
+          new Notice("取消失败:" + (e instanceof Error ? e.message : e));
+        } finally {
+          cancel.removeAttribute("disabled");
         }
       };
       return;

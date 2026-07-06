@@ -12,7 +12,17 @@ import { isUsableBox } from "./tree.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
-import { ensureRoleInit, relayPromptForTask, RoleWorkspaceContract, writeTaskEnvelope } from "./task.js";
+import {
+  ackTaskEnvelope,
+  cancelTaskEnvelope,
+  ensureRoleInit,
+  loadTaskEnvelope,
+  loadTaskEnvelopes,
+  relayPromptForTask,
+  RoleWorkspaceContract,
+  TaskEnvelope,
+  writeTaskEnvelope,
+} from "./task.js";
 import { loadReport, removeReportsForBox } from "./report.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
@@ -59,9 +69,7 @@ async function dispatchUnlocked(
     : promptOrOptions;
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const previousOwner = claim.root ? undefined : claim.box.fm.owner;
-  const previousStatus = claim.root ? undefined : claim.box.fm.status;
-  const previousAcceptedBy = claim.root ? undefined : claim.box.fm.acceptedBy;
+  const tasks = await loadTaskEnvelopes(env.fs);
   const roleTempPath = join("temp", roleName);
   const roleTempExisted = await env.fs.exists(roleTempPath);
   if (claim.root) {
@@ -76,18 +84,17 @@ async function dispatchUnlocked(
     }
     const claimable = canClaim(claim.box);
     if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    await setOwner(env.fs, claim.box, roleName, "doing");
-    claim.box.fm.owner = roleName;
-    claim.box.fm.status = "doing";
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
 
   try {
-    const ownedClaims = claim.root
+    const roleClaims = claim.root
       ? []
-      : [...tent.byPath.values()].filter((box) => box.fm.owner === roleName);
+      : roleManifestClaims(tent, roleName, claim.box, tasks);
     const input: DispatchInput = claim.root
       ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace }
-      : { tentName: env.tentName, role: roleName, claimBoxes: ownedClaims, ...options.workspace };
+      : { tentName: env.tentName, role: roleName, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
@@ -122,17 +129,58 @@ async function dispatchUnlocked(
     );
     return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
   } catch (error) {
-    if (!claim.root) {
-      await restoreOwnerState(env.fs, claim.box, previousOwner, previousStatus, previousAcceptedBy);
-      claim.box.fm.owner = previousOwner;
-      claim.box.fm.status = previousStatus;
-      claim.box.fm.acceptedBy = previousAcceptedBy;
-    }
     if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
       await env.fs.remove(roleTempPath);
     }
     throw error;
   }
+}
+
+// ---- task ack / cancel ----
+
+export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
+  await withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.status === "taken") {
+      await ackTaskEnvelope(env.fs, taskPath);
+      return;
+    }
+
+    const tent = await loadTent(env.fs);
+    const claimedBoxes = task.claims
+      .filter((claimId) => claimId !== "root")
+      .map((claimId) => requireBoxById(tent, claimId));
+    const previous = claimedBoxes.map((box) => ({
+      box,
+      owner: box.fm.owner,
+      status: box.fm.status,
+      acceptedBy: box.fm.acceptedBy,
+    }));
+
+    for (const box of claimedBoxes) {
+      const claimable = canClaim(box);
+      if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
+    }
+
+    try {
+      for (const box of claimedBoxes) {
+        await setOwner(env.fs, box, task.role, "doing");
+        box.fm.owner = task.role;
+        box.fm.status = "doing";
+        box.fm.acceptedBy = undefined;
+      }
+      await ackTaskEnvelope(env.fs, taskPath);
+    } catch (error) {
+      for (const item of previous) {
+        await restoreOwnerState(env.fs, item.box, item.owner, item.status, item.acceptedBy);
+      }
+      throw error;
+    }
+  });
+}
+
+export async function cancelPendingTask(env: OpsEnv, taskPath: string): Promise<void> {
+  await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
 }
 
 type DispatchClaim =
@@ -579,6 +627,54 @@ function ownerCovering(box: Box): Box | undefined {
     parent = parent.parent;
   }
   return undefined;
+}
+
+function pendingClaimCovering(tent: LoadedTent, box: Box, tasks: TaskEnvelope[]): { reason: string } | undefined {
+  for (const task of tasks) {
+    if (task.status !== "pending") continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
+      }
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (claimed.id === box.id) {
+        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(claimed, box)) {
+        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(box, claimed)) {
+        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+    }
+  }
+  return undefined;
+}
+
+function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks: TaskEnvelope[]): Box[] {
+  const claims = new Map<string, Box>();
+  for (const box of tent.byPath.values()) {
+    if (box.fm.owner === role) claims.set(box.id, box);
+  }
+  for (const task of tasks) {
+    if (task.status !== "pending" || task.role !== role) continue;
+    for (const claimId of task.claims) {
+      const box = tent.byId.get(claimId);
+      if (box) claims.set(box.id, box);
+    }
+  }
+  claims.set(current.id, current);
+  return [...claims.values()];
+}
+
+function isAncestor(ancestor: Box, child: Box): boolean {
+  let parent = child.parent;
+  while (parent) {
+    if (parent.id === ancestor.id) return true;
+    parent = parent.parent;
+  }
+  return false;
 }
 
 function requireBoxById(tent: LoadedTent, boxId: string): Box {
