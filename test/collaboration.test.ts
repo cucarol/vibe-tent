@@ -4,6 +4,7 @@ import * as fs from "node:fs/promises";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { loadReport, loadReports, rejectReport, submitReport } from "../src/core/report.js";
+import { acceptProposal, loadProposal, loadProposals, rejectProposal, submitProposal } from "../src/core/proposal.js";
 import { makeTent } from "./helpers.js";
 
 test("buildInbox:认领中由 inbox 聚合,不计入待裁", async () => {
@@ -71,4 +72,28 @@ test("report:纯数字 commit ref 保持字符串且兼容旧文件", async () =
     (await loadReport(fsa, report.path)).commits,
     ["08a83cd", ...refs],
   );
+});
+
+test("proposal:投递后 pending 进待裁,确认和驳回后离开待裁但保留文件", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const clock = { now: () => "2026-07-04T08:00:00.000Z" };
+
+  const first = await submitProposal(fsa, clock, "planner", "bx-p1", "建议收窄验收标准");
+  assert.equal(first.path, "temp/planner/proposals/bx-p1.md");
+  assert.equal(first.status, "pending");
+  assert.equal(first.role, "planner");
+  assert.equal(first.body, "建议收窄验收标准");
+  assert.deepEqual((await loadProposals(fsa)).filter((item) => item.status === "pending").map((item) => item.boxId), ["bx-p1"]);
+
+  await acceptProposal(fsa, first.path);
+  assert.equal((await loadProposal(fsa, first.path)).status, "accepted");
+  assert.equal(await fsa.exists(first.path), true);
+  assert.equal((await loadProposals(fsa)).filter((item) => item.status === "pending").length, 0);
+
+  const second = await submitProposal(fsa, clock, "planner", "bx-p1", "改走低风险方案");
+  await rejectProposal(fsa, second.path);
+  assert.equal((await loadProposal(fsa, second.path)).status, "rejected");
+  assert.equal(await fsa.exists(second.path), true);
+  assert.equal((await loadProposals(fsa)).filter((item) => item.status === "pending").length, 0);
 });
