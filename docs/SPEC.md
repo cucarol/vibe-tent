@@ -77,29 +77,10 @@ combines a base with a modifier. Each permission axis resolves independently:
 5. base default, otherwise false.
 
 Permission axes do not inherit from ancestors. Hierarchy expresses organization
-and containment, not permission inheritance. Legacy `kind` is read-compatible but new writes use only
-`type`; `tent migrate-kind-to-type` performs the migration.
+and containment, not permission inheritance.
 
 Manifest R/W is an honor contract, not an OS sandbox. Core enforces mechanical
 invariants, not semantic prompt authority.
-
-## 3.1 Overlay Format Migrations
-
-OKF covers the interoperable Markdown bundle. Tent's overlay is the data that
-only Tent understands: `.tent/` registries, `bx-` ids, owner/status semantics,
-temp manifests, task envelopes, reports, and permission resolution.
-
-Any breaking overlay format change must ship with an idempotent
-`tent migrate-*` command. Migration commands must:
-
-- be named for the source and target shape, such as `migrate-kind-to-type`;
-- be safe to run more than once;
-- report touched files;
-- preserve user-authored note body text;
-- have regression tests covering old data and already-migrated data.
-
-When upstream OKF changes, Tent updates the vendored conformance suite and, if
-needed, provides an OKF-version migration anchored by `okf_version`.
 
 ## 4. Roles, Claims, And Dispatch
 
@@ -295,7 +276,6 @@ tent force-release <boxId>
 tent new-box <name> <type> [parentId]
 tent fork <boxId>
 tent clean-temp [role]
-tent migrate-kind-to-type
 tent okf-sync
 tent skill-install [--target claude] [--force]
 tent tree

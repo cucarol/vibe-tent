@@ -28,7 +28,7 @@ test("plugin ui-model:registry pane state starts expanded and isolated", () => {
   const first = createRegistryPaneState();
   const second = createRegistryPaneState();
 
-  assert.deepEqual(first.collapsed, { type: false, kind: false, roles: false });
+  assert.deepEqual(first.collapsed, { type: false, modifier: false, roles: false });
   assert.equal(first.typeCollapsed, false);
   assert.equal(first.newFormOpen, null);
   assert.equal(first.openEditor, null);

@@ -12,7 +12,6 @@ import { makeUniqueBoxId } from "./id.js";
 export interface ScaffoldBox {
   name: string;   // 文件夹名 = 框身份(真名)
   type: string;   // OKF/Tent 单层 type
-  kind?: string;  // legacy: 若传入则折入 type
   body?: string;  // 身份笔记正文
   id?: string;    // 缺省自动生成
 }
@@ -35,7 +34,7 @@ export async function scaffoldTent(fs: FsAdapter, options: ScaffoldTentOptions):
   const usedIds = new Set<string>();
   for (const box of options.boxes ?? []) {
     const boxName = validateBoxName(box.name);
-    const type = (box.kind?.trim() || box.type.trim());
+    const type = box.type.trim();
     if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
     const id = box.id?.trim() || makeUniqueBoxId(usedIds);
     usedIds.add(id);

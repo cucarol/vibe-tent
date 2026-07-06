@@ -414,9 +414,6 @@ function splitType(type) {
   if (i === -1) return { base: type };
   return { base: type.slice(0, i), modifier: type.slice(i + 1) };
 }
-function joinType(base, modifier) {
-  return modifier ? `${base}-${modifier}` : base;
-}
 function typeExists(type, registry) {
   if (registry[type]) return true;
   const { base, modifier } = splitType(type);
@@ -558,7 +555,6 @@ async function loadBox(fs4, path3, parent, registry) {
   const box = {
     id: fm.id,
     type: fm.type,
-    kind: fm.kind,
     tags,
     archived: false,
     invalid: !!parseError,
@@ -586,15 +582,11 @@ async function loadBox(fs4, path3, parent, registry) {
 }
 function normalizeIdentity(data) {
   const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
-  const rawKind = typeof data.kind === "string" && data.kind ? data.kind : "";
-  const effectiveType = rawKind ? joinType(rawType, rawKind) : rawType;
   const fm = {
     ...data,
     id: typeof data.id === "string" ? data.id : "",
-    type: effectiveType
+    type: rawType
   };
-  if (rawKind) fm.kind = rawKind;
-  else delete fm.kind;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -1337,7 +1329,7 @@ async function scaffoldTent(fs4, options) {
   const usedIds = /* @__PURE__ */ new Set();
   for (const box of options.boxes ?? []) {
     const boxName = validateBoxName(box.name);
-    const type = box.kind?.trim() || box.type.trim();
+    const type = box.type.trim();
     if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
     const id = box.id?.trim() || makeUniqueBoxId(usedIds);
     usedIds.add(id);
@@ -1739,40 +1731,6 @@ function matchField(line, fields) {
 }
 function cleanValue(value) {
   return value.trim().replace(/^`|`$/g, "").trim();
-}
-
-// src/core/typeManagement.ts
-async function migrateKindToType(fs4) {
-  return withTentMutation(fs4, async () => {
-    const tent = await loadTent(fs4);
-    const touched = [];
-    for (const box of tent.byPath.values()) {
-      const kind = typeof box.fm.kind === "string" ? box.fm.kind.trim() : "";
-      if (!kind) continue;
-      const path3 = boxNotePath(box.path);
-      const { data, body, keyOrder } = parseFrontmatter(await fs4.readFile(path3));
-      const base = typeof data.type === "string" && data.type.trim() ? data.type.trim() : "custom";
-      data.type = joinType(base, kind);
-      delete data.kind;
-      await fs4.writeFile(path3, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
-      touched.push(path3);
-    }
-    if (touched.length === 0) return touched;
-    const registry = await loadTypeRegistry(fs4);
-    await writeTypeRegistryUnlocked(fs4, registry);
-    touched.push(TYPE_REGISTRY_PATH);
-    return touched;
-  });
-}
-async function writeTypeRegistryUnlocked(fs4, registry) {
-  if (!await fs4.exists(".tent")) await fs4.mkdir(".tent");
-  await fs4.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
-}
-function boxKeyOrder3(existing) {
-  return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
 }
 
 // src/core/okf.ts
@@ -2650,14 +2608,6 @@ ${r.relayPrompt}`);
       console.log(`\u2713 Force-released owner: ${args[0]}`);
       break;
     }
-    case "migrate-kind-to-type": {
-      if (args.length > 0) return fail("Usage: tent migrate-kind-to-type");
-      const touched = await migrateKindToType(env.fs);
-      if (touched.length === 0) console.log("\u2713 No migration needed: no legacy kind fields found");
-      else console.log(`\u2713 Migrated legacy kind \u2192 type:
-${touched.map((p) => `- ${p}`).join("\n")}`);
-      break;
-    }
     case "okf-sync": {
       if (args.length > 0) return fail("Usage: tent okf-sync");
       const result = await syncOkfBundle(env.fs);
@@ -2694,7 +2644,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
       );
   }
 }
@@ -2841,7 +2791,6 @@ Commands:
   find <tag>                         Find boxes by tag.
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
-  migrate-kind-to-type               Rewrite legacy kind fields to type.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.
   tree                               Print the box tree.

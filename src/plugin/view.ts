@@ -1043,7 +1043,7 @@ export class TentView extends ItemView {
     if (this.propEditExpanded) {
       const editor = card.createDiv({ cls: "tent-prop-editor" });
 
-      // type(base)— kind(modifier):合成单 type 串(modifier 覆盖 base 的 R/W)
+      // type(base)—modifier:合成单 type 串(modifier 覆盖 base 的 R/W)
       const { base: curBase, modifier: curMod } = splitType(box.fm.type || "");
       const bases = Object.keys(reg).filter((n) => reg[n].tier !== "modifier");
       const mods = Object.keys(reg).filter((n) => reg[n].tier === "modifier");
@@ -1711,7 +1711,7 @@ export class TentView extends ItemView {
     const state = {
       name: "",
       base: sp.base && bases.includes(sp.base) ? sp.base : bases[0] ?? "",
-      kind: sp.modifier && mods.includes(sp.modifier) ? sp.modifier : "",
+      modifier: sp.modifier && mods.includes(sp.modifier) ? sp.modifier : "",
     };
 
     // 单行:名字 input · type 一级—二级 两个下拉 · 新建 / 取消
@@ -1733,14 +1733,14 @@ export class TentView extends ItemView {
 
     row.createSpan({ cls: "tent-tk-dash", text: "—" });
 
-    const kindSel = row.createEl("select", { cls: "dropdown tent-newbox-type" });
-    const none = kindSel.createEl("option", { text: "无", value: "" });
-    if (!state.kind) none.selected = true;
+    const modifierSel = row.createEl("select", { cls: "dropdown tent-newbox-type" });
+    const none = modifierSel.createEl("option", { text: "无", value: "" });
+    if (!state.modifier) none.selected = true;
     for (const m of mods) {
-      const o = kindSel.createEl("option", { text: m, value: m });
-      if (m === state.kind) o.selected = true;
+      const o = modifierSel.createEl("option", { text: m, value: m });
+      if (m === state.modifier) o.selected = true;
     }
-    kindSel.onchange = () => (state.kind = kindSel.value);
+    modifierSel.onchange = () => (state.modifier = modifierSel.value);
 
     const create = row.createEl("button", { cls: "mod-cta", text: "新建" });
     create.setAttr("type", "button");
@@ -1749,7 +1749,7 @@ export class TentView extends ItemView {
         new Notice("请填写框名");
         return;
       }
-      const type = joinType(state.base, state.kind || undefined);
+      const type = joinType(state.base, state.modifier || undefined);
       await createBox(this.env(), { parentPath, name: state.name, type });
       this.newBoxParentPath = null;
       await this.refresh();

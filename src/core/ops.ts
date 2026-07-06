@@ -392,7 +392,7 @@ async function patchBoxUnlocked(
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "archived", "kind"].filter((key) => key in patch);
+  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
   if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
   if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
   if (box.invalid) {

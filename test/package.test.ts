@@ -537,7 +537,6 @@ test("CLI 表面:help 与 version 正常退出", async () => {
   assert.match(help.stdout, /status/);
   assert.match(help.stdout, /task-ack/);
   assert.match(help.stdout, /clean-temp/);
-  assert.match(help.stdout, /migrate-kind-to-type/);
   assert.doesNotMatch(help.stdout, /handoff/i);
   assert.equal(help.stderr, "");
 

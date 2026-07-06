@@ -13,7 +13,7 @@ test("buildInbox:认领中由 inbox 聚合,不计入待裁", async () => {
   const tent = await loadTent(fsa);
   const { buildInbox, pendingCount } = await import("../src/core/inbox.js");
   const inbox = await buildInbox(tent);
-  assert.ok(inbox.some((i) => i.kind === "stale" && i.boxId === "bx-g2"), "owner 显示为认领中");
+  assert.ok(inbox.some((i) => i.state === "stale" && i.boxId === "bx-g2"), "owner 显示为认领中");
   assert.equal(pendingCount(inbox), 0, "认领中不计入待裁");
 });
 

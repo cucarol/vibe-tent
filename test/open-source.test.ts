@@ -96,10 +96,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
   assert.match(readme, /tent skill-install \[--target claude\] \[--force\]/);
-  assert.match(readme, /idempotent `tent migrate-\*` commands/);
-  assert.match(spec, /Overlay Format Migrations/);
-  assert.match(spec, /Any breaking overlay format change must ship with an idempotent/);
-  assert.match(spec, /`tent migrate-\*` command/);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine-readable delivery record/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);

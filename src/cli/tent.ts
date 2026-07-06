@@ -20,7 +20,6 @@
 //   tent status
 //   tent clean-temp [role]
 //   tent force-release <boxId>
-//   tent migrate-kind-to-type
 //   tent okf-sync
 //   tent skill-install [--target claude] [--force]
 //   tent tree                          打印框树(调试)
@@ -50,7 +49,6 @@ import {
 import { scaffoldTent } from "../core/scaffold.js";
 import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
-import { migrateKindToType } from "../core/typeManagement.js";
 import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
@@ -377,13 +375,6 @@ async function main() {
       console.log(`✓ Force-released owner: ${args[0]}`);
       break;
     }
-    case "migrate-kind-to-type": {
-      if (args.length > 0) return fail("Usage: tent migrate-kind-to-type");
-      const touched = await migrateKindToType(env.fs);
-      if (touched.length === 0) console.log("✓ No migration needed: no legacy kind fields found");
-      else console.log(`✓ Migrated legacy kind → type:\n${touched.map((p) => `- ${p}`).join("\n")}`);
-      break;
-    }
     case "okf-sync": {
       if (args.length > 0) return fail("Usage: tent okf-sync");
       const result = await syncOkfBundle(env.fs);
@@ -419,7 +410,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
       );
   }
 }
@@ -586,7 +577,6 @@ Commands:
   find <tag>                         Find boxes by tag.
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
-  migrate-kind-to-type               Rewrite legacy kind fields to type.
   okf-sync                           Regenerate OKF indexes and projected links.
   skill-install [--force]            Install bundled Tent skills for Claude Code.
   tree                               Print the box tree.

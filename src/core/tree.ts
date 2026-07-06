@@ -11,7 +11,7 @@ import {
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
-import { joinType, loadTypeRegistry, TypeRegistry, typeExists, resolveTypeAxis } from "./typeRegistry.js";
+import { loadTypeRegistry, TypeRegistry, typeExists, resolveTypeAxis } from "./typeRegistry.js";
 
 const ZONE_NAMES: ZoneType[] = ["goal", "prompt", "output"];
 
@@ -96,7 +96,6 @@ export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: str
   const identity = normalizeIdentity(data);
   if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
   box.type = identity.fm.type;
-  box.kind = identity.fm.kind;
   box.tags = identity.tags;
   box.fm = identity.fm;
   box.body = body;
@@ -138,7 +137,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   const box: Box = {
     id: fm.id,
     type: fm.type,
-    kind: fm.kind,
     tags,
     archived: false,
     invalid: !!parseError,
@@ -168,15 +166,11 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
 
 function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter; tags: string[] } {
   const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
-  const rawKind = typeof data.kind === "string" && data.kind ? data.kind : "";
-  const effectiveType = rawKind ? joinType(rawType, rawKind) : rawType;
   const fm: BoxFrontmatter = {
     ...data,
     id: typeof data.id === "string" ? data.id : "",
-    type: effectiveType,
+    type: rawType,
   } as BoxFrontmatter;
-  if (rawKind) fm.kind = rawKind;
-  else delete fm.kind;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;

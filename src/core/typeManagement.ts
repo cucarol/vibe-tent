@@ -1,7 +1,6 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { Box } from "./types.js";
-import { boxNotePath, loadTent } from "./tree.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import { loadTent } from "./tree.js";
 import {
   DEFAULT_TYPE_REGISTRY,
   TYPE_COLOR_PALETTE,
@@ -9,7 +8,6 @@ import {
   TypeDefinition,
   TYPE_REGISTRY_PATH,
   TypeRegistry,
-  joinType,
   splitType,
 } from "./typeRegistry.js";
 
@@ -155,29 +153,6 @@ export async function deleteCustomType(
   });
 }
 
-export async function migrateKindToType(fs: FsAdapter): Promise<string[]> {
-  return withTentMutation(fs, async () => {
-    const tent = await loadTent(fs);
-    const touched: string[] = [];
-    for (const box of tent.byPath.values()) {
-      const kind = typeof box.fm.kind === "string" ? box.fm.kind.trim() : "";
-      if (!kind) continue;
-      const path = boxNotePath(box.path);
-      const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(path));
-      const base = typeof data.type === "string" && data.type.trim() ? data.type.trim() : "custom";
-      data.type = joinType(base, kind);
-      delete data.kind;
-      await fs.writeFile(path, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
-      touched.push(path);
-    }
-    if (touched.length === 0) return touched;
-    const registry = await loadTypeRegistry(fs);
-    await writeTypeRegistryUnlocked(fs, registry);
-    touched.push(TYPE_REGISTRY_PATH);
-    return touched;
-  });
-}
-
 async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
   if (!(await fs.exists(".tent"))) await fs.mkdir(".tent");
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
@@ -215,11 +190,4 @@ function withDefaultColor<T extends { color?: string }>(registry: TypeRegistry, 
   if (color) return { ...definition, color };
   const used = Object.keys(registry).length;
   return { ...definition, color: TYPE_COLOR_PALETTE[used % TYPE_COLOR_PALETTE.length] };
-}
-
-function boxKeyOrder(existing: string[]): string[] {
-  return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key)),
-  ];
 }

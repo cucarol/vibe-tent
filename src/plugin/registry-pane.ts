@@ -47,7 +47,7 @@ export function drawRegistryPane(
   });
   if (!state.typeCollapsed) {
     drawTypeSection(typeBlock, context, state, "type", "base", "一级", primary);
-    drawTypeSection(typeBlock, context, state, "kind", "modifier", "二级", secondary);
+    drawTypeSection(typeBlock, context, state, "modifier", "modifier", "二级", secondary);
   }
 
   const roleBlock = list.createDiv({ cls: "reg-block" });
@@ -167,7 +167,7 @@ function drawTypeSection(
   block: HTMLElement,
   context: RegistryPaneContext,
   state: RegistryPaneState,
-  key: "type" | "kind",
+  key: "type" | "modifier",
   tier: TypeTier,
   label: string,
   entries: Array<[string, TypeDefinition]>
@@ -217,7 +217,7 @@ function drawAddButton(
     state.newFormOpen = state.newFormOpen === key ? null : key;
     if (state.newFormOpen === key) {
       state.collapsed[key] = false;
-      if (key === "type" || key === "kind") state.typeCollapsed = false;
+      if (key === "type" || key === "modifier") state.typeCollapsed = false;
     }
     context.redraw();
   };
@@ -227,7 +227,7 @@ function drawTypeRow(
   content: HTMLElement,
   context: RegistryPaneContext,
   state: RegistryPaneState,
-  section: "type" | "kind",
+  section: "type" | "modifier",
   name: string,
   definition: TypeDefinition
 ): void {

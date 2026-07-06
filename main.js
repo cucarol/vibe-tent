@@ -512,7 +512,6 @@ async function reloadLoadedBox(fs, tent, path) {
   const identity = normalizeIdentity(data);
   if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
   box.type = identity.fm.type;
-  box.kind = identity.fm.kind;
   box.tags = identity.tags;
   box.fm = identity.fm;
   box.body = body;
@@ -549,7 +548,6 @@ async function loadBox(fs, path, parent, registry) {
   const box = {
     id: fm.id,
     type: fm.type,
-    kind: fm.kind,
     tags,
     archived: false,
     invalid: !!parseError,
@@ -577,15 +575,11 @@ async function loadBox(fs, path, parent, registry) {
 }
 function normalizeIdentity(data) {
   const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
-  const rawKind = typeof data.kind === "string" && data.kind ? data.kind : "";
-  const effectiveType = rawKind ? joinType(rawType, rawKind) : rawType;
   const fm = {
     ...data,
     id: typeof data.id === "string" ? data.id : "",
-    type: effectiveType
+    type: rawType
   };
-  if (rawKind) fm.kind = rawKind;
-  else delete fm.kind;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -1809,7 +1803,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "archived", "kind"].filter((key) => key in patch);
+  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
   if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
   if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
   if (box.invalid) {
@@ -2142,7 +2136,7 @@ async function buildInbox(tent) {
     if (box.invalid || box.archived) continue;
     const role = box.fm.owner;
     if (!role) continue;
-    items.push({ kind: "stale", role, boxPath: box.path, boxId: box.id });
+    items.push({ state: "stale", role, boxPath: box.path, boxId: box.id });
   }
   return items;
 }
@@ -2713,7 +2707,7 @@ function createRegistryPaneState() {
   return {
     markedRoles: /* @__PURE__ */ new Set(),
     markedTypes: /* @__PURE__ */ new Set(),
-    collapsed: { type: false, kind: false, roles: false },
+    collapsed: { type: false, modifier: false, roles: false },
     typeCollapsed: false,
     newFormOpen: null,
     openEditor: null
@@ -2803,7 +2797,6 @@ init_skillRoleRegistry();
 // src/core/typeManagement.ts
 init_adapter();
 init_tree();
-init_frontmatter();
 init_typeRegistry();
 async function createType(fs, name, definition) {
   await withTentMutation(fs, async () => {
@@ -2923,7 +2916,7 @@ function drawRegistryPane(host, context, state) {
   });
   if (!state.typeCollapsed) {
     drawTypeSection(typeBlock, context, state, "type", "base", "\u4E00\u7EA7", primary);
-    drawTypeSection(typeBlock, context, state, "kind", "modifier", "\u4E8C\u7EA7", secondary);
+    drawTypeSection(typeBlock, context, state, "modifier", "modifier", "\u4E8C\u7EA7", secondary);
   }
   const roleBlock = list.createDiv({ cls: "reg-block" });
   drawBlockHead(
@@ -3049,7 +3042,7 @@ function drawAddButton(head, context, state, key) {
     state.newFormOpen = state.newFormOpen === key ? null : key;
     if (state.newFormOpen === key) {
       state.collapsed[key] = false;
-      if (key === "type" || key === "kind") state.typeCollapsed = false;
+      if (key === "type" || key === "modifier") state.typeCollapsed = false;
     }
     context.redraw();
   };
@@ -4906,7 +4899,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const state = {
       name: "",
       base: sp.base && bases.includes(sp.base) ? sp.base : bases[0] ?? "",
-      kind: sp.modifier && mods.includes(sp.modifier) ? sp.modifier : ""
+      modifier: sp.modifier && mods.includes(sp.modifier) ? sp.modifier : ""
     };
     const row = card.createDiv({ cls: "tent-newbox-row" });
     row.createSpan({ cls: "tent-newform-label", text: "\u540D\u5B57" });
@@ -4923,14 +4916,14 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     baseSel.onchange = () => state.base = baseSel.value;
     row.createSpan({ cls: "tent-tk-dash", text: "\u2014" });
-    const kindSel = row.createEl("select", { cls: "dropdown tent-newbox-type" });
-    const none = kindSel.createEl("option", { text: "\u65E0", value: "" });
-    if (!state.kind) none.selected = true;
+    const modifierSel = row.createEl("select", { cls: "dropdown tent-newbox-type" });
+    const none = modifierSel.createEl("option", { text: "\u65E0", value: "" });
+    if (!state.modifier) none.selected = true;
     for (const m of mods) {
-      const o = kindSel.createEl("option", { text: m, value: m });
-      if (m === state.kind) o.selected = true;
+      const o = modifierSel.createEl("option", { text: m, value: m });
+      if (m === state.modifier) o.selected = true;
     }
-    kindSel.onchange = () => state.kind = kindSel.value;
+    modifierSel.onchange = () => state.modifier = modifierSel.value;
     const create = row.createEl("button", { cls: "mod-cta", text: "\u65B0\u5EFA" });
     create.setAttr("type", "button");
     create.onclick = async () => {
@@ -4938,7 +4931,7 @@ var TentView = class extends import_obsidian4.ItemView {
         new import_obsidian4.Notice("\u8BF7\u586B\u5199\u6846\u540D");
         return;
       }
-      const type = joinType(state.base, state.kind || void 0);
+      const type = joinType(state.base, state.modifier || void 0);
       await createBox(this.env(), { parentPath, name: state.name, type });
       this.newBoxParentPath = null;
       await this.refresh();

@@ -7,12 +7,10 @@ export type ZoneType = "goal" | "prompt" | "output";
 
 export type Status = "todo" | "doing" | "done";
 
-/** 框身份文件(<box-name>.md)的 frontmatter。type 必填;旧 kind 会被迁移/折入 type。 */
+/** 框身份文件(<box-name>.md)的 frontmatter。type 必填。 */
 export interface BoxFrontmatter {
   id: string;
   type: BoxType;
-  /** legacy: type/kind 合并前的二级分类。新写入不再使用。 */
-  kind?: string;
   tags?: string[];
   archived?: boolean;
   readable?: boolean;
@@ -35,8 +33,6 @@ export interface ResolvedAxis {
 export interface Box {
   id: string;
   type: BoxType;
-  /** legacy raw kind,仅供迁移/兼容显示。治理解析不再读取它。 */
-  kind?: string;
   tags: string[];
   /** 自身或祖先 archived=true。归档子树强制 R/W=false。 */
   archived: boolean;

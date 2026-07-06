@@ -2,7 +2,7 @@ import type { LoadedTent } from "./tree.js";
 
 /** 收件箱条目:当前认领。report 由 temp/<role>/reports 独立聚合。 */
 export type InboxItem =
-  | { kind: "stale"; role: string; boxPath: string; boxId: string };
+  | { state: "stale"; role: string; boxPath: string; boxId: string };
 
 /** 聚合收件箱:当前认领中的框。 */
 export async function buildInbox(tent: LoadedTentLike): Promise<InboxItem[]> {
@@ -11,7 +11,7 @@ export async function buildInbox(tent: LoadedTentLike): Promise<InboxItem[]> {
     if (box.invalid || box.archived) continue;
     const role = box.fm.owner;
     if (!role) continue;
-    items.push({ kind: "stale", role, boxPath: box.path, boxId: box.id });
+    items.push({ state: "stale", role, boxPath: box.path, boxId: box.id });
   }
   return items;
 }

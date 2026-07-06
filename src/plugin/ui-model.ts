@@ -1,7 +1,7 @@
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { TYPE_COLORS, typeColorValue } from "./colors.js";
 
-export type RegistrySection = "type" | "kind" | "roles";
+export type RegistrySection = "type" | "modifier" | "roles";
 
 export interface RegistryPaneState {
   markedRoles: Set<string>;
@@ -131,7 +131,7 @@ export function createRegistryPaneState(): RegistryPaneState {
   return {
     markedRoles: new Set<string>(),
     markedTypes: new Set<string>(),
-    collapsed: { type: false, kind: false, roles: false },
+    collapsed: { type: false, modifier: false, roles: false },
     typeCollapsed: false,
     newFormOpen: null,
     openEditor: null,

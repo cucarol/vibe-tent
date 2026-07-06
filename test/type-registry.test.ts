@@ -13,7 +13,6 @@ import {
   createSecondaryType,
   deleteCustomType,
   inspectTypeDeletion,
-  migrateKindToType,
   updateTypeMetadata,
 } from "../src/core/typeManagement.js";
 import { makeTent } from "./helpers.js";
@@ -60,10 +59,10 @@ test("单层 type:asset 只作用当前 node 的 readable", async () => {
   assert.equal(child.readable.source, "type");
 });
 
-test("旧 types.json schema 与 legacy kind 会归一到复合 type", async () => {
+test("旧 types.json schema 会归一到单层 type registry", async () => {
   const dir = await makeTent();
   const legacy = path.join(dir, "prompt", "旧站资料", "旧站资料.md");
-  await fs.writeFile(legacy, "---\nid: bx-a1\ntype: prompt\nkind: asset\n---\n");
+  await fs.writeFile(legacy, "---\nid: bx-a1\ntype: prompt-asset\n---\n");
   await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
   await fs.writeFile(
     path.join(dir, ".tent", "types.json"),
@@ -86,45 +85,6 @@ test("旧 types.json schema 与 legacy kind 会归一到复合 type", async () =
     "modifier 缺省 writable 时继承 base",
   );
   assert.equal(tent.typeRegistry.asset.writable, undefined);
-});
-
-test("migrateKindToType:移除 legacy kind 并写成单层 type registry", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const legacy = path.join(dir, "prompt", "旧站资料", "旧站资料.md");
-  await fs.writeFile(legacy, "---\nid: bx-a1\ntype: prompt\nkind: asset\n---\n");
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(
-    path.join(dir, ".tent", "types.json"),
-    JSON.stringify({
-      primary: { goal: { readable: true, writable: false }, prompt: { readable: true, writable: true } },
-      secondary: { asset: { readable: false, writable: true } },
-    }),
-  );
-
-  const touched = await migrateKindToType(fsa);
-  const note = await fs.readFile(legacy, "utf8");
-  const registry = JSON.parse(await fs.readFile(path.join(dir, ".tent", "types.json"), "utf8"));
-  assert.ok(touched.includes("prompt/旧站资料/旧站资料.md"));
-  assert.match(note, /type: prompt-asset/);
-  assert.doesNotMatch(note, /kind:/);
-  assert.ok(registry.asset);
-  assert.equal(registry.secondary, undefined);
-});
-
-test("migrateKindToType:no legacy kind leaves registry untouched", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  const registryPath = path.join(dir, ".tent", "types.json");
-  await fs.writeFile(registryPath, JSON.stringify({ custom: { tier: "base", readable: true, writable: false } }, null, 2));
-  const before = await fs.stat(registryPath);
-
-  const touched = await migrateKindToType(fsa);
-  const after = await fs.stat(registryPath);
-
-  assert.deepEqual(touched, []);
-  assert.equal(after.mtimeMs, before.mtimeMs);
 });
 
 test("显式 R/W 只作用本框:不再沿祖先下流", async () => {
@@ -447,22 +407,4 @@ test("patchBox 改 type 不污染其他字段", async () => {
   assert.equal(after.data.type, "output", "type 已改");
   assert.equal(after.data.id, before.data.id, "id 未污染");
   assert.equal(after.data.writable, before.data.writable, "writable 未污染");
-  assert.equal(after.data.kind, before.data.kind, "legacy kind 未污染");
-});
-
-test("patchBox 拒绝新写 kind", async () => {
-  const dir = await makeTent();
-  const fsa = new NodeFs(dir);
-  const env = {
-    fs: fsa,
-    git: { run: async () => "" },
-    clock: { now: () => "t" },
-    tentName: "x",
-    rand: Math.random,
-  };
-  const { patchBox } = await import("../src/core/ops.js");
-  await assert.rejects(
-    () => patchBox(env as any, "prompt/表达式任务书/草稿", { kind: "draft" }),
-    /Reserved fields/,
-  );
 });
