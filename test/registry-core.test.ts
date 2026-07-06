@@ -60,7 +60,7 @@ test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS
   assert.equal(await fsa.exists(".claude"), false);
   assert.equal(await fsa.exists(".tent/skills.json"), false);
   assert.deepEqual((await loadRolesRegistry(fsa)).roles, []);
-  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["decision"]);
+  assert.deepEqual((await loadTagRegistry(fsa)).tags, []);
   assert.deepEqual(
     JSON.parse(await fsa.readFile(".tent/types.json")),
     tent.typeRegistry,
@@ -279,13 +279,13 @@ test("corrupt tags registry is backed up and rebuilt from box frontmatter before
   await fs.writeFile(path.join(dir, ".tent", "tags.json"), "{not-json", "utf8");
   const notePath = path.join(dir, "prompt", "表达式任务书", "表达式任务书.md");
   const raw = await fs.readFile(notePath, "utf8");
-  await fs.writeFile(notePath, raw.replace("type: prompt", "type: prompt\ntags: [decision, recovered]"));
+  await fs.writeFile(notePath, raw.replace("type: prompt", "type: prompt\ntags: [legacy, recovered]"));
 
   const warnings = await captureConsoleError(() => addRegistryTag(fsa, "fresh"));
 
   assert.match(warnings.join("\n"), /\.tent\/tags\.json was corrupt; backed up to \.tent\/tags\.json\.corrupt-/);
   assert.match(warnings.join("\n"), /and recovered\. Review it\./);
-  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["decision", "fresh", "recovered"]);
+  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["fresh", "legacy", "recovered"]);
   assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("tags.json.corrupt-")), true);
 });
 

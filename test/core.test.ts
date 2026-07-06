@@ -580,7 +580,7 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
     !manifest.readable.some((x) => x.path.startsWith("prompt/表达式任务书")),
   );
   await assert.rejects(
-    () => tagBox(env as any, "bx-p1", "decision"),
+    () => tagBox(env as any, "bx-p1", "release"),
     /Invalid or archived boxes cannot be tagged\./,
   );
 
@@ -620,7 +620,7 @@ test("CLI rejects unexpected positional args and missing report body cleanly", a
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Usage: tent new-box <name> <type> \[parentId\]/);
 
-  result = await cli(dir, "tag-new", "decision", "ignored");
+  result = await cli(dir, "tag-new", "release", "ignored");
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Usage: tent tag-new <name>/);
 

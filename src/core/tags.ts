@@ -5,7 +5,7 @@ import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery
 import type { Box } from "./types.js";
 
 export const TAGS_REGISTRY_PATH = ".tent/tags.json";
-export const DEFAULT_TAG_REGISTRY: TagRegistry = { tags: ["decision"] };
+export const DEFAULT_TAG_REGISTRY: TagRegistry = { tags: [] };
 
 export interface TagRegistry {
   tags: string[];
