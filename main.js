@@ -4867,12 +4867,70 @@ var TentView = class extends import_obsidian4.ItemView {
     this.workspaceHeadCache.clear();
     this.roleCommitsCache.clear();
   }
-  // 派活内联:待投递任务优先；空闲框显示目标 role + user prompt。
+  // 派活内联:表单常驻；下方显示当前投递状态。
   drawDispatchInline(body, actSlot, box) {
     const pendingDispatch = this.pendingDispatchByBox.get(box.id)?.[0];
+    body.createDiv({ cls: "tent-dispatch-sec", text: "\u6D3E\u6D3B\u8868\u5355" });
+    const form = body.createDiv({ cls: "tent-dispatch-form style-a-view" });
+    const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
+    roleRow.createSpan({ cls: "tent-prop-key", text: "\u76EE\u6807 role" });
+    const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
+    const roleSelect = createChevronSelect(roleControl, {
+      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
+      options: [
+        { value: "", label: this.roles.length ? "(\u9009\u62E9)" : "(\u624B\u52A8\u8F93\u5165)" },
+        ...this.roles.map((role) => ({ value: role.name, label: role.name }))
+      ]
+    });
+    const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
+    manualRole.toggleClass("is-hidden", this.roles.length > 0);
+    roleSelect.onchange = () => {
+      manualRole.toggleClass("is-hidden", !!roleSelect.value || this.roles.length > 0);
+    };
+    const userSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-prompt-row" });
+    userSection.createSpan({ cls: "tent-prop-key", text: "user prompt" });
+    const prompt = userSection.createEl("textarea", {
+      cls: "tent-dispatch-prompt",
+      attr: { rows: "1" }
+    });
+    const resizePrompt = () => {
+      prompt.style.height = "auto";
+      prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
+    };
+    prompt.oninput = resizePrompt;
+    const claim = canClaim(box);
+    const blockedReason = pendingDispatch ? "\u5DF2\u6709\u6295\u9012\u7B49\u5F85\u63A5\u624B\u3002" : claim.reason || "";
+    const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "\u6D3E\u6D3B\u63A5\u529B" });
+    run.setAttr("type", "button");
+    run.disabled = !!pendingDispatch || !claim.ok;
+    if (run.disabled) tentTooltip(run, blockedReason);
+    run.onclick = async () => {
+      const roleName = roleSelect.value.trim() || manualRole.value.trim();
+      if (!roleName) {
+        new import_obsidian4.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
+        return;
+      }
+      const localPrompt = prompt.value.trim();
+      if (!localPrompt) {
+        new import_obsidian4.Notice("\u8BF7\u586B\u5199 user prompt");
+        return;
+      }
+      try {
+        const r = await this.dispatchBox(box, roleName, localPrompt);
+        if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
+          await navigator.clipboard.writeText(r.relayPrompt);
+          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
+        } else {
+          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
+        }
+        await this.refresh();
+      } catch (e) {
+        new import_obsidian4.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+      }
+    };
     if (pendingDispatch) {
-      body.createDiv({ cls: "tent-triage-sec", text: "\u7B49\u5F85\u6295\u9012" });
-      const item = body.createDiv({ cls: "tent-triage-item" });
+      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "\u6295\u9012\u72B6\u6001" });
+      const item = body.createDiv({ cls: "tent-triage-item tent-dispatch-status-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
       main.createDiv({
         cls: "tent-triage-name",
@@ -4909,70 +4967,12 @@ var TentView = class extends import_obsidian4.ItemView {
           cancel.removeAttribute("disabled");
         }
       };
-      return;
-    }
-    if (box.fm.owner) {
-      const state = body.createDiv({ cls: "tent-content-intro is-stacked" });
+    } else if (box.fm.owner) {
+      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "\u6295\u9012\u72B6\u6001" });
+      const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
       state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} \u6B63\u5728\u5904\u7406\u6B64\u6846` });
       state.createDiv({ cls: "tent-content-meta", text: "\u53EF\u5728\u300C\u5F85\u88C1\u300D\u4E2D\u67E5\u770B\u4EA4\u4ED8\u6216\u4E2D\u65AD\u4EFB\u52A1" });
-      return;
     }
-    const form = body.createDiv({ cls: "tent-dispatch-form style-a-view" });
-    const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
-    roleRow.createSpan({ cls: "tent-prop-key", text: "\u76EE\u6807 role" });
-    const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
-    const roleSelect = createChevronSelect(roleControl, {
-      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
-      options: [
-        { value: "", label: this.roles.length ? "(\u9009\u62E9)" : "(\u624B\u52A8\u8F93\u5165)" },
-        ...this.roles.map((role) => ({ value: role.name, label: role.name }))
-      ]
-    });
-    const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
-    manualRole.toggleClass("is-hidden", this.roles.length > 0);
-    roleSelect.onchange = () => {
-      manualRole.toggleClass("is-hidden", !!roleSelect.value || this.roles.length > 0);
-    };
-    const userSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-prompt-row" });
-    userSection.createSpan({ cls: "tent-prop-key", text: "user prompt" });
-    const prompt = userSection.createEl("textarea", {
-      cls: "tent-dispatch-prompt",
-      attr: { rows: "1" }
-    });
-    const resizePrompt = () => {
-      prompt.style.height = "auto";
-      prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
-    };
-    prompt.oninput = resizePrompt;
-    const claim = canClaim(box);
-    const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "\u6D3E\u6D3B\u63A5\u529B" });
-    run.setAttr("type", "button");
-    run.disabled = !claim.ok;
-    if (!claim.ok) tentTooltip(run, claim.reason || "");
-    run.onclick = async () => {
-      const roleName = roleSelect.value.trim() || manualRole.value.trim();
-      if (!roleName) {
-        new import_obsidian4.Notice("\u8BF7\u9009\u62E9\u6216\u8F93\u5165 role");
-        return;
-      }
-      const localPrompt = prompt.value.trim();
-      if (!localPrompt) {
-        new import_obsidian4.Notice("\u8BF7\u586B\u5199 user prompt");
-        return;
-      }
-      try {
-        const r = await this.dispatchBox(box, roleName, localPrompt);
-        if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
-          await navigator.clipboard.writeText(r.relayPrompt);
-          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u5DF2\u590D\u5236\u63A5\u529B prompt,\u53BB\u76EE\u6807 agent \u4F1A\u8BDD\u7C98\u8D34\u3002", 6e3);
-        } else {
-          new import_obsidian4.Notice("\u5DF2\u6D3E\u6D3B\u3002\u63A5\u529B prompt \u5DF2\u751F\u6210\u3002", 6e3);
-        }
-        await this.refresh();
-      } catch (e) {
-        new import_obsidian4.Notice("\u6D3E\u6D3B\u5931\u8D25:" + (e instanceof Error ? e.message : e));
-      }
-    };
   }
   // 正文:可编辑 textarea,blur 落盘。支持拖 Obsidian 文件进来转成帐根相对路径。
   drawNote(el, box) {

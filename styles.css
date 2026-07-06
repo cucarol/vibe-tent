@@ -1527,6 +1527,22 @@
   gap: 0;
   padding: 2px 0 0;
 }
+.tent-dispatch-sec {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-weight: 500;
+  line-height: 1.4;
+  margin: 10px 4px 3px;
+}
+.tent-dispatch-status-sec {
+  margin-top: 12px;
+  padding-top: 10px;
+  border-top: 1px solid color-mix(in srgb, var(--text-muted) 24%, var(--background-modifier-border));
+}
+.tent-dispatch-status-item {
+  padding-left: 4px;
+  padding-right: 4px;
+}
 .tent-dispatch-row {
   display: grid;
   grid-template-columns: 92px minmax(0, 1fr);

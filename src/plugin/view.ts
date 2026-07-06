@@ -1561,12 +1561,74 @@ export class TentView extends ItemView {
     this.roleCommitsCache.clear();
   }
 
-  // 派活内联:待投递任务优先；空闲框显示目标 role + user prompt。
+  // 派活内联:表单常驻；下方显示当前投递状态。
   private drawDispatchInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
     const pendingDispatch = this.pendingDispatchByBox.get(box.id)?.[0];
+
+    body.createDiv({ cls: "tent-dispatch-sec", text: "派活表单" });
+    const form = body.createDiv({ cls: "tent-dispatch-form style-a-view" });
+    const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
+    roleRow.createSpan({ cls: "tent-prop-key", text: "目标 role" });
+    const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
+    const roleSelect = createChevronSelect(roleControl, {
+      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
+      options: [
+        { value: "", label: this.roles.length ? "(选择)" : "(手动输入)" },
+        ...this.roles.map((role) => ({ value: role.name, label: role.name })),
+      ],
+    });
+    const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
+    manualRole.toggleClass("is-hidden", this.roles.length > 0);
+    roleSelect.onchange = () => {
+      manualRole.toggleClass("is-hidden", !!roleSelect.value || this.roles.length > 0);
+    };
+
+    const userSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-prompt-row" });
+    userSection.createSpan({ cls: "tent-prop-key", text: "user prompt" });
+    const prompt = userSection.createEl("textarea", {
+      cls: "tent-dispatch-prompt",
+      attr: { rows: "1" },
+    });
+    const resizePrompt = () => {
+      prompt.style.height = "auto";
+      prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
+    };
+    prompt.oninput = resizePrompt;
+
+    const claim = canClaim(box);
+    const blockedReason = pendingDispatch ? "已有投递等待接手。" : claim.reason || "";
+    const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "派活接力" });
+    run.setAttr("type", "button");
+    run.disabled = !!pendingDispatch || !claim.ok;
+    if (run.disabled) tentTooltip(run, blockedReason);
+    run.onclick = async () => {
+      const roleName = roleSelect.value.trim() || manualRole.value.trim();
+      if (!roleName) {
+        new Notice("请选择或输入 role");
+        return;
+      }
+      const localPrompt = prompt.value.trim();
+      if (!localPrompt) {
+        new Notice("请填写 user prompt");
+        return;
+      }
+      try {
+        const r = await this.dispatchBox(box, roleName, localPrompt);
+        if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
+          await navigator.clipboard.writeText(r.relayPrompt);
+          new Notice("已派活。已复制接力 prompt,去目标 agent 会话粘贴。", 6000);
+        } else {
+          new Notice("已派活。接力 prompt 已生成。", 6000);
+        }
+        await this.refresh();
+      } catch (e) {
+        new Notice("派活失败:" + (e instanceof Error ? e.message : e));
+      }
+    };
+
     if (pendingDispatch) {
-      body.createDiv({ cls: "tent-triage-sec", text: "等待投递" });
-      const item = body.createDiv({ cls: "tent-triage-item" });
+      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "投递状态" });
+      const item = body.createDiv({ cls: "tent-triage-item tent-dispatch-status-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
       main.createDiv({
         cls: "tent-triage-name",
@@ -1603,74 +1665,12 @@ export class TentView extends ItemView {
           cancel.removeAttribute("disabled");
         }
       };
-      return;
-    }
-
-    if (box.fm.owner) {
-      const state = body.createDiv({ cls: "tent-content-intro is-stacked" });
+    } else if (box.fm.owner) {
+      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "投递状态" });
+      const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
       state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} 正在处理此框` });
       state.createDiv({ cls: "tent-content-meta", text: "可在「待裁」中查看交付或中断任务" });
-      return;
     }
-
-    const form = body.createDiv({ cls: "tent-dispatch-form style-a-view" });
-    const roleRow = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-role-row" });
-    roleRow.createSpan({ cls: "tent-prop-key", text: "目标 role" });
-    const roleControl = roleRow.createDiv({ cls: "tent-dispatch-control" });
-    const roleSelect = createChevronSelect(roleControl, {
-      cls: "dropdown tent-prop-select tent-dispatch-select tent-dispatch-role-select",
-      options: [
-        { value: "", label: this.roles.length ? "(选择)" : "(手动输入)" },
-        ...this.roles.map((role) => ({ value: role.name, label: role.name })),
-      ],
-    });
-    const manualRole = roleControl.createEl("input", { cls: "tent-dispatch-role-input", attr: { type: "text" } });
-    manualRole.toggleClass("is-hidden", this.roles.length > 0);
-    roleSelect.onchange = () => {
-      manualRole.toggleClass("is-hidden", !!roleSelect.value || this.roles.length > 0);
-    };
-
-    const userSection = form.createDiv({ cls: "tent-dispatch-row tent-dispatch-prompt-row" });
-    userSection.createSpan({ cls: "tent-prop-key", text: "user prompt" });
-    const prompt = userSection.createEl("textarea", {
-      cls: "tent-dispatch-prompt",
-      attr: { rows: "1" },
-    });
-    const resizePrompt = () => {
-      prompt.style.height = "auto";
-      prompt.style.height = `${Math.max(30, prompt.scrollHeight)}px`;
-    };
-    prompt.oninput = resizePrompt;
-
-    const claim = canClaim(box);
-    const run = actSlot.createEl("button", { cls: "tent-bottom-action", text: "派活接力" });
-    run.setAttr("type", "button");
-    run.disabled = !claim.ok;
-    if (!claim.ok) tentTooltip(run, claim.reason || "");
-    run.onclick = async () => {
-      const roleName = roleSelect.value.trim() || manualRole.value.trim();
-      if (!roleName) {
-        new Notice("请选择或输入 role");
-        return;
-      }
-      const localPrompt = prompt.value.trim();
-      if (!localPrompt) {
-        new Notice("请填写 user prompt");
-        return;
-      }
-      try {
-        const r = await this.dispatchBox(box, roleName, localPrompt);
-        if (this.plugin.settings.dispatchPrefs.copyPromptToClipboard) {
-          await navigator.clipboard.writeText(r.relayPrompt);
-          new Notice("已派活。已复制接力 prompt,去目标 agent 会话粘贴。", 6000);
-        } else {
-          new Notice("已派活。接力 prompt 已生成。", 6000);
-        }
-        await this.refresh();
-      } catch (e) {
-        new Notice("派活失败:" + (e instanceof Error ? e.message : e));
-      }
-    };
   }
 
   // 正文:可编辑 textarea,blur 落盘。支持拖 Obsidian 文件进来转成帐根相对路径。
