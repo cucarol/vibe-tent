@@ -25,7 +25,7 @@ export interface PaneScrollPositions {
 
 export interface BottomTabCountInput {
   pendingDispatches: number;
-  pendingDecisions: number;
+  pendingProposals: number;
   readyReports: number;
 }
 
@@ -35,7 +35,7 @@ export interface StatusCountInput {
 }
 
 export interface TreePendingInput {
-  pendingDecisions: number;
+  pendingProposals: number;
   pendingDispatches: number;
   owner?: string;
 }
@@ -96,7 +96,7 @@ export function statuslessDirectChildren<T extends LifecycleTreeNode>(node: T): 
 export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
   return {
     dispatch: input.pendingDispatches,
-    triage: input.pendingDecisions + input.readyReports,
+    triage: input.pendingProposals + input.readyReports,
   };
 }
 
@@ -117,7 +117,7 @@ export function statusIncreaseNoticeText(increase: number): string {
 }
 
 export function hasTreePending(input: TreePendingInput): boolean {
-  return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
+  return input.pendingProposals > 0 || input.pendingDispatches > 0 || !!input.owner;
 }
 
 export function bottomTabParts(label: string, count: number): { label: string; count: string } {

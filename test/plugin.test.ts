@@ -114,7 +114,7 @@ test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
   assert.deepEqual(
     bottomTabCounts({
       pendingDispatches: 2,
-      pendingDecisions: 3,
+      pendingProposals: 3,
       readyReports: 1,
     }),
     { dispatch: 2, triage: 4 },
@@ -141,10 +141,10 @@ test("plugin ui-model:tab count is a stable part separate from its label", () =>
 });
 
 test("plugin ui-model:tree pending filter includes pending dispatches", () => {
-  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 1 }), true);
-  assert.equal(hasTreePending({ pendingDecisions: 1, pendingDispatches: 0 }), true);
-  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 0, owner: "executor" }), true);
-  assert.equal(hasTreePending({ pendingDecisions: 0, pendingDispatches: 0 }), false);
+  assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 1 }), true);
+  assert.equal(hasTreePending({ pendingProposals: 1, pendingDispatches: 0 }), true);
+  assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0, owner: "executor" }), true);
+  assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0 }), false);
 });
 
 test("plugin pending dispatch:only taken status clears the newest task claims", () => {
