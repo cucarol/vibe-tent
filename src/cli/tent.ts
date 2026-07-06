@@ -14,6 +14,7 @@
 //   tent tags
 //   tent find <name>
 //   tent fork <boxId>
+//   tent propose <boxId> <bodyFile|->
 //   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 //   tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 //   tent status
@@ -55,6 +56,7 @@ import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeReg
 import { ackTaskEnvelope, ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
+import { submitProposal } from "../core/proposal.js";
 import { NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
 import { validateBoxName } from "../core/scaffold.js";
@@ -178,6 +180,22 @@ async function main() {
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
       console.log(`✓ Report ready for review: ${report.path}`);
+      break;
+    }
+    case "propose": {
+      const { positionals } = parseFlags(args);
+      const [boxId, bodySource] = positionals;
+      if (!boxId || !bodySource) {
+        return fail("Usage: tent propose <boxId> <bodyFile|->");
+      }
+      if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
+      const role = process.env.TENT_ROLE;
+      if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
+      const body = bodySource === "-"
+        ? await readStdin()
+        : await readBodyFile(bodySource);
+      const proposal = await submitProposal(env.fs, env.clock, role, boxId, body);
+      console.log(`✓ Proposal submitted for triage: ${proposal.path}`);
       break;
     }
     case "complete": {
@@ -401,7 +419,7 @@ async function main() {
     }
     default:
       fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -556,6 +574,7 @@ Commands:
   dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
+  propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   status                             Print a read-only Tent status summary.

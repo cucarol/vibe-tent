@@ -1,6 +1,7 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { NodeFs } from "../fs/node-fs.js";
+import { loadProposals } from "./proposal.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
@@ -21,12 +22,16 @@ export async function renderTentStatus(cwd = process.cwd(), role = process.env.T
     "",
   ];
 
-  const decisions = pendingDecisionBoxes(tent);
-  if (decisions.length === 0) {
-    lines.push("Pending decisions: none");
+  const proposals = (await loadProposals(fsAdapter)).filter((proposal) => proposal.status === "pending");
+  if (proposals.length === 0) {
+    lines.push("Pending proposals: none");
   } else {
-    lines.push("Pending decisions:");
-    for (const box of decisions) lines.push(`- ${box.id}: ${box.name}`);
+    lines.push("Pending proposals:");
+    for (const proposal of proposals) {
+      const box = tent.byId.get(proposal.boxId);
+      const first = proposal.body.split("\n").map((line) => line.trim()).find(Boolean) || "(empty proposal)";
+      lines.push(`- ${proposal.boxId}: ${box?.name ?? "(missing box)"} (${proposal.role}) - ${first}`);
+    }
   }
 
   const tasks = (await loadTaskEnvelopes(fsAdapter))
@@ -68,12 +73,6 @@ async function exists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function pendingDecisionBoxes(tent: LoadedTent): Box[] {
-  return [...tent.byId.values()]
-    .filter((box) => box.tags.includes("decision") && box.fm.status !== "done")
-    .sort((a, b) => a.path.localeCompare(b.path));
 }
 
 function activeClaimBoxes(tent: LoadedTent): Box[] {

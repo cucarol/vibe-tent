@@ -27,11 +27,11 @@ interface RunExitResult extends RunResult {
   code: number | null;
 }
 
-function run(command: string, args: string[], cwd: string): Promise<RunResult> {
+function run(command: string, args: string[], cwd: string, envExtra: Record<string, string> = {}): Promise<RunResult> {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       cwd,
-      env: { ...process.env, ...gitIdentity },
+      env: { ...process.env, ...gitIdentity, ...envExtra },
       windowsHide: true,
     });
     let stdout = "";
@@ -71,6 +71,10 @@ async function makeSkeletonTent(): Promise<string> {
 
 function runCli(cwd: string, ...args: string[]): Promise<RunResult> {
   return run(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd);
+}
+
+function runCliAsRole(cwd: string, role: string, ...args: string[]): Promise<RunResult> {
+  return run(process.execPath, ["--import", tsxImport, cliSource, ...args], cwd, { TENT_ROLE: role });
 }
 
 function runCliWithExit(cwd: string, ...args: string[]): Promise<RunExitResult> {
@@ -215,10 +219,13 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(subData.targetBranch, "tent-role/planner");
 });
 
-test("tent status:prints decisions, pending tasks, active claims, and rejects non-Tent dirs", async () => {
+test("tent status:prints proposals, pending tasks, active claims, and rejects non-Tent dirs", async () => {
   const tent = await makeSkeletonTent();
-  const decisionId = boxId(await runCli(tent, "new-box", "Choose release lane", "prompt"));
-  await runCli(tent, "tag", decisionId, "decision");
+  const proposalId = boxId(await runCli(tent, "new-box", "Choose release lane", "prompt"));
+  const proposalBody = path.join(path.dirname(tent), "proposal.md");
+  await fs.writeFile(proposalBody, "建议选择低风险发布路径\n", "utf8");
+  const proposed = await runCliAsRole(tent, "planner", "propose", proposalId, proposalBody);
+  assert.match(proposed.stdout, new RegExp(`temp/planner/proposals/${proposalId}\\.md`));
   const claimId = boxId(await runCli(tent, "new-box", "Implement release notes", "prompt"));
 
   const dispatched = await runCli(tent, "dispatch", claimId, "reviewer", "Draft release notes.");
@@ -227,8 +234,8 @@ test("tent status:prints decisions, pending tasks, active claims, and rejects no
 
   assert.match(status.stdout, new RegExp(`Tent: ${escapeRegExp(path.resolve(tent))}`));
   assert.match(status.stdout, /Workspace: \(none\)/);
-  assert.match(status.stdout, /Pending decisions:/);
-  assert.match(status.stdout, new RegExp(`- ${decisionId}: Choose release lane`));
+  assert.match(status.stdout, /Pending proposals:/);
+  assert.match(status.stdout, new RegExp(`- ${proposalId}: Choose release lane \\(planner\\) - 建议选择低风险发布路径`));
   assert.match(status.stdout, /Pending tasks \(task-ack\):/);
   assert.match(status.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
   assert.match(status.stdout, /Active claims:/);
@@ -446,7 +453,7 @@ test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", asyn
   assert.deepEqual(Object.keys(registry).sort(), ["asset", "goal", "open", "output", "prompt", "reference", "sealed"]);
   assert.equal(await exists(path.join(target, ".tent", "roles.json")), true);
   assert.equal(await exists(path.join(target, ".tent", "skills.json")), false);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(target, ".tent", "tags.json"), "utf8")), { tags: ["decision"] });
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(target, ".tent", "tags.json"), "utf8")), { tags: [] });
 
   // 不生成 agent 配置层文件。
   assert.equal(await exists(path.join(target, ".claude")), false);
