@@ -159,7 +159,7 @@ fresh contract.
 The task envelope is the machine-readable delivery record. Its prompt body is immutable;
 its `status` field flips one way from `pending` to `taken` when `task-ack`
 acknowledges the task. The claimed box remains the task truth: scope, background,
-decisions, and acceptance criteria belong in the box body or child boxes. A
+context, and acceptance criteria belong in the box body or child boxes. A
 draft or incomplete box may be dispatched; after `task-ack`, the agent aligns the task, asks
 when unclear, and writes confirmed conclusions back to the box.
 
@@ -216,15 +216,16 @@ same `-x` cherry-pick is idempotent.
 Completion and interruption are distinct core actions even if a UI groups them
 under one release control.
 
-## 6. Report And Fork
+## 6. Proposal, Report, And Fork
 
-Decision boxes are ordinary `prompt` boxes tagged `decision`. They are used
-only for agent-to-user decision points that genuinely need the user to choose.
-The body states the question, 2-4 options, the agent's recommendation, and the
-impact. The decision remains pending while its `status` is not `done`; after
-the user chooses, the choice is written back to the box or acted on directly,
-then the user stamps the decision box to resolve it. No separate core
-lifecycle exists for decisions.
+Proposal:
+
+- agent-to-user prompt text about one target box;
+- deterministic temporary path `temp/<role>/proposals/<boxId>.md`;
+- no tree box is created or modified by submission;
+- the lifecycle is `pending -> accepted` or `pending -> rejected`;
+- only pending proposals enter triage;
+- accepted and rejected proposal files remain on disk so the submitting agent can read the result.
 
 Report:
 
@@ -309,7 +310,7 @@ remains equivalent to the zero-integration `stamp` path. A rejected report must
 be replaced before `complete` may proceed.
 
 `status` is a read-only status view for quick orientation: Tent root, workspace,
-pending decisions, pending task envelopes, and active claims.
+pending proposals, pending task envelopes, and active claims.
 
 `--require-check` is a user-supplied mechanical gate. It runs in the resolved
 workspace before cherry-pick, owner clearing, report deletion, or any other
@@ -324,7 +325,7 @@ The UI renders core state and invokes core actions:
 - property edits and drag/drop update files immediately;
 - native copy is adopted as fork;
 - report text stays in the conversation layer;
-- decision points are ordinary boxes resolved by stamping;
+- proposals are temporary prompt deliveries resolved by confirmation or rejection;
 - completion presents the selected commit-integration step and releases the owner only after integration;
 - interruption releases owner without integration;
 - pending task envelopes are shown as task envelopes; copying relay text does

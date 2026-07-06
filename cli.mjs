@@ -915,7 +915,7 @@ function collect(box, out) {
 
 // src/core/tags.ts
 var TAGS_REGISTRY_PATH = ".tent/tags.json";
-var DEFAULT_TAG_REGISTRY = { tags: ["decision"] };
+var DEFAULT_TAG_REGISTRY = { tags: [] };
 async function loadTagRegistry(fs4) {
   if (!await fs4.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
@@ -1923,6 +1923,102 @@ function markdownLinkDestination(destination) {
   return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
 
+// src/core/proposal.ts
+async function submitProposal(fs4, clock, role, boxId, body) {
+  return withTentMutation(fs4, async () => submitProposalUnlocked(fs4, clock, role, boxId, body));
+}
+async function submitProposalUnlocked(fs4, clock, roleInput, boxId, body) {
+  const text = body.trim();
+  if (!text) throw new Error("Proposal body cannot be empty.");
+  const role = normalizeRole(roleInput);
+  const tent = await loadTent(fs4);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  const path3 = proposalPath(role, box.id);
+  if (await fs4.exists(path3)) {
+    const current = await loadProposal(fs4, path3);
+    if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
+  }
+  const proposal = {
+    path: path3,
+    boxId: box.id,
+    role,
+    status: "pending",
+    createdAt: clock.now(),
+    body: text
+  };
+  await ensureDir4(fs4, join("temp", role, "proposals"));
+  await writeProposal(fs4, proposal);
+  return proposal;
+}
+async function loadProposals(fs4) {
+  const proposals = [];
+  if (!await fs4.exists("temp")) return proposals;
+  for (const roleDir of await fs4.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join("temp", roleDir.name, "proposals");
+    if (!await fs4.exists(dir)) continue;
+    for (const entry of await fs4.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path3 = join(dir, entry.name);
+      try {
+        proposals.push(await loadProposal(fs4, path3));
+      } catch {
+      }
+    }
+  }
+  return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+}
+async function loadProposal(fs4, inputPath) {
+  const path3 = normalizeProposalPath(inputPath);
+  if (!await fs4.exists(path3)) throw new Error(`Proposal not found: ${path3}.`);
+  const { data, body } = parseFrontmatter(await fs4.readFile(path3));
+  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
+    throw new Error(`Invalid proposal format: ${path3}.`);
+  }
+  return {
+    path: path3,
+    boxId: data.box,
+    role: data.role,
+    status: data.status,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    body: body.trim()
+  };
+}
+function proposalPath(role, boxId) {
+  return join("temp", role, "proposals", `${boxId}.md`);
+}
+function normalizeProposalPath(input) {
+  const path3 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/bx-[^/]+\.md$/.test(path3)) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  }
+  return path3;
+}
+async function writeProposal(fs4, proposal) {
+  const data = {
+    type: "proposal",
+    box: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt
+  };
+  await fs4.writeFile(
+    proposal.path,
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+  );
+}
+async function ensureDir4(fs4, path3) {
+  if (!await fs4.exists(path3)) await fs4.mkdir(path3);
+}
+function normalizeRole(role) {
+  const normalized = role.trim();
+  if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
+  if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
+  return normalized;
+}
+
 // src/core/status.ts
 import * as fs2 from "node:fs/promises";
 import * as path from "node:path";
@@ -2195,12 +2291,16 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
     `Workspace: ${workspace || "(none)"}`,
     ""
   ];
-  const decisions = pendingDecisionBoxes(tent);
-  if (decisions.length === 0) {
-    lines.push("Pending decisions: none");
+  const proposals = (await loadProposals(fsAdapter)).filter((proposal) => proposal.status === "pending");
+  if (proposals.length === 0) {
+    lines.push("Pending proposals: none");
   } else {
-    lines.push("Pending decisions:");
-    for (const box of decisions) lines.push(`- ${box.id}: ${box.name}`);
+    lines.push("Pending proposals:");
+    for (const proposal of proposals) {
+      const box = tent.byId.get(proposal.boxId);
+      const first = proposal.body.split("\n").map((line) => line.trim()).find(Boolean) || "(empty proposal)";
+      lines.push(`- ${proposal.boxId}: ${box?.name ?? "(missing box)"} (${proposal.role}) - ${first}`);
+    }
   }
   const tasks = (await loadTaskEnvelopes(fsAdapter)).filter((task) => task.status === "pending").filter((task) => hasUndoneClaim(tent, task.claims)).filter((task) => !role || task.role === role);
   lines.push("");
@@ -2234,9 +2334,6 @@ async function exists(target) {
   } catch {
     return false;
   }
-}
-function pendingDecisionBoxes(tent) {
-  return [...tent.byId.values()].filter((box) => box.tags.includes("decision") && box.fm.status !== "done").sort((a, b) => a.path.localeCompare(b.path));
 }
 function activeClaimBoxes(tent) {
   return [...tent.byId.values()].filter((box) => !!box.fm.owner).sort((a, b) => a.path.localeCompare(b.path));
@@ -2358,6 +2455,20 @@ ${r.relayPrompt}`);
       const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       const report = await submitReport(env.fs, env.clock, boxId, body, commits);
       console.log(`\u2713 Report ready for review: ${report.path}`);
+      break;
+    }
+    case "propose": {
+      const { positionals } = parseFlags(args);
+      const [boxId, bodySource] = positionals;
+      if (!boxId || !bodySource) {
+        return fail("Usage: tent propose <boxId> <bodyFile|->");
+      }
+      if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
+      const role = process.env.TENT_ROLE;
+      if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
+      const body = bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
+      const proposal = await submitProposal(env.fs, env.clock, role, boxId, body);
+      console.log(`\u2713 Proposal submitted for triage: ${proposal.path}`);
       break;
     }
     case "complete": {
@@ -2583,7 +2694,7 @@ unresolved wiki links: ${result.unresolved.length}`
     default:
       fail(
         `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack report complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
+Commands: new role-init roles dispatch task-ack report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release migrate-kind-to-type okf-sync skill-install tree`
       );
   }
 }
@@ -2718,6 +2829,7 @@ Commands:
   dispatch <boxId> <role> <prompt>   Claim a box and create a task envelope.
   task-ack <taskPath>                Mark a task envelope as taken.
   report <boxId> <file|->            Submit a delivery report for triage.
+  propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   status                             Print a read-only Tent status summary.

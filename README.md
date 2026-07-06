@@ -85,14 +85,11 @@ tent roles
 tent dispatch <claimId> <role> <prompt...> [--as-sub --by <role>]
 tent task-ack <taskPath>
 tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
+tent propose <boxId> <bodyFile|->
 tent complete <boxId> [--commits <sha,sha>]
 tent stamp <boxId>
 tent new-box <name> <type> [parentId]
-tent propose <targetId> <role> <bodyFile|->
-tent proposal <path> accept|reject [note]
 tent grant-readable <boxId>
-tent apply <proposalPath>
-tent apply-done <proposalPath>
 tent fork <boxId>
 tent clean-temp [role]
 tent force-release <boxId>

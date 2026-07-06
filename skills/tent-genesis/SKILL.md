@@ -39,7 +39,7 @@ Tent 只保存上下文和状态，不使用 Git。真实 workspace 才使用 Gi
 一级 type 通常表达 box 的主语义：
 
 - `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。
-- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
+- `prompt`：范围最大，用于任务说明、上下文、问题、提案、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
 - `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、task envelope、workspace 指针等。
 
 二级 type 通常是可选修饰，不是默认补全项。

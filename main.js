@@ -2149,6 +2149,83 @@ async function buildInbox(tent) {
 
 // src/plugin/view.ts
 init_report();
+
+// src/core/proposal.ts
+init_adapter();
+init_frontmatter();
+init_tree();
+async function loadProposals(fs) {
+  const proposals = [];
+  if (!await fs.exists("temp")) return proposals;
+  for (const roleDir of await fs.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join2("temp", roleDir.name, "proposals");
+    if (!await fs.exists(dir)) continue;
+    for (const entry of await fs.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path = join2(dir, entry.name);
+      try {
+        proposals.push(await loadProposal(fs, path));
+      } catch {
+      }
+    }
+  }
+  return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+}
+async function loadProposal(fs, inputPath) {
+  const path = normalizeProposalPath(inputPath);
+  if (!await fs.exists(path)) throw new Error(`Proposal not found: ${path}.`);
+  const { data, body } = parseFrontmatter(await fs.readFile(path));
+  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
+    throw new Error(`Invalid proposal format: ${path}.`);
+  }
+  return {
+    path,
+    boxId: data.box,
+    role: data.role,
+    status: data.status,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    body: body.trim()
+  };
+}
+async function acceptProposal(fs, inputPath) {
+  await withTentMutation(fs, async () => {
+    const proposal = await loadProposal(fs, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
+    proposal.status = "accepted";
+    await writeProposal(fs, proposal);
+  });
+}
+async function rejectProposal(fs, inputPath) {
+  await withTentMutation(fs, async () => {
+    const proposal = await loadProposal(fs, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
+    proposal.status = "rejected";
+    await writeProposal(fs, proposal);
+  });
+}
+function normalizeProposalPath(input) {
+  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/bx-[^/]+\.md$/.test(path)) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  }
+  return path;
+}
+async function writeProposal(fs, proposal) {
+  const data = {
+    type: "proposal",
+    box: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt
+  };
+  await fs.writeFile(
+    proposal.path,
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+  );
+}
+
+// src/plugin/view.ts
 init_task();
 
 // src/core/canvas.ts
@@ -2608,7 +2685,7 @@ function statuslessDirectChildren(node) {
 function bottomTabCounts(input) {
   return {
     dispatch: input.pendingDispatches,
-    triage: input.pendingDecisions + input.readyReports
+    triage: input.pendingProposals + input.readyReports
   };
 }
 function statusBarText(total) {
@@ -2624,7 +2701,7 @@ function statusIncreaseNoticeText(increase) {
   return `\u5E10\u5185\u65B0\u589E ${increase} \u9879\u5F85\u88C1`;
 }
 function hasTreePending(input) {
-  return input.pendingDecisions > 0 || input.pendingDispatches > 0 || !!input.owner;
+  return input.pendingProposals > 0 || input.pendingDispatches > 0 || !!input.owner;
 }
 function bottomTabParts(label, count) {
   return {
@@ -3405,6 +3482,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.selectedId = null;
     this.tent = null;
     this.reports = [];
+    this.proposals = [];
     this.tasks = [];
     this.inbox = [];
     this.pendingDispatchItems = [];
@@ -3413,7 +3491,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.collapsed = /* @__PURE__ */ new Set();
     this.selectedSystem = null;
     this.bottomTab = "note";
-    // 左树热切换:全部 / 只看有待处理(decision、owner 或待投递 task)的框
+    // 左树热切换:全部 / 只看有待处理(proposal、owner 或待投递 task)的框
     this.treeFilter = "all";
     this.registryUi = createRegistryPaneState();
     this.colRatio = 0.58;
@@ -3428,7 +3506,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.pendingDelete = null;
     this.roles = [];
     this.registryTags = [];
-    // 每个 box 的未决 decision 数；report / 待投递 task 在 boxTriageCount 合并。
+    // 每个 box 的 pending proposal 数；report / 待投递 task 在 boxTriageCount 合并。
     this.pendingByTarget = /* @__PURE__ */ new Map();
     this.loadError = null;
     this.refreshTimer = null;
@@ -3517,6 +3595,7 @@ var TentView = class extends import_obsidian4.ItemView {
         await this.adoptNativeCopies();
         this.tent = await loadTent(fs);
         this.reports = await loadReports(fs);
+        this.proposals = await loadProposals(fs);
         this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(this.tent);
         this.roles = (await loadRolesRegistry(fs)).roles;
@@ -3525,6 +3604,7 @@ var TentView = class extends import_obsidian4.ItemView {
       } catch (e) {
         this.tent = null;
         this.reports = [];
+        this.proposals = [];
         this.tasks = [];
         this.inbox = [];
         this.roles = [];
@@ -3533,10 +3613,9 @@ var TentView = class extends import_obsidian4.ItemView {
       }
     }
     this.rebuildPendingDispatches();
-    const decisions = this.pendingDecisionBoxes();
     const statusCounts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchItems.length,
-      pendingDecisions: decisions.length,
+      pendingProposals: this.pendingProposals().length,
       readyReports: this.reports.filter((report) => report.status === "ready").length
     });
     this.plugin.updateStatus({
@@ -3780,7 +3859,7 @@ var TentView = class extends import_obsidian4.ItemView {
   }
   // ---- 树 ----
   drawTree(el) {
-    this.pendingByTarget = this.countPendingDecisionsByBox();
+    this.pendingByTarget = this.countPendingProposalsByBox();
     const rows = el.createDiv({ cls: "tent-rows" });
     if (this.treeFilter === "pending") rows.addClass("is-pending-filter");
     for (const r of this.tent.roots) {
@@ -3821,7 +3900,7 @@ var TentView = class extends import_obsidian4.ItemView {
   }
   boxHasPending(box) {
     return hasTreePending({
-      pendingDecisions: this.pendingByTarget.get(box.id) ?? 0,
+      pendingProposals: this.pendingByTarget.get(box.id) ?? 0,
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
       owner: box.fm.owner
     });
@@ -3978,7 +4057,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const pend = visibleTreeCount(box, isCollapsed, (item) => this.boxTriageCount(item));
     if (pend > 0) {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
-      tentTooltip(nb, isCollapsed ? `${pend} \u5F85\u88C1\u51B3\u7B56\u70B9\uFF08\u542B\u5B50\u7EA7\uFF09` : `${pend} \u5F85\u88C1\u51B3\u7B56\u70B9`);
+      tentTooltip(nb, isCollapsed ? `${pend} \u9879\u5F85\u88C1\uFF08\u542B\u5B50\u7EA7\uFF09` : `${pend} \u9879\u5F85\u88C1`);
     }
     const st = box.fm.status;
     if (box.invalid) {
@@ -4434,7 +4513,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const tabs = head.createDiv({ cls: "tent-bottom-tabs" });
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
-      pendingDecisions: this.isPendingDecisionBox(box) ? 1 : 0,
+      pendingProposals: this.pendingProposalsForBox(box.id).length,
       readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length
     });
     const mkTab = (key, label, count = 0) => {
@@ -4463,14 +4542,14 @@ var TentView = class extends import_obsidian4.ItemView {
     }
   }
   boxTriageCount(box) {
-    const decisions = this.isPendingDecisionBox(box) ? 1 : 0;
+    const proposals = this.pendingProposalsForBox(box.id).length;
     const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
-    return decisions + reports + dispatches;
+    return proposals + reports + dispatches;
   }
-  // 待裁 tab:未决 decision + 完成待确认(中断释放 / 确认完成)
+  // 待裁 tab:pending proposal + 完成待确认(中断释放 / 确认完成)
   drawTriageInline(body, actSlot, box) {
-    const isDecision = this.isPendingDecisionBox(box);
+    const proposals = this.pendingProposalsForBox(box.id);
     const owner = box.fm.owner;
     const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
     const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
@@ -4486,34 +4565,49 @@ var TentView = class extends import_obsidian4.ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (!isDecision && !owner && !report) {
+    if (proposals.length === 0 && !owner && !report) {
       body.createDiv({ cls: "tent-bottom-empty", text: "\u65E0\u5F85\u5904\u7406" });
       return;
     }
-    if (isDecision) {
-      body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u4F60\u88C1\u51B3\u7684\u51B3\u7B56\u70B9" });
-      const item = body.createDiv({ cls: "tent-triage-item" });
-      const main = item.createDiv({ cls: "tent-triage-main" });
-      const first = box.body.split("\n").map((line) => line.trim()).find((line) => line && !line.startsWith("#")) || box.name;
-      main.createDiv({ cls: "tent-triage-name", text: first });
-      main.createDiv({ cls: "tent-triage-meta", text: "decision \xB7 user \u9009\u62E9\u540E\u76D6\u7AE0\u89E3\u6D88" });
-      const acts = item.createDiv({ cls: "tent-triage-acts" });
-      const open2 = acts.createEl("button", { text: "\u6253\u5F00" });
-      open2.setAttr("type", "button");
-      open2.onclick = () => this.openBoxFile(box);
-      const done = acts.createEl("button", { cls: "mod-cta", text: "\u76D6\u7AE0" });
-      done.setAttr("type", "button");
-      done.onclick = async () => {
-        done.setAttr("disabled", "true");
-        try {
-          await stamp(this.env(), box.id);
-          await this.refresh();
-          new import_obsidian4.Notice("\u51B3\u7B56\u70B9\u5DF2\u89E3\u6D88");
-        } catch (e) {
-          done.removeAttribute("disabled");
-          new import_obsidian4.Notice("\u76D6\u7AE0\u5931\u8D25:" + (e instanceof Error ? e.message : e));
-        }
-      };
+    if (proposals.length > 0) {
+      body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u4F60\u5904\u7406\u7684\u63D0\u6848" });
+      for (const proposal of proposals) {
+        const item = body.createDiv({ cls: "tent-triage-item" });
+        const main = item.createDiv({ cls: "tent-triage-main" });
+        const first = proposal.body.split("\n").map((line) => line.trim()).find(Boolean) || "(\u65E0\u8BF4\u660E)";
+        main.createDiv({ cls: "tent-triage-name", text: first });
+        main.createDiv({ cls: "tent-triage-meta", text: `${proposal.role} \xB7 \u63D0\u6848` });
+        const acts = item.createDiv({ cls: "tent-triage-acts" });
+        const open2 = acts.createEl("button", { text: "\u6253\u5F00" });
+        open2.setAttr("type", "button");
+        open2.onclick = () => this.openVaultFile(proposal.path);
+        const reject = acts.createEl("button", { text: "\u9A73\u56DE" });
+        reject.setAttr("type", "button");
+        reject.onclick = async () => {
+          reject.setAttr("disabled", "true");
+          try {
+            await rejectProposal(this.env().fs, proposal.path);
+            await this.refresh();
+            new import_obsidian4.Notice("\u63D0\u6848\u5DF2\u9A73\u56DE");
+          } catch (e) {
+            reject.removeAttribute("disabled");
+            new import_obsidian4.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          }
+        };
+        const accept = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
+        accept.setAttr("type", "button");
+        accept.onclick = async () => {
+          accept.setAttr("disabled", "true");
+          try {
+            await acceptProposal(this.env().fs, proposal.path);
+            await this.refresh();
+            new import_obsidian4.Notice("\u63D0\u6848\u5DF2\u786E\u8BA4");
+          } catch (e) {
+            accept.removeAttribute("disabled");
+            new import_obsidian4.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
+          }
+        };
+      }
     }
     if (report) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u786E\u8BA4\u4EA4\u4ED8" });
@@ -4635,17 +4729,16 @@ var TentView = class extends import_obsidian4.ItemView {
       });
     }
   }
-  pendingDecisionBoxes() {
-    if (!this.tent) return [];
-    return [...this.tent.byId.values()].filter((box) => this.isPendingDecisionBox(box));
+  pendingProposals() {
+    return this.proposals.filter((proposal) => proposal.status === "pending");
   }
-  isPendingDecisionBox(box) {
-    return box.tags.includes("decision") && box.fm.status !== "done";
+  pendingProposalsForBox(boxId) {
+    return this.pendingProposals().filter((proposal) => proposal.boxId === boxId);
   }
-  countPendingDecisionsByBox() {
+  countPendingProposalsByBox() {
     const counts = /* @__PURE__ */ new Map();
-    for (const box of this.pendingDecisionBoxes()) {
-      counts.set(box.id, (counts.get(box.id) ?? 0) + 1);
+    for (const proposal of this.pendingProposals()) {
+      counts.set(proposal.boxId, (counts.get(proposal.boxId) ?? 0) + 1);
     }
     return counts;
   }

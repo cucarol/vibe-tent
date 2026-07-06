@@ -38,7 +38,7 @@ description: 让 agent 进入现有 Tent 的长期 role session：从 task envel
 一级 type 通常表达 box 的主语义：
 
 - `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。不要把普通待办、检查项、问题记录都写成 goal。
-- `prompt`：范围最大，用于任务说明、上下文、问题、决策点、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
+- `prompt`：范围最大，用于任务说明、上下文、问题、提案、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
 - `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、task envelope、workspace 指针等，重点是它代表或指向某个交付物。
 
 二级 type 通常是可选修饰，不是默认补全项。
@@ -71,34 +71,23 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 - output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
 - 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
 
-## 向 user 提 PR / 决策点
+## agent 向 user 提提案
 
-向 user 提 PR / 决策点是罕见动作，只在两种情形使用：
+提案就是 agent 针对某个 box 给 user 提的一段 prompt，投递到待裁，交给 user 确认或驳回。默认自己拿主意，真正需要 user 过目或拍板的才提。
 
-- user 明显错得离谱，继续做会造成实质偏差或损失。
-- 遇到真正需要 user 拍板的决策点，类似 plan mode 需要给 2-4 个选项。
+提法：
 
-不要为琐碎命名、局部实现偏好、可以自行判断的工程细节创建决策点。
+```bash
+tent propose <boxId> <file|->
+```
 
-提决策点时，在相关框附近新建一个 box：
+正文写清想说的；有选项就给 2-4 个；写出你的推荐和影响。提案出现在该 box 的待裁，user 确认或驳回后解消。
 
-- `type: prompt`
-- `tags: [decision]`
-- `status: todo`
-
-正文必须写清：
-
-- 问题
-- 2-4 个选项
-- 你的推荐
-- 影响
-
-user 读完选定后，把选择写回该 decision box 或直接按选择行动，然后对该 decision box 执行 `tent stamp <boxId>` 解消。`report` 是交付待验收，`dispatch` 是派活，`decision` 是请 user 拍板。
 
 ## 协议
 
 1. 确认工作目录就是 Tent 根目录，且包含 `RULES.md`、`.tent/`、`temp/`。否则停止并告诉 user。
-2. 进入或恢复 Tent 会话时可运行 `tent status` 快速定向：看待裁 decision、待 ack task、认领态，以及 Tent / workspace 两个路径。
+2. 进入或恢复 Tent 会话时可运行 `tent status` 快速定向：看待裁提案、待 ack task、认领态，以及 Tent / workspace 两个路径。
 3. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。
 4. 每次唤醒或恢复 role 时，检查 `temp/<role>/tasks/*.md`。user 直接给了 task 路径时，以该路径为准；否则列出所有 `status: pending` 的 task，按 user 指定或既有优先级逐个处理，顺序不清楚时先问。
 5. 接任务后的第一步运行 `tent task-ack <taskPath>`。然后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件，只有 `task-ack` 会把任务改成 `taken`。
