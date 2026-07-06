@@ -1,12 +1,14 @@
 # Tent / 帷幄
 
+> *vibe 于帷幄之中*
+
 user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经由 **prompt** 交给 agent，最终得到 **output**。当你同时指挥多个 agent，这个过程很快会失控：谁在做什么、能改哪里、进行到哪一步、交付是否可信——都散落在各处。
 
 **Tent（帷幄）承载这套协作**——在 Obsidian 中可视化地定义意图、划定 agent 权限、派活与验收，产出可追踪回真实代码仓。你运筹，agent 执行，决策权始终在你。
 
 <!-- demo 截图 / 视频：在 GitHub 上拖拽上传后替换此处 -->
 
-## 快速上手
+## 快速开始
 
 **环境**：Node.js 20+、Git、Obsidian 1.5+（仅桌面端）。
 
@@ -24,26 +26,26 @@ user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经�
 
 **③ BRAT** —— 用 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 添加 `cucarol/tent`，自动安装并保持更新。
 
-安装并启用后，在你的 agent 里运行 `tent-genesis` 创建第一顶帐；之后每个新会话运行 `tent-role` 进入工作。
+安装并启用后，
+在你的 agent 里运行 `tent-genesis` 创建第一顶帐；
+之后每个新会话运行 `tent-role` 进入工作。
 
 ## 架构与概念
 
 Tent 在你的 Obsidian 中创建一个文件夹存放 markdown 文档；真实产出（代码、文档）所在的 workspace 由你指定。一顶 Tent 本质是一个 **OKF v0.1 bundle**——一批带 frontmatter 的 markdown，加一层治理。它由三部分组成：**core**（规则与文件契约）、**Obsidian UI**（可视化操作）、**agent 侧 skill 层**（agent 如何进入并使用一顶帐）。
 
-```mermaid
-flowchart LR
-    U(["你 · user"])
-    subgraph T["Tent · Obsidian"]
-        BOX["box 树<br/>意图 / 权限 / 状态"]
-    end
-    subgraph W["workspace · Git"]
-        CODE["代码 · 真实产出"]
-    end
-    U -- "写意图 / 派活" --> BOX
-    BOX -- "任务 + 接力 prompt" --> AG["agent · role"]
-    AG -- "在 worktree / branch 执行" --> CODE
-    AG -- "report / proposal 投递待裁" --> BOX
-    BOX -- "确认 / 驳回" --> U
+<!-- 架构图：可自己画一张替换下面的 ASCII 示意 -->
+
+```text
+你 ──写意图 / 派活──▶  box 树（意图 / 权限 / 状态）
+                          │
+                任务 + 接力 prompt
+                          ▼
+                     agent · role ──在 worktree / branch 执行──▶  代码 · 真实产出
+                          │
+                report / proposal 投递
+                          ▼
+你 ◀──确认 / 驳回──   待裁
 ```
 
 ### 两个 skill
