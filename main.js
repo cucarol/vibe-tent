@@ -4319,9 +4319,6 @@ var TentView = class extends import_obsidian4.ItemView {
       drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
         await this.patchBoxIncremental(box, { writable: v });
       });
-      if (box.fm.owner) {
-        editor.createDiv({ cls: "tent-prop-snapshot-note", text: "\u4E0D\u5F71\u54CD\u5DF2\u53D1\u51FA\u7684 manifest,\u9700\u91CD\u65B0 dispatch" });
-      }
       const soItem = editor.createDiv({ cls: "tent-prop-item" });
       soItem.createSpan({ cls: "tent-item-label", text: "status" });
       const seg = soItem.createDiv({ cls: "tent-status-segment" });

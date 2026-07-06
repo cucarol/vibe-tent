@@ -765,13 +765,6 @@
 .tent-view .style-a-view .tent-prop-select:hover {
   background-color: color-mix(in srgb, var(--ctrl-bg) 50%, var(--background-primary) 50%) !important;
 }
-.tent-prop-snapshot-note {
-  padding: 6px 2px 8px 54px;
-  color: var(--text-muted);
-  font-size: var(--font-ui-smaller);
-  line-height: 1.4;
-}
-
 /* 标题行:名字 + ID(紧靠右)+ owner(最右)+ 展开按钮 */
 .tent-prop-titlerow { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; min-width: 0; }
 .tent-prop-titlerow .tent-card-title { margin-bottom: 0; flex: none; }
