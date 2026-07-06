@@ -1,132 +1,96 @@
 # Tent / 帷幄
 
-Tent is an open-source harness for managing intent, context, permissions, and task delegation between a user and coding agents. A Tent is an OKF v0.1 bundle with a governance overlay; the Obsidian plugin and CLI are two clients of the same core rules.
+user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经由 **prompt** 交给 agent，最终得到 **output**。当你同时指挥多个 agent，这个过程很快会失控：谁在做什么、能改哪里、进行到哪一步、交付是否可信——都散落在各处。
 
-The project is early (`0.1.x`) and the data format may still evolve. The behavioral contract lives in [`docs/SPEC.md`](docs/SPEC.md).
+**Tent（帷幄）承载这套协作**——在 Obsidian 中可视化地定义意图、划定 agent 权限、派活与验收，产出可追踪回真实代码仓。你运筹，agent 执行，决策权始终在你。
 
-## Why
+<!-- demo 截图 / 视频：在 GitHub 上拖拽上传后替换此处 -->
 
-A project is split into two spaces:
+## 快速上手
 
-- **Code workspace**: source code and real deliverables.
-- **Tent**: goals, prompts, box state, manifests, reports, and task envelopes.
+**环境**：Node.js 20+、Git、Obsidian 1.5+（仅桌面端）。
 
-The user remains the final decision maker. Agents receive deterministic readable/writable scopes and work in role-specific branches/worktrees. Their chat report and workspace commits are accepted only when the user confirms completion.
+安装有三种方式，任选其一。
 
-## Components
+**① 交给 agent 安装（推荐）** —— 把下面这段发给你的 coding agent（Claude Code / Codex），它会问你要 vault 路径并完成全部安装：
 
-| Component | Purpose |
-|---|---|
-| `src/core/` | Framework-agnostic rules and filesystem contracts |
-| `src/cli/` | `tent` command for user-authority actions |
-| `src/plugin/` | Optional Obsidian structure editor |
-| `skills/` | Agent-side skills: `tent-genesis` (create a tent) + `tent-role` (orient an agent into a role) |
+> Install the Tent plugin and CLI for me (github.com/cucarol/tent):
+> 1. Clone the repo and run `npm ci && npm run build`.
+> 2. Ask me for my Obsidian vault path, then copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/tent/`.
+> 3. Run `npm link`, then run `tent skill-install`.
+> When done, tell me to enable Tent in Obsidian's community-plugin settings.
 
-Rules belong in core. Frontends render and invoke them; they must not invent their own permission semantics.
+**② 手动安装** —— 构建后把 `main.js`、`manifest.json`、`styles.css` 拷入 `<vault>/.obsidian/plugins/tent/`，在 Obsidian 第三方插件设置中启用。
 
-## Requirements
+**③ BRAT** —— 用 [BRAT](https://github.com/TfTHacker/obsidian42-brat) 添加 `cucarol/tent`，自动安装并保持更新。
 
-- Node.js 20 or newer
-- Git
-- Obsidian 1.5 or newer for the optional desktop plugin
+安装并启用后，在你的 agent 里运行 `tent-genesis` 创建第一顶帐；之后每个新会话运行 `tent-role` 进入工作。
 
-## Development
+## 架构与概念
 
-```bash
-npm ci
-npm run check
+Tent 在你的 Obsidian 中创建一个文件夹存放 markdown 文档；真实产出（代码、文档）所在的 workspace 由你指定。一顶 Tent 本质是一个 **OKF v0.1 bundle**——一批带 frontmatter 的 markdown，加一层治理。它由三部分组成：**core**（规则与文件契约）、**Obsidian UI**（可视化操作）、**agent 侧 skill 层**（agent 如何进入并使用一顶帐）。
+
+```mermaid
+flowchart LR
+    U(["你 · user"])
+    subgraph T["Tent · Obsidian"]
+        BOX["box 树<br/>意图 / 权限 / 状态"]
+    end
+    subgraph W["workspace · Git"]
+        CODE["代码 · 真实产出"]
+    end
+    U -- "写意图 / 派活" --> BOX
+    BOX -- "任务 + 接力 prompt" --> AG["agent · role"]
+    AG -- "在 worktree / branch 执行" --> CODE
+    AG -- "report / proposal 投递待裁" --> BOX
+    BOX -- "确认 / 驳回" --> U
 ```
 
-`npm run check` runs TypeScript validation, production builds for `main.js` and `cli.mjs`, unit/integration tests, and the OKF conformance gate.
+### 两个 skill
 
-Useful focused commands:
+1. **`tent-genesis`（创建帐，一次性）** —— 让 agent 运行它，它会向你询问 Tent 区与 workspace 的路径，然后创建帐。
+2. **`tent-role`（每个新会话一次）** —— 此后每开启一个 agent 会话，先让它运行 tent-role 进入某个 role：读取自己的信箱、已认领的框与权限，随后开始工作。
 
-```bash
-npm run test:core
-npm run test:integration
-npm run build
-npm run okf:check
-npm run okf:check:strict
-```
+### 界面
 
-## Use from a Checkout
+打开面板，左侧是整棵 box 树，选中任一 box，右侧是它的详情面板。
 
-Build and expose the CLI on your PATH:
+- **box（框）** —— 每份 markdown 文档即一个 box，可带父子层级与一组属性；父子关系表达归属，正文是任务本体。
+- **type / status / tags** —— 每个 box 具有 `type`（`goal` / `prompt` / `output`，决定语义与默认读写）、`status`（todo / doing / done，表示进度）、`tags`（横向检索主题）；读写权限（R/W）也在详情面板中设置。
+- **三个 tab** —— **笔记**是 box 的正文；**派活**把该框交给某个 role；**待裁**收拢等待你裁决的项。
 
-```bash
-npm ci
-npm run build
-npm link
-```
+### 一个使用周期
 
-Create a new Tent in any empty destination:
+1. 你在框里写下意图，在「派活」把它交给某个 role。派活会生成一份任务与一段接力 prompt；目标 agent 执行 `task-ack` 接手后，框进入占用态。
+2. agent 在它专属的 `worktree + branch` 里执行——每个 role 一条独立车道，多个 agent 同时干活互不干扰。
+3. 完成后，agent 把成果作为 **report** 交付、或把建议作为 **proposal** 提出，二者都落到你的「待裁」。
+4. 你在「待裁」确认或驳回。确认一份带 commit 的 report，即把 agent 的改动合入你的 workspace，框随之标记完成。
 
-```bash
-tent new "<path-to-your-tent>"
-cd "<path-to-your-tent>"
-tent tree
-```
+全程你是唯一决策者——agent 的交付只有经你确认才生效。
 
-Without `npm link`, the equivalent checkout-only command is `node ./cli.mjs new "<path-to-your-tent>"` after `npm run build`.
+### 可自定义
 
-The new Tent is a self-contained skeleton: `RULES.md`, `.tent/types.json`, `.tent/roles.json`, `.tent/tags.json`, and a temp pipeline. It does not initialize Git or copy the mechanism `SPEC.md` and agent configuration files into the Tent.
+- **type**：除内置的 goal / prompt / output 外可自定义，包括默认 R/W 与描述。
+- **role**：可自定义，除描述外还可附带一段专属 prompt，作为该 role 的稳定设定。
 
-## Syncing
+### 多 agent 与 A2A
 
-Tent files do not use Git and may follow the vault's normal synchronization policy. The real workspace remains a normal Git repository and uses its own remote/push workflow.
+派活不限于 user → agent（U2A），agent 也可派给 agent（A2A）。派活本质上是写入一份任务与一段接力 prompt，两种 A2A 情形的区别仅在于如何把这段 prompt 送达接收方：接收方为 GUI agent 时，由你手动复制粘贴，相当于替派活方完成一次输入；为 CLI agent 时，编排方可自行唤醒它并送入 prompt，直接接手。
 
-## CLI
+Tent 本身只写入任务与接力 prompt，从不自动唤醒 agent——真实接手始终由目标 agent 的 `task-ack` 完成。
 
-Run commands from the Tent root:
+## 项目状态
 
-```text
-tent role-init <role>
-tent roles
-tent dispatch <claimId> <role> <prompt...> [--as-sub --by <role>]
-tent task-ack <taskPath>
-tent task-cancel <taskPath>
-tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
-tent propose <boxId> <bodyFile|->
-tent complete <boxId> [--commits <sha,sha>]
-tent stamp <boxId>
-tent new-box <name> <type> [parentId]
-tent grant-readable <boxId>
-tent fork <boxId>
-tent clean-temp [role]
-tent force-release <boxId>
-tent migrate-kind-to-type
-tent okf-sync
-tent skill-install [--target claude] [--force]
-tent tree
-```
+- core、CLI 与 agent skill 均已实现。
+- type 系统是扁平的、对齐 OKF 的注册表，支持用户自定义 type。
+- OKF 索引/日志生成与 wiki-link 投影通过 `tent okf-sync` 提供。
+- `temp/` 是系统管道，不是语义节点或 type。
+- Obsidian UI 仍在迭代中。
 
-## Obsidian Plugin
+## 贡献与安全
 
-After `npm run build`, copy these files into `<vault>/.obsidian/plugins/tent/`:
+开发规则、仓库结构与本地开发流程见 [`CONTRIBUTING.md`](CONTRIBUTING.md)，漏洞私密上报指引见 [`SECURITY.md`](SECURITY.md)。
 
-```text
-main.js
-manifest.json
-styles.css
-```
-
-Then enable **Tent / 帷幄** in Obsidian's community plugin settings.
-
-## Project Status
-
-- Core, CLI, and the agent skills are implemented.
-- The type system is a flat OKF-aligned registry with user-defined types.
-- Legacy `kind` is load-compatible and can be migrated with `tent migrate-kind-to-type`.
-- Breaking Tent overlay format changes ship with idempotent `tent migrate-*` commands.
-- OKF index/log generation and wiki-link projection are available via `tent okf-sync`.
-- `temp/` is a system pipeline, not a semantic node or type.
-- The Obsidian UI is under active iteration.
-- Package publication and Obsidian community plugin submission have not happened yet.
-
-## Contributing and Security
-
-See [`CONTRIBUTING.md`](CONTRIBUTING.md) for development rules and [`SECURITY.md`](SECURITY.md) for private vulnerability reporting guidance.
-
-## License
+## 许可证
 
 [MIT](LICENSE)

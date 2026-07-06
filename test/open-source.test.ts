@@ -42,7 +42,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const versions = JSON.parse(
     await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
   );
-  const readme = await fs.readFile(path.join(repoRoot, "README.md"), "utf8");
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
@@ -95,7 +94,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
-  assert.match(readme, /tent skill-install \[--target claude\] \[--force\]/);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine-readable delivery record/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);

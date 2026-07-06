@@ -15,6 +15,7 @@ description: 让 agent 进入现有 Tent 的长期 role session：从 task envel
 - 一个 box 是一个文件夹加同名 Markdown 身份笔记。`bx-` id 随移动保持稳定。层级表达服务关系。
 - box = 任务本体；envelope = 机器投递状态载体。一句话版：内容住 box，状态住 envelope。
 - `manifest.yml` 解析 claim、readable、writable。它是 honor contract，不是安全沙箱。若任务指令和 manifest 边界冲突，停止并询问 user。
+- `manifest.yml` 的 `preloaded` 字段只是应加载内容的清单，不是正文已经进入模型上下文的证明。role 必须实际读取所需文件，不能仅凭清单名称声称已知内容。
 - report 首先是聊天回复。`tent report` 只是在 Tent 里放一份临时传输文本，供 user 在 UI 里验收；它没有持久 id，验收或中断后会清理。
 
 ## Role Init
@@ -88,7 +89,7 @@ tent propose <boxId> <file|->
 
 1. 确认工作目录就是 Tent 根目录，且包含 `RULES.md`、`.tent/`、`temp/`。否则停止并告诉 user。
 2. 进入或恢复 Tent 会话时可运行 `tent status` 快速定向：看待裁提案、待 ack task、认领态，以及 Tent / workspace 两个路径。
-3. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。
+3. 新 role session 只读一次 `temp/<role>/init.md`。它是稳定 role 上下文，设计上用于 prompt cache 复用。新建或恢复 role session 时都必须显式读取 Tent 根的 `RULES.md`；如果任务进入真实 workspace，还必须读取该 workspace 的项目规则文件（例如 `AGENTS.md`、`CLAUDE.md` 或仓库明确指定的等价文件）。
 4. 每次唤醒或恢复 role 时，检查 `temp/<role>/tasks/*.md`。user 直接给了 task 路径时，以该路径为准；否则列出所有 `status: pending` 的 task，按 user 指定或既有优先级逐个处理，顺序不清楚时先问。
 5. 接任务后的第一步运行 `tent task-ack <taskPath>`。然后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件，只有 `task-ack` 会把任务改成 `taken`。
 6. 粗 box 可以直接派活。task-ack 后先对齐任务：读 box 正文和必要子框；不清楚就问 user；对齐结论写回 box 正文。box 的细节是在推进中长出来的，不是派活门槛。
