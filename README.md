@@ -7,7 +7,7 @@ user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经�
 **Tent（帷幄）承载这套协作**——在 Obsidian 中可视化地管理 **goal**、**prompt** 和 **output**，划定 agent 权限、派活与验收，产出可追踪回真实代码仓。你运筹，agent 执行，决策权始终在你。
 
 **示例demo**：
-<img width="1793" height="1191" alt="image" src="https://github.com/user-attachments/assets/0ba2ca09-cfdf-47ed-bc48-e89afabba9c8" />
+<img width="1572" height="1076" alt="image" src="https://github.com/user-attachments/assets/2989b6ff-e249-435e-913e-c0267c05ffdf" />
 
 ## 快速开始
 
@@ -35,7 +35,7 @@ When done, tell me to enable Tent in Obsidian's community-plugin settings.
 
 ## 架构与概念
 
-<img width="1359" height="678" alt="image" src="https://github.com/user-attachments/assets/584710a6-1c5e-44be-8cd9-53389f021585" />
+<img width="1721" height="834" alt="image" src="https://github.com/user-attachments/assets/b3cd6e0d-8990-464a-ab51-9fd071c16bf4" />
 
 Tent 在你的 Obsidian 中创建一个文件夹存放 markdown 文档；真实产出（代码、文档）所在的 workspace 由你指定。
 
@@ -45,7 +45,7 @@ OKF 兼容：一顶 Tent（帐） 本质是一个 OKF v0.1 bundle；`tent okf-sy
 
 ### core
 
-<img width="1550" height="441" alt="image" src="https://github.com/user-attachments/assets/be545819-f56e-49d4-8e0d-433b9f72003a" />
+<img width="1938" height="525" alt="image" src="https://github.com/user-attachments/assets/3f9beeae-ac0e-4307-8f62-0c0e43283111" />
 
 core 是 Tent（帐） 的地基：一套纯文件约定，加上操作它的 `tent` CLI。状态、意图、权限、协作管道全部落在带 frontmatter 的 markdown 和 `.tent/` 注册表里——不依赖 Obsidian，也不用 Git 存状态。UI 只是它的可视化外壳，整套流程用 CLI 就能跑完。
 
@@ -66,7 +66,7 @@ agent 侧有两个 skill，覆盖「创建」和「进入」两件事。
 
 可选的可视化层，把上面这套 core 摊在面板里操作：左侧是整棵 box 树，右侧是选中 box 的详情面板，含三个 tab——**笔记**（box 正文）、**派活**（把框交给某个 role）、**待裁**（逐个确认或驳回 report / proposal）。
 
-<!-- 视频演示：在 GitHub 上拖拽上传后替换此处 -->
+https://github.com/user-attachments/assets/092cec70-e68d-4298-a2fc-c5d58921a14d
 
 ## 贡献与安全
 
