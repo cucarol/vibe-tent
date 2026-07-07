@@ -42,6 +42,7 @@ Tent 在你的 Obsidian 中创建一个文件夹存放 markdown 文档；真实�
 它由三部分组成：**core**（规则与文件契约）、**agent 侧 skill 层**（agent 如何进入并使用一顶帐）、**Obsidian UI**（可视化操作）。
 
 OKF 兼容：一顶 Tent（帐） 本质是一个 OKF v0.1 bundle；`tent okf-sync` 生成 OKF 索引/日志并投影 wiki-link，让这批 markdown 同时是一份可被其它工具读取的开放知识库。
+https://github.com/GoogleCloudPlatform/knowledge-catalog
 
 ### core
 
