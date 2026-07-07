@@ -63,7 +63,7 @@ function runWithExit(command: string, args: string[], cwd: string): Promise<RunE
 }
 
 async function makeSkeletonTent(): Promise<string> {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-open-source-"));
+  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-open-source-")));
   const target = path.join(parent, "example-tent");
   await run(process.execPath, ["--import", tsxImport, cliSource, "new", target], parent);
   return target;
@@ -260,7 +260,7 @@ test("tent status:prints proposals, pending tasks, active claims, and rejects no
   assert.match(doneStatus.stdout, /Pending tasks \(task-ack\): none/);
   assert.doesNotMatch(doneStatus.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
 
-  const outside = await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-"));
+  const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-")));
   const failed = await runCliWithExit(outside, "status");
   assert.equal(failed.code, 1);
   assert.equal(failed.stdout, "");
@@ -447,7 +447,7 @@ test("tent complete:--require-check missing command reports an error", async () 
 });
 
 test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", async () => {
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-"));
+  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-new-")));
   const target = path.join(parent, "fresh-tent");
   await runCli(parent, "new", target);
 
@@ -478,7 +478,7 @@ test("tent new:空骨架帐(不强制 zone),生成 RULES 且 Tent 无 Git", asyn
 });
 
 test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", async () => {
-  const vault = await fs.mkdtemp(path.join(os.tmpdir(), "tent-vault-defaults-"));
+  const vault = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-vault-defaults-")));
   const settingsDir = path.join(vault, ".obsidian", "plugins", "tent");
   await fs.mkdir(settingsDir, { recursive: true });
   await fs.writeFile(
@@ -515,7 +515,7 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
 });
 
 test("skill-install:安装内置 skills,重复执行需 --force", async () => {
-  const target = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-"));
+  const target = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-")));
   const installed = await runCli(repoRoot, "skill-install", "--dir", target);
   assert.match(installed.stdout, /tent-genesis/);
   assert.match(installed.stdout, /tent-role/);
@@ -626,7 +626,7 @@ async function commitRoleFile(
 test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {
   const npmCli = process.env.npm_execpath;
   assert.ok(npmCli, "测试必须由 npm script 启动");
-  const packDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pack-"));
+  const packDir = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-pack-")));
   const packed = await run(process.execPath, [
     npmCli,
     "pack",
@@ -638,7 +638,7 @@ test("npm 包冒烟:产物可安装并运行打包 CLI", async () => {
   ], repoRoot);
   const packageInfo = JSON.parse(packed.stdout)[0];
   const tarball = path.join(packDir, packageInfo.filename);
-  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-package-"));
+  const parent = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-package-")));
   const prefix = path.join(parent, "install");
   const target = path.join(parent, "packed-tent");
 
