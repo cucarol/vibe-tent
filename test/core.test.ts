@@ -69,23 +69,39 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-test("认领不重叠:祖先/子孙被占则挡", async () => {
+test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async () => {
   const dir = await makeTent();
+  await fs.mkdir(path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
+    "---\nid: bx-g3\ntype: goal\n---\n",
+  );
   const tent = await loadTent(new NodeFs(dir));
 
   const g1 = tent.byId.get("bx-g1")!; // 子孙 g2 已被 executor 占
   const check = canClaim(g1);
   assert.equal(check.ok, false);
   assert.ok(check.blocker?.id === "bx-g2");
+  assert.equal(isFrozen(g1), false, "有占用子孙的祖先不冻结");
+  assert.equal(g1.locked, false);
+  assert.equal(g1.lockSource, undefined);
+  assert.equal(g1.lockOwner, undefined);
 
   const g2 = tent.byId.get("bx-g2")!;
   assert.equal(canClaim(g2).ok, false, "自己已被占");
-  assert.equal(isFrozen(g1), true, "祖先冻结");
-  assert.equal(g1.locked, true);
-  assert.equal(g1.lockSource, "descendant");
-  assert.equal(g1.lockOwner, "executor");
+  assert.equal(isFrozen(g2), true, "占用框自身冻结");
   assert.equal(g2.locked, true);
   assert.equal(g2.lockSource, "self");
+  assert.equal(g2.lockOwner, "executor");
+
+  const g3 = tent.byId.get("bx-g3")!;
+  const descendantCheck = canClaim(g3);
+  assert.equal(descendantCheck.ok, false, "占用框的子孙仍不能被重复认领");
+  assert.equal(descendantCheck.blocker?.id, "bx-g2");
+  assert.equal(isFrozen(g3), true, "占用框的子孙冻结");
+  assert.equal(g3.locked, true);
+  assert.equal(g3.lockSource, "ancestor");
+  assert.equal(g3.lockOwner, "executor");
 });
 
 test("loadTent:顶层普通目录透传其下合法框", async () => {
@@ -379,7 +395,7 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
   );
 });
 
-test("placeBox:不能移动或移入认领冻结范围", async () => {
+test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -389,13 +405,18 @@ test("placeBox:不能移动或移入认领冻结范围", async () => {
   };
   const { placeBox } = await import("../src/core/ops.js");
   await assert.rejects(
-    () => placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" }),
+    () => placeBox(env as any, "goal/挖新alpha/写表达式", "prompt", { mode: "inside" }),
     /Claimed ranges cannot be moved/,
   );
   await assert.rejects(
-    () => placeBox(env as any, "prompt/旧站资料", "goal/挖新alpha", { mode: "inside" }),
+    () => placeBox(env as any, "prompt/旧站资料", "goal/挖新alpha/写表达式", { mode: "inside" }),
     /Cannot move into a claimed range/,
   );
+
+  await placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" });
+  const tent = await loadTent(new NodeFs(dir));
+  const prompt = tent.byId.get("bx-promptzone")!;
+  assert.ok(prompt.children.some((child) => child.id === "bx-g1"));
 });
 
 test("中断认领:清 owner、回到 todo 并清理临时 report", async () => {

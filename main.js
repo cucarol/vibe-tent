@@ -639,25 +639,15 @@ function clearLocks(box) {
   for (const child of box.children) clearLocks(child);
 }
 function resolveLockSubtree(box) {
-  let descendantOwner;
   for (const child of box.children) {
-    const occupied = resolveLockSubtree(child);
-    if (!descendantOwner && occupied) descendantOwner = occupied;
+    resolveLockSubtree(child);
   }
   if (box.fm.owner) {
     applyAncestorLock(box, box.fm.owner);
     box.locked = true;
     box.lockSource = "self";
     box.lockOwner = box.fm.owner;
-    return { owner: box.fm.owner, box };
   }
-  if (descendantOwner) {
-    box.locked = true;
-    box.lockSource = "descendant";
-    box.lockOwner = descendantOwner.owner;
-    return descendantOwner;
-  }
-  return void 0;
 }
 function applyAncestorLock(box, owner) {
   for (const child of box.children) {
@@ -2877,11 +2867,7 @@ function hasActiveOwnerInScope(box) {
     if (current.fm.owner) return true;
     current = current.parent;
   }
-  return subtreeHasOwner(box);
-}
-function subtreeHasOwner(box) {
-  if (box.fm.owner) return true;
-  return box.children.some(subtreeHasOwner);
+  return false;
 }
 function tentTooltip(el, text, placement = "top") {
   el.removeAttribute("title");

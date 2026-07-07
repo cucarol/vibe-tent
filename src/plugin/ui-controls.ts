@@ -51,12 +51,7 @@ export function hasActiveOwnerInScope(box: Box): boolean {
     if (current.fm.owner) return true;
     current = current.parent;
   }
-  return subtreeHasOwner(box);
-}
-
-function subtreeHasOwner(box: Box): boolean {
-  if (box.fm.owner) return true;
-  return box.children.some(subtreeHasOwner);
+  return false;
 }
 
 export function tentTooltip(

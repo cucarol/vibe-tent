@@ -251,11 +251,9 @@ function clearLocks(box: Box): void {
   for (const child of box.children) clearLocks(child);
 }
 
-function resolveLockSubtree(box: Box): { owner: string; box: Box } | undefined {
-  let descendantOwner: { owner: string; box: Box } | undefined;
+function resolveLockSubtree(box: Box): void {
   for (const child of box.children) {
-    const occupied = resolveLockSubtree(child);
-    if (!descendantOwner && occupied) descendantOwner = occupied;
+    resolveLockSubtree(child);
   }
 
   if (box.fm.owner) {
@@ -263,15 +261,7 @@ function resolveLockSubtree(box: Box): { owner: string; box: Box } | undefined {
     box.locked = true;
     box.lockSource = "self";
     box.lockOwner = box.fm.owner;
-    return { owner: box.fm.owner, box };
   }
-  if (descendantOwner) {
-    box.locked = true;
-    box.lockSource = "descendant";
-    box.lockOwner = descendantOwner.owner;
-    return descendantOwner;
-  }
-  return undefined;
 }
 
 function applyAncestorLock(box: Box, owner: string): void {

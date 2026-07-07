@@ -1650,7 +1650,6 @@
   color: var(--text-error) !important;
   border: 1px solid color-mix(in srgb, var(--text-error) 24%, transparent) !important;
   box-shadow: none !important;
-  cursor: pointer !important;
 }
 .tent-view button.tent-bottom-action.tent-bottom-danger:hover {
   background: var(--text-error) !important;
@@ -1660,7 +1659,6 @@
 .tent-view button.tent-bottom-action.tent-bottom-danger.is-confirm {
   background: color-mix(in srgb, var(--text-error) 18%, var(--background-primary)) !important;
   border-color: color-mix(in srgb, var(--text-error) 38%, transparent) !important;
-  font-weight: 600 !important;
 }
 
 /* ===== Obsidian 插件设置 ===== */
