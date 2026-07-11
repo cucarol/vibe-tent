@@ -21,8 +21,12 @@ workspace: C:/path/to/workspace
 ref: 0123abcd
 ```
 
-`ref` is a workspace commit. A Tent with multiple distinct workspace output boxes
-is invalid for dispatch/integration.
+`ref` is a workspace commit. A workspace pointer is registered when any box has
+base type `output` (including a compound type such as `output-reference`) and a
+non-empty `workspace` value in frontmatter, or a `workspace: ...` line in its
+body. The box name and tree position do not matter. An `output` box without that
+field is an ordinary output, not a workspace pointer. A Tent with multiple
+distinct workspace paths is invalid for dispatch/integration.
 
 ## 2. Boxes And Identity
 
@@ -128,6 +132,24 @@ Confirmed dispatch:
 3. creates/reuses the role workspace lane;
 4. writes a pending task envelope under `temp/<role>/tasks/`;
 5. returns the relay prompt for delivery to the agent session.
+
+Dispatch authority is independent of the dispatcher's `readable` and `writable`
+manifest grants. Those grants govern the receiving role's work contract, not
+who may claim a box. The dispatch gate is topology and lifecycle state: the
+target subtree must not overlap an owner or another pending envelope, and it
+must not be archived or structurally invalid.
+
+When the registered workspace exists, the CLI derives and creates/reuses the
+target role's branch and worktree from the role name; neither dispatcher nor
+receiver hand-writes those envelope fields. Without a workspace pointer, a
+normal peer dispatch is a valid pure-Tent task and its envelope has no workspace
+contract.
+
+`--as-sub --by <role>` records the dispatching role in `dispatchedBy` and changes
+the delivery target from the workspace's formal branch to the dispatcher's role
+branch. This makes the subagent's commits part of the dispatcher's delivery.
+Because that relationship requires real Git lanes, sub dispatch is invalid
+without a registered workspace pointer. User/peer dispatch does not require one.
 
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.

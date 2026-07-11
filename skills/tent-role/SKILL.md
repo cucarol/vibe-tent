@@ -99,7 +99,7 @@ tent propose <boxId> <file|->
 10. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态。
 11. 协作命令：
    - `tent roles`：读取共享 role 注册表，再选择派活目标 role。
-   - `tent dispatch <boxId> <role> --prompt <text> [--as-sub --by <role>]`：生成该 role 的 pending task envelope。user prompt 必填；真正认领发生在目标 agent 执行 `task-ack` 时。
+   - `tent dispatch <boxId> <role> --prompt <text> [--as-sub --by <role>]`：生成该 role 的 pending task envelope。user prompt 必填；真正认领发生在目标 agent 执行 `task-ack` 时。普通派活可用于没有 workspace 的纯 Tent；`--as-sub --by <role>` 会记录派活 role，并把验收目标改为该 role 的分支，因此必须有 workspace 指针。
    - `tent new-box <name> <type> [parentId]`：创建 box 并获得防撞 id。CLI 只生成空身份笔记——建完立即补写正文（问题、方案、验收标准）和 `status`，不要留空壳框。
    - `tent fork <boxId>`：复制子树，只改变根名称，重发 ids，并清 owner/status。
 12. 收尾时在聊天里报告：改了什么、还剩什么、跑了什么测试、workspace commit hash。报告只写你**实际验证过**的事实——测试贴运行结果，修复贴复现前后对比；命令打了 ✓ 不等于结果发生了，关键动作要回读状态确认。若有待 UI 验收的交付，用 `tent report <boxId> <bodyFile|-> --commits <sha,sha>` 提交同一份报告。
@@ -111,6 +111,8 @@ tent propose <boxId> <file|->
 标准链路是：dispatch -> spawn/唤醒 -> receive report -> review -> complete。
 
 - dispatch：用 `tent dispatch` 写 manifest 和 pending task envelope，不写 owner/status。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，也没有 pending task envelope，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
+- workspace 契约：任意位置的框只要一级/base type 是 `output`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名不参与识别。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。没有该字段的 output 只是普通产出框。
+- sub 派活：`--as-sub --by <role>` 把 `dispatchedBy` 记为派活 role，并把目标分支设为派活 role 的分支，让 sub 交付进入其上级交付；所以它必须有 workspace 契约。普通 user/peer 派活没有 workspace 时仍可作为纯 Tent 任务。
 - task-ack：目标 agent 执行 `tent task-ack <taskPath>` 后，envelope 变为 taken，并把目标 box owner 设为该 role、status 设为 doing。
 - manifest 是 dispatch 时刻的快照；派活后修改 box 的 readable、writable 或 type 不影响已发出的 manifest，需要释放后重新 dispatch 才刷新。
 - spawn/唤醒：把 relay prompt 交给目标 role 的新会话或旧会话。

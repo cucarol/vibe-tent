@@ -297,6 +297,18 @@ test("tent dispatch --as-sub:missing dispatcher fails before workspace side effe
   );
 });
 
+test("tent dispatch --as-sub:missing workspace explains how to register the contract", async () => {
+  const tent = await makeSkeletonTent();
+  const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
+  const outputId = boxId(await runCli(tent, "new-box", "delivery", "output"));
+  assert.ok(outputId, "an output box without workspace is not a workspace pointer");
+
+  await assert.rejects(
+    () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub", "--by", "planner"),
+    /Add a box whose base type is output and set `workspace: C:\/path\/to\/git-root`/,
+  );
+});
+
 test("tent clean-temp:rejects traversal role names and preserves root siblings", async () => {
   const tent = await makeSkeletonTent();
   const victim = path.join(path.dirname(tent), "victim");

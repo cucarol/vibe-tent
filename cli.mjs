@@ -2448,7 +2448,11 @@ async function main() {
         console.log("Note: this Tent has no workspace output box; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
-        if (!workspacePath) return fail("--as-sub requires a workspace output pointer");
+        if (!workspacePath) {
+          return fail(
+            "--as-sub requires a workspace contract. Add a box whose base type is output and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
+          );
+        }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
         const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
         workspace = { ...workspace ?? await ensureRoleWorkspace(workspacePath, role), targetBranch: dispatcherWorkspace.branch };
