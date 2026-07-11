@@ -53,7 +53,7 @@ import { scaffoldTent } from "../core/scaffold.js";
 import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
 import { syncOkfBundle } from "../core/okf.js";
-import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
+import { normalizeRegistry, splitType, typeAllowsWorkspacePointer, type TypeRegistry } from "../core/typeRegistry.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
@@ -125,13 +125,13 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
       if (!workspacePath) {
-        console.log("Note: this Tent has no workspace output box; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no workspace pointer box; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Add a box whose base type is output and set " +
-            "`workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
+            "--as-sub requires a workspace contract. Add a box whose base type enables workspace pointer " +
+            "capability, and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -237,12 +237,12 @@ async function main() {
       let integrationLines: string[] = [];
       const workspacePath = resolveTentWorkspace(tent);
       if (flags["require-check"]) {
-        if (!workspacePath) return fail("--require-check requires a workspace output pointer");
+        if (!workspacePath) return fail("--require-check requires a workspace pointer");
         await runWorkspaceCheck(workspacePath, flags["require-check"]);
       }
       const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       const integrate = async (commitRefs: string[]) => {
-        if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
+        if (!workspacePath) throw new Error("The Tent has no workspace pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner!);
         const integrated = await integrateWorkspaceCommits(contract, commitRefs);
         integrationLines = integrated.map(
@@ -365,7 +365,9 @@ async function main() {
         break;
       }
       for (const box of boxes) {
-        const pointer = splitType(box.type).base === "output" ? outputPointer(box.fm, box.body) : "";
+        const pointer = typeAllowsWorkspacePointer(box.type, tent.typeRegistry)
+          ? outputPointer(box.fm, box.body)
+          : "";
         console.log(`${box.id}\t${box.path}\t${box.type}${pointer ? `\t${pointer}` : ""}`);
       }
       break;

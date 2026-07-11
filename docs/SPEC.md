@@ -11,8 +11,9 @@ A Tent points to exactly one real workspace:
   envelopes. It consists of plain files and does not use Git.
 - **Workspace** stores code and real deliverables. It must use Git.
 
-`output` is an ordinary box type, not a synonym for every delivery. An output
-box may map the Tent to the workspace:
+`output` is an ordinary box type, not a synonym for every delivery. A box may map
+the Tent to the workspace when its **base type** enables workspace-pointer
+capability:
 
 ```yaml
 id: bx-7k2f9q
@@ -21,12 +22,19 @@ workspace: C:/path/to/workspace
 ref: 0123abcd
 ```
 
-`ref` is a workspace commit. A workspace pointer is registered when any box has
-base type `output` (including a compound type such as `output-reference`) and a
-non-empty `workspace` value in frontmatter, or a `workspace: ...` line in its
-body. The box name and tree position do not matter. An `output` box without that
-field is an ordinary output, not a workspace pointer. A Tent with multiple
-distinct workspace paths is invalid for dispatch/integration.
+`ref` is a workspace commit. A workspace pointer is registered when:
+
+1. the box's base type has `workspacePointer: true` in `.tent/types.json`
+   (compound types follow the base; modifiers do not configure this flag); and
+2. the box has a non-empty `workspace` value in frontmatter, or a
+   `workspace: ...` line in its body.
+
+The box name and tree position do not matter. Built-in `output` enables the flag
+by default; other base types do not, even if renamed or named similarly. A box
+whose type allows pointers but omits `workspace` is an ordinary box, not a
+workspace pointer. Legacy tents that lack the field treat a base type named
+`output` as enabled for migration. A Tent with multiple distinct workspace paths
+is invalid for dispatch/integration.
 
 ## 2. Boxes And Identity
 
@@ -70,6 +78,11 @@ cleared. Any duplicate that cannot be identified as a fresh copy is invalid.
 
 `.tent/types.json` is a flat OKF-aligned type map. Built-ins are `goal`,
 `prompt`, `output`, `open`, `reference`, `asset`, and `sealed`.
+
+Base type definitions may set optional `workspacePointer: true` so boxes of that
+base type can register the Tent's workspace path when they also carry a
+`workspace` field. Only base types store this flag; modifiers inherit from the
+compound type's base. Default built-in `output` has the flag on.
 
 A type is either a base type or a modifier. A compound type such as `goal-draft`
 combines a base with a modifier. Each permission axis resolves independently:
@@ -264,7 +277,7 @@ Core fails loudly on:
 - duplicate ids that are not adopted copies;
 - owner or pending-envelope overlap on confirmed dispatch;
 - stale/active mutation lock;
-- multiple workspace output boxes;
+- multiple workspace pointer boxes;
 - dirty or wrong workspace target branch;
 - Git integration conflict;
 - invalid order/type state.

@@ -12,7 +12,12 @@ import {
   inspectTypeDeletion,
   updateTypeMetadata,
 } from "../core/typeManagement.js";
-import type { TypeDefinition, TypeRegistry, TypeTier } from "../core/typeRegistry.js";
+import {
+  baseDefinitionWorkspacePointer,
+  type TypeDefinition,
+  type TypeRegistry,
+  type TypeTier,
+} from "../core/typeRegistry.js";
 import { TYPE_COLORS, typeColorValue } from "./colors.js";
 import { drawRwSegment, roleColorValue } from "./ui-controls.js";
 import type { RegistryPaneState, RegistrySection } from "./ui-model.js";
@@ -245,7 +250,8 @@ function drawTypeRow(
   drawRwCapsule(
     rightArea.createDiv({ cls: "item-indicators" }),
     definition.readable,
-    definition.writable
+    definition.writable,
+    baseDefinitionWorkspacePointer(definition) === true ? true : definition.tier === "modifier" ? undefined : false
   );
   const actions = rightArea.createDiv({ cls: "row-actions" });
   const edit = actions.createEl("button", {
@@ -297,13 +303,18 @@ function drawTypeRow(
 function drawRwCapsule(
   host: HTMLElement,
   readable: boolean | undefined,
-  writable: boolean | undefined
+  writable: boolean | undefined,
+  workspacePointer?: boolean
 ): void {
   const capsule = host.createSpan({ cls: "rw-cap" });
   const label = (state: boolean | undefined) => (
     state === undefined ? "继承" : state ? "开" : "关"
   );
-  addTooltip(capsule, `readable:${label(readable)} · writable:${label(writable)}`);
+  const pointerTip =
+    workspacePointer === undefined
+      ? ""
+      : ` · workspace 指针:${label(workspacePointer)}`;
+  addTooltip(capsule, `readable:${label(readable)} · writable:${label(writable)}${pointerTip}`);
   const drawPart = (key: string, value: boolean | undefined) => {
     const className = value === undefined ? "is-inherit" : value ? "is-on" : "is-off";
     const symbol = value === undefined ? "—" : value ? "√" : "✕";
@@ -314,6 +325,10 @@ function drawRwCapsule(
   drawPart("R", readable);
   capsule.createSpan({ cls: "rw-dot", text: "·" });
   drawPart("W", writable);
+  if (workspacePointer !== undefined) {
+    capsule.createSpan({ cls: "rw-dot", text: "·" });
+    drawPart("针", workspacePointer);
+  }
 }
 
 function drawPalette(
@@ -348,6 +363,7 @@ function drawLabelRow(host: HTMLElement, label: string, extraClass = ""): HTMLEl
     label === "颜色" ? "color" :
     label === "描述" ? "description" :
     label === "R/W" ? "r-w" :
+    label === "指针" ? "workspace-pointer" :
     label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const row = host.createDiv({
     cls: `tent-newform-row tent-newform-row-${normalized}${extraClass ? ` ${extraClass}` : ""}`,
@@ -391,6 +407,22 @@ function drawTypeEditDrawer(
     await context.refresh();
   }, isModifier);
 
+  if (!isModifier) {
+    const pointer = drawLabelRow(drawer, "指针").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(
+      pointer,
+      "workspacePointer",
+      baseDefinitionWorkspacePointer(definition) === true,
+      async (value) => {
+        await updateTypeMetadata(context.fs, "type", name, {
+          workspacePointer: value === true,
+        });
+        await context.refresh();
+      },
+      false
+    );
+  }
+
   const description = drawLabelRow(drawer, "描述").createEl("textarea", {
     cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
     attr: { rows: "1" },
@@ -418,12 +450,14 @@ function drawNewTypeForm(
     description: string;
     readable: boolean | undefined;
     writable: boolean | undefined;
+    workspacePointer: boolean;
     color: string;
   } = {
     name: "",
     description: "",
     readable: tier === "modifier" ? undefined : true,
     writable: tier === "modifier" ? undefined : false,
+    workspacePointer: false,
     color: "gray",
   };
   const isModifier = tier === "modifier";
@@ -448,6 +482,13 @@ function drawNewTypeForm(
   drawRwSegment(rw, "writable", form.writable, (value) => {
     form.writable = value;
   }, isModifier);
+
+  if (!isModifier) {
+    const pointer = drawLabelRow(card, "指针").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(pointer, "workspacePointer", form.workspacePointer, (value) => {
+      form.workspacePointer = value === true;
+    }, false);
+  }
 
   const description = drawLabelRow(card, "描述").createEl("textarea", {
     cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
@@ -477,6 +518,7 @@ function drawNewTypeForm(
           tier: "base",
           readable: form.readable!,
           writable: form.writable!,
+          ...(form.workspacePointer ? { workspacePointer: true } : {}),
         };
     if (form.color) definition.color = form.color;
     if (form.description) definition.description = form.description;

@@ -19,6 +19,11 @@ export type TypeDefinition =
       tier?: "base";
       readable: boolean;
       writable: boolean;
+      /**
+       * 一级 type 是否可承载 workspace 指针。
+       * 默认仅内置 `output` 为 true；二级 type 不配置，跟随一级。
+       */
+      workspacePointer?: boolean;
     })
   | (TypeDefinitionMetadata & {
       /** modifier 缺省的轴继承复合 type 的 base。 */
@@ -49,6 +54,7 @@ export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
     writable: true,
     color: "cyan",
     tier: "base",
+    workspacePointer: true,
     description: "映射真实交付物与 workspace",
   },
   open: {
@@ -113,6 +119,30 @@ export function resolveTypeAxis(
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
 
+/**
+ * 框的一级/base type 是否开启 workspace 指针能力。
+ * 二级 type 不单独配置；复合 type 跟随 base。
+ * core 只看注册表字段，不依赖 type 名称是否为 `output`。
+ */
+export function typeAllowsWorkspacePointer(type: string, registry: TypeRegistry): boolean {
+  const { base } = splitType(type);
+  return baseDefinitionWorkspacePointer(registry[base] ?? registry[type]) === true;
+}
+
+/** 读取一级 type 定义上的 workspace 指针开关；modifier 恒为 undefined。 */
+export function baseDefinitionWorkspacePointer(definition: TypeDefinition | undefined): boolean | undefined {
+  if (!definition || definition.tier === "modifier") return undefined;
+  return definition.workspacePointer;
+}
+
+/** 写入一级 type 的 workspace 指针开关；modifier 抛错。 */
+export function setBaseWorkspacePointer(definition: TypeDefinition, value: boolean): void {
+  if (definition.tier === "modifier") {
+    throw new Error("Modifier types cannot configure workspace pointer capability.");
+  }
+  definition.workspacePointer = value;
+}
+
 export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
   if (!(await fs.exists(TYPE_REGISTRY_PATH))) return cloneDefaults();
   try {
@@ -167,15 +197,42 @@ function mergeDefinitions(
           ? { description: current.description }
           : {}),
     };
-    registry[name] = resolvedTier === "modifier"
-      ? {
-          tier: "modifier",
-          ...(readable !== undefined ? { readable } : {}),
-          ...(writable !== undefined ? { writable } : {}),
-          ...metadata,
-        }
-      : { tier: "base", readable: readable!, writable: writable!, ...metadata };
+    if (resolvedTier === "modifier") {
+      registry[name] = {
+        tier: "modifier",
+        ...(readable !== undefined ? { readable } : {}),
+        ...(writable !== undefined ? { writable } : {}),
+        ...metadata,
+      };
+      continue;
+    }
+    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
+    registry[name] = {
+      tier: "base",
+      readable: readable!,
+      writable: writable!,
+      ...metadata,
+      ...(workspacePointer !== undefined ? { workspacePointer } : {}),
+    };
   }
+}
+
+/**
+ * 解析一级 type 的 workspace 指针能力。
+ * - 显式 boolean 优先（含 false，避免关闭后被默认值吞回）；
+ * - 源中出现该 type 但未写字段时：名为 `output` 的一级 type 兼容为 true，其余不开启。
+ * 不从 cloneDefaults 的 current 继承，否则无法把默认 output 持久关闭。
+ */
+function resolveWorkspacePointerFlag(
+  name: string,
+  raw: Record<string, unknown>,
+  _current: TypeDefinition | undefined
+): boolean | undefined {
+  void _current;
+  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
+  // 旧 types.json 无字段：保留默认 output 开启，其它一级 type 不隐式开启。
+  if (name === "output") return true;
+  return undefined;
 }
 
 function cloneDefaults(): TypeRegistry {

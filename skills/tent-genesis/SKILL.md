@@ -81,7 +81,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 5. 初始化或连接真实 workspace。如果 workspace 还不是 Git 仓库，创建目录并 `git init`，优先使用 `main`。如果它已经是仓库，保留历史和配置。随后在 workspace 根放一份 agent 规则文件，让在这个仓里干活的 coding agent 知道它由 Tent 驱动：若仓里没有 `AGENTS.md`（也没有既有的等价文件如 `CLAUDE.md`），新建一份 `AGENTS.md`，写清「本仓由一顶 Tent / 帷幄驱动：任务在各 role 的 worktree/branch 上执行，交付通过 `tent report` / `tent propose` 回到 user 的待裁由 user 确认；不要直接 push 或自行合并，合入由 user 裁决」；若已存在这类规则文件，以清晰分隔的一段**幂等追加**同样说明（先检查是否已写过，写过就跳过），绝不覆盖原有内容。这属于 workspace 文件改动，按第 11 条 commit。
 6. 根据追问结果创建真实 box 树。优先用 `tent new-box <name> <type> [parentId]` 创建——它生成防撞 id 并校验 type；创建后补写身份笔记正文。只有 CLI 不可用时才手写文件夹加同名笔记（frontmatter 至少含 `id: bx-<six random chars>` 与有意选择的 `type`）。
 7. box 名称创建后视为不可在 Tent 内重命名。不要创建 legacy `kind`。
-8. 创建一个 `output` box，把 Tent 映射到真实 workspace，写入 `workspace` 和可选当前 `ref`。一顶 Tent 不应指向多个 workspace。
+8. 创建一个开启 workspace 指针能力的一级 type 的 box（默认 `output` 已开启），把 Tent 映射到真实 workspace，写入 `workspace` 和可选当前 `ref`。一顶 Tent 不应指向多个 workspace。
 9. 写 `.tent/roles.json`，格式为 `{ "roles": [{ "name", "description"?, "prompt"?, "color"? }] }`。
 10. 把项目本地约定写入 `RULES.md`：workspace 路径、提交/命名约定、其他项目规矩。用追问出的实际值填写，不要留 `<填>` 之类的占位符——追问不出的条目写"暂无"并告知 user。机制规范属于 Tent 仓库文档，不复制进新 Tent。
 11. 只有当 genesis 创建或有意修改了真实 workspace 文件时，才 commit workspace。永远不要 commit Tent。

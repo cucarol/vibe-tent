@@ -57,6 +57,20 @@ function resolveTypeAxis(type, axis, registry) {
   const modVal = modifier ? registry[modifier]?.[axis] : void 0;
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
+function typeAllowsWorkspacePointer(type, registry) {
+  const { base: base2 } = splitType(type);
+  return baseDefinitionWorkspacePointer(registry[base2] ?? registry[type]) === true;
+}
+function baseDefinitionWorkspacePointer(definition) {
+  if (!definition || definition.tier === "modifier") return void 0;
+  return definition.workspacePointer;
+}
+function setBaseWorkspacePointer(definition, value) {
+  if (definition.tier === "modifier") {
+    throw new Error("Modifier types cannot configure workspace pointer capability.");
+  }
+  definition.workspacePointer = value;
+}
 async function loadTypeRegistry(fs) {
   if (!await fs.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
@@ -92,13 +106,30 @@ function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
       ...typeof raw.color === "string" && raw.color ? { color: raw.color } : current?.color ? { color: current.color } : {},
       ...typeof raw.description === "string" && raw.description ? { description: raw.description } : current?.description ? { description: current.description } : {}
     };
-    registry[name] = resolvedTier === "modifier" ? {
-      tier: "modifier",
-      ...readable !== void 0 ? { readable } : {},
-      ...writable !== void 0 ? { writable } : {},
-      ...metadata
-    } : { tier: "base", readable, writable, ...metadata };
+    if (resolvedTier === "modifier") {
+      registry[name] = {
+        tier: "modifier",
+        ...readable !== void 0 ? { readable } : {},
+        ...writable !== void 0 ? { writable } : {},
+        ...metadata
+      };
+      continue;
+    }
+    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
+    registry[name] = {
+      tier: "base",
+      readable,
+      writable,
+      ...metadata,
+      ...workspacePointer !== void 0 ? { workspacePointer } : {}
+    };
   }
+}
+function resolveWorkspacePointerFlag(name, raw, _current) {
+  void _current;
+  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
+  if (name === "output") return true;
+  return void 0;
 }
 function cloneDefaults() {
   return Object.fromEntries(
@@ -134,6 +165,7 @@ var init_typeRegistry = __esm({
         writable: true,
         color: "cyan",
         tier: "base",
+        workspacePointer: true,
         description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
       },
       open: {
@@ -2500,7 +2532,7 @@ init_typeRegistry();
 function resolveTentWorkspace(tent) {
   const workspaces = /* @__PURE__ */ new Set();
   for (const box of tent.byPath.values()) {
-    if (splitType(box.type).base !== "output") continue;
+    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath2.resolve(workspace));
   }
@@ -2852,7 +2884,11 @@ function drawRwSegment(parent, key, declared, onChange, allowInherit = true, rea
   const segment = parent.createDiv({
     cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "")
   });
-  segment.createSpan({ cls: "tent-seg-key", text: key === "readable" ? "R" : "W" });
+  const keyLabel = key === "readable" ? "R" : key === "writable" ? "W" : "\u9488";
+  segment.createSpan({ cls: "tent-seg-key", text: keyLabel });
+  if (key === "workspacePointer") {
+    tentTooltip(segment, "\u53EF\u627F\u8F7D workspace \u6307\u9488\uFF1A\u5F00\u5219\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u6CE8\u518C workspace \u8DEF\u5F84");
+  }
   for (const state of rwSegmentStates(declared, allowInherit)) {
     const option = segment.createDiv({
       cls: "tent-status-segment-option" + (state.active ? " is-active" : ""),
@@ -2925,6 +2961,9 @@ async function updateTypeMetadata(fs, level, name, patch) {
     }
     updateAxis(current, "readable", patch.readable);
     updateAxis(current, "writable", patch.writable);
+    if (patch.workspacePointer !== void 0) {
+      setBaseWorkspacePointer(current, patch.workspacePointer);
+    }
     await writeTypeRegistryUnlocked(fs, registry);
   });
 }
@@ -2998,6 +3037,7 @@ function withDefaultColor(registry, definition) {
 }
 
 // src/plugin/registry-pane.ts
+init_typeRegistry();
 function drawRegistryPane(host, context, state) {
   host.createDiv({ cls: "registry-title", text: "\u7C7B\u578B / \u89D2\u8272 \u6CE8\u518C\u8868" });
   const list = host.createDiv({ cls: "registry-list" });
@@ -3156,7 +3196,8 @@ function drawTypeRow(content, context, state, section, name, definition) {
   drawRwCapsule(
     rightArea.createDiv({ cls: "item-indicators" }),
     definition.readable,
-    definition.writable
+    definition.writable,
+    baseDefinitionWorkspacePointer(definition) === true ? true : definition.tier === "modifier" ? void 0 : false
   );
   const actions = rightArea.createDiv({ cls: "row-actions" });
   const edit = actions.createEl("button", {
@@ -3202,10 +3243,11 @@ function drawTypeRow(content, context, state, section, name, definition) {
   };
   if (open2) drawTypeEditDrawer(wrapper, context, name, definition);
 }
-function drawRwCapsule(host, readable, writable) {
+function drawRwCapsule(host, readable, writable, workspacePointer) {
   const capsule = host.createSpan({ cls: "rw-cap" });
   const label = (state) => state === void 0 ? "\u7EE7\u627F" : state ? "\u5F00" : "\u5173";
-  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}`);
+  const pointerTip = workspacePointer === void 0 ? "" : ` \xB7 workspace \u6307\u9488:${label(workspacePointer)}`;
+  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}${pointerTip}`);
   const drawPart = (key, value) => {
     const className = value === void 0 ? "is-inherit" : value ? "is-on" : "is-off";
     const symbol = value === void 0 ? "\u2014" : value ? "\u221A" : "\u2715";
@@ -3216,6 +3258,10 @@ function drawRwCapsule(host, readable, writable) {
   drawPart("R", readable);
   capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
   drawPart("W", writable);
+  if (workspacePointer !== void 0) {
+    capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
+    drawPart("\u9488", workspacePointer);
+  }
 }
 function drawPalette(host, selected, onSelect) {
   const palette = host.createDiv({ cls: "tent-color-palette" });
@@ -3239,7 +3285,7 @@ function drawPalette(host, selected, onSelect) {
   return palette;
 }
 function drawLabelRow(host, label, extraClass = "") {
-  const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label === "\u6307\u9488" ? "workspace-pointer" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const row = host.createDiv({
     cls: `tent-newform-row tent-newform-row-${normalized}${extraClass ? ` ${extraClass}` : ""}`
   });
@@ -3272,6 +3318,21 @@ function drawTypeEditDrawer(wrapper, context, name, definition) {
     });
     await context.refresh();
   }, isModifier);
+  if (!isModifier) {
+    const pointer = drawLabelRow(drawer, "\u6307\u9488").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(
+      pointer,
+      "workspacePointer",
+      baseDefinitionWorkspacePointer(definition) === true,
+      async (value) => {
+        await updateTypeMetadata(context.fs, "type", name, {
+          workspacePointer: value === true
+        });
+        await context.refresh();
+      },
+      false
+    );
+  }
   const description = drawLabelRow(drawer, "\u63CF\u8FF0").createEl("textarea", {
     cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
     attr: { rows: "1" }
@@ -3293,6 +3354,7 @@ function drawNewTypeForm(section, context, state, tier) {
     description: "",
     readable: tier === "modifier" ? void 0 : true,
     writable: tier === "modifier" ? void 0 : false,
+    workspacePointer: false,
     color: "gray"
   };
   const isModifier = tier === "modifier";
@@ -3314,6 +3376,12 @@ function drawNewTypeForm(section, context, state, tier) {
   drawRwSegment(rw, "writable", form.writable, (value) => {
     form.writable = value;
   }, isModifier);
+  if (!isModifier) {
+    const pointer = drawLabelRow(card, "\u6307\u9488").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(pointer, "workspacePointer", form.workspacePointer, (value) => {
+      form.workspacePointer = value === true;
+    }, false);
+  }
   const description = drawLabelRow(card, "\u63CF\u8FF0").createEl("textarea", {
     cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
     attr: { rows: "1" }
@@ -3338,7 +3406,8 @@ function drawNewTypeForm(section, context, state, tier) {
     } : {
       tier: "base",
       readable: form.readable,
-      writable: form.writable
+      writable: form.writable,
+      ...form.workspacePointer ? { workspacePointer: true } : {}
     };
     if (form.color) definition.color = form.color;
     if (form.description) definition.description = form.description;
@@ -4371,7 +4440,9 @@ var TentView = class extends import_obsidian4.ItemView {
       this.propEditExpanded = !this.propEditExpanded;
       this.draw();
     };
-    if (splitType(box.type).base === "output") this.drawOutputSummary(card, box);
+    if (this.tent && typeAllowsWorkspacePointer(box.type, this.tent.typeRegistry)) {
+      this.drawOutputSummary(card, box);
+    }
     const reg = this.tent.typeRegistry;
     if (this.propEditExpanded) {
       const editor = card.createDiv({ cls: "tent-prop-editor" });
@@ -4753,7 +4824,7 @@ var TentView = class extends import_obsidian4.ItemView {
             {
               integrate: async (refs) => {
                 const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
-                if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace output \u6307\u9488");
+                if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace \u6307\u9488");
                 const contract = await ensureRoleWorkspace(wp, report.role);
                 await integrateWorkspaceCommits(contract, refs);
               }
@@ -5274,9 +5345,11 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       const summary = new import_obsidian5.Setting(row).setName(name).setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
+      const pointerFlag = baseDefinitionWorkspacePointer(definition);
+      const pointerSummary = pointerFlag === void 0 && (definition.tier ?? "base") === "modifier" ? "" : ` \xB7 ${axisSummary("\u9488", pointerFlag === true)}`;
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} \xB7 ${axisSummary("W", definition.writable)}`
+        text: `${axisSummary("R", definition.readable)} \xB7 ${axisSummary("W", definition.writable)}${pointerSummary}`
       });
       summary.addButton(
         (button) => button.setIcon("settings").setTooltip(`\u7F16\u8F91 ${name}`).onClick(() => {
@@ -5301,6 +5374,9 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       this.display();
     });
     this.drawAxisControl(editor, definition);
+    if ((definition.tier ?? "base") === "base") {
+      this.drawWorkspacePointerControl(editor, definition);
+    }
     if (!BUILTIN_TYPES.has(name)) {
       new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684\u5E10\u3002").addButton(
         (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
@@ -5327,13 +5403,30 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       });
     }
   }
+  drawWorkspacePointerControl(parent, definition) {
+    new import_obsidian5.Setting(parent).setName("\u6307\u9488").setDesc("\u5F00\u542F\u540E\uFF0C\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u627F\u8F7D workspace \u8DEF\u5F84\u5E76\u6CE8\u518C workspace \u5951\u7EA6\u3002").addDropdown(
+      (dropdown) => dropdown.addOption("on", "\u5F00").addOption("off", "\u5173").setValue(baseDefinitionWorkspacePointer(definition) === true ? "on" : "off").onChange(async (value) => {
+        setBaseWorkspacePointer(definition, value === "on");
+        await this.plugin.saveSettings();
+        this.display();
+      })
+    );
+  }
   drawAddType(parent, tier, label) {
     let name = "";
-    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc("\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    let workspacePointer = false;
+    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc(tier === "base" ? "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002\u53EF\u9009\u5F00\u542F workspace \u6307\u9488\u80FD\u529B\u3002" : "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
     }));
+    if (tier === "base") {
+      form.addDropdown(
+        (dropdown) => dropdown.addOption("off", "\u6307\u9488\u5173").addOption("on", "\u6307\u9488\u5F00").setValue("off").onChange((value) => {
+          workspacePointer = value === "on";
+        })
+      );
+    }
     form.addButton(
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
@@ -5346,7 +5439,13 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
           new import_obsidian5.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
-        registry[normalized] = tier === "base" ? { tier: "base", readable: true, writable: false, color: "gray" } : { tier: "modifier", color: "gray" };
+        registry[normalized] = tier === "base" ? {
+          tier: "base",
+          readable: true,
+          writable: false,
+          color: "gray",
+          ...workspacePointer ? { workspacePointer: true } : {}
+        } : { tier: "modifier", color: "gray" };
         this.openType = normalized;
         await this.plugin.saveSettings();
         this.display();

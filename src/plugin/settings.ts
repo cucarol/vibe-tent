@@ -1,6 +1,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import {
+  baseDefinitionWorkspacePointer,
   DEFAULT_TYPE_REGISTRY,
+  setBaseWorkspacePointer,
   TYPE_COLOR_PALETTE,
   type TypeDefinition,
   type TypeRegistry,
@@ -156,9 +158,14 @@ export class TentSettingTab extends PluginSettingTab {
         .setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
+      const pointerFlag = baseDefinitionWorkspacePointer(definition);
+      const pointerSummary =
+        pointerFlag === undefined && (definition.tier ?? "base") === "modifier"
+          ? ""
+          : ` · ${axisSummary("针", pointerFlag === true)}`;
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} · ${axisSummary("W", definition.writable)}`,
+        text: `${axisSummary("R", definition.readable)} · ${axisSummary("W", definition.writable)}${pointerSummary}`,
       });
       summary.addButton((button) =>
         button
@@ -189,6 +196,9 @@ export class TentSettingTab extends PluginSettingTab {
       this.display();
     });
     this.drawAxisControl(editor, definition);
+    if ((definition.tier ?? "base") === "base") {
+      this.drawWorkspacePointerControl(editor, definition);
+    }
 
     if (!BUILTIN_TYPES.has(name)) {
       new Setting(editor)
@@ -225,13 +235,42 @@ export class TentSettingTab extends PluginSettingTab {
     }
   }
 
+  private drawWorkspacePointerControl(parent: HTMLElement, definition: TypeDefinition) {
+    new Setting(parent)
+      .setName("指针")
+      .setDesc("开启后，该一级 type 的框可承载 workspace 路径并注册 workspace 契约。")
+      .addDropdown((dropdown) =>
+        dropdown
+          .addOption("on", "开")
+          .addOption("off", "关")
+          .setValue(baseDefinitionWorkspacePointer(definition) === true ? "on" : "off")
+          .onChange(async (value) => {
+            setBaseWorkspacePointer(definition, value === "on");
+            await this.plugin.saveSettings();
+            this.display();
+          })
+      );
+  }
+
   private drawAddType(parent: HTMLElement, tier: TypeTier, label: string) {
     let name = "";
+    let workspacePointer = false;
     const form = new Setting(parent)
       .setName(`新建${label}`)
-      .setDesc("创建后名称不可修改。");
+      .setDesc(tier === "base" ? "创建后名称不可修改。可选开启 workspace 指针能力。" : "创建后名称不可修改。");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => { name = value; }));
+    if (tier === "base") {
+      form.addDropdown((dropdown) =>
+        dropdown
+          .addOption("off", "指针关")
+          .addOption("on", "指针开")
+          .setValue("off")
+          .onChange((value) => {
+            workspacePointer = value === "on";
+          })
+      );
+    }
     form.addButton((button) =>
       button.setButtonText("新建").setCta().onClick(async () => {
         const normalized = name.trim();
@@ -245,7 +284,13 @@ export class TentSettingTab extends PluginSettingTab {
           return;
         }
         registry[normalized] = tier === "base"
-          ? { tier: "base", readable: true, writable: false, color: "gray" }
+          ? {
+              tier: "base",
+              readable: true,
+              writable: false,
+              color: "gray",
+              ...(workspacePointer ? { workspacePointer: true } : {}),
+            }
           : { tier: "modifier", color: "gray" };
         this.openType = normalized;
         await this.plugin.saveSettings();

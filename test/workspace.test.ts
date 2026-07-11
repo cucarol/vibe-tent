@@ -5,7 +5,46 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
+import { createPrimaryType, updateTypeMetadata } from "../src/core/typeManagement.js";
 import { configureTestGitIdentity, git, makeTent } from "./helpers.js";
+
+test("resolveTentWorkspace:按一级 type 的 workspacePointer 解析,不依赖 output 名称", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const { resolveTentWorkspace } = await import("../src/core/workspace.js");
+
+  await fs.writeFile(
+    path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"),
+    "---\nid: bx-o1\ntype: output\nworkspace: C:/legacy/repo\n---\n",
+  );
+  let tent = await loadTent(fsa);
+  assert.equal(path.resolve(resolveTentWorkspace(tent)!), path.resolve("C:/legacy/repo"));
+
+  await updateTypeMetadata(fsa, "type", "output", { workspacePointer: false });
+  tent = await loadTent(fsa);
+  assert.equal(resolveTentWorkspace(tent), undefined, "关闭能力后即使有 workspace 字段也不注册");
+
+  await createPrimaryType(fsa, "repo", {
+    tier: "base",
+    readable: true,
+    writable: true,
+    workspacePointer: true,
+  });
+  await fs.mkdir(path.join(dir, "repo-pointer"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "repo-pointer", "repo-pointer.md"),
+    "---\nid: bx-repo1\ntype: repo\nworkspace: C:/custom/repo\n---\n",
+  );
+  tent = await loadTent(fsa);
+  assert.equal(path.resolve(resolveTentWorkspace(tent)!), path.resolve("C:/custom/repo"));
+
+  await fs.writeFile(
+    path.join(dir, "repo-pointer", "repo-pointer.md"),
+    "---\nid: bx-repo1\ntype: repo\n---\n",
+  );
+  tent = await loadTent(fsa);
+  assert.equal(resolveTentWorkspace(tent), undefined, "开启能力但无 workspace 字段不产生契约");
+});
 
 test("workspaceCheckShell:POSIX require-check uses portable sh -c", async () => {
   const { workspaceCheckShell } = await import("../src/core/workspace.js");

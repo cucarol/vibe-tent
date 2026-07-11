@@ -380,6 +380,7 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: true,
     color: "cyan",
     tier: "base",
+    workspacePointer: true,
     description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
   },
   open: {
@@ -427,6 +428,14 @@ function resolveTypeAxis(type, axis, registry) {
   const modVal = modifier ? registry[modifier]?.[axis] : void 0;
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
+function typeAllowsWorkspacePointer(type, registry) {
+  const { base } = splitType(type);
+  return baseDefinitionWorkspacePointer(registry[base] ?? registry[type]) === true;
+}
+function baseDefinitionWorkspacePointer(definition) {
+  if (!definition || definition.tier === "modifier") return void 0;
+  return definition.workspacePointer;
+}
 async function loadTypeRegistry(fs4) {
   if (!await fs4.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
@@ -462,13 +471,30 @@ function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
       ...typeof raw.color === "string" && raw.color ? { color: raw.color } : current?.color ? { color: current.color } : {},
       ...typeof raw.description === "string" && raw.description ? { description: raw.description } : current?.description ? { description: current.description } : {}
     };
-    registry[name] = resolvedTier === "modifier" ? {
-      tier: "modifier",
-      ...readable !== void 0 ? { readable } : {},
-      ...writable !== void 0 ? { writable } : {},
-      ...metadata
-    } : { tier: "base", readable, writable, ...metadata };
+    if (resolvedTier === "modifier") {
+      registry[name] = {
+        tier: "modifier",
+        ...readable !== void 0 ? { readable } : {},
+        ...writable !== void 0 ? { writable } : {},
+        ...metadata
+      };
+      continue;
+    }
+    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
+    registry[name] = {
+      tier: "base",
+      readable,
+      writable,
+      ...metadata,
+      ...workspacePointer !== void 0 ? { workspacePointer } : {}
+    };
   }
+}
+function resolveWorkspacePointerFlag(name, raw, _current) {
+  void _current;
+  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
+  if (name === "output") return true;
+  return void 0;
 }
 function cloneDefaults() {
   return Object.fromEntries(
@@ -2077,7 +2103,7 @@ import { spawn } from "node:child_process";
 function resolveTentWorkspace(tent) {
   const workspaces = /* @__PURE__ */ new Set();
   for (const box of tent.byPath.values()) {
-    if (splitType(box.type).base !== "output") continue;
+    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath2.resolve(workspace));
   }
@@ -2445,12 +2471,12 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
       if (!workspacePath) {
-        console.log("Note: this Tent has no workspace output box; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no workspace pointer box; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Add a box whose base type is output and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
+            "--as-sub requires a workspace contract. Add a box whose base type enables workspace pointer capability, and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -2555,12 +2581,12 @@ ${r.relayPrompt}`);
       let integrationLines = [];
       const workspacePath = resolveTentWorkspace(tent);
       if (flags["require-check"]) {
-        if (!workspacePath) return fail("--require-check requires a workspace output pointer");
+        if (!workspacePath) return fail("--require-check requires a workspace pointer");
         await runWorkspaceCheck(workspacePath, flags["require-check"]);
       }
       const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       const integrate = async (commitRefs) => {
-        if (!workspacePath) throw new Error("The Tent has no workspace output pointer");
+        if (!workspacePath) throw new Error("The Tent has no workspace pointer");
         const contract = await ensureRoleWorkspace(workspacePath, owner);
         const integrated = await integrateWorkspaceCommits(contract, commitRefs);
         integrationLines = integrated.map(
@@ -2683,7 +2709,7 @@ ${r.relayPrompt}`);
         break;
       }
       for (const box of boxes) {
-        const pointer = splitType(box.type).base === "output" ? outputPointer(box.fm, box.body) : "";
+        const pointer = typeAllowsWorkspacePointer(box.type, tent.typeRegistry) ? outputPointer(box.fm, box.body) : "";
         console.log(`${box.id}	${box.path}	${box.type}${pointer ? `	${pointer}` : ""}`);
       }
       break;

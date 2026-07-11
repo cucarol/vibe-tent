@@ -6,6 +6,7 @@ import {
   pendingDispatches,
 } from "../src/plugin/pending-dispatch.js";
 import type { TaskEnvelope } from "../src/core/task.js";
+import { baseDefinitionWorkspacePointer } from "../src/core/typeRegistry.js";
 import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
@@ -212,6 +213,8 @@ test("plugin settings:migrates legacy defaults", () => {
     newTentTemplate: {
       typeRegistry: {
         note: { tier: "base", readable: true, writable: false, color: "blue" },
+        output: { tier: "base", readable: true, writable: true, color: "cyan" },
+        repo: { tier: "base", readable: true, writable: true, color: "green", workspacePointer: true },
       },
       rolesRegistry: {
         roles: [
@@ -231,6 +234,12 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.equal(settings.appearance, "light");
   assert.equal(settings.dispatchPrefs.copyPromptToClipboard, false);
   assert.equal(settings.newTentDefaults.typeRegistry.note.description, undefined);
+  assert.equal(
+    baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.output),
+    true,
+    "旧默认 Type 无字段时 output 仍兼容开启 workspace 指针"
+  );
+  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.repo), true);
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   assert.deepEqual(settings.newTentDefaults.rolesRegistry.roles[0], {
     name: "planner",
@@ -238,6 +247,13 @@ test("plugin settings:migrates legacy defaults", () => {
     description: "Plan",
   });
   assert.equal(settings.newTentDefaults.rulesTemplate, "# Custom");
+});
+
+test("plugin settings:default type registry exposes workspacePointer on output", () => {
+  const settings = mergeSettings({});
+  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.output), true);
+  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.goal), undefined);
+  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.prompt), undefined);
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

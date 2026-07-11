@@ -9,7 +9,7 @@ import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
 import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
 import { Box, Status } from "../core/types.js";
-import { splitType, joinType } from "../core/typeRegistry.js";
+import { splitType, joinType, typeAllowsWorkspacePointer } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
@@ -1036,7 +1036,9 @@ export class TentView extends ItemView {
       this.draw();
     };
 
-    if (splitType(box.type).base === "output") this.drawOutputSummary(card, box);
+    if (this.tent && typeAllowsWorkspacePointer(box.type, this.tent.typeRegistry)) {
+      this.drawOutputSummary(card, box);
+    }
 
     const reg = this.tent!.typeRegistry;
 
@@ -1451,7 +1453,7 @@ export class TentView extends ItemView {
             {
               integrate: async (refs) => {
                 const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
-                if (!wp) throw new Error("帐内没有 workspace output 指针");
+                if (!wp) throw new Error("帐内没有 workspace 指针");
                 const contract = await ensureRoleWorkspace(wp, report.role);
                 await integrateWorkspaceCommits(contract, refs);
               },

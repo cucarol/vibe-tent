@@ -305,7 +305,7 @@ test("tent dispatch --as-sub:missing workspace explains how to register the cont
 
   await assert.rejects(
     () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub", "--by", "planner"),
-    /Add a box whose base type is output and set `workspace: C:\/path\/to\/git-root`/,
+    /Add a box whose base type enables workspace pointer capability, and set `workspace: C:\/path\/to\/git-root`/,
   );
 });
 

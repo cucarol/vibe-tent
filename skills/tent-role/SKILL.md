@@ -111,7 +111,7 @@ tent propose <boxId> <file|->
 标准链路是：dispatch -> spawn/唤醒 -> receive report -> review -> complete。
 
 - dispatch：用 `tent dispatch` 写 manifest 和 pending task envelope，不写 owner/status。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，也没有 pending task envelope，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
-- workspace 契约：任意位置的框只要一级/base type 是 `output`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名不参与识别。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。没有该字段的 output 只是普通产出框。
+- workspace 契约：任意位置的框只要其一级/base type 在 `.tent/types.json` 开启了 `workspacePointer`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名与 type 字面名称（是否叫 `output`）不参与识别，二级 type 跟随一级。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。开启能力但未填 `workspace` 的框只是普通框。
 - sub 派活：`--as-sub --by <role>` 把 `dispatchedBy` 记为派活 role，并把目标分支设为派活 role 的分支，让 sub 交付进入其上级交付；所以它必须有 workspace 契约。普通 user/peer 派活没有 workspace 时仍可作为纯 Tent 任务。
 - task-ack：目标 agent 执行 `tent task-ack <taskPath>` 后，envelope 变为 taken，并把目标 box owner 设为该 role、status 设为 doing。
 - manifest 是 dispatch 时刻的快照；派活后修改 box 的 readable、writable 或 type 不影响已发出的 manifest，需要释放后重新 dispatch 才刷新。

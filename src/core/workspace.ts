@@ -3,7 +3,7 @@ import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { LoadedTent } from "./tree.js";
 import { parseOutputPointer } from "./output.js";
-import { splitType } from "./typeRegistry.js";
+import { typeAllowsWorkspacePointer } from "./typeRegistry.js";
 import type { RoleWorkspaceContract } from "./task.js";
 
 export interface IntegrationResult {
@@ -34,7 +34,7 @@ export interface WorkspaceCheckResult {
 export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
   const workspaces = new Set<string>();
   for (const box of tent.byPath.values()) {
-    if (splitType(box.type).base !== "output") continue;
+    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath.resolve(workspace));
   }

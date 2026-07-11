@@ -7,7 +7,12 @@ import { loadTent } from "../src/core/tree.js";
 import { canClaim } from "../src/core/claim.js";
 import { buildManifest } from "../src/core/manifest.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
-import { loadTypeRegistry } from "../src/core/typeRegistry.js";
+import {
+  baseDefinitionWorkspacePointer,
+  loadTypeRegistry,
+  normalizeRegistry,
+  typeAllowsWorkspacePointer,
+} from "../src/core/typeRegistry.js";
 import {
   createPrimaryType,
   createSecondaryType,
@@ -16,6 +21,7 @@ import {
   updateTypeMetadata,
 } from "../src/core/typeManagement.js";
 import { makeTent } from "./helpers.js";
+
 test("一级 type 默认:goal/prompt/output 来自注册表", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
@@ -36,6 +42,63 @@ test("一级 type 默认:goal/prompt/output 来自注册表", async () => {
   const out = tent.byId.get("bx-o1")!;
   assert.equal(out.writable.value, true, "output 默认可写");
   assert.equal(out.writable.source, "type");
+  assert.equal(baseDefinitionWorkspacePointer(tent.typeRegistry.output), true, "默认 output 开启 workspace 指针");
+  assert.equal(baseDefinitionWorkspacePointer(tent.typeRegistry.goal), undefined);
+  assert.equal(typeAllowsWorkspacePointer("output", tent.typeRegistry), true);
+  assert.equal(typeAllowsWorkspacePointer("output-reference", tent.typeRegistry), true);
+  assert.equal(typeAllowsWorkspacePointer("goal", tent.typeRegistry), false);
+});
+
+test("workspacePointer:旧帐无字段时仅名为 output 的一级 type 兼容开启", async () => {
+  const legacy = normalizeRegistry({
+    goal: { tier: "base", readable: true, writable: false },
+    prompt: { tier: "base", readable: true, writable: true },
+    output: { tier: "base", readable: true, writable: true },
+    repo: { tier: "base", readable: true, writable: true },
+  });
+  assert.equal(baseDefinitionWorkspacePointer(legacy.output), true);
+  assert.equal(baseDefinitionWorkspacePointer(legacy.repo), undefined);
+  assert.equal(typeAllowsWorkspacePointer("output", legacy), true);
+  assert.equal(typeAllowsWorkspacePointer("repo", legacy), false);
+
+  const renamed = normalizeRegistry({
+    delivery: { tier: "base", readable: true, writable: true, workspacePointer: true },
+    output: { tier: "base", readable: true, writable: true, workspacePointer: false },
+  });
+  assert.equal(typeAllowsWorkspacePointer("delivery", renamed), true);
+  assert.equal(typeAllowsWorkspacePointer("delivery-asset", renamed), true);
+  assert.equal(typeAllowsWorkspacePointer("output", renamed), false);
+});
+
+test("workspacePointer:可在一级 type 上更新,二级 type 拒绝", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  await createPrimaryType(fsa, "repo", {
+    tier: "base",
+    readable: true,
+    writable: true,
+    workspacePointer: true,
+  });
+  let registry = await loadTypeRegistry(fsa);
+  assert.equal(baseDefinitionWorkspacePointer(registry.repo), true);
+
+  await updateTypeMetadata(fsa, "type", "repo", { workspacePointer: false });
+  registry = await loadTypeRegistry(fsa);
+  assert.equal(baseDefinitionWorkspacePointer(registry.repo), false);
+  assert.equal(typeAllowsWorkspacePointer("repo", registry), false);
+
+  await updateTypeMetadata(fsa, "type", "output", { workspacePointer: false });
+  registry = await loadTypeRegistry(fsa);
+  assert.equal(baseDefinitionWorkspacePointer(registry.output), false);
+  assert.equal(typeAllowsWorkspacePointer("output", registry), false);
+  // 落盘后重载仍保持关闭，不被默认兼容逻辑吞回。
+  registry = await loadTypeRegistry(fsa);
+  assert.equal(typeAllowsWorkspacePointer("output", registry), false);
+
+  await assert.rejects(
+    () => updateTypeMetadata(fsa, "type", "reference", { workspacePointer: true }),
+    /Modifier types cannot configure workspace pointer/,
+  );
 });
 
 test("单层 type:asset 只作用当前 node 的 readable", async () => {

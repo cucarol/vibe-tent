@@ -5,6 +5,7 @@ import {
   DEFAULT_TYPE_REGISTRY,
   TYPE_COLOR_PALETTE,
   loadTypeRegistry,
+  setBaseWorkspacePointer,
   TypeDefinition,
   TYPE_REGISTRY_PATH,
   TypeRegistry,
@@ -18,6 +19,8 @@ export interface TypeMetadataPatch {
   description?: string;
   readable?: boolean | "inherit";
   writable?: boolean | "inherit";
+  /** 仅一级/base type 可设；二级 type 跟随一级。 */
+  workspacePointer?: boolean;
 }
 
 export interface TypeReference {
@@ -96,6 +99,10 @@ export async function updateTypeMetadata(
     }
     updateAxis(current, "readable", patch.readable);
     updateAxis(current, "writable", patch.writable);
+    if (patch.workspacePointer !== undefined) {
+      // 显式持久化 false，避免重载时被默认 output 兼容逻辑吞回为 true。
+      setBaseWorkspacePointer(current, patch.workspacePointer);
+    }
     await writeTypeRegistryUnlocked(fs, registry);
   });
 }
