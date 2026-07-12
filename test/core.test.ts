@@ -238,8 +238,7 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
 
 test("dispatch:corrupt roles registry is backed up, reset, and dispatch continues", async () => {
   const dir = await makeTent();
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(path.join(dir, ".tent", "roles.json"), "{not-json", "utf8");
+  await fs.writeFile(path.join(dir, "roles.json"), "{not-json", "utf8");
   const env = {
     fs: new NodeFs(dir),
     clock: { now: () => "2026-06-29T01:02:03.000Z" },
@@ -252,8 +251,8 @@ test("dispatch:corrupt roles registry is backed up, reset, and dispatch continue
   const box = parseFrontmatter(await fs.readFile(path.join(dir, "prompt", "表达式任务书", "表达式任务书.md"), "utf8")).data;
   assert.equal(box.owner, undefined);
   assert.equal(box.status, undefined);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, ".tent", "roles.json"), "utf8")), { roles: [] });
-  assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("roles.json.corrupt-")), true);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "roles.json"), "utf8")), { roles: [] });
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), true);
   assert.equal(await exists(path.join(dir, "temp", "analyst")), true);
 });
 

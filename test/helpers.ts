@@ -17,6 +17,25 @@ export async function makeTent(): Promise<string> {
         )
       );
   };
+  // System root markers: CLI must locate RULES.md (+ types/temp) and must not fall back to cwd.
+  await fs.writeFile(path.join(dir, "RULES.md"), "# test tent\n");
+  await fs.writeFile(
+    path.join(dir, "types.json"),
+    JSON.stringify(
+      {
+        note: { tier: "base", readable: true, writable: true, coordination: false, color: "gray" },
+        goal: { tier: "base", readable: true, writable: false, coordination: true, color: "blue" },
+        prompt: { tier: "base", readable: true, writable: true, coordination: true, color: "purple" },
+        artifact: { tier: "base", readable: true, writable: true, coordination: true, color: "cyan" },
+        open: { tier: "modifier", readable: true, writable: true, color: "green" },
+        reference: { tier: "modifier", readable: true, color: "blue" },
+        asset: { tier: "modifier", writable: true, color: "purple" },
+        sealed: { tier: "modifier", readable: false, writable: false, color: "red" },
+      },
+      null,
+      2
+    ) + "\n"
+  );
   await box("goal", "id: bx-goalzone\ntype: goal");
   await box("goal/挖新alpha", "id: bx-g1\ntype: goal\nstatus: doing");
   await box(

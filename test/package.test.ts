@@ -319,7 +319,7 @@ test("tent dispatch --as-sub:missing workspace explains how to register the cont
 
   await assert.rejects(
     () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub", "--by", "planner"),
-    /Scaffold an in-workspace tent at <workspace>\/\.tent\/|set `workspace: C:\/path\/to\/git-root`/,
+    /Scaffold an in-workspace tent at <workspace>\/\.tent\//,
   );
 });
 

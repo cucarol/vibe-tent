@@ -8,7 +8,7 @@ import { loadTent } from "../src/core/tree.js";
 import { createPrimaryType, updateTypeMetadata } from "../src/core/typeManagement.js";
 import { configureTestGitIdentity, git, makeTent } from "./helpers.js";
 
-test("resolveTentWorkspace:优先 in-workspace 布局,否则读 concept 上的 workspace 字段", async () => {
+test("resolveTentWorkspace:仅 in-workspace 布局,不再扫描 concept workspace 字段", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const { resolveTentWorkspace, findIntegratedCommit } = await import("../src/core/workspace.js");
@@ -18,15 +18,16 @@ test("resolveTentWorkspace:优先 in-workspace 布局,否则读 concept 上的 w
     "---\nid: bx-o1\ntype: artifact\nworkspace: C:/legacy/repo\n---\n",
   );
   let tent = await loadTent(fsa);
-  assert.equal(path.resolve(resolveTentWorkspace(tent)!), path.resolve("C:/legacy/repo"));
-
-  // 去掉所有 workspace 字段后无契约
-  await fs.writeFile(
-    path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"),
-    "---\nid: bx-o1\ntype: artifact\n---\n",
+  assert.equal(
+    resolveTentWorkspace(tent),
+    undefined,
+    "无 systemRoot 时不得用 concept workspace 字段兜底",
   );
-  tent = await loadTent(fsa);
-  assert.equal(resolveTentWorkspace(tent), undefined, "无 workspace 字段不产生契约");
+  assert.equal(
+    resolveTentWorkspace(tent, dir),
+    undefined,
+    "system root 不叫 .tent 时不得扫描 workspace 字段",
+  );
 
   // system root 名为 .tent 时父目录即 workspace
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ws-layout-"));

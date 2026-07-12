@@ -276,25 +276,24 @@ test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(path.join(dir, ".tent", "tags.json"), "{not-json", "utf8");
+  // system root is flat: registries live at tags.json (not nested .tent/)
+  await fs.writeFile(path.join(dir, "tags.json"), "{not-json", "utf8");
   const notePath = path.join(dir, "prompt", "表达式任务书", "表达式任务书.md");
   const raw = await fs.readFile(notePath, "utf8");
   await fs.writeFile(notePath, raw.replace("type: prompt", "type: prompt\ntags: [legacy, recovered]"));
 
   const warnings = await captureConsoleError(() => addRegistryTag(fsa, "fresh"));
 
-  assert.match(warnings.join("\n"), /\.tent\/tags\.json was corrupt; backed up to \.tent\/tags\.json\.corrupt-/);
+  assert.match(warnings.join("\n"), /tags\.json was corrupt; backed up to tags\.json\.corrupt-/);
   assert.match(warnings.join("\n"), /and recovered\. Review it\./);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["fresh", "legacy", "recovered"]);
-  assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("tags.json.corrupt-")), true);
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("tags.json.corrupt-")), true);
 });
 
 test("corrupt order registry is backed up and reset to default order", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(path.join(dir, ".tent", "order.json"), "{not-json", "utf8");
+  await fs.writeFile(path.join(dir, "order.json"), "{not-json", "utf8");
 
   const warnings = await captureConsoleError(async () => {
     const { createBox } = await import("../src/core/ops.js");
@@ -305,27 +304,26 @@ test("corrupt order registry is backed up and reset to default order", async () 
     } as any, { parentPath: "", name: "AfterBadOrder", type: "goal" });
   });
 
-  assert.match(warnings.join("\n"), /\.tent\/order\.json was corrupt; backed up to \.tent\/order\.json\.corrupt-/);
+  assert.match(warnings.join("\n"), /order\.json was corrupt; backed up to order\.json\.corrupt-/);
   assert.match(warnings.join("\n"), /and recovered\. Review it\./);
-  assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("order.json.corrupt-")), true);
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("order.json.corrupt-")), true);
   assert.equal((await loadTent(fsa)).byPath.has("AfterBadOrder"), true);
 });
 
 test("corrupt roles registry is backed up and reset with an explicit restore warning", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(path.join(dir, ".tent", "roles.json"), "{not-json", "utf8");
+  await fs.writeFile(path.join(dir, "roles.json"), "{not-json", "utf8");
 
   const warnings = await captureConsoleError(async () => {
     assert.deepEqual(await loadRolesRegistry(fsa), { roles: [] });
   });
 
-  assert.match(warnings.join("\n"), /\.tent\/roles\.json was corrupt; backed up to \.tent\/roles\.json\.corrupt-/);
+  assert.match(warnings.join("\n"), /roles\.json was corrupt; backed up to roles\.json\.corrupt-/);
   assert.match(warnings.join("\n"), /and reset\. Review it\./);
   assert.match(warnings.join("\n"), /IMPORTANT: role definitions cannot be inferred/);
-  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, ".tent", "roles.json"), "utf8")), { roles: [] });
-  assert.equal((await fs.readdir(path.join(dir, ".tent"))).some((name) => name.startsWith("roles.json.corrupt-")), true);
+  assert.deepEqual(JSON.parse(await fs.readFile(path.join(dir, "roles.json"), "utf8")), { roles: [] });
+  assert.equal((await fs.readdir(dir)).some((name) => name.startsWith("roles.json.corrupt-")), true);
 });
 
 async function captureConsoleError(action: () => Promise<void>): Promise<string[]> {

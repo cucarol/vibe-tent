@@ -136,9 +136,9 @@ test("旧 types.json schema 会归一到单层 type registry", async () => {
   const dir = await makeTent();
   const legacy = path.join(dir, "prompt", "旧站资料", "旧站资料.md");
   await fs.writeFile(legacy, "---\nid: bx-a1\ntype: prompt-asset\n---\n");
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
+  // flat system-root types.json (no nested dual-read)
   await fs.writeFile(
-    path.join(dir, ".tent", "types.json"),
+    path.join(dir, "types.json"),
     JSON.stringify(
       {
         primary: {},
@@ -415,9 +415,8 @@ test("内置 modifier 默认:reference 的 W 与 asset 的 R 继承 base", async
 
 test("types.json:遗留 glyph 静默忽略", async () => {
   const dir = await makeTent();
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
   await fs.writeFile(
-    path.join(dir, ".tent", "types.json"),
+    path.join(dir, "types.json"),
     JSON.stringify({ research: { tier: "base", readable: true, writable: false, glyph: "R" } }),
   );
   const registry = await loadTypeRegistry(new NodeFs(dir));
@@ -427,9 +426,8 @@ test("types.json:遗留 glyph 静默忽略", async () => {
 test("类型注册表:旧 schema 缺 color 时继承默认色,新建缺 color 自动分配", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
   await fs.writeFile(
-    path.join(dir, ".tent", "types.json"),
+    path.join(dir, "types.json"),
     JSON.stringify(
       { primary: { goal: { readable: true, writable: false } }, secondary: {} },
       null,
@@ -451,8 +449,7 @@ test("R4 types.json 损坏 fail-loud,文件缺省仍用内置默认", async () =
   const defaults = await loadTypeRegistry(fsa);
   assert.equal(defaults.goal.readable, true, "缺省文件使用内置注册表");
 
-  await fs.mkdir(path.join(dir, ".tent"), { recursive: true });
-  await fs.writeFile(path.join(dir, ".tent", "types.json"), "{ broken json");
+  await fs.writeFile(path.join(dir, "types.json"), "{ broken json");
   await assert.rejects(() => loadTent(fsa), /types\.json is corrupt/);
 });
 
