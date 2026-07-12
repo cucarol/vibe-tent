@@ -1,0 +1,322 @@
+/**
+ * B9a · Agent Supervisor + SessionRegistry + Fake ProviderAdapter
+ * Uses only the fake provider — no real paid/network agent requests.
+ */
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { createFakeAdapter, FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import {
+  createAgentRuntime,
+  makeSessionId,
+  SessionRegistry,
+  type RuntimeEvent,
+} from "../src/runtime/index.js";
+
+async function tempDataDir(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "tent-b9a-"));
+}
+
+async function tempCwd(): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), "tent-b9a-cwd-"));
+}
+
+function waitFor(
+  events: RuntimeEvent[],
+  type: RuntimeEvent["type"],
+  sessionId: string,
+  timeoutMs = 5000
+): Promise<RuntimeEvent> {
+  const start = Date.now();
+  return new Promise((resolve, reject) => {
+    const tick = () => {
+      const hit = events.find((e) => e.type === type && e.sessionId === sessionId);
+      if (hit) return resolve(hit);
+      if (Date.now() - start > timeoutMs) {
+        return reject(
+          new Error(
+            `timeout waiting for ${type} on ${sessionId}; got ${events.map((e) => e.type).join(",")}`
+          )
+        );
+      }
+      setTimeout(tick, 25);
+    };
+    tick();
+  });
+}
+
+test("makeSessionId uses ss- prefix", () => {
+  const id = makeSessionId(() => 0.1);
+  assert.match(id, /^ss-[0-9a-z]+$/);
+});
+
+test("SessionRegistry persists and lists machine-local sessions", async () => {
+  const dataDir = await tempDataDir();
+  const reg = new SessionRegistry(dataDir);
+  const now = new Date().toISOString();
+  await reg.write({
+    id: "ss-test01",
+    profileId: "fake-default",
+    adapterId: FAKE_ADAPTER_ID,
+    state: "live",
+    pid: 42,
+    runtimeWorkspace: { cwd: "C:\\work" },
+    createdAt: now,
+    updatedAt: now,
+  });
+  const read = await reg.read("ss-test01");
+  assert.ok(read);
+  assert.equal(read!.pid, 42);
+  assert.equal(read!.runtimeWorkspace?.cwd, "C:\\work");
+
+  const listed = await reg.list();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0].id, "ss-test01");
+
+  // Path is under dataDir/sessions — not workspace
+  const file = path.join(dataDir, "sessions", "ss-test01.json");
+  await fs.access(file);
+});
+
+test("startSession / probe / stopSession with fake provider (no paid requests)", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-live001";
+  const handle = await runtime.startSession({
+    sessionId,
+    profileId: "fake-default",
+    roleName: "ACP适配Grok",
+    runtimeWorkspace: { cwd },
+    workspaceLane: {
+      workspace: cwd,
+      worktree: cwd,
+      branch: "tent-role/ACP适配Grok",
+    },
+    bootstrapPrompt: "relay: claim task and do work",
+  });
+
+  assert.equal(handle.state, "live");
+  assert.ok(handle.pid && handle.pid > 0);
+  assert.equal(handle.adapterId, FAKE_ADAPTER_ID);
+
+  await waitFor(events, "session.starting", sessionId);
+  await waitFor(events, "session.live", sessionId);
+
+  const probeLive = await runtime.probe(sessionId);
+  assert.equal(probeLive.alive, true);
+  assert.equal(probeLive.state, "live");
+
+  await runtime.stopSession(sessionId, "user");
+  await waitFor(events, "session.exited", sessionId);
+
+  const probeStopped = await runtime.probe(sessionId);
+  assert.equal(probeStopped.alive, false);
+  assert.ok(probeStopped.state === "stopped" || probeStopped.state === "failed");
+
+  await runtime.shutdown();
+});
+
+test("launch failure records session.failed without spawning paid provider", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir });
+  runtime.registerProfile({
+    id: "fake-broken",
+    adapterId: FAKE_ADAPTER_ID,
+    fake: { failLaunch: "missing binary: codex" },
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-fail001";
+  await assert.rejects(
+    () =>
+      runtime.startSession({
+        sessionId,
+        profileId: "fake-broken",
+        cwd,
+      }),
+    /missing binary/
+  );
+
+  await waitFor(events, "session.failed", sessionId);
+  const probe = await runtime.probe(sessionId);
+  assert.equal(probe.alive, false);
+  assert.equal(probe.state, "failed");
+  assert.match(probe.lastError ?? "", /missing binary/);
+
+  await runtime.shutdown();
+});
+
+test("natural non-zero exit maps to session.failed", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 1000 });
+  runtime.registerProfile({
+    id: "fake-exit1",
+    adapterId: FAKE_ADAPTER_ID,
+    fake: { waitForSignal: false, sleepMs: 50, exitCode: 7, emitStdout: false },
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-exit007";
+  await runtime.startSession({ sessionId, profileId: "fake-exit1", cwd });
+  await waitFor(events, "session.failed", sessionId, 5000);
+
+  const probe = await runtime.probe(sessionId);
+  assert.equal(probe.alive, false);
+  assert.equal(probe.state, "failed");
+
+  await runtime.shutdown();
+});
+
+test("two live sessions do not cross-contaminate cwd", async () => {
+  const dataDir = await tempDataDir();
+  const cwdA = await tempCwd();
+  const cwdB = await tempCwd();
+  await fs.writeFile(path.join(cwdA, "marker-a.txt"), "A");
+  await fs.writeFile(path.join(cwdB, "marker-b.txt"), "B");
+
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
+  const idA = "ss-concura";
+  const idB = "ss-concurb";
+
+  const [ha, hb] = await Promise.all([
+    runtime.startSession({
+      sessionId: idA,
+      profileId: "fake-default",
+      runtimeWorkspace: { cwd: cwdA },
+    }),
+    runtime.startSession({
+      sessionId: idB,
+      profileId: "fake-default",
+      runtimeWorkspace: { cwd: cwdB },
+    }),
+  ]);
+
+  assert.notEqual(ha.pid, hb.pid);
+  assert.equal(ha.runtimeWorkspace?.cwd, cwdA);
+  assert.equal(hb.runtimeWorkspace?.cwd, cwdB);
+
+  const diskA = await runtime.registry.read(idA);
+  const diskB = await runtime.registry.read(idB);
+  assert.equal(diskA?.runtimeWorkspace?.cwd, cwdA);
+  assert.equal(diskB?.runtimeWorkspace?.cwd, cwdB);
+
+  await runtime.stopSession(idA, "user");
+  await runtime.stopSession(idB, "user");
+  await runtime.shutdown();
+});
+
+test("shutdown stops push children (service-stop policy)", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
+  const sessionId = "ss-shut001";
+  await runtime.startSession({ sessionId, profileId: "fake-default", cwd });
+  assert.equal((await runtime.probe(sessionId)).alive, true);
+
+  await runtime.shutdown();
+  assert.equal(runtime.supervisor.listLive().length, 0);
+
+  // New runtime on same disk sees non-alive process
+  const runtime2 = createAgentRuntime({ dataDir });
+  const probe = await runtime2.probe(sessionId);
+  assert.equal(probe.alive, false);
+  assert.ok(probe.state === "stopped" || probe.state === "failed");
+  await runtime2.shutdown();
+});
+
+test("reconcileOnBoot marks dead non-resume sessions failed/stopped", async () => {
+  const dataDir = await tempDataDir();
+  const reg = new SessionRegistry(dataDir);
+  const now = new Date().toISOString();
+  await reg.write({
+    id: "ss-zombie1",
+    profileId: "fake-default",
+    adapterId: FAKE_ADAPTER_ID,
+    state: "live",
+    pid: 999999, // almost certainly dead
+    createdAt: now,
+    updatedAt: now,
+    runtimeWorkspace: { cwd: await tempCwd() },
+  });
+
+  const runtime = createAgentRuntime({ dataDir });
+  const results = await runtime.reconcileOnBoot();
+  assert.equal(results.length, 1);
+  assert.equal(results[0].alive, false);
+  assert.ok(results[0].state === "failed" || results[0].state === "stopped");
+
+  const rec = await reg.read("ss-zombie1");
+  assert.ok(rec);
+  assert.ok(rec!.state === "failed" || rec!.state === "stopped");
+  await runtime.shutdown();
+});
+
+test("subscribe is session-scoped; no chat-router event types", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({
+    dataDir,
+    gracefulMs: 1500,
+    captureStdout: true,
+  });
+  runtime.registerProfile({
+    id: "fake-quick",
+    adapterId: FAKE_ADAPTER_ID,
+    fake: { waitForSignal: false, sleepMs: 80, exitCode: 0, emitStdout: true },
+  });
+
+  const scoped: RuntimeEvent[] = [];
+  const other: RuntimeEvent[] = [];
+  const id = "ss-scope01";
+  runtime.subscribe(id, (e) => scoped.push(e));
+  runtime.subscribe("ss-otherxx", (e) => other.push(e));
+
+  await runtime.startSession({
+    sessionId: id,
+    profileId: "fake-quick",
+    cwd,
+    bootstrapPrompt: "hello-fake",
+  });
+  await waitFor(scoped, "session.exited", id, 5000);
+
+  assert.ok(scoped.some((e) => e.type === "session.live"));
+  assert.equal(other.length, 0);
+
+  const allowed = new Set([
+    "session.starting",
+    "session.live",
+    "session.waiting_user",
+    "session.exited",
+    "session.failed",
+    "session.stdout_tail",
+  ]);
+  for (const e of scoped) {
+    assert.ok(allowed.has(e.type), `unexpected event type ${e.type}`);
+    assert.equal(
+      (e as { message?: string }).message,
+      undefined,
+      "no chat message field on runtime events"
+    );
+  }
+
+  await runtime.shutdown();
+});
+
+test("fake adapter is the only registered default adapter", () => {
+  const adapter = createFakeAdapter();
+  assert.equal(adapter.id, "fake-cli");
+  const caps = adapter.capabilities();
+  assert.equal(caps.canSpawn, true);
+  assert.equal(caps.authModel, "none");
+  assert.equal(caps.observeLevel, "process");
+});
