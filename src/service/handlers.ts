@@ -33,6 +33,7 @@ import {
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { makeSessionId } from "../runtime/types.js";
 import type { RuntimeEvent } from "../runtime/types.js";
+import { buildBacklinkIndex } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
 import type { MutationBus } from "./mutation-bus.js";
@@ -45,6 +46,7 @@ import {
   RPC_A2A_ASK,
   RPC_A2A_DENIED,
   RPC_LIFECYCLE,
+  type ArtifactRef,
   type ConceptProjection,
   type DeliveryProjection,
   type SessionProjection,
@@ -127,6 +129,10 @@ export async function dispatchMethod(
         return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
+      case "docs.search":
+        return docsSearch(ctx, p);
+      case "docs.backlinks":
+        return docsBacklinks(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -237,14 +243,20 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
   const concept = resolveConcept(tent, p);
   const notePath = boxNotePath(concept.path);
   const raw = await mount.env.fs.readFile(notePath);
-  const { body } = parseFrontmatter(raw);
+  const { data, body } = parseFrontmatter(raw);
   return {
     workspaceId,
     id: concept.id,
+    cx: concept.id,
     path: concept.path,
+    name: concept.name,
+    type: concept.type,
+    coordination: concept.coordination,
     body,
+    raw,
     etag: contentEtag(raw),
-    frontmatter: concept.fm,
+    frontmatter: data,
+    artifactRefs: parseArtifactRefs(data),
   };
 }
 
@@ -252,6 +264,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const rawInput = typeof p.raw === "string" ? p.raw : undefined;
   const body = typeof p.body === "string" ? p.body : undefined;
   const frontmatter =
     p.frontmatter && typeof p.frontmatter === "object" && !Array.isArray(p.frontmatter)
@@ -262,8 +275,8 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     const tent = await loadTent(mount.env.fs);
     const concept = resolveConcept(tent, p);
     const notePath = boxNotePath(concept.path);
-    const raw = await mount.env.fs.readFile(notePath);
-    const currentEtag = contentEtag(raw);
+    const diskRaw = await mount.env.fs.readFile(notePath);
+    const currentEtag = contentEtag(diskRaw);
     if (baseEtag && baseEtag !== currentEtag) {
       throw new RpcError(-32009, "etag conflict", {
         currentEtag,
@@ -272,16 +285,37 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       });
     }
 
-    if (frontmatter) {
-      assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
-    }
+    if (rawInput !== undefined) {
+      const diskParsed = parseFrontmatter(diskRaw);
+      const nextParsed = parseFrontmatter(rawInput);
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      // Only reject when protected collab projection fields actually change.
+      const changed: Record<string, unknown> = {};
+      for (const field of PROTECTED_COLLAB_FIELDS) {
+        if (String(nextParsed.data[field] ?? "") !== String(diskParsed.data[field] ?? "")) {
+          changed[field] = nextParsed.data[field];
+        }
+      }
+      if (Object.keys(changed).length > 0) {
+        assertDocsWriteAllowed(tent, concept.id, changed, tasks);
+      }
+      ctx.host.markSelfWrite(workspaceId);
+      await mount.env.fs.writeFile(notePath, rawInput);
+    } else {
+      if (frontmatter) {
+        assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
+      }
 
-    ctx.host.markSelfWrite(workspaceId);
-    if (frontmatter && Object.keys(frontmatter).length > 0) {
-      await patchBox(mount.env, concept.path, frontmatter, tent);
-    }
-    if (body !== undefined) {
-      await patchBody(mount.env, concept.path, body, tent);
+      ctx.host.markSelfWrite(workspaceId);
+      if (frontmatter && Object.keys(frontmatter).length > 0) {
+        await patchBox(mount.env, concept.path, frontmatter, tent);
+      }
+      if (body !== undefined) {
+        await patchBody(mount.env, concept.path, body, tent);
+      }
+      if (body === undefined && (!frontmatter || Object.keys(frontmatter).length === 0)) {
+        throw new RpcError(-32602, "docs.write requires raw, body, and/or frontmatter");
+      }
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
@@ -295,11 +329,93 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     return {
       workspaceId,
       id: concept.id,
+      cx: concept.id,
       path: concept.path,
       etag: contentEtag(afterRaw),
       body: after.body,
+      raw: afterRaw,
     };
   });
+}
+
+async function docsSearch(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const query = optionalString(p, "query") ?? optionalString(p, "q") ?? "";
+  const q = query.trim().toLowerCase();
+  if (!q) return { workspaceId, hits: [] as unknown[] };
+
+  const tent = await loadTent(mount.env.fs);
+  const hits: Array<{
+    cx: string;
+    path: string;
+    name: string;
+    title?: string;
+    snippet: string;
+    match: "title" | "body" | "path";
+  }> = [];
+
+  for (const box of tent.byId.values()) {
+    if (box.archived || box.invalid) continue;
+    const title = typeof box.fm.title === "string" ? box.fm.title : box.name;
+    if (box.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: title,
+        match: "title",
+      });
+      continue;
+    }
+    if (box.path.toLowerCase().includes(q)) {
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: box.path,
+        match: "path",
+      });
+      continue;
+    }
+    const body = box.body ?? "";
+    const idx = body.toLowerCase().indexOf(q);
+    if (idx >= 0) {
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(body.length, idx + q.length + 40);
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: body.slice(start, end).replace(/\s+/g, " ").trim(),
+        match: "body",
+      });
+    }
+  }
+  return { workspaceId, hits: hits.slice(0, 50) };
+}
+
+async function docsBacklinks(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept(tent, p);
+  const concepts = [...tent.byId.values()].map((b) => ({
+    id: b.id,
+    path: b.path,
+    name: b.name,
+    body: b.body,
+    notePath: boxNotePath(b.path),
+  }));
+  const reverse = buildBacklinkIndex(concepts);
+  return {
+    workspaceId,
+    cx: concept.id,
+    backlinks: reverse.get(concept.id) ?? [],
+  };
 }
 
 async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -308,17 +424,22 @@ async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
   const name = requireString(p, "name");
   const type = optionalString(p, "type") ?? "note";
   const parentPath = optionalString(p, "parentPath") ?? "";
+  const body = typeof p.body === "string" ? p.body : undefined;
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const id = await createBox(mount.env, { parentPath, name, type });
+    const notePath = parentPath ? `${parentPath}/${name}` : name;
+    if (body !== undefined) {
+      await patchBody(mount.env, notePath, body.endsWith("\n") ? body : body + "\n");
+    }
     ctx.events.emit(
       "concept.changed",
       workspaceId,
-      { id, path: parentPath ? `${parentPath}/${name}` : name, reason: "docs.createNote" },
+      { id, path: notePath, reason: "docs.createNote" },
       "self"
     );
-    return { workspaceId, id, path: parentPath ? `${parentPath}/${name}` : name, type };
+    return { workspaceId, id, path: notePath, type };
   });
 }
 
@@ -1144,6 +1265,7 @@ function projectConcept(
   includeBody: boolean,
   withChildren: boolean
 ): ConceptProjection {
+  const title = typeof box.fm.title === "string" ? box.fm.title : undefined;
   const proj: ConceptProjection = {
     id: box.id,
     path: box.path,
@@ -1156,6 +1278,7 @@ function projectConcept(
     archived: box.archived,
     invalid: box.invalid,
   };
+  if (title) (proj as ConceptProjection & { title?: string }).title = title;
   if (includeBody) {
     proj.bodyPreview = box.body.slice(0, 500);
   }
@@ -1163,6 +1286,29 @@ function projectConcept(
     proj.children = box.children.map((c) => projectConcept(c, includeBody, true));
   }
   return proj;
+}
+
+function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
+  const raw = data.artifactRefs;
+  if (!Array.isArray(raw)) return [];
+  const out: ArtifactRef[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item as Record<string, unknown>;
+    const kind = rec.kind;
+    const target = rec.target;
+    if (
+      (kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") &&
+      typeof target === "string"
+    ) {
+      out.push({
+        kind,
+        target,
+        label: typeof rec.label === "string" ? rec.label : undefined,
+      });
+    }
+  }
+  return out;
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {

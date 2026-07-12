@@ -1,0 +1,25 @@
+appId: com.cucarol.tent
+productName: Tent
+copyright: Copyright © cucarol
+directories:
+  output: release
+  buildResources: build
+files:
+  - desktop/dist/**/*
+  - desktop/package.json
+  - service.mjs
+  - cli.mjs
+  - package.json
+  - manifest.json
+  - README.md
+extraMetadata:
+  main: desktop/dist/main/index.cjs
+win:
+  target:
+    - target: portable
+      arch:
+        - x64
+  artifactName: Tent-${version}-portable.${ext}
+nsis:
+  oneClick: false
+  allowToChangeInstallationDirectory: true

@@ -138,6 +138,8 @@ export const CLIENT_METHODS = [
   "docs.createNote",
   "docs.promote",
   "docs.fork",
+  "docs.search",
+  "docs.backlinks",
   "task.dispatch",
   "task.claim",
   "task.wait",

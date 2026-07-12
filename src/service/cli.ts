@@ -1,6 +1,6 @@
-#!/usr/bin/env node
 // Minimal bootstrap entry: tent-service [start]
 // Desktop/CLI clients attach via loopback HTTP; this process outlives UI windows.
+// Shebang is injected by esbuild banner in esbuild.config.mjs (avoid double shebang).
 
 import * as path from "node:path";
 import { startLocalTentService } from "./service.js";

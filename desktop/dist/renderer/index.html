@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Tent</title>
+  <link rel="stylesheet" href="./styles.css" />
+</head>
+<body>
+  <header class="topbar" id="topbar">
+    <strong>Tent</strong>
+    <span id="health-pill" class="pill off">service offline</span>
+    <select id="workspace-select" title="Foreground workspace"></select>
+    <button type="button" id="btn-open-ws">Open workspace…</button>
+    <button type="button" id="btn-refresh">Refresh</button>
+    <span class="spacer"></span>
+    <button type="button" id="btn-card">Emit Context Card</button>
+    <button type="button" id="btn-float">Floating control</button>
+    <span id="status-line" class="status-line"></span>
+  </header>
+  <div class="layout">
+    <aside class="panel tree-panel">
+      <div class="panel-head">
+        <span>Concepts</span>
+        <button type="button" id="btn-new-note" title="Create note">+</button>
+      </div>
+      <div class="search-row">
+        <input id="search-input" placeholder="Search title / body" />
+        <button type="button" id="btn-search">Search</button>
+      </div>
+      <ul id="search-hits" class="card-list" style="padding: 0 0.75rem"></ul>
+      <ul id="tree" class="tree" aria-label="Concept tree"></ul>
+    </aside>
+    <main class="panel main-panel">
+      <div id="tabs" class="tabs"></div>
+      <div id="toolbar" class="toolbar"></div>
+      <div id="editor-host" class="editor-wrap">
+        <div class="empty">Open a workspace with an in-workspace Tent (.tent), then select a concept.</div>
+      </div>
+    </main>
+    <aside class="panel side-panel">
+      <div class="panel-head">Meta</div>
+      <div id="meta" class="meta muted">No selection</div>
+      <div class="panel-head">Tasks</div>
+      <ul id="tasks" class="task-list"></ul>
+      <div class="panel-head">Recent Context Cards</div>
+      <ul id="cards" class="card-list"></ul>
+    </aside>
+  </div>
+  <script type="module" src="./main-ui.js"></script>
+</body>
+</html>

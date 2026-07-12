@@ -23,20 +23,26 @@
     "SECURITY.md",
     "LICENSE"
   ],
+  "main": "desktop/dist/main/index.cjs",
   "scripts": {
     "build": "node esbuild.config.mjs production",
     "build:plugin": "node esbuild.config.mjs production",
+    "build:desktop": "node scripts/build-desktop.mjs",
     "dev": "node esbuild.config.mjs",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/markdown-workspace.test.ts test/agent-runtime-b9a.test.ts test/task-lifecycle.test.ts test/package.test.ts test/open-source.test.ts test/plugin.test.ts",
-    "test:core": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/markdown-workspace.test.ts test/agent-runtime-b9a.test.ts test/task-lifecycle.test.ts",
+    "test": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/markdown-workspace.test.ts test/agent-runtime-b9a.test.ts test/task-lifecycle.test.ts test/desktop-b5.test.ts test/package.test.ts test/open-source.test.ts test/plugin.test.ts",
+    "test:core": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/markdown-workspace.test.ts test/agent-runtime-b9a.test.ts test/task-lifecycle.test.ts test/desktop-b5.test.ts",
     "test:integration": "node --test --import tsx test/package.test.ts test/open-source.test.ts",
     "typecheck": "tsc -noEmit",
     "security:audit": "npm audit --audit-level=high",
     "okf:check": "node scripts/okf-check.mjs",
     "okf:check:strict": "node scripts/okf-check.mjs --strict",
     "markdown:preview": "tsx src/markdown/preview-server.ts",
-    "check": "npm run typecheck && npm run build && npm test && npm run okf:check",
+    "desktop:build": "npm run build && npm run build:desktop",
+    "desktop:dev": "npm run desktop:build && electron .",
+    "desktop:start": "electron .",
+    "desktop:package": "node scripts/package-desktop.mjs",
+    "check": "npm run typecheck && npm run build && npm run build:desktop && npm test && npm run okf:check",
     "prepack": "npm run check"
   },
   "keywords": [
@@ -68,6 +74,8 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "electron": "^35.7.5",
+    "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
     "obsidian": "^1.7.2",
     "tsx": "^4.19.0",

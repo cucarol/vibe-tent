@@ -1,0 +1,5 @@
+{
+  "name": "tent-desktop",
+  "private": true,
+  "main": "dist/main/index.cjs"
+}
