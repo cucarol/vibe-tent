@@ -13,7 +13,6 @@ import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName 
 import { typeExists } from "./typeRegistry.js";
 import { loadRolesRegistry } from "./skillRoleRegistry.js";
 import {
-  ackTaskEnvelope,
   cancelTaskEnvelope,
   ensureRoleInit,
   loadTaskEnvelope,
@@ -26,6 +25,7 @@ import {
 import { loadReport, removeReportsForBox } from "./report.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
+import { taskClaim } from "./task-lifecycle.js";
 
 export type { OpsEnv } from "./ops-context.js";
 export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
@@ -44,6 +44,8 @@ export interface DispatchOptions {
   userPrompt?: string;
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
+  /** Delivery policy for this task (default manual). */
+  deliveryPolicy?: import("./task-model.js").DeliveryPolicy;
 }
 
 export async function dispatch(
@@ -120,6 +122,7 @@ async function dispatchUnlocked(
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
+      deliveryPolicy: options.deliveryPolicy,
     });
 
     const relayPrompt = relayPromptForTask(
@@ -129,6 +132,7 @@ async function dispatchUnlocked(
         claims: taskClaims.map((taskClaim) => taskClaim.id),
         manifest: manifestPath,
         status: "pending",
+        state: "queued",
       },
       env.tentRoot || env.tentName
     );
@@ -144,49 +148,8 @@ async function dispatchUnlocked(
 // ---- task ack / cancel ----
 
 export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.status === "taken") {
-      await ackTaskEnvelope(env.fs, taskPath);
-      return;
-    }
-
-    const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims
-      .filter((claimId) => claimId !== "root")
-      .map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy,
-    }));
-
-    for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
-      const claimable = canClaim(box);
-      if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
-    }
-
-    try {
-      for (const box of claimedBoxes) {
-        await setOwner(env.fs, box, task.role, "doing");
-        box.fm.owner = task.role;
-        box.fm.status = "doing";
-        box.fm.acceptedBy = undefined;
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreOwnerState(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
-    }
-  });
+  // Alias of task.claim (B0 / B4 lifecycle).
+  await taskClaim(env, taskPath);
 }
 
 export async function cancelPendingTask(env: OpsEnv, taskPath: string): Promise<void> {
@@ -641,7 +604,16 @@ function ownerCovering(box: Box): Box | undefined {
 
 function pendingClaimCovering(tent: LoadedTent, box: Box, tasks: TaskEnvelope[]): { reason: string } | undefined {
   for (const task of tasks) {
-    if (task.status !== "pending") continue;
+    // Any active task (queued/running/waiting/delivered) blocks overlapping dispatch.
+    const active =
+      task.state
+        ? task.state === "queued" ||
+          task.state === "running" ||
+          task.state === "waiting" ||
+          task.state === "delivered"
+        : task.status === "pending" || task.status === "taken";
+    if (!active) continue;
+    // taken/running already projects owner; still block by task for topology consistency.
     for (const claimId of task.claims) {
       if (claimId === "root") {
         return { reason: `Tent root is awaiting delivery to ${task.role}.` };
