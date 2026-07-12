@@ -61,11 +61,7 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
   const child = spawnFn(process.execPath, [entryAbs, "start", "--data-dir", dataDir], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      ...options.env,
-      TENT_SERVICE_DATA_DIR: dataDir,
-    },
+    env: serviceChildEnv(options.env, dataDir),
     windowsHide: true,
     cwd: path.dirname(entryAbs),
   });
@@ -104,6 +100,20 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
   throw new Error(
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
   );
+}
+
+export function serviceChildEnv(
+  overrides: NodeJS.ProcessEnv | undefined,
+  dataDir: string
+): NodeJS.ProcessEnv {
+  return {
+    ...process.env,
+    ...overrides,
+    TENT_SERVICE_DATA_DIR: dataDir,
+    // The packaged runtime is Tent.exe (Electron), so opt into its Node mode
+    // when spawning the standalone service entry.
+    ELECTRON_RUN_AS_NODE: "1",
+  };
 }
 
 export async function tryAttach(

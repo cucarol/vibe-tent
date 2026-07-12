@@ -13,7 +13,11 @@ import {
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { ServiceRpcClient, ServiceRpcError } from "../src/desktop/client/rpc-client.js";
-import { tryAttach, attachOrStartService } from "../src/desktop/client/service-attach.js";
+import {
+  tryAttach,
+  attachOrStartService,
+  serviceChildEnv,
+} from "../src/desktop/client/service-attach.js";
 import { ServiceDocsClient } from "../src/desktop/client/service-docs-client.js";
 import { ContextCardStore } from "../src/desktop/workbench/context-card-store.js";
 import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
@@ -260,6 +264,13 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
     }
     await fs.rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
   }
+});
+
+test("packaged service spawn forces Electron into Node mode", () => {
+  const env = serviceChildEnv({ CUSTOM_SENTINEL: "yes" }, "C:\\tent-data");
+  assert.equal(env.ELECTRON_RUN_AS_NODE, "1");
+  assert.equal(env.TENT_SERVICE_DATA_DIR, "C:\\tent-data");
+  assert.equal(env.CUSTOM_SENTINEL, "yes");
 });
 
 test("desktop prefs remember workspaces", async () => {

@@ -179,11 +179,7 @@ async function attachOrStartService(options = {}) {
   const child = spawnFn(process.execPath, [entryAbs, "start", "--data-dir", dataDir2], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
-    env: {
-      ...process.env,
-      ...options.env,
-      TENT_SERVICE_DATA_DIR: dataDir2
-    },
+    env: serviceChildEnv(options.env, dataDir2),
     windowsHide: true,
     cwd: path2.dirname(entryAbs)
   });
@@ -218,6 +214,16 @@ ${spawnLog}`
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir2})
 ${spawnLog}`
   );
+}
+function serviceChildEnv(overrides, dataDir2) {
+  return {
+    ...process.env,
+    ...overrides,
+    TENT_SERVICE_DATA_DIR: dataDir2,
+    // The packaged runtime is Tent.exe (Electron), so opt into its Node mode
+    // when spawning the standalone service entry.
+    ELECTRON_RUN_AS_NODE: "1"
+  };
 }
 async function tryAttach(dataDir2, fetchImpl = fetch) {
   const endpoint = await readServiceEndpoint(dataDir2);
@@ -1404,7 +1410,8 @@ var DesktopShellModel = class {
 
 // src/desktop/main/index.ts
 var isDev = !import_electron3.app.isPackaged;
-var appRoot = isDev ? process.cwd() : path5.dirname(import_electron3.app.getAppPath());
+var appRoot = isDev ? process.cwd() : import_electron3.app.getAppPath();
+var serviceRoot = isDev ? process.cwd() : process.resourcesPath;
 var dataDir = process.env.TENT_SERVICE_DATA_DIR || defaultServiceDataDir();
 var mainWindow = null;
 var floatWindow = null;
@@ -1413,11 +1420,11 @@ var quitting = false;
 var host = new DesktopServiceHost();
 var model = new DesktopShellModel();
 async function bootstrap() {
-  const serviceEntry = process.env.TENT_SERVICE_ENTRY || path5.join(appRoot, "service.mjs");
+  const serviceEntry = process.env.TENT_SERVICE_ENTRY || path5.join(serviceRoot, "service.mjs");
   const attach = await host.ensureAttached({
     dataDir,
     serviceEntry,
-    cwd: appRoot
+    cwd: serviceRoot
   });
   model.setRpc(attach.client);
   await model.refreshHealth();

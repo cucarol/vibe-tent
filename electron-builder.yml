@@ -12,6 +12,9 @@ files:
   - package.json
   - manifest.json
   - README.md
+extraResources:
+  - from: service.mjs
+    to: service.mjs
 extraMetadata:
   main: desktop/dist/main/index.cjs
 win:

@@ -12,7 +12,8 @@ import { defaultServiceDataDir } from "../../service/data-dir.js";
 import { DESKTOP_IPC } from "../types.js";
 
 const isDev = !app.isPackaged;
-const appRoot = isDev ? process.cwd() : path.dirname(app.getAppPath());
+const appRoot = isDev ? process.cwd() : app.getAppPath();
+const serviceRoot = isDev ? process.cwd() : process.resourcesPath;
 const dataDir = process.env.TENT_SERVICE_DATA_DIR || defaultServiceDataDir();
 
 let mainWindow: BrowserWindow | null = null;
@@ -26,12 +27,12 @@ const model = new DesktopShellModel();
 async function bootstrap(): Promise<void> {
   const serviceEntry =
     process.env.TENT_SERVICE_ENTRY ||
-    path.join(appRoot, "service.mjs");
+    path.join(serviceRoot, "service.mjs");
 
   const attach = await host.ensureAttached({
     dataDir,
     serviceEntry,
-    cwd: appRoot,
+    cwd: serviceRoot,
   });
   model.setRpc(attach.client);
   await model.refreshHealth();
