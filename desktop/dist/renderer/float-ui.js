@@ -13,12 +13,12 @@ async function refresh() {
   const s = await window.tentDesktop.getFloatingStatus();
   const ok = s.health.status === "ok";
   healthEl.className = `pill ${ok ? "ok" : "off"}`;
-  healthEl.textContent = ok ? `ok \xB7 ${s.health.pid ?? ""}` : "offline";
+  healthEl.textContent = ok ? `\u6B63\u5E38 \xB7 ${s.health.pid ?? ""}` : "\u79BB\u7EBF";
   pendingEl.textContent = String(s.pendingTasks);
   takenEl.textContent = String(s.takenTasks);
-  fgEl.textContent = s.foregroundRoot || "No foreground workspace";
+  fgEl.textContent = s.foregroundRoot || "\u65E0\u524D\u53F0\u5DE5\u4F5C\u533A";
   if (!s.recentCards.length) {
-    cardsEl.innerHTML = `<li class="muted">No cards yet</li>`;
+    cardsEl.innerHTML = `<li class="muted">\u6682\u65E0\u4E0A\u4E0B\u6587\u5361</li>`;
     return;
   }
   cardsEl.innerHTML = s.recentCards.map(

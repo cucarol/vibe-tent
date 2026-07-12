@@ -322,8 +322,8 @@ function createMainWindow(paths, prefs, isDev2) {
     minWidth: 900,
     minHeight: 560,
     show: false,
-    title: "Tent",
-    backgroundColor: "#0f1419",
+    title: "\u5E37\u5E44 \xB7 Tent",
+    backgroundColor: "#e8e4d7",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
@@ -359,8 +359,8 @@ function createFloatWindow(paths, prefs) {
     resizable: true,
     minimizable: false,
     maximizable: false,
-    title: "Tent \xB7 floating",
-    backgroundColor: "#1a222c",
+    title: "\u5E37\u5E44 \xB7 \u6D6E\u52A8\u63A7\u4EF6",
+    backgroundColor: "#e8e4d7",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
@@ -549,7 +549,7 @@ function registerDesktopIpc(ctx) {
     const win = import_electron2.BrowserWindow.fromWebContents(event.sender);
     const result = await import_electron2.dialog.showOpenDialog(win ?? void 0, {
       properties: ["openDirectory"],
-      title: "Open workspace with in-workspace Tent (.tent)"
+      title: "\u6253\u5F00\u5E26\u6709\u5E10\uFF08.tent\uFF09\u7684\u5DE5\u4F5C\u533A"
     });
     if (result.canceled || !result.filePaths[0]) return null;
     return result.filePaths[0];
@@ -1495,22 +1495,22 @@ async function bootstrap() {
 function createTray(_paths) {
   const img = import_electron3.nativeImage.createEmpty();
   tray = new import_electron3.Tray(img.isEmpty() ? import_electron3.nativeImage.createFromDataURL(TINY_PNG) : img);
-  tray.setToolTip("Tent Desktop");
+  tray.setToolTip("\u5E37\u5E44 \xB7 Tent");
   const menu = import_electron3.Menu.buildFromTemplate([
     {
-      label: "Open Tent",
+      label: "\u6253\u5F00\u4E3B\u754C\u9762",
       click: () => {
         mainWindow?.show();
         mainWindow?.focus();
       }
     },
     {
-      label: "Show floating control",
+      label: "\u663E\u793A\u6D6E\u52A8\u63A7\u4EF6",
       click: () => floatWindow?.show()
     },
     { type: "separator" },
     {
-      label: "Quit UI (service keeps running)",
+      label: "\u9000\u51FA\u754C\u9762\uFF08\u670D\u52A1\u7EE7\u7EED\u8FD0\u884C\uFF09",
       click: () => {
         quitting = true;
         void host.disposeShellOnly().then(() => import_electron3.app.quit());

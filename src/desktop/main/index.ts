@@ -114,22 +114,22 @@ function createTray(_paths: ReturnType<typeof resolveDesktopAssetPaths>): void {
   // 16x16 simple tray icon as data URL PNG is heavy; use empty and set title on Windows.
   const img = nativeImage.createEmpty();
   tray = new Tray(img.isEmpty() ? nativeImage.createFromDataURL(TINY_PNG) : img);
-  tray.setToolTip("Tent Desktop");
+  tray.setToolTip("帷幄 · Tent");
   const menu = Menu.buildFromTemplate([
     {
-      label: "Open Tent",
+      label: "打开主界面",
       click: () => {
         mainWindow?.show();
         mainWindow?.focus();
       },
     },
     {
-      label: "Show floating control",
+      label: "显示浮动控件",
       click: () => floatWindow?.show(),
     },
     { type: "separator" },
     {
-      label: "Quit UI (service keeps running)",
+      label: "退出界面（服务继续运行）",
       click: () => {
         quitting = true;
         void host.disposeShellOnly().then(() => app.quit());

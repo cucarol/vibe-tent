@@ -1,50 +1,50 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tent</title>
+  <title>帷幄 · Tent</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
   <header class="topbar" id="topbar">
-    <strong>Tent</strong>
-    <span id="health-pill" class="pill off">service offline</span>
-    <select id="workspace-select" title="Foreground workspace"></select>
-    <button type="button" id="btn-open-ws">Open workspace…</button>
-    <button type="button" id="btn-refresh">Refresh</button>
+    <strong>帷幄</strong>
+    <span id="health-pill" class="pill off">服务离线</span>
+    <select id="workspace-select" title="前台工作区"></select>
+    <button type="button" id="btn-open-ws">打开工作区…</button>
+    <button type="button" id="btn-refresh">刷新</button>
     <span class="spacer"></span>
-    <button type="button" id="btn-card">Emit Context Card</button>
-    <button type="button" id="btn-float">Floating control</button>
+    <button type="button" id="btn-card">发出上下文卡</button>
+    <button type="button" id="btn-float">浮动控件</button>
     <span id="status-line" class="status-line"></span>
   </header>
   <div class="layout">
     <aside class="panel tree-panel">
       <div class="panel-head">
-        <span>Concepts</span>
-        <button type="button" id="btn-new-note" title="Create note">+</button>
+        <span>概念树</span>
+        <button type="button" id="btn-new-note" title="新建笔记">+</button>
       </div>
       <div class="search-row">
-        <input id="search-input" placeholder="Search title / body" />
-        <button type="button" id="btn-search">Search</button>
+        <input id="search-input" placeholder="搜索标题 / 正文" />
+        <button type="button" id="btn-search">搜索</button>
       </div>
-      <ul id="search-hits" class="card-list" style="padding: 0 0.75rem"></ul>
-      <ul id="tree" class="tree" aria-label="Concept tree"></ul>
+      <ul id="search-hits" class="card-list" style="padding: 0 10px"></ul>
+      <ul id="tree" class="tree" aria-label="概念树"></ul>
     </aside>
     <main class="panel main-panel">
       <div id="tabs" class="tabs"></div>
       <div id="toolbar" class="toolbar"></div>
       <div id="editor-host" class="editor-wrap">
-        <div class="empty">Open a workspace with an in-workspace Tent (.tent), then select a concept.</div>
+        <div class="empty">打开带有帐（.tent）的工作区，再选一个概念。</div>
       </div>
     </main>
     <aside class="panel side-panel">
-      <div class="panel-head">Meta</div>
-      <div id="meta" class="meta muted">No selection</div>
-      <div class="panel-head">Tasks</div>
+      <div class="panel-head">属性</div>
+      <div id="meta" class="meta muted">未选择</div>
+      <div class="panel-head">任务</div>
       <ul id="tasks" class="task-list"></ul>
-      <div class="panel-head">Recent Context Cards</div>
+      <div class="panel-head">最近上下文卡</div>
       <ul id="cards" class="card-list"></ul>
     </aside>
   </div>

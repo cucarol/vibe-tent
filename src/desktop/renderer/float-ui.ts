@@ -15,13 +15,13 @@ async function refresh(): Promise<void> {
   const s = await window.tentDesktop.getFloatingStatus();
   const ok = s.health.status === "ok";
   healthEl.className = `pill ${ok ? "ok" : "off"}`;
-  healthEl.textContent = ok ? `ok · ${s.health.pid ?? ""}` : "offline";
+  healthEl.textContent = ok ? `正常 · ${s.health.pid ?? ""}` : "离线";
   pendingEl.textContent = String(s.pendingTasks);
   takenEl.textContent = String(s.takenTasks);
-  fgEl.textContent = s.foregroundRoot || "No foreground workspace";
+  fgEl.textContent = s.foregroundRoot || "无前台工作区";
 
   if (!s.recentCards.length) {
-    cardsEl.innerHTML = `<li class="muted">No cards yet</li>`;
+    cardsEl.innerHTML = `<li class="muted">暂无上下文卡</li>`;
     return;
   }
   cardsEl.innerHTML = s.recentCards

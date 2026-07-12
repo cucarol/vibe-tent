@@ -1,27 +1,27 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
   <meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'; img-src 'self' data:;" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>Tent · floating</title>
+  <title>帷幄 · 浮动控件</title>
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body class="float">
   <div class="float-shell">
     <div class="float-head">
-      <strong>Tent</strong>
+      <strong>帷幄</strong>
       <div class="row">
-        <span id="health-pill" class="pill off">offline</span>
-        <button type="button" id="btn-open-main">Open</button>
+        <span id="health-pill" class="pill off">离线</span>
+        <button type="button" id="btn-open-main">打开主界面</button>
       </div>
     </div>
     <div class="float-metrics">
-      <div class="metric"><div class="muted">pending</div><div class="n" id="n-pending">0</div></div>
-      <div class="metric"><div class="muted">running</div><div class="n" id="n-taken">0</div></div>
+      <div class="metric"><div class="muted">待处理</div><div class="n" id="n-pending">0</div></div>
+      <div class="metric"><div class="muted">进行中</div><div class="n" id="n-taken">0</div></div>
     </div>
-    <div class="muted" id="fg-root" style="margin-bottom:0.4rem"></div>
-    <div class="panel-head" style="margin:0 0 0.35rem">Context Cards · drag out</div>
+    <div class="muted" id="fg-root"></div>
+    <div class="panel-head" style="margin:0 0 4px;padding:0">上下文卡 · 拖出</div>
     <div class="float-cards">
       <ul id="cards" class="card-list"></ul>
     </div>

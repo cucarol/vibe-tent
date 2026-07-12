@@ -110,8 +110,8 @@ function applyShell(s: ShellState): void {
   const ok = s.health.status === "ok";
   el.health.className = `pill ${ok ? "ok" : "off"}`;
   el.health.textContent = ok
-    ? `service ok · pid ${s.health.pid ?? "?"} · ${s.health.version ?? ""}`
-    : "service offline";
+    ? `服务正常 · pid ${s.health.pid ?? "?"} · ${s.health.version ?? ""}`
+    : "服务离线";
 
   el.wsSelect.innerHTML = "";
   for (const w of s.workspaces) {
@@ -143,7 +143,7 @@ async function reloadTree(): Promise<void> {
 }
 
 function renderTree(): void {
-  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">No concepts</li>`;
+  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">暂无概念</li>`;
   el.tree.querySelectorAll<HTMLElement>("[data-open]").forEach((node) => {
     node.addEventListener("click", () => void openConcept(node.getAttribute("data-open")!));
   });
@@ -153,8 +153,8 @@ function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
       const badge = n.coordination
-        ? `<span class="badge box">${escapeHtml(n.status || "box")}</span>`
-        : `<span class="badge note">note</span>`;
+        ? `<span class="badge box">${escapeHtml(n.status || "框")}</span>`
+        : `<span class="badge note">笔记</span>`;
       const active = n.id === activeCx ? " active" : "";
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
       return `<li>
@@ -191,7 +191,7 @@ async function openConcept(cx: string): Promise<void> {
   if (existing?.dirty) {
     activeCx = edit.id;
     renderAll();
-    el.status.textContent = "Tab has unsaved changes.";
+    el.status.textContent = "当前标签有未保存更改。";
     return;
   }
 
@@ -254,12 +254,12 @@ function renderToolbar(): void {
     return;
   }
   el.toolbar.innerHTML = `
-    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">Source</button>
-    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">Preview</button>
-    <button type="button" data-act="save" class="primary">Save</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote">Promote → goal</button>` : ""}
-    <button type="button" data-act="card">Context Card</button>
-    <span class="muted">${tab.dirty ? "dirty" : "clean"} · ${escapeHtml(tab.cx)}</span>
+    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
+    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
+    <button type="button" data-act="save" class="primary">保存</button>
+    ${!tab.coordination ? `<button type="button" data-act="promote">提升为 goal</button>` : ""}
+    <button type="button" data-act="card">上下文卡</button>
+    <span class="muted">${tab.dirty ? "未保存" : "已保存"} · ${escapeHtml(tab.cx)}</span>
   `;
   el.toolbar.querySelectorAll<HTMLElement>("[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")!));
@@ -285,7 +285,7 @@ async function onToolbar(act: string): Promise<void> {
       id: tab.cx,
       toType: "goal",
     });
-    el.status.textContent = "Promoted to goal";
+    el.status.textContent = "已提升为 goal";
     await openConcept(tab.cx);
     await reloadTree();
     return;
@@ -311,7 +311,7 @@ async function saveTab(tab: TabView): Promise<void> {
     })) as { etag: string };
     tab.etag = result.etag;
     tab.dirty = false;
-    el.status.textContent = "Saved.";
+    el.status.textContent = "已保存。";
     await reloadTree();
     renderAll();
   } catch (err) {
@@ -323,7 +323,7 @@ function renderEditor(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
     el.editor.innerHTML =
-      '<div class="empty">Open a workspace with an in-workspace Tent (.tent), then select a concept.</div>';
+      '<div class="empty">打开带有帐（.tent）的工作区，再选一个概念。</div>';
     return;
   }
   if (tab.mode === "preview") {
@@ -357,20 +357,20 @@ function splitBody(raw: string): string {
 function renderMeta(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">No selection</span>`;
+    el.meta.innerHTML = `<span class="muted">未选择</span>`;
     return;
   }
   el.meta.innerHTML = `<dl>
-    <dt>cx</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
-    <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
-    <dt>coordination</dt><dd>${tab.coordination ? "true" : "false"}</dd>
+    <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+    <dt>路径</dt><dd>${escapeHtml(tab.path)}</dd>
+    <dt>类型</dt><dd>${escapeHtml(tab.type)}</dd>
+    <dt>协作框</dt><dd>${tab.coordination ? "是" : "否"}</dd>
   </dl>`;
 }
 
 function renderTasks(tasks: ShellState["tasks"]): void {
   if (!tasks.length) {
-    el.tasks.innerHTML = `<li class="muted">No tasks</li>`;
+    el.tasks.innerHTML = `<li class="muted">暂无任务</li>`;
     return;
   }
   el.tasks.innerHTML = tasks
@@ -378,7 +378,7 @@ function renderTasks(tasks: ShellState["tasks"]): void {
       (t) => `<li class="task-item">
         <div><strong>${escapeHtml(t.status)}</strong> · ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">claims: ${escapeHtml((t.claims || []).join(", "))}</div>
+        <div class="muted">认领：${escapeHtml((t.claims || []).join(", ") || "—")}</div>
       </li>`
     )
     .join("");
@@ -388,7 +388,7 @@ async function loadCards(): Promise<void> {
   const snap = await window.tentDesktop.getFloatingStatus();
   const cards = snap.recentCards || [];
   if (!cards.length) {
-    el.cards.innerHTML = `<li class="muted">None yet — select a box and emit</li>`;
+    el.cards.innerHTML = `<li class="muted">暂无 — 选中框后发出</li>`;
     return;
   }
   el.cards.innerHTML = cards
@@ -422,7 +422,7 @@ async function onOpenWorkspace(): Promise<void> {
 
 async function onCreateNote(): Promise<void> {
   if (!workspaceId) {
-    el.status.textContent = "Mount a workspace first.";
+    el.status.textContent = "请先挂载工作区。";
     return;
   }
   const name = `note-${Date.now().toString(36).slice(-4)}`;
@@ -462,7 +462,7 @@ async function onSearch(): Promise<void> {
 async function onEmitCard(): Promise<void> {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.status.textContent = "Open a concept first.";
+    el.status.textContent = "请先打开一个概念。";
     return;
   }
   await window.tentDesktop.pushContextCard({
@@ -472,7 +472,7 @@ async function onEmitCard(): Promise<void> {
     label: tab.name,
   });
   await loadCards();
-  el.status.textContent = "Context Card ready — drag from the list.";
+  el.status.textContent = "上下文卡已就绪 — 可从列表拖出。";
 }
 
 void boot();

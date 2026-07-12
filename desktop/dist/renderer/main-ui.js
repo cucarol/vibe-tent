@@ -203,7 +203,7 @@ function applyShell(s) {
   state = s;
   const ok = s.health.status === "ok";
   el.health.className = `pill ${ok ? "ok" : "off"}`;
-  el.health.textContent = ok ? `service ok \xB7 pid ${s.health.pid ?? "?"} \xB7 ${s.health.version ?? ""}` : "service offline";
+  el.health.textContent = ok ? `\u670D\u52A1\u6B63\u5E38 \xB7 pid ${s.health.pid ?? "?"} \xB7 ${s.health.version ?? ""}` : "\u670D\u52A1\u79BB\u7EBF";
   el.wsSelect.innerHTML = "";
   for (const w of s.workspaces) {
     const opt = document.createElement("option");
@@ -228,14 +228,14 @@ async function reloadTree() {
   renderTree();
 }
 function renderTree() {
-  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">No concepts</li>`;
+  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
   el.tree.querySelectorAll("[data-open]").forEach((node) => {
     node.addEventListener("click", () => void openConcept(node.getAttribute("data-open")));
   });
 }
 function renderNodes(nodes) {
   return nodes.map((n) => {
-    const badge = n.coordination ? `<span class="badge box">${escapeHtml(n.status || "box")}</span>` : `<span class="badge note">note</span>`;
+    const badge = n.coordination ? `<span class="badge box">${escapeHtml(n.status || "\u6846")}</span>` : `<span class="badge note">\u7B14\u8BB0</span>`;
     const active = n.id === activeCx ? " active" : "";
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
@@ -258,7 +258,7 @@ async function openConcept(cx) {
   if (existing?.dirty) {
     activeCx = edit.id;
     renderAll();
-    el.status.textContent = "Tab has unsaved changes.";
+    el.status.textContent = "\u5F53\u524D\u6807\u7B7E\u6709\u672A\u4FDD\u5B58\u66F4\u6539\u3002";
     return;
   }
   const tab = {
@@ -314,12 +314,12 @@ function renderToolbar() {
     return;
   }
   el.toolbar.innerHTML = `
-    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">Source</button>
-    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">Preview</button>
-    <button type="button" data-act="save" class="primary">Save</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote">Promote \u2192 goal</button>` : ""}
-    <button type="button" data-act="card">Context Card</button>
-    <span class="muted">${tab.dirty ? "dirty" : "clean"} \xB7 ${escapeHtml(tab.cx)}</span>
+    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
+    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
+    <button type="button" data-act="save" class="primary">\u4FDD\u5B58</button>
+    ${!tab.coordination ? `<button type="button" data-act="promote">\u63D0\u5347\u4E3A goal</button>` : ""}
+    <button type="button" data-act="card">\u4E0A\u4E0B\u6587\u5361</button>
+    <span class="muted">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"} \xB7 ${escapeHtml(tab.cx)}</span>
   `;
   el.toolbar.querySelectorAll("[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")));
@@ -344,7 +344,7 @@ async function onToolbar(act) {
       id: tab.cx,
       toType: "goal"
     });
-    el.status.textContent = "Promoted to goal";
+    el.status.textContent = "\u5DF2\u63D0\u5347\u4E3A goal";
     await openConcept(tab.cx);
     await reloadTree();
     return;
@@ -369,7 +369,7 @@ async function saveTab(tab) {
     });
     tab.etag = result.etag;
     tab.dirty = false;
-    el.status.textContent = "Saved.";
+    el.status.textContent = "\u5DF2\u4FDD\u5B58\u3002";
     await reloadTree();
     renderAll();
   } catch (err) {
@@ -379,7 +379,7 @@ async function saveTab(tab) {
 function renderEditor() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.editor.innerHTML = '<div class="empty">Open a workspace with an in-workspace Tent (.tent), then select a concept.</div>';
+    el.editor.innerHTML = '<div class="empty">\u6253\u5F00\u5E26\u6709\u5E10\uFF08.tent\uFF09\u7684\u5DE5\u4F5C\u533A\uFF0C\u518D\u9009\u4E00\u4E2A\u6982\u5FF5\u3002</div>';
     return;
   }
   if (tab.mode === "preview") {
@@ -411,26 +411,26 @@ function splitBody(raw) {
 function renderMeta() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">No selection</span>`;
+    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
     return;
   }
   el.meta.innerHTML = `<dl>
-    <dt>cx</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
-    <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
-    <dt>coordination</dt><dd>${tab.coordination ? "true" : "false"}</dd>
+    <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+    <dt>\u8DEF\u5F84</dt><dd>${escapeHtml(tab.path)}</dd>
+    <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}</dd>
+    <dt>\u534F\u4F5C\u6846</dt><dd>${tab.coordination ? "\u662F" : "\u5426"}</dd>
   </dl>`;
 }
 function renderTasks(tasks) {
   if (!tasks.length) {
-    el.tasks.innerHTML = `<li class="muted">No tasks</li>`;
+    el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
     return;
   }
   el.tasks.innerHTML = tasks.map(
     (t) => `<li class="task-item">
         <div><strong>${escapeHtml(t.status)}</strong> \xB7 ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">claims: ${escapeHtml((t.claims || []).join(", "))}</div>
+        <div class="muted">\u8BA4\u9886\uFF1A${escapeHtml((t.claims || []).join(", ") || "\u2014")}</div>
       </li>`
   ).join("");
 }
@@ -438,7 +438,7 @@ async function loadCards() {
   const snap = await window.tentDesktop.getFloatingStatus();
   const cards = snap.recentCards || [];
   if (!cards.length) {
-    el.cards.innerHTML = `<li class="muted">None yet \u2014 select a box and emit</li>`;
+    el.cards.innerHTML = `<li class="muted">\u6682\u65E0 \u2014 \u9009\u4E2D\u6846\u540E\u53D1\u51FA</li>`;
     return;
   }
   el.cards.innerHTML = cards.map(
@@ -468,7 +468,7 @@ async function onOpenWorkspace() {
 }
 async function onCreateNote() {
   if (!workspaceId) {
-    el.status.textContent = "Mount a workspace first.";
+    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
     return;
   }
   const name = `note-${Date.now().toString(36).slice(-4)}`;
@@ -503,7 +503,7 @@ async function onSearch() {
 async function onEmitCard() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.status.textContent = "Open a concept first.";
+    el.status.textContent = "\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u6982\u5FF5\u3002";
     return;
   }
   await window.tentDesktop.pushContextCard({
@@ -513,7 +513,7 @@ async function onEmitCard() {
     label: tab.name
   });
   await loadCards();
-  el.status.textContent = "Context Card ready \u2014 drag from the list.";
+  el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u53EF\u4ECE\u5217\u8868\u62D6\u51FA\u3002";
 }
 void boot();
 //# sourceMappingURL=main-ui.js.map

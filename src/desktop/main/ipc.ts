@@ -70,7 +70,7 @@ export function registerDesktopIpc(ctx: IpcContext): void {
     const win = BrowserWindow.fromWebContents(event.sender);
     const result = await dialog.showOpenDialog(win ?? undefined!, {
       properties: ["openDirectory"],
-      title: "Open workspace with in-workspace Tent (.tent)",
+      title: "打开带有帐（.tent）的工作区",
     });
     if (result.canceled || !result.filePaths[0]) return null;
     return result.filePaths[0];

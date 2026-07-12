@@ -24,8 +24,8 @@ export function createMainWindow(
     minWidth: 900,
     minHeight: 560,
     show: false,
-    title: "Tent",
-    backgroundColor: "#0f1419",
+    title: "帷幄 · Tent",
+    backgroundColor: "#e8e4d7",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
@@ -67,8 +67,8 @@ export function createFloatWindow(
     resizable: true,
     minimizable: false,
     maximizable: false,
-    title: "Tent · floating",
-    backgroundColor: "#1a222c",
+    title: "帷幄 · 浮动控件",
+    backgroundColor: "#e8e4d7",
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
