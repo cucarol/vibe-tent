@@ -35,6 +35,55 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
+// src/core/paths.ts
+function workspaceRootFromSystemRoot(systemRoot) {
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base2 = normalized.split(/[\\/]/).pop() ?? "";
+  if (base2 !== TENT_SYSTEM_DIR) return void 0;
+  const parent = normalized.replace(/[\\/]+[^\\/]+$/, "");
+  return parent || void 0;
+}
+function isOperationalPath(relativePath2) {
+  const path = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path) return false;
+  const top = path.split("/")[0] ?? "";
+  return OPERATIONAL_TOP_LEVEL.has(top);
+}
+function isSystemNoteName(fileName) {
+  return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
+}
+var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, TEMP_DIR, ATTACHMENTS_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
+var init_paths = __esm({
+  "src/core/paths.ts"() {
+    "use strict";
+    TENT_SYSTEM_DIR = ".tent";
+    TYPE_REGISTRY_PATH = "types.json";
+    ROLES_REGISTRY_PATH = "roles.json";
+    TAGS_REGISTRY_PATH = "tags.json";
+    ORDER_PATH = "order.json";
+    MUTATION_LOCK_PATH = "mutation.lock";
+    RULES_PATH = "RULES.md";
+    TEMP_DIR = "temp";
+    ATTACHMENTS_DIR = "attachments";
+    OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
+      TEMP_DIR,
+      ATTACHMENTS_DIR,
+      // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+      TENT_SYSTEM_DIR
+    ]);
+    SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
+      TYPE_REGISTRY_PATH,
+      ROLES_REGISTRY_PATH,
+      TAGS_REGISTRY_PATH,
+      ORDER_PATH,
+      MUTATION_LOCK_PATH,
+      RULES_PATH,
+      "index.md",
+      "log.md"
+    ]);
+  }
+});
+
 // src/core/typeRegistry.ts
 function splitType(type) {
   const i = type.indexOf("-");
@@ -44,42 +93,69 @@ function splitType(type) {
 function joinType(base2, modifier) {
   return modifier ? `${base2}-${modifier}` : base2;
 }
+function canonicalTypeName(type) {
+  if (type === "output") return "artifact";
+  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
+  return type;
+}
 function typeExists(type, registry) {
-  if (registry[type]) return true;
-  const { base: base2, modifier } = splitType(type);
+  const canonical = canonicalTypeName(type);
+  if (registry[canonical] || registry[type]) return true;
+  const { base: base2, modifier } = splitType(canonical);
   return !!(registry[base2] && (modifier === void 0 || !!registry[modifier]));
 }
 function resolveTypeAxis(type, axis, registry) {
-  const exact = registry[type];
+  const canonical = canonicalTypeName(type);
+  const exact = registry[canonical] ?? registry[type];
   if (exact) return exact[axis];
-  const { base: base2, modifier } = splitType(type);
+  const { base: base2, modifier } = splitType(canonical);
   const baseVal = registry[base2]?.[axis];
   const modVal = modifier ? registry[modifier]?.[axis] : void 0;
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
-function typeAllowsWorkspacePointer(type, registry) {
-  const { base: base2 } = splitType(type);
-  return baseDefinitionWorkspacePointer(registry[base2] ?? registry[type]) === true;
+function typeHasCoordination(type, registry) {
+  const canonical = canonicalTypeName(type);
+  const { base: base2 } = splitType(canonical);
+  return baseDefinitionCoordination(registry[base2] ?? registry[canonical] ?? registry[type]) === true;
 }
-function baseDefinitionWorkspacePointer(definition) {
+function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
-  return definition.workspacePointer;
+  return definition.coordination;
 }
-function setBaseWorkspacePointer(definition, value) {
+function setBaseCoordination(definition, value) {
   if (definition.tier === "modifier") {
-    throw new Error("Modifier types cannot configure workspace pointer capability.");
+    throw new Error("Modifier types cannot configure coordination capability.");
   }
-  definition.workspacePointer = value;
+  definition.coordination = value;
+}
+function typeAllowsWorkspacePointer(_type, _registry) {
+  void _type;
+  void _registry;
+  return false;
+}
+function baseDefinitionWorkspacePointer(_definition) {
+  void _definition;
+  return void 0;
+}
+function setBaseWorkspacePointer(_definition, _value) {
+  void _definition;
+  void _value;
+  throw new Error(
+    "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
+  );
 }
 async function loadTypeRegistry(fs) {
-  if (!await fs.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
-  try {
-    const parsed = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH));
-    return normalizeRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json is corrupt: ${detail}.`);
+  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
+    if (!await fs.exists(candidate)) continue;
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidate));
+      return normalizeRegistry(parsed);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`types.json is corrupt: ${detail}.`);
+    }
   }
+  return cloneDefaults();
 }
 function normalizeRegistry(value) {
   const root = isRecord(value) ? value : {};
@@ -87,10 +163,29 @@ function normalizeRegistry(value) {
   if (isRecord(root.primary) || isRecord(root.secondary)) {
     mergeDefinitions(registry, root.primary, true, "base");
     mergeDefinitions(registry, root.secondary, false, "modifier");
+    applyLegacyOutputAlias(registry);
     return registry;
   }
   mergeDefinitions(registry, root);
+  applyLegacyOutputAlias(registry);
   return registry;
+}
+function applyLegacyOutputAlias(registry) {
+  if (registry.output && !isRecord(registry.output)) return;
+  if (registry.output) {
+    const out = registry.output;
+    if (out.tier !== "modifier") {
+      const artifact = registry.artifact;
+      if (artifact && artifact.tier !== "modifier") {
+        if (typeof out.readable === "boolean") artifact.readable = out.readable;
+        if (typeof out.writable === "boolean") artifact.writable = out.writable;
+        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
+        else if (out.coordination === void 0) artifact.coordination = true;
+        if (out.color) artifact.color = out.color;
+        if (out.description) artifact.description = out.description;
+      }
+    }
+  }
 }
 function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
   if (!isRecord(source)) return;
@@ -115,20 +210,25 @@ function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
       };
       continue;
     }
-    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
-    registry[name] = {
+    const coordination = resolveCoordinationFlag(name, raw, current);
+    const entry = {
       tier: "base",
       readable,
       writable,
       ...metadata,
-      ...workspacePointer !== void 0 ? { workspacePointer } : {}
+      ...coordination !== void 0 ? { coordination } : {}
     };
+    delete entry.workspacePointer;
+    registry[name] = entry;
   }
 }
-function resolveWorkspacePointerFlag(name, raw, _current) {
-  void _current;
-  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
-  if (name === "output") return true;
+function resolveCoordinationFlag(name, raw, current) {
+  if (typeof raw.coordination === "boolean") return raw.coordination;
+  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
+    return current.coordination;
+  }
+  if (name === "note") return false;
+  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
   return void 0;
 }
 function cloneDefaults() {
@@ -139,18 +239,27 @@ function cloneDefaults() {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var TYPE_REGISTRY_PATH, TYPE_COLOR_PALETTE, DEFAULT_TYPE_REGISTRY;
+var TYPE_COLOR_PALETTE, DEFAULT_TYPE_REGISTRY, TYPE_REGISTRY_CANDIDATES;
 var init_typeRegistry = __esm({
   "src/core/typeRegistry.ts"() {
     "use strict";
-    TYPE_REGISTRY_PATH = ".tent/types.json";
+    init_paths();
     TYPE_COLOR_PALETTE = ["gray", "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown"];
     DEFAULT_TYPE_REGISTRY = {
+      note: {
+        readable: true,
+        writable: true,
+        color: "gray",
+        tier: "base",
+        coordination: false,
+        description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
+      },
       goal: {
         readable: true,
         writable: false,
         color: "blue",
         tier: "base",
+        coordination: true,
         description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
       },
       prompt: {
@@ -158,15 +267,16 @@ var init_typeRegistry = __esm({
         writable: true,
         color: "purple",
         tier: "base",
+        coordination: true,
         description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
       },
-      output: {
+      artifact: {
         readable: true,
         writable: true,
         color: "cyan",
         tier: "base",
-        workspacePointer: true,
-        description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
+        coordination: true,
+        description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
       },
       open: {
         readable: true,
@@ -195,12 +305,13 @@ var init_typeRegistry = __esm({
         description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
       }
     };
+    TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
   }
 });
 
 // src/core/adapter.ts
 function withTentMutation(fs, action) {
-  return fs.withLock ? fs.withLock(".tent/mutation.lock", action) : action();
+  return fs.withLock ? fs.withLock("mutation.lock", action) : action();
 }
 var init_adapter = __esm({
   "src/core/adapter.ts"() {
@@ -452,18 +563,20 @@ var init_registryRecovery = __esm({
 
 // src/core/order.ts
 async function loadOrder(fs) {
-  if (!await fs.exists(ORDER_PATH)) return {};
-  try {
-    return JSON.parse(await fs.readFile(ORDER_PATH));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, ORDER_PATH);
-    await saveOrder(fs, {});
-    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
-    return {};
+  for (const candidate of ORDER_CANDIDATES) {
+    if (!await fs.exists(candidate)) continue;
+    try {
+      return JSON.parse(await fs.readFile(candidate));
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs, candidate);
+      await saveOrder(fs, {});
+      warnRegistryRecovered(candidate, backupPath, "recovered");
+      return {};
+    }
   }
+  return {};
 }
 async function saveOrder(fs, map) {
-  if (!await fs.exists(".tent")) await fs.mkdir(".tent");
   await fs.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
@@ -481,13 +594,14 @@ function sortByOrder(items, order, fallback) {
   });
   return sorted;
 }
-var ROOT_KEY, ORDER_PATH;
+var ROOT_KEY, ORDER_CANDIDATES;
 var init_order = __esm({
   "src/core/order.ts"() {
     "use strict";
     init_registryRecovery();
+    init_paths();
     ROOT_KEY = "__root__";
-    ORDER_PATH = ".tent/order.json";
+    ORDER_CANDIDATES = [ORDER_PATH, `.tent/${ORDER_PATH}`];
   }
 });
 
@@ -503,7 +617,8 @@ async function loadTent(fs) {
   const top = await fs.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
-    if (entry.name === "temp") continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    if (isSystemNoteName(entry.name)) continue;
     await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
   }
   const order = await loadOrder(fs);
@@ -560,6 +675,7 @@ function zoneRank(name) {
   return i === -1 ? 99 : i;
 }
 async function loadBox(fs, path, parent, registry) {
+  if (isOperationalPath(path)) return null;
   const boxFile = boxNotePath(path);
   if (!await fs.exists(boxFile)) {
     return null;
@@ -581,6 +697,8 @@ async function loadBox(fs, path, parent, registry) {
     id: fm.id,
     type: fm.type,
     tags,
+    coordination: false,
+    // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
     path,
@@ -601,6 +719,7 @@ async function loadBox(fs, path, parent, registry) {
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join2(path, entry.name), box, registry, box.children);
   }
   return box;
@@ -632,6 +751,7 @@ function normalizeTags(value) {
   return out;
 }
 async function loadBoxInto(fs, path, parent, registry, target) {
+  if (isOperationalPath(path)) return;
   const box = await loadBox(fs, path, parent, registry);
   if (box) {
     target.push(box);
@@ -640,6 +760,7 @@ async function loadBoxInto(fs, path, parent, registry, target) {
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join2(path, entry.name), parent, registry, target);
   }
 }
@@ -653,7 +774,11 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
   box.archived = inheritedArchived || box.fm.archived === true;
+  box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
+    delete box.fm.status;
+  }
+  if (!box.coordination) {
     delete box.fm.status;
   }
   box.readable = resolveAxis(box, "readable", registry);
@@ -736,25 +861,28 @@ var init_tree = __esm({
     init_frontmatter();
     init_order();
     init_typeRegistry();
-    ZONE_NAMES = ["goal", "prompt", "output"];
+    init_paths();
+    ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
   }
 });
 
 // src/core/tags.ts
 async function loadTagRegistry(fs) {
-  if (!await fs.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
-  try {
-    return normalizeRegistry2(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs);
-    await saveTagRegistryUnlocked(fs, recovered);
-    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
-    return recovered;
+  for (const candidate of TAGS_CANDIDATES) {
+    if (!await fs.exists(candidate)) continue;
+    try {
+      return normalizeRegistry2(JSON.parse(await fs.readFile(candidate)));
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs, candidate);
+      const recovered = await recoverTagRegistryFromBoxes(fs);
+      await saveTagRegistryUnlocked(fs, recovered);
+      warnRegistryRecovered(candidate, backupPath, "recovered");
+      return recovered;
+    }
   }
+  return { tags: [] };
 }
 async function saveTagRegistryUnlocked(fs, registry) {
-  if (!await fs.exists(".tent")) await fs.mkdir(".tent");
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
 async function addRegistryTag(fs, name) {
@@ -851,7 +979,7 @@ function boxKeyOrder(existing) {
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var TAGS_REGISTRY_PATH;
+var TAGS_CANDIDATES;
 var init_tags = __esm({
   "src/core/tags.ts"() {
     "use strict";
@@ -859,28 +987,35 @@ var init_tags = __esm({
     init_frontmatter();
     init_tree();
     init_registryRecovery();
-    TAGS_REGISTRY_PATH = ".tent/tags.json";
+    init_paths();
+    TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
   }
 });
 
 // src/core/skillRoleRegistry.ts
 async function loadRolesRegistry(fs) {
-  if (!await fs.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
-  try {
-    const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return reset;
+  for (const candidate of ROLES_CANDIDATES) {
+    if (!await fs.exists(candidate)) continue;
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidate));
+      return normalizeRolesRegistry(parsed);
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs, candidate);
+      const reset = cloneDefaultRoles();
+      await writeJson(fs, candidate, reset);
+      if (candidate !== ROLES_REGISTRY_PATH) {
+        await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+      }
+      warnRegistryRecovered(
+        candidate,
+        backupPath,
+        "reset",
+        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+      );
+      return reset;
+    }
   }
+  return cloneDefaultRoles();
 }
 async function createRole(fs, definition) {
   await withTentMutation(fs, async () => {
@@ -962,16 +1097,17 @@ async function writeJson(fs, path, value) {
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var ROLES_REGISTRY_PATH, DEFAULT_ROLES_REGISTRY;
+var DEFAULT_ROLES_REGISTRY, ROLES_CANDIDATES;
 var init_skillRoleRegistry = __esm({
   "src/core/skillRoleRegistry.ts"() {
     "use strict";
     init_adapter();
     init_registryRecovery();
-    ROLES_REGISTRY_PATH = ".tent/roles.json";
+    init_paths();
     DEFAULT_ROLES_REGISTRY = {
       roles: []
     };
+    ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
   }
 });
 
@@ -1078,7 +1214,7 @@ async function removeReportsForBox(fs, boxId) {
 }
 function normalizeReportPath(input) {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path)) {
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
   return path;
@@ -1276,7 +1412,7 @@ function buildManifest(tent, input) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
-  readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
@@ -1357,8 +1493,9 @@ function preloadTypeRank(box) {
   const base2 = splitType(box.type).base;
   if (base2 === "goal") return 0;
   if (base2 === "prompt") return 1;
-  if (base2 === "output") return 2;
-  return 3;
+  if (base2 === "artifact" || base2 === "output") return 2;
+  if (base2 === "note") return 3;
+  return 4;
 }
 function treeOrder(tent) {
   const order = /* @__PURE__ */ new Map();
@@ -1398,25 +1535,26 @@ var init_manifest = __esm({
 });
 
 // src/core/id.ts
-function makeBoxId(rand = Math.random, len = 6) {
+function makeConceptId(rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
     s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
   }
-  return "bx-" + s;
+  return CONCEPT_ID_PREFIX + s;
 }
-function makeUniqueBoxId(existing, rand = Math.random) {
+function makeUniqueConceptId(existing, rand = Math.random) {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeBoxId(rand);
+    const id = makeConceptId(rand);
     if (!existing.has(id)) return id;
   }
-  return makeBoxId(rand, 10);
+  return makeConceptId(rand, 10);
 }
-var ALPHABET;
+var ALPHABET, CONCEPT_ID_PREFIX;
 var init_id = __esm({
   "src/core/id.ts"() {
     "use strict";
     ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+    CONCEPT_ID_PREFIX = "cx-";
   }
 });
 
@@ -1439,6 +1577,7 @@ var init_scaffold = __esm({
     init_tags();
     init_tree();
     init_id();
+    init_paths();
   }
 });
 
@@ -1459,7 +1598,7 @@ async function forkNodeUnlocked(env, boxId) {
   const usedIds = new Set(tent.byId.keys());
   const idMap = /* @__PURE__ */ new Map();
   for (const box of sourceBoxes) {
-    const nextId = makeUniqueBoxId(usedIds, env.rand);
+    const nextId = makeUniqueConceptId(usedIds, env.rand);
     usedIds.add(nextId);
     idMap.set(box.id, nextId);
   }
@@ -1508,7 +1647,7 @@ async function adoptCopiedSubtree(env, boxPath) {
     if (!hasDuplicate) return [];
     const idMap = /* @__PURE__ */ new Map();
     for (const box of copied) {
-      const next = makeUniqueBoxId(outsideIds, env.rand);
+      const next = makeUniqueConceptId(outsideIds, env.rand);
       outsideIds.add(next);
       idMap.set(box.id, next);
     }
@@ -1542,7 +1681,7 @@ async function normalizeCopiedRootIdentity(fs, boxPath) {
     if (entry.isDir || !entry.name.endsWith(".md") || entry.name === "index.md") continue;
     const candidate = join2(boxPath, entry.name);
     const { data } = parseFrontmatter(await fs.readFile(candidate));
-    if (typeof data.id === "string" && data.id.startsWith("bx-") && typeof data.type === "string") {
+    if (typeof data.id === "string" && (data.id.startsWith("bx-") || data.id.startsWith("cx-")) && typeof data.type === "string") {
       candidates.push(candidate);
     }
   }
@@ -1810,7 +1949,7 @@ async function createBoxUnlocked(env, input) {
     if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
   }
   const existing = new Set(tent.byId.keys());
-  const id = makeUniqueBoxId(existing, env.rand);
+  const id = makeUniqueConceptId(existing, env.rand);
   const path = join2(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir2(env.fs, path);
@@ -2331,7 +2470,7 @@ async function rejectProposal(fs, inputPath) {
 }
 function normalizeProposalPath(input) {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/bx-[^/]+\.md$/.test(path)) {
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
   return path;
@@ -2365,7 +2504,9 @@ var COL_GAP = 48;
 var ZONE_COLOR = {
   goal: "5",
   prompt: "6",
+  artifact: "4",
   output: "4",
+  note: "1",
   temp: "",
   custom: "2"
 };
@@ -2440,7 +2581,7 @@ function colorFor(box, isZone) {
   const { base: base2, modifier } = splitType(box.type);
   if (base2 === "goal") return "5";
   if (base2 === "prompt") return "6";
-  if (base2 === "output") return "4";
+  if (base2 === "artifact" || base2 === "output") return "4";
   if (modifier === "asset" || box.type === "asset") return "";
   return void 0;
 }
@@ -2528,11 +2669,14 @@ function cleanValue(value) {
 var nodePath2 = __toESM(require("node:path"), 1);
 var nodeFs2 = __toESM(require("node:fs/promises"), 1);
 var import_node_child_process = require("node:child_process");
-init_typeRegistry();
-function resolveTentWorkspace(tent) {
+init_paths();
+function resolveTentWorkspace(tent, systemRoot) {
+  if (systemRoot) {
+    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+    if (fromLayout) return nodePath2.resolve(fromLayout);
+  }
   const workspaces = /* @__PURE__ */ new Set();
   for (const box of tent.byPath.values()) {
-    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath2.resolve(workspace));
   }
@@ -2688,18 +2832,24 @@ async function worktreeForBranch(root, branch) {
   return void 0;
 }
 async function findCherryPick(root, sourceRef) {
-  const needle = `(cherry picked from commit ${await fullRef(root, sourceRef)})`;
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", contractRange()]);
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    if (parts[i + 1].includes(needle)) return parts[i].trim();
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+    if (body.includes("cherry picked from commit") && body.includes(full)) {
+      return parts[i].trim();
+    }
   }
   return void 0;
 }
 async function findAncestorIntegration(root, sourceRef, targetBranch) {
   const targetRef = `refs/heads/${targetBranch}`;
-  if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, targetRef])) {
-    return (await git(root, ["rev-parse", targetRef])).trim();
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
   }
   return void 0;
 }
@@ -2725,9 +2875,6 @@ async function rollbackIntegration(root, originalRef, cause) {
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
-}
-function contractRange() {
-  return "-n1000";
 }
 async function fullRef(root, ref) {
   return (await git(root, ["rev-parse", ref])).trim();
@@ -2946,6 +3093,11 @@ async function updateTypeMetadata(fs, level, name, patch) {
   await withTentMutation(fs, async () => {
     void level;
     assertTypeName(name);
+    if (patch.workspacePointer !== void 0) {
+      throw new Error(
+        "workspacePointer capability is retired; use coordination and in-workspace .tent layout."
+      );
+    }
     const registry = await loadTypeRegistry(fs);
     const current = registry[name];
     if (!current) throw new Error(`Type does not exist: ${name}.`);
@@ -2961,8 +3113,8 @@ async function updateTypeMetadata(fs, level, name, patch) {
     }
     updateAxis(current, "readable", patch.readable);
     updateAxis(current, "writable", patch.writable);
-    if (patch.workspacePointer !== void 0) {
-      setBaseWorkspacePointer(current, patch.workspacePointer);
+    if (patch.coordination !== void 0) {
+      setBaseCoordination(current, patch.coordination);
     }
     await writeTypeRegistryUnlocked(fs, registry);
   });
@@ -3008,7 +3160,6 @@ async function deleteCustomType(fs, level, name, confirmation) {
   });
 }
 async function writeTypeRegistryUnlocked(fs, registry) {
-  if (!await fs.exists(".tent")) await fs.mkdir(".tent");
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
 }
 function assertTypeName(name) {

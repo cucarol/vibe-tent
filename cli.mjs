@@ -324,22 +324,67 @@ function timestamp() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
 }
 
+// src/core/paths.ts
+var TENT_SYSTEM_DIR = ".tent";
+var TYPE_REGISTRY_PATH = "types.json";
+var ROLES_REGISTRY_PATH = "roles.json";
+var TAGS_REGISTRY_PATH = "tags.json";
+var ORDER_PATH = "order.json";
+var MUTATION_LOCK_PATH = "mutation.lock";
+var RULES_PATH = "RULES.md";
+var TEMP_DIR = "temp";
+var ATTACHMENTS_DIR = "attachments";
+var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
+  TEMP_DIR,
+  ATTACHMENTS_DIR,
+  // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+  TENT_SYSTEM_DIR
+]);
+var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH,
+  ORDER_PATH,
+  MUTATION_LOCK_PATH,
+  RULES_PATH,
+  "index.md",
+  "log.md"
+]);
+function workspaceRootFromSystemRoot(systemRoot) {
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base = normalized.split(/[\\/]/).pop() ?? "";
+  if (base !== TENT_SYSTEM_DIR) return void 0;
+  const parent = normalized.replace(/[\\/]+[^\\/]+$/, "");
+  return parent || void 0;
+}
+function isOperationalPath(relativePath2) {
+  const path3 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path3) return false;
+  const top = path3.split("/")[0] ?? "";
+  return OPERATIONAL_TOP_LEVEL.has(top);
+}
+function isSystemNoteName(fileName) {
+  return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
+}
+
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-var ORDER_PATH = ".tent/order.json";
+var ORDER_CANDIDATES = [ORDER_PATH, `.tent/${ORDER_PATH}`];
 async function loadOrder(fs4) {
-  if (!await fs4.exists(ORDER_PATH)) return {};
-  try {
-    return JSON.parse(await fs4.readFile(ORDER_PATH));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs4, ORDER_PATH);
-    await saveOrder(fs4, {});
-    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
-    return {};
+  for (const candidate of ORDER_CANDIDATES) {
+    if (!await fs4.exists(candidate)) continue;
+    try {
+      return JSON.parse(await fs4.readFile(candidate));
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs4, candidate);
+      await saveOrder(fs4, {});
+      warnRegistryRecovered(candidate, backupPath, "recovered");
+      return {};
+    }
   }
+  return {};
 }
 async function saveOrder(fs4, map) {
-  if (!await fs4.exists(".tent")) await fs4.mkdir(".tent");
   await fs4.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
@@ -359,13 +404,21 @@ function sortByOrder(items, order, fallback) {
 }
 
 // src/core/typeRegistry.ts
-var TYPE_REGISTRY_PATH = ".tent/types.json";
 var DEFAULT_TYPE_REGISTRY = {
+  note: {
+    readable: true,
+    writable: true,
+    color: "gray",
+    tier: "base",
+    coordination: false,
+    description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
+  },
   goal: {
     readable: true,
     writable: false,
     color: "blue",
     tier: "base",
+    coordination: true,
     description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
   },
   prompt: {
@@ -373,15 +426,16 @@ var DEFAULT_TYPE_REGISTRY = {
     writable: true,
     color: "purple",
     tier: "base",
+    coordination: true,
     description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
   },
-  output: {
+  artifact: {
     readable: true,
     writable: true,
     color: "cyan",
     tier: "base",
-    workspacePointer: true,
-    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E workspace"
+    coordination: true,
+    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
   },
   open: {
     readable: true,
@@ -415,36 +469,48 @@ function splitType(type) {
   if (i === -1) return { base: type };
   return { base: type.slice(0, i), modifier: type.slice(i + 1) };
 }
+function canonicalTypeName(type) {
+  if (type === "output") return "artifact";
+  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
+  return type;
+}
 function typeExists(type, registry) {
-  if (registry[type]) return true;
-  const { base, modifier } = splitType(type);
+  const canonical = canonicalTypeName(type);
+  if (registry[canonical] || registry[type]) return true;
+  const { base, modifier } = splitType(canonical);
   return !!(registry[base] && (modifier === void 0 || !!registry[modifier]));
 }
 function resolveTypeAxis(type, axis, registry) {
-  const exact = registry[type];
+  const canonical = canonicalTypeName(type);
+  const exact = registry[canonical] ?? registry[type];
   if (exact) return exact[axis];
-  const { base, modifier } = splitType(type);
+  const { base, modifier } = splitType(canonical);
   const baseVal = registry[base]?.[axis];
   const modVal = modifier ? registry[modifier]?.[axis] : void 0;
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
-function typeAllowsWorkspacePointer(type, registry) {
-  const { base } = splitType(type);
-  return baseDefinitionWorkspacePointer(registry[base] ?? registry[type]) === true;
+function typeHasCoordination(type, registry) {
+  const canonical = canonicalTypeName(type);
+  const { base } = splitType(canonical);
+  return baseDefinitionCoordination(registry[base] ?? registry[canonical] ?? registry[type]) === true;
 }
-function baseDefinitionWorkspacePointer(definition) {
+function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
-  return definition.workspacePointer;
+  return definition.coordination;
 }
+var TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
 async function loadTypeRegistry(fs4) {
-  if (!await fs4.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
-  try {
-    const parsed = JSON.parse(await fs4.readFile(TYPE_REGISTRY_PATH));
-    return normalizeRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json is corrupt: ${detail}.`);
+  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
+    if (!await fs4.exists(candidate)) continue;
+    try {
+      const parsed = JSON.parse(await fs4.readFile(candidate));
+      return normalizeRegistry(parsed);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`types.json is corrupt: ${detail}.`);
+    }
   }
+  return cloneDefaults();
 }
 function normalizeRegistry(value) {
   const root = isRecord(value) ? value : {};
@@ -452,10 +518,29 @@ function normalizeRegistry(value) {
   if (isRecord(root.primary) || isRecord(root.secondary)) {
     mergeDefinitions(registry, root.primary, true, "base");
     mergeDefinitions(registry, root.secondary, false, "modifier");
+    applyLegacyOutputAlias(registry);
     return registry;
   }
   mergeDefinitions(registry, root);
+  applyLegacyOutputAlias(registry);
   return registry;
+}
+function applyLegacyOutputAlias(registry) {
+  if (registry.output && !isRecord(registry.output)) return;
+  if (registry.output) {
+    const out = registry.output;
+    if (out.tier !== "modifier") {
+      const artifact = registry.artifact;
+      if (artifact && artifact.tier !== "modifier") {
+        if (typeof out.readable === "boolean") artifact.readable = out.readable;
+        if (typeof out.writable === "boolean") artifact.writable = out.writable;
+        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
+        else if (out.coordination === void 0) artifact.coordination = true;
+        if (out.color) artifact.color = out.color;
+        if (out.description) artifact.description = out.description;
+      }
+    }
+  }
 }
 function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
   if (!isRecord(source)) return;
@@ -480,20 +565,25 @@ function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
       };
       continue;
     }
-    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
-    registry[name] = {
+    const coordination = resolveCoordinationFlag(name, raw, current);
+    const entry = {
       tier: "base",
       readable,
       writable,
       ...metadata,
-      ...workspacePointer !== void 0 ? { workspacePointer } : {}
+      ...coordination !== void 0 ? { coordination } : {}
     };
+    delete entry.workspacePointer;
+    registry[name] = entry;
   }
 }
-function resolveWorkspacePointerFlag(name, raw, _current) {
-  void _current;
-  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
-  if (name === "output") return true;
+function resolveCoordinationFlag(name, raw, current) {
+  if (typeof raw.coordination === "boolean") return raw.coordination;
+  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
+    return current.coordination;
+  }
+  if (name === "note") return false;
+  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
   return void 0;
 }
 function cloneDefaults() {
@@ -506,7 +596,7 @@ function isRecord(value) {
 }
 
 // src/core/tree.ts
-var ZONE_NAMES = ["goal", "prompt", "output"];
+var ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
@@ -518,7 +608,8 @@ async function loadTent(fs4) {
   const top = await fs4.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
-    if (entry.name === "temp") continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    if (isSystemNoteName(entry.name)) continue;
     await loadBoxInto(fs4, entry.name, null, typeRegistry, roots);
   }
   const order = await loadOrder(fs4);
@@ -561,6 +652,7 @@ function zoneRank(name) {
   return i === -1 ? 99 : i;
 }
 async function loadBox(fs4, path3, parent, registry) {
+  if (isOperationalPath(path3)) return null;
   const boxFile = boxNotePath(path3);
   if (!await fs4.exists(boxFile)) {
     return null;
@@ -582,6 +674,8 @@ async function loadBox(fs4, path3, parent, registry) {
     id: fm.id,
     type: fm.type,
     tags,
+    coordination: false,
+    // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
     path: path3,
@@ -602,6 +696,7 @@ async function loadBox(fs4, path3, parent, registry) {
   const sub = await fs4.listDir(path3);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs4, join(path3, entry.name), box, registry, box.children);
   }
   return box;
@@ -633,6 +728,7 @@ function normalizeTags(value) {
   return out;
 }
 async function loadBoxInto(fs4, path3, parent, registry, target) {
+  if (isOperationalPath(path3)) return;
   const box = await loadBox(fs4, path3, parent, registry);
   if (box) {
     target.push(box);
@@ -641,6 +737,7 @@ async function loadBoxInto(fs4, path3, parent, registry, target) {
   const sub = await fs4.listDir(path3);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs4, join(path3, entry.name), parent, registry, target);
   }
 }
@@ -654,7 +751,11 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
   box.archived = inheritedArchived || box.fm.archived === true;
+  box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
+    delete box.fm.status;
+  }
+  if (!box.coordination) {
     delete box.fm.status;
   }
   box.readable = resolveAxis(box, "readable", registry);
@@ -733,7 +834,7 @@ function dirName(path3) {
 
 // src/core/adapter.ts
 function withTentMutation(fs4, action) {
-  return fs4.withLock ? fs4.withLock(".tent/mutation.lock", action) : action();
+  return fs4.withLock ? fs4.withLock("mutation.lock", action) : action();
 }
 
 // src/core/manifest.ts
@@ -748,7 +849,7 @@ function buildManifest(tent, input) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
-  readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
     if (isUsableBox(box) && box.writable.value) {
@@ -829,8 +930,9 @@ function preloadTypeRank(box) {
   const base = splitType(box.type).base;
   if (base === "goal") return 0;
   if (base === "prompt") return 1;
-  if (base === "output") return 2;
-  return 3;
+  if (base === "artifact" || base === "output") return 2;
+  if (base === "note") return 3;
+  return 4;
 }
 function treeOrder(tent) {
   const order = /* @__PURE__ */ new Map();
@@ -864,19 +966,20 @@ function dedupe(entries) {
 
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-function makeBoxId(rand = Math.random, len = 6) {
+var CONCEPT_ID_PREFIX = "cx-";
+function makeConceptId(rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
     s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
   }
-  return "bx-" + s;
+  return CONCEPT_ID_PREFIX + s;
 }
-function makeUniqueBoxId(existing, rand = Math.random) {
+function makeUniqueConceptId(existing, rand = Math.random) {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeBoxId(rand);
+    const id = makeConceptId(rand);
     if (!existing.has(id)) return id;
   }
-  return makeBoxId(rand, 10);
+  return makeConceptId(rand, 10);
 }
 
 // src/core/claim.ts
@@ -922,22 +1025,24 @@ function collect(box, out) {
 }
 
 // src/core/tags.ts
-var TAGS_REGISTRY_PATH = ".tent/tags.json";
 var DEFAULT_TAG_REGISTRY = { tags: [] };
+var TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
 async function loadTagRegistry(fs4) {
-  if (!await fs4.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
-  try {
-    return normalizeRegistry2(JSON.parse(await fs4.readFile(TAGS_REGISTRY_PATH)));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs4, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs4);
-    await saveTagRegistryUnlocked(fs4, recovered);
-    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
-    return recovered;
+  for (const candidate of TAGS_CANDIDATES) {
+    if (!await fs4.exists(candidate)) continue;
+    try {
+      return normalizeRegistry2(JSON.parse(await fs4.readFile(candidate)));
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs4, candidate);
+      const recovered = await recoverTagRegistryFromBoxes(fs4);
+      await saveTagRegistryUnlocked(fs4, recovered);
+      warnRegistryRecovered(candidate, backupPath, "recovered");
+      return recovered;
+    }
   }
+  return { tags: [] };
 }
 async function saveTagRegistryUnlocked(fs4, registry) {
-  if (!await fs4.exists(".tent")) await fs4.mkdir(".tent");
   await fs4.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
 async function addRegistryTag(fs4, name) {
@@ -1040,27 +1145,33 @@ function isRecord2(value) {
 }
 
 // src/core/skillRoleRegistry.ts
-var ROLES_REGISTRY_PATH = ".tent/roles.json";
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
+var ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
 async function loadRolesRegistry(fs4) {
-  if (!await fs4.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
-  try {
-    const parsed = JSON.parse(await fs4.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs4, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return reset;
+  for (const candidate of ROLES_CANDIDATES) {
+    if (!await fs4.exists(candidate)) continue;
+    try {
+      const parsed = JSON.parse(await fs4.readFile(candidate));
+      return normalizeRolesRegistry(parsed);
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs4, candidate);
+      const reset = cloneDefaultRoles();
+      await writeJson(fs4, candidate, reset);
+      if (candidate !== ROLES_REGISTRY_PATH) {
+        await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
+      }
+      warnRegistryRecovered(
+        candidate,
+        backupPath,
+        "reset",
+        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+      );
+      return reset;
+    }
   }
+  return cloneDefaultRoles();
 }
 function normalizeRolesRegistry(value) {
   const root = isRecord3(value) ? value : {};
@@ -1335,7 +1446,7 @@ function reportPath(role, boxId) {
 }
 function normalizeReportPath(input) {
   const path3 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path3)) {
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path3)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
   return path3;
@@ -1363,27 +1474,69 @@ function uniqueCommits(commits) {
 }
 
 // src/core/scaffold.ts
-async function scaffoldTent(fs4, options) {
-  const name = options.name.trim();
-  if (!name) throw new Error("Tent name cannot be empty.");
-  if (!options.rules.trim()) throw new Error("RULES.md content cannot be empty.");
+async function scaffoldInWorkspace(workspaceFs, options) {
+  const systemRelative = TENT_SYSTEM_DIR;
+  if (await workspaceFs.exists(systemRelative)) {
+    throw new Error(`Target already has a Tent system dir: ${systemRelative}`);
+  }
+  await workspaceFs.mkdir(systemRelative);
+  const nested = (p) => `${systemRelative}/${p}`.replace(/\\/g, "/");
   const usedIds = /* @__PURE__ */ new Set();
   for (const box of options.boxes ?? []) {
     const boxName = validateBoxName(box.name);
     const type = box.type.trim();
     if (!type) throw new Error(`Box ${boxName} is missing a primary type.`);
-    const id = box.id?.trim() || makeUniqueBoxId(usedIds);
+    const id = box.id?.trim() || makeUniqueConceptId(usedIds);
     usedIds.add(id);
     const frontmatter = { id, type };
-    await writeBox(fs4, boxName, frontmatter, box.body ?? `# ${boxName}
-`);
+    const path3 = nested(boxName);
+    await workspaceFs.mkdir(path3);
+    await workspaceFs.writeFile(
+      `${path3}/${boxName}.md`,
+      serializeFrontmatter(frontmatter, `
+${box.body ?? `# ${boxName}
+`}
+`, BOX_FRONTMATTER_KEY_ORDER)
+    );
   }
-  await fs4.mkdir("temp");
-  await fs4.mkdir(".tent");
-  await fs4.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n");
-  await fs4.writeFile(ROLES_REGISTRY_PATH, JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n");
-  await fs4.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n");
-  await fs4.writeFile("RULES.md", options.rules);
+  await workspaceFs.mkdir(nested(TEMP_DIR));
+  await workspaceFs.mkdir(nested(ATTACHMENTS_DIR));
+  await workspaceFs.writeFile(
+    nested(TYPE_REGISTRY_PATH),
+    JSON.stringify(options.typeRegistry ?? DEFAULT_TYPE_REGISTRY, null, 2) + "\n"
+  );
+  await workspaceFs.writeFile(
+    nested(ROLES_REGISTRY_PATH),
+    JSON.stringify(options.rolesRegistry ?? { roles: [] }, null, 2) + "\n"
+  );
+  await workspaceFs.writeFile(
+    nested(TAGS_REGISTRY_PATH),
+    JSON.stringify(DEFAULT_TAG_REGISTRY, null, 2) + "\n"
+  );
+  await workspaceFs.writeFile(nested(RULES_PATH), options.rules);
+  await ensureWorkspaceGitignore(workspaceFs);
+  return { systemRootRelative: systemRelative };
+}
+async function ensureWorkspaceGitignore(workspaceFs) {
+  const path3 = ".gitignore";
+  const entry = `${TENT_SYSTEM_DIR}/`;
+  if (!await workspaceFs.exists(path3)) {
+    await workspaceFs.writeFile(path3, `${entry}
+`);
+    return;
+  }
+  const text = await workspaceFs.readFile(path3);
+  const lines = text.split(/\r?\n/);
+  const has = lines.some((line) => {
+    const t = line.trim();
+    return t === entry || t === TENT_SYSTEM_DIR || t === `/${entry}` || t === `/${TENT_SYSTEM_DIR}`;
+  });
+  if (has) return;
+  const next = text.endsWith("\n") || text === "" ? `${text}${entry}
+` : `${text}
+${entry}
+`;
+  await workspaceFs.writeFile(path3, next);
 }
 function validateBoxName(value) {
   const name = value.trim();
@@ -1393,12 +1546,6 @@ function validateBoxName(value) {
   if (/[\r\n]/.test(name)) throw new Error("Box name cannot contain newlines.");
   if (/[\x00-\x08\x0B\x0C\x0E-\x1F\x7F]/.test(name)) throw new Error("Box name cannot contain control characters.");
   return name;
-}
-async function writeBox(fs4, path3, frontmatter, body) {
-  await fs4.mkdir(path3);
-  await fs4.writeFile(boxNotePath(path3), serializeFrontmatter(frontmatter, `
-${body}
-`, BOX_FRONTMATTER_KEY_ORDER));
 }
 
 // src/core/forkOps.ts
@@ -1418,7 +1565,7 @@ async function forkNodeUnlocked(env, boxId) {
   const usedIds = new Set(tent.byId.keys());
   const idMap = /* @__PURE__ */ new Map();
   for (const box of sourceBoxes) {
-    const nextId = makeUniqueBoxId(usedIds, env.rand);
+    const nextId = makeUniqueConceptId(usedIds, env.rand);
     usedIds.add(nextId);
     idMap.set(box.id, nextId);
   }
@@ -1679,7 +1826,7 @@ async function createBoxUnlocked(env, input) {
     if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
   }
   const existing = new Set(tent.byId.keys());
-  const id = makeUniqueBoxId(existing, env.rand);
+  const id = makeUniqueConceptId(existing, env.rand);
   const path3 = join(input.parentPath, name);
   assertNotTempPath(path3);
   await ensureDir3(env.fs, path3);
@@ -2064,7 +2211,7 @@ function proposalPath(role, boxId) {
 }
 function normalizeProposalPath(input) {
   const path3 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/bx-[^/]+\.md$/.test(path3)) {
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path3)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
   return path3;
@@ -2100,10 +2247,13 @@ import * as path from "node:path";
 import * as nodePath2 from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
-function resolveTentWorkspace(tent) {
+function resolveTentWorkspace(tent, systemRoot) {
+  if (systemRoot) {
+    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+    if (fromLayout) return nodePath2.resolve(fromLayout);
+  }
   const workspaces = /* @__PURE__ */ new Set();
   for (const box of tent.byPath.values()) {
-    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath2.resolve(workspace));
   }
@@ -2229,18 +2379,24 @@ async function worktreeForBranch(root, branch) {
   return void 0;
 }
 async function findCherryPick(root, sourceRef) {
-  const needle = `(cherry picked from commit ${await fullRef(root, sourceRef)})`;
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", contractRange()]);
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    if (parts[i + 1].includes(needle)) return parts[i].trim();
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+    if (body.includes("cherry picked from commit") && body.includes(full)) {
+      return parts[i].trim();
+    }
   }
   return void 0;
 }
 async function findAncestorIntegration(root, sourceRef, targetBranch) {
   const targetRef = `refs/heads/${targetBranch}`;
-  if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, targetRef])) {
-    return (await git(root, ["rev-parse", targetRef])).trim();
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
   }
   return void 0;
 }
@@ -2266,9 +2422,6 @@ async function rollbackIntegration(root, originalRef, cause) {
 }
 function errorMessage(error) {
   return error instanceof Error ? error.message : String(error);
-}
-function contractRange() {
-  return "-n1000";
 }
 async function fullRef(root, ref) {
   return (await git(root, ["rev-parse", ref])).trim();
@@ -2352,15 +2505,15 @@ function workspaceCheckShell(command, platform = process.platform, comSpec = pro
 }
 
 // src/core/status.ts
-var NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/RULES.md found).";
+var NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
 async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE) {
-  const root = path.resolve(cwd);
-  if (!await isTentRoot(root)) throw new Error(NOT_INSIDE_TENT_MESSAGE);
-  const fsAdapter = new NodeFs(root);
+  const systemRoot = await findTentSystemRoot(cwd);
+  if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
+  const fsAdapter = new NodeFs(systemRoot);
   const tent = await loadTent(fsAdapter);
-  const workspace = resolveTentWorkspace(tent);
+  const workspace = resolveTentWorkspace(tent, systemRoot);
   const lines = [
-    `Tent: ${root}`,
+    `Tent: ${systemRoot}`,
     `Workspace: ${workspace || "(none)"}`,
     ""
   ];
@@ -2397,8 +2550,20 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
   }
   return lines.join("\n") + "\n";
 }
-async function isTentRoot(root) {
-  return await exists(path.join(root, ".tent")) && await exists(path.join(root, "RULES.md"));
+async function findTentSystemRoot(cwd = process.cwd()) {
+  let dir = path.resolve(cwd);
+  for (; ; ) {
+    if (await isSystemRoot(dir)) return dir;
+    const nested = path.join(dir, ".tent");
+    if (await isSystemRoot(nested)) return nested;
+    const parent = path.dirname(dir);
+    if (parent === dir) return void 0;
+    dir = parent;
+  }
+}
+async function isSystemRoot(root) {
+  if (!await exists(path.join(root, "RULES.md"))) return false;
+  return await exists(path.join(root, "types.json")) || await exists(path.join(root, "temp")) || await exists(path.join(root, ".tent"));
 }
 async function exists(target) {
   try {
@@ -2417,18 +2582,18 @@ function hasUndoneClaim(tent, claims) {
 }
 
 // src/cli/tent.ts
-function makeEnv() {
-  const root = process.cwd();
+async function makeEnv() {
+  const systemRoot = await findTentSystemRoot(process.cwd()) ?? process.cwd();
+  const workspace = workspaceRootFromSystemRoot(systemRoot);
   return {
-    fs: new NodeFs(root),
+    fs: new NodeFs(systemRoot),
     clock: new SystemClock(),
-    tentName: path2.basename(root),
-    tentRoot: root
+    tentName: path2.basename(workspace ?? systemRoot),
+    tentRoot: systemRoot
   };
 }
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
-  const env = makeEnv();
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
     console.log(helpText());
     return;
@@ -2437,16 +2602,17 @@ async function main() {
     console.log(await packageVersion());
     return;
   }
-  switch (cmd) {
-    case "new": {
-      const { positionals, flags } = parseFlags(args);
-      if (!positionals[0]) {
-        return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
-      }
-      if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
-      await newTent(positionals[0], flags.vault);
-      break;
+  if (cmd === "new") {
+    const { positionals, flags } = parseFlags(args);
+    if (!positionals[0]) {
+      return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
     }
+    if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
+    await newTent(positionals[0], flags.vault);
+    return;
+  }
+  const env = await makeEnv();
+  switch (cmd) {
     case "dispatch": {
       const { positionals, flags } = parseFlags(args);
       const [boxId, role, ...promptParts] = positionals;
@@ -2467,16 +2633,16 @@ async function main() {
         }
       }
       const tent = await loadTent(env.fs);
-      const workspacePath = resolveTentWorkspace(tent);
+      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
       if (!workspacePath) {
-        console.log("Note: this Tent has no workspace pointer box; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no in-workspace layout or workspace field; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Add a box whose base type enables workspace pointer capability, and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
+            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/ or set `workspace: C:/path/to/git-root` on a concept (legacy migration path)."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -2579,7 +2745,7 @@ ${r.relayPrompt}`);
       const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines = [];
-      const workspacePath = resolveTentWorkspace(tent);
+      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
       if (flags["require-check"]) {
         if (!workspacePath) return fail("--require-check requires a workspace pointer");
         await runWorkspaceCheck(workspacePath, flags["require-check"]);
@@ -2709,7 +2875,7 @@ ${r.relayPrompt}`);
         break;
       }
       for (const box of boxes) {
-        const pointer = typeAllowsWorkspacePointer(box.type, tent.typeRegistry) ? outputPointer(box.fm, box.body) : "";
+        const pointer = outputPointer(box.fm, box.body);
         console.log(`${box.id}	${box.path}	${box.type}${pointer ? `	${pointer}` : ""}`);
       }
       break;
@@ -2955,29 +3121,31 @@ async function newTent(target, vault) {
     pluginSettings = await readVaultPluginSettings(vault);
     target = path2.join(path2.resolve(vault), pluginSettings.tentsRoot, target);
   }
-  const fsa = new NodeFs(target);
-  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${target}`);
-  await fsmod.mkdir(target, { recursive: true });
-  const name = path2.basename(path2.resolve(target));
+  const workspaceRoot = path2.resolve(target);
+  const fsa = new NodeFs(workspaceRoot);
+  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
+  await fsmod.mkdir(workspaceRoot, { recursive: true });
+  const name = path2.basename(workspaceRoot);
   const fallbackRules = `# ${name} - Project Rules
 
 > Local project rules for this Tent. Created by tent-genesis; edit freely.
 > Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.
 
-- Output workspace: <real code repository path>
+- Output workspace: ${workspaceRoot.replaceAll("\\", "/")}
 - Commit / naming conventions: <fill in>
 - Other project rules: <fill in>
 `;
   const rules = pluginSettings?.rulesTemplate ? pluginSettings.rulesTemplate.replaceAll("{tent}", name) : fallbackRules;
-  await scaffoldTent(fsa, {
+  await scaffoldInWorkspace(fsa, {
     name,
     rules,
     typeRegistry: pluginSettings?.typeRegistry,
     rolesRegistry: pluginSettings?.rolesRegistry
   });
   console.log(
-    `\u2713 Created Tent: ${target}
-The root starts empty; add boxes in the panel or create a folder that contains a same-named Markdown note.`
+    `\u2713 Created Tent: ${path2.join(workspaceRoot, ".tent")}
+In-workspace layout: collaboration facts live under <workspace>/.tent/.
+The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );
 }
 function normalizeTemplateRoles(value) {
