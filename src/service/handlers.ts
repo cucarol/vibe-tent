@@ -10,8 +10,13 @@ import {
 } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
-import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../core/task.js";
+import {
+  loadTaskEnvelope,
+  loadTaskEnvelopes,
+  sessionBootstrapPromptForTask,
+} from "../core/task.js";
 import { taskContextCard } from "../core/context-card.js";
+import { systemRootFromWorkspace } from "../core/paths.js";
 import { loadDeliveries } from "../core/delivery.js";
 import { loadTypeRegistry } from "../core/typeRegistry.js";
 import { loadRolesRegistry, roleA2APolicy } from "../core/skillRoleRegistry.js";
@@ -607,6 +612,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   let session: unknown = undefined;
   if (startSession) {
     // Claim then startSession so running+sessionId bind together.
+    // Do not pass relayPrompt as bootstrap — relay still tells external agents to claim;
+    // startSession builds a post-claim bootstrap (task get + deliver) by default.
     await taskClaimRpc(ctx, {
       workspaceId,
       taskPath: result.taskPath,
@@ -617,7 +624,6 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       profileId,
       callerKind,
       ...(a2aPolicyOverride !== undefined ? { a2aPolicyOverride } : {}),
-      bootstrapPrompt: result.relayPrompt,
     });
   }
 
@@ -994,11 +1000,14 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         }
       : undefined;
 
-  // Pointer-first bootstrap: Context Card + relay path — never copy full box/task body
-  // into the agent session (preserves prompt-cache hits on the task envelope itself).
+  // Pointer-first bootstrap: Context Card + post-claim session steps — never copy full
+  // box/task body (preserves prompt-cache). Not the external relay (which still says claim).
   const sessionBootstrap =
     bootstrapPrompt?.trim() ||
-    buildSessionBootstrapPrompt(task, mount.workspaceRoot);
+    buildSessionBootstrapPrompt(task, {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot,
+    });
 
   let handle;
   try {
@@ -1439,19 +1448,25 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 }
 
 /**
- * Build ACP bootstrap text from task pointers only (Context Card + relay).
+ * Build ACP bootstrap text from task pointers only (Context Card + post-claim steps).
  * Does not embed the full user prompt / box body — agent must read the envelope.
+ * Distinct from relayPromptForTask: service already claimed; no claim/task-ack.
  */
 function buildSessionBootstrapPrompt(
   task: import("../core/task.js").TaskEnvelope,
-  tentRoot: string
+  roots: { workspaceRoot: string; systemRoot: string }
 ): string {
+  const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
-    tentRootHint: tentRoot,
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot,
     label: `task:${task.role}`,
   });
-  const relay = relayPromptForTask(task, tentRoot);
+  const sessionSteps = sessionBootstrapPromptForTask(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot,
+  });
   const aux: string[] = [];
   if (task.role) aux.push(`role: ${task.role}`);
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
@@ -1459,7 +1474,7 @@ function buildSessionBootstrapPrompt(
     `${card.prompt}\n\n` +
     `--- Tent session bootstrap ---\n` +
     (aux.length ? `${aux.join("\n")}\n` : "") +
-    `${relay}\n`
+    `${sessionSteps}\n`
   );
 }
 

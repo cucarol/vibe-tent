@@ -452,7 +452,7 @@ function buildContextCard(ref, options) {
   if (!id) throw new Error("ContextRef.id cannot be empty.");
   if (!kind) throw new Error("ContextRef.kind is required.");
   const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options?.tentRootHint);
+  const prompt = formatContextCardPrompt(ref, options);
   return {
     contextRef: {
       kind,
@@ -465,16 +465,33 @@ function buildContextCard(ref, options) {
     templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
   };
 }
-function formatContextCardPrompt(ref, tentRootHint) {
+function formatContextCardPrompt(ref, hints) {
+  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
+  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
+  const workspaceRoot = opts.workspaceRoot?.trim() || "";
   const lines = [
     "Tent contextCard v1",
     `contextRef: ${ref.kind}/${ref.id}`
   ];
   if (ref.path) lines.push(`path: ${ref.path}`);
   if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (tentRootHint) lines.push(`tentRoot: ${tentRootHint}`);
+  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
+  if (systemRoot) {
+    lines.push(`systemRoot: ${systemRoot}`);
+    lines.push(`tentRoot: ${systemRoot}`);
+  }
+  if (ref.path) {
+    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (rel && !rel.startsWith(".tent/")) {
+      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
+    }
+  }
+  lines.push(
+    "CLI: run tent from workspaceRoot; taskPath/docs paths are relative to systemRoot (.tent)."
+  );
   lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
   lines.push("Do not invent missing content; fetch by id before answering.");
+  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
   return lines.join("\n");
 }
 function boxContextCard(boxId, path6, opts) {

@@ -133,15 +133,88 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   return task;
 }
 
-export function relayPromptForTask(task: TaskEnvelope, tentRoot: string): string {
-  const initPath = join("temp", task.role, "init.md");
+/**
+ * Roots for agent-facing task prompts.
+ * - workspaceRoot: real project; run `tent` CLI here.
+ * - systemRoot: tent system root (`<workspace>/.tent`); taskPath base.
+ */
+export type TaskPromptRoots = {
+  workspaceRoot: string;
+  systemRoot: string;
+};
+
+/**
+ * Normalize legacy string root (system root / tentRoot) or explicit dual roots.
+ * When only systemRoot is known, workspaceRoot is its parent if the leaf is `.tent`.
+ */
+export function resolveTaskPromptRoots(
+  roots: string | TaskPromptRoots
+): TaskPromptRoots {
+  if (typeof roots !== "string") {
+    return {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot,
+    };
+  }
+  const systemRoot = roots;
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base = normalized.split(/[\\/]/).pop() ?? "";
+  const workspaceRoot =
+    base === ".tent"
+      ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot
+      : systemRoot;
+  return { workspaceRoot, systemRoot };
+}
+
+function formatTaskPathHints(task: TaskEnvelope, roots: TaskPromptRoots): string {
+  const initCli = join("temp", task.role, "init.md");
+  const initFile = join(".tent", "temp", task.role, "init.md");
+  const taskFile = join(".tent", task.path);
+  return (
+    `workspaceRoot: ${roots.workspaceRoot}\n` +
+    `systemRoot: ${roots.systemRoot}\n` +
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.\n` +
+    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} — never <workspaceRoot>/temp.\n` +
+    `Role init file: ${initFile} (CLI path remains ${initCli}).`
+  );
+}
+
+/**
+ * External / manual wake relay: task is still queued — agent must claim.
+ * Used for clipboard relay and dispatch.relayPrompt, NOT for service startSession bootstrap.
+ */
+export function relayPromptForTask(
+  task: TaskEnvelope,
+  roots: string | TaskPromptRoots
+): string {
+  const resolved = resolveTaskPromptRoots(roots);
   return (
     `A Tent task has been dispatched to role ${task.role}.\n` +
-    `Tent root: ${tentRoot}\n` +
+    `${formatTaskPathHints(task, resolved)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
-    `2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.\n` +
+    `2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.\n` +
     `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
-    `4. If this is a new session for this role, complete role init first: ${initPath}.`
+    `4. If this is a new session for this role, complete role init first (read the init file above).`
+  );
+}
+
+/**
+ * Service already claimed the task (task.startSession / auto-claim path).
+ * Agent must NOT claim again (claim is denied under permissionPolicy=deny noise / double-claim).
+ */
+export function sessionBootstrapPromptForTask(
+  task: TaskEnvelope,
+  roots: string | TaskPromptRoots
+): string {
+  const resolved = resolveTaskPromptRoots(roots);
+  return (
+    `A Tent task is ready for role ${task.role}.\n` +
+    `${formatTaskPathHints(task, resolved)}\n` +
+    `Service status: this task is already claimed (state=${task.state || "running"}). Skip any claim step; inspect and work, then deliver.\n` +
+    `1. Run \`tent task get ${task.path}\` to inspect the task (or read the envelope file under systemRoot).\n` +
+    `2. Read the envelope → manifest → claimed boxes; the box notes contain the task definition.\n` +
+    `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
+    `4. If this is a new session for this role, complete role init first (read the init file above).`
   );
 }
 
@@ -154,11 +227,13 @@ export async function ensureRoleInit(
   const body =
     `# Role Init\n\n` +
     `- Tent: ${tentName}\n` +
-    `- Rules: RULES.md\n` +
-    `- Role registry: .tent/roles.json (or run \`tent roles\`)\n\n` +
+    `- Rules (CLI / system-root relative): RULES.md\n` +
+    `- Rules (workspace file read): .tent/RULES.md\n` +
+    `- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)\n\n` +
     `## Role Prompt\n\n${role.prompt?.trim() || "(no persistent role prompt)"}\n\n` +
     `## Operating Model\n\n` +
-    `Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.\n`;
+    `Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.\n` +
+    `Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp — operational files live under .tent/temp.\n`;
   await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path;
 }

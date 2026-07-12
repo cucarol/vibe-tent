@@ -1391,22 +1391,46 @@ async function loadTaskEnvelope(fs, path) {
   if (wait) task.wait = wait;
   return task;
 }
-function relayPromptForTask(task, tentRoot) {
-  const initPath = join2("temp", task.role, "init.md");
+function resolveTaskPromptRoots(roots) {
+  if (typeof roots !== "string") {
+    return {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot
+    };
+  }
+  const systemRoot = roots;
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base2 = normalized.split(/[\\/]/).pop() ?? "";
+  const workspaceRoot = base2 === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
+  return { workspaceRoot, systemRoot };
+}
+function formatTaskPathHints(task, roots) {
+  const initCli = join2("temp", task.role, "init.md");
+  const initFile = join2(".tent", "temp", task.role, "init.md");
+  const taskFile = join2(".tent", task.path);
+  return `workspaceRoot: ${roots.workspaceRoot}
+systemRoot: ${roots.systemRoot}
+CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.
+File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} \u2014 never <workspaceRoot>/temp.
+Role init file: ${initFile} (CLI path remains ${initCli}).`;
+}
+function relayPromptForTask(task, roots) {
+  const resolved = resolveTaskPromptRoots(roots);
   return `A Tent task has been dispatched to role ${task.role}.
-Tent root: ${tentRoot}
+${formatTaskPathHints(task, resolved)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
+2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
-4. If this is a new session for this role, complete role init first: ${initPath}.`;
+4. If this is a new session for this role, complete role init first (read the init file above).`;
 }
 async function ensureRoleInit(fs, role, tentName) {
   const path = join2("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
-- Rules: RULES.md
-- Role registry: .tent/roles.json (or run \`tent roles\`)
+- Rules (CLI / system-root relative): RULES.md
+- Rules (workspace file read): .tent/RULES.md
+- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
 
 ## Role Prompt
 
@@ -1415,6 +1439,7 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 ## Operating Model
 
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
   await fs.writeFile(path, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path;

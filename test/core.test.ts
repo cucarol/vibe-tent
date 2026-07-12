@@ -287,7 +287,8 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
   assert.match(relay, /^A Tent task has been dispatched to role reviewer\./);
-  assert.match(relay, new RegExp(`Tent root: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(relay, new RegExp(`systemRoot: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(relay, /\.tent\/temp\//);
   assert.match(
     relay,
     new RegExp(
@@ -296,13 +297,28 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   );
   assert.match(
     relay,
+    new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`)
+  );
+  assert.match(
+    relay,
     new RegExp(
       `3\\. When finished, run \`tent task deliver ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} --summary <text>\``
     )
   );
-  assert.match(relay, /4\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
+  assert.match(relay, /complete role init first/);
   assert.doesNotMatch(relay, /task-ack|tent report\b/);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
+
+  const { sessionBootstrapPromptForTask } = await import("../src/core/task.js");
+  const bootstrap = sessionBootstrapPromptForTask(
+    { ...tasks[1], state: "running", status: "taken" },
+    { workspaceRoot: path.join(dir, ".."), systemRoot: dir }
+  );
+  assert.match(bootstrap, /already claimed/i);
+  assert.match(bootstrap, /Skip any claim step/i);
+  assert.match(bootstrap, new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(bootstrap, new RegExp(`tent task deliver ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
 });
 
 test("task-ack missing envelope reports a clean error", async () => {

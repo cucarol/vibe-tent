@@ -241,6 +241,10 @@ test("contextCard: stable prompt template + parse round-trip", () => {
   assert.match(card.prompt, /Tent contextCard v1/);
   assert.match(card.prompt, /contextRef: box\/cx-abc123/);
   assert.match(card.prompt, /path: goal\/demo/);
+  assert.match(card.prompt, /systemRoot: \/tents\/demo/);
+  assert.match(card.prompt, /tentRoot: \/tents\/demo/);
+  assert.match(card.prompt, /fileRead: \.tent\/goal\/demo/);
+  assert.match(card.prompt, /Do not resolve operational files as <workspaceRoot>\/temp/);
   const parsed = parseContextCardText(card.prompt);
   assert.deepEqual(parsed, {
     kind: "box",
@@ -248,6 +252,16 @@ test("contextCard: stable prompt template + parse round-trip", () => {
     path: "goal/demo",
     fragment: undefined,
   });
+
+  const dual = taskContextCard("tk-zzzz", {
+    path: "temp/r/tasks/a.md",
+    workspaceRoot: "/ws",
+    systemRoot: "/ws/.tent",
+  });
+  assert.match(dual.prompt, /workspaceRoot: \/ws/);
+  assert.match(dual.prompt, /systemRoot: \/ws\/\.tent/);
+  assert.match(dual.prompt, /fileRead: \.tent\/temp\/r\/tasks\/a\.md/);
+  assert.match(dual.prompt, /run tent from workspaceRoot/);
 
   const tCard = taskContextCard("tk-zzzz");
   assert.match(tCard.prompt, /task\/tk-zzzz/);

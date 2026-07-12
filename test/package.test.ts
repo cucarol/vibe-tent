@@ -212,10 +212,15 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.equal(peerData.dispatchedBy, "user");
   assert.equal(peerData.targetBranch, "main");
   assert.equal(peerData.handoff, undefined);
-  assert.match(peerDispatch.stdout, new RegExp(`Tent root: ${escapeRegExp(systemRoot)}`));
+  assert.match(peerDispatch.stdout, new RegExp(`systemRoot: ${escapeRegExp(systemRoot)}`));
+  assert.match(peerDispatch.stdout, /\.tent\/temp\//);
   assert.match(
     peerDispatch.stdout,
     new RegExp(`1\\. Run \`tent task claim ${escapeRegExp(peerTask)}\` to take this task`),
+  );
+  assert.match(
+    peerDispatch.stdout,
+    new RegExp(`tent task get ${escapeRegExp(peerTask)}`),
   );
   assert.match(
     peerDispatch.stdout,
@@ -574,28 +579,71 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
   assert.match(installed.stdout, /tent-role/);
   assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
   assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
+  const bundledRoleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const installedRoleSkill = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
-  assert.match(installedRoleSkill, /tent task claim <taskPath>/);
-  assert.match(installedRoleSkill, /tent task deliver/);
-  assert.doesNotMatch(installedRoleSkill, /tent handoff/);
+  assert.equal(
+    installedRoleSkill,
+    bundledRoleSkill,
+    "skill-install must copy bundled tent-role byte-for-byte",
+  );
+  assertInstalledTentRoleSkill(installedRoleSkill);
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--dir", target),
     /Skills already exist/,
   );
 
-  await fs.writeFile(path.join(target, "tent-role", "SKILL.md"), "stale\n", "utf8");
-  await runCli(repoRoot, "skill-install", "--dir", target, "--force");
-  assert.match(
-    await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8"),
-    /name: tent-role/,
+  // Simulate stale local skill that still teaches legacy main flow
+  await fs.writeFile(
+    path.join(target, "tent-role", "SKILL.md"),
+    [
+      "---",
+      "name: tent-role",
+      "---",
+      "# stale legacy",
+      "1. Run `tent task-ack <taskPath>`",
+      "2. Finish with `tent report <boxId>`",
+      "Confirm cwd has RULES.md, .tent/, temp/ at workspace root.",
+      "Read temp/<role>/init.md",
+    ].join("\n") + "\n",
+    "utf8",
   );
+  await runCli(repoRoot, "skill-install", "--dir", target, "--force");
+  const forced = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
+  assert.equal(forced, bundledRoleSkill, "skill-install --force must match bundled skill");
+  assertInstalledTentRoleSkill(forced);
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
     /currently supports only --target claude/,
   );
 });
+
+/** Assert installed tent-role is the new in-workspace + service lifecycle skill, not legacy main flow. */
+function assertInstalledTentRoleSkill(skill: string) {
+  assert.match(skill, /name: tent-role/);
+  assert.match(skill, /in-workspace/);
+  assert.match(skill, /workspace root/i);
+  assert.match(skill, /system root/i);
+  assert.match(skill, /\.tent\/temp\//);
+  assert.match(skill, /temp\/<role>\/init\.md/);
+  assert.match(skill, /tent task claim/);
+  assert.match(skill, /tent task get/);
+  assert.match(skill, /tent task deliver/);
+  assert.match(skill, /task\.startSession|startSession/);
+  assert.match(skill, /already claimed|已 claim|代 claim/);
+  // Legacy may appear only as isolated notes, not as the primary protocol steps.
+  assert.match(skill, /## Legacy/);
+  // Primary protocol must not prescribe task-ack / tent report as the default claim/deliver path.
+  const protocolSection = skill.split("## Legacy")[0] ?? skill;
+  assert.doesNotMatch(
+    protocolSection,
+    /接任务后的第一步运行 `tent task-ack|Run `tent task-ack|`tent report <boxId>/,
+  );
+  assert.doesNotMatch(protocolSection, /确认工作目录就是 Tent 根目录，且包含 `RULES\.md`、`\.tent\/`、`temp\/`/);
+  assert.doesNotMatch(protocolSection, /新 role session 只读一次 `temp\/<role>\/init\.md`/);
+  assert.doesNotMatch(skill, /tent handoff/);
+}
 
 test("CLI 表面:help 与 version 正常退出", async () => {
   const help = await runCli(repoRoot, "--help");

@@ -102,7 +102,14 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(spec, /handoff/i);
   assert.match(roleSkill, /内容住 box，状态住 envelope/);
   assert.match(roleSkill, /编排者手册/);
-  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> claim -> deliver -> review -> accept/);
+  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> claim（或 startSession 代 claim）-> deliver -> review -> accept/);
+  assert.match(roleSkill, /in-workspace/);
+  assert.match(roleSkill, /\.tent\/temp\//);
+  assert.match(roleSkill, /tent task get/);
+  assert.match(roleSkill, /tent task deliver/);
+  assert.match(roleSkill, /## Legacy/);
+  const roleProtocol = roleSkill.split("## Legacy")[0] ?? roleSkill;
+  assert.doesNotMatch(roleProtocol, /`tent task-ack|`tent report </);
   assert.doesNotMatch(roleSkill, /tent handoff/i);
 });
 

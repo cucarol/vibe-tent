@@ -591,6 +591,93 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
   });
 });
 
+test("B5: startSession bootstrap is post-claim (get+deliver); relay still has claim", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "bootstrap path semantics",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    const relay = (d.result as { relayPrompt: string }).relayPrompt;
+
+    // External manual wake: still claim.
+    assert.match(relay, new RegExp(`tent task claim ${escapeRegExp(taskPath)}`));
+    assert.match(relay, /workspaceRoot:|systemRoot:/);
+    assert.match(relay, /\.tent\/temp\//);
+    assert.doesNotMatch(relay, /task-ack|tent report\b/);
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    // Capture bootstrap from fake adapter temp file via runtime probe / env is not exposed;
+    // re-build expected contract by reading task + mount roots and asserting session is live.
+    // Service must have used post-claim bootstrap — verify via a second startSession override empty
+    // is not needed; instead read the bootstrap file written by fake adapter under os.tmpdir.
+    const bootstrap = await findFakeBootstrapPrompt(sessionId);
+    assert.ok(bootstrap, "fake adapter should write bootstrap file for session");
+    const normalized = bootstrap!.replace(/\\/g, "/");
+    const wsNorm = ws.replace(/\\/g, "/");
+    assert.match(bootstrap!, /workspaceRoot:/);
+    assert.match(bootstrap!, /systemRoot:/);
+    assert.ok(normalized.includes(wsNorm), `bootstrap should include workspaceRoot ${wsNorm}`);
+    assert.ok(
+      normalized.includes(`${wsNorm}/.tent`),
+      `bootstrap should include systemRoot ${wsNorm}/.tent`
+    );
+    assert.match(bootstrap!, /\.tent\/temp\//);
+    assert.match(bootstrap!, new RegExp(`tent task get ${escapeRegExp(taskPath)}`));
+    assert.match(bootstrap!, new RegExp(`tent task deliver ${escapeRegExp(taskPath)}`));
+    assert.match(bootstrap!, /already claimed/i);
+    assert.match(bootstrap!, /Skip any claim step/i);
+    // Must not instruct claim / legacy ack/report (substring ban — bootstrap text avoids naming them).
+    assert.doesNotMatch(bootstrap!, /tent task claim|task-ack|tent report\b/);
+    assert.doesNotMatch(bootstrap!, /Run `tent task claim/);
+  });
+});
+
+function escapeRegExp(s: string): string {
+  return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null> {
+  const tmp = os.tmpdir();
+  const safe = sessionId.replace(/[^a-zA-Z0-9_-]/g, "");
+  const candidates = [
+    path.join(tmp, `tent-bootstrap-${safe}.txt`),
+    path.join(tmp, `tent-bootstrap-${sessionId}.txt`),
+  ];
+  for (const p of candidates) {
+    try {
+      return await fs.readFile(p, "utf8");
+    } catch {
+      /* try next */
+    }
+  }
+  // Scan tmp for matching prefix (Windows may vary)
+  try {
+    for (const name of await fs.readdir(tmp)) {
+      if (name.startsWith("tent-bootstrap-") && name.includes(safe) && name.endsWith(".txt")) {
+        return await fs.readFile(path.join(tmp, name), "utf8");
+      }
+    }
+  } catch {
+    /* ignore */
+  }
+  return null;
+}
+
 // ---- interrupt stops runtime ----
 
 test("B5: task.interrupt stops bound session", async () => {

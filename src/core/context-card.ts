@@ -30,6 +30,25 @@ export type ContextCard = {
   templateVersion: "v1";
 };
 
+/**
+ * Path roots for agent-facing prompts.
+ * - workspaceRoot: real project root; run `tent` CLI here.
+ * - systemRoot: tent system root (`<workspace>/.tent`); FsAdapter / taskPath base.
+ * - tentRootHint: legacy alias for systemRoot (never the bare workspace root alone).
+ */
+export type ContextCardPathHints = {
+  label?: string;
+  /** Absolute workspace root (preferred). */
+  workspaceRoot?: string;
+  /** Absolute tent system root = workspaceRoot/.tent (preferred). */
+  systemRoot?: string;
+  /**
+   * Legacy single hint. Treated as systemRoot when systemRoot is omitted.
+   * Do not pass workspace root here — agents would invent `<workspace>/temp`.
+   */
+  tentRootHint?: string;
+};
+
 /** Fixed short instruction template — do not expand with full document bodies. */
 export const CONTEXT_CARD_TEMPLATE_VERSION = "v1" as const;
 
@@ -39,7 +58,7 @@ export const CONTEXT_CARD_TEMPLATE_VERSION = "v1" as const;
  */
 export function buildContextCard(
   ref: ContextRef,
-  options?: { label?: string; tentRootHint?: string }
+  options?: ContextCardPathHints
 ): ContextCard {
   const kind = ref.kind;
   const id = ref.id.trim();
@@ -50,7 +69,7 @@ export function buildContextCard(
     options?.label?.trim() ||
     (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
 
-  const prompt = formatContextCardPrompt(ref, options?.tentRootHint);
+  const prompt = formatContextCardPrompt(ref, options);
 
   return {
     contextRef: {
@@ -68,17 +87,45 @@ export function buildContextCard(
 /**
  * Stable English prompt text. Clients may wrap with UI chrome but should not
  * rewrite the instruction body (prompt-cache friendly).
+ *
+ * Path contract (in-workspace Tent):
+ * - CLI cwd = workspaceRoot
+ * - CLI taskPath / docs paths are relative to systemRoot (`.tent`)
+ * - Direct file reads from workspace use `.tent/<path>` or absolute systemRoot
  */
-export function formatContextCardPrompt(ref: ContextRef, tentRootHint?: string): string {
+export function formatContextCardPrompt(
+  ref: ContextRef,
+  hints?: string | ContextCardPathHints
+): string {
+  const opts: ContextCardPathHints =
+    typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
+  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
+  const workspaceRoot = opts.workspaceRoot?.trim() || "";
+
   const lines = [
     "Tent contextCard v1",
     `contextRef: ${ref.kind}/${ref.id}`,
   ];
   if (ref.path) lines.push(`path: ${ref.path}`);
   if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (tentRootHint) lines.push(`tentRoot: ${tentRootHint}`);
+  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
+  if (systemRoot) {
+    lines.push(`systemRoot: ${systemRoot}`);
+    // Compat: tentRoot means tent system root (`.tent`), not the workspace.
+    lines.push(`tentRoot: ${systemRoot}`);
+  }
+  if (ref.path) {
+    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (rel && !rel.startsWith(".tent/")) {
+      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
+    }
+  }
+  lines.push(
+    "CLI: run tent from workspaceRoot; taskPath/docs paths are relative to systemRoot (.tent)."
+  );
   lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
   lines.push("Do not invent missing content; fetch by id before answering.");
+  lines.push("Do not resolve operational files as <workspaceRoot>/temp — use .tent/temp.");
   return lines.join("\n");
 }
 
@@ -86,21 +133,21 @@ export function formatContextCardPrompt(ref: ContextRef, tentRootHint?: string):
 export function boxContextCard(
   boxId: string,
   path?: string,
-  opts?: { label?: string; tentRootHint?: string }
+  opts?: ContextCardPathHints
 ): ContextCard {
   return buildContextCard({ kind: "box", id: boxId, path }, opts);
 }
 
 export function taskContextCard(
   taskId: string,
-  opts?: { label?: string; path?: string; tentRootHint?: string }
+  opts?: ContextCardPathHints & { path?: string }
 ): ContextCard {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
 }
 
 export function deliveryContextCard(
   deliveryId: string,
-  opts?: { label?: string; path?: string; tentRootHint?: string }
+  opts?: ContextCardPathHints & { path?: string }
 ): ContextCard {
   return buildContextCard({ kind: "delivery", id: deliveryId, path: opts?.path }, opts);
 }

@@ -944,6 +944,8 @@ __export(task_exports, {
   patchTaskEnvelope: () => patchTaskEnvelope,
   primaryBoxId: () => primaryBoxId,
   relayPromptForTask: () => relayPromptForTask,
+  resolveTaskPromptRoots: () => resolveTaskPromptRoots,
+  sessionBootstrapPromptForTask: () => sessionBootstrapPromptForTask,
   workspaceLaneOf: () => workspaceLaneOf,
   writeTaskEnvelope: () => writeTaskEnvelope
 });
@@ -1000,22 +1002,56 @@ async function loadTaskEnvelope(fs9, path9) {
   if (wait) task.wait = wait;
   return task;
 }
-function relayPromptForTask(task, tentRoot) {
-  const initPath = join("temp", task.role, "init.md");
+function resolveTaskPromptRoots(roots) {
+  if (typeof roots !== "string") {
+    return {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot
+    };
+  }
+  const systemRoot = roots;
+  const normalized = systemRoot.replace(/[\\/]+$/, "");
+  const base = normalized.split(/[\\/]/).pop() ?? "";
+  const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
+  return { workspaceRoot, systemRoot };
+}
+function formatTaskPathHints(task, roots) {
+  const initCli = join("temp", task.role, "init.md");
+  const initFile = join(".tent", "temp", task.role, "init.md");
+  const taskFile = join(".tent", task.path);
+  return `workspaceRoot: ${roots.workspaceRoot}
+systemRoot: ${roots.systemRoot}
+CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.
+File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} \u2014 never <workspaceRoot>/temp.
+Role init file: ${initFile} (CLI path remains ${initCli}).`;
+}
+function relayPromptForTask(task, roots) {
+  const resolved = resolveTaskPromptRoots(roots);
   return `A Tent task has been dispatched to role ${task.role}.
-Tent root: ${tentRoot}
+${formatTaskPathHints(task, resolved)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
-2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
+2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
-4. If this is a new session for this role, complete role init first: ${initPath}.`;
+4. If this is a new session for this role, complete role init first (read the init file above).`;
+}
+function sessionBootstrapPromptForTask(task, roots) {
+  const resolved = resolveTaskPromptRoots(roots);
+  return `A Tent task is ready for role ${task.role}.
+${formatTaskPathHints(task, resolved)}
+Service status: this task is already claimed (state=${task.state || "running"}). Skip any claim step; inspect and work, then deliver.
+1. Run \`tent task get ${task.path}\` to inspect the task (or read the envelope file under systemRoot).
+2. Read the envelope \u2192 manifest \u2192 claimed boxes; the box notes contain the task definition.
+3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
+4. If this is a new session for this role, complete role init first (read the init file above).`;
 }
 async function ensureRoleInit(fs9, role, tentName) {
   const path9 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
-- Rules: RULES.md
-- Role registry: .tent/roles.json (or run \`tent roles\`)
+- Rules (CLI / system-root relative): RULES.md
+- Rules (workspace file read): .tent/RULES.md
+- Role registry (workspace file read): .tent/roles.json (or run \`tent roles\` from workspace root)
 
 ## Role Prompt
 
@@ -1024,6 +1060,7 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 ## Operating Model
 
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
   await fs9.writeFile(path9, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path9;
@@ -2449,7 +2486,7 @@ function buildContextCard(ref, options) {
   if (!id) throw new Error("ContextRef.id cannot be empty.");
   if (!kind) throw new Error("ContextRef.kind is required.");
   const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options?.tentRootHint);
+  const prompt = formatContextCardPrompt(ref, options);
   return {
     contextRef: {
       kind,
@@ -2462,16 +2499,33 @@ function buildContextCard(ref, options) {
     templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
   };
 }
-function formatContextCardPrompt(ref, tentRootHint) {
+function formatContextCardPrompt(ref, hints) {
+  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
+  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
+  const workspaceRoot = opts.workspaceRoot?.trim() || "";
   const lines = [
     "Tent contextCard v1",
     `contextRef: ${ref.kind}/${ref.id}`
   ];
   if (ref.path) lines.push(`path: ${ref.path}`);
   if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (tentRootHint) lines.push(`tentRoot: ${tentRootHint}`);
+  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
+  if (systemRoot) {
+    lines.push(`systemRoot: ${systemRoot}`);
+    lines.push(`tentRoot: ${systemRoot}`);
+  }
+  if (ref.path) {
+    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (rel && !rel.startsWith(".tent/")) {
+      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
+    }
+  }
+  lines.push(
+    "CLI: run tent from workspaceRoot; taskPath/docs paths are relative to systemRoot (.tent)."
+  );
   lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
   lines.push("Do not invent missing content; fetch by id before answering.");
+  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
   return lines.join("\n");
 }
 function taskContextCard(taskId, opts) {
@@ -2479,6 +2533,7 @@ function taskContextCard(taskId, opts) {
 }
 
 // src/service/handlers.ts
+init_paths();
 init_typeRegistry();
 init_task_model();
 
@@ -4011,8 +4066,7 @@ async function taskDispatch(ctx, p) {
       taskPath: result.taskPath,
       profileId,
       callerKind,
-      ...a2aPolicyOverride !== void 0 ? { a2aPolicyOverride } : {},
-      bootstrapPrompt: result.relayPrompt
+      ...a2aPolicyOverride !== void 0 ? { a2aPolicyOverride } : {}
     });
   }
   return {
@@ -4345,7 +4399,10 @@ async function taskStartSessionRpc(ctx, p) {
     worktree: task.worktree || mount.workspaceRoot,
     branch: task.branch || "HEAD"
   } : void 0;
-  const sessionBootstrap = bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, mount.workspaceRoot);
+  const sessionBootstrap = bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, {
+    workspaceRoot: mount.workspaceRoot,
+    systemRoot: mount.systemRoot
+  });
   let handle;
   try {
     handle = await ctx.runtime.startSession({
@@ -4710,13 +4767,18 @@ function parseArtifactRefs2(data) {
   }
   return out;
 }
-function buildSessionBootstrapPrompt(task, tentRoot) {
+function buildSessionBootstrapPrompt(task, roots) {
+  const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
-    tentRootHint: tentRoot,
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot,
     label: `task:${task.role}`
   });
-  const relay = relayPromptForTask(task, tentRoot);
+  const sessionSteps = sessionBootstrapPromptForTask(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot
+  });
   const aux = [];
   if (task.role) aux.push(`role: ${task.role}`);
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
@@ -4724,7 +4786,7 @@ function buildSessionBootstrapPrompt(task, tentRoot) {
 
 --- Tent session bootstrap ---
 ` + (aux.length ? `${aux.join("\n")}
-` : "") + `${relay}
+` : "") + `${sessionSteps}
 `;
 }
 function projectTask(task) {

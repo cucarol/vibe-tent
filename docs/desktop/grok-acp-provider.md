@@ -116,7 +116,9 @@ RPC sketch:
 }
 ```
 
-Optional `bootstrapPrompt` overrides the default **pointer** bootstrap (Context Card + relay with `tent task claim` / `tent task deliver`). If omitted, service builds a short pointer text — it does **not** copy the full task/box body.
+Optional `bootstrapPrompt` overrides the default **pointer** bootstrap. If omitted, service builds a short pointer text (Context Card + **post-claim** session steps: `tent task get` / `tent task deliver`, with `workspaceRoot` + `systemRoot` / `.tent/temp` path hints). It does **not** tell the agent to `tent task claim` (service already claimed) and does **not** copy the full task/box body.
+
+Clipboard / dispatch **relayPrompt** is separate: it still instructs external manual agents to `tent task claim` then deliver.
 
 ## Permission policy (tools)
 
