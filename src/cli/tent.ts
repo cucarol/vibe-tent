@@ -1,6 +1,9 @@
 #!/usr/bin/env node
 // tent CLI —— agent 侧的薄壳。tent-genesis / tent-role 等 skill 脚本就是喊这个命令。
-// 用法(cwd = 帐根,new 例外):
+// 用法(cwd = 帐根 / workspace 根, new 例外):
+//   --- 新架构协作生命周期（Local Service RPC；不直写）---
+//   tent task list|get|claim|deliver|…  attach → mount → task.* （见 task-rpc.ts）
+//   --- Legacy in-workspace / 纯 core 直写（兼容；Desktop 共置 agent 请用 task *）---
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent dispatch <boxId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
@@ -68,6 +71,7 @@ import {
   runWorkspaceCheck,
 } from "../core/workspace.js";
 import { workspaceRootFromSystemRoot } from "../core/paths.js";
+import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 
 async function makeEnv(): Promise<OpsEnv> {
   // 找不到 system root 时明确失败；禁止回退 cwd 把系统数据写到项目根。
@@ -118,6 +122,20 @@ async function main() {
     return;
   }
 
+  // New-architecture task lifecycle: Local Service RPC only (no core direct write).
+  if (cmd === "task") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(taskHelpText());
+      return;
+    }
+    const result = await runTaskCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
   // Unknown commands fail before system-root resolution (no cwd fallback writes).
   const tentCommands = new Set([
     "dispatch",
@@ -146,7 +164,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -608,15 +626,20 @@ function helpText(): string {
 Usage:
   tent <command> [args]
 
-Run commands from a Tent root unless noted.
+Run commands from a workspace with <workspace>/.tent/ (or legacy tent root) unless noted.
 
-Commands:
+Service-backed task lifecycle (preferred for Desktop / external agents):
+  tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
+  tent task --help                    Full task subcommand help
+  CLI exit does not stop Local Service. Token stays in machine-local service.json.
+
+Legacy direct-core commands (compatible; not service RPC):
   new <path>                         Create an empty Tent.
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
-  task-ack <taskPath>                Mark a task taken and claim its box.
+  task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
   report <boxId> <file|->            Submit a delivery report for triage.
   propose <boxId> <file|->           Submit a proposal prompt for triage.

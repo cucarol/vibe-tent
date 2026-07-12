@@ -301,7 +301,7 @@ Contract freeze is **B0** (this document + peer B0 contracts). Implementation or
 | **B1** | Core location & identity | Desktop architecture | B0 field tables | In-workspace **`.tent/`** scaffold, `cx-`/capability migration, core tests green |
 | **B2** | Local Service skeleton | Desktop architecture | B1 | Process model, attach protocol, watch, sole mutation entry |
 | **B3** | Electron shell + workbench vertical slice | Desktop architecture | B2 protocol | Main window tree/attrs/dispatch/review; tray |
-| **B4** | CLI attach service | Desktop architecture | B2 | CLI via service; bootstrap if missing |
+| **B4** | CLI attach service | Desktop architecture | B2 | CLI via service; bootstrap if missing （实现见 `docs/desktop/cli-service.md`，`tent task *`） |
 | **B5** | Migration tool | Desktop architecture | B1 | dry-run / migrate / rollback report |
 | **B6** | contextCard native drag | Desktop architecture | B3 | Windows cross-app drag gate |
 | **B7** | Markdown MVP | Docs role | B2 Query API | Editor/links/search |

@@ -52,9 +52,10 @@ core 是 Tent（帐） 的地基：一套纯文件约定，加上操作它的 `t
 
 - **box（框）** —— 每份带 frontmatter 的 markdown 即一个 box：`bx-` id 随移动保持稳定，父子层级表达归属，正文是任务本体。`tent new-box <name> <type> [parentId]` 建框，`tent fork <boxId>` 复制整棵子树。
 - **type / status / tags / 权限** —— `type`（`goal` / `prompt` / `output`）决定语义与默认读写，`status`（todo / doing / done）表进度，`tags` 做横向检索，每个 box 另有 R/W 权限。type 存在 `.tent/types.json`，可自定义名称、默认 R/W 与描述。
-- **派活与认领** —— `tent dispatch <boxId> <role> --prompt <text>` 只写入一份任务信封和一段接力 prompt，并不替 agent 占用；目标 agent 执行 `tent task-ack` 才真正认领，框转入占用态。派活既可 user → agent（U2A），也可 agent → agent（A2A）；Tent 从不自动唤醒 agent，接手始终由目标 agent 的 `task-ack` 完成。
-- **执行与隔离** —— dispatch 会从 Tent 唯一的 workspace 指针自动解析并创建 `worktree + branch`，每个 role 一条独立车道，多个 agent 同时干活互不干扰。真实代码、commit、branch 都发生在 workspace，Tent 侧只存状态。
-- **交付与裁决** —— 完成后 agent 用 `tent report <boxId> --commits <sha>` 交付成果、或用 `tent propose <boxId>` 提议，二者都投递到「待裁」；你确认（`tent complete`）或驳回。确认一份带 commit 的 report 即把改动合入 workspace，框标记完成。全程你是唯一决策者，agent 的交付只有经你确认才生效。
+- **派活与认领** —— Desktop / 外部 agent 优先走 **Local Service RPC**：`tent task list|get|claim|deliver`（attach 当前 workspace 的同一 service；CLI 退出不杀 service）。窗口关掉后仍可 claim/deliver，Desktop 看到同一状态。详见 [`docs/desktop/cli-service.md`](docs/desktop/cli-service.md)。
+- **Legacy CLI** —— `tent dispatch` / `tent task-ack` / `tent report` / `tent complete` 仍可直写 core（兼容与离线测试）；**不要**与 Desktop 共置时当第二写路径。新架构协作生命周期以 service 为唯一 mutation entry。
+- **执行与隔离** —— dispatch 会从 in-workspace tent 解析并创建 `worktree + branch`，每个 role 一条独立车道。真实代码、commit、branch 都发生在 workspace，Tent 侧只存协作状态。
+- **交付与裁决** —— agent 用 `tent task deliver <taskPath> --summary …`（RPC）提交 delivery；你在 Desktop 或 `tent task accept/reject` 裁决。全程你是唯一决策者。
 
 ### skill
 
