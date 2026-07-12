@@ -70,7 +70,9 @@ import {
 import { workspaceRootFromSystemRoot } from "../core/paths.js";
 
 async function makeEnv(): Promise<OpsEnv> {
-  const systemRoot = (await findTentSystemRoot(process.cwd())) ?? process.cwd();
+  // 找不到 system root 时明确失败；禁止回退 cwd 把系统数据写到项目根。
+  const systemRoot = await findTentSystemRoot(process.cwd());
+  if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
   const workspace = workspaceRootFromSystemRoot(systemRoot);
   return {
     fs: new NodeFs(systemRoot),
@@ -92,7 +94,7 @@ async function main() {
     return;
   }
 
-  // `tent new` does not require an existing system root
+  // Commands that do not require an existing system root
   if (cmd === "new") {
     const { positionals, flags } = parseFlags(args);
     if (!positionals[0]) {
@@ -101,6 +103,51 @@ async function main() {
     if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
     await newTent(positionals[0], flags.vault);
     return;
+  }
+  if (cmd === "skill-install") {
+    const { positionals, flags } = parseFlags(args);
+    if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
+    const target = flags.target || "claude";
+    const force = flags.force === "true";
+    const dir = flags.dir || defaultSkillInstallDir(target);
+    const installed = await installSkills(dir, { force, target });
+    console.log(
+      `✓ Installed ${target} skills in ${dir}\n` +
+        installed.map((name) => `- ${name}`).join("\n")
+    );
+    return;
+  }
+
+  // Unknown commands fail before system-root resolution (no cwd fallback writes).
+  const tentCommands = new Set([
+    "dispatch",
+    "task-ack",
+    "task-cancel",
+    "role-init",
+    "roles",
+    "report",
+    "propose",
+    "complete",
+    "stamp",
+    "status",
+    "grant-readable",
+    "new-box",
+    "tag",
+    "untag",
+    "tag-new",
+    "tag-rm",
+    "tags",
+    "find",
+    "fork",
+    "clean-temp",
+    "force-release",
+    "okf-sync",
+    "tree",
+  ]);
+  if (!tentCommands.has(cmd)) {
+    return fail(
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+    );
   }
 
   const env = await makeEnv();
@@ -130,13 +177,12 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
       if (!workspacePath) {
-        console.log("Note: this Tent has no in-workspace layout or workspace field; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no in-workspace .tent layout; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/ " +
-            "or set `workspace: C:/path/to/git-root` on a concept (legacy migration path)."
+            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -410,19 +456,6 @@ async function main() {
       }
       break;
     }
-    case "skill-install": {
-      const { positionals, flags } = parseFlags(args);
-      if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
-      const target = flags.target || "claude";
-      const force = flags.force === "true";
-      const dir = flags.dir || defaultSkillInstallDir(target);
-      const installed = await installSkills(dir, { force, target });
-      console.log(
-        `✓ Installed ${target} skills in ${dir}\n` +
-          installed.map((name) => `- ${name}`).join("\n")
-      );
-      break;
-    }
     case "tree": {
       if (args.length > 0) return fail("Usage: tent tree");
       const tent = await loadTent(env.fs);
@@ -430,9 +463,8 @@ async function main() {
       break;
     }
     default:
-      fail(
-        `Unknown command: ${cmd || "(empty)"}\nCommands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
-      );
+      // Unreachable: unknown commands rejected before makeEnv.
+      return fail(`Unknown command: ${cmd || "(empty)"}`);
   }
 }
 
