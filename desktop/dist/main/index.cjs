@@ -64,6 +64,9 @@ async function readServiceEndpoint(dataDir2) {
   }
 }
 
+// src/service/auth.ts
+var AUTH_TOKEN_HEADER = "x-tent-token";
+
 // src/desktop/client/rpc-client.ts
 var ServiceRpcError = class extends Error {
   constructor(error) {
@@ -76,6 +79,7 @@ var ServiceRpcClient = class {
   constructor(options) {
     this.seq = 0;
     this.baseUrl = options.baseUrl.replace(/\/$/, "");
+    this.token = options.token;
     this.fetchImpl = options.fetchImpl ?? fetch;
     this.idPrefix = options.idPrefix ?? "desk";
   }
@@ -86,15 +90,68 @@ var ServiceRpcClient = class {
     const id = `${this.idPrefix}-${++this.seq}`;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
       method: "POST",
-      headers: { "content-type": "application/json" },
+      headers: {
+        "content-type": "application/json",
+        [AUTH_TOKEN_HEADER]: this.token
+      },
       body: JSON.stringify({ jsonrpc: "2.0", id, method, params })
     });
+    if (res.status === 401) {
+      throw new ServiceRpcError({
+        code: -32001,
+        message: "Unauthorized: invalid or missing service token"
+      });
+    }
     if (!res.ok) {
       throw new Error(`Service RPC HTTP ${res.status} for ${method}`);
     }
     const json = await res.json();
     if (json.error) throw new ServiceRpcError(json.error);
     return json.result;
+  }
+  /**
+   * Subscribe to SSE events with endpoint token.
+   * Health remains unauthenticated; this path always sends X-Tent-Token.
+   */
+  subscribeEvents(onEvent, onError) {
+    const ac = new AbortController();
+    void (async () => {
+      try {
+        const res = await this.fetchImpl(`${this.baseUrl}/events`, {
+          headers: {
+            [AUTH_TOKEN_HEADER]: this.token,
+            accept: "text/event-stream"
+          },
+          signal: ac.signal
+        });
+        if (!res.ok || !res.body) {
+          onError?.(new Error(`SSE HTTP ${res.status}`));
+          return;
+        }
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = "";
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+          const parts = buffer.split("\n\n");
+          buffer = parts.pop() ?? "";
+          for (const part of parts) {
+            const dataLine = part.split("\n").find((l) => l.startsWith("data: "));
+            if (!dataLine) continue;
+            try {
+              const payload = JSON.parse(dataLine.slice(6));
+              onEvent(payload);
+            } catch {
+            }
+          }
+        }
+      } catch (err) {
+        if (!ac.signal.aborted) onError?.(err);
+      }
+    })();
+    return { close: () => ac.abort() };
   }
   async health() {
     const res = await this.fetchImpl(`${this.baseUrl}/health`);
@@ -165,8 +222,11 @@ ${spawnLog}`
 async function tryAttach(dataDir2, fetchImpl = fetch) {
   const endpoint = await readServiceEndpoint(dataDir2);
   if (!endpoint) return null;
+  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
+    return null;
+  }
   const url = `http://${endpoint.host}:${endpoint.port}`;
-  const client = new ServiceRpcClient({ baseUrl: url, fetchImpl });
+  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = await client.health();
     if (health.status !== "ok") return null;

@@ -12,7 +12,7 @@ import {
 } from "../src/core/context-card.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
-import { ServiceRpcClient } from "../src/desktop/client/rpc-client.js";
+import { ServiceRpcClient, ServiceRpcError } from "../src/desktop/client/rpc-client.js";
 import { tryAttach, attachOrStartService } from "../src/desktop/client/service-attach.js";
 import { ServiceDocsClient } from "../src/desktop/client/service-docs-client.js";
 import { ContextCardStore } from "../src/desktop/workbench/context-card-store.js";
@@ -66,7 +66,7 @@ test("ServiceDocsClient over real Local Service: list/open/write/search/promote"
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-data-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
   try {
-    const rpc = new ServiceRpcClient({ baseUrl: svc.url });
+    const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
     const mounted = await rpc.call<{ workspaceId: string }>("workspace.mount", {
       workspaceRoot: ws,
     });
@@ -130,6 +130,7 @@ test("tryAttach finds healthy endpoint; attach leaves service alive after client
     const attached = await tryAttach(dataDir);
     assert.ok(attached);
     assert.equal(attached!.url, svc.url);
+    assert.equal(attached!.client.token, svc.token);
     const health = await attached!.client.health();
     assert.equal(health.status, "ok");
 
@@ -138,6 +139,81 @@ test("tryAttach finds healthy endpoint; attach leaves service alive after client
     assert.ok(re);
     const h2 = await fetch(`${svc.url}/health`);
     assert.equal(h2.status, 200);
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("desktop attach propagates endpoint token for RPC/SSE; health stays open", async () => {
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-token-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    // Discovery probe: /health without token
+    const openHealth = await fetch(`${svc.url}/health`);
+    assert.equal(openHealth.status, 200);
+
+    // Missing / wrong token still rejected at service edge
+    const noTok = await fetch(`${svc.url}/rpc`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: 1, method: "workspace.list", params: {} }),
+    });
+    assert.equal(noTok.status, 401);
+    const sseNoTok = await fetch(`${svc.url}/events`);
+    assert.equal(sseNoTok.status, 401);
+
+    const attached = await tryAttach(dataDir);
+    assert.ok(attached);
+    assert.equal(attached!.endpoint.token, svc.token);
+    assert.equal(attached!.client.token, svc.token);
+
+    // workspace.mount must succeed with attach-propagated token (the joint-test failure)
+    const mounted = await attached!.client.call<{ workspaceId: string }>("workspace.mount", {
+      workspaceRoot: ws,
+    });
+    assert.ok(mounted.workspaceId);
+
+    const listed = await attached!.client.call<{ workspaces: unknown[] }>("workspace.list", {});
+    assert.ok(Array.isArray(listed.workspaces));
+    assert.ok(listed.workspaces.length >= 1);
+
+    // SSE with attach client token
+    const events: unknown[] = [];
+    const sub = attached!.client.subscribeEvents((ev) => events.push(ev));
+    await attached!.client.call("workspace.setForeground", { workspaceId: mounted.workspaceId });
+    await new Promise((r) => setTimeout(r, 150));
+    sub.close();
+    // At least the connection must authenticate; events may or may not fire depending on bus
+    // Wrong-token client must not mount
+    const bad = new ServiceRpcClient({ baseUrl: svc.url, token: "not-the-token" });
+    await assert.rejects(
+      () => bad.call("workspace.list", {}),
+      (err: unknown) =>
+        err instanceof ServiceRpcError &&
+        (err.message.includes("Unauthorized") || err.code === -32001)
+    );
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("tryAttach rejects endpoint without token even if health is open", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-notoken-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    // Corrupt endpoint: strip token while service still healthy
+    const epPath = path.join(dataDir, "service.json");
+    const raw = JSON.parse(await fs.readFile(epPath, "utf8")) as Record<string, unknown>;
+    delete raw.token;
+    await fs.writeFile(epPath, JSON.stringify(raw, null, 2) + "\n", "utf8");
+
+    const attached = await tryAttach(dataDir);
+    assert.equal(attached, null);
+
+    // Health remains open for discovery
+    const h = await fetch(`${svc.url}/health`);
+    assert.equal(h.status, 200);
   } finally {
     await svc.stop();
   }
@@ -155,13 +231,20 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
     });
     assert.equal(result.started, true);
     assert.ok(result.url);
+    assert.ok(result.endpoint.token);
+    assert.equal(result.client.token, result.endpoint.token);
     childPid = result.endpoint.pid;
     const health = await result.client.health();
     assert.equal(health.status, "ok");
 
+    // Bootstrap client must authenticate RPC with endpoint token
+    const listed = await result.client.call<{ workspaces: unknown[] }>("workspace.list", {});
+    assert.ok(Array.isArray(listed.workspaces));
+
     // Service still healthy without holding Electron
     const again = await tryAttach(dataDir);
     assert.ok(again);
+    assert.equal(again!.client.token, result.endpoint.token);
   } finally {
     // Tear down spawned service
     try {

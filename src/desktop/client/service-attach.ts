@@ -112,8 +112,12 @@ export async function tryAttach(
 ): Promise<{ url: string; endpoint: ServiceEndpointRecord; client: ServiceRpcClient } | null> {
   const endpoint = await readServiceEndpoint(dataDir);
   if (!endpoint) return null;
+  // B5 loopback token is required for RPC/SSE; health stays open without it.
+  if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
+    return null;
+  }
   const url = `http://${endpoint.host}:${endpoint.port}`;
-  const client = new ServiceRpcClient({ baseUrl: url, fetchImpl });
+  const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = await client.health();
     if (health.status !== "ok") return null;
