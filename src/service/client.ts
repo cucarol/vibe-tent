@@ -128,6 +128,11 @@ export class ServiceClient {
     return this.call("registry.roles", { workspaceId });
   }
 
+  // ---- convenience: machine-local profiles (safe metadata only) ----
+  profileList(opts?: { includeTest?: boolean }) {
+    return this.call("profile.list", opts ?? {});
+  }
+
   // ---- convenience: task ----
   taskDispatch(
     workspaceId: string,

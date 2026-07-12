@@ -9,6 +9,7 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../adapters/grok-acp/index.js";
+import type { AgentProfileProjection } from "./types.js";
 
 export function profilesPath(dataDir: string): string {
   return path.join(dataDir, "agent-profiles.json");
@@ -83,4 +84,47 @@ export async function ensureDefaultProfiles(dataDir: string): Promise<AgentProfi
   const defaults = defaultAgentProfiles();
   await saveAgentProfiles(dataDir, defaults);
   return defaults;
+}
+
+/** Whether a profile is harness/test-only (must not be product default). */
+export function isTestOnlyProfile(profile: AgentProfileConfig): boolean {
+  return profile.adapterId === FAKE_ADAPTER_ID || !!profile.fake;
+}
+
+const DISPLAY_NAME_BY_KEY: Record<string, string> = {
+  "profile.fake.default": "fake-default（测试）",
+  "profile.grokAcp.default": "Grok ACP",
+};
+
+/**
+ * Project a machine-local profile for clients.
+ * Strips env maps, executable paths that may leak layout, and all secret-bearing fields.
+ * Never includes API keys, tokens, or env *values*.
+ */
+export function projectAgentProfile(profile: AgentProfileConfig): AgentProfileProjection {
+  const testOnly = isTestOnlyProfile(profile);
+  const displayName =
+    (profile.displayNameKey && DISPLAY_NAME_BY_KEY[profile.displayNameKey]) ||
+    profile.id;
+  return {
+    id: profile.id,
+    adapterId: profile.adapterId,
+    displayName,
+    displayNameKey: profile.displayNameKey,
+    // Model id only — never env values, keys, or executable paths.
+    model: profile.grokAcp?.model,
+    testOnly,
+    permissionPolicy: profile.grokAcp?.permissionPolicy,
+  };
+}
+
+/** Safe list for profile.list RPC — never secrets. */
+export function projectAgentProfiles(profiles: AgentProfileConfig[]): AgentProfileProjection[] {
+  return profiles
+    .map(projectAgentProfile)
+    .sort((a, b) => {
+      // Product profiles first; then id.
+      if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
+      return a.id.localeCompare(b.id);
+    });
 }

@@ -4,21 +4,29 @@
 import "./api-types.js";
 import { renderMarkdownToHtml, escapeHtml } from "../../markdown/render.js";
 import type {
+  AgentProfileProjection,
   DeliveryProjection,
   RoleRegistryEntryProjection,
+  SessionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
 import {
   buildAcceptPayload,
   buildRejectPayload,
+  buildStartSessionPayload,
   buildTaskReviewItems,
   listCoordinationTypeOptions,
+  listProfileOptions,
   listRoleOptions,
   pickDefaultCoordinationType,
+  pickDefaultProfileId,
+  sessionStateLabel,
   suggestBoxName,
+  taskStateLabel,
   validateDispatchForm,
   type CoordinationTypeOption,
+  type ProfileOption,
   type RoleOption,
   type TaskReviewItem,
 } from "../workbench/collaboration-ui.js";
@@ -80,10 +88,13 @@ type ShellState = {
     id?: string;
     prompt?: string;
     activeDeliveryId?: string;
+    sessionId?: string;
   }>;
   taskReview?: TaskReviewItem[];
   roles?: RoleOption[];
   coordinationTypes?: CoordinationTypeOption[];
+  profiles?: ProfileOption[];
+  selectedProfileId?: string | null;
   statusMessage: string | null;
 };
 
@@ -99,6 +110,11 @@ let coordinationTypes: CoordinationTypeOption[] = [];
 let roles: RoleOption[] = [];
 let taskReview: TaskReviewItem[] = [];
 let deliveries: DeliveryProjection[] = [];
+let sessions: SessionProjection[] = [];
+/** Product profiles from profile.list (safe metadata; no secrets). */
+let profiles: ProfileOption[] = [];
+/** Selected machine-local profile for「启动 agent」— never auto-starts. */
+let selectedProfileId: string | null = null;
 
 /** Draft form state (pure UI). */
 let createTypePick = "";
@@ -154,7 +170,9 @@ async function refresh(): Promise<void> {
   const s = (await window.tentDesktop.getState()) as ShellState;
   applyShell(s);
   if (workspaceId) {
-    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks()]);
+    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks(), reloadProfiles()]);
+  } else {
+    await reloadProfiles();
   }
 }
 
@@ -189,6 +207,12 @@ function applyShell(s: ShellState): void {
   if (s.roles) {
     roles = s.roles;
   }
+  if (s.profiles?.length) {
+    profiles = s.profiles;
+  }
+  if (s.selectedProfileId !== undefined) {
+    selectedProfileId = s.selectedProfileId;
+  }
   if (s.taskReview?.length) {
     taskReview = s.taskReview;
   } else if (s.tasks?.length) {
@@ -202,9 +226,11 @@ function applyShell(s: ShellState): void {
         state: t.state || t.status,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
+        sessionId: t.sessionId,
         manifest: "",
       })),
-      deliveries
+      deliveries,
+      sessions
     );
   } else {
     taskReview = [];
@@ -253,16 +279,39 @@ async function reloadRegistry(): Promise<void> {
 async function reloadTasks(): Promise<void> {
   if (!workspaceId) return;
   try {
-    const [taskResult, deliveryResult] = await Promise.all([
+    const [taskResult, deliveryResult, sessionResult] = await Promise.all([
       window.tentDesktop.rpc("task.list", { workspaceId }) as Promise<{ tasks: TaskProjection[] }>,
       window.tentDesktop.rpc("delivery.list", { workspaceId }) as Promise<{
         deliveries: DeliveryProjection[];
       }>,
+      window.tentDesktop.rpc("session.list", { workspaceId }) as Promise<{
+        sessions: SessionProjection[];
+      }>,
     ]);
     deliveries = deliveryResult.deliveries || [];
-    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries);
+    sessions = sessionResult.sessions || [];
+    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
     renderTasks();
   } catch (err) {
+    setError(err);
+  }
+}
+
+/** Load product profiles (testOnly hidden by service default). */
+async function reloadProfiles(): Promise<void> {
+  try {
+    const result = (await window.tentDesktop.rpc("profile.list", {})) as {
+      profiles: AgentProfileProjection[];
+    };
+    profiles = listProfileOptions(result.profiles || []);
+    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
+      selectedProfileId = pickDefaultProfileId(profiles);
+    }
+    renderTasks();
+  } catch (err) {
+    // Profiles are machine-local; show Chinese error when launch is attempted.
+    profiles = [];
+    selectedProfileId = null;
     setError(err);
   }
 }
@@ -645,38 +694,88 @@ function renderTasks(): void {
     el.tasks.innerHTML = `<li class="muted">暂无任务</li>`;
     return;
   }
-  el.tasks.innerHTML = taskReview
-    .map((t) => {
-      const commits =
-        t.commits.length > 0
-          ? `<div class="muted">commits：${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>`
+
+  const profileOpts =
+    profiles.length > 0
+      ? profiles
+          .map(
+            (p) =>
+              `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
+          )
+          .join("")
+      : `<option value="">（无可用 profile）</option>`;
+
+  // Shared compact profile picker once above the list when any startable task exists.
+  const anyStartable = taskReview.some((t) => t.canStartAgent);
+  const profileBar = anyStartable
+    ? `<li class="task-profile-bar">
+        <label for="agent-profile">agent profile</label>
+        <select id="agent-profile" title="machine-local profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
+      </li>`
+    : "";
+
+  el.tasks.innerHTML =
+    profileBar +
+    taskReview
+      .map((t) => {
+        const commits =
+          t.commits.length > 0
+            ? `<div class="muted">commits：${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>`
+            : "";
+        const summary = t.deliverySummary
+          ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>`
+          : t.prompt
+            ? `<div class="muted">prompt：${escapeHtml(t.prompt)}</div>`
+            : "";
+        const stateLabel = taskStateLabel(t.state, t.status);
+        const sessBit = t.sessionState
+          ? ` · 会话${escapeHtml(sessionStateLabel(t.sessionState))}`
           : "";
-      const summary = t.deliverySummary
-        ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>`
-        : t.prompt
-          ? `<div class="muted">prompt：${escapeHtml(t.prompt)}</div>`
+        const rejectDraft = rejectDrafts.get(t.path) || "";
+
+        const startBtn = t.canStartAgent
+          ? `<button type="button" class="primary" data-start="${escapeHtml(t.path)}"${
+              profiles.length && selectedProfileId ? "" : " disabled"
+            } title="通过 ACP 启动 agent（callerKind=user）">启动 agent</button>`
           : "";
-      const rejectDraft = rejectDrafts.get(t.path) || "";
-      const actions = t.canAcceptOrReject
-        ? `<div class="task-actions">
-            <button type="button" class="primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
+        const interruptBtn = t.canInterrupt
+          ? `<button type="button" data-interrupt="${escapeHtml(t.path)}" title="中断 agent 会话">中断</button>`
+          : "";
+        const reviewActions = t.canAcceptOrReject
+          ? `<button type="button" class="primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
             <div class="reject-inline">
               <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
               <button type="button" data-reject="${escapeHtml(t.path)}">驳回</button>
-            </div>
-          </div>`
-        : "";
-      return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div><strong>${escapeHtml(t.summaryLine.split(" · ")[0] || t.state)}</strong> · ${escapeHtml(t.role)}</div>
+            </div>`
+          : "";
+        const actions =
+          startBtn || interruptBtn || reviewActions
+            ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>`
+            : "";
+
+        return `<li class="task-item" data-task="${escapeHtml(t.path)}">
+        <div><strong>${escapeHtml(stateLabel)}</strong>${sessBit} · ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
         <div class="muted">认领：${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "—")}</div>
         ${summary}
         ${commits}
         ${actions}
       </li>`;
-    })
-    .join("");
+      })
+      .join("");
 
+  const profileSel = document.getElementById("agent-profile") as HTMLSelectElement | null;
+  profileSel?.addEventListener("change", () => {
+    selectedProfileId = profileSel.value || null;
+    renderTasks();
+  });
+
+  el.tasks.querySelectorAll<HTMLElement>("[data-start]").forEach((btn) => {
+    btn.addEventListener("click", () => void onStartAgent(btn.getAttribute("data-start")!));
+  });
+  el.tasks.querySelectorAll<HTMLElement>("[data-interrupt]").forEach((btn) => {
+    btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")!));
+  });
   el.tasks.querySelectorAll<HTMLElement>("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")!));
   });
@@ -688,6 +787,53 @@ function renderTasks(): void {
   el.tasks.querySelectorAll<HTMLElement>("[data-reject]").forEach((btn) => {
     btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")!));
   });
+}
+
+/**
+ * User-clicked start: task.startSession with callerKind=user.
+ * Dispatch remains a separate action — never auto-spends tokens.
+ */
+async function onStartAgent(taskPath: string): Promise<void> {
+  if (!workspaceId) return;
+  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    const result = (await window.tentDesktop.rpc("task.startSession", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      profileId: built.payload.profileId,
+      callerKind: built.payload.callerKind,
+    })) as {
+      session?: { sessionId?: string; state?: string };
+      task?: { state?: string };
+    };
+    const sid = result.session?.sessionId;
+    const st = result.session?.state || result.task?.state || "";
+    el.status.textContent = sid
+      ? `已启动 agent · ${sid}${st ? `（${sessionStateLabel(st) || st}）` : ""}`
+      : `已启动 agent · ${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+    await reloadTasks().catch(() => undefined);
+  }
+}
+
+async function onInterrupt(taskPath: string): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("task.interrupt", {
+      workspaceId,
+      taskPath,
+    });
+    el.status.textContent = `已中断：${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
 }
 
 async function onAccept(taskPath: string): Promise<void> {

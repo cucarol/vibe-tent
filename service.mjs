@@ -2712,6 +2712,7 @@ var CLIENT_METHODS = [
   "docs.backlinks",
   "registry.types",
   "registry.roles",
+  "profile.list",
   "task.dispatch",
   "task.claim",
   "task.wait",
@@ -2740,6 +2741,795 @@ var RPC_UNAUTHORIZED = -32001;
 var RPC_A2A_DENIED = -32020;
 var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
+
+// src/service/profiles.ts
+import * as fs4 from "node:fs/promises";
+import * as path4 from "node:path";
+
+// src/adapters/fake/index.ts
+import * as fs2 from "node:fs";
+import * as os from "node:os";
+import * as path2 from "node:path";
+var FAKE_ADAPTER_ID = "fake-cli";
+function buildInlineScript(opts) {
+  return `
+const fs = require('fs');
+const sleepMs = ${opts.sleepMs};
+const exitCode = ${opts.exitCode};
+const waitForSignal = ${opts.waitForSignal ? "true" : "false"};
+const emitStdout = ${opts.emitStdout ? "true" : "false"};
+const promptFile = process.env.TENT_BOOTSTRAP_FILE || '';
+if (emitStdout) {
+  let prompt = '';
+  try { if (promptFile) prompt = fs.readFileSync(promptFile, 'utf8').slice(0, 200); } catch {}
+  process.stdout.write('fake-adapter live' + (prompt ? ' prompt=' + JSON.stringify(prompt) : '') + '\\n');
+}
+function shutdown(code) {
+  try { if (promptFile) fs.unlinkSync(promptFile); } catch {}
+  process.exit(code);
+}
+if (waitForSignal) {
+  const onStop = () => shutdown(0);
+  process.on('SIGTERM', onStop);
+  process.on('SIGINT', onStop);
+  // Windows: taskkill / SIGTERM via child.kill maps here when possible.
+  setInterval(() => {}, 1 << 30);
+} else {
+  setTimeout(() => shutdown(exitCode), sleepMs);
+}
+`.trim();
+}
+function normalizeFakeOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  return {
+    sleepMs: typeof o.sleepMs === "number" ? o.sleepMs : 3e4,
+    exitCode: typeof o.exitCode === "number" ? o.exitCode : 0,
+    waitForSignal: o.waitForSignal !== false,
+    emitStdout: o.emitStdout !== false,
+    failLaunch: o.failLaunch,
+    canResume: o.canResume === true
+  };
+}
+var FakeProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = FAKE_ADAPTER_ID;
+    this.displayNameKey = "adapter.fake.displayName";
+    this.nodePath = options.nodePath ?? process.execPath;
+  }
+  capabilities() {
+    return {
+      canSpawn: true,
+      canResume: false,
+      // default; profile may store resumeToken separately
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "process"
+    };
+  }
+  resolveLaunch(plan) {
+    const fake = normalizeFakeOpts(plan.extras?.fake ?? plan.extras);
+    if (fake.failLaunch) {
+      throw new Error(fake.failLaunch);
+    }
+    let bootstrapFile;
+    if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
+      bootstrapFile = path2.join(
+        os.tmpdir(),
+        `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
+      );
+      fs2.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+    }
+    const script = buildInlineScript(fake);
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (plan.command) {
+      return {
+        command: plan.command,
+        args: plan.args ?? [],
+        cwd: plan.cwd,
+        env,
+        bootstrapFile,
+        stopSignal: "SIGTERM"
+      };
+    }
+    return {
+      command: this.nodePath,
+      args: ["-e", script],
+      cwd: plan.cwd,
+      env,
+      bootstrapFile,
+      stopSignal: "SIGTERM"
+    };
+  }
+  parseResumeToken(raw) {
+    return { raw, providerSessionId: raw };
+  }
+  mapExit(code, signal) {
+    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
+      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
+    }
+    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
+      return { type: "session.exited", sessionId: "", exitCode: code };
+    }
+    if (code !== 0 && code != null) {
+      return {
+        type: "session.failed",
+        sessionId: "",
+        error: `exit:${code}`
+      };
+    }
+    return { type: "session.exited", sessionId: "", exitCode: code };
+  }
+};
+function createFakeAdapter(options) {
+  return new FakeProviderAdapter(options);
+}
+
+// src/adapters/grok-acp/index.ts
+import * as fs3 from "node:fs";
+import * as os2 from "node:os";
+import * as path3 from "node:path";
+
+// src/adapters/grok-acp/client.ts
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
+
+// src/adapters/grok-acp/types.ts
+var GROK_ACP_ADAPTER_ID = "grok-acp";
+var DEFAULT_GROK_MODEL = "grok-4.5";
+var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
+var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
+var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
+
+// src/adapters/grok-acp/client.ts
+var GrokAcpClient = class {
+  constructor(options) {
+    this.options = options;
+    this.proc = null;
+    this.lines = null;
+    this.nextId = 1;
+    this.pending = /* @__PURE__ */ new Map();
+    this.assistantText = "";
+    this.stderrTail = "";
+    this.closed = false;
+    this.exitCode = null;
+    this.exitSignal = null;
+    this.exitWaiters = [];
+  }
+  get pid() {
+    return this.proc?.pid ?? void 0;
+  }
+  get providerSession() {
+    return this.providerSessionId;
+  }
+  get lastAssistantText() {
+    return this.assistantText;
+  }
+  get lastStderrTail() {
+    return this.stderrTail;
+  }
+  isAlive() {
+    const pid = this.proc?.pid;
+    if (pid == null || pid <= 0 || this.closed) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Spawn ACP process + initialize/authenticate/session/new.
+   * Emits session.live when the ACP session exists. Does not block on prompt.
+   */
+  async connect() {
+    this.spawnProcess();
+    const pid = this.proc.pid;
+    this.options.emit({
+      type: "session.starting",
+      sessionId: this.options.sessionId
+    });
+    try {
+      const init = await this.request("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false
+        }
+      });
+      const authMethods = new Set((init.authMethods ?? []).map((m) => m.id));
+      const methodId = authMethods.has("xai.api_key") ? "xai.api_key" : authMethods.has("cached_token") ? "cached_token" : null;
+      if (!methodId) {
+        throw new Error(
+          "Grok ACP \u672A\u63D0\u4F9B\u53EF\u7528\u7684\u8BA4\u8BC1\u65B9\u5F0F\uFF08\u9700\u8981 xai.api_key \u6216 cached_token\uFF09\u3002\u8BF7\u786E\u8BA4 grok CLI \u4E0E CPA \u914D\u7F6E\u3002"
+        );
+      }
+      await this.request("authenticate", {
+        methodId,
+        _meta: { headless: true }
+      });
+      const session = await this.request(
+        "session/new",
+        { cwd: this.options.cwd, mcpServers: [] },
+        6e4
+      );
+      if (!session.sessionId) {
+        throw new Error("Grok ACP session/new \u672A\u8FD4\u56DE sessionId");
+      }
+      this.providerSessionId = session.sessionId;
+      this.options.emit({
+        type: "session.live",
+        sessionId: this.options.sessionId,
+        pid
+      });
+      return { pid, providerSessionId: session.sessionId };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      throw new Error(detail);
+    }
+  }
+  /**
+   * Send session/prompt with task pointer / relay text. Maps session/update events.
+   * Safe to call after connect(); failures emit session.failed.
+   */
+  async sendPrompt(bootstrapPrompt) {
+    if (!this.providerSessionId) {
+      throw new Error("Grok ACP session \u5C1A\u672A\u5EFA\u7ACB\uFF0C\u65E0\u6CD5 prompt");
+    }
+    const pid = this.proc?.pid;
+    if (pid == null) {
+      throw new Error("Grok ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
+    }
+    try {
+      const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+      const result = await this.request(
+        "session/prompt",
+        {
+          sessionId: this.providerSessionId,
+          prompt: [{ type: "text", text: bootstrapPrompt }]
+        },
+        promptTimeout
+      );
+      return {
+        pid,
+        providerSessionId: this.providerSessionId,
+        stopReason: result.stopReason,
+        assistantText: this.assistantText.trim()
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      throw new Error(detail);
+    }
+  }
+  /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
+  async stop(reason) {
+    void reason;
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectAllPending(new Error("session stopped"));
+    const proc = this.proc;
+    if (!proc || proc.killed) {
+      this.cleanupStreams();
+      return;
+    }
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+    }
+    await Promise.race([
+      this.waitExit(),
+      sleep(1500).then(() => this.forceKill())
+    ]);
+    this.cleanupStreams();
+  }
+  spawnProcess() {
+    const child = spawn(this.options.command, this.options.args, {
+      cwd: this.options.cwd,
+      env: {
+        ...process.env,
+        ...this.options.env
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached: false
+    });
+    if (child.pid == null) {
+      throw new Error(
+        `\u65E0\u6CD5\u542F\u52A8 Grok ACP \u8FDB\u7A0B: ${this.options.command} ${this.options.args.join(" ")}`
+      );
+    }
+    this.proc = child;
+    this.lines = readline.createInterface({ input: child.stdout });
+    child.stderr?.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      this.stderrTail = (this.stderrTail + text).slice(-4e3);
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text
+      });
+    });
+    this.lines.on("line", (line) => this.onLine(line));
+    child.on("exit", (code, signal) => {
+      this.exitCode = code;
+      this.exitSignal = signal;
+      this.closed = true;
+      this.rejectAllPending(
+        new Error(
+          signal ? `Grok ACP \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `Grok ACP \u8FDB\u7A0B\u9000\u51FA code=${code}`
+        )
+      );
+      for (const w of this.exitWaiters) w();
+      this.exitWaiters = [];
+    });
+    child.on("error", (err) => {
+      this.closed = true;
+      this.rejectAllPending(
+        new Error(`Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
+      );
+    });
+  }
+  onLine(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if ("method" in message && message.method === "session/update") {
+      this.handleSessionUpdate(
+        message.params?.update
+      );
+      return;
+    }
+    if ("method" in message && message.method === "session/request_permission" && message.id !== void 0) {
+      void this.handlePermissionRequest(
+        message.id,
+        message.params
+      );
+      return;
+    }
+    if ("method" in message && message.id !== void 0 && message.method) {
+      this.write({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32601,
+          message: "Client-side requests are disabled for Tent grok-acp adapter."
+        }
+      });
+      return;
+    }
+    if (!("id" in message) || message.id === void 0) return;
+    const id = Number(message.id);
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if ("error" in message && message.error) {
+      pending.reject(
+        new Error(message.error.message || JSON.stringify(message.error))
+      );
+    } else {
+      pending.resolve(("result" in message ? message.result : void 0) ?? {});
+    }
+  }
+  handleSessionUpdate(update) {
+    if (!update) return;
+    const kind = update.sessionUpdate ?? "";
+    if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.text) {
+      this.assistantText += update.content.text;
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${update.content.text}`
+      });
+      return;
+    }
+    if (kind === "tool_call" || kind === "tool_call_update") {
+      const title = typeof update.title === "string" && update.title || update.toolCallId || "tool";
+      const status = typeof update.status === "string" ? update.status : "";
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${title}${status ? ` (${status})` : ""}
+`
+      });
+      return;
+    }
+    if (kind) {
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[session/update] ${kind}
+`
+      });
+    }
+  }
+  async handlePermissionRequest(id, params) {
+    const options = params.options ?? [];
+    const toolTitle = params.toolCall?.title || params.toolCall?.toolCallId || "tool";
+    const policy = this.options.permissionPolicy;
+    let decision = "deny";
+    if (policy === "allow") {
+      decision = "allow";
+    } else if (policy === "deny") {
+      decision = "deny";
+    } else {
+      this.options.emit({
+        type: "session.waiting_user",
+        sessionId: this.options.sessionId,
+        summary: `Grok ACP \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
+      });
+      try {
+        if (this.options.onPermissionAsk) {
+          decision = await Promise.race([
+            this.options.onPermissionAsk({ toolTitle, options }),
+            sleep(
+              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
+            ).then(() => "deny")
+          ]);
+        } else {
+          decision = "deny";
+        }
+      } catch {
+        decision = "deny";
+      }
+    }
+    const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
+    this.write({
+      jsonrpc: "2.0",
+      id,
+      result: { outcome }
+    });
+    this.options.emit({
+      type: "session.stdout_tail",
+      sessionId: this.options.sessionId,
+      text: `[permission] ${toolTitle} \u2192 ${decision === "allow" ? "allow_once" : "deny/cancelled"}
+`
+    });
+  }
+  request(method, params, timeoutMs = 3e4) {
+    if (this.closed || !this.proc?.stdin) {
+      return Promise.reject(new Error(`Grok ACP \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`));
+    }
+    const id = this.nextId++;
+    return new Promise((resolve5, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Grok ACP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve: resolve5, reject, timer });
+      this.write({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+  write(payload) {
+    const stdin = this.proc?.stdin;
+    if (!stdin || stdin.destroyed) return;
+    stdin.write(JSON.stringify(payload) + "\n");
+  }
+  rejectAllPending(err) {
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(err);
+      this.pending.delete(id);
+    }
+  }
+  waitExit() {
+    if (!this.proc || this.closed) return Promise.resolve();
+    return new Promise((resolve5) => {
+      this.exitWaiters.push(resolve5);
+    });
+  }
+  async forceKill() {
+    const proc = this.proc;
+    const pid = proc?.pid;
+    if (!proc || pid == null) return;
+    if (process.platform === "win32") {
+      await new Promise((resolve5) => {
+        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore"
+        });
+        killer.on("exit", () => resolve5());
+        killer.on("error", () => resolve5());
+        setTimeout(resolve5, 1500);
+      });
+    } else {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+      }
+    }
+  }
+  cleanupStreams() {
+    try {
+      this.lines?.close();
+    } catch {
+    }
+    this.lines = null;
+  }
+};
+function selectAllowOnce(options) {
+  const once = options.find((o) => o.kind === "allow_once") || options.find((o) => o.optionId === "allow_once");
+  if (once?.optionId) {
+    return { outcome: "selected", optionId: once.optionId };
+  }
+  return { outcome: "cancelled" };
+}
+function sleep(ms) {
+  return new Promise((resolve5) => setTimeout(resolve5, ms));
+}
+
+// src/adapters/grok-acp/index.ts
+function defaultGrokExecutable() {
+  if (process.platform === "win32") {
+    const home2 = process.env.USERPROFILE || os2.homedir();
+    return path3.join(home2, ".grok", "bin", "grok.exe");
+  }
+  const home = process.env.HOME || os2.homedir();
+  return path3.join(home, ".grok", "bin", "grok");
+}
+function normalizeGrokOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const policy = o.permissionPolicy;
+  const permissionPolicy = policy === "allow" || policy === "ask" || policy === "deny" ? policy : "deny";
+  return {
+    executable: o.executable,
+    model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : DEFAULT_GROK_MODEL,
+    envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : DEFAULT_GROK_ENV_KEY,
+    promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
+    permissionPolicy,
+    permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
+  };
+}
+var GrokManagedSession = class {
+  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
+    this.sessionId = sessionId;
+    this.client = client;
+    this.bootstrapDone = bootstrapDone;
+    this.stopRequested = stopRequested;
+  }
+  get pid() {
+    return this.client.pid;
+  }
+  get providerSessionId() {
+    return this.client.providerSession;
+  }
+  isAlive() {
+    return !this.stopRequested && this.client.isAlive();
+  }
+  async waitBootstrap() {
+    await this.bootstrapDone;
+  }
+  async stop(reason) {
+    this.stopRequested = true;
+    await this.client.stop(reason);
+  }
+};
+var GrokAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = GROK_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.grokAcp.displayName";
+    this.resolveApiKey = options.resolveApiKey ?? ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
+    this.onPermissionAsk = options.onPermissionAsk;
+  }
+  capabilities() {
+    return {
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "env",
+      observeLevel: "structured"
+    };
+  }
+  /**
+   * Launch plan validation only. Real ACP needs bidirectional stdio —
+   * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
+   */
+  resolveLaunch(plan) {
+    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const command = plan.command || opts.executable || defaultGrokExecutable();
+    const model = opts.model;
+    const envKey = opts.envKey;
+    const apiKey = this.resolveApiKey(envKey, plan.env);
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error(
+        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}\uFF1BCPA base URL \u7531 ~/.grok/config.toml \u7BA1\u7406\uFF0C\u5207\u52FF\u5199\u5165 workspace/box/task\u3002`
+      );
+    }
+    if (!plan.command && opts.executable) {
+      if (!fs3.existsSync(opts.executable)) {
+        throw new Error(
+          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.grokAcp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
+        );
+      }
+    } else if (!plan.command) {
+      if (!fs3.existsSync(command)) {
+        throw new Error(
+          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E grokAcp.executable\u3002`
+        );
+      }
+    }
+    const args = plan.args && plan.args.length > 0 ? plan.args : ["agent", "--model", model, "stdio"];
+    const env = {
+      ...plan.env,
+      [envKey]: apiKey,
+      // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
+      // Base URL still comes from ~/.grok/config.toml (CPA), not hard-coded api.x.ai.
+      XAI_API_KEY: apiKey,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId,
+      TENT_GROK_MODEL: model
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    const home = process.env.USERPROFILE || process.env.HOME || os2.homedir();
+    if (!env.GROK_HOME) {
+      env.GROK_HOME = path3.join(home, ".grok");
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const launch = this.resolveLaunch(plan);
+    const bootstrap = plan.bootstrapPrompt?.trim() || "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
+    const client = new GrokAcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      model: opts.model,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      emit: emit2,
+      onPermissionAsk: opts.permissionPolicy === "ask" ? async (info) => {
+        if (!this.onPermissionAsk) return "deny";
+        return this.onPermissionAsk({
+          sessionId: plan.sessionId,
+          toolTitle: info.toolTitle
+        });
+      } : void 0
+    });
+    await client.connect();
+    const promptDone = client.sendPrompt(bootstrap).then(
+      () => void 0,
+      async (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
+        try {
+          await client.stop("interrupt");
+        } catch {
+        }
+      }
+    );
+    return new GrokManagedSession(plan.sessionId, client, promptDone);
+  }
+  parseResumeToken(raw) {
+    return { raw, providerSessionId: raw };
+  }
+  mapExit(code, signal) {
+    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
+      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
+    }
+    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
+      return { type: "session.exited", sessionId: "", exitCode: code };
+    }
+    if (code !== 0 && code != null) {
+      return { type: "session.failed", sessionId: "", error: `exit:${code}` };
+    }
+    return { type: "session.exited", sessionId: "", exitCode: code };
+  }
+};
+function createGrokAcpAdapter(options) {
+  return new GrokAcpProviderAdapter(options);
+}
+
+// src/service/profiles.ts
+function profilesPath(dataDir) {
+  return path4.join(dataDir, "agent-profiles.json");
+}
+async function loadAgentProfiles(dataDir) {
+  const file = profilesPath(dataDir);
+  try {
+    const raw = await fs4.readFile(file, "utf8");
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
+    return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
+  } catch {
+    return [];
+  }
+}
+async function saveAgentProfiles(dataDir, profiles) {
+  await fs4.mkdir(dataDir, { recursive: true });
+  await fs4.writeFile(
+    profilesPath(dataDir),
+    JSON.stringify({ profiles }, null, 2) + "\n",
+    "utf8"
+  );
+}
+function defaultAgentProfiles() {
+  return [
+    {
+      id: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      displayNameKey: "profile.fake.default",
+      fake: { waitForSignal: true, emitStdout: true, canResume: true }
+    },
+    {
+      id: "grok-acp-default",
+      adapterId: GROK_ACP_ADAPTER_ID,
+      displayNameKey: "profile.grokAcp.default",
+      grokAcp: {
+        // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
+        model: DEFAULT_GROK_MODEL,
+        envKey: DEFAULT_GROK_ENV_KEY,
+        // Default deny tool permissions — never unconditional yolo.
+        permissionPolicy: "deny"
+      }
+    }
+  ];
+}
+async function ensureDefaultProfiles(dataDir) {
+  const existing = await loadAgentProfiles(dataDir);
+  if (existing.length > 0) {
+    if (!existing.some((p) => p.id === "grok-acp-default")) {
+      const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default");
+      const merged = [...existing, grok];
+      await saveAgentProfiles(dataDir, merged);
+      return merged;
+    }
+    return existing;
+  }
+  const defaults = defaultAgentProfiles();
+  await saveAgentProfiles(dataDir, defaults);
+  return defaults;
+}
+function isTestOnlyProfile(profile) {
+  return profile.adapterId === FAKE_ADAPTER_ID || !!profile.fake;
+}
+var DISPLAY_NAME_BY_KEY = {
+  "profile.fake.default": "fake-default\uFF08\u6D4B\u8BD5\uFF09",
+  "profile.grokAcp.default": "Grok ACP"
+};
+function projectAgentProfile(profile) {
+  const testOnly = isTestOnlyProfile(profile);
+  const displayName = profile.displayNameKey && DISPLAY_NAME_BY_KEY[profile.displayNameKey] || profile.id;
+  return {
+    id: profile.id,
+    adapterId: profile.adapterId,
+    displayName,
+    displayNameKey: profile.displayNameKey,
+    // Model id only — never env values, keys, or executable paths.
+    model: profile.grokAcp?.model,
+    testOnly,
+    permissionPolicy: profile.grokAcp?.permissionPolicy
+  };
+}
+function projectAgentProfiles(profiles) {
+  return profiles.map(projectAgentProfile).sort((a, b) => {
+    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
+    return a.id.localeCompare(b.id);
+  });
+}
 
 // src/service/handlers.ts
 var RpcError = class extends Error {
@@ -2796,6 +3586,8 @@ async function dispatchMethod(ctx, method, params) {
         return registryTypes(ctx, p);
       case "registry.roles":
         return registryRoles(ctx, p);
+      case "profile.list":
+        return profileList(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -3083,6 +3875,16 @@ async function registryRoles(ctx, p) {
     prompt: role.prompt
   })).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
+}
+async function profileList(ctx, p) {
+  const includeTest = p.includeTest === true;
+  const fromRuntime = ctx.runtime.listProfiles();
+  const source = fromRuntime.length > 0 ? fromRuntime : await loadAgentProfiles(ctx.dataDir);
+  let profiles = projectAgentProfiles(source);
+  if (!includeTest) {
+    profiles = profiles.filter((pr) => !pr.testOnly);
+  }
+  return { profiles };
 }
 async function docsCreateNote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -4214,11 +5016,11 @@ var MutationBus = class {
 
 // src/service/workspace-host.ts
 import { watch } from "node:fs";
-import * as fs3 from "node:fs/promises";
-import * as path2 from "node:path";
+import * as fs6 from "node:fs/promises";
+import * as path5 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs2 from "node:fs/promises";
+import * as fs5 from "node:fs/promises";
 import * as nodePath from "node:path";
 var NodeFs = class {
   constructor(root) {
@@ -4234,47 +5036,47 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs2.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs5.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path9) {
-    return fs2.readFile(this.abs(path9), "utf8");
+    return fs5.readFile(this.abs(path9), "utf8");
   }
   async writeFile(path9, content) {
-    await fs2.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
-    await fs2.writeFile(this.abs(path9), content, "utf8");
+    await fs5.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
+    await fs5.writeFile(this.abs(path9), content, "utf8");
   }
   async exists(path9) {
     try {
-      await fs2.access(this.abs(path9));
+      await fs5.access(this.abs(path9));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path9) {
-    await fs2.mkdir(this.abs(path9), { recursive: true });
+    await fs5.mkdir(this.abs(path9), { recursive: true });
   }
   async move(from, to) {
-    await fs2.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
-    await fs2.rename(this.abs(from), this.abs(to));
+    await fs5.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
+    await fs5.rename(this.abs(from), this.abs(to));
   }
   async remove(path9) {
-    await fs2.rm(this.abs(path9), { recursive: true, force: true });
+    await fs5.rm(this.abs(path9), { recursive: true, force: true });
   }
   async withLock(path9, action) {
     const lockPath = this.abs(path9);
-    await fs2.mkdir(nodePath.dirname(lockPath), { recursive: true });
+    await fs5.mkdir(nodePath.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs2.open(lockPath, "wx");
+        handle = await fs5.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs2.rm(lockPath, { force: true });
+        await fs5.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -4283,7 +5085,7 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs2.rm(lockPath, { force: true });
+      await fs5.rm(lockPath, { force: true });
     }
   }
 };
@@ -4292,7 +5094,7 @@ function isAlreadyExists(error) {
 }
 async function isStaleLock(path9) {
   try {
-    const stat2 = await fs2.stat(path9);
+    const stat2 = await fs5.stat(path9);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -4326,18 +5128,18 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path2.resolve(workspaceRoot);
+    const root = path5.resolve(workspaceRoot);
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path2.join(systemRoot, "RULES.md");
+    const rulesPath = path5.join(systemRoot, "RULES.md");
     try {
-      await fs3.access(rulesPath);
+      await fs6.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path2.resolve(existing.workspaceRoot) === root) {
+      if (path5.resolve(existing.workspaceRoot) === root) {
         return this.toInfo(existing);
       }
     }
@@ -4345,7 +5147,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path2.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path5.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -4480,40 +5282,40 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path2.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path2.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  const base = path5.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path5.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
   return `ws-${base}-${hash}`;
 }
 
 // src/service/data-dir.ts
-import * as fs4 from "node:fs/promises";
-import * as os from "node:os";
-import * as path3 from "node:path";
+import * as fs7 from "node:fs/promises";
+import * as os3 from "node:os";
+import * as path6 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path3.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path6.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path3.join(os.homedir(), "AppData", "Roaming");
-    return path3.join(base, "Tent");
+    const base = env.APPDATA || path6.join(os3.homedir(), "AppData", "Roaming");
+    return path6.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path3.join(os.homedir(), "Library", "Application Support", "Tent");
+    return path6.join(os3.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path3.join(os.homedir(), ".local", "state");
-  return path3.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path6.join(os3.homedir(), ".local", "state");
+  return path6.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path3.join(dataDir, "service.json");
+  return path6.join(dataDir, "service.json");
 }
 async function writeServiceEndpoint(dataDir, record) {
-  await fs4.mkdir(dataDir, { recursive: true });
+  await fs7.mkdir(dataDir, { recursive: true });
   const file = serviceEndpointPath(dataDir);
-  await fs4.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+  await fs7.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
   return file;
 }
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs4.readFile(file, "utf8");
+    const raw = await fs7.readFile(file, "utf8");
     const data = JSON.parse(raw);
     if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
       return null;
@@ -4525,771 +5327,9 @@ async function readServiceEndpoint(dataDir) {
 }
 async function removeServiceEndpoint(dataDir) {
   try {
-    await fs4.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs7.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
-}
-
-// src/service/profiles.ts
-import * as fs7 from "node:fs/promises";
-import * as path6 from "node:path";
-
-// src/adapters/fake/index.ts
-import * as fs5 from "node:fs";
-import * as os2 from "node:os";
-import * as path4 from "node:path";
-var FAKE_ADAPTER_ID = "fake-cli";
-function buildInlineScript(opts) {
-  return `
-const fs = require('fs');
-const sleepMs = ${opts.sleepMs};
-const exitCode = ${opts.exitCode};
-const waitForSignal = ${opts.waitForSignal ? "true" : "false"};
-const emitStdout = ${opts.emitStdout ? "true" : "false"};
-const promptFile = process.env.TENT_BOOTSTRAP_FILE || '';
-if (emitStdout) {
-  let prompt = '';
-  try { if (promptFile) prompt = fs.readFileSync(promptFile, 'utf8').slice(0, 200); } catch {}
-  process.stdout.write('fake-adapter live' + (prompt ? ' prompt=' + JSON.stringify(prompt) : '') + '\\n');
-}
-function shutdown(code) {
-  try { if (promptFile) fs.unlinkSync(promptFile); } catch {}
-  process.exit(code);
-}
-if (waitForSignal) {
-  const onStop = () => shutdown(0);
-  process.on('SIGTERM', onStop);
-  process.on('SIGINT', onStop);
-  // Windows: taskkill / SIGTERM via child.kill maps here when possible.
-  setInterval(() => {}, 1 << 30);
-} else {
-  setTimeout(() => shutdown(exitCode), sleepMs);
-}
-`.trim();
-}
-function normalizeFakeOpts(raw) {
-  const o = raw && typeof raw === "object" ? raw : {};
-  return {
-    sleepMs: typeof o.sleepMs === "number" ? o.sleepMs : 3e4,
-    exitCode: typeof o.exitCode === "number" ? o.exitCode : 0,
-    waitForSignal: o.waitForSignal !== false,
-    emitStdout: o.emitStdout !== false,
-    failLaunch: o.failLaunch,
-    canResume: o.canResume === true
-  };
-}
-var FakeProviderAdapter = class {
-  constructor(options = {}) {
-    this.id = FAKE_ADAPTER_ID;
-    this.displayNameKey = "adapter.fake.displayName";
-    this.nodePath = options.nodePath ?? process.execPath;
-  }
-  capabilities() {
-    return {
-      canSpawn: true,
-      canResume: false,
-      // default; profile may store resumeToken separately
-      canStopGraceful: true,
-      needsTty: false,
-      supportsWorktreeCwd: true,
-      authModel: "none",
-      observeLevel: "process"
-    };
-  }
-  resolveLaunch(plan) {
-    const fake = normalizeFakeOpts(plan.extras?.fake ?? plan.extras);
-    if (fake.failLaunch) {
-      throw new Error(fake.failLaunch);
-    }
-    let bootstrapFile;
-    if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
-      bootstrapFile = path4.join(
-        os2.tmpdir(),
-        `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
-      );
-      fs5.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
-    }
-    const script = buildInlineScript(fake);
-    const env = {
-      ...plan.env,
-      TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId
-    };
-    if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
-    if (plan.command) {
-      return {
-        command: plan.command,
-        args: plan.args ?? [],
-        cwd: plan.cwd,
-        env,
-        bootstrapFile,
-        stopSignal: "SIGTERM"
-      };
-    }
-    return {
-      command: this.nodePath,
-      args: ["-e", script],
-      cwd: plan.cwd,
-      env,
-      bootstrapFile,
-      stopSignal: "SIGTERM"
-    };
-  }
-  parseResumeToken(raw) {
-    return { raw, providerSessionId: raw };
-  }
-  mapExit(code, signal) {
-    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
-      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
-    }
-    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
-      return { type: "session.exited", sessionId: "", exitCode: code };
-    }
-    if (code !== 0 && code != null) {
-      return {
-        type: "session.failed",
-        sessionId: "",
-        error: `exit:${code}`
-      };
-    }
-    return { type: "session.exited", sessionId: "", exitCode: code };
-  }
-};
-function createFakeAdapter(options) {
-  return new FakeProviderAdapter(options);
-}
-
-// src/adapters/grok-acp/index.ts
-import * as fs6 from "node:fs";
-import * as os3 from "node:os";
-import * as path5 from "node:path";
-
-// src/adapters/grok-acp/client.ts
-import { spawn } from "node:child_process";
-import * as readline from "node:readline";
-
-// src/adapters/grok-acp/types.ts
-var GROK_ACP_ADAPTER_ID = "grok-acp";
-var DEFAULT_GROK_MODEL = "grok-4.5";
-var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
-var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
-var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
-
-// src/adapters/grok-acp/client.ts
-var GrokAcpClient = class {
-  constructor(options) {
-    this.options = options;
-    this.proc = null;
-    this.lines = null;
-    this.nextId = 1;
-    this.pending = /* @__PURE__ */ new Map();
-    this.assistantText = "";
-    this.stderrTail = "";
-    this.closed = false;
-    this.exitCode = null;
-    this.exitSignal = null;
-    this.exitWaiters = [];
-  }
-  get pid() {
-    return this.proc?.pid ?? void 0;
-  }
-  get providerSession() {
-    return this.providerSessionId;
-  }
-  get lastAssistantText() {
-    return this.assistantText;
-  }
-  get lastStderrTail() {
-    return this.stderrTail;
-  }
-  isAlive() {
-    const pid = this.proc?.pid;
-    if (pid == null || pid <= 0 || this.closed) return false;
-    try {
-      process.kill(pid, 0);
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  /**
-   * Spawn ACP process + initialize/authenticate/session/new.
-   * Emits session.live when the ACP session exists. Does not block on prompt.
-   */
-  async connect() {
-    this.spawnProcess();
-    const pid = this.proc.pid;
-    this.options.emit({
-      type: "session.starting",
-      sessionId: this.options.sessionId
-    });
-    try {
-      const init = await this.request("initialize", {
-        protocolVersion: 1,
-        clientCapabilities: {
-          fs: { readTextFile: false, writeTextFile: false },
-          terminal: false
-        }
-      });
-      const authMethods = new Set((init.authMethods ?? []).map((m) => m.id));
-      const methodId = authMethods.has("xai.api_key") ? "xai.api_key" : authMethods.has("cached_token") ? "cached_token" : null;
-      if (!methodId) {
-        throw new Error(
-          "Grok ACP \u672A\u63D0\u4F9B\u53EF\u7528\u7684\u8BA4\u8BC1\u65B9\u5F0F\uFF08\u9700\u8981 xai.api_key \u6216 cached_token\uFF09\u3002\u8BF7\u786E\u8BA4 grok CLI \u4E0E CPA \u914D\u7F6E\u3002"
-        );
-      }
-      await this.request("authenticate", {
-        methodId,
-        _meta: { headless: true }
-      });
-      const session = await this.request(
-        "session/new",
-        { cwd: this.options.cwd, mcpServers: [] },
-        6e4
-      );
-      if (!session.sessionId) {
-        throw new Error("Grok ACP session/new \u672A\u8FD4\u56DE sessionId");
-      }
-      this.providerSessionId = session.sessionId;
-      this.options.emit({
-        type: "session.live",
-        sessionId: this.options.sessionId,
-        pid
-      });
-      return { pid, providerSessionId: session.sessionId };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
-      throw new Error(detail);
-    }
-  }
-  /**
-   * Send session/prompt with task pointer / relay text. Maps session/update events.
-   * Safe to call after connect(); failures emit session.failed.
-   */
-  async sendPrompt(bootstrapPrompt) {
-    if (!this.providerSessionId) {
-      throw new Error("Grok ACP session \u5C1A\u672A\u5EFA\u7ACB\uFF0C\u65E0\u6CD5 prompt");
-    }
-    const pid = this.proc?.pid;
-    if (pid == null) {
-      throw new Error("Grok ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
-    }
-    try {
-      const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
-      const result = await this.request(
-        "session/prompt",
-        {
-          sessionId: this.providerSessionId,
-          prompt: [{ type: "text", text: bootstrapPrompt }]
-        },
-        promptTimeout
-      );
-      return {
-        pid,
-        providerSessionId: this.providerSessionId,
-        stopReason: result.stopReason,
-        assistantText: this.assistantText.trim()
-      };
-    } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
-      throw new Error(detail);
-    }
-  }
-  /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
-  async stop(reason) {
-    void reason;
-    if (this.closed) return;
-    this.closed = true;
-    this.rejectAllPending(new Error("session stopped"));
-    const proc = this.proc;
-    if (!proc || proc.killed) {
-      this.cleanupStreams();
-      return;
-    }
-    try {
-      proc.kill("SIGTERM");
-    } catch {
-    }
-    await Promise.race([
-      this.waitExit(),
-      sleep(1500).then(() => this.forceKill())
-    ]);
-    this.cleanupStreams();
-  }
-  spawnProcess() {
-    const child = spawn(this.options.command, this.options.args, {
-      cwd: this.options.cwd,
-      env: {
-        ...process.env,
-        ...this.options.env
-      },
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      detached: false
-    });
-    if (child.pid == null) {
-      throw new Error(
-        `\u65E0\u6CD5\u542F\u52A8 Grok ACP \u8FDB\u7A0B: ${this.options.command} ${this.options.args.join(" ")}`
-      );
-    }
-    this.proc = child;
-    this.lines = readline.createInterface({ input: child.stdout });
-    child.stderr?.on("data", (chunk) => {
-      const text = chunk.toString("utf8");
-      this.stderrTail = (this.stderrTail + text).slice(-4e3);
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text
-      });
-    });
-    this.lines.on("line", (line) => this.onLine(line));
-    child.on("exit", (code, signal) => {
-      this.exitCode = code;
-      this.exitSignal = signal;
-      this.closed = true;
-      this.rejectAllPending(
-        new Error(
-          signal ? `Grok ACP \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `Grok ACP \u8FDB\u7A0B\u9000\u51FA code=${code}`
-        )
-      );
-      for (const w of this.exitWaiters) w();
-      this.exitWaiters = [];
-    });
-    child.on("error", (err) => {
-      this.closed = true;
-      this.rejectAllPending(
-        new Error(`Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
-      );
-    });
-  }
-  onLine(line) {
-    let message;
-    try {
-      message = JSON.parse(line);
-    } catch {
-      return;
-    }
-    if ("method" in message && message.method === "session/update") {
-      this.handleSessionUpdate(
-        message.params?.update
-      );
-      return;
-    }
-    if ("method" in message && message.method === "session/request_permission" && message.id !== void 0) {
-      void this.handlePermissionRequest(
-        message.id,
-        message.params
-      );
-      return;
-    }
-    if ("method" in message && message.id !== void 0 && message.method) {
-      this.write({
-        jsonrpc: "2.0",
-        id: message.id,
-        error: {
-          code: -32601,
-          message: "Client-side requests are disabled for Tent grok-acp adapter."
-        }
-      });
-      return;
-    }
-    if (!("id" in message) || message.id === void 0) return;
-    const id = Number(message.id);
-    const pending = this.pending.get(id);
-    if (!pending) return;
-    this.pending.delete(id);
-    clearTimeout(pending.timer);
-    if ("error" in message && message.error) {
-      pending.reject(
-        new Error(message.error.message || JSON.stringify(message.error))
-      );
-    } else {
-      pending.resolve(("result" in message ? message.result : void 0) ?? {});
-    }
-  }
-  handleSessionUpdate(update) {
-    if (!update) return;
-    const kind = update.sessionUpdate ?? "";
-    if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.text) {
-      this.assistantText += update.content.text;
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: `[${kind}] ${update.content.text}`
-      });
-      return;
-    }
-    if (kind === "tool_call" || kind === "tool_call_update") {
-      const title = typeof update.title === "string" && update.title || update.toolCallId || "tool";
-      const status = typeof update.status === "string" ? update.status : "";
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: `[${kind}] ${title}${status ? ` (${status})` : ""}
-`
-      });
-      return;
-    }
-    if (kind) {
-      this.options.emit({
-        type: "session.stdout_tail",
-        sessionId: this.options.sessionId,
-        text: `[session/update] ${kind}
-`
-      });
-    }
-  }
-  async handlePermissionRequest(id, params) {
-    const options = params.options ?? [];
-    const toolTitle = params.toolCall?.title || params.toolCall?.toolCallId || "tool";
-    const policy = this.options.permissionPolicy;
-    let decision = "deny";
-    if (policy === "allow") {
-      decision = "allow";
-    } else if (policy === "deny") {
-      decision = "deny";
-    } else {
-      this.options.emit({
-        type: "session.waiting_user",
-        sessionId: this.options.sessionId,
-        summary: `Grok ACP \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
-      });
-      try {
-        if (this.options.onPermissionAsk) {
-          decision = await Promise.race([
-            this.options.onPermissionAsk({ toolTitle, options }),
-            sleep(
-              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-            ).then(() => "deny")
-          ]);
-        } else {
-          decision = "deny";
-        }
-      } catch {
-        decision = "deny";
-      }
-    }
-    const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
-    this.write({
-      jsonrpc: "2.0",
-      id,
-      result: { outcome }
-    });
-    this.options.emit({
-      type: "session.stdout_tail",
-      sessionId: this.options.sessionId,
-      text: `[permission] ${toolTitle} \u2192 ${decision === "allow" ? "allow_once" : "deny/cancelled"}
-`
-    });
-  }
-  request(method, params, timeoutMs = 3e4) {
-    if (this.closed || !this.proc?.stdin) {
-      return Promise.reject(new Error(`Grok ACP \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`));
-    }
-    const id = this.nextId++;
-    return new Promise((resolve5, reject) => {
-      const timer = setTimeout(() => {
-        this.pending.delete(id);
-        reject(new Error(`Grok ACP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
-      }, timeoutMs);
-      this.pending.set(id, { resolve: resolve5, reject, timer });
-      this.write({ jsonrpc: "2.0", id, method, params });
-    });
-  }
-  write(payload) {
-    const stdin = this.proc?.stdin;
-    if (!stdin || stdin.destroyed) return;
-    stdin.write(JSON.stringify(payload) + "\n");
-  }
-  rejectAllPending(err) {
-    for (const [id, p] of this.pending) {
-      clearTimeout(p.timer);
-      p.reject(err);
-      this.pending.delete(id);
-    }
-  }
-  waitExit() {
-    if (!this.proc || this.closed) return Promise.resolve();
-    return new Promise((resolve5) => {
-      this.exitWaiters.push(resolve5);
-    });
-  }
-  async forceKill() {
-    const proc = this.proc;
-    const pid = proc?.pid;
-    if (!proc || pid == null) return;
-    if (process.platform === "win32") {
-      await new Promise((resolve5) => {
-        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
-          windowsHide: true,
-          stdio: "ignore"
-        });
-        killer.on("exit", () => resolve5());
-        killer.on("error", () => resolve5());
-        setTimeout(resolve5, 1500);
-      });
-    } else {
-      try {
-        proc.kill("SIGKILL");
-      } catch {
-      }
-    }
-  }
-  cleanupStreams() {
-    try {
-      this.lines?.close();
-    } catch {
-    }
-    this.lines = null;
-  }
-};
-function selectAllowOnce(options) {
-  const once = options.find((o) => o.kind === "allow_once") || options.find((o) => o.optionId === "allow_once");
-  if (once?.optionId) {
-    return { outcome: "selected", optionId: once.optionId };
-  }
-  return { outcome: "cancelled" };
-}
-function sleep(ms) {
-  return new Promise((resolve5) => setTimeout(resolve5, ms));
-}
-
-// src/adapters/grok-acp/index.ts
-function defaultGrokExecutable() {
-  if (process.platform === "win32") {
-    const home2 = process.env.USERPROFILE || os3.homedir();
-    return path5.join(home2, ".grok", "bin", "grok.exe");
-  }
-  const home = process.env.HOME || os3.homedir();
-  return path5.join(home, ".grok", "bin", "grok");
-}
-function normalizeGrokOpts(raw) {
-  const o = raw && typeof raw === "object" ? raw : {};
-  const policy = o.permissionPolicy;
-  const permissionPolicy = policy === "allow" || policy === "ask" || policy === "deny" ? policy : "deny";
-  return {
-    executable: o.executable,
-    model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : DEFAULT_GROK_MODEL,
-    envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : DEFAULT_GROK_ENV_KEY,
-    promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
-    permissionPolicy,
-    permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
-  };
-}
-var GrokManagedSession = class {
-  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
-    this.sessionId = sessionId;
-    this.client = client;
-    this.bootstrapDone = bootstrapDone;
-    this.stopRequested = stopRequested;
-  }
-  get pid() {
-    return this.client.pid;
-  }
-  get providerSessionId() {
-    return this.client.providerSession;
-  }
-  isAlive() {
-    return !this.stopRequested && this.client.isAlive();
-  }
-  async waitBootstrap() {
-    await this.bootstrapDone;
-  }
-  async stop(reason) {
-    this.stopRequested = true;
-    await this.client.stop(reason);
-  }
-};
-var GrokAcpProviderAdapter = class {
-  constructor(options = {}) {
-    this.id = GROK_ACP_ADAPTER_ID;
-    this.displayNameKey = "adapter.grokAcp.displayName";
-    this.resolveApiKey = options.resolveApiKey ?? ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
-    this.onPermissionAsk = options.onPermissionAsk;
-  }
-  capabilities() {
-    return {
-      canSpawn: true,
-      canResume: false,
-      canStopGraceful: true,
-      needsTty: false,
-      supportsWorktreeCwd: true,
-      authModel: "env",
-      observeLevel: "structured"
-    };
-  }
-  /**
-   * Launch plan validation only. Real ACP needs bidirectional stdio —
-   * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
-   */
-  resolveLaunch(plan) {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
-    const command = plan.command || opts.executable || defaultGrokExecutable();
-    const model = opts.model;
-    const envKey = opts.envKey;
-    const apiKey = this.resolveApiKey(envKey, plan.env);
-    if (!apiKey || !apiKey.trim()) {
-      throw new Error(
-        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}\uFF1BCPA base URL \u7531 ~/.grok/config.toml \u7BA1\u7406\uFF0C\u5207\u52FF\u5199\u5165 workspace/box/task\u3002`
-      );
-    }
-    if (!plan.command && opts.executable) {
-      if (!fs6.existsSync(opts.executable)) {
-        throw new Error(
-          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.grokAcp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
-        );
-      }
-    } else if (!plan.command) {
-      if (!fs6.existsSync(command)) {
-        throw new Error(
-          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E grokAcp.executable\u3002`
-        );
-      }
-    }
-    const args = plan.args && plan.args.length > 0 ? plan.args : ["agent", "--model", model, "stdio"];
-    const env = {
-      ...plan.env,
-      [envKey]: apiKey,
-      // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
-      // Base URL still comes from ~/.grok/config.toml (CPA), not hard-coded api.x.ai.
-      XAI_API_KEY: apiKey,
-      TENT_SESSION_ID: plan.sessionId,
-      TENT_PROFILE_ID: plan.profileId,
-      TENT_GROK_MODEL: model
-    };
-    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
-    const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
-    if (!env.GROK_HOME) {
-      env.GROK_HOME = path5.join(home, ".grok");
-    }
-    return {
-      command,
-      args,
-      cwd: plan.cwd,
-      env,
-      stopSignal: "SIGTERM"
-    };
-  }
-  async startManagedSession(plan, emit2) {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
-    const launch = this.resolveLaunch(plan);
-    const bootstrap = plan.bootstrapPrompt?.trim() || "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
-    const client = new GrokAcpClient({
-      command: launch.command,
-      args: launch.args,
-      cwd: launch.cwd,
-      env: launch.env,
-      sessionId: plan.sessionId,
-      model: opts.model,
-      promptTimeoutMs: opts.promptTimeoutMs,
-      permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
-      emit: emit2,
-      onPermissionAsk: opts.permissionPolicy === "ask" ? async (info) => {
-        if (!this.onPermissionAsk) return "deny";
-        return this.onPermissionAsk({
-          sessionId: plan.sessionId,
-          toolTitle: info.toolTitle
-        });
-      } : void 0
-    });
-    await client.connect();
-    const promptDone = client.sendPrompt(bootstrap).then(
-      () => void 0,
-      async (err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
-        try {
-          await client.stop("interrupt");
-        } catch {
-        }
-      }
-    );
-    return new GrokManagedSession(plan.sessionId, client, promptDone);
-  }
-  parseResumeToken(raw) {
-    return { raw, providerSessionId: raw };
-  }
-  mapExit(code, signal) {
-    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
-      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
-    }
-    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
-      return { type: "session.exited", sessionId: "", exitCode: code };
-    }
-    if (code !== 0 && code != null) {
-      return { type: "session.failed", sessionId: "", error: `exit:${code}` };
-    }
-    return { type: "session.exited", sessionId: "", exitCode: code };
-  }
-};
-function createGrokAcpAdapter(options) {
-  return new GrokAcpProviderAdapter(options);
-}
-
-// src/service/profiles.ts
-function profilesPath(dataDir) {
-  return path6.join(dataDir, "agent-profiles.json");
-}
-async function loadAgentProfiles(dataDir) {
-  const file = profilesPath(dataDir);
-  try {
-    const raw = await fs7.readFile(file, "utf8");
-    const parsed = JSON.parse(raw);
-    const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
-    return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
-  } catch {
-    return [];
-  }
-}
-async function saveAgentProfiles(dataDir, profiles) {
-  await fs7.mkdir(dataDir, { recursive: true });
-  await fs7.writeFile(
-    profilesPath(dataDir),
-    JSON.stringify({ profiles }, null, 2) + "\n",
-    "utf8"
-  );
-}
-function defaultAgentProfiles() {
-  return [
-    {
-      id: "fake-default",
-      adapterId: FAKE_ADAPTER_ID,
-      displayNameKey: "profile.fake.default",
-      fake: { waitForSignal: true, emitStdout: true, canResume: true }
-    },
-    {
-      id: "grok-acp-default",
-      adapterId: GROK_ACP_ADAPTER_ID,
-      displayNameKey: "profile.grokAcp.default",
-      grokAcp: {
-        // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
-        model: DEFAULT_GROK_MODEL,
-        envKey: DEFAULT_GROK_ENV_KEY,
-        // Default deny tool permissions — never unconditional yolo.
-        permissionPolicy: "deny"
-      }
-    }
-  ];
-}
-async function ensureDefaultProfiles(dataDir) {
-  const existing = await loadAgentProfiles(dataDir);
-  if (existing.length > 0) {
-    if (!existing.some((p) => p.id === "grok-acp-default")) {
-      const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default");
-      const merged = [...existing, grok];
-      await saveAgentProfiles(dataDir, merged);
-      return merged;
-    }
-    return existing;
-  }
-  const defaults = defaultAgentProfiles();
-  await saveAgentProfiles(dataDir, defaults);
-  return defaults;
 }
 
 // src/runtime/process-supervisor.ts
@@ -5666,6 +5706,10 @@ var AgentRuntime = class {
   }
   registerProfile(profile) {
     this.profiles.set(profile.id, profile);
+  }
+  /** Machine-local catalog snapshot (for profile.list projection). */
+  listProfiles() {
+    return [...this.profiles.values()];
   }
   registerAdapter(adapter) {
     this.adapters.set(adapter.id, adapter);

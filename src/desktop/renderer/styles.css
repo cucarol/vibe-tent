@@ -368,11 +368,45 @@ textarea:focus {
   min-width: 0;
 }
 
+.task-actions.row {
+  flex-direction: row;
+  flex-wrap: wrap;
+  align-items: center;
+}
+
 .task-actions > button {
   align-self: flex-start;
   height: 28px;
   padding: 0 10px;
   font-size: var(--font-ui-smaller);
+}
+
+.task-profile-bar {
+  border: none;
+  background: transparent;
+  padding: 2px 0 8px;
+  margin-bottom: 2px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.task-profile-bar label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.task-profile-bar select {
+  width: 100%;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
 }
 
 .reject-inline {

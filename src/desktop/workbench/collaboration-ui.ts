@@ -2,8 +2,10 @@
 // No Electron, no FS — builds RPC payloads and view models from projections.
 
 import type {
+  AgentProfileProjection,
   DeliveryProjection,
   RoleRegistryEntryProjection,
+  SessionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -19,6 +21,17 @@ export type RoleOption = {
   description?: string;
 };
 
+/** Product-facing profile option for the launch picker (safe metadata only). */
+export type ProfileOption = {
+  id: string;
+  adapterId: string;
+  displayName: string;
+  model?: string;
+  testOnly: boolean;
+  /** Compact label: displayName · adapter · model */
+  label: string;
+};
+
 export type TaskReviewItem = {
   path: string;
   id?: string;
@@ -28,9 +41,18 @@ export type TaskReviewItem = {
   claims: string[];
   prompt?: string;
   activeDeliveryId?: string;
+  sessionId?: string;
+  /** Bound runtime session projection when known (not chat). */
+  sessionState?: string;
+  sessionAlive?: boolean;
+  sessionProfileId?: string;
   deliverySummary?: string;
   commits: string[];
   canAcceptOrReject: boolean;
+  /** User may start an agent session on this task (queued/running without live session). */
+  canStartAgent: boolean;
+  /** User may interrupt a live/waiting agent session. */
+  canInterrupt: boolean;
   summaryLine: string;
 };
 
@@ -104,6 +126,81 @@ export function listRoleOptions(roles: RoleRegistryEntryProjection[]): RoleOptio
   return roles
     .map((r) => ({ name: r.name, description: r.description }))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+/**
+ * Build profile picker options from safe profile.list projections.
+ * By default hides testOnly (fake) so product default is never harness.
+ */
+export function listProfileOptions(
+  profiles: AgentProfileProjection[],
+  opts?: { includeTest?: boolean }
+): ProfileOption[] {
+  const includeTest = opts?.includeTest === true;
+  return profiles
+    .filter((p) => includeTest || !p.testOnly)
+    .map((p) => {
+      const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+      return {
+        id: p.id,
+        adapterId: p.adapterId,
+        displayName: p.displayName || p.id,
+        model: p.model,
+        testOnly: p.testOnly,
+        label: parts.join(" · "),
+      };
+    })
+    .sort((a, b) => {
+      if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
+      return a.id.localeCompare(b.id);
+    });
+}
+
+/**
+ * Default product profile: sole non-test profile, else grok-acp-default when present,
+ * else first product option. Never auto-picks fake when a product profile exists.
+ */
+export function pickDefaultProfileId(profiles: ProfileOption[]): string | null {
+  const product = profiles.filter((p) => !p.testOnly);
+  if (product.length === 1) return product[0].id;
+  const grok = product.find((p) => p.id === "grok-acp-default");
+  if (grok) return grok.id;
+  if (product.length > 0) return product[0].id;
+  // Only if nothing else is available (tests with includeTest / empty catalog).
+  return profiles[0]?.id ?? null;
+}
+
+export type StartSessionPayload = {
+  taskPath: string;
+  profileId: string;
+  callerKind: "user";
+};
+
+/**
+ * Build task.startSession payload for the user launch button.
+ * Does not claim or start automatically — caller must invoke RPC on click.
+ * Never invents profileId; never sets startSession on dispatch.
+ */
+export function buildStartSessionPayload(
+  taskPath: string,
+  profileId: string
+): { ok: true; payload: StartSessionPayload } | { ok: false; reason: string } {
+  const path = taskPath.trim();
+  if (!path) {
+    return { ok: false, reason: "缺少任务路径。" };
+  }
+  const profile = profileId.trim();
+  if (!profile) {
+    return { ok: false, reason: "请选择 machine-local agent profile。" };
+  }
+  return {
+    ok: true,
+    payload: {
+      taskPath: path,
+      profileId: profile,
+      callerKind: "user",
+    },
+  };
 }
 
 /**
@@ -195,18 +292,97 @@ export function taskStateLabel(state: string, legacyStatus?: string): string {
       return "已驳回";
     case "interrupted":
       return "已中断";
+    case "failed":
+      return "失败";
     default:
       return s || "未知";
   }
 }
 
 /**
- * Enrich task list with delivery summary/commits for triage display.
+ * Map runtime SessionState / session projection to short Chinese label.
+ * Status only — never chat, thought, or terminal text.
+ */
+export function sessionStateLabel(state: string | undefined | null): string {
+  if (!state) return "";
+  switch (state) {
+    case "starting":
+      return "启动中";
+    case "live":
+    case "running":
+      return "运行中";
+    case "waiting-user":
+    case "waiting_user":
+      return "等待用户";
+    case "stopped":
+      return "已停止";
+    case "failed":
+      return "会话失败";
+    case "external":
+      return "外部会话";
+    default:
+      return state;
+  }
+}
+
+/** Task states where user may start (or re-start) an agent session. */
+export function canStartAgentOnTask(
+  taskState: string,
+  session?: Pick<SessionProjection, "state" | "alive"> | null
+): boolean {
+  const s = taskState || "";
+  // Terminal collaboration outcomes: no start.
+  if (
+    s === "delivered" ||
+    s === "accepted" ||
+    s === "rejected" ||
+    s === "interrupted"
+  ) {
+    return false;
+  }
+  // Active live session: use interrupt instead.
+  if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
+    return false;
+  }
+  // queued (service auto-claims for user), running, waiting, failed (retry after fix).
+  return (
+    s === "queued" ||
+    s === "pending" ||
+    s === "running" ||
+    s === "taken" ||
+    s === "waiting" ||
+    s === "failed"
+  );
+}
+
+export function canInterruptTask(
+  taskState: string,
+  session?: Pick<SessionProjection, "state" | "alive"> | null,
+  opts?: { hasSessionId?: boolean }
+): boolean {
+  if (session) {
+    return (
+      !!session.alive &&
+      (session.state === "live" ||
+        session.state === "starting" ||
+        session.state === "waiting-user")
+    );
+  }
+  // Fallback when session projection not loaded but task is mid-flight with sessionId.
+  if (!opts?.hasSessionId) return false;
+  const s = taskState || "";
+  return s === "running" || s === "waiting" || s === "taken";
+}
+
+/**
+ * Enrich task list with delivery summary/commits + optional session projection.
  * Prefer matching activeDeliveryId; fall back to newest delivery for task id.
+ * Prefer sessionId match for runtime status.
  */
 export function buildTaskReviewItems(
   tasks: TaskProjection[],
-  deliveries: DeliveryProjection[] = []
+  deliveries: DeliveryProjection[] = [],
+  sessions: SessionProjection[] = []
 ): TaskReviewItem[] {
   const byId = new Map<string, DeliveryProjection>();
   const byTaskId = new Map<string, DeliveryProjection[]>();
@@ -215,6 +391,13 @@ export function buildTaskReviewItems(
     const list = byTaskId.get(d.taskId) ?? [];
     list.push(d);
     byTaskId.set(d.taskId, list);
+  }
+
+  const sessionById = new Map<string, SessionProjection>();
+  const sessionByTaskId = new Map<string, SessionProjection>();
+  for (const s of sessions) {
+    sessionById.set(s.sessionId, s);
+    if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
   }
 
   return tasks.map((task) => {
@@ -230,12 +413,22 @@ export function buildTaskReviewItems(
         .sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
     }
 
+    let session: SessionProjection | undefined;
+    if (task.sessionId) {
+      session = sessionById.get(task.sessionId);
+    }
+    if (!session && task.id) {
+      session = sessionByTaskId.get(task.id);
+    }
+
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
     const label = taskStateLabel(state, task.status);
+    const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
       label,
+      sessLabel ? `会话${sessLabel}` : null,
       task.role,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null,
     ]
@@ -251,9 +444,17 @@ export function buildTaskReviewItems(
       claims: task.claims ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
+      sessionId: task.sessionId ?? session?.sessionId,
+      sessionState: session?.state,
+      sessionAlive: session?.alive,
+      sessionProfileId: session?.profileId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",
+      canStartAgent: canStartAgentOnTask(state, session),
+      canInterrupt: canInterruptTask(state, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId),
+      }),
       summaryLine,
     };
   });

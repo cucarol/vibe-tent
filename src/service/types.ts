@@ -141,9 +141,30 @@ export type RoleRegistryEntryProjection = {
 };
 
 /**
+ * Machine-local AgentProfile projection for clients.
+ * Safe metadata only — never secrets, tokens, env *values*, or raw env maps.
+ */
+export type AgentProfileProjection = {
+  id: string;
+  adapterId: string;
+  /** Human label for pickers (resolved from displayNameKey when needed). */
+  displayName: string;
+  displayNameKey?: string;
+  /** Model id when known (e.g. grok-4.5); never credentials. */
+  model?: string;
+  /**
+   * true = harness/test profile (fake-cli). Product UI should not default to these.
+   */
+  testOnly: boolean;
+  /** Non-secret permission policy name for real providers. */
+  permissionPolicy?: string;
+};
+
+/**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * B5 adds full task lifecycle + session projections + a2a resolve.
  * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
+ * Desktop ACP launch surface adds profile.list (safe metadata only).
  */
 export const CLIENT_METHODS = [
   "service.health",
@@ -163,6 +184,7 @@ export const CLIENT_METHODS = [
   "docs.backlinks",
   "registry.types",
   "registry.roles",
+  "profile.list",
   "task.dispatch",
   "task.claim",
   "task.wait",

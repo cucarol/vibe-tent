@@ -1260,6 +1260,49 @@ function listCoordinationTypeOptions(types) {
 function listRoleOptions(roles) {
   return roles.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
+function listProfileOptions(profiles, opts) {
+  const includeTest = opts?.includeTest === true;
+  return profiles.filter((p) => includeTest || !p.testOnly).map((p) => {
+    const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+    return {
+      id: p.id,
+      adapterId: p.adapterId,
+      displayName: p.displayName || p.id,
+      model: p.model,
+      testOnly: p.testOnly,
+      label: parts.join(" \xB7 ")
+    };
+  }).sort((a, b) => {
+    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
+    return a.id.localeCompare(b.id);
+  });
+}
+function pickDefaultProfileId(profiles) {
+  const product = profiles.filter((p) => !p.testOnly);
+  if (product.length === 1) return product[0].id;
+  const grok = product.find((p) => p.id === "grok-acp-default");
+  if (grok) return grok.id;
+  if (product.length > 0) return product[0].id;
+  return profiles[0]?.id ?? null;
+}
+function buildStartSessionPayload(taskPath, profileId) {
+  const path6 = taskPath.trim();
+  if (!path6) {
+    return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
+  }
+  const profile = profileId.trim();
+  if (!profile) {
+    return { ok: false, reason: "\u8BF7\u9009\u62E9 machine-local agent profile\u3002" };
+  }
+  return {
+    ok: true,
+    payload: {
+      taskPath: path6,
+      profileId: profile,
+      callerKind: "user"
+    }
+  };
+}
 function taskStateLabel(state, legacyStatus) {
   const s = state || legacyStatus || "";
   switch (s) {
@@ -1279,11 +1322,52 @@ function taskStateLabel(state, legacyStatus) {
       return "\u5DF2\u9A73\u56DE";
     case "interrupted":
       return "\u5DF2\u4E2D\u65AD";
+    case "failed":
+      return "\u5931\u8D25";
     default:
       return s || "\u672A\u77E5";
   }
 }
-function buildTaskReviewItems(tasks, deliveries = []) {
+function sessionStateLabel(state) {
+  if (!state) return "";
+  switch (state) {
+    case "starting":
+      return "\u542F\u52A8\u4E2D";
+    case "live":
+    case "running":
+      return "\u8FD0\u884C\u4E2D";
+    case "waiting-user":
+    case "waiting_user":
+      return "\u7B49\u5F85\u7528\u6237";
+    case "stopped":
+      return "\u5DF2\u505C\u6B62";
+    case "failed":
+      return "\u4F1A\u8BDD\u5931\u8D25";
+    case "external":
+      return "\u5916\u90E8\u4F1A\u8BDD";
+    default:
+      return state;
+  }
+}
+function canStartAgentOnTask(taskState, session) {
+  const s = taskState || "";
+  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted") {
+    return false;
+  }
+  if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
+    return false;
+  }
+  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
+}
+function canInterruptTask(taskState, session, opts) {
+  if (session) {
+    return !!session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user");
+  }
+  if (!opts?.hasSessionId) return false;
+  const s = taskState || "";
+  return s === "running" || s === "waiting" || s === "taken";
+}
+function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
   const byId = /* @__PURE__ */ new Map();
   const byTaskId = /* @__PURE__ */ new Map();
   for (const d of deliveries) {
@@ -1291,6 +1375,12 @@ function buildTaskReviewItems(tasks, deliveries = []) {
     const list = byTaskId.get(d.taskId) ?? [];
     list.push(d);
     byTaskId.set(d.taskId, list);
+  }
+  const sessionById = /* @__PURE__ */ new Map();
+  const sessionByTaskId = /* @__PURE__ */ new Map();
+  for (const s of sessions) {
+    sessionById.set(s.sessionId, s);
+    if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
   }
   return tasks.map((task) => {
     const state = task.state || task.status;
@@ -1302,12 +1392,21 @@ function buildTaskReviewItems(tasks, deliveries = []) {
       const list = byTaskId.get(task.id) ?? [];
       delivery = list.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
     }
+    let session;
+    if (task.sessionId) {
+      session = sessionById.get(task.sessionId);
+    }
+    if (!session && task.id) {
+      session = sessionByTaskId.get(task.id);
+    }
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
     const label = taskStateLabel(state, task.status);
+    const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
       label,
+      sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
       task.role,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
@@ -1320,9 +1419,17 @@ function buildTaskReviewItems(tasks, deliveries = []) {
       claims: task.claims ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
+      sessionId: task.sessionId ?? session?.sessionId,
+      sessionState: session?.state,
+      sessionAlive: session?.alive,
+      sessionProfileId: session?.profileId,
       deliverySummary,
       commits,
       canAcceptOrReject: state === "delivered",
+      canStartAgent: canStartAgentOnTask(state, session),
+      canInterrupt: canInterruptTask(state, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId)
+      }),
       summaryLine
     };
   });
@@ -1344,8 +1451,11 @@ var DesktopShellModel = class {
     this.controller = null;
     this.tasks = [];
     this.deliveries = [];
+    this.sessions = [];
     this.roles = [];
     this.coordinationTypes = [];
+    this.profiles = [];
+    this.selectedProfileId = null;
     this.statusMessage = null;
     this.listeners = /* @__PURE__ */ new Set();
     this.cards = new ContextCardStore();
@@ -1374,17 +1484,25 @@ var DesktopShellModel = class {
           state: t.state || t.status,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
+          sessionId: t.sessionId,
           manifest: ""
         })),
-        this.deliveries
+        this.deliveries,
+        this.sessions
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
+      profiles: this.profiles,
+      selectedProfileId: this.selectedProfileId,
       statusMessage: this.statusMessage
     };
   }
   getController() {
     return this.controller;
+  }
+  setSelectedProfileId(profileId) {
+    this.selectedProfileId = profileId;
+    this.emit();
   }
   async refreshHealth() {
     if (!this.rpc) {
@@ -1454,22 +1572,26 @@ var DesktopShellModel = class {
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    await Promise.all([this.refreshTasks(), this.refreshRegistry()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
     this.emit();
   }
   async refreshTasks() {
     if (!this.rpc || !this.foregroundWorkspaceId) {
       this.tasks = [];
       this.deliveries = [];
+      this.sessions = [];
       this.emit();
       return;
     }
     try {
-      const [taskResult, deliveryResult] = await Promise.all([
+      const [taskResult, deliveryResult, sessionResult] = await Promise.all([
         this.rpc.call("task.list", {
           workspaceId: this.foregroundWorkspaceId
         }),
         this.rpc.call("delivery.list", {
+          workspaceId: this.foregroundWorkspaceId
+        }),
+        this.rpc.call("session.list", {
           workspaceId: this.foregroundWorkspaceId
         })
       ]);
@@ -1481,12 +1603,15 @@ var DesktopShellModel = class {
         state: t.state,
         id: t.id,
         prompt: t.prompt,
-        activeDeliveryId: t.activeDeliveryId
+        activeDeliveryId: t.activeDeliveryId,
+        sessionId: t.sessionId
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
+      this.sessions = sessionResult.sessions ?? [];
     } catch {
       this.tasks = [];
       this.deliveries = [];
+      this.sessions = [];
     }
     this.emit();
   }
@@ -1513,6 +1638,63 @@ var DesktopShellModel = class {
       this.coordinationTypes = [];
     }
     this.emit();
+  }
+  /**
+   * Load machine-local profiles (product list: testOnly hidden).
+   * Does not start sessions; selection only.
+   */
+  async refreshProfiles() {
+    if (!this.rpc) {
+      this.profiles = [];
+      this.selectedProfileId = null;
+      this.emit();
+      return this.profiles;
+    }
+    try {
+      const result = await this.rpc.call("profile.list", {});
+      this.profiles = listProfileOptions(result.profiles ?? []);
+      if (!this.selectedProfileId || !this.profiles.some((p) => p.id === this.selectedProfileId)) {
+        this.selectedProfileId = pickDefaultProfileId(this.profiles);
+      }
+    } catch {
+      this.profiles = [];
+      if (!this.profiles.length) this.selectedProfileId = null;
+    }
+    this.emit();
+    return this.profiles;
+  }
+  /**
+   * User-clicked start agent. Builds task.startSession with callerKind=user.
+   * Does not auto-run; service may claim queued tasks for user callers.
+   */
+  async startAgentSession(taskPath, profileId) {
+    if (!this.rpc || !this.foregroundWorkspaceId) {
+      throw new Error("\u670D\u52A1\u672A\u8FDE\u63A5\u6216\u672A\u9009\u62E9\u5DE5\u4F5C\u533A\u3002");
+    }
+    const pid = (profileId ?? this.selectedProfileId ?? "").trim();
+    const built = buildStartSessionPayload(taskPath, pid);
+    if (!built.ok) {
+      throw new Error(built.reason);
+    }
+    const result = await this.rpc.call("task.startSession", {
+      workspaceId: this.foregroundWorkspaceId,
+      taskPath: built.payload.taskPath,
+      profileId: built.payload.profileId,
+      callerKind: built.payload.callerKind
+    });
+    await this.refreshTasks();
+    return result;
+  }
+  async interruptTask(taskPath) {
+    if (!this.rpc || !this.foregroundWorkspaceId) {
+      throw new Error("\u670D\u52A1\u672A\u8FDE\u63A5\u6216\u672A\u9009\u62E9\u5DE5\u4F5C\u533A\u3002");
+    }
+    const result = await this.rpc.call("task.interrupt", {
+      workspaceId: this.foregroundWorkspaceId,
+      taskPath
+    });
+    await this.refreshTasks();
+    return result;
   }
   emitContextCardForActive() {
     const tab = this.controller?.getActiveTab();

@@ -4,8 +4,10 @@ import type { ServiceRpcClient } from "../client/rpc-client.js";
 import { ServiceDocsClient } from "../client/service-docs-client.js";
 import { WorkspaceController, type WorkspaceSnapshot } from "../../markdown/workspace-controller.js";
 import type {
+  AgentProfileProjection,
   DeliveryProjection,
   RoleRegistryEntryProjection,
+  SessionProjection,
   TaskProjection,
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
@@ -16,10 +18,14 @@ import type {
 } from "../types.js";
 import { ContextCardStore } from "./context-card-store.js";
 import {
+  buildStartSessionPayload,
   buildTaskReviewItems,
   listCoordinationTypeOptions,
+  listProfileOptions,
   listRoleOptions,
+  pickDefaultProfileId,
   type CoordinationTypeOption,
+  type ProfileOption,
   type RoleOption,
   type TaskReviewItem,
 } from "./collaboration-ui.js";
@@ -34,6 +40,7 @@ export type ShellTaskRow = {
   id?: string;
   prompt?: string;
   activeDeliveryId?: string;
+  sessionId?: string;
 };
 
 export type ShellSnapshot = {
@@ -46,6 +53,10 @@ export type ShellSnapshot = {
   taskReview: TaskReviewItem[];
   roles: RoleOption[];
   coordinationTypes: CoordinationTypeOption[];
+  /** Product profile picker options (testOnly hidden unless includeTest). */
+  profiles: ProfileOption[];
+  /** Selected machine-local profile id for start agent. */
+  selectedProfileId: string | null;
   statusMessage: string | null;
 };
 
@@ -57,8 +68,11 @@ export class DesktopShellModel {
   private controller: WorkspaceController | null = null;
   private tasks: ShellTaskRow[] = [];
   private deliveries: DeliveryProjection[] = [];
+  private sessions: SessionProjection[] = [];
   private roles: RoleOption[] = [];
   private coordinationTypes: CoordinationTypeOption[] = [];
+  private profiles: ProfileOption[] = [];
+  private selectedProfileId: string | null = null;
   private statusMessage: string | null = null;
   private listeners = new Set<() => void>();
   readonly cards = new ContextCardStore();
@@ -91,18 +105,27 @@ export class DesktopShellModel {
           state: t.state || t.status,
           prompt: t.prompt,
           activeDeliveryId: t.activeDeliveryId,
+          sessionId: t.sessionId,
           manifest: "",
         })),
-        this.deliveries
+        this.deliveries,
+        this.sessions
       ),
       roles: this.roles,
       coordinationTypes: this.coordinationTypes,
+      profiles: this.profiles,
+      selectedProfileId: this.selectedProfileId,
       statusMessage: this.statusMessage,
     };
   }
 
   getController(): WorkspaceController | null {
     return this.controller;
+  }
+
+  setSelectedProfileId(profileId: string | null): void {
+    this.selectedProfileId = profileId;
+    this.emit();
   }
 
   async refreshHealth(): Promise<ServiceHealthView> {
@@ -189,7 +212,7 @@ export class DesktopShellModel {
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    await Promise.all([this.refreshTasks(), this.refreshRegistry()]);
+    await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
     this.emit();
   }
 
@@ -197,15 +220,19 @@ export class DesktopShellModel {
     if (!this.rpc || !this.foregroundWorkspaceId) {
       this.tasks = [];
       this.deliveries = [];
+      this.sessions = [];
       this.emit();
       return;
     }
     try {
-      const [taskResult, deliveryResult] = await Promise.all([
+      const [taskResult, deliveryResult, sessionResult] = await Promise.all([
         this.rpc.call<{ tasks: TaskProjection[] }>("task.list", {
           workspaceId: this.foregroundWorkspaceId,
         }),
         this.rpc.call<{ deliveries: DeliveryProjection[] }>("delivery.list", {
+          workspaceId: this.foregroundWorkspaceId,
+        }),
+        this.rpc.call<{ sessions: SessionProjection[] }>("session.list", {
           workspaceId: this.foregroundWorkspaceId,
         }),
       ]);
@@ -218,11 +245,14 @@ export class DesktopShellModel {
         id: t.id,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
+        sessionId: t.sessionId,
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
+      this.sessions = sessionResult.sessions ?? [];
     } catch {
       this.tasks = [];
       this.deliveries = [];
+      this.sessions = [];
     }
     this.emit();
   }
@@ -250,6 +280,70 @@ export class DesktopShellModel {
       this.coordinationTypes = [];
     }
     this.emit();
+  }
+
+  /**
+   * Load machine-local profiles (product list: testOnly hidden).
+   * Does not start sessions; selection only.
+   */
+  async refreshProfiles(): Promise<ProfileOption[]> {
+    if (!this.rpc) {
+      this.profiles = [];
+      this.selectedProfileId = null;
+      this.emit();
+      return this.profiles;
+    }
+    try {
+      const result = await this.rpc.call<{ profiles: AgentProfileProjection[] }>("profile.list", {});
+      this.profiles = listProfileOptions(result.profiles ?? []);
+      if (
+        !this.selectedProfileId ||
+        !this.profiles.some((p) => p.id === this.selectedProfileId)
+      ) {
+        this.selectedProfileId = pickDefaultProfileId(this.profiles);
+      }
+    } catch {
+      this.profiles = [];
+      // Keep previous selection only if still meaningful; otherwise clear.
+      if (!this.profiles.length) this.selectedProfileId = null;
+    }
+    this.emit();
+    return this.profiles;
+  }
+
+  /**
+   * User-clicked start agent. Builds task.startSession with callerKind=user.
+   * Does not auto-run; service may claim queued tasks for user callers.
+   */
+  async startAgentSession(taskPath: string, profileId?: string): Promise<unknown> {
+    if (!this.rpc || !this.foregroundWorkspaceId) {
+      throw new Error("服务未连接或未选择工作区。");
+    }
+    const pid = (profileId ?? this.selectedProfileId ?? "").trim();
+    const built = buildStartSessionPayload(taskPath, pid);
+    if (!built.ok) {
+      throw new Error(built.reason);
+    }
+    const result = await this.rpc.call("task.startSession", {
+      workspaceId: this.foregroundWorkspaceId,
+      taskPath: built.payload.taskPath,
+      profileId: built.payload.profileId,
+      callerKind: built.payload.callerKind,
+    });
+    await this.refreshTasks();
+    return result;
+  }
+
+  async interruptTask(taskPath: string): Promise<unknown> {
+    if (!this.rpc || !this.foregroundWorkspaceId) {
+      throw new Error("服务未连接或未选择工作区。");
+    }
+    const result = await this.rpc.call("task.interrupt", {
+      workspaceId: this.foregroundWorkspaceId,
+      taskPath,
+    });
+    await this.refreshTasks();
+    return result;
   }
 
   emitContextCardForActive(): void {

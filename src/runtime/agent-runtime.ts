@@ -101,6 +101,11 @@ export class AgentRuntime implements AgentRuntimePort {
     this.profiles.set(profile.id, profile);
   }
 
+  /** Machine-local catalog snapshot (for profile.list projection). */
+  listProfiles(): AgentProfileConfig[] {
+    return [...this.profiles.values()];
+  }
+
   registerAdapter(adapter: ProviderAdapter): void {
     this.adapters.set(adapter.id, adapter);
   }

@@ -2863,6 +2863,10 @@ var ServiceClient = class {
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
   }
+  // ---- convenience: machine-local profiles (safe metadata only) ----
+  profileList(opts) {
+    return this.call("profile.list", opts ?? {});
+  }
   // ---- convenience: task ----
   taskDispatch(workspaceId, args) {
     return this.call("task.dispatch", { workspaceId, ...args });

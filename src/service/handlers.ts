@@ -57,6 +57,7 @@ import {
   type TaskProjection,
   type TypeRegistryEntryProjection,
 } from "./types.js";
+import { loadAgentProfiles, projectAgentProfiles } from "./profiles.js";
 
 export interface HandlerContext {
   host: WorkspaceHost;
@@ -142,6 +143,8 @@ export async function dispatchMethod(
         return registryTypes(ctx, p);
       case "registry.roles":
         return registryRoles(ctx, p);
+      case "profile.list":
+        return profileList(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -465,6 +468,25 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
+}
+
+/**
+ * Machine-local AgentProfile catalog for desktop launch picker.
+ * Safe metadata only — no keys, tokens, env values, or executable secrets.
+ * Optional includeTest: when true, also return fake/harness profiles (tests/dev).
+ * Default product list hides testOnly profiles so fake is not a product default.
+ */
+async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
+  const includeTest = p.includeTest === true;
+  // Runtime holds the live catalog (service start + test injects); disk is fallback.
+  const fromRuntime = ctx.runtime.listProfiles();
+  const source =
+    fromRuntime.length > 0 ? fromRuntime : await loadAgentProfiles(ctx.dataDir);
+  let profiles = projectAgentProfiles(source);
+  if (!includeTest) {
+    profiles = profiles.filter((pr) => !pr.testOnly);
+  }
+  return { profiles };
 }
 
 async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {

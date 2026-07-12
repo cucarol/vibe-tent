@@ -178,6 +178,49 @@ function listCoordinationTypeOptions(types) {
 function listRoleOptions(roles2) {
   return roles2.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
 }
+function listProfileOptions(profiles2, opts) {
+  const includeTest = opts?.includeTest === true;
+  return profiles2.filter((p) => includeTest || !p.testOnly).map((p) => {
+    const parts = [p.displayName || p.id, p.adapterId, p.model].filter(Boolean);
+    return {
+      id: p.id,
+      adapterId: p.adapterId,
+      displayName: p.displayName || p.id,
+      model: p.model,
+      testOnly: p.testOnly,
+      label: parts.join(" \xB7 ")
+    };
+  }).sort((a, b) => {
+    if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
+    return a.id.localeCompare(b.id);
+  });
+}
+function pickDefaultProfileId(profiles2) {
+  const product = profiles2.filter((p) => !p.testOnly);
+  if (product.length === 1) return product[0].id;
+  const grok = product.find((p) => p.id === "grok-acp-default");
+  if (grok) return grok.id;
+  if (product.length > 0) return product[0].id;
+  return profiles2[0]?.id ?? null;
+}
+function buildStartSessionPayload(taskPath, profileId) {
+  const path = taskPath.trim();
+  if (!path) {
+    return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
+  }
+  const profile = profileId.trim();
+  if (!profile) {
+    return { ok: false, reason: "\u8BF7\u9009\u62E9 machine-local agent profile\u3002" };
+  }
+  return {
+    ok: true,
+    payload: {
+      taskPath: path,
+      profileId: profile,
+      callerKind: "user"
+    }
+  };
+}
 function validateDispatchForm(form) {
   if (!form.boxId) {
     return { ok: false, reason: "\u8BF7\u5148\u9009\u4E2D\u4E00\u4E2A\u534F\u4F5C\u6846\u3002", payload: null };
@@ -255,11 +298,52 @@ function taskStateLabel(state2, legacyStatus) {
       return "\u5DF2\u9A73\u56DE";
     case "interrupted":
       return "\u5DF2\u4E2D\u65AD";
+    case "failed":
+      return "\u5931\u8D25";
     default:
       return s || "\u672A\u77E5";
   }
 }
-function buildTaskReviewItems(tasks, deliveries2 = []) {
+function sessionStateLabel(state2) {
+  if (!state2) return "";
+  switch (state2) {
+    case "starting":
+      return "\u542F\u52A8\u4E2D";
+    case "live":
+    case "running":
+      return "\u8FD0\u884C\u4E2D";
+    case "waiting-user":
+    case "waiting_user":
+      return "\u7B49\u5F85\u7528\u6237";
+    case "stopped":
+      return "\u5DF2\u505C\u6B62";
+    case "failed":
+      return "\u4F1A\u8BDD\u5931\u8D25";
+    case "external":
+      return "\u5916\u90E8\u4F1A\u8BDD";
+    default:
+      return state2;
+  }
+}
+function canStartAgentOnTask(taskState, session) {
+  const s = taskState || "";
+  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted") {
+    return false;
+  }
+  if (session && session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user")) {
+    return false;
+  }
+  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
+}
+function canInterruptTask(taskState, session, opts) {
+  if (session) {
+    return !!session.alive && (session.state === "live" || session.state === "starting" || session.state === "waiting-user");
+  }
+  if (!opts?.hasSessionId) return false;
+  const s = taskState || "";
+  return s === "running" || s === "waiting" || s === "taken";
+}
+function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
   const byId = /* @__PURE__ */ new Map();
   const byTaskId = /* @__PURE__ */ new Map();
   for (const d of deliveries2) {
@@ -267,6 +351,12 @@ function buildTaskReviewItems(tasks, deliveries2 = []) {
     const list = byTaskId.get(d.taskId) ?? [];
     list.push(d);
     byTaskId.set(d.taskId, list);
+  }
+  const sessionById = /* @__PURE__ */ new Map();
+  const sessionByTaskId = /* @__PURE__ */ new Map();
+  for (const s of sessions2) {
+    sessionById.set(s.sessionId, s);
+    if (s.lastTaskId) sessionByTaskId.set(s.lastTaskId, s);
   }
   return tasks.map((task) => {
     const state2 = task.state || task.status;
@@ -278,12 +368,21 @@ function buildTaskReviewItems(tasks, deliveries2 = []) {
       const list = byTaskId.get(task.id) ?? [];
       delivery = list.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
     }
+    let session;
+    if (task.sessionId) {
+      session = sessionById.get(task.sessionId);
+    }
+    if (!session && task.id) {
+      session = sessionByTaskId.get(task.id);
+    }
     const commits = delivery?.commits ?? [];
     const deliverySummary = delivery?.summary;
     const label = taskStateLabel(state2, task.status);
+    const sessLabel = sessionStateLabel(session?.state);
     const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
     const summaryLine = [
       label,
+      sessLabel ? `\u4F1A\u8BDD${sessLabel}` : null,
       task.role,
       deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
     ].filter(Boolean).join(" \xB7 ");
@@ -296,9 +395,17 @@ function buildTaskReviewItems(tasks, deliveries2 = []) {
       claims: task.claims ?? [],
       prompt: task.prompt,
       activeDeliveryId: task.activeDeliveryId,
+      sessionId: task.sessionId ?? session?.sessionId,
+      sessionState: session?.state,
+      sessionAlive: session?.alive,
+      sessionProfileId: session?.profileId,
       deliverySummary,
       commits,
       canAcceptOrReject: state2 === "delivered",
+      canStartAgent: canStartAgentOnTask(state2, session),
+      canInterrupt: canInterruptTask(state2, session, {
+        hasSessionId: !!(task.sessionId || session?.sessionId)
+      }),
       summaryLine
     };
   });
@@ -360,6 +467,9 @@ var coordinationTypes = [];
 var roles = [];
 var taskReview = [];
 var deliveries = [];
+var sessions = [];
+var profiles = [];
+var selectedProfileId = null;
 var createTypePick = "";
 var dispatchRole = "";
 var dispatchPrompt = "";
@@ -408,7 +518,9 @@ async function refresh() {
   const s = await window.tentDesktop.getState();
   applyShell(s);
   if (workspaceId) {
-    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks()]);
+    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks(), reloadProfiles()]);
+  } else {
+    await reloadProfiles();
   }
 }
 function applyShell(s) {
@@ -437,6 +549,12 @@ function applyShell(s) {
   if (s.roles) {
     roles = s.roles;
   }
+  if (s.profiles?.length) {
+    profiles = s.profiles;
+  }
+  if (s.selectedProfileId !== void 0) {
+    selectedProfileId = s.selectedProfileId;
+  }
   if (s.taskReview?.length) {
     taskReview = s.taskReview;
   } else if (s.tasks?.length) {
@@ -450,9 +568,11 @@ function applyShell(s) {
         state: t.state || t.status,
         prompt: t.prompt,
         activeDeliveryId: t.activeDeliveryId,
+        sessionId: t.sessionId,
         manifest: ""
       })),
-      deliveries
+      deliveries,
+      sessions
     );
   } else {
     taskReview = [];
@@ -491,14 +611,30 @@ async function reloadRegistry() {
 async function reloadTasks() {
   if (!workspaceId) return;
   try {
-    const [taskResult, deliveryResult] = await Promise.all([
+    const [taskResult, deliveryResult, sessionResult] = await Promise.all([
       window.tentDesktop.rpc("task.list", { workspaceId }),
-      window.tentDesktop.rpc("delivery.list", { workspaceId })
+      window.tentDesktop.rpc("delivery.list", { workspaceId }),
+      window.tentDesktop.rpc("session.list", { workspaceId })
     ]);
     deliveries = deliveryResult.deliveries || [];
-    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries);
+    sessions = sessionResult.sessions || [];
+    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
     renderTasks();
   } catch (err) {
+    setError(err);
+  }
+}
+async function reloadProfiles() {
+  try {
+    const result = await window.tentDesktop.rpc("profile.list", {});
+    profiles = listProfileOptions(result.profiles || []);
+    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
+      selectedProfileId = pickDefaultProfileId(profiles);
+    }
+    renderTasks();
+  } catch (err) {
+    profiles = [];
+    selectedProfileId = null;
     setError(err);
   }
 }
@@ -822,19 +958,30 @@ function renderTasks() {
     el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
     return;
   }
-  el.tasks.innerHTML = taskReview.map((t) => {
+  const profileOpts = profiles.length > 0 ? profiles.map(
+    (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
+  ).join("") : `<option value="">\uFF08\u65E0\u53EF\u7528 profile\uFF09</option>`;
+  const anyStartable = taskReview.some((t) => t.canStartAgent);
+  const profileBar = anyStartable ? `<li class="task-profile-bar">
+        <label for="agent-profile">agent profile</label>
+        <select id="agent-profile" title="machine-local profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
+      </li>` : "";
+  el.tasks.innerHTML = profileBar + taskReview.map((t) => {
     const commits = t.commits.length > 0 ? `<div class="muted">commits\uFF1A${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : "";
     const summary = t.deliverySummary ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>` : t.prompt ? `<div class="muted">prompt\uFF1A${escapeHtml(t.prompt)}</div>` : "";
+    const stateLabel = taskStateLabel(t.state, t.status);
+    const sessBit = t.sessionState ? ` \xB7 \u4F1A\u8BDD${escapeHtml(sessionStateLabel(t.sessionState))}` : "";
     const rejectDraft = rejectDrafts.get(t.path) || "";
-    const actions = t.canAcceptOrReject ? `<div class="task-actions">
-            <button type="button" class="primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
+    const startBtn = t.canStartAgent ? `<button type="button" class="primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u901A\u8FC7 ACP \u542F\u52A8 agent\uFF08callerKind=user\uFF09">\u542F\u52A8 agent</button>` : "";
+    const interruptBtn = t.canInterrupt ? `<button type="button" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD agent \u4F1A\u8BDD">\u4E2D\u65AD</button>` : "";
+    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
             <div class="reject-inline">
               <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
               <button type="button" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
-            </div>
-          </div>` : "";
+            </div>` : "";
+    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div><strong>${escapeHtml(t.summaryLine.split(" \xB7 ")[0] || t.state)}</strong> \xB7 ${escapeHtml(t.role)}</div>
+        <div><strong>${escapeHtml(stateLabel)}</strong>${sessBit} \xB7 ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
         <div class="muted">\u8BA4\u9886\uFF1A${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "\u2014")}</div>
         ${summary}
@@ -842,6 +989,17 @@ function renderTasks() {
         ${actions}
       </li>`;
   }).join("");
+  const profileSel = document.getElementById("agent-profile");
+  profileSel?.addEventListener("change", () => {
+    selectedProfileId = profileSel.value || null;
+    renderTasks();
+  });
+  el.tasks.querySelectorAll("[data-start]").forEach((btn) => {
+    btn.addEventListener("click", () => void onStartAgent(btn.getAttribute("data-start")));
+  });
+  el.tasks.querySelectorAll("[data-interrupt]").forEach((btn) => {
+    btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")));
+  });
   el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
   });
@@ -853,6 +1011,42 @@ function renderTasks() {
   el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
     btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
   });
+}
+async function onStartAgent(taskPath) {
+  if (!workspaceId) return;
+  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("task.startSession", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      profileId: built.payload.profileId,
+      callerKind: built.payload.callerKind
+    });
+    const sid = result.session?.sessionId;
+    const st = result.session?.state || result.task?.state || "";
+    el.status.textContent = sid ? `\u5DF2\u542F\u52A8 agent \xB7 ${sid}${st ? `\uFF08${sessionStateLabel(st) || st}\uFF09` : ""}` : `\u5DF2\u542F\u52A8 agent \xB7 ${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+    await reloadTasks().catch(() => void 0);
+  }
+}
+async function onInterrupt(taskPath) {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("task.interrupt", {
+      workspaceId,
+      taskPath
+    });
+    el.status.textContent = `\u5DF2\u4E2D\u65AD\uFF1A${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
 }
 async function onAccept(taskPath) {
   if (!workspaceId) return;

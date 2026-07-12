@@ -15,15 +15,29 @@ import { CLIENT_METHODS } from "../src/service/types.js";
 import {
   buildAcceptPayload,
   buildRejectPayload,
+  buildStartSessionPayload,
   buildTaskReviewItems,
+  canInterruptTask,
+  canStartAgentOnTask,
   listCoordinationTypeNames,
   listCoordinationTypeOptions,
+  listProfileOptions,
   pickDefaultCoordinationType,
+  pickDefaultProfileId,
+  sessionStateLabel,
   suggestBoxName,
+  taskStateLabel,
   validateDispatchForm,
 } from "../src/desktop/workbench/collaboration-ui.js";
 import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 import { ServiceRpcClient } from "../src/desktop/client/rpc-client.js";
+import {
+  defaultAgentProfiles,
+  projectAgentProfile,
+  projectAgentProfiles,
+} from "../src/service/profiles.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 
 // ---- pure UI model ----
 
@@ -189,6 +203,8 @@ test("accept/reject payload builders and task review model", () => {
   assert.equal(items[0].deliverySummary, "Done with tests");
   assert.deepEqual(items[0].commits, ["abcdef123456"]);
   assert.equal(items[1].canAcceptOrReject, false);
+  assert.equal(items[1].canStartAgent, true);
+  assert.equal(items[0].canStartAgent, false);
   assert.match(items[0].summaryLine, /待确认交付/);
 });
 
@@ -197,9 +213,131 @@ test("suggestBoxName embeds type without hardcoding goal", () => {
   assert.match(suggestBoxName("mission", 1_700_000_000_000), /^mission-/);
 });
 
-test("CLIENT_METHODS includes registry.types/roles for desktop pickers", () => {
+test("CLIENT_METHODS includes registry.types/roles and profile.list", () => {
   assert.ok(CLIENT_METHODS.includes("registry.types"));
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
+  assert.ok(CLIENT_METHODS.includes("profile.list"));
+});
+
+test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
+  const raw = defaultAgentProfiles();
+  // Inject a secret-looking env bag — must never appear in projection.
+  raw[0].env = { CPA_GROK_API_KEY: "sk-secret-value", PATH: "/tmp" };
+  raw[1].env = { TOKEN: "should-not-leak" };
+
+  const projected = projectAgentProfiles(raw);
+  const json = JSON.stringify(projected);
+  assert.ok(!json.includes("sk-secret-value"));
+  assert.ok(!json.includes("should-not-leak"));
+  assert.ok(!json.includes("CPA_GROK_API_KEY"));
+  assert.ok(!json.includes("env"));
+  assert.ok(!json.includes("executable"));
+
+  const fake = projected.find((p) => p.id === "fake-default")!;
+  const grok = projected.find((p) => p.id === "grok-acp-default")!;
+  assert.equal(fake.testOnly, true);
+  assert.equal(fake.adapterId, FAKE_ADAPTER_ID);
+  assert.equal(grok.testOnly, false);
+  assert.equal(grok.adapterId, GROK_ACP_ADAPTER_ID);
+  assert.equal(grok.model, "grok-4.5");
+  // Product profiles sort before test-only.
+  assert.equal(projected[0].id, "grok-acp-default");
+
+  const single = projectAgentProfile(raw[1]);
+  assert.equal(single.id, "grok-acp-default");
+  assert.ok(!("env" in single));
+  assert.ok(!("fake" in single));
+  assert.ok(!("grokAcp" in single));
+});
+
+test("listProfileOptions + pickDefaultProfileId hide fake as product default", () => {
+  const opts = listProfileOptions(projectAgentProfiles(defaultAgentProfiles()));
+  assert.ok(opts.every((p) => !p.testOnly));
+  assert.ok(opts.some((p) => p.id === "grok-acp-default"));
+  assert.equal(pickDefaultProfileId(opts), "grok-acp-default");
+
+  // With includeTest, fake is available but still not the product default when grok exists.
+  const withTest = listProfileOptions(projectAgentProfiles(defaultAgentProfiles()), {
+    includeTest: true,
+  });
+  assert.ok(withTest.some((p) => p.id === "fake-default"));
+  assert.equal(pickDefaultProfileId(withTest), "grok-acp-default");
+
+  // Sole product profile wins.
+  assert.equal(
+    pickDefaultProfileId([{ id: "only", adapterId: "x", displayName: "only", testOnly: false, label: "only" }]),
+    "only"
+  );
+});
+
+test("buildStartSessionPayload is user callerKind and never auto-dispatches", () => {
+  const ok = buildStartSessionPayload("temp/executor/tasks/t1.md", "grok-acp-default");
+  assert.equal(ok.ok, true);
+  if (ok.ok) {
+    assert.deepEqual(ok.payload, {
+      taskPath: "temp/executor/tasks/t1.md",
+      profileId: "grok-acp-default",
+      callerKind: "user",
+    });
+  }
+  assert.equal(buildStartSessionPayload("", "grok-acp-default").ok, false);
+  assert.equal(buildStartSessionPayload("temp/x.md", "  ").ok, false);
+});
+
+test("task/session state labels and start/interrupt gates", () => {
+  assert.equal(taskStateLabel("queued"), "排队中");
+  assert.equal(taskStateLabel("failed"), "失败");
+  assert.equal(sessionStateLabel("starting"), "启动中");
+  assert.equal(sessionStateLabel("live"), "运行中");
+  assert.equal(sessionStateLabel("waiting-user"), "等待用户");
+  assert.equal(sessionStateLabel("stopped"), "已停止");
+  assert.equal(sessionStateLabel("failed"), "会话失败");
+
+  assert.equal(canStartAgentOnTask("queued"), true);
+  assert.equal(canStartAgentOnTask("running"), true);
+  assert.equal(canStartAgentOnTask("delivered"), false);
+  assert.equal(
+    canStartAgentOnTask("running", { state: "live", alive: true }),
+    false
+  );
+  assert.equal(
+    canInterruptTask("running", { state: "live", alive: true }),
+    true
+  );
+  assert.equal(canInterruptTask("queued"), false);
+  assert.equal(canInterruptTask("running", null, { hasSessionId: true }), true);
+
+  const items = buildTaskReviewItems(
+    [
+      {
+        path: "temp/executor/tasks/live.md",
+        id: "tk-live",
+        role: "executor",
+        claims: ["cx-1"],
+        status: "taken",
+        state: "running",
+        manifest: "m",
+        sessionId: "ss-live1",
+        prompt: "go",
+      },
+    ],
+    [],
+    [
+      {
+        sessionId: "ss-live1",
+        profileId: "fake-default",
+        adapterId: FAKE_ADAPTER_ID,
+        state: "live",
+        alive: true,
+        resumeCapable: false,
+        lastTaskId: "tk-live",
+      },
+    ]
+  );
+  assert.equal(items[0].canStartAgent, false);
+  assert.equal(items[0].canInterrupt, true);
+  assert.equal(items[0].sessionState, "live");
+  assert.match(items[0].summaryLine, /会话运行中/);
 });
 
 // ---- service + client vertical smoke ----
@@ -340,6 +478,126 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.ok(snap.coordinationTypes.some((t) => t.name === "goal"));
     assert.ok(snap.roles.some((r) => r.name === "executor"));
     assert.ok(Array.isArray(snap.taskReview));
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("service+client: profile.list safe metadata + startSession/interrupt via shell model", async () => {
+  const ws = await makeCollabWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-collab-acp-"));
+  // Inject only fake for offline start (no CPA / no real grok binary).
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    profiles: [
+      {
+        id: "fake-default",
+        adapterId: FAKE_ADAPTER_ID,
+        displayNameKey: "profile.fake.default",
+        fake: { waitForSignal: true, emitStdout: true, canResume: true },
+      },
+      {
+        id: "grok-acp-default",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        displayNameKey: "profile.grokAcp.default",
+        grokAcp: {
+          model: "grok-4.5",
+          envKey: "CPA_GROK_API_KEY",
+          permissionPolicy: "deny",
+        },
+      },
+    ],
+  });
+  try {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+
+    // Product list: no testOnly, no secret fields.
+    const productList = (await client.profileList()) as {
+      profiles: Array<Record<string, unknown>>;
+    };
+    const productJson = JSON.stringify(productList);
+    assert.ok(!productJson.includes("fake-default"));
+    assert.ok(!productJson.includes("env"));
+    assert.ok(!productJson.includes("sk-"));
+    assert.ok(productList.profiles.some((p) => p.id === "grok-acp-default"));
+    assert.ok(productList.profiles.every((p) => p.testOnly === false));
+
+    // includeTest for harness visibility only.
+    const allList = (await client.profileList({ includeTest: true })) as {
+      profiles: Array<{ id: string; testOnly: boolean }>;
+    };
+    assert.ok(allList.profiles.some((p) => p.id === "fake-default" && p.testOnly));
+
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const box = (await client.docsCreateNote(workspaceId, {
+      name: suggestBoxName("prompt", Date.now()),
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: box.id,
+      role: "executor",
+      prompt: "start via UI model",
+      dispatchedBy: "user",
+      deliveryPolicy: "manual",
+      // Explicit: dispatch must not auto-start session.
+      startSession: false,
+    })) as { taskPath: string; state: string };
+    assert.equal(dispatched.state, "queued");
+
+    const rpc = new ServiceRpcClient({ baseUrl: svc.url, token: svc.token });
+    const model = new DesktopShellModel(rpc);
+    await model.refreshHealth();
+    await model.refreshWorkspaces();
+    await model.bindForeground(workspaceId);
+
+    let snap = model.getSnapshot();
+    // Product profiles only in shell default refresh.
+    assert.ok(snap.profiles.every((p) => !p.testOnly));
+    assert.equal(snap.selectedProfileId, "grok-acp-default");
+
+    const review = snap.taskReview.find((t) => t.path === dispatched.taskPath);
+    assert.ok(review);
+    assert.equal(review!.canStartAgent, true);
+    assert.equal(review!.canInterrupt, false);
+
+    // startSession payload path: user click with fake profile (offline).
+    // Shell still defaults to grok; pass explicit fake for harness — never auto.
+    const started = (await model.startAgentSession(dispatched.taskPath, "fake-default")) as {
+      session: { sessionId: string; state: string; profileId: string };
+      task: { state: string; sessionId?: string };
+    };
+    assert.match(started.session.sessionId, /^ss-/);
+    assert.equal(started.session.profileId, "fake-default");
+    assert.ok(started.task.state === "running" || started.task.sessionId);
+
+    snap = model.getSnapshot();
+    const afterStart = snap.taskReview.find((t) => t.path === dispatched.taskPath);
+    assert.ok(afterStart);
+    // Live session → interrupt available; start gated off while alive.
+    assert.equal(afterStart!.canInterrupt, true);
+    assert.equal(afterStart!.canStartAgent, false);
+    assert.ok(afterStart!.sessionId);
+
+    const interrupted = (await model.interruptTask(dispatched.taskPath)) as {
+      state: string;
+    };
+    assert.equal(interrupted.state, "interrupted");
+
+    snap = model.getSnapshot();
+    const afterIntr = snap.taskReview.find((t) => t.path === dispatched.taskPath);
+    assert.ok(afterIntr);
+    assert.equal(afterIntr!.state, "interrupted");
+    assert.equal(afterIntr!.canStartAgent, false);
+    assert.equal(afterIntr!.canInterrupt, false);
+
+    // Missing profileId surfaces as Chinese validation error (no silent fake fallback).
+    await assert.rejects(
+      () => model.startAgentSession(dispatched.taskPath, ""),
+      /profile|请选择/i
+    );
   } finally {
     await svc.stop();
   }
