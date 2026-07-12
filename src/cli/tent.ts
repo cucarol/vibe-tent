@@ -6,6 +6,7 @@
 //   --- Legacy in-workspace / 纯 core 直写（兼容；Desktop 共置 agent 请用 task *）---
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
+//   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
 //   tent dispatch <boxId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
 //   tent stamp <boxId> [--by <role>]   盖章
 //   tent grant-readable <boxId>
@@ -71,6 +72,7 @@ import {
   runWorkspaceCheck,
 } from "../core/workspace.js";
 import { workspaceRootFromSystemRoot } from "../core/paths.js";
+import { importExternalTentRoot } from "../core/migration.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
 
 async function makeEnv(): Promise<OpsEnv> {
@@ -119,6 +121,41 @@ async function main() {
     console.log(formatSkillInstallResults(target, results));
     return;
   }
+  // External/legacy tent root → in-workspace `.tent` (B5). Does not require an existing system root.
+  if (cmd === "migrate" || cmd === "import") {
+    const { positionals, flags } = parseFlags(args);
+    if (positionals.length > 0) {
+      return fail(
+        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
+      );
+    }
+    const source = flags.source || flags.from || flags.src;
+    const workspace = flags.workspace || flags.to || flags.dest || flags.target;
+    if (!source || !workspace) {
+      return fail(
+        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
+      );
+    }
+    const dryRun = flags["dry-run"] === "true" || flags.dryRun === "true";
+    const force = flags.force === "true";
+    const asJson = flags.json === "true";
+    try {
+      const report = await importExternalTentRoot({
+        sourceRoot: path.resolve(source),
+        workspaceRoot: path.resolve(workspace),
+        dryRun,
+        force,
+      });
+      if (asJson) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatImportReport(report));
+      }
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
 
   // New-architecture task lifecycle: Local Service RPC only (no core direct write).
   if (cmd === "task") {
@@ -162,7 +199,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -529,7 +566,7 @@ function isUnsafeRoleSegment(value: string): boolean {
 function parseFlags(args: string[]): { positionals: string[]; flags: Record<string, string> } {
   const positionals: string[] = [];
   const flags: Record<string, string> = {};
-  const booleanFlags = new Set(["force", "yes", "as-sub"]);
+  const booleanFlags = new Set(["force", "yes", "as-sub", "dry-run", "json"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -679,6 +716,10 @@ Service-backed task lifecycle (preferred for Desktop / external agents):
 Legacy direct-core commands (compatible; not service RPC):
   new <path>                         Create an empty Tent.
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
+  migrate --source <root> --workspace <ws>
+                                     Copy legacy external tent root into <ws>/.tent (alias: import).
+                                     Refuses if <ws>/.tent exists. Never deletes source.
+                                     Options: --dry-run --force --json
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
@@ -784,6 +825,45 @@ async function newTent(target: string, vault?: string): Promise<void> {
       `In-workspace layout: collaboration facts live under <workspace>/.tent/.\n` +
       `The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );
+}
+
+function formatImportReport(report: Awaited<ReturnType<typeof importExternalTentRoot>>): string {
+  const lines = [
+    report.dryRun ? "Tent migrate (dry-run)" : "Tent migrate",
+    `  source:     ${report.sourceRoot}`,
+    `  workspace:  ${report.workspaceRoot}`,
+    `  systemRoot: ${report.systemRoot}`,
+    `  copied:     ${report.copied}`,
+    `  sourceMarked (MIGRATED.md): ${report.sourceMarked}`,
+    `  id remaps:  ${report.schema.idMap.length}`,
+    `  type rewrites: ${report.schema.typeRewrites.length}`,
+  ];
+  if (report.schema.registryChanges.length) {
+    lines.push("  registry:");
+    for (const c of report.schema.registryChanges.slice(0, 40)) {
+      lines.push(`    - ${c}`);
+    }
+    if (report.schema.registryChanges.length > 40) {
+      lines.push(`    … +${report.schema.registryChanges.length - 40} more`);
+    }
+  }
+  if (report.schema.idMap.length) {
+    lines.push("  id map (sample):");
+    for (const e of report.schema.idMap.slice(0, 12)) {
+      lines.push(`    - ${e.from} → ${e.to} (${e.path})`);
+    }
+    if (report.schema.idMap.length > 12) {
+      lines.push(`    … +${report.schema.idMap.length - 12} more`);
+    }
+  }
+  for (const w of report.warnings) lines.push(`  warning: ${w}`);
+  for (const s of report.skipped) lines.push(`  skipped: ${s}`);
+  if (!report.dryRun) {
+    lines.push(
+      "Source was not deleted. Verify <workspace>/.tent then remove the old root manually if desired."
+    );
+  }
+  return lines.join("\n");
 }
 
 function normalizeTemplateRoles(value: unknown): RolesRegistry {

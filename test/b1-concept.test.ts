@@ -6,7 +6,14 @@ import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
 import { promoteConcept } from "../src/core/concept.js";
-import { migrateLegacySchema, planIdRemap, rewriteOutputType } from "../src/core/migration.js";
+import {
+  IMPORT_STAGING_DIR_PREFIX,
+  importExternalTentRoot,
+  isLegacyTentRoot,
+  migrateLegacySchema,
+  planIdRemap,
+  rewriteOutputType,
+} from "../src/core/migration.js";
 import { scaffoldInWorkspace, scaffoldTent } from "../src/core/scaffold.js";
 import { makeConceptId, isConceptId, isLegacyBoxId } from "../src/core/id.js";
 import { typeHasCoordination } from "../src/core/typeRegistry.js";
@@ -406,4 +413,278 @@ async function fsaExists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
+}
+
+/** Build a minimal legacy external tent root (flat system root, not under .tent). */
+async function makeLegacyExternalRoot(parent: string): Promise<string> {
+  const root = path.join(parent, "legacy-tent");
+  await fs.mkdir(root, { recursive: true });
+  await fs.writeFile(path.join(root, "RULES.md"), "# legacy rules\n");
+  await fs.writeFile(
+    path.join(root, "types.json"),
+    JSON.stringify({
+      primary: {
+        goal: { readable: true, writable: false, color: "blue" },
+        output: { readable: true, writable: true, workspacePointer: true },
+      },
+    }) + "\n"
+  );
+  await fs.writeFile(
+    path.join(root, "roles.json"),
+    JSON.stringify({ roles: [{ name: "executor", prompt: "do work" }] }) + "\n"
+  );
+  await fs.writeFile(path.join(root, "tags.json"), JSON.stringify({ tags: ["alpha"] }) + "\n");
+  await fs.writeFile(
+    path.join(root, "order.json"),
+    JSON.stringify({ __root__: ["bx-legbox1"] }) + "\n"
+  );
+  // Nested registry residue (old dual layout)
+  await fs.mkdir(path.join(root, ".tent"), { recursive: true });
+  await fs.writeFile(
+    path.join(root, ".tent", "types.json"),
+    JSON.stringify({ onlyNested: { readable: true, writable: true } }) + "\n"
+  );
+  const boxDir = path.join(root, "goal");
+  await fs.mkdir(boxDir, { recursive: true });
+  await fs.writeFile(
+    path.join(boxDir, "goal.md"),
+    "---\nid: bx-legbox1\ntype: output\n---\n# Goal body\nPreserved.\n"
+  );
+  const tempRole = path.join(root, "temp", "executor", "tasks");
+  await fs.mkdir(tempRole, { recursive: true });
+  await fs.writeFile(
+    path.join(tempRole, "task-bx-legbox1.md"),
+    "---\ntype: task\nrole: executor\nstatus: pending\nclaims: [bx-legbox1]\nbox: bx-legbox1\n---\n## User Prompt\nDo the thing.\n"
+  );
+  return root;
+}
+
+test("importExternalTentRoot:dry-run 不写目标且不标记源", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-dry-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+
+  assert.equal(await isLegacyTentRoot(source), true);
+
+  const report = await importExternalTentRoot({
+    sourceRoot: source,
+    workspaceRoot: workspace,
+    dryRun: true,
+    rand: () => 0.1,
+  });
+  assert.equal(report.dryRun, true);
+  assert.equal(report.copied, false);
+  assert.equal(report.sourceMarked, false);
+  assert.ok(report.schema.idMap.some((e) => e.from === "bx-legbox1"));
+  assert.equal(await fsaExists(path.join(workspace, ".tent")), false);
+  assert.equal(await fsaExists(path.join(source, "MIGRATED.md")), false);
+  assert.ok(await fsaExists(path.join(source, "RULES.md")), "source intact");
+});
+
+test("importExternalTentRoot:拒绝覆盖已有 .tent", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-refuse-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+  await fs.mkdir(path.join(workspace, ".tent"));
+  await fs.writeFile(path.join(workspace, ".tent", "RULES.md"), "# existing\n");
+
+  await assert.rejects(
+    () =>
+      importExternalTentRoot({
+        sourceRoot: source,
+        workspaceRoot: workspace,
+        dryRun: false,
+        force: true, // force must NOT enable overwrite
+      }),
+    /already has \.tent|Refusing to import/
+  );
+  // Source untouched
+  assert.equal(await fsaExists(path.join(source, "MIGRATED.md")), false);
+  assert.match(await fs.readFile(path.join(workspace, ".tent", "RULES.md"), "utf8"), /existing/);
+});
+
+test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且不删源", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-live-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+
+  const report = await importExternalTentRoot({
+    sourceRoot: source,
+    workspaceRoot: workspace,
+    dryRun: false,
+    rand: () => 0.1,
+  });
+  assert.equal(report.copied, true);
+  assert.equal(report.sourceMarked, true);
+  assert.ok(await fsaExists(path.join(source, "RULES.md")), "source not deleted");
+  assert.ok(await fsaExists(path.join(source, "goal", "goal.md")), "source boxes remain");
+  assert.match(await fs.readFile(path.join(source, "MIGRATED.md"), "utf8"), /Migrated/);
+
+  const systemRoot = path.join(workspace, ".tent");
+  assert.ok(await fsaExists(path.join(systemRoot, "RULES.md")));
+  assert.ok(await fsaExists(path.join(systemRoot, "types.json")));
+  assert.ok(await fsaExists(path.join(systemRoot, "roles.json")));
+  assert.ok(await fsaExists(path.join(systemRoot, "tags.json")));
+  assert.ok(await fsaExists(path.join(systemRoot, "order.json")));
+
+  // Nested source registry lifted away on destination
+  assert.equal(await fsaExists(path.join(systemRoot, ".tent", "types.json")), false);
+
+  const destFs = new NodeFs(systemRoot);
+  const tent = await loadTent(destFs);
+  assert.equal(tent.byId.has("cx-legbox1"), true);
+  assert.equal(tent.byId.has("bx-legbox1"), false);
+  const note = await destFs.readFile("goal/goal.md");
+  assert.match(note, /id: cx-legbox1/);
+  assert.match(note, /type: artifact/);
+  assert.match(note, /Preserved/);
+
+  const taskText = await destFs.readFile("temp/executor/tasks/task-cx-legbox1.md");
+  assert.match(taskText, /claims: \[cx-legbox1\]/);
+  assert.match(taskText, /Do the thing/);
+
+  const roles = JSON.parse(await destFs.readFile("roles.json"));
+  assert.equal(roles.roles[0].name, "executor");
+  const tags = JSON.parse(await destFs.readFile("tags.json"));
+  assert.deepEqual(tags.tags, ["alpha"]);
+
+  const gitignore = await fs.readFile(path.join(workspace, ".gitignore"), "utf8");
+  assert.match(gitignore, /\.tent\//);
+
+  // Idempotent refuse on second live import
+  await assert.rejects(
+    () =>
+      importExternalTentRoot({
+        sourceRoot: source,
+        workspaceRoot: workspace,
+        dryRun: false,
+      }),
+    /Refusing to import|already has/
+  );
+});
+
+test("importExternalTentRoot:中途 schema 失败后无 .tent / marker / staging 且可重试", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-fail-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+
+  await assert.rejects(
+    () =>
+      importExternalTentRoot({
+        sourceRoot: source,
+        workspaceRoot: workspace,
+        dryRun: false,
+        rand: () => 0.1,
+        _testHooks: {
+          afterSchema: async () => {
+            throw new Error("injected schema-phase failure");
+          },
+        },
+      }),
+    /injected schema-phase failure/
+  );
+
+  assert.equal(await fsaExists(path.join(workspace, ".tent")), false, "final .tent must not exist");
+  assert.equal(await fsaExists(path.join(source, "MIGRATED.md")), false, "source marker not written");
+  const leftover = await listImportStagingDirs(workspace);
+  assert.deepEqual(leftover, [], "staging cleaned best-effort");
+
+  // Retry succeeds after cleanup
+  const report = await importExternalTentRoot({
+    sourceRoot: source,
+    workspaceRoot: workspace,
+    dryRun: false,
+    rand: () => 0.1,
+  });
+  assert.equal(report.copied, true);
+  assert.equal(report.sourceMarked, true);
+  assert.ok(await fsaExists(path.join(workspace, ".tent", "RULES.md")));
+  assert.ok(await fsaExists(path.join(source, "MIGRATED.md")));
+});
+
+test("importExternalTentRoot:copy 阶段失败后无最终 .tent 且无 marker", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-copyfail-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+
+  await assert.rejects(
+    () =>
+      importExternalTentRoot({
+        sourceRoot: source,
+        workspaceRoot: workspace,
+        dryRun: false,
+        _testHooks: {
+          afterCopy: async () => {
+            throw new Error("injected copy-phase failure");
+          },
+        },
+      }),
+    /injected copy-phase failure/
+  );
+
+  assert.equal(await fsaExists(path.join(workspace, ".tent")), false);
+  assert.equal(await fsaExists(path.join(source, "MIGRATED.md")), false);
+  assert.deepEqual(await listImportStagingDirs(workspace), []);
+});
+
+test("importExternalTentRoot:不跟随符号链接并记入 skipped/warnings", async (t) => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-import-symlink-"));
+  const source = await makeLegacyExternalRoot(parent);
+  const workspace = path.join(parent, "ws");
+  await fs.mkdir(workspace);
+
+  // External payload outside source root — must never land in destination.
+  const outside = path.join(parent, "outside-secret");
+  await fs.mkdir(outside);
+  await fs.writeFile(path.join(outside, "leak.txt"), "SECRET_OUTSIDE_SOURCE\n");
+
+  let symlinkOk = false;
+  try {
+    await fs.symlink(
+      path.join(outside, "leak.txt"),
+      path.join(source, "leaked-file"),
+      process.platform === "win32" ? "file" : undefined
+    );
+    await fs.symlink(outside, path.join(source, "leaked-dir"), process.platform === "win32" ? "dir" : undefined);
+    symlinkOk = true;
+  } catch (error) {
+    // Windows without Developer Mode / SeCreateSymbolicLinkPrivilege.
+    t.skip(
+      `symlink create unavailable on this host: ${error instanceof Error ? error.message : String(error)}`
+    );
+    return;
+  }
+  assert.equal(symlinkOk, true);
+
+  const report = await importExternalTentRoot({
+    sourceRoot: source,
+    workspaceRoot: workspace,
+    dryRun: false,
+    rand: () => 0.1,
+  });
+  assert.equal(report.copied, true);
+
+  const systemRoot = path.join(workspace, ".tent");
+  assert.equal(await fsaExists(path.join(systemRoot, "leaked-file")), false);
+  assert.equal(await fsaExists(path.join(systemRoot, "leaked-dir")), false);
+  assert.equal(await fsaExists(path.join(systemRoot, "leaked-dir", "leak.txt")), false);
+
+  const allNotes = [...report.skipped, ...report.warnings].join("\n");
+  assert.match(allNotes, /skipped symlink \(not followed\): leaked-file/);
+  assert.match(allNotes, /skipped symlink \(not followed\): leaked-dir/);
+
+  // Destination content must not contain the outside secret payload.
+  const rules = await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8");
+  assert.doesNotMatch(rules, /SECRET_OUTSIDE_SOURCE/);
+  assert.ok(await fsaExists(path.join(systemRoot, "goal", "goal.md")));
+});
+
+async function listImportStagingDirs(workspace: string): Promise<string[]> {
+  const names = await fs.readdir(workspace);
+  return names.filter((n) => n.startsWith(IMPORT_STAGING_DIR_PREFIX));
 }

@@ -45,7 +45,14 @@ const log = {
   envKeysPresent: {
     CPA_GROK_API_KEY: Boolean(process.env.CPA_GROK_API_KEY),
     XAI_API_KEY: Boolean(process.env.XAI_API_KEY),
+    CPA_GROK_BASE_URL: Boolean(process.env.CPA_GROK_BASE_URL),
+    XAI_API_BASE_URL: Boolean(process.env.XAI_API_BASE_URL),
+    OPENAI_BASE_URL: Boolean(process.env.OPENAI_BASE_URL),
   },
+  xaiApiBaseUrlFlag: (() => {
+    const i = process.argv.indexOf("--xai-api-base-url");
+    return i >= 0 ? process.argv[i + 1] : null;
+  })(),
   // Never log secret values
   contactedApiXai: false,
 };

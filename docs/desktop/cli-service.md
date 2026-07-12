@@ -55,6 +55,17 @@ These remain for package tests / offline pure-core workflows. They **direct-writ
 
 Prefer `tent task *` whenever Desktop or another client shares the same Local Service.
 
+## One-shot external tent import (B5)
+
+Copy a legacy independent tent root into a workspace `.tent/` (no service required):
+
+```bash
+tent migrate --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]
+# alias: tent import …
+```
+
+Hard refuse if `<workspace>/.tent` already exists. Source is never deleted (`MIGRATED.md` only). Details: `docs/desktop/migration.md`.
+
 ## Agent minimal flow
 
 ```bash

@@ -18,18 +18,26 @@ Tent is **not** a chat router. The adapter starts/observes/stops an external age
 ## Prerequisites (machine-local)
 
 1. **Grok CLI** installed (typical Windows path: `%USERPROFILE%\.grok\bin\grok.exe`).
-2. **CPA custom model** in `~/.grok/config.toml` (example shape — managed by Grok/CPA, not Tent):
-   - model id `grok-4.5` → base URL `http://127.0.0.1:8317/v1`
-   - `env_key = "CPA_GROK_API_KEY"`
-3. **Environment variable** on the process that starts Local Service:
-   - `CPA_GROK_API_KEY=<your key>`
-4. CPA proxy / local adapter reachable at the URL in config.toml.
+2. **CPA** reachable (local proxy / OpenAI-compatible endpoint).
+3. **Environment variables** on the process that starts Local Service / Desktop (machine-local only):
+
+| Env | Purpose | Default profile field |
+| --- | --- | --- |
+| `CPA_GROK_API_KEY` | API bearer for CPA | `grokAcp.envKey` |
+| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8317/v1`) | `grokAcp.baseUrlEnvKey` |
+
+Optional fallbacks (still **not** workspace):
+
+- `~/.grok/config.toml` `[model."grok-4.5"]` `base_url` / `env_key` — Grok CLI native config when env base URL is unset.
+- Machine-local `agent-profiles.json` may set `grokAcp.baseUrl` (literal URL on **this machine only**) when the service cannot inherit a user shell env. Prefer env.
 
 Tent **does not** store the API key, OAuth token, or CPA base URL in:
 
 - workspace git / `.tent/`
 - box / task / concept bodies
-- `agent-profiles.json` values (only the env key *name* and paths)
+- committed repo files
+
+`agent-profiles.json` lives under the **service data dir** (`%APPDATA%/Tent/`): only env key *names*, optional machine-local paths, and optionally a machine-local `baseUrl` — never commit this file with a workspace.
 
 ## Register machine-local profile
 
@@ -53,6 +61,7 @@ On first service start, Tent ensures a `grok-acp-default` entry (alongside `fake
       "grokAcp": {
         "model": "grok-4.5",
         "envKey": "CPA_GROK_API_KEY",
+        "baseUrlEnvKey": "CPA_GROK_BASE_URL",
         "permissionPolicy": "deny"
       }
     }
@@ -67,9 +76,21 @@ Optional `grokAcp` fields:
 | `executable` | `%USERPROFILE%\.grok\bin\grok.exe` (or `~/.grok/bin/grok`) | Absolute path on this machine |
 | `model` | `grok-4.5` | Passed as `grok agent --model <model> stdio` |
 | `envKey` | `CPA_GROK_API_KEY` | Read from **service process** env only |
+| `baseUrlEnvKey` | `CPA_GROK_BASE_URL` | Env **name** for CPA base URL; value never written to workspace |
+| `baseUrl` | _(unset)_ | Optional machine-local literal URL if env cannot be set; still not for git |
 | `promptTimeoutMs` | 1800000 (30m) | ACP `session/prompt` wait |
 | `permissionPolicy` | `deny` | `allow` \| `ask` \| `deny` — **never** unconditional yolo / `allow_always` |
 | `permissionTimeoutMs` | 120000 | When `ask`, timeout → deny |
+
+### How base URL is passed to Grok
+
+When a base URL resolves (env or profile `baseUrl`), the adapter:
+
+1. Adds `--xai-api-base-url <url>` on the `grok agent … stdio` argv (unless the launch plan already supplies a full custom argv without that flag shape).
+2. Injects child env: `CPA_GROK_BASE_URL` (or configured key), `XAI_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `TENT_GROK_BASE_URL`.
+3. Still injects API key as `CPA_GROK_API_KEY` + `XAI_API_KEY`.
+
+Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing base URL alone is allowed so `~/.grok/config.toml` can still own the endpoint.
 
 `fake-default` remains available for **tests only** when harnesses pass `profileId: "fake-default"` explicitly. Product `task.startSession` / `task.dispatch` with `startSession: true` **requires** an explicit `profileId` — there is **no** silent fallback to fake or to a product default.
 
@@ -157,7 +178,7 @@ If executable or `envKey` is missing / empty:
 - **No** fallback to `fake-cli`
 - Session record → `failed`; bound task may project `failed`
 
-CPA base URL misconfiguration is owned by `~/.grok/config.toml`, not Tent.
+CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `~/.grok/config.toml`). Tent does not invent `api.x.ai`.
 
 ## Lifecycle
 

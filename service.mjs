@@ -2968,6 +2968,7 @@ import * as readline from "node:readline";
 var GROK_ACP_ADAPTER_ID = "grok-acp";
 var DEFAULT_GROK_MODEL = "grok-4.5";
 var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
+var DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
 var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
@@ -3389,10 +3390,17 @@ function normalizeGrokOpts(raw) {
     executable: o.executable,
     model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : DEFAULT_GROK_MODEL,
     envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : DEFAULT_GROK_ENV_KEY,
+    baseUrlEnvKey: typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim() ? o.baseUrlEnvKey.trim() : DEFAULT_GROK_BASE_URL_ENV_KEY,
+    baseUrl: typeof o.baseUrl === "string" && o.baseUrl.trim() ? o.baseUrl.trim() : void 0,
     promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
     permissionPolicy,
     permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
   };
+}
+function normalizeCpaBaseUrl(raw) {
+  if (!raw || typeof raw !== "string") return void 0;
+  const t = raw.trim().replace(/\/+$/, "");
+  return t || void 0;
 }
 var GrokManagedSession = class {
   constructor(sessionId, client, bootstrapDone, stopRequested = false) {
@@ -3423,6 +3431,9 @@ var GrokAcpProviderAdapter = class {
     this.id = GROK_ACP_ADAPTER_ID;
     this.displayNameKey = "adapter.grokAcp.displayName";
     this.resolveApiKey = options.resolveApiKey ?? ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
+    this.resolveBaseUrl = options.resolveBaseUrl ?? ((baseUrlEnvKey, planEnv, profileBaseUrl) => normalizeCpaBaseUrl(
+      planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
+    ));
     this.onPermissionAsk = options.onPermissionAsk;
   }
   capabilities() {
@@ -3445,10 +3456,12 @@ var GrokAcpProviderAdapter = class {
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
+    const baseUrlEnvKey = opts.baseUrlEnvKey;
     const apiKey = this.resolveApiKey(envKey, plan.env);
+    const baseUrl = this.resolveBaseUrl(baseUrlEnvKey, plan.env, opts.baseUrl);
     if (!apiKey || !apiKey.trim()) {
       throw new Error(
-        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}\uFF1BCPA base URL \u7531 ~/.grok/config.toml \u7BA1\u7406\uFF0C\u5207\u52FF\u5199\u5165 workspace/box/task\u3002`
+        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}` + (baseUrlEnvKey ? `\uFF08\u53EF\u9009 ${baseUrlEnvKey}=CPA base URL\uFF09` : "") + `\uFF1B\u5207\u52FF\u628A key/URL \u5199\u5165 workspace/box/task\u3002`
       );
     }
     if (!plan.command && opts.executable) {
@@ -3464,18 +3477,37 @@ var GrokAcpProviderAdapter = class {
         );
       }
     }
-    const args = plan.args && plan.args.length > 0 ? plan.args : ["agent", "--model", model, "stdio"];
+    let args;
+    if (plan.args && plan.args.length > 0) {
+      args = [...plan.args];
+      if (baseUrl && !args.includes("--xai-api-base-url") && args.includes("agent") && args.includes("stdio")) {
+        const stdioIdx = args.indexOf("stdio");
+        args.splice(stdioIdx, 0, "--xai-api-base-url", baseUrl);
+      }
+    } else {
+      args = ["agent", "--model", model];
+      if (baseUrl) {
+        args.push("--xai-api-base-url", baseUrl);
+      }
+      args.push("stdio");
+    }
     const env = {
       ...plan.env,
       [envKey]: apiKey,
       // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
-      // Base URL still comes from ~/.grok/config.toml (CPA), not hard-coded api.x.ai.
       XAI_API_KEY: apiKey,
       TENT_SESSION_ID: plan.sessionId,
       TENT_PROFILE_ID: plan.profileId,
       TENT_GROK_MODEL: model
     };
     if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (baseUrl) {
+      env[baseUrlEnvKey] = baseUrl;
+      env.XAI_API_BASE_URL = baseUrl;
+      env.OPENAI_BASE_URL = baseUrl;
+      env.OPENAI_API_BASE = baseUrl;
+      env.TENT_GROK_BASE_URL = baseUrl;
+    }
     const home = process.env.USERPROFILE || process.env.HOME || os2.homedir();
     if (!env.GROK_HOME) {
       env.GROK_HOME = path3.join(home, ".grok");
@@ -3614,6 +3646,8 @@ function defaultAgentProfiles() {
         // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
         model: DEFAULT_GROK_MODEL,
         envKey: DEFAULT_GROK_ENV_KEY,
+        // CPA base URL from process env (name only here). Optional machine-local baseUrl field.
+        baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
         // Default deny tool permissions — never unconditional yolo.
         permissionPolicy: "deny"
       }
@@ -3623,13 +3657,27 @@ function defaultAgentProfiles() {
 async function ensureDefaultProfiles(dataDir) {
   const existing = await loadAgentProfiles(dataDir);
   if (existing.length > 0) {
+    let changed = false;
+    let next = existing;
     if (!existing.some((p) => p.id === "grok-acp-default")) {
       const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default");
-      const merged = [...existing, grok];
-      await saveAgentProfiles(dataDir, merged);
-      return merged;
+      next = [...existing, grok];
+      changed = true;
     }
-    return existing;
+    next = next.map((p) => {
+      if (p.adapterId !== GROK_ACP_ADAPTER_ID) return p;
+      if (p.grokAcp?.baseUrlEnvKey) return p;
+      changed = true;
+      return {
+        ...p,
+        grokAcp: {
+          ...p.grokAcp ?? {},
+          baseUrlEnvKey: p.grokAcp?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY
+        }
+      };
+    });
+    if (changed) await saveAgentProfiles(dataDir, next);
+    return next;
   }
   const defaults = defaultAgentProfiles();
   await saveAgentProfiles(dataDir, defaults);

@@ -15,6 +15,7 @@ import type {
 import type { RuntimeEvent, StopReason } from "../../runtime/types.js";
 import { GrokAcpClient } from "./client.js";
 import {
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_GROK_ENV_KEY,
   DEFAULT_GROK_MODEL,
   DEFAULT_PERMISSION_TIMEOUT_MS,
@@ -28,6 +29,7 @@ export {
   GROK_ACP_ADAPTER_ID,
   DEFAULT_GROK_MODEL,
   DEFAULT_GROK_ENV_KEY,
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_PROMPT_TIMEOUT_MS,
   DEFAULT_PERMISSION_TIMEOUT_MS,
   type GrokAcpProfileOptions,
@@ -40,6 +42,15 @@ export interface GrokAcpAdapterOptions {
    * Tests inject without mutating real process secrets.
    */
   resolveApiKey?: (envKey: string, planEnv: Record<string, string>) => string | undefined;
+  /**
+   * Resolve CPA base URL for baseUrlEnvKey / profile.baseUrl.
+   * Default: planEnv[key] ?? process.env[key] ?? profile.baseUrl.
+   */
+  resolveBaseUrl?: (
+    baseUrlEnvKey: string,
+    planEnv: Record<string, string>,
+    profileBaseUrl?: string
+  ) => string | undefined;
   /**
    * Optional permission ask resolver (tests / future service UI).
    * When omitted and policy=ask, permissions deny after timeout.
@@ -62,7 +73,12 @@ function defaultGrokExecutable(): string {
 function normalizeGrokOpts(raw: unknown): Required<
   Pick<
     GrokAcpProfileOptions,
-    "model" | "envKey" | "promptTimeoutMs" | "permissionPolicy" | "permissionTimeoutMs"
+    | "model"
+    | "envKey"
+    | "baseUrlEnvKey"
+    | "promptTimeoutMs"
+    | "permissionPolicy"
+    | "permissionTimeoutMs"
   >
 > &
   GrokAcpProfileOptions {
@@ -77,6 +93,11 @@ function normalizeGrokOpts(raw: unknown): Required<
       typeof o.envKey === "string" && o.envKey.trim()
         ? o.envKey.trim()
         : DEFAULT_GROK_ENV_KEY,
+    baseUrlEnvKey:
+      typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim()
+        ? o.baseUrlEnvKey.trim()
+        : DEFAULT_GROK_BASE_URL_ENV_KEY,
+    baseUrl: typeof o.baseUrl === "string" && o.baseUrl.trim() ? o.baseUrl.trim() : undefined,
     promptTimeoutMs:
       typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0
         ? o.promptTimeoutMs
@@ -87,6 +108,13 @@ function normalizeGrokOpts(raw: unknown): Required<
         ? o.permissionTimeoutMs
         : DEFAULT_PERMISSION_TIMEOUT_MS,
   };
+}
+
+/** Strip trailing slashes; reject empty / whitespace. */
+export function normalizeCpaBaseUrl(raw: string | undefined): string | undefined {
+  if (!raw || typeof raw !== "string") return undefined;
+  const t = raw.trim().replace(/\/+$/, "");
+  return t || undefined;
 }
 
 class GrokManagedSession implements ManagedSession {
@@ -126,12 +154,23 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     envKey: string,
     planEnv: Record<string, string>
   ) => string | undefined;
+  private readonly resolveBaseUrl: (
+    baseUrlEnvKey: string,
+    planEnv: Record<string, string>,
+    profileBaseUrl?: string
+  ) => string | undefined;
   private readonly onPermissionAsk?: GrokAcpAdapterOptions["onPermissionAsk"];
 
   constructor(options: GrokAcpAdapterOptions = {}) {
     this.resolveApiKey =
       options.resolveApiKey ??
       ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
+    this.resolveBaseUrl =
+      options.resolveBaseUrl ??
+      ((baseUrlEnvKey, planEnv, profileBaseUrl) =>
+        normalizeCpaBaseUrl(
+          planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
+        ));
     this.onPermissionAsk = options.onPermissionAsk;
   }
 
@@ -156,13 +195,17 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
+    const baseUrlEnvKey = opts.baseUrlEnvKey;
     const apiKey = this.resolveApiKey(envKey, plan.env);
+    const baseUrl = this.resolveBaseUrl(baseUrlEnvKey, plan.env, opts.baseUrl);
 
     if (!apiKey || !apiKey.trim()) {
       throw new Error(
         `未配置环境变量 ${envKey}：grok-acp 需要本机 CPA Grok API key（仅 service 进程环境）。` +
           `不会回退官方 xAI（api.x.ai），也不会回退 fake provider。` +
-          `请在启动 Local Service 前设置 ${envKey}；CPA base URL 由 ~/.grok/config.toml 管理，切勿写入 workspace/box/task。`
+          `请在启动 Local Service 前设置 ${envKey}` +
+          (baseUrlEnvKey ? `（可选 ${baseUrlEnvKey}=CPA base URL）` : "") +
+          `；切勿把 key/URL 写入 workspace/box/task。`
       );
     }
 
@@ -181,22 +224,48 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     }
 
     // Explicit model on argv — never silent default inside opaque wrapper.
-    const args =
-      plan.args && plan.args.length > 0
-        ? plan.args
-        : ["agent", "--model", model, "stdio"];
+    // When plan.args is fully custom (tests/mock), preserve it; otherwise build
+    // `grok agent --model <m> [--xai-api-base-url <cpa>] stdio`.
+    let args: string[];
+    if (plan.args && plan.args.length > 0) {
+      args = [...plan.args];
+      // If caller used default-shaped args without base URL flag, inject when we have one.
+      if (
+        baseUrl &&
+        !args.includes("--xai-api-base-url") &&
+        args.includes("agent") &&
+        args.includes("stdio")
+      ) {
+        const stdioIdx = args.indexOf("stdio");
+        args.splice(stdioIdx, 0, "--xai-api-base-url", baseUrl);
+      }
+    } else {
+      args = ["agent", "--model", model];
+      if (baseUrl) {
+        args.push("--xai-api-base-url", baseUrl);
+      }
+      args.push("stdio");
+    }
 
     const env: Record<string, string> = {
       ...plan.env,
       [envKey]: apiKey,
       // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
-      // Base URL still comes from ~/.grok/config.toml (CPA), not hard-coded api.x.ai.
       XAI_API_KEY: apiKey,
       TENT_SESSION_ID: plan.sessionId,
       TENT_PROFILE_ID: plan.profileId,
       TENT_GROK_MODEL: model,
     };
     if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+
+    if (baseUrl) {
+      // Propagate CPA base URL through common env names Grok / OpenAI-compat stacks read.
+      env[baseUrlEnvKey] = baseUrl;
+      env.XAI_API_BASE_URL = baseUrl;
+      env.OPENAI_BASE_URL = baseUrl;
+      env.OPENAI_API_BASE = baseUrl;
+      env.TENT_GROK_BASE_URL = baseUrl;
+    }
 
     const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
     if (!env.GROK_HOME) {
@@ -328,12 +397,14 @@ export function createGrokAcpAdapter(
   return new GrokAcpProviderAdapter(options);
 }
 
-/** Machine-local profile template — secrets only via envKey name, never values. */
+/** Machine-local profile template — secrets only via env key *names* / optional machine-local baseUrl, never workspace. */
 export function grokAcpProfileTemplate(overrides?: {
   id?: string;
   executable?: string;
   model?: string;
   envKey?: string;
+  baseUrlEnvKey?: string;
+  baseUrl?: string;
   permissionPolicy?: GrokAcpPermissionPolicy;
   promptTimeoutMs?: number;
 }): {
@@ -350,6 +421,8 @@ export function grokAcpProfileTemplate(overrides?: {
       executable: overrides?.executable,
       model: overrides?.model ?? DEFAULT_GROK_MODEL,
       envKey: overrides?.envKey ?? DEFAULT_GROK_ENV_KEY,
+      baseUrlEnvKey: overrides?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY,
+      baseUrl: overrides?.baseUrl,
       permissionPolicy: overrides?.permissionPolicy ?? "deny",
       promptTimeoutMs: overrides?.promptTimeoutMs,
     },

@@ -357,6 +357,11 @@ function workspaceRootFromSystemRoot(systemRoot) {
   const parent = normalized.replace(/[\\/]+[^\\/]+$/, "");
   return parent || void 0;
 }
+function systemRootFromWorkspace(workspaceRoot) {
+  const root = workspaceRoot.replace(/[\\/]+$/, "");
+  const sep2 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
+  return `${root}${sep2}${TENT_SYSTEM_DIR}`;
+}
 function isOperationalPath(relativePath2) {
   const path6 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!path6) return false;
@@ -959,6 +964,7 @@ function dedupe(entries) {
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 var CONCEPT_ID_PREFIX = "cx-";
+var LEGACY_BOX_ID_PREFIX = "bx-";
 function makeConceptId(rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
@@ -972,6 +978,9 @@ function makeUniqueConceptId(existing, rand = Math.random) {
     if (!existing.has(id)) return id;
   }
   return makeConceptId(rand, 10);
+}
+function isLegacyBoxId(id) {
+  return id.startsWith(LEGACY_BOX_ID_PREFIX) && id.length > LEGACY_BOX_ID_PREFIX.length;
 }
 
 // src/core/claim.ts
@@ -2648,21 +2657,21 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve8, reject) => {
+  return new Promise((resolve9, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve8(out);
+      if (code === 0) resolve9(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
   });
 }
 function runShell(cwd, command) {
-  return new Promise((resolve8, reject) => {
+  return new Promise((resolve9, reject) => {
     const { shell, args } = workspaceCheckShell(command);
     const child = spawn(shell, args, { cwd, windowsHide: true });
     let stdout = "";
@@ -2671,7 +2680,7 @@ function runShell(cwd, command) {
     child.stderr.on("data", (data) => stderr += data);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve8({ command, stdout, stderr });
+        resolve9({ command, stdout, stderr });
         return;
       }
       const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
@@ -2767,6 +2776,558 @@ function activeClaimBoxes(tent) {
 function hasUndoneClaim(tent, claims) {
   if (claims.length === 0 || claims.includes("root")) return true;
   return claims.some((claim) => tent.byId.get(claim)?.fm.status !== "done");
+}
+
+// src/core/migration.ts
+import * as nodeFs2 from "node:fs/promises";
+import * as nodePath3 from "node:path";
+var NESTED_REGISTRY_FILES = [
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH,
+  ORDER_PATH,
+  RULES_PATH
+];
+function planIdRemap(legacyIds, existing, rand = Math.random) {
+  const used = new Set(existing);
+  const map = /* @__PURE__ */ new Map();
+  for (const id of legacyIds) {
+    if (!isLegacyBoxId(id)) continue;
+    if (map.has(id)) continue;
+    const suffix = id.slice(3);
+    const preferred = CONCEPT_ID_PREFIX + suffix;
+    let next = preferred;
+    if (used.has(next)) next = makeUniqueConceptId(used, rand);
+    used.add(next);
+    map.set(id, next);
+  }
+  return map;
+}
+function rewriteOutputType(type) {
+  if (type === "output") return "artifact";
+  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
+  return void 0;
+}
+function migrateTypeRegistryJson(value) {
+  const changes = [];
+  const root = isRecord4(value) ? deepClone(value) : {};
+  const stripPointer = (def) => {
+    if (!isRecord4(def)) return def;
+    if (!("workspacePointer" in def)) return def;
+    const next = { ...def };
+    delete next.workspacePointer;
+    changes.push("removed workspacePointer from a type definition");
+    return next;
+  };
+  if (isRecord4(root.primary) || isRecord4(root.secondary)) {
+    if (isRecord4(root.primary)) {
+      root.primary = migratePrimarySecondaryBucket(root.primary, stripPointer, changes, "primary");
+    }
+    if (isRecord4(root.secondary)) {
+      root.secondary = migratePrimarySecondaryBucket(root.secondary, stripPointer, changes, "secondary");
+    }
+  } else {
+    for (const key of Object.keys(root)) {
+      root[key] = stripPointer(root[key]);
+    }
+    promoteOutputKey(root, changes);
+  }
+  const registry = normalizeRegistry(root);
+  for (const def of Object.values(registry)) {
+    if (def && typeof def === "object" && "workspacePointer" in def) {
+      delete def.workspacePointer;
+      changes.push("stripped workspacePointer after normalize");
+    }
+  }
+  if ("output" in registry) {
+    delete registry.output;
+    changes.push("removed residual output key after normalize");
+  }
+  void DEFAULT_TYPE_REGISTRY;
+  return { registry, changes };
+}
+function migratePrimarySecondaryBucket(bucket, stripPointer, changes, label) {
+  const next = {};
+  for (const [key, raw] of Object.entries(bucket)) {
+    const stripped = stripPointer(raw);
+    if (key === "output") {
+      if (next.artifact === void 0) {
+        if (isRecord4(stripped)) {
+          const out = { ...stripped };
+          if (out.coordination === void 0 && label === "primary") out.coordination = true;
+          delete out.workspacePointer;
+          next.artifact = out;
+        } else {
+          next.artifact = stripped;
+        }
+        changes.push(`promoted ${label}.output definition to ${label}.artifact`);
+      } else {
+        changes.push(`dropped duplicate ${label}.output; kept existing ${label}.artifact`);
+      }
+      changes.push(`removed legacy ${label}.output type key`);
+      continue;
+    }
+    next[key] = stripped;
+  }
+  return next;
+}
+function promoteOutputKey(root, changes) {
+  if (!isRecord4(root.output)) return;
+  if (!root.artifact) {
+    const out = { ...root.output, coordination: root.output.coordination ?? true };
+    delete out.workspacePointer;
+    root.artifact = out;
+    changes.push("promoted output definition to artifact");
+  } else {
+    changes.push("dropped duplicate output; kept existing artifact");
+  }
+  delete root.output;
+  changes.push("removed legacy output type key");
+}
+async function migrateLegacySchema(fs6, options = {}) {
+  const dryRun = options.dryRun === true;
+  const rewriteOps = options.rewriteOperationalRefs !== false;
+  const report = {
+    dryRun,
+    idMap: [],
+    typeRewrites: [],
+    registryChanges: [],
+    skipped: [],
+    warnings: []
+  };
+  await liftNestedRegistries(fs6, report, dryRun);
+  await migrateFlatTypeRegistry(fs6, report, dryRun);
+  await unifyMutationLock(fs6, report, dryRun);
+  const tent = await loadTent(fs6);
+  const legacyIds = [...tent.byId.keys()].filter(isLegacyBoxId);
+  const existing = new Set(tent.byId.keys());
+  const idMap = planIdRemap(legacyIds, existing, options.rand);
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await fs6.readFile(notePath));
+    let dirty = false;
+    const oldId = typeof data.id === "string" ? data.id : "";
+    if (isLegacyBoxId(oldId)) {
+      let next = idMap.get(oldId);
+      if (!next) {
+        const extra = planIdRemap([oldId], /* @__PURE__ */ new Set([...existing, ...idMap.values()]), options.rand);
+        next = extra.get(oldId);
+        idMap.set(oldId, next);
+      }
+      data.id = next;
+      dirty = true;
+      report.idMap.push({ from: oldId, to: next, path: box.path });
+      existing.add(next);
+    }
+    if (typeof data.type === "string") {
+      const rewritten = rewriteOutputType(data.type);
+      if (rewritten) {
+        report.typeRewrites.push({ path: box.path, from: data.type, to: rewritten });
+        data.type = rewritten;
+        dirty = true;
+      }
+    }
+    if (dirty && !dryRun) {
+      await fs6.writeFile(
+        notePath,
+        serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER)
+      );
+    }
+  }
+  if (await fs6.exists(ORDER_PATH)) {
+    try {
+      const order = JSON.parse(await fs6.readFile(ORDER_PATH));
+      let dirty = false;
+      const next = {};
+      for (const [key, list] of Object.entries(order)) {
+        const newKey = idMap.get(key) ?? key;
+        if (newKey !== key) dirty = true;
+        next[newKey] = list.map((id) => {
+          const mapped = idMap.get(id);
+          if (mapped) {
+            dirty = true;
+            return mapped;
+          }
+          return id;
+        });
+      }
+      if (dirty) {
+        report.registryChanges.push(dryRun ? "would rewrite order.json ids" : "rewrote order.json ids");
+        if (!dryRun) await fs6.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
+      }
+    } catch (error) {
+      report.warnings.push(`order.json: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+  if (rewriteOps && await fs6.exists(TEMP_DIR)) {
+    await rewriteOperationalTree(fs6, idMap, report, dryRun);
+  }
+  const seen = /* @__PURE__ */ new Set();
+  report.idMap = report.idMap.filter((entry) => {
+    const key = `${entry.from}->${entry.to}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return report;
+}
+async function liftNestedRegistries(fs6, report, dryRun) {
+  if (!await fs6.exists(TENT_SYSTEM_DIR)) return;
+  for (const name of NESTED_REGISTRY_FILES) {
+    const nested = join(TENT_SYSTEM_DIR, name);
+    if (!await fs6.exists(nested)) continue;
+    const flatExists = await fs6.exists(name);
+    if (!flatExists) {
+      report.registryChanges.push(
+        dryRun ? `would lift nested ${nested} \u2192 ${name}` : `lifted nested ${nested} \u2192 ${name}`
+      );
+      if (!dryRun) {
+        const text = await fs6.readFile(nested);
+        await fs6.writeFile(name, text);
+      }
+    } else {
+      report.registryChanges.push(`nested ${nested} ignored; flat ${name} already present`);
+    }
+    report.registryChanges.push(dryRun ? `would remove nested ${nested}` : `removed nested ${nested}`);
+    if (!dryRun) await fs6.remove(nested);
+  }
+  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs6.exists(nestedLock)) {
+    report.registryChanges.push(
+      dryRun ? `would remove nested ${nestedLock}` : `removed nested ${nestedLock}`
+    );
+    if (!dryRun) await fs6.remove(nestedLock);
+  }
+}
+async function migrateFlatTypeRegistry(fs6, report, dryRun) {
+  if (!await fs6.exists(TYPE_REGISTRY_PATH)) return;
+  try {
+    const raw = JSON.parse(await fs6.readFile(TYPE_REGISTRY_PATH));
+    const { registry, changes } = migrateTypeRegistryJson(raw);
+    report.registryChanges.push(...changes);
+    if (!dryRun && changes.length > 0) {
+      await fs6.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+    }
+  } catch (error) {
+    report.warnings.push(
+      `types.json migration skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+async function unifyMutationLock(fs6, report, dryRun) {
+  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs6.exists(nestedLock)) {
+    report.registryChanges.push(
+      dryRun ? `would remove nested lock ${nestedLock}` : `removed nested lock ${nestedLock}`
+    );
+    if (!dryRun) await fs6.remove(nestedLock);
+  }
+  if (!report.registryChanges.some((c) => c.includes(MUTATION_LOCK_PATH))) {
+    report.registryChanges.push(`unique lock path: ${MUTATION_LOCK_PATH}`);
+  }
+}
+async function rewriteOperationalTree(fs6, idMap, report, dryRun) {
+  if (idMap.size === 0) return;
+  const walk = async (dir) => {
+    if (!await fs6.exists(dir)) return;
+    for (const entry of await fs6.listDir(dir)) {
+      const path6 = join(dir, entry.name);
+      if (entry.isDir) {
+        await walk(path6);
+        continue;
+      }
+      const lower = entry.name.toLowerCase();
+      if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
+      const text = await fs6.readFile(path6);
+      const rewritten = rewriteOperationalText(text, idMap);
+      let targetName = entry.name;
+      for (const [from, to] of idMap) {
+        if (targetName.includes(from)) {
+          targetName = replaceExactIdTokens(targetName, from, to);
+        }
+      }
+      const targetPath = join(dir, targetName);
+      if (rewritten === text && targetPath === path6) continue;
+      report.registryChanges.push(`operational rewrite: ${path6}`);
+      if (!dryRun) {
+        if (targetPath !== path6) {
+          await fs6.writeFile(targetPath, rewritten);
+          await fs6.remove(path6);
+        } else {
+          await fs6.writeFile(path6, rewritten);
+        }
+      }
+    }
+  };
+  await walk(TEMP_DIR);
+}
+function rewriteOperationalText(text, idMap) {
+  if (idMap.size === 0) return text;
+  let next = text;
+  next = next.replace(
+    /^([ \t]*(?:claims|box|id|claim|parent|from|to|root)[ \t]*:[ \t]*)(.+)$/gim,
+    (full, prefix, value) => {
+      return prefix + replaceIdsInStructuredValue(value, idMap);
+    }
+  );
+  for (const [from, to] of idMap) {
+    next = replaceExactIdTokens(next, from, to);
+  }
+  return next;
+}
+function replaceIdsInStructuredValue(value, idMap) {
+  let next = value;
+  for (const [from, to] of idMap) {
+    next = replaceExactIdTokens(next, from, to);
+  }
+  return next;
+}
+function replaceExactIdTokens(text, from, to) {
+  if (!from || from === to) return text;
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "g");
+  return text.replace(re, to);
+}
+var IMPORT_SKIP_DIR_NAMES = /* @__PURE__ */ new Set([".git", "node_modules"]);
+var IMPORT_STAGING_DIR_PREFIX = `${TENT_SYSTEM_DIR}.import-staging-`;
+async function isLegacyTentRoot(root) {
+  const rules = nodePath3.join(root, RULES_PATH);
+  if (!await pathExists2(rules)) return false;
+  return await pathExists2(nodePath3.join(root, TYPE_REGISTRY_PATH)) || await pathExists2(nodePath3.join(root, TEMP_DIR)) || await pathExists2(nodePath3.join(root, TENT_SYSTEM_DIR)) || await pathExists2(nodePath3.join(root, ORDER_PATH)) || await pathExists2(nodePath3.join(root, "index.md"));
+}
+async function importExternalTentRoot(options) {
+  const dryRun = options.dryRun === true;
+  const sourceRoot = nodePath3.resolve(options.sourceRoot);
+  const workspaceRoot = nodePath3.resolve(options.workspaceRoot);
+  const systemRoot = systemRootFromWorkspace(workspaceRoot);
+  const warnings = [];
+  const skipped = [];
+  if (!await pathExists2(sourceRoot)) {
+    throw new Error(`Source tent root does not exist: ${sourceRoot}`);
+  }
+  const sourceStat = await nodeFs2.lstat(sourceRoot);
+  if (sourceStat.isSymbolicLink()) {
+    throw new Error(`Source tent root must not be a symbolic link: ${sourceRoot}`);
+  }
+  if (!sourceStat.isDirectory()) {
+    throw new Error(`Source tent root is not a directory: ${sourceRoot}`);
+  }
+  if (!await isLegacyTentRoot(sourceRoot)) {
+    throw new Error(
+      `Source does not look like a Tent root (need RULES.md and types/temp/.tent/order/index): ${sourceRoot}`
+    );
+  }
+  if (samePath(sourceRoot, systemRoot)) {
+    throw new Error(`Source is already the target system root: ${systemRoot}`);
+  }
+  if (samePath(sourceRoot, workspaceRoot)) {
+    throw new Error(
+      `Source equals workspace root. Point --source at the legacy tent directory (e.g. vault/_tents/tent-dev), not the workspace.`
+    );
+  }
+  if (await pathExists2(systemRoot)) {
+    throw new Error(
+      `Refusing to import: target already has ${TENT_SYSTEM_DIR} at ${systemRoot}. No silent overwrite. Move/rename the existing system dir first if you intend to replace it.`
+    );
+  }
+  const sourceFs = new NodeFs(sourceRoot);
+  try {
+    const tent = await loadTent(sourceFs);
+    const claimed = [...tent.byId.values()].filter(
+      (b) => typeof b.fm.owner === "string" && b.fm.owner.trim() && b.fm.status === "doing"
+    );
+    if (claimed.length > 0) {
+      const msg = `Source has ${claimed.length} active claim(s) (owner+doing). Prefer idle cutover.`;
+      if (options.force) warnings.push(msg + " (--force: continuing)");
+      else {
+        throw new Error(
+          msg + ` Re-run with --force to import anyway (still will not overwrite an existing .tent).`
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("active claim")) throw error;
+    warnings.push(
+      `Could not fully load source tent for occupancy check: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+  await collectSymlinkSkips(sourceRoot, skipped, warnings);
+  const plannedSchema = await migrateLegacySchema(sourceFs, {
+    dryRun: true,
+    rand: options.rand,
+    rewriteOperationalRefs: options.rewriteOperationalRefs
+  });
+  if (dryRun) {
+    return {
+      dryRun: true,
+      sourceRoot,
+      workspaceRoot,
+      systemRoot,
+      copied: false,
+      sourceMarked: false,
+      schema: plannedSchema,
+      warnings,
+      skipped: [
+        ...skipped,
+        "dry-run: no files copied",
+        "dry-run: source not marked with MIGRATED.md"
+      ]
+    };
+  }
+  await nodeFs2.mkdir(workspaceRoot, { recursive: true });
+  const stagingRoot = await allocateImportStagingDir(workspaceRoot);
+  let renamedToFinal = false;
+  try {
+    await copyHostTree(sourceRoot, stagingRoot, skipped, warnings);
+    if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
+    const destFs = new NodeFs(stagingRoot);
+    const schema = await migrateLegacySchema(destFs, {
+      dryRun: false,
+      rand: options.rand,
+      rewriteOperationalRefs: options.rewriteOperationalRefs
+    });
+    if (options._testHooks?.afterSchema) await options._testHooks.afterSchema(stagingRoot);
+    const workspaceFs = new NodeFs(workspaceRoot);
+    await ensureWorkspaceGitignore(workspaceFs);
+    if (options._testHooks?.beforeRename) {
+      await options._testHooks.beforeRename(stagingRoot, systemRoot);
+    }
+    if (await pathExists2(systemRoot)) {
+      throw new Error(
+        `Refusing to import: target already has ${TENT_SYSTEM_DIR} at ${systemRoot}. No silent overwrite. Move/rename the existing system dir first if you intend to replace it.`
+      );
+    }
+    await nodeFs2.rename(stagingRoot, systemRoot);
+    renamedToFinal = true;
+    await writeMigratedMarker(sourceRoot, {
+      workspaceRoot,
+      systemRoot,
+      idMapCount: schema.idMap.length
+    });
+    return {
+      dryRun: false,
+      sourceRoot,
+      workspaceRoot,
+      systemRoot,
+      copied: true,
+      sourceMarked: true,
+      schema,
+      warnings: [...warnings, ...schema.warnings],
+      skipped: [...skipped, ...schema.skipped]
+    };
+  } catch (error) {
+    if (!renamedToFinal) {
+      await removeHostTreeBestEffort(stagingRoot);
+    }
+    throw error;
+  }
+}
+async function writeMigratedMarker(sourceRoot, info) {
+  const when = (/* @__PURE__ */ new Date()).toISOString();
+  const body = `# Migrated
+
+This external Tent root was **copied** into an in-workspace system dir.
+
+- When: ${when}
+- Workspace: \`${info.workspaceRoot.replace(/\\/g, "/")}\`
+- System root: \`${info.systemRoot.replace(/\\/g, "/")}\`
+- Id remaps applied on the **copy**: ${info.idMapCount}
+
+The source tree was **not** deleted. There is no bidirectional sync.
+After verifying the workspace tent, you may delete this directory manually.
+Do not continue writing collaboration facts here.
+`;
+  await nodeFs2.writeFile(nodePath3.join(sourceRoot, "MIGRATED.md"), body, "utf8");
+}
+function noteSkippedSymlink(relPosix, skipped, warnings) {
+  const msg = `skipped symlink (not followed): ${relPosix}`;
+  if (!skipped.includes(msg)) skipped.push(msg);
+  if (!warnings.includes(msg)) warnings.push(msg);
+}
+async function collectSymlinkSkips(root, skipped, warnings, relBase = "") {
+  let entries;
+  try {
+    entries = await nodeFs2.readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
+    if (entry.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+    const relPosix = rel.replace(/\\/g, "/");
+    const abs = nodePath3.join(root, entry.name);
+    if (entry.isSymbolicLink()) {
+      noteSkippedSymlink(relPosix, skipped, warnings);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await collectSymlinkSkips(abs, skipped, warnings, relPosix);
+    }
+  }
+}
+async function copyHostTree(from, to, skipped, warnings, relBase = "") {
+  await nodeFs2.mkdir(to, { recursive: true });
+  const entries = await nodeFs2.readdir(from, { withFileTypes: true });
+  for (const entry of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
+    if (entry.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+    const relPosix = rel.replace(/\\/g, "/");
+    const src = nodePath3.join(from, entry.name);
+    const dst = nodePath3.join(to, entry.name);
+    if (entry.isSymbolicLink()) {
+      noteSkippedSymlink(relPosix, skipped, warnings);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await copyHostTree(src, dst, skipped, warnings, relPosix);
+    } else if (entry.isFile()) {
+      await nodeFs2.mkdir(nodePath3.dirname(dst), { recursive: true });
+      const st = await nodeFs2.lstat(src);
+      if (st.isSymbolicLink()) {
+        noteSkippedSymlink(relPosix, skipped, warnings);
+        continue;
+      }
+      await nodeFs2.copyFile(src, dst);
+    }
+  }
+}
+async function allocateImportStagingDir(workspaceRoot) {
+  for (let i = 0; i < 8; i++) {
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const stagingRoot = nodePath3.join(workspaceRoot, `${IMPORT_STAGING_DIR_PREFIX}${id}`);
+    if (await pathExists2(stagingRoot)) continue;
+    await nodeFs2.mkdir(stagingRoot, { recursive: false });
+    return stagingRoot;
+  }
+  throw new Error(`Could not allocate unique import staging directory under ${workspaceRoot}`);
+}
+async function removeHostTreeBestEffort(root) {
+  try {
+    await nodeFs2.rm(root, { recursive: true, force: true });
+  } catch {
+  }
+}
+async function pathExists2(p) {
+  try {
+    await nodeFs2.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function samePath(a, b) {
+  const na = nodePath3.resolve(a);
+  const nb = nodePath3.resolve(b);
+  if (process.platform === "win32") return na.toLowerCase() === nb.toLowerCase();
+  return na === nb;
+}
+function deepClone(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // src/cli/service-attach.ts
@@ -3416,11 +3977,11 @@ function parseTaskFlags(args) {
   return { positionals, flags };
 }
 function readStdinText() {
-  return new Promise((resolve8, reject) => {
+  return new Promise((resolve9, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve8(data));
+    process.stdin.on("end", () => resolve9(data));
     process.stdin.on("error", reject);
   });
 }
@@ -3492,6 +4053,40 @@ async function main() {
     console.log(formatSkillInstallResults(target, results));
     return;
   }
+  if (cmd === "migrate" || cmd === "import") {
+    const { positionals, flags } = parseFlags(args);
+    if (positionals.length > 0) {
+      return fail(
+        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
+      );
+    }
+    const source = flags.source || flags.from || flags.src;
+    const workspace = flags.workspace || flags.to || flags.dest || flags.target;
+    if (!source || !workspace) {
+      return fail(
+        `Usage: tent ${cmd} --source <legacy-tent-root> --workspace <workspace-root> [--dry-run] [--force] [--json]`
+      );
+    }
+    const dryRun = flags["dry-run"] === "true" || flags.dryRun === "true";
+    const force = flags.force === "true";
+    const asJson = flags.json === "true";
+    try {
+      const report = await importExternalTentRoot({
+        sourceRoot: path5.resolve(source),
+        workspaceRoot: path5.resolve(workspace),
+        dryRun,
+        force
+      });
+      if (asJson) {
+        console.log(JSON.stringify(report, null, 2));
+      } else {
+        console.log(formatImportReport(report));
+      }
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+    return;
+  }
   if (cmd === "task") {
     const [sub, ...rest] = args;
     if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
@@ -3532,7 +4127,7 @@ async function main() {
   if (!tentCommands.has(cmd)) {
     return fail(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new migrate import task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
   const env = await makeEnv();
@@ -3850,11 +4445,11 @@ unresolved wiki links: ${result.unresolved.length}`
   }
 }
 function readStdin() {
-  return new Promise((resolve8, reject) => {
+  return new Promise((resolve9, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve8(data));
+    process.stdin.on("end", () => resolve9(data));
     process.stdin.on("error", reject);
   });
 }
@@ -3887,7 +4482,7 @@ function isUnsafeRoleSegment(value) {
 function parseFlags(args) {
   const positionals = [];
   const flags = {};
-  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes", "as-sub"]);
+  const booleanFlags = /* @__PURE__ */ new Set(["force", "yes", "as-sub", "dry-run", "json"]);
   for (let i = 0; i < args.length; i++) {
     const a = args[i];
     if (a.startsWith("--")) {
@@ -4010,6 +4605,10 @@ Service-backed task lifecycle (preferred for Desktop / external agents):
 Legacy direct-core commands (compatible; not service RPC):
   new <path>                         Create an empty Tent.
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
+  migrate --source <root> --workspace <ws>
+                                     Copy legacy external tent root into <ws>/.tent (alias: import).
+                                     Refuses if <ws>/.tent exists. Never deletes source.
+                                     Options: --dry-run --force --json
   role-init <role>                   Prepare stable role init context.
   roles                              Print the role registry.
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
@@ -4090,6 +4689,44 @@ async function newTent(target, vault) {
 In-workspace layout: collaboration facts live under <workspace>/.tent/.
 The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );
+}
+function formatImportReport(report) {
+  const lines = [
+    report.dryRun ? "Tent migrate (dry-run)" : "Tent migrate",
+    `  source:     ${report.sourceRoot}`,
+    `  workspace:  ${report.workspaceRoot}`,
+    `  systemRoot: ${report.systemRoot}`,
+    `  copied:     ${report.copied}`,
+    `  sourceMarked (MIGRATED.md): ${report.sourceMarked}`,
+    `  id remaps:  ${report.schema.idMap.length}`,
+    `  type rewrites: ${report.schema.typeRewrites.length}`
+  ];
+  if (report.schema.registryChanges.length) {
+    lines.push("  registry:");
+    for (const c of report.schema.registryChanges.slice(0, 40)) {
+      lines.push(`    - ${c}`);
+    }
+    if (report.schema.registryChanges.length > 40) {
+      lines.push(`    \u2026 +${report.schema.registryChanges.length - 40} more`);
+    }
+  }
+  if (report.schema.idMap.length) {
+    lines.push("  id map (sample):");
+    for (const e of report.schema.idMap.slice(0, 12)) {
+      lines.push(`    - ${e.from} \u2192 ${e.to} (${e.path})`);
+    }
+    if (report.schema.idMap.length > 12) {
+      lines.push(`    \u2026 +${report.schema.idMap.length - 12} more`);
+    }
+  }
+  for (const w of report.warnings) lines.push(`  warning: ${w}`);
+  for (const s of report.skipped) lines.push(`  skipped: ${s}`);
+  if (!report.dryRun) {
+    lines.push(
+      "Source was not deleted. Verify <workspace>/.tent then remove the old root manually if desired."
+    );
+  }
+  return lines.join("\n");
 }
 function normalizeTemplateRoles(value) {
   if (typeof value !== "object" || value === null) return { roles: [] };

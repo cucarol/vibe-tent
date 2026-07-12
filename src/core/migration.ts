@@ -1,10 +1,25 @@
 // 一次性 legacy schema migration（纯函数 + 可对 FsAdapter 执行）。
 // 不做长期 alias / 双解析产品路径：迁移报告写出后，新写入只用 cx- / artifact。
 // 正常运行路径不得 dual-read 嵌套 `.tent/*`；本文件负责读旧布局并切断。
+// 另：importExternalTentRoot 将旧独立帐根复制进 workspace 内 `.tent/`（B5）。
 
+import * as nodeFs from "node:fs/promises";
+import * as nodePath from "node:path";
+import { NodeFs } from "../fs/node-fs.js";
 import { FsAdapter } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { CONCEPT_ID_PREFIX, isLegacyBoxId, makeUniqueConceptId, type RandomSource } from "./id.js";
+import {
+  MUTATION_LOCK_PATH,
+  ORDER_PATH,
+  ROLES_REGISTRY_PATH,
+  RULES_PATH,
+  systemRootFromWorkspace,
+  TAGS_REGISTRY_PATH,
+  TEMP_DIR,
+  TENT_SYSTEM_DIR,
+} from "./paths.js";
+import { ensureWorkspaceGitignore } from "./scaffold.js";
 import { boxNotePath, join, loadTent } from "./tree.js";
 import {
   DEFAULT_TYPE_REGISTRY,
@@ -12,15 +27,6 @@ import {
   TYPE_REGISTRY_PATH,
   type TypeRegistry,
 } from "./typeRegistry.js";
-import {
-  MUTATION_LOCK_PATH,
-  ORDER_PATH,
-  ROLES_REGISTRY_PATH,
-  RULES_PATH,
-  TAGS_REGISTRY_PATH,
-  TEMP_DIR,
-  TENT_SYSTEM_DIR,
-} from "./paths.js";
 
 export interface IdRemap {
   from: string;
@@ -450,6 +456,374 @@ export function replaceExactIdTokens(text: string, from: string, to: string): st
   const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
   const re = new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "g");
   return text.replace(re, to);
+}
+
+/**
+ * 将旧的独立 Tent 根（vault/_tents/… 等）安全导入到 workspace 内 `.tent/`。
+ *
+ * 合同（architecture §7）：
+ * - 目标已有最终 `.tent` 时硬拒绝（无静默覆盖）
+ * - live：复制 + schema migration 只在 workspace 下唯一 staging 目录进行，成功后原子 rename 为 `.tent`
+ * - 任一步失败：best-effort 删除 staging；最终 `.tent` 不存在；源不写 `MIGRATED.md`（可重试）
+ * - 成功后不删除旧源；仅写 `MIGRATED.md` 标记
+ * - 不跟随/不复制符号链接（跳过并记入 skipped/warnings），避免带入 source root 外内容
+ * - dry-run 只报告，不写目标、不标记旧源
+ */
+export interface ImportExternalTentOptions {
+  /** Absolute or relative path to legacy tent root (contains RULES.md + boxes/temp/…). */
+  sourceRoot: string;
+  /** Absolute or relative path to target workspace root (receives `.tent/`). */
+  workspaceRoot: string;
+  dryRun?: boolean;
+  rand?: RandomSource;
+  rewriteOperationalRefs?: boolean;
+  /**
+   * When true, proceed even if source has active claims / pending tasks.
+   * Never enables overwrite of an existing destination `.tent`.
+   */
+  force?: boolean;
+  /**
+   * @internal Test-only hooks for mid-import failure injection.
+   * Not part of the stable product API surface.
+   */
+  _testHooks?: ImportExternalTentTestHooks;
+}
+
+/** @internal */
+export interface ImportExternalTentTestHooks {
+  afterCopy?: (stagingRoot: string) => void | Promise<void>;
+  afterSchema?: (stagingRoot: string) => void | Promise<void>;
+  beforeRename?: (stagingRoot: string, systemRoot: string) => void | Promise<void>;
+}
+
+export interface ImportExternalTentReport {
+  dryRun: boolean;
+  sourceRoot: string;
+  workspaceRoot: string;
+  systemRoot: string;
+  copied: boolean;
+  sourceMarked: boolean;
+  schema: MigrationReport;
+  warnings: string[];
+  skipped: string[];
+}
+
+const IMPORT_SKIP_DIR_NAMES = new Set([".git", "node_modules"]);
+
+/** Staging dir prefix under workspace: `.tent.import-staging-<id>` (never the final `.tent`). */
+export const IMPORT_STAGING_DIR_PREFIX = `${TENT_SYSTEM_DIR}.import-staging-`;
+
+/**
+ * Detect a usable legacy (or flat) tent system root directory.
+ * Accepts both flat layout (RULES.md + types/temp) and roots that still nest registries under `.tent/`.
+ */
+export async function isLegacyTentRoot(root: string): Promise<boolean> {
+  const rules = nodePath.join(root, RULES_PATH);
+  if (!(await pathExists(rules))) return false;
+  return (
+    (await pathExists(nodePath.join(root, TYPE_REGISTRY_PATH))) ||
+    (await pathExists(nodePath.join(root, TEMP_DIR))) ||
+    (await pathExists(nodePath.join(root, TENT_SYSTEM_DIR))) ||
+    (await pathExists(nodePath.join(root, ORDER_PATH))) ||
+    (await pathExists(nodePath.join(root, "index.md")))
+  );
+}
+
+/**
+ * Import an external/legacy tent root into `<workspace>/.tent`.
+ * Pure orchestration around host fs + `migrateLegacySchema`; safe for CLI and service callers.
+ */
+export async function importExternalTentRoot(
+  options: ImportExternalTentOptions
+): Promise<ImportExternalTentReport> {
+  const dryRun = options.dryRun === true;
+  const sourceRoot = nodePath.resolve(options.sourceRoot);
+  const workspaceRoot = nodePath.resolve(options.workspaceRoot);
+  const systemRoot = systemRootFromWorkspace(workspaceRoot);
+  const warnings: string[] = [];
+  const skipped: string[] = [];
+
+  if (!(await pathExists(sourceRoot))) {
+    throw new Error(`Source tent root does not exist: ${sourceRoot}`);
+  }
+  // lstat: refuse to treat a symlink as the source root (would pull external content).
+  const sourceStat = await nodeFs.lstat(sourceRoot);
+  if (sourceStat.isSymbolicLink()) {
+    throw new Error(`Source tent root must not be a symbolic link: ${sourceRoot}`);
+  }
+  if (!sourceStat.isDirectory()) {
+    throw new Error(`Source tent root is not a directory: ${sourceRoot}`);
+  }
+  if (!(await isLegacyTentRoot(sourceRoot))) {
+    throw new Error(
+      `Source does not look like a Tent root (need RULES.md and types/temp/.tent/order/index): ${sourceRoot}`
+    );
+  }
+
+  if (samePath(sourceRoot, systemRoot)) {
+    throw new Error(`Source is already the target system root: ${systemRoot}`);
+  }
+  if (samePath(sourceRoot, workspaceRoot)) {
+    throw new Error(
+      `Source equals workspace root. Point --source at the legacy tent directory (e.g. vault/_tents/tent-dev), not the workspace.`
+    );
+  }
+
+  if (await pathExists(systemRoot)) {
+    // Hard refuse — never overwrite existing in-workspace tent (even with --force).
+    throw new Error(
+      `Refusing to import: target already has ${TENT_SYSTEM_DIR} at ${systemRoot}. ` +
+        `No silent overwrite. Move/rename the existing system dir first if you intend to replace it.`
+    );
+  }
+
+  // Pre-flight occupancy on source (informational; --force continues).
+  const sourceFs = new NodeFs(sourceRoot);
+  try {
+    const tent = await loadTent(sourceFs);
+    const claimed = [...tent.byId.values()].filter(
+      (b) => typeof b.fm.owner === "string" && b.fm.owner.trim() && b.fm.status === "doing"
+    );
+    if (claimed.length > 0) {
+      const msg = `Source has ${claimed.length} active claim(s) (owner+doing). Prefer idle cutover.`;
+      if (options.force) warnings.push(msg + " (--force: continuing)");
+      else {
+        throw new Error(
+          msg + ` Re-run with --force to import anyway (still will not overwrite an existing .tent).`
+        );
+      }
+    }
+  } catch (error) {
+    if (error instanceof Error && error.message.includes("active claim")) throw error;
+    warnings.push(
+      `Could not fully load source tent for occupancy check: ${
+        error instanceof Error ? error.message : String(error)
+      }`
+    );
+  }
+
+  // Inventory symlinks (skipped, never followed) for dry-run and live reports.
+  await collectSymlinkSkips(sourceRoot, skipped, warnings);
+
+  // Dry-run schema plan against source (no writes).
+  const plannedSchema = await migrateLegacySchema(sourceFs, {
+    dryRun: true,
+    rand: options.rand,
+    rewriteOperationalRefs: options.rewriteOperationalRefs,
+  });
+
+  if (dryRun) {
+    return {
+      dryRun: true,
+      sourceRoot,
+      workspaceRoot,
+      systemRoot,
+      copied: false,
+      sourceMarked: false,
+      schema: plannedSchema,
+      warnings,
+      skipped: [
+        ...skipped,
+        "dry-run: no files copied",
+        "dry-run: source not marked with MIGRATED.md",
+      ],
+    };
+  }
+
+  await nodeFs.mkdir(workspaceRoot, { recursive: true });
+  const stagingRoot = await allocateImportStagingDir(workspaceRoot);
+  let renamedToFinal = false;
+
+  try {
+    await copyHostTree(sourceRoot, stagingRoot, skipped, warnings);
+    if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
+
+    const destFs = new NodeFs(stagingRoot);
+    const schema = await migrateLegacySchema(destFs, {
+      dryRun: false,
+      rand: options.rand,
+      rewriteOperationalRefs: options.rewriteOperationalRefs,
+    });
+    if (options._testHooks?.afterSchema) await options._testHooks.afterSchema(stagingRoot);
+
+    // Workspace gitignore for `.tent/` (idempotent) — before atomic switch.
+    const workspaceFs = new NodeFs(workspaceRoot);
+    await ensureWorkspaceGitignore(workspaceFs);
+
+    if (options._testHooks?.beforeRename) {
+      await options._testHooks.beforeRename(stagingRoot, systemRoot);
+    }
+
+    // Re-check final target right before rename (hard refuse if it appeared).
+    if (await pathExists(systemRoot)) {
+      throw new Error(
+        `Refusing to import: target already has ${TENT_SYSTEM_DIR} at ${systemRoot}. ` +
+          `No silent overwrite. Move/rename the existing system dir first if you intend to replace it.`
+      );
+    }
+
+    await nodeFs.rename(stagingRoot, systemRoot);
+    renamedToFinal = true;
+
+    await writeMigratedMarker(sourceRoot, {
+      workspaceRoot,
+      systemRoot,
+      idMapCount: schema.idMap.length,
+    });
+
+    return {
+      dryRun: false,
+      sourceRoot,
+      workspaceRoot,
+      systemRoot,
+      copied: true,
+      sourceMarked: true,
+      schema,
+      warnings: [...warnings, ...schema.warnings],
+      skipped: [...skipped, ...schema.skipped],
+    };
+  } catch (error) {
+    if (!renamedToFinal) {
+      await removeHostTreeBestEffort(stagingRoot);
+    }
+    throw error;
+  }
+}
+
+async function writeMigratedMarker(
+  sourceRoot: string,
+  info: { workspaceRoot: string; systemRoot: string; idMapCount: number }
+): Promise<void> {
+  const when = new Date().toISOString();
+  const body =
+    `# Migrated\n\n` +
+    `This external Tent root was **copied** into an in-workspace system dir.\n\n` +
+    `- When: ${when}\n` +
+    `- Workspace: \`${info.workspaceRoot.replace(/\\/g, "/")}\`\n` +
+    `- System root: \`${info.systemRoot.replace(/\\/g, "/")}\`\n` +
+    `- Id remaps applied on the **copy**: ${info.idMapCount}\n\n` +
+    `The source tree was **not** deleted. There is no bidirectional sync.\n` +
+    `After verifying the workspace tent, you may delete this directory manually.\n` +
+    `Do not continue writing collaboration facts here.\n`;
+  await nodeFs.writeFile(nodePath.join(sourceRoot, "MIGRATED.md"), body, "utf8");
+}
+
+function noteSkippedSymlink(
+  relPosix: string,
+  skipped: string[],
+  warnings: string[]
+): void {
+  const msg = `skipped symlink (not followed): ${relPosix}`;
+  if (!skipped.includes(msg)) skipped.push(msg);
+  if (!warnings.includes(msg)) warnings.push(msg);
+}
+
+/** Walk source and record every symlink path (relative, posix). Does not follow links. */
+async function collectSymlinkSkips(
+  root: string,
+  skipped: string[],
+  warnings: string[],
+  relBase = ""
+): Promise<void> {
+  let entries: import("node:fs").Dirent[];
+  try {
+    entries = await nodeFs.readdir(root, { withFileTypes: true });
+  } catch {
+    return;
+  }
+  for (const entry of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
+    if (entry.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+    const relPosix = rel.replace(/\\/g, "/");
+    const abs = nodePath.join(root, entry.name);
+    if (entry.isSymbolicLink()) {
+      noteSkippedSymlink(relPosix, skipped, warnings);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await collectSymlinkSkips(abs, skipped, warnings, relPosix);
+    }
+  }
+}
+
+/**
+ * Recursive host copy into staging.
+ * - Skips VCS/deps noise and prior MIGRATED.md
+ * - Never follows or copies symbolic links (file or directory); records skipped/warnings
+ * - Preserves nested real `.tent` registry residue for later schema lift
+ */
+async function copyHostTree(
+  from: string,
+  to: string,
+  skipped: string[],
+  warnings: string[],
+  relBase = ""
+): Promise<void> {
+  await nodeFs.mkdir(to, { recursive: true });
+  const entries = await nodeFs.readdir(from, { withFileTypes: true });
+  for (const entry of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
+    // Never copy a prior migration marker into the new system root as content.
+    if (entry.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+    const relPosix = rel.replace(/\\/g, "/");
+    const src = nodePath.join(from, entry.name);
+    const dst = nodePath.join(to, entry.name);
+
+    // Dirent type checks do not follow symlinks; check links first.
+    if (entry.isSymbolicLink()) {
+      noteSkippedSymlink(relPosix, skipped, warnings);
+      continue;
+    }
+    if (entry.isDirectory()) {
+      await copyHostTree(src, dst, skipped, warnings, relPosix);
+    } else if (entry.isFile()) {
+      await nodeFs.mkdir(nodePath.dirname(dst), { recursive: true });
+      // copyFile would follow a symlink if we mis-detected; lstat guard is belt-and-suspenders.
+      const st = await nodeFs.lstat(src);
+      if (st.isSymbolicLink()) {
+        noteSkippedSymlink(relPosix, skipped, warnings);
+        continue;
+      }
+      await nodeFs.copyFile(src, dst);
+    }
+  }
+}
+
+async function allocateImportStagingDir(workspaceRoot: string): Promise<string> {
+  for (let i = 0; i < 8; i++) {
+    const id = `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+    const stagingRoot = nodePath.join(workspaceRoot, `${IMPORT_STAGING_DIR_PREFIX}${id}`);
+    if (await pathExists(stagingRoot)) continue;
+    await nodeFs.mkdir(stagingRoot, { recursive: false });
+    return stagingRoot;
+  }
+  throw new Error(`Could not allocate unique import staging directory under ${workspaceRoot}`);
+}
+
+async function removeHostTreeBestEffort(root: string): Promise<void> {
+  try {
+    await nodeFs.rm(root, { recursive: true, force: true });
+  } catch {
+    // best-effort only
+  }
+}
+
+async function pathExists(p: string): Promise<boolean> {
+  try {
+    await nodeFs.access(p);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function samePath(a: string, b: string): boolean {
+  const na = nodePath.resolve(a);
+  const nb = nodePath.resolve(b);
+  if (process.platform === "win32") return na.toLowerCase() === nb.toLowerCase();
+  return na === nb;
 }
 
 function deepClone(value: Record<string, unknown>): Record<string, unknown> {

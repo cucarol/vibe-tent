@@ -5,6 +5,7 @@ import * as path from "node:path";
 import type { AgentProfileConfig } from "../runtime/types.js";
 import { FAKE_ADAPTER_ID } from "../adapters/fake/index.js";
 import {
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_GROK_ENV_KEY,
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
@@ -62,6 +63,8 @@ export function defaultAgentProfiles(): AgentProfileConfig[] {
         // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
         model: DEFAULT_GROK_MODEL,
         envKey: DEFAULT_GROK_ENV_KEY,
+        // CPA base URL from process env (name only here). Optional machine-local baseUrl field.
+        baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
         // Default deny tool permissions — never unconditional yolo.
         permissionPolicy: "deny",
       },
@@ -72,14 +75,29 @@ export function defaultAgentProfiles(): AgentProfileConfig[] {
 export async function ensureDefaultProfiles(dataDir: string): Promise<AgentProfileConfig[]> {
   const existing = await loadAgentProfiles(dataDir);
   if (existing.length > 0) {
+    let changed = false;
+    let next = existing;
     // Migrate older catalogs that only had fake: ensure grok-acp-default is present.
     if (!existing.some((p) => p.id === "grok-acp-default")) {
       const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default")!;
-      const merged = [...existing, grok];
-      await saveAgentProfiles(dataDir, merged);
-      return merged;
+      next = [...existing, grok];
+      changed = true;
     }
-    return existing;
+    // Ensure grok-acp profiles know the base URL env key name (no secret values).
+    next = next.map((p) => {
+      if (p.adapterId !== GROK_ACP_ADAPTER_ID) return p;
+      if (p.grokAcp?.baseUrlEnvKey) return p;
+      changed = true;
+      return {
+        ...p,
+        grokAcp: {
+          ...(p.grokAcp ?? {}),
+          baseUrlEnvKey: p.grokAcp?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY,
+        },
+      };
+    });
+    if (changed) await saveAgentProfiles(dataDir, next);
+    return next;
   }
   const defaults = defaultAgentProfiles();
   await saveAgentProfiles(dataDir, defaults);

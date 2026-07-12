@@ -11,9 +11,11 @@ import { test } from "node:test";
 import {
   createGrokAcpAdapter,
   GROK_ACP_ADAPTER_ID,
+  DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_GROK_ENV_KEY,
   DEFAULT_GROK_MODEL,
   grokAcpProfileTemplate,
+  normalizeCpaBaseUrl,
 } from "../src/adapters/grok-acp/index.js";
 import { createAgentRuntime, type RuntimeEvent } from "../src/runtime/index.js";
 import { taskContextCard } from "../src/core/context-card.js";
@@ -136,6 +138,76 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
   assert.doesNotMatch(joined, /api\.x\.ai/);
   assert.equal(launch.env.CPA_GROK_API_KEY, "test-key-not-real");
   // Secret values must not appear in profile serialization surfaces — only env injection.
+});
+
+test("resolveLaunch injects CPA base URL via env + --xai-api-base-url", () => {
+  assert.equal(normalizeCpaBaseUrl("http://127.0.0.1:8317/v1/"), "http://127.0.0.1:8317/v1");
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key-not-real",
+  });
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-base01",
+    profileId: "grok-acp-default",
+    cwd: process.cwd(),
+    env: {
+      [DEFAULT_GROK_BASE_URL_ENV_KEY]: "http://127.0.0.1:8317/v1/",
+    },
+    command: process.execPath,
+    extras: {
+      grokAcp: {
+        model: "grok-4.5",
+        envKey: DEFAULT_GROK_ENV_KEY,
+        baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
+        executable: process.execPath,
+      },
+    },
+  });
+  assert.ok(launch.args.includes("--xai-api-base-url"));
+  assert.equal(
+    launch.args[launch.args.indexOf("--xai-api-base-url") + 1],
+    "http://127.0.0.1:8317/v1"
+  );
+  assert.equal(launch.env.XAI_API_BASE_URL, "http://127.0.0.1:8317/v1");
+  assert.equal(launch.env.OPENAI_BASE_URL, "http://127.0.0.1:8317/v1");
+  assert.equal(launch.env.OPENAI_API_BASE, "http://127.0.0.1:8317/v1");
+  assert.equal(launch.env[DEFAULT_GROK_BASE_URL_ENV_KEY], "http://127.0.0.1:8317/v1");
+  assert.equal(launch.env.TENT_GROK_BASE_URL, "http://127.0.0.1:8317/v1");
+  assert.equal(launch.env.XAI_API_KEY, "test-key-not-real");
+  assert.doesNotMatch(launch.args.join(" "), /api\.x\.ai/);
+});
+
+test("resolveLaunch accepts machine-local profile baseUrl when env unset", () => {
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "k",
+    resolveBaseUrl: (_key, planEnv, profileBaseUrl) =>
+      planEnv.CPA_GROK_BASE_URL ?? profileBaseUrl,
+  });
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-base02",
+    profileId: "grok-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    command: process.execPath,
+    extras: {
+      grokAcp: {
+        model: "grok-4.5",
+        envKey: "CPA_GROK_API_KEY",
+        baseUrl: "http://10.0.0.2:8317/v1",
+        executable: process.execPath,
+      },
+    },
+  });
+  assert.equal(launch.env.XAI_API_BASE_URL, "http://10.0.0.2:8317/v1");
+  assert.ok(launch.args.includes("--xai-api-base-url"));
+});
+
+test("grokAcpProfileTemplate includes baseUrlEnvKey name only", () => {
+  const t = grokAcpProfileTemplate({ model: "grok-4.5" });
+  assert.equal(t.grokAcp.baseUrlEnvKey, DEFAULT_GROK_BASE_URL_ENV_KEY);
+  assert.equal(t.grokAcp.baseUrl, undefined);
+  const json = JSON.stringify(t);
+  assert.ok(json.includes("CPA_GROK_BASE_URL"));
+  assert.doesNotMatch(json, /127\.0\.0\.1|8317/);
 });
 
 test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
