@@ -2,12 +2,15 @@
 
 export type BoxType = string;
 
-/** 三个语义 folder zone。temp 是无 type 的系统管道,不属于框树。 */
-export type ZoneType = "goal" | "prompt" | "output";
+/**
+ * 顶层展示 zone 名（文件夹名碰巧为这些时用于排序）。
+ * 不是 type 硬编码；仅 UI/排序提示。artifact 替代旧 output zone 名。
+ */
+export type ZoneType = "goal" | "prompt" | "artifact" | "output" | "note";
 
 export type Status = "todo" | "doing" | "done";
 
-/** 框身份文件(<box-name>.md)的 frontmatter。type 必填。 */
+/** concept 身份文件 frontmatter。type 必填。id 为 cx- handle（迁移前可有 bx-）。 */
 export interface BoxFrontmatter {
   id: string;
   type: BoxType;
@@ -15,6 +18,7 @@ export interface BoxFrontmatter {
   archived?: boolean;
   readable?: boolean;
   writable?: boolean;
+  /** @deprecated 投影为 task assignee；迁移后新写入优先用 Task API。 */
   owner?: string;
   status?: Status;
   /** 允许 user 加自定义键,原样保留落盘。 */
@@ -29,11 +33,16 @@ export interface ResolvedAxis {
   source: AxisSource;
 }
 
-/** 解析进内存的框节点。 */
+/**
+ * 解析进内存的 concept 节点。
+ * box = coordination 开启的 concept；字段名 Box 为历史兼容。
+ */
 export interface Box {
   id: string;
   type: BoxType;
   tags: string[];
+  /** 解析后的 type.coordination（来自注册表 capability，非名称硬编码）。 */
+  coordination: boolean;
   /** 自身或祖先 archived=true。归档子树强制 R/W=false。 */
   archived: boolean;
   /** 自身或祖先引用了不存在的 type。失效子树退出正常流程。 */
@@ -41,7 +50,7 @@ export interface Box {
   /** 直接失效的根节点 id;子孙沿用。 */
   invalidRootId?: string;
   invalidReason?: string;
-  /** 相对帐根的路径,如 "goal/挖新alpha"。 */
+  /** 相对帐根(system root)的路径,如 "goal/挖新alpha"。 */
   path: string;
   /** 显示名 = 文件夹名。 */
   name: string;
@@ -58,6 +67,11 @@ export interface Box {
   lockOwner?: string;
   readable: ResolvedAxis;
   writable: ResolvedAxis;
+}
+
+/** 是否为可承载协作生命周期的 box（coordination-enabled concept）。 */
+export function isCoordinationBox(concept: Pick<Box, "coordination">): boolean {
+  return concept.coordination === true;
 }
 
 /** manifest 里 readable/writable 的一条。 */

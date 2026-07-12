@@ -7,17 +7,17 @@ import { loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
 import { resolveTentWorkspace } from "./workspace.js";
 
-export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/RULES.md found).";
+export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
 
 export async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE): Promise<string> {
-  const root = path.resolve(cwd);
-  if (!(await isTentRoot(root))) throw new Error(NOT_INSIDE_TENT_MESSAGE);
+  const systemRoot = await findTentSystemRoot(cwd);
+  if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
 
-  const fsAdapter = new NodeFs(root);
+  const fsAdapter = new NodeFs(systemRoot);
   const tent = await loadTent(fsAdapter);
-  const workspace = resolveTentWorkspace(tent);
+  const workspace = resolveTentWorkspace(tent, systemRoot);
   const lines = [
-    `Tent: ${root}`,
+    `Tent: ${systemRoot}`,
     `Workspace: ${workspace || "(none)"}`,
     "",
   ];
@@ -62,8 +62,32 @@ export async function renderTentStatus(cwd = process.cwd(), role = process.env.T
   return lines.join("\n") + "\n";
 }
 
-async function isTentRoot(root: string): Promise<boolean> {
-  return (await exists(path.join(root, ".tent"))) && (await exists(path.join(root, "RULES.md")));
+/**
+ * 定位 tent system root：
+ * 1. cwd 本身是 system root（含 RULES.md + types.json 或 temp/）
+ * 2. cwd 下有 `.tent/` system dir（workspace 根）
+ * 3. 向上查找（兼容从子目录调用）
+ */
+export async function findTentSystemRoot(cwd = process.cwd()): Promise<string | undefined> {
+  let dir = path.resolve(cwd);
+  for (;;) {
+    if (await isSystemRoot(dir)) return dir;
+    const nested = path.join(dir, ".tent");
+    if (await isSystemRoot(nested)) return nested;
+    const parent = path.dirname(dir);
+    if (parent === dir) return undefined;
+    dir = parent;
+  }
+}
+
+async function isSystemRoot(root: string): Promise<boolean> {
+  if (!(await exists(path.join(root, "RULES.md")))) return false;
+  // 新布局：注册表扁平在 system root；兼容极旧 fixture 仍有嵌套 .tent 的判定略宽松
+  return (
+    (await exists(path.join(root, "types.json"))) ||
+    (await exists(path.join(root, "temp"))) ||
+    (await exists(path.join(root, ".tent")))
+  );
 }
 
 async function exists(target: string): Promise<boolean> {

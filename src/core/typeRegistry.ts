@@ -1,6 +1,7 @@
 import { FsAdapter } from "./adapter.js";
+import { TYPE_REGISTRY_PATH } from "./paths.js";
 
-export const TYPE_REGISTRY_PATH = ".tent/types.json";
+export { TYPE_REGISTRY_PATH };
 
 export const TYPE_COLOR_PALETTE = ["gray", "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown"];
 
@@ -20,8 +21,12 @@ export type TypeDefinition =
       readable: boolean;
       writable: boolean;
       /**
-       * 一级 type 是否可承载 workspace 指针。
-       * 默认仅内置 `output` 为 true；二级 type 不配置，跟随一级。
+       * 是否可承载协作生命周期（status / task occupation / delivery projection）。
+       * 默认 false；compound type 跟随 base，modifier 不可单独配置。
+       */
+      coordination?: boolean;
+      /**
+       * @deprecated 运行时已退役；normalize/load 忽略。仅保留类型形状以免旧插件编译面瞬间断裂。
        */
       workspacePointer?: boolean;
     })
@@ -34,12 +39,27 @@ export type TypeDefinition =
 
 export type TypeRegistry = Record<string, TypeDefinition>;
 
+/**
+ * 内置默认 type 注册表。
+ * - note: 普通 concept，coordination=false
+ * - goal / prompt / artifact: 默认可作 box（coordination=true）
+ * - artifact: 替代旧 output；不再携带 workspacePointer 运行时语义
+ */
 export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
+  note: {
+    readable: true,
+    writable: true,
+    color: "gray",
+    tier: "base",
+    coordination: false,
+    description: "普通笔记 concept，默认不进入协作生命周期",
+  },
   goal: {
     readable: true,
     writable: false,
     color: "blue",
     tier: "base",
+    coordination: true,
     description: "定义目标、意图与验收方向",
   },
   prompt: {
@@ -47,15 +67,16 @@ export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
     writable: true,
     color: "purple",
     tier: "base",
+    coordination: true,
     description: "提供任务说明与工作上下文",
   },
-  output: {
+  artifact: {
     readable: true,
     writable: true,
     color: "cyan",
     tier: "base",
-    workspacePointer: true,
-    description: "映射真实交付物与 workspace",
+    coordination: true,
+    description: "映射真实交付物与 ArtifactRef 关联",
   },
   open: {
     readable: true,
@@ -98,10 +119,21 @@ export function joinType(base: string, modifier?: string): string {
   return modifier ? `${base}-${modifier}` : base;
 }
 
+/**
+ * 迁移窗口：落盘 type 名 `output` 解析时映射到 canonical `artifact`。
+ * 新写入应只使用 artifact；长期双 type 产品语义不保留。
+ */
+export function canonicalTypeName(type: string): string {
+  if (type === "output") return "artifact";
+  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
+  return type;
+}
+
 /** type 是否可被注册表解析(精确命中,或 base[+modifier] 都在册)。 */
 export function typeExists(type: string, registry: TypeRegistry): boolean {
-  if (registry[type]) return true;
-  const { base, modifier } = splitType(type);
+  const canonical = canonicalTypeName(type);
+  if (registry[canonical] || registry[type]) return true;
+  const { base, modifier } = splitType(canonical);
   return !!(registry[base] && (modifier === undefined || !!registry[modifier]));
 }
 
@@ -111,47 +143,79 @@ export function resolveTypeAxis(
   axis: "readable" | "writable",
   registry: TypeRegistry
 ): boolean | undefined {
-  const exact = registry[type];
+  const canonical = canonicalTypeName(type);
+  const exact = registry[canonical] ?? registry[type];
   if (exact) return exact[axis];
-  const { base, modifier } = splitType(type);
+  const { base, modifier } = splitType(canonical);
   const baseVal = registry[base]?.[axis];
   const modVal = modifier ? registry[modifier]?.[axis] : undefined;
   return typeof modVal === "boolean" ? modVal : baseVal;
 }
 
 /**
- * 框的一级/base type 是否开启 workspace 指针能力。
- * 二级 type 不单独配置；复合 type 跟随 base。
- * core 只看注册表字段，不依赖 type 名称是否为 `output`。
+ * 框/concept 的一级 type 是否开启 coordination（可作 box）。
+ * 永远读注册表 capability，禁止按 type 名称硬编码。
  */
-export function typeAllowsWorkspacePointer(type: string, registry: TypeRegistry): boolean {
-  const { base } = splitType(type);
-  return baseDefinitionWorkspacePointer(registry[base] ?? registry[type]) === true;
+export function typeHasCoordination(type: string, registry: TypeRegistry): boolean {
+  const canonical = canonicalTypeName(type);
+  const { base } = splitType(canonical);
+  return baseDefinitionCoordination(registry[base] ?? registry[canonical] ?? registry[type]) === true;
 }
 
-/** 读取一级 type 定义上的 workspace 指针开关；modifier 恒为 undefined。 */
-export function baseDefinitionWorkspacePointer(definition: TypeDefinition | undefined): boolean | undefined {
+/** 读取一级 type 定义上的 coordination；modifier 恒为 undefined。 */
+export function baseDefinitionCoordination(definition: TypeDefinition | undefined): boolean | undefined {
   if (!definition || definition.tier === "modifier") return undefined;
-  return definition.workspacePointer;
+  return definition.coordination;
 }
 
-/** 写入一级 type 的 workspace 指针开关；modifier 抛错。 */
-export function setBaseWorkspacePointer(definition: TypeDefinition, value: boolean): void {
+/** 写入一级 type 的 coordination；modifier 抛错。 */
+export function setBaseCoordination(definition: TypeDefinition, value: boolean): void {
   if (definition.tier === "modifier") {
-    throw new Error("Modifier types cannot configure workspace pointer capability.");
+    throw new Error("Modifier types cannot configure coordination capability.");
   }
-  definition.workspacePointer = value;
+  definition.coordination = value;
 }
+
+/**
+ * @deprecated workspacePointer 运行时语义已退役；保留空实现兼容旧调用点编译，恒为 false。
+ * 新代码请使用 in-workspace `.tent` 布局与 WorkspaceLane，不要再依赖 type 轴。
+ */
+export function typeAllowsWorkspacePointer(_type: string, _registry: TypeRegistry): boolean {
+  void _type;
+  void _registry;
+  return false;
+}
+
+/** @deprecated 见 typeAllowsWorkspacePointer。 */
+export function baseDefinitionWorkspacePointer(_definition: TypeDefinition | undefined): boolean | undefined {
+  void _definition;
+  return undefined;
+}
+
+/** @deprecated 见 setBaseCoordination；workspacePointer 不再可写。 */
+export function setBaseWorkspacePointer(_definition: TypeDefinition, _value: boolean): void {
+  void _definition;
+  void _value;
+  throw new Error(
+    "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
+  );
+}
+
+/** 新布局 types.json；迁移窗口兼容嵌套 .tent/types.json。 */
+const TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
 
 export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
-  if (!(await fs.exists(TYPE_REGISTRY_PATH))) return cloneDefaults();
-  try {
-    const parsed = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH)) as unknown;
-    return normalizeRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json is corrupt: ${detail}.`);
+  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
+    if (!(await fs.exists(candidate))) continue;
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidate)) as unknown;
+      return normalizeRegistry(parsed);
+    } catch (error) {
+      const detail = error instanceof Error ? error.message : String(error);
+      throw new Error(`types.json is corrupt: ${detail}.`);
+    }
   }
+  return cloneDefaults();
 }
 
 export function normalizeRegistry(value: unknown): TypeRegistry {
@@ -162,11 +226,36 @@ export function normalizeRegistry(value: unknown): TypeRegistry {
   if (isRecord(root.primary) || isRecord(root.secondary)) {
     mergeDefinitions(registry, root.primary, true, "base");
     mergeDefinitions(registry, root.secondary, false, "modifier");
+    applyLegacyOutputAlias(registry);
     return registry;
   }
 
   mergeDefinitions(registry, root);
+  applyLegacyOutputAlias(registry);
   return registry;
+}
+
+/**
+ * 一次性兼容：磁盘上仍写 `output` 时映射为 `artifact` 的定义字段，
+ * 不保留长期双 type 产品语义；迁移函数会把落盘名改成 artifact。
+ */
+function applyLegacyOutputAlias(registry: TypeRegistry): void {
+  if (registry.output && !isRecord(registry.output)) return;
+  if (registry.output) {
+    const out = registry.output;
+    if (out.tier !== "modifier") {
+      // 若用户未显式写 artifact，用 output 定义填充 artifact 缺省轴
+      const artifact = registry.artifact;
+      if (artifact && artifact.tier !== "modifier") {
+        if (typeof out.readable === "boolean") artifact.readable = out.readable;
+        if (typeof out.writable === "boolean") artifact.writable = out.writable;
+        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
+        else if (out.coordination === undefined) artifact.coordination = true;
+        if (out.color) artifact.color = out.color;
+        if (out.description) artifact.description = out.description;
+      }
+    }
+  }
 }
 
 function mergeDefinitions(
@@ -206,32 +295,37 @@ function mergeDefinitions(
       };
       continue;
     }
-    const workspacePointer = resolveWorkspacePointerFlag(name, raw, current);
-    registry[name] = {
+    const coordination = resolveCoordinationFlag(name, raw, current);
+    const entry: TypeDefinition = {
       tier: "base",
       readable: readable!,
       writable: writable!,
       ...metadata,
-      ...(workspacePointer !== undefined ? { workspacePointer } : {}),
+      ...(coordination !== undefined ? { coordination } : {}),
     };
+    // 永不把 workspacePointer 带入运行时注册表
+    delete (entry as { workspacePointer?: boolean }).workspacePointer;
+    registry[name] = entry;
   }
 }
 
 /**
- * 解析一级 type 的 workspace 指针能力。
- * - 显式 boolean 优先（含 false，避免关闭后被默认值吞回）；
- * - 源中出现该 type 但未写字段时：名为 `output` 的一级 type 兼容为 true，其余不开启。
- * 不从 cloneDefaults 的 current 继承，否则无法把默认 output 持久关闭。
+ * 解析一级 type 的 coordination。
+ * - 显式 boolean 优先；
+ * - 旧 types.json 无字段：内置倾向 goal/prompt/artifact/output → true，note → false。
+ * - 忽略遗留 workspacePointer 字段（不读入运行时）。
  */
-function resolveWorkspacePointerFlag(
+function resolveCoordinationFlag(
   name: string,
   raw: Record<string, unknown>,
-  _current: TypeDefinition | undefined
+  current: TypeDefinition | undefined
 ): boolean | undefined {
-  void _current;
-  if (typeof raw.workspacePointer === "boolean") return raw.workspacePointer;
-  // 旧 types.json 无字段：保留默认 output 开启，其它一级 type 不隐式开启。
-  if (name === "output") return true;
+  if (typeof raw.coordination === "boolean") return raw.coordination;
+  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
+    return current.coordination;
+  }
+  if (name === "note") return false;
+  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
   return undefined;
 }
 

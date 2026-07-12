@@ -123,7 +123,7 @@ function proposalPath(role: string, boxId: string): string {
 
 function normalizeProposalPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/bx-[^/]+\.md$/.test(path)) {
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
   return path;

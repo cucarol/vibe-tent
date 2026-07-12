@@ -1,6 +1,6 @@
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import { makeUniqueBoxId } from "./id.js";
+import { makeUniqueConceptId } from "./id.js";
 import { loadOrder, ROOT_KEY, saveOrder } from "./order.js";
 import type { OpsEnv } from "./ops-context.js";
 import { type Box } from "./types.js";
@@ -25,7 +25,7 @@ async function forkNodeUnlocked(env: OpsEnv, boxId: string): Promise<string> {
   const usedIds = new Set(tent.byId.keys());
   const idMap = new Map<string, string>();
   for (const box of sourceBoxes) {
-    const nextId = makeUniqueBoxId(usedIds, env.rand);
+    const nextId = makeUniqueConceptId(usedIds, env.rand);
     usedIds.add(nextId);
     idMap.set(box.id, nextId);
   }
@@ -84,7 +84,7 @@ export async function adoptCopiedSubtree(env: OpsEnv, boxPath: string): Promise<
 
     const idMap = new Map<string, string>();
     for (const box of copied) {
-      const next = makeUniqueBoxId(outsideIds, env.rand);
+      const next = makeUniqueConceptId(outsideIds, env.rand);
       outsideIds.add(next);
       idMap.set(box.id, next);
     }
@@ -120,7 +120,11 @@ async function normalizeCopiedRootIdentity(fs: FsAdapter, boxPath: string): Prom
     if (entry.isDir || !entry.name.endsWith(".md") || entry.name === "index.md") continue;
     const candidate = join(boxPath, entry.name);
     const { data } = parseFrontmatter(await fs.readFile(candidate));
-    if (typeof data.id === "string" && data.id.startsWith("bx-") && typeof data.type === "string") {
+    if (
+      typeof data.id === "string" &&
+      (data.id.startsWith("bx-") || data.id.startsWith("cx-")) &&
+      typeof data.type === "string"
+    ) {
       candidates.push(candidate);
     }
   }

@@ -35,7 +35,7 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
-  readable.push({ path: ".tent/roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
   // 可写集:认领子树里 writable=true 的框
@@ -133,8 +133,9 @@ function preloadTypeRank(box: Box): number {
   const base = splitType(box.type).base;
   if (base === "goal") return 0;
   if (base === "prompt") return 1;
-  if (base === "output") return 2;
-  return 3;
+  if (base === "artifact" || base === "output") return 2;
+  if (base === "note") return 3;
+  return 4;
 }
 
 function treeOrder(tent: LoadedTent): Map<string, number> {

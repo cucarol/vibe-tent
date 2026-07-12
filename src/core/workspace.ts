@@ -3,8 +3,8 @@ import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { LoadedTent } from "./tree.js";
 import { parseOutputPointer } from "./output.js";
-import { typeAllowsWorkspacePointer } from "./typeRegistry.js";
 import type { RoleWorkspaceContract } from "./task.js";
+import { workspaceRootFromSystemRoot } from "./paths.js";
 
 export interface IntegrationResult {
   sourceRef: string;
@@ -30,11 +30,21 @@ export interface WorkspaceCheckResult {
   stderr: string;
 }
 
-/** 一顶 Tent 只允许解析出一个真实 workspace。 */
-export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
+/**
+ * 解析一顶 Tent 对应的真实 workspace 根。
+ *
+ * B1 起：优先从 in-workspace 布局推导（system root 目录名为 `.tent` 时父目录即 workspace）。
+ * 兼容迁移前：仍可读 concept 上的 `workspace:` 指针字段（不再依赖 type.workspacePointer 能力轴）。
+ * 多指针冲突仍报错。不再使用「workspace pointer type」产品语义。
+ */
+export function resolveTentWorkspace(tent: LoadedTent, systemRoot?: string): string | undefined {
+  if (systemRoot) {
+    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+    if (fromLayout) return nodePath.resolve(fromLayout);
+  }
+
   const workspaces = new Set<string>();
   for (const box of tent.byPath.values()) {
-    if (!typeAllowsWorkspacePointer(box.type, tent.typeRegistry)) continue;
     const workspace = parseOutputPointer(box.fm, box.body).workspace;
     if (workspace) workspaces.add(nodePath.resolve(workspace));
   }
@@ -42,6 +52,25 @@ export function resolveTentWorkspace(tent: LoadedTent): string | undefined {
     throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
   }
   return [...workspaces][0];
+}
+
+/**
+ * 判断 source commit 是否已合入 target 分支（ancestor 或 -x cherry-pick 痕迹）。
+ * 供 Task API / complete 幂等复用；不修改仓库。
+ */
+export async function findIntegratedCommit(
+  workspace: string,
+  sourceRef: string,
+  targetBranch: string
+): Promise<{ integratedRef: string; reason: "ancestor" | "cherry-pick" } | undefined> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const full = await fullRef(root, sourceRef);
+  const ancestor = await findAncestorIntegration(root, full, targetBranch);
+  if (ancestor) return { integratedRef: full, reason: "ancestor" };
+  const prior = await findCherryPick(root, full);
+  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
+  return undefined;
 }
 
 /** 读取正式分支当前 HEAD；只读，不要求 workspace 正 checkout 在正式分支。 */
@@ -232,11 +261,18 @@ async function worktreeForBranch(root: string, branch: string): Promise<string |
 }
 
 async function findCherryPick(root: string, sourceRef: string): Promise<string | undefined> {
-  const needle = `(cherry picked from commit ${await fullRef(root, sourceRef)})`;
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", contractRange()]);
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  // 扫描目标历史上足够深的提交；短窗口会导致「已合入」误判为需再次 cherry-pick。
+  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
-    if (parts[i + 1].includes(needle)) return parts[i].trim();
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+    // 兼容部分 git 前端截断 message 时仍保留完整 sha 的变体
+    if (body.includes("cherry picked from commit") && body.includes(full)) {
+      return parts[i].trim();
+    }
   }
   return undefined;
 }
@@ -247,8 +283,10 @@ async function findAncestorIntegration(
   targetBranch: string
 ): Promise<string | undefined> {
   const targetRef = `refs/heads/${targetBranch}`;
-  if (await gitOk(root, ["merge-base", "--is-ancestor", sourceRef, targetRef])) {
-    return (await git(root, ["rev-parse", targetRef])).trim();
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    // 已是祖先时，幂等结果应指向 source 自身（已在历史上），而非当前 target HEAD。
+    return full;
   }
   return undefined;
 }
@@ -284,10 +322,6 @@ async function rollbackIntegration(root: string, originalRef: string, cause: unk
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function contractRange(): string {
-  return "-n1000";
 }
 
 async function fullRef(root: string, ref: string): Promise<string> {

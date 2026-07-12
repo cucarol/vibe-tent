@@ -33,7 +33,9 @@ const COL_GAP = 48;
 const ZONE_COLOR: Record<string, string> = {
   goal: "5",
   prompt: "6",
+  artifact: "4",
   output: "4",
+  note: "1",
   temp: "",
   custom: "2",
 };
@@ -117,7 +119,7 @@ function colorFor(box: Box, isZone: boolean): string | undefined {
   const { base, modifier } = splitType(box.type);
   if (base === "goal") return "5";
   if (base === "prompt") return "6";
-  if (base === "output") return "4";
+  if (base === "artifact" || base === "output") return "4";
   if (modifier === "asset" || box.type === "asset") return "";
   return undefined;
 }

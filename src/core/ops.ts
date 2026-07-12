@@ -3,7 +3,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { loadTent, join, dirName, boxNotePath, LoadedTent } from "./tree.js";
 import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
-import { makeUniqueBoxId } from "./id.js";
+import { makeUniqueConceptId } from "./id.js";
 import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType } from "./types.js";
@@ -321,7 +321,7 @@ async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<strin
     if (!parent || !isUsableBox(parent)) throw new Error("Target parent box is invalid or archived.");
   }
   const existing = new Set(tent.byId.keys());
-  const id = makeUniqueBoxId(existing, env.rand);
+  const id = makeUniqueConceptId(existing, env.rand);
   const path = join(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir(env.fs, path);

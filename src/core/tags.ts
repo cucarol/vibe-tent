@@ -4,24 +4,30 @@ import { boxNotePath, isUsableBox, loadTent } from "./tree.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 import type { Box } from "./types.js";
 
-export const TAGS_REGISTRY_PATH = ".tent/tags.json";
+import { TAGS_REGISTRY_PATH } from "./paths.js";
+export { TAGS_REGISTRY_PATH };
 export const DEFAULT_TAG_REGISTRY: TagRegistry = { tags: [] };
 
 export interface TagRegistry {
   tags: string[];
 }
 
+const TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
+
 export async function loadTagRegistry(fs: FsAdapter): Promise<TagRegistry> {
-  if (!(await fs.exists(TAGS_REGISTRY_PATH))) return { tags: [] };
-  try {
-    return normalizeRegistry(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs);
-    await saveTagRegistryUnlocked(fs, recovered);
-    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
-    return recovered;
+  for (const candidate of TAGS_CANDIDATES) {
+    if (!(await fs.exists(candidate))) continue;
+    try {
+      return normalizeRegistry(JSON.parse(await fs.readFile(candidate)));
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs, candidate);
+      const recovered = await recoverTagRegistryFromBoxes(fs);
+      await saveTagRegistryUnlocked(fs, recovered);
+      warnRegistryRecovered(candidate, backupPath, "recovered");
+      return recovered;
+    }
   }
+  return { tags: [] };
 }
 
 export async function saveTagRegistry(fs: FsAdapter, registry: TagRegistry): Promise<void> {
@@ -29,7 +35,6 @@ export async function saveTagRegistry(fs: FsAdapter, registry: TagRegistry): Pro
 }
 
 async function saveTagRegistryUnlocked(fs: FsAdapter, registry: TagRegistry): Promise<void> {
-  if (!(await fs.exists(".tent"))) await fs.mkdir(".tent");
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry(registry), null, 2) + "\n");
 }
 

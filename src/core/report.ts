@@ -129,7 +129,7 @@ function reportPath(role: string, boxId: string): string {
 
 function normalizeReportPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/bx-[^/]+\.md$/.test(path)) {
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
   return path;

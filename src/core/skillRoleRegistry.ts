@@ -1,7 +1,8 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
-export const ROLES_REGISTRY_PATH = ".tent/roles.json";
+import { ROLES_REGISTRY_PATH } from "./paths.js";
+export { ROLES_REGISTRY_PATH };
 
 export interface RoleDefinition {
   name: string;
@@ -27,23 +28,32 @@ const DEFAULT_ROLES_REGISTRY: RolesRegistry = {
   roles: [],
 };
 
+const ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
+
 export async function loadRolesRegistry(fs: FsAdapter): Promise<RolesRegistry> {
-  if (!(await fs.exists(ROLES_REGISTRY_PATH))) return cloneDefaultRoles();
-  try {
-    const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH)) as unknown;
-    return normalizeRolesRegistry(parsed);
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return reset;
+  for (const candidate of ROLES_CANDIDATES) {
+    if (!(await fs.exists(candidate))) continue;
+    try {
+      const parsed = JSON.parse(await fs.readFile(candidate)) as unknown;
+      return normalizeRolesRegistry(parsed);
+    } catch {
+      const backupPath = await backupCorruptRegistry(fs, candidate);
+      const reset = cloneDefaultRoles();
+      // 写回被损坏的候选路径（兼容迁移窗口的嵌套 .tent/roles.json）
+      await writeJson(fs, candidate, reset);
+      if (candidate !== ROLES_REGISTRY_PATH) {
+        await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+      }
+      warnRegistryRecovered(
+        candidate,
+        backupPath,
+        "reset",
+        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+      );
+      return reset;
+    }
   }
+  return cloneDefaultRoles();
 }
 
 export async function createRole(fs: FsAdapter, definition: RoleDefinition): Promise<void> {

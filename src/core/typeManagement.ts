@@ -5,7 +5,7 @@ import {
   DEFAULT_TYPE_REGISTRY,
   TYPE_COLOR_PALETTE,
   loadTypeRegistry,
-  setBaseWorkspacePointer,
+  setBaseCoordination,
   TypeDefinition,
   TYPE_REGISTRY_PATH,
   TypeRegistry,
@@ -20,6 +20,10 @@ export interface TypeMetadataPatch {
   readable?: boolean | "inherit";
   writable?: boolean | "inherit";
   /** 仅一级/base type 可设；二级 type 跟随一级。 */
+  coordination?: boolean;
+  /**
+   * @deprecated workspacePointer 已退役；传入时抛错，避免静默双语义。
+   */
   workspacePointer?: boolean;
 }
 
@@ -83,6 +87,11 @@ export async function updateTypeMetadata(
   await withTentMutation(fs, async () => {
     void level;
     assertTypeName(name);
+    if (patch.workspacePointer !== undefined) {
+      throw new Error(
+        "workspacePointer capability is retired; use coordination and in-workspace .tent layout."
+      );
+    }
     const registry = await loadTypeRegistry(fs);
     const current = registry[name];
     if (!current) throw new Error(`Type does not exist: ${name}.`);
@@ -99,9 +108,8 @@ export async function updateTypeMetadata(
     }
     updateAxis(current, "readable", patch.readable);
     updateAxis(current, "writable", patch.writable);
-    if (patch.workspacePointer !== undefined) {
-      // 显式持久化 false，避免重载时被默认 output 兼容逻辑吞回为 true。
-      setBaseWorkspacePointer(current, patch.workspacePointer);
+    if (patch.coordination !== undefined) {
+      setBaseCoordination(current, patch.coordination);
     }
     await writeTypeRegistryUnlocked(fs, registry);
   });
@@ -161,7 +169,6 @@ export async function deleteCustomType(
 }
 
 async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
-  if (!(await fs.exists(".tent"))) await fs.mkdir(".tent");
   await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
 }
 

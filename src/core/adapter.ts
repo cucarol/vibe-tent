@@ -23,5 +23,5 @@ export interface Clock {
 }
 
 export function withTentMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {
-  return fs.withLock ? fs.withLock(".tent/mutation.lock", action) : action();
+  return fs.withLock ? fs.withLock("mutation.lock", action) : action();
 }

@@ -1,6 +1,7 @@
-// 加载帐 → 框树 → 解析 readable/writable。
+// 加载帐 → concept 树 → 解析 readable/writable / coordination。
 // 每条轴:本框显式声明 > 当前 type 默认。
 // 普通 R/W 不看父/祖先;archive/invalid 是单独的子树强制机制。
+// operational pipeline（temp/ 等）永不进入 concept 索引。
 
 import { FsAdapter } from "./adapter.js";
 import {
@@ -11,21 +12,28 @@ import {
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
-import { loadTypeRegistry, TypeRegistry, typeExists, resolveTypeAxis } from "./typeRegistry.js";
+import {
+  loadTypeRegistry,
+  TypeRegistry,
+  typeExists,
+  resolveTypeAxis,
+  typeHasCoordination,
+} from "./typeRegistry.js";
+import { isOperationalPath, isSystemNoteName, OPERATIONAL_TOP_LEVEL } from "./paths.js";
 
-const ZONE_NAMES: ZoneType[] = ["goal", "prompt", "output"];
+const ZONE_NAMES: ZoneType[] = ["goal", "prompt", "artifact", "output", "note"];
 
-/** 框身份文件路径 = <文件夹名>.md */
+/** concept 身份文件路径 = <文件夹名>.md */
 export function boxNotePath(boxPath: string): string {
   return join(boxPath, baseName(boxPath) + ".md");
 }
 
 export interface LoadedTent {
-  /** 顶层 zone/框,按 goal/prompt/output/其它 排。temp 不在框树内。 */
+  /** 顶层 concept,按 zone 排名+名字排。temp 等 operational 不在树内。 */
   roots: Box[];
-  /** id → Box 索引。 */
+  /** id → concept 索引（仅 user-facing concepts）。 */
   byId: Map<string, Box>;
-  /** path → Box 索引。 */
+  /** path → concept 索引。 */
   byPath: Map<string, Box>;
   duplicateIds: Set<string>;
   typeRegistry: TypeRegistry;
@@ -40,7 +48,8 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   const top = await fs.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
-    if (entry.name === "temp") continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
+    if (isSystemNoteName(entry.name)) continue;
     await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
   }
 
@@ -115,9 +124,10 @@ function zoneRank(name: string): number {
 }
 
 async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry: TypeRegistry): Promise<Box | null> {
+  if (isOperationalPath(path)) return null;
   const boxFile = boxNotePath(path);
   if (!(await fs.exists(boxFile))) {
-    // 没有同名 .md 的文件夹不是框(普通分组)。但其子孙里可能有框 —— 透传扫描。
+    // 没有同名 .md 的文件夹不是 concept(普通分组)。但其子孙里可能有 —— 透传扫描。
     return null;
   }
   const raw = await fs.readFile(boxFile);
@@ -138,6 +148,7 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     id: fm.id,
     type: fm.type,
     tags,
+    coordination: false, // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
     path,
@@ -159,6 +170,7 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join(path, entry.name), box, registry, box.children);
   }
   return box;
@@ -200,6 +212,7 @@ async function loadBoxInto(
   registry: TypeRegistry,
   target: Box[]
 ): Promise<void> {
+  if (isOperationalPath(path)) return;
   const box = await loadBox(fs, path, parent, registry);
   if (box) {
     target.push(box);
@@ -208,6 +221,7 @@ async function loadBoxInto(
   const sub = await fs.listDir(path);
   for (const entry of sub) {
     if (!entry.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join(path, entry.name), parent, registry, target);
   }
 }
@@ -230,7 +244,12 @@ function resolveSubtree(
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
   box.archived = inheritedArchived || box.fm.archived === true;
+  box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
+    delete box.fm.status;
+  }
+  // 无 coordination 时 status 不参与协作语义（仍可保留落盘字段，解析后清除内存投影）
+  if (!box.coordination) {
     delete box.fm.status;
   }
 

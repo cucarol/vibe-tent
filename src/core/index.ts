@@ -1,5 +1,6 @@
 // tent-core 公开面。插件和 CLI 都从这里 import。
 export * from "./types.js";
+export * from "./paths.js";
 export * from "./typeRegistry.js";
 export * from "./typeManagement.js";
 export * from "./skillRoleRegistry.js";
@@ -8,6 +9,8 @@ export * from "./scaffold.js";
 export * from "./adapter.js";
 export * from "./frontmatter.js";
 export * from "./tree.js";
+export * from "./concept.js";
+export * from "./migration.js";
 export * from "./claim.js";
 export * from "./manifest.js";
 export * from "./inbox.js";
@@ -18,3 +21,4 @@ export * from "./order.js";
 export * from "./canvas.js";
 export * from "./id.js";
 export * from "./ops.js";
+export * from "./workspace.js";
