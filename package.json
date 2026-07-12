@@ -4,10 +4,12 @@
   "description": "Manage intent, context, permissions, and task delegation between users and coding agents with an Obsidian plugin and CLI.",
   "type": "module",
   "bin": {
-    "tent": "./cli.mjs"
+    "tent": "./cli.mjs",
+    "tent-service": "./service.mjs"
   },
   "files": [
     "cli.mjs",
+    "service.mjs",
     "main.js",
     "manifest.json",
     "versions.json",
@@ -26,8 +28,8 @@
     "build:plugin": "node esbuild.config.mjs production",
     "dev": "node esbuild.config.mjs",
     "build:core": "tsc -p tsconfig.core.json",
-    "test": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/package.test.ts test/open-source.test.ts test/plugin.test.ts",
-    "test:core": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts",
+    "test": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/package.test.ts test/open-source.test.ts test/plugin.test.ts",
+    "test:core": "node --test --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/b1-concept.test.ts test/service-b2.test.ts",
     "test:integration": "node --test --import tsx test/package.test.ts test/open-source.test.ts",
     "typecheck": "tsc -noEmit",
     "security:audit": "npm audit --audit-level=high",
