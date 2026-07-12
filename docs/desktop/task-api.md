@@ -195,7 +195,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `task.startSession` | authorized orchestration / user | Resolve **machine-local AgentProfile**, enforce **A2APolicy**, then service calls **internal** `AgentRuntimePort` |
 | `task.wait` | executing session / service | `running → waiting` with reason + summary |
 | `task.resume` | user confirmation / external event | `waiting → running` |
-| `task.deliver` | assignee | Create/update delivery; enter `delivered` (or auto-integrate path per policy) |
+| `task.deliver` | assignee **or Local Service** (managed ACP auto-deliver) | Create/update delivery; enter `delivered` (or auto-integrate path per policy). Managed path: service calls the same lifecycle with `summary` = final assistant reply — never auto-accept beyond existing deliveryPolicy. |
 | `task.requestReview` | assignee | Explicit review queue (used when `agent-decide` chooses upgrade) |
 | `task.accept` | user; authorized orchestrator **≠ deliverer** | Integrate commits if any → `accepted`; clear occupation |
 | `task.reject` | same as accept | Reject delivery; default resume rework |
@@ -241,6 +241,21 @@ docs.fork + box occupation & review    no box-tree writes; no client exposure
 ```
 
 Agents submit task targets (role / **AgentProfile** id / capability). They never read provider credentials. The service resolves authorized machine-local profiles and starts adapters **after** A2A.
+
+### 3.5 Managed ACP vs external manual agent (two paths)
+
+| Path | Who starts | Bootstrap | Claim | Report / deliver |
+| --- | --- | --- | --- | --- |
+| **Managed ACP** (`task.startSession`) | Local Service after A2A | Context Card **pointer** + near-field **user prompt** (task envelope `## User Prompt` only — not box/manifest bodies) | Service claims (user path) before spawn; agent must **not** claim | Service captures final ACP assistant response (`agent_message_chunk` until `end_turn`) and calls **the same** `task.deliver` with `summary` = that reply. Agent does **not** need `tent task deliver`. |
+| **External / relay** (clipboard, pull-host) | Human / external session | `relayPrompt` (claim → get → deliver CLI steps) | Agent runs `tent task claim` | Agent runs `tent task deliver --summary …` |
+
+**Managed invariants:**
+
+1. **Report ≡ final assistant reply.** Tent does not invent a second “report” channel; delivery.summary is that text.
+2. **No auto-accept.** `deliveryPolicy=manual` → `delivered` + ready delivery pending user review. `bypass` / `agent-decide` use existing policy routing only (`agent-decide` without an integrate decision defaults to **request-review**).
+3. **No forge on failure.** Empty assistant text, ACP error, timeout, stop, or interrupt → **no** delivery; task/session projects `failed` or `interrupted` with recoverable semantics where applicable.
+4. **No double delivery.** Reconnect / duplicate `session.prompt_complete` / already `delivered|accepted|…` is ignored or fails loudly at lifecycle authority — never two ready deliveries.
+5. **Tool permissionPolicy** remains `deny|ask|allow` (default **deny**). Tool-less tasks must still complete via the managed report path.
 
 ---
 

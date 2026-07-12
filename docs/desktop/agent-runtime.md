@@ -133,7 +133,11 @@ interface StartSessionRequest {
     cwd: string;
     // env handles / absolute path caches stay in session registry
   };
-  /** Initial text for the agent (relay prompt / task pointer). Not a multi-turn chat API. */
+  /**
+   * Initial text for the agent. Managed ACP: Context Card pointer + user prompt
+   * (not multi-turn chat; not a full box paste). External adapters may still
+   * receive a short pointer. Prefer non-argv channels on Windows.
+   */
   bootstrapPrompt?: string;
   cwd?: string; // alias of runtimeWorkspace.cwd when set; worktree absolute path from core
   env?: Record<string, string>; // no secret plaintext for disk
@@ -145,7 +149,13 @@ type RuntimeEvent =
   | { type: "session.waiting_user"; sessionId: string; summary: string }
   | { type: "session.exited"; sessionId: string; exitCode: number | null }
   | { type: "session.failed"; sessionId: string; error: string }
-  | { type: "session.stdout_tail"; sessionId: string; text: string }; // optional diagnostics only
+  | { type: "session.stdout_tail"; sessionId: string; text: string } // optional diagnostics only
+  | {
+      type: "session.prompt_complete";
+      sessionId: string;
+      assistantText: string; // agent_message_chunk only — managed delivery report
+      stopReason?: string;
+    };
 ```
 
 Client-visible session projections may be wrapped in the shared **EventEnvelope** (architecture §5.2) as `session.state` events. Adapters emit `RuntimeEvent` only to the service; they do not publish concept or task events.
@@ -165,7 +175,8 @@ Client-visible session projections may be wrapped in the shared **EventEnvelope*
 | --- | --- |
 | `session.live` | keep/ensure `running` when bound; bind **`task.sessionId`** (id reference only) |
 | `session.waiting_user` | `task.wait` with reason + summary (user-input / external) |
-| `session.exited` (expected) | no auto-accept; collaboration ends via deliver/interrupt |
+| `session.exited` (expected) | no auto-accept; managed path may already have delivered via `session.prompt_complete` |
+| `session.prompt_complete` | managed ACP only: successful `session/prompt` `end_turn` with non-empty `agent_message_chunk` text; Local Service may auto-call `task.deliver` (summary=assistantText). Empty/error/interrupt must **not** emit this event |
 | `session.failed` / dead probe unrecoverable | `failed` or recoverable `waiting` per service policy |
 | `session.stdout_tail` | diagnostics only; **never** product chat transcript |
 
@@ -278,8 +289,8 @@ Rules:
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **Push** | `capabilities.canSpawn === true` and **A2APolicy** allows (or user grants `ask`) | Service calls **internal** `AgentRuntimePort.startSession`; bootstrapPrompt delivered to process (prefer stdin/temp file over giant Windows cmdline) |
-| **Pull** | GUI hosts, no CLI, `deny` policy, or user-woken existing session | Write task envelope + relay prompt only; session may be `external`; Tent shows waiting/claim; optional deep-link/jump to official client—no fake spawn |
+| **Push (managed ACP)** | `capabilities.canSpawn === true` and **A2APolicy** allows (or user grants `ask`) | Service claims task (user path), builds **managed bootstrap** (Context Card pointer + near-field user prompt — not full box body; **no** claim/get/deliver CLI steps), calls **internal** `AgentRuntimePort.startSession`. On `session.prompt_complete`, service auto-`task.deliver`s the final assistant reply. Tool `permissionPolicy` default remains **deny**. |
+| **Pull (external)** | GUI hosts, no CLI, `deny` A2A, or user-woken existing session | Write task envelope + **relay** prompt (claim → get → deliver); session may be `external`; Tent shows waiting/claim; agent uses `tent task *` RPC |
 
 MVP requirement:
 

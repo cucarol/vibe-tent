@@ -180,7 +180,7 @@ function formatTaskPathHints(task: TaskEnvelope, roots: TaskPromptRoots): string
 }
 
 /**
- * External / manual wake relay: task is still queued — agent must claim.
+ * External / manual wake relay: task is still queued — agent must claim + deliver via CLI.
  * Used for clipboard relay and dispatch.relayPrompt, NOT for service startSession bootstrap.
  */
 export function relayPromptForTask(
@@ -199,22 +199,39 @@ export function relayPromptForTask(
 }
 
 /**
- * Service already claimed the task (task.startSession / auto-claim path).
- * Agent must NOT claim again (claim is denied under permissionPolicy=deny noise / double-claim).
+ * Extract the near-field user prompt from a task envelope body.
+ * Envelope layout: Context Pointers + `## User Prompt` — never the box/manifest body.
+ */
+export function extractTaskUserPrompt(task: TaskEnvelope): string {
+  const body = task.prompt?.trim() || "";
+  if (!body) return "";
+  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (match) return match[1].trim();
+  // Legacy / override bodies without the section header: treat whole body as the prompt.
+  return body;
+}
+
+/**
+ * Managed ACP startSession bootstrap (service already claimed).
+ * Pointers + near-field user prompt only — no claim/get/deliver CLI steps.
+ * Final assistant response is captured by Local Service and auto-delivered.
  */
 export function sessionBootstrapPromptForTask(
   task: TaskEnvelope,
   roots: string | TaskPromptRoots
 ): string {
   const resolved = resolveTaskPromptRoots(roots);
+  const userPrompt = extractTaskUserPrompt(task);
   return (
-    `A Tent task is ready for role ${task.role}.\n` +
+    `A Tent managed ACP session is ready for role ${task.role}.\n` +
     `${formatTaskPathHints(task, resolved)}\n` +
-    `Service status: this task is already claimed (state=${task.state || "running"}). Skip any claim step; inspect and work, then deliver.\n` +
-    `1. Run \`tent task get ${task.path}\` to inspect the task (or read the envelope file under systemRoot).\n` +
-    `2. Read the envelope → manifest → claimed boxes; the box notes contain the task definition.\n` +
-    `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
-    `4. If this is a new session for this role, complete role init first (read the init file above).`
+    `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
+    `Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).\n` +
+    `Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).\n` +
+    `Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.\n` +
+    (userPrompt
+      ? `\n## User Prompt\n\n${userPrompt}\n`
+      : `\n## User Prompt\n\n(no user prompt on envelope)\n`)
   );
 }
 

@@ -939,6 +939,7 @@ __export(task_exports, {
   ackTaskEnvelope: () => ackTaskEnvelope,
   cancelTaskEnvelope: () => cancelTaskEnvelope,
   ensureRoleInit: () => ensureRoleInit,
+  extractTaskUserPrompt: () => extractTaskUserPrompt,
   loadTaskEnvelope: () => loadTaskEnvelope,
   loadTaskEnvelopes: () => loadTaskEnvelopes,
   patchTaskEnvelope: () => patchTaskEnvelope,
@@ -1034,15 +1035,31 @@ ${formatTaskPathHints(task, resolved)}
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
 4. If this is a new session for this role, complete role init first (read the init file above).`;
 }
+function extractTaskUserPrompt(task) {
+  const body = task.prompt?.trim() || "";
+  if (!body) return "";
+  const match = body.match(/##\s*User Prompt\s*\r?\n+([\s\S]*?)\s*$/i);
+  if (match) return match[1].trim();
+  return body;
+}
 function sessionBootstrapPromptForTask(task, roots) {
   const resolved = resolveTaskPromptRoots(roots);
-  return `A Tent task is ready for role ${task.role}.
+  const userPrompt = extractTaskUserPrompt(task);
+  return `A Tent managed ACP session is ready for role ${task.role}.
 ${formatTaskPathHints(task, resolved)}
-Service status: this task is already claimed (state=${task.state || "running"}). Skip any claim step; inspect and work, then deliver.
-1. Run \`tent task get ${task.path}\` to inspect the task (or read the envelope file under systemRoot).
-2. Read the envelope \u2192 manifest \u2192 claimed boxes; the box notes contain the task definition.
-3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
-4. If this is a new session for this role, complete role init first (read the init file above).`;
+Service status: this task is already claimed (state=${task.state || "running"}).
+Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).
+Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).
+Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.
+` + (userPrompt ? `
+## User Prompt
+
+${userPrompt}
+` : `
+## User Prompt
+
+(no user prompt on envelope)
+`);
 }
 async function ensureRoleInit(fs9, role, tentName) {
   const path9 = join("temp", role.name, "init.md");
@@ -2962,9 +2979,11 @@ var GrokAcpClient = class {
     this.lines = null;
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
+    /** Accumulated agent_message_chunk only — used as managed delivery report. */
     this.assistantText = "";
     this.stderrTail = "";
     this.closed = false;
+    this.stopRequested = false;
     this.exitCode = null;
     this.exitSignal = null;
     this.exitWaiters = [];
@@ -3043,8 +3062,9 @@ var GrokAcpClient = class {
     }
   }
   /**
-   * Send session/prompt with task pointer / relay text. Maps session/update events.
-   * Safe to call after connect(); failures emit session.failed.
+   * Send session/prompt with managed bootstrap (Context Card + user prompt).
+   * Accumulates agent_message_chunk only for the final report text.
+   * Safe to call after connect(); failures throw (caller emits session.failed).
    */
   async sendPrompt(bootstrapPrompt) {
     if (!this.providerSessionId) {
@@ -3054,6 +3074,7 @@ var GrokAcpClient = class {
     if (pid == null) {
       throw new Error("Grok ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
     }
+    this.assistantText = "";
     try {
       const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
       const result = await this.request(
@@ -3064,6 +3085,9 @@ var GrokAcpClient = class {
         },
         promptTimeout
       );
+      if (this.stopRequested) {
+        throw new Error("session interrupted before prompt completed");
+      }
       return {
         pid,
         providerSessionId: this.providerSessionId,
@@ -3071,6 +3095,9 @@ var GrokAcpClient = class {
         assistantText: this.assistantText.trim()
       };
     } catch (err) {
+      if (this.stopRequested) {
+        throw new Error("session interrupted before prompt completed");
+      }
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
       throw new Error(detail);
@@ -3080,6 +3107,7 @@ var GrokAcpClient = class {
   async stop(reason) {
     void reason;
     if (this.closed) return;
+    this.stopRequested = true;
     this.closed = true;
     this.rejectAllPending(new Error("session stopped"));
     const proc = this.proc;
@@ -3192,8 +3220,16 @@ var GrokAcpClient = class {
   handleSessionUpdate(update) {
     if (!update) return;
     const kind = update.sessionUpdate ?? "";
-    if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.text) {
+    if (kind === "agent_message_chunk" && update.content?.text) {
       this.assistantText += update.content.text;
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${update.content.text}`
+      });
+      return;
+    }
+    if (kind === "agent_thought_chunk" && update.content?.text) {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
@@ -3476,17 +3512,47 @@ var GrokAcpProviderAdapter = class {
       } : void 0
     });
     await client.connect();
-    const promptDone = client.sendPrompt(bootstrap).then(
-      () => void 0,
-      async (err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
-        try {
-          await client.stop("interrupt");
-        } catch {
-        }
+    const promptDone = client.sendPrompt(bootstrap).then((result) => {
+      const stopReason = (result.stopReason || "end_turn").toLowerCase();
+      const assistantText = (result.assistantText || "").trim();
+      if (stopReason !== "end_turn") {
+        emit2({
+          type: "session.failed",
+          sessionId: plan.sessionId,
+          error: `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
+        });
+        return;
       }
-    );
+      if (!assistantText) {
+        emit2({
+          type: "session.failed",
+          sessionId: plan.sessionId,
+          error: "ACP assistant response empty (no auto-delivery)"
+        });
+        return;
+      }
+      emit2({
+        type: "session.prompt_complete",
+        sessionId: plan.sessionId,
+        assistantText,
+        stopReason: result.stopReason || "end_turn"
+      });
+    }).catch(async (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/interrupted|session stopped/i.test(message)) {
+        emit2({
+          type: "session.failed",
+          sessionId: plan.sessionId,
+          error: `session interrupted: ${message}`
+        });
+        return;
+      }
+      emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
+      try {
+        await client.stop("interrupt");
+      } catch {
+      }
+    });
     return new GrokManagedSession(plan.sessionId, client, promptDone);
   }
   parseResumeToken(raw) {
@@ -4576,6 +4642,11 @@ async function a2aResolve(ctx, p) {
   }
   return { approval: item, started: null };
 }
+var managedAutoDeliverInFlight = /* @__PURE__ */ new Set();
+var managedAutoDeliverDone = /* @__PURE__ */ new Set();
+function managedDeliverKey(sessionId, taskPath) {
+  return `${sessionId}::${taskPath}`;
+}
 function mapRuntimeEventToService(ctx, ev) {
   void (async () => {
     try {
@@ -4593,7 +4664,8 @@ function mapRuntimeEventToService(ctx, ev) {
           ..."pid" in ev ? { pid: ev.pid } : {},
           ..."exitCode" in ev ? { exitCode: ev.exitCode } : {},
           ..."error" in ev ? { error: ev.error } : {},
-          ..."summary" in ev ? { summary: ev.summary } : {}
+          ..."summary" in ev ? { summary: ev.summary } : {},
+          ...ev.type === "session.prompt_complete" ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason } : {}
         },
         "service"
       );
@@ -4628,11 +4700,108 @@ function mapRuntimeEventToService(ctx, ev) {
             });
             emitTaskState(ctx, mount.workspaceId, failed, "session.failed");
           });
+        } else if (ev.type === "session.prompt_complete") {
+          await tryManagedAutoDeliver(ctx, {
+            workspaceId: mount.workspaceId,
+            taskPath: task.path,
+            sessionId: ev.sessionId,
+            assistantText: ev.assistantText
+          });
         }
       }
     } catch {
     }
   })();
+}
+async function tryManagedAutoDeliver(ctx, input) {
+  const summary = input.assistantText.trim();
+  if (!summary) {
+    return;
+  }
+  const key = managedDeliverKey(input.sessionId, input.taskPath);
+  if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
+    return;
+  }
+  managedAutoDeliverInFlight.add(key);
+  try {
+    const mount = ctx.host.get(input.workspaceId);
+    if (!mount) return;
+    await ctx.mutations.run(input.workspaceId, async () => {
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (task.state !== "running") {
+        return;
+      }
+      if (task.sessionId && task.sessionId !== input.sessionId) {
+        return;
+      }
+      const existing = await loadDeliveries(mount.env.fs, {
+        taskId: task.id || input.taskPath
+      });
+      if (existing.some((d) => d.status === "ready")) {
+        managedAutoDeliverDone.add(key);
+        return;
+      }
+      ctx.host.markSelfWrite(input.workspaceId);
+      const integrate = async (cs) => {
+        if (ctx.integrateCommits) {
+          await ctx.integrateCommits(mount.workspaceRoot, cs);
+        }
+      };
+      const policy = task.deliveryPolicy ?? "manual";
+      const decision = policy === "agent-decide" ? "request-review" : void 0;
+      const result = await taskDeliver(mount.env, input.taskPath, {
+        summary,
+        decision,
+        integrate
+      });
+      managedAutoDeliverDone.add(key);
+      emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
+      ctx.events.emit(
+        "delivery.updated",
+        input.workspaceId,
+        {
+          id: result.delivery.id,
+          taskId: result.delivery.taskId,
+          status: result.delivery.status,
+          reason: "session.prompt_complete",
+          managedAuto: true
+        },
+        "self"
+      );
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      const mount = ctx.host.get(input.workspaceId);
+      if (!mount) return;
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (task.state === "running" || task.state === "waiting") {
+        await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
+          const failed = await patchTaskEnvelope2(mount.env.fs, input.taskPath, {
+            state: "failed",
+            wait: null,
+            updatedAt: mount.env.clock.now()
+          });
+          emitTaskState(ctx, input.workspaceId, failed, "session.prompt_complete.failed");
+        });
+        ctx.events.emit(
+          "session.state",
+          input.workspaceId,
+          {
+            sessionId: input.sessionId,
+            runtimeEvent: "session.prompt_complete.failed",
+            error: message
+          },
+          "service"
+        );
+      }
+    } catch {
+    }
+  } finally {
+    managedAutoDeliverInFlight.delete(key);
+  }
 }
 function emitTaskState(ctx, workspaceId, task, reason) {
   ctx.events.emit(
@@ -4782,9 +4951,10 @@ function buildSessionBootstrapPrompt(task, roots) {
   const aux = [];
   if (task.role) aux.push(`role: ${task.role}`);
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
+  if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
   return `${card.prompt}
 
---- Tent session bootstrap ---
+--- Tent managed session bootstrap ---
 ` + (aux.length ? `${aux.join("\n")}
 ` : "") + `${sessionSteps}
 `;

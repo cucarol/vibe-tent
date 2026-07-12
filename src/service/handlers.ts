@@ -612,8 +612,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   let session: unknown = undefined;
   if (startSession) {
     // Claim then startSession so running+sessionId bind together.
-    // Do not pass relayPrompt as bootstrap — relay still tells external agents to claim;
-    // startSession builds a post-claim bootstrap (task get + deliver) by default.
+    // Do not pass relayPrompt as bootstrap — relay still tells external agents to claim+deliver;
+    // startSession builds managed bootstrap (Context Card + user prompt; auto-deliver on end).
     await taskClaimRpc(ctx, {
       workspaceId,
       taskPath: result.taskPath,
@@ -1000,8 +1000,9 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         }
       : undefined;
 
-  // Pointer-first bootstrap: Context Card + post-claim session steps — never copy full
-  // box/task body (preserves prompt-cache). Not the external relay (which still says claim).
+  // Managed ACP bootstrap: stable Context Card pointer + near-field user prompt.
+  // Does not copy box/manifest bodies. Does not instruct claim/get/deliver CLI —
+  // Local Service auto-delivers the final assistant response. External relay is separate.
   const sessionBootstrap =
     bootstrapPrompt?.trim() ||
     buildSessionBootstrapPrompt(task, {
@@ -1206,6 +1207,18 @@ async function a2aResolve(ctx: HandlerContext, p: Record<string, unknown>) {
 
 // ---- runtime event bridge (called from service bootstrap) ----
 
+/**
+ * Dedup keys for managed auto-delivery: one successful prompt_complete per
+ * sessionId+taskPath must not create two deliveries (reconnect / double emit).
+ * Authority remains task lifecycle (ready delivery / non-running state also blocks).
+ */
+const managedAutoDeliverInFlight = new Set<string>();
+const managedAutoDeliverDone = new Set<string>();
+
+function managedDeliverKey(sessionId: string, taskPath: string): string {
+  return `${sessionId}::${taskPath}`;
+}
+
 export function mapRuntimeEventToService(
   ctx: HandlerContext,
   ev: RuntimeEvent
@@ -1229,11 +1242,14 @@ export function mapRuntimeEventToService(
           ...("exitCode" in ev ? { exitCode: ev.exitCode } : {}),
           ...("error" in ev ? { error: ev.error } : {}),
           ...("summary" in ev ? { summary: ev.summary } : {}),
+          ...(ev.type === "session.prompt_complete"
+            ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason }
+            : {}),
         },
         "service"
       );
 
-      // Map waiting_user / failed onto bound task when lastTaskId known.
+      // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
       if (!rec?.lastTaskId) return;
       const mountInfos = ctx.host.list();
       for (const info of mountInfos) {
@@ -1254,7 +1270,10 @@ export function mapRuntimeEventToService(
             });
             emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
           });
-        } else if (ev.type === "session.failed" && (task.state === "running" || task.state === "waiting")) {
+        } else if (
+          ev.type === "session.failed" &&
+          (task.state === "running" || task.state === "waiting")
+        ) {
           await ctx.mutations.run(mount.workspaceId, async () => {
             ctx.host.markSelfWrite(mount.workspaceId);
             const { patchTaskEnvelope } = await import("../core/task.js");
@@ -1265,12 +1284,150 @@ export function mapRuntimeEventToService(
             });
             emitTaskState(ctx, mount.workspaceId, failed, "session.failed");
           });
+        } else if (ev.type === "session.prompt_complete") {
+          await tryManagedAutoDeliver(ctx, {
+            workspaceId: mount.workspaceId,
+            taskPath: task.path,
+            sessionId: ev.sessionId,
+            assistantText: ev.assistantText,
+          });
         }
       }
     } catch {
       // mapping must not crash the runtime
     }
   })();
+}
+
+/**
+ * Managed ACP path: capture final assistant response → same task.deliver lifecycle.
+ * - summary/report = assistant final reply
+ * - never auto-accept; manual → pending review; bypass/agent-decide use existing policy
+ * - empty/error already filtered by adapter; still refuse empty here
+ * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
+ */
+async function tryManagedAutoDeliver(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId: string;
+    assistantText: string;
+  }
+): Promise<void> {
+  const summary = input.assistantText.trim();
+  if (!summary) {
+    // Adapter should have failed already; do not invent a delivery.
+    return;
+  }
+
+  const key = managedDeliverKey(input.sessionId, input.taskPath);
+  if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
+    return;
+  }
+  managedAutoDeliverInFlight.add(key);
+
+  try {
+    const mount = ctx.host.get(input.workspaceId);
+    if (!mount) return;
+
+    // Re-load authority state under mutation bus.
+    await ctx.mutations.run(input.workspaceId, async () => {
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+
+      // Only deliver from active running managed session for this sessionId.
+      if (task.state !== "running") {
+        // Already delivered / review / terminal / interrupted — ignore duplicate.
+        return;
+      }
+      if (task.sessionId && task.sessionId !== input.sessionId) {
+        return;
+      }
+
+      // Ready delivery already present → lifecycle forbids double ready.
+      const existing = await loadDeliveries(mount.env.fs, {
+        taskId: task.id || input.taskPath,
+      });
+      if (existing.some((d) => d.status === "ready")) {
+        managedAutoDeliverDone.add(key);
+        return;
+      }
+
+      ctx.host.markSelfWrite(input.workspaceId);
+      const integrate = async (cs: string[]) => {
+        if (ctx.integrateCommits) {
+          await ctx.integrateCommits(mount.workspaceRoot, cs);
+        }
+      };
+
+      // agent-decide without an explicit agent decision: request-review (never auto-accept).
+      const policy = task.deliveryPolicy ?? "manual";
+      const decision =
+        policy === "agent-decide" ? ("request-review" as const) : undefined;
+
+      const result = await taskDeliver(mount.env, input.taskPath, {
+        summary,
+        decision,
+        integrate,
+      });
+
+      managedAutoDeliverDone.add(key);
+      emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
+      ctx.events.emit(
+        "delivery.updated",
+        input.workspaceId,
+        {
+          id: result.delivery.id,
+          taskId: result.delivery.taskId,
+          status: result.delivery.status,
+          reason: "session.prompt_complete",
+          managedAuto: true,
+        },
+        "self"
+      );
+    });
+  } catch (err) {
+    // Lifecycle refusal (terminal, ready delivery, invalid transition) = no forge.
+    // Surface as session diagnostics only when task is still running.
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      const mount = ctx.host.get(input.workspaceId);
+      if (!mount) return;
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (task.state === "running" || task.state === "waiting") {
+        await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          const { patchTaskEnvelope } = await import("../core/task.js");
+          const failed = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+            state: "failed",
+            wait: null,
+            updatedAt: mount.env.clock.now(),
+          });
+          emitTaskState(ctx, input.workspaceId, failed, "session.prompt_complete.failed");
+        });
+        ctx.events.emit(
+          "session.state",
+          input.workspaceId,
+          {
+            sessionId: input.sessionId,
+            runtimeEvent: "session.prompt_complete.failed",
+            error: message,
+          },
+          "service"
+        );
+      }
+    } catch {
+      // ignore nested mapping failures
+    }
+  } finally {
+    managedAutoDeliverInFlight.delete(key);
+  }
+}
+
+/** Test helper: clear in-process managed deliver dedup (does not touch disk). */
+export function resetManagedAutoDeliverDedupForTests(): void {
+  managedAutoDeliverInFlight.clear();
+  managedAutoDeliverDone.clear();
 }
 
 // ---- helpers ----
@@ -1448,9 +1605,9 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 }
 
 /**
- * Build ACP bootstrap text from task pointers only (Context Card + post-claim steps).
- * Does not embed the full user prompt / box body — agent must read the envelope.
- * Distinct from relayPromptForTask: service already claimed; no claim/task-ack.
+ * Build managed ACP bootstrap: Context Card pointer + near-field user prompt.
+ * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
+ * Distinct from relayPromptForTask (external manual path still claim+deliver).
  */
 function buildSessionBootstrapPrompt(
   task: import("../core/task.js").TaskEnvelope,
@@ -1470,9 +1627,10 @@ function buildSessionBootstrapPrompt(
   const aux: string[] = [];
   if (task.role) aux.push(`role: ${task.role}`);
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
+  if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
   return (
     `${card.prompt}\n\n` +
-    `--- Tent session bootstrap ---\n` +
+    `--- Tent managed session bootstrap ---\n` +
     (aux.length ? `${aux.join("\n")}\n` : "") +
     `${sessionSteps}\n`
   );

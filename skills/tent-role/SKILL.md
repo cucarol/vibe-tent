@@ -113,10 +113,10 @@ Desktop 共置与 Local Service 路径使用 **`tent task *`**（经 Service RPC
    - CLI 相对 system root：`temp/<role>/init.md`
    它是稳定 role 上下文，设计上用于 prompt cache 复用。新建或恢复 role session 时还必须显式读取 `.tent/RULES.md`；如果任务进入真实 workspace，还必须读取该 workspace 的项目规则文件（例如 `AGENTS.md`、`CLAUDE.md` 或仓库明确指定的等价文件）。
 4. 每次唤醒或恢复 role 时：
-   - **若 bootstrap / Context Card 写明 service 已 claim（`task.startSession` 路径）**：不要 `tent task claim`，用 `tent task get <taskPath>` 检查任务，再读 envelope / manifest / claimed box，最终 `tent task deliver`。
-   - **若是外部手动唤醒 / 剪贴板 relay（任务仍 queued）**：先 `tent task claim <taskPath>`，再读 envelope 与 box，最终 deliver。
+   - **若是 Tent managed ACP（`task.startSession`）**：service 已 claim；首条 prompt 已含 Context Card 指针 + user prompt。**不要**运行 `tent task claim|get|deliver`（默认工具权限可能是 deny）。你的**最终回复就是 report**；Local Service 会捕获并自动 `task.deliver`（manual 仍待 user 裁断，不会 auto-accept）。
+   - **若是外部手动唤醒 / 剪贴板 relay（任务仍 queued）**：先 `tent task claim <taskPath>`，用 `tent task get <taskPath>` 检查任务，再读 envelope / manifest / claimed box，最终 `tent task deliver`。
    - user 直接给了 task 路径时以该路径为准；否则用 `tent task list` 或检查 `.tent/temp/<role>/tasks/*.md`。
-5. 接任务后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件；只有 `task claim`（或 service 代 claim）会把任务改成 `running`。
+5. **外部路径**接任务后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件；只有 `task claim`（或 service 代 claim）会把任务改成 `running`。Managed 路径以 prompt 内 user prompt 为准，不必为取 prompt 而调用 CLI。
 6. 粗 box 可以直接派活。claim 后先对齐任务：读 box 正文和必要子框；不清楚就问 user；对齐结论写回 box 正文。box 的细节是在推进中长出来的，不是派活门槛。
 7. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending/queued task 时再按口头范围工作。读 `.tent/RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
 8. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。这三个字段由 dispatch 自动生成：从 Tent 唯一的 workspace 指针框解析 workspace，按 `tent-role/<role>` 与 `<workspace>-worktrees/<role>` 命名并实际创建 worktree——派活者不手填，接活者不自建。若 envelope 没有这些字段，说明该 Tent 没有 workspace 指针框：这是合法的纯 Tent 任务（只做 Tent 侧工作，不碰代码仓），不是派活出错。
@@ -141,11 +141,11 @@ tent task deliver <taskPath> --summary <text> [--commits sha,sha]
 
 - dispatch：写 manifest 和 queued task envelope，不写 owner/status。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，也没有 active task envelope，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
 - workspace 契约：任意位置的框只要其一级/base type 在 `.tent/types.json` 开启了 `workspacePointer`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名与 type 字面名称（是否叫 `output`）不参与识别，二级 type 跟随一级。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。开启能力但未填 `workspace` 的框只是普通框。
-- claim：目标 agent 执行 `tent task claim <taskPath>`（Service RPC）后，envelope 变为 running，并把目标 box owner 设为该 role、status 设为 doing。**`task.startSession` 会在 user 路径上先 claim，bootstrap 会写明已 claim——agent 不要再 claim。**
-- deliver：完成后执行 `tent task deliver <taskPath> --summary …`；user 用 Desktop 或 `tent task accept/reject` 裁决。
+- claim：外部 agent 执行 `tent task claim <taskPath>`（Service RPC）后，envelope 变为 running，并把目标 box owner 设为该 role、status 设为 doing。**`task.startSession` 会在 user 路径上先 claim——managed agent 不要再 claim。**
+- deliver：**外部路径**完成后执行 `tent task deliver <taskPath> --summary …`。**Managed ACP 路径**由 Local Service 在 `session/prompt` 成功结束时用最终 assistant 回复自动 deliver；agent 不必也不应依赖 CLI deliver。user 用 Desktop 或 `tent task accept/reject` 裁决。
 - A2A：role 是否可 `startSession` 由 `.tent/roles.json` 的 `a2aPolicy: allow|ask|deny`（默认 deny）服务端硬执行；不要把 secret 写入 role。
 - manifest 是 dispatch 时刻的快照；派活后修改 box 的 readable、writable 或 type 不影响已发出的 manifest，需要释放后重新 dispatch 才刷新。
-- spawn/唤醒：把 **relay prompt**（含 claim）交给外部/手动唤醒的会话；或由 service **startSession bootstrap**（已 claim，get + deliver）推给 ACP 会话。
+- spawn/唤醒：把 **relay prompt**（含 claim+deliver）交给外部/手动会话；或由 service **managed startSession bootstrap**（Context Card + user prompt，自动 deliver）推给 ACP 会话。
 - review / accept：读 delivery、commit、diff；不满意就 reject 或继续追问。只有 user（或被明确授权的编排）可 accept。
 
 不要自己把 box 标记完成。只有 user 确认后，交付才算完成。

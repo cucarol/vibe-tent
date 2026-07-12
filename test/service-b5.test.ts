@@ -15,6 +15,70 @@ import { createServiceClient } from "../src/service/client.js";
 import { readServiceEndpoint } from "../src/service/data-dir.js";
 import { CLIENT_METHODS, RPC_A2A_ASK, RPC_A2A_DENIED, RPC_UNAUTHORIZED } from "../src/service/types.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import {
+  DEFAULT_GROK_MODEL,
+  GROK_ACP_ADAPTER_ID,
+} from "../src/adapters/grok-acp/index.js";
+import {
+  mapRuntimeEventToService,
+  resetManagedAutoDeliverDedupForTests,
+} from "../src/service/handlers.js";
+import { fileURLToPath } from "node:url";
+
+const MOCK_ACP = path.join(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "fixtures",
+  "mock-acp-server.mjs"
+);
+
+function mockAcpProfile(
+  id: string,
+  opts: {
+    logPath: string;
+    promptText?: string;
+    promptMode?: "ok" | "empty" | "error" | "interrupt";
+    stopReason?: string;
+    permissionPolicy?: "deny" | "allow" | "ask";
+  }
+): import("../src/runtime/types.js").AgentProfileConfig {
+  return {
+    id,
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    env: {
+      MOCK_ACP_LOG: opts.logPath,
+      MOCK_ACP_KEEP_ALIVE: "1",
+      MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "MANAGED_FINAL_REPORT",
+      ...(opts.promptMode && opts.promptMode !== "ok"
+        ? { MOCK_ACP_PROMPT_MODE: opts.promptMode }
+        : {}),
+      ...(opts.stopReason ? { MOCK_ACP_STOP_REASON: opts.stopReason } : {}),
+      CPA_GROK_API_KEY: "test-key-not-real",
+    },
+    grokAcp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      permissionPolicy: opts.permissionPolicy ?? "deny",
+      promptTimeoutMs: 8_000,
+      permissionTimeoutMs: 500,
+    },
+  };
+}
+
+async function pollUntil<T>(
+  fn: () => Promise<T | undefined | null | false>,
+  timeoutMs = 10_000,
+  label = "condition"
+): Promise<T> {
+  const start = Date.now();
+  while (Date.now() - start < timeoutMs) {
+    const v = await fn();
+    if (v) return v as T;
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  throw new Error(`timeout waiting for ${label}`);
+}
 
 async function makeWorkspace(
   name = "b5",
@@ -591,7 +655,7 @@ test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async ()
   });
 });
 
-test("B5: startSession bootstrap is post-claim (get+deliver); relay still has claim", async () => {
+test("B5: startSession bootstrap is managed (Context Card + user prompt); relay still has claim", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -605,8 +669,9 @@ test("B5: startSession bootstrap is post-claim (get+deliver); relay still has cl
     const taskPath = (d.result as { taskPath: string }).taskPath;
     const relay = (d.result as { relayPrompt: string }).relayPrompt;
 
-    // External manual wake: still claim.
+    // External manual wake: still claim + deliver via CLI.
     assert.match(relay, new RegExp(`tent task claim ${escapeRegExp(taskPath)}`));
+    assert.match(relay, new RegExp(`tent task deliver ${escapeRegExp(taskPath)}`));
     assert.match(relay, /workspaceRoot:|systemRoot:/);
     assert.match(relay, /\.tent\/temp\//);
     assert.doesNotMatch(relay, /task-ack|tent report\b/);
@@ -621,10 +686,7 @@ test("B5: startSession bootstrap is post-claim (get+deliver); relay still has cl
     assert.ok(!started.error, JSON.stringify(started.error));
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
 
-    // Capture bootstrap from fake adapter temp file via runtime probe / env is not exposed;
-    // re-build expected contract by reading task + mount roots and asserting session is live.
-    // Service must have used post-claim bootstrap — verify via a second startSession override empty
-    // is not needed; instead read the bootstrap file written by fake adapter under os.tmpdir.
+    // Capture managed bootstrap from fake adapter temp file.
     const bootstrap = await findFakeBootstrapPrompt(sessionId);
     assert.ok(bootstrap, "fake adapter should write bootstrap file for session");
     const normalized = bootstrap!.replace(/\\/g, "/");
@@ -637,12 +699,16 @@ test("B5: startSession bootstrap is post-claim (get+deliver); relay still has cl
       `bootstrap should include systemRoot ${wsNorm}/.tent`
     );
     assert.match(bootstrap!, /\.tent\/temp\//);
-    assert.match(bootstrap!, new RegExp(`tent task get ${escapeRegExp(taskPath)}`));
-    assert.match(bootstrap!, new RegExp(`tent task deliver ${escapeRegExp(taskPath)}`));
+    assert.match(bootstrap!, /contextCard|Tent contextCard/i);
     assert.match(bootstrap!, /already claimed/i);
-    assert.match(bootstrap!, /Skip any claim step/i);
-    // Must not instruct claim / legacy ack/report (substring ban — bootstrap text avoids naming them).
+    assert.match(bootstrap!, /managed ACP session|managed session bootstrap/i);
+    assert.match(bootstrap!, /## User Prompt/);
+    assert.match(bootstrap!, /bootstrap path semantics/);
+    assert.match(bootstrap!, /submit delivery automatically|auto/i);
+    assert.match(bootstrap!, /skip Local Service claim\/get\/deliver CLI/i);
+    // Must not instruct claim/get/deliver CLI commands (managed path auto-delivers final reply).
     assert.doesNotMatch(bootstrap!, /tent task claim|task-ack|tent report\b/);
+    assert.doesNotMatch(bootstrap!, /tent task get |tent task deliver /);
     assert.doesNotMatch(bootstrap!, /Run `tent task claim/);
   });
 });
@@ -650,6 +716,288 @@ test("B5: startSession bootstrap is post-claim (get+deliver); relay still has cl
 function escapeRegExp(s: string): string {
   return s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
+
+// ---- managed ACP auto-delivery (mock ACP only; never real CPA) ----
+
+test("B5 managed ACP: user prompt enters ACP; final response → one manual delivery", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-macp-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const reportText = "MANAGED_FINAL_REPORT_OK";
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const userPrompt = "near-field: summarize the box intent without tools";
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: userPrompt,
+        deliveryPolicy: "manual",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-managed",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      // Wait for managed auto-deliver → delivered + one ready delivery.
+      const delivered = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "delivered" ? task : null;
+      }, 12_000, "task delivered via managed auto-deliver");
+
+      assert.equal(delivered.state, "delivered");
+
+      const list = await rpc(svc, "delivery.list", { workspaceId });
+      assert.ok(!list.error, JSON.stringify(list.error));
+      const deliveries = (list.result as { deliveries: Array<{ summary: string; status: string }> })
+        .deliveries;
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].status, "ready");
+
+      // User prompt must have entered ACP session/prompt text.
+      const logRaw = await fs.readFile(logPath, "utf8");
+      const log = JSON.parse(logRaw) as { prompts: string[] };
+      assert.ok(log.prompts.some((p) => p.includes(userPrompt)));
+      assert.ok(log.prompts.some((p) => /contextCard|Tent contextCard/i.test(p)));
+      assert.ok(log.prompts.some((p) => /skip Local Service claim\/get\/deliver CLI/i.test(p)));
+      assert.ok(
+        log.prompts.every((p) => !/tent task deliver /.test(p)),
+        "managed bootstrap must not instruct tent task deliver"
+      );
+
+      // Duplicate completion must not create a second delivery.
+      mapRuntimeEventToService(svc.ctx, {
+        type: "session.prompt_complete",
+        sessionId,
+        assistantText: "SECOND_SHOULD_BE_IGNORED",
+        stopReason: "end_turn",
+      });
+      await new Promise((r) => setTimeout(r, 200));
+      const list2 = await rpc(svc, "delivery.list", { workspaceId });
+      const deliveries2 = (
+        list2.result as { deliveries: Array<{ summary: string }> }
+      ).deliveries;
+      assert.equal(deliveries2.length, 1);
+      assert.equal(deliveries2[0].summary, reportText);
+
+      // Still pending user review — not auto-accepted.
+      const g2 = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.equal((g2.result as { task: { state: string } }).task.state, "delivered");
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-managed", {
+          logPath,
+          promptText: reportText,
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  for (const mode of ["empty", "error"] as const) {
+    const ws = await makeWorkspace();
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-b5-${mode}-`));
+    const logPath = path.join(dataDir, "mock-acp-log.json");
+    await withService(
+      async (svc) => {
+        const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+        const d = await rpc(svc, "task.dispatch", {
+          workspaceId,
+          boxId,
+          role: "executor",
+          prompt: `mode ${mode}`,
+        });
+        const taskPath = (d.result as { taskPath: string }).taskPath;
+        await rpc(svc, "task.claim", { workspaceId, taskPath });
+        const started = await rpc(svc, "task.startSession", {
+          workspaceId,
+          taskPath,
+          callerKind: "user",
+          profileId: `mock-acp-${mode}`,
+        });
+        assert.ok(!started.error, JSON.stringify(started.error));
+
+        const failed = await pollUntil(async () => {
+          const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+          const task = (g.result as { task: { state: string } }).task;
+          return task.state === "failed" ? task : null;
+        }, 12_000, `task failed for mode=${mode}`);
+        assert.equal(failed.state, "failed");
+
+        const list = await rpc(svc, "delivery.list", { workspaceId });
+        const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
+        assert.equal(deliveries.length, 0, `mode=${mode} must not create delivery`);
+      },
+      {
+        profiles: [
+          mockAcpProfile(`mock-acp-${mode}`, {
+            logPath,
+            promptMode: mode,
+          }),
+        ],
+      }
+    );
+  }
+});
+
+test("B5 managed ACP: interrupt / stop does not deliver", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-int-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "will interrupt",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-interrupt",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      // Hang mode: wait until session is live, then interrupt task.
+      await pollUntil(async () => {
+        const probe = await svc.runtime.probe(sessionId);
+        return probe.alive ? true : null;
+      }, 8_000, "session alive");
+
+      const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+      assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
+      assert.equal((interrupted.result as { state: string }).state, "interrupted");
+
+      await new Promise((r) => setTimeout(r, 300));
+      const list = await rpc(svc, "delivery.list", { workspaceId });
+      const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
+      assert.equal(deliveries.length, 0);
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-interrupt", {
+          logPath,
+          promptMode: "interrupt",
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review (no auto-accept forge)", async () => {
+  resetManagedAutoDeliverDedupForTests();
+
+  // bypass → accepted without review.by
+  {
+    const ws = await makeWorkspace();
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-bypass-"));
+    const logPath = path.join(dataDir, "mock-acp-log.json");
+    await withService(
+      async (svc) => {
+        const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+        const d = await rpc(svc, "task.dispatch", {
+          workspaceId,
+          boxId,
+          role: "executor",
+          prompt: "bypass policy path",
+          deliveryPolicy: "bypass",
+        });
+        const taskPath = (d.result as { taskPath: string }).taskPath;
+        await rpc(svc, "task.claim", { workspaceId, taskPath });
+        await rpc(svc, "task.startSession", {
+          workspaceId,
+          taskPath,
+          callerKind: "user",
+          profileId: "mock-acp-bypass",
+        });
+        const accepted = await pollUntil(async () => {
+          const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+          const task = (g.result as { task: { state: string } }).task;
+          return task.state === "accepted" ? task : null;
+        }, 12_000, "bypass accepted");
+        assert.equal(accepted.state, "accepted");
+        const list = await rpc(svc, "delivery.list", { workspaceId });
+        const deliveries = (
+          list.result as { deliveries: Array<{ status: string; review?: unknown }> }
+        ).deliveries;
+        assert.equal(deliveries.length, 1);
+        assert.equal(deliveries[0].status, "accepted");
+        assert.equal(deliveries[0].review, undefined);
+      },
+      {
+        profiles: [mockAcpProfile("mock-acp-bypass", { logPath, promptText: "BYPASS_OK" })],
+      }
+    );
+  }
+
+  // agent-decide without integrate decision → request-review → delivered (not accepted)
+  {
+    resetManagedAutoDeliverDedupForTests();
+    const ws = await makeWorkspace();
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ad-"));
+    const logPath = path.join(dataDir, "mock-acp-log.json");
+    await withService(
+      async (svc) => {
+        const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+        const d = await rpc(svc, "task.dispatch", {
+          workspaceId,
+          boxId,
+          role: "executor",
+          prompt: "agent-decide path",
+          deliveryPolicy: "agent-decide",
+        });
+        const taskPath = (d.result as { taskPath: string }).taskPath;
+        await rpc(svc, "task.claim", { workspaceId, taskPath });
+        await rpc(svc, "task.startSession", {
+          workspaceId,
+          taskPath,
+          callerKind: "user",
+          profileId: "mock-acp-ad",
+        });
+        const delivered = await pollUntil(async () => {
+          const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+          const task = (g.result as { task: { state: string } }).task;
+          return task.state === "delivered" ? task : null;
+        }, 12_000, "agent-decide delivered for review");
+        assert.equal(delivered.state, "delivered");
+        const list = await rpc(svc, "delivery.list", { workspaceId });
+        const deliveries = (
+          list.result as { deliveries: Array<{ status: string }> }
+        ).deliveries;
+        assert.equal(deliveries.length, 1);
+        assert.equal(deliveries[0].status, "ready");
+      },
+      {
+        profiles: [mockAcpProfile("mock-acp-ad", { logPath, promptText: "AD_OK" })],
+      }
+    );
+  }
+});
 
 async function findFakeBootstrapPrompt(sessionId: string): Promise<string | null> {
   const tmp = os.tmpdir();

@@ -17,7 +17,18 @@ export type RuntimeEvent =
   | { type: "session.waiting_user"; sessionId: string; summary: string }
   | { type: "session.exited"; sessionId: string; exitCode: number | null }
   | { type: "session.failed"; sessionId: string; error: string }
-  | { type: "session.stdout_tail"; sessionId: string; text: string };
+  | { type: "session.stdout_tail"; sessionId: string; text: string }
+  /**
+   * Managed ACP: first session/prompt finished successfully (end_turn).
+   * `assistantText` is the accumulated agent_message_chunk body only (not thoughts).
+   * Local Service may auto-deliver this as the task report — never a chat-UI message.
+   */
+  | {
+      type: "session.prompt_complete";
+      sessionId: string;
+      assistantText: string;
+      stopReason?: string;
+    };
 
 export type Unsubscribe = () => void;
 

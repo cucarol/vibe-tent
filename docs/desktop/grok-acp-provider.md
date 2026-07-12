@@ -116,9 +116,25 @@ RPC sketch:
 }
 ```
 
-Optional `bootstrapPrompt` overrides the default **pointer** bootstrap. If omitted, service builds a short pointer text (Context Card + **post-claim** session steps: `tent task get` / `tent task deliver`, with `workspaceRoot` + `systemRoot` / `.tent/temp` path hints). It does **not** tell the agent to `tent task claim` (service already claimed) and does **not** copy the full task/box body.
+Optional `bootstrapPrompt` overrides the default **managed** bootstrap. If omitted, service builds:
 
-Clipboard / dispatch **relayPrompt** is separate: it still instructs external manual agents to `tent task claim` then deliver.
+1. Stable **Context Card** pointer (`workspaceRoot` / `systemRoot` / task path / id)
+2. Near-field **user prompt** (envelope `## User Prompt` only — **not** box/manifest bodies)
+3. Explicit managed instructions: **do not** run `tent task claim|get|deliver`; final assistant reply is auto-submitted as delivery
+
+Clipboard / dispatch **relayPrompt** is separate: external manual agents still `tent task claim` then `tent task deliver`.
+
+### Managed final response → delivery
+
+| Step | Owner |
+| --- | --- |
+| Accumulate `agent_message_chunk` during `session/prompt` | `GrokAcpClient` (thoughts are diagnostics only) |
+| On successful `end_turn` with non-empty text | Adapter emits `session.prompt_complete` |
+| On empty / ACP error / timeout / stop / interrupt / non-`end_turn` | Emit `session.failed` or leave interrupted — **no** delivery |
+| Map `session.prompt_complete` → `task.deliver` | Local Service (`mapRuntimeEventToService`) — same lifecycle as CLI deliver |
+| Dedup | In-process key `sessionId::taskPath` + lifecycle authority (ready delivery / non-running state) |
+
+`deliveryPolicy` is unchanged: **manual** → pending review; **bypass** → auto-integrate; **agent-decide** without an integrate decision → **request-review** (never forge accept).
 
 ## Permission policy (tools)
 
@@ -126,11 +142,11 @@ ACP may send `session/request_permission`. Mapping:
 
 | `permissionPolicy` | Behavior |
 | --- | --- |
-| `deny` (default) | Reply `cancelled` — tools not auto-approved |
+| `deny` (default) | Reply `cancelled` — tools not auto-approved; **tool-less managed tasks still complete** via final reply auto-deliver |
 | `allow` | Select **`allow_once` only**; never `allow_always` |
 | `ask` | Emit `session.waiting_user`; without a UI grant, timeout → deny |
 
-There is **no** “yolo / bypass all tools” mode in Tent’s adapter.
+There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding tasks that need tools may set machine-local profile `permissionPolicy: allow` (still `allow_once` only) or future UI `ask` — not unconditional always-allow.
 
 ## Fail-loud rules
 
@@ -149,7 +165,8 @@ CPA base URL misconfiguration is owned by `~/.grok/config.toml`, not Tent.
 | --- | --- |
 | Desktop UI close | Does **not** stop agent sessions |
 | Local Service stop / shutdown | Stops push children this service started |
-| `task` interrupt / session stop | Graceful stop of ACP process |
+| `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery |
+| `session.prompt_complete` | Service auto-deliver (see above) |
 | PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
 
 ## Verification (dev)

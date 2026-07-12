@@ -56,9 +56,11 @@ export class GrokAcpClient {
   private lines: readline.Interface | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
+  /** Accumulated agent_message_chunk only — used as managed delivery report. */
   private assistantText = "";
   private stderrTail = "";
   private closed = false;
+  private stopRequested = false;
   private providerSessionId: string | undefined;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
@@ -158,8 +160,9 @@ export class GrokAcpClient {
   }
 
   /**
-   * Send session/prompt with task pointer / relay text. Maps session/update events.
-   * Safe to call after connect(); failures emit session.failed.
+   * Send session/prompt with managed bootstrap (Context Card + user prompt).
+   * Accumulates agent_message_chunk only for the final report text.
+   * Safe to call after connect(); failures throw (caller emits session.failed).
    */
   async sendPrompt(bootstrapPrompt: string): Promise<GrokAcpStartResult> {
     if (!this.providerSessionId) {
@@ -169,6 +172,8 @@ export class GrokAcpClient {
     if (pid == null) {
       throw new Error("Grok ACP 进程不可用");
     }
+    // Fresh accumulation per prompt — never mix reconnect/retry chunks.
+    this.assistantText = "";
     try {
       const promptTimeout =
         this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
@@ -181,6 +186,10 @@ export class GrokAcpClient {
         promptTimeout
       )) as { stopReason?: string };
 
+      if (this.stopRequested) {
+        throw new Error("session interrupted before prompt completed");
+      }
+
       return {
         pid,
         providerSessionId: this.providerSessionId,
@@ -188,6 +197,9 @@ export class GrokAcpClient {
         assistantText: this.assistantText.trim(),
       };
     } catch (err) {
+      if (this.stopRequested) {
+        throw new Error("session interrupted before prompt completed");
+      }
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
@@ -200,6 +212,7 @@ export class GrokAcpClient {
   async stop(reason: "user" | "interrupt" | "shutdown"): Promise<void> {
     void reason;
     if (this.closed) return;
+    this.stopRequested = true;
     this.closed = true;
     this.rejectAllPending(new Error("session stopped"));
 
@@ -339,12 +352,17 @@ export class GrokAcpClient {
   private handleSessionUpdate(update: AcpSessionUpdate | undefined): void {
     if (!update) return;
     const kind = update.sessionUpdate ?? "";
-    if (
-      (kind === "agent_message_chunk" || kind === "agent_thought_chunk") &&
-      update.content?.text
-    ) {
+    if (kind === "agent_message_chunk" && update.content?.text) {
+      // Final report body only — thoughts are diagnostics, not delivery summary.
       this.assistantText += update.content.text;
-      // Diagnostics only — Tent is not a chat UI.
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${update.content.text}`,
+      });
+      return;
+    }
+    if (kind === "agent_thought_chunk" && update.content?.text) {
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,

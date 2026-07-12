@@ -309,16 +309,23 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.doesNotMatch(relay, /task-ack|tent report\b/);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
 
-  const { sessionBootstrapPromptForTask } = await import("../src/core/task.js");
+  const { sessionBootstrapPromptForTask, extractTaskUserPrompt } = await import(
+    "../src/core/task.js"
+  );
   const bootstrap = sessionBootstrapPromptForTask(
     { ...tasks[1], state: "running", status: "taken" },
     { workspaceRoot: path.join(dir, ".."), systemRoot: dir }
   );
   assert.match(bootstrap, /already claimed/i);
-  assert.match(bootstrap, /Skip any claim step/i);
-  assert.match(bootstrap, new RegExp(`tent task get ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-  assert.match(bootstrap, new RegExp(`tent task deliver ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+  assert.match(bootstrap, /managed ACP session/i);
+  assert.match(bootstrap, /skip Local Service claim\/get\/deliver CLI/i);
+  assert.match(bootstrap, /submit delivery automatically/i);
+  assert.match(bootstrap, /## User Prompt/);
+  // Near-field user prompt must be present; no CLI get/deliver command instructions.
+  const userPrompt = extractTaskUserPrompt(tasks[1]);
+  if (userPrompt) assert.match(bootstrap, new RegExp(userPrompt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
+  assert.doesNotMatch(bootstrap, /tent task get |tent task deliver /);
 });
 
 test("task-ack missing envelope reports a clean error", async () => {

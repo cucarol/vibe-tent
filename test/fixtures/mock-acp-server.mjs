@@ -27,6 +27,9 @@ const promptText = process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
 const requestPermission = process.env.MOCK_ACP_REQUEST_PERMISSION === "1";
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
+/** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
+const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
+const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
 const logPath = process.env.MOCK_ACP_LOG || "";
 
 const log = {
@@ -122,17 +125,37 @@ rl.on("line", (line) => {
       .filter((p) => p?.type === "text")
       .map((p) => p.text)
       .join("");
-    log.prompts.push(textParts.slice(0, 500));
+    // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
+    log.prompts.push(textParts.slice(0, 8000));
 
-    // Stream thought + message + tool call updates (mapped by client to RuntimeEvent).
+    if (promptMode === "error") {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: { code: -32000, message: "mock ACP prompt failed" },
+      });
+      flushLog();
+      if (!keepAlive) setTimeout(() => process.exit(0), 50);
+      return;
+    }
+
+    if (promptMode === "interrupt") {
+      // Never answer the prompt — hang until SIGTERM so client sees interrupted.
+      flushLog();
+      return;
+    }
+
+    // Stream thought + optional message + tool call updates.
     notifyUpdate({
       sessionUpdate: "agent_thought_chunk",
       content: { type: "text", text: "thinking..." },
     });
-    notifyUpdate({
-      sessionUpdate: "agent_message_chunk",
-      content: { type: "text", text: promptText },
-    });
+    if (promptMode !== "empty") {
+      notifyUpdate({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: promptText },
+      });
+    }
     notifyUpdate({
       sessionUpdate: "tool_call",
       toolCallId: "tc-1",
@@ -168,7 +191,7 @@ rl.on("line", (line) => {
     write({
       jsonrpc: "2.0",
       id: msg.id,
-      result: { stopReason: "end_turn" },
+      result: { stopReason: stopReasonEnv },
     });
     flushLog();
     if (!keepAlive) {

@@ -249,20 +249,57 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     // Handshake must succeed before startSession returns live (fail-loud).
     await client.connect();
 
-    // Task pointer / relay prompt runs in background — Tent is not a chat router;
-    // observe via RuntimeEvent only. Keep process for probe/stop.
-    const promptDone = client.sendPrompt(bootstrap).then(
-      () => undefined,
-      async (err) => {
+    // Managed bootstrap runs in background — Tent is not a chat router.
+    // On successful end_turn, emit session.prompt_complete so Local Service can
+    // auto-deliver the final assistant reply as the task report.
+    const promptDone = client
+      .sendPrompt(bootstrap)
+      .then((result) => {
+        const stopReason = (result.stopReason || "end_turn").toLowerCase();
+        const assistantText = (result.assistantText || "").trim();
+        // Only successful end_turn with non-empty message is a deliverable report.
+        // cancelled / max_tokens / refused / interrupted → no delivery (service maps failure).
+        if (stopReason !== "end_turn") {
+          emit({
+            type: "session.failed",
+            sessionId: plan.sessionId,
+            error: `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`,
+          });
+          return;
+        }
+        if (!assistantText) {
+          emit({
+            type: "session.failed",
+            sessionId: plan.sessionId,
+            error: "ACP assistant response empty (no auto-delivery)",
+          });
+          return;
+        }
+        emit({
+          type: "session.prompt_complete",
+          sessionId: plan.sessionId,
+          assistantText,
+          stopReason: result.stopReason || "end_turn",
+        });
+      })
+      .catch(async (err) => {
         const message = err instanceof Error ? err.message : String(err);
+        // Stop/interrupt should not look like a provider crash when user cancelled.
+        if (/interrupted|session stopped/i.test(message)) {
+          emit({
+            type: "session.failed",
+            sessionId: plan.sessionId,
+            error: `session interrupted: ${message}`,
+          });
+          return;
+        }
         emit({ type: "session.failed", sessionId: plan.sessionId, error: message });
         try {
           await client.stop("interrupt");
         } catch {
           // ignore
         }
-      }
-    );
+      });
 
     return new GrokManagedSession(plan.sessionId, client, promptDone);
   }

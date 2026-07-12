@@ -438,3 +438,118 @@ test("grokAcpProfileTemplate never embeds secret values", () => {
   assert.doesNotMatch(json, /sk-|xai-|api_key_value/i);
   assert.ok(json.includes("CPA_GROK_API_KEY")); // name only
 });
+
+test("mock ACP: prompt_complete emits assistant_message only (not thoughts)", async () => {
+  const dataDir = await tempDir("tent-grok-pc-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        ...mockProfile("grok-pc", { logPath, apiKey: "test-key" }),
+        env: {
+          ...mockProfile("grok-pc", { logPath, apiKey: "test-key" }).env,
+          MOCK_ACP_PROMPT_TEXT: "FINAL_REPORT_BODY",
+          MOCK_ACP_KEEP_ALIVE: "1",
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpprom1";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-pc",
+    cwd,
+    bootstrapPrompt: "user near-field: do the thing",
+  });
+  await waitFor(events, "session.live", sessionId);
+  const complete = (await waitFor(
+    events,
+    "session.prompt_complete",
+    sessionId,
+    8000
+  )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
+  assert.equal(complete.assistantText, "FINAL_REPORT_BODY");
+  assert.doesNotMatch(complete.assistantText, /thinking/);
+  assert.equal(complete.stopReason, "end_turn");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("mock ACP: empty assistant does not emit prompt_complete", async () => {
+  const dataDir = await tempDir("tent-grok-empty-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        ...mockProfile("grok-empty", { logPath, apiKey: "test-key" }),
+        env: {
+          ...mockProfile("grok-empty", { logPath, apiKey: "test-key" }).env,
+          MOCK_ACP_PROMPT_MODE: "empty",
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpempty";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-empty",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.failed", sessionId, 8000);
+  assert.ok(!events.some((e) => e.type === "session.prompt_complete"));
+  await runtime.shutdown();
+});
+
+test("mock ACP: prompt error does not emit prompt_complete", async () => {
+  const dataDir = await tempDir("tent-grok-err-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        ...mockProfile("grok-err", { logPath, apiKey: "test-key" }),
+        env: {
+          ...mockProfile("grok-err", { logPath, apiKey: "test-key" }).env,
+          MOCK_ACP_PROMPT_MODE: "error",
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acperror";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-err",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.failed", sessionId, 8000);
+  assert.ok(!events.some((e) => e.type === "session.prompt_complete"));
+  await runtime.shutdown();
+});
