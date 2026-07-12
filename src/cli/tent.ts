@@ -49,38 +49,39 @@ import {
   deleteTag,
   taskAck,
 } from "../core/ops.js";
-import { scaffoldTent } from "../core/scaffold.js";
+
 import { findBoxesByTag, loadTagRegistry, normalizeTagName } from "../core/tags.js";
 import { parseOutputPointer } from "../core/output.js";
 import { syncOkfBundle } from "../core/okf.js";
-import { normalizeRegistry, splitType, typeAllowsWorkspacePointer, type TypeRegistry } from "../core/typeRegistry.js";
+import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
 import { loadReports, submitReport } from "../core/report.js";
 import { submitProposal } from "../core/proposal.js";
-import { NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
+import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
-import { validateBoxName } from "../core/scaffold.js";
+import { scaffoldInWorkspace, validateBoxName } from "../core/scaffold.js";
 import {
   ensureRoleWorkspace,
   integrateWorkspaceCommits,
   resolveTentWorkspace,
   runWorkspaceCheck,
 } from "../core/workspace.js";
+import { workspaceRootFromSystemRoot } from "../core/paths.js";
 
-function makeEnv(): OpsEnv {
-  const root = process.cwd();
+async function makeEnv(): Promise<OpsEnv> {
+  const systemRoot = (await findTentSystemRoot(process.cwd())) ?? process.cwd();
+  const workspace = workspaceRootFromSystemRoot(systemRoot);
   return {
-    fs: new NodeFs(root),
+    fs: new NodeFs(systemRoot),
     clock: new SystemClock(),
-    tentName: path.basename(root),
-    tentRoot: root,
+    tentName: path.basename(workspace ?? systemRoot),
+    tentRoot: systemRoot,
   };
 }
 
 async function main() {
   const [cmd, ...args] = process.argv.slice(2);
-  const env = makeEnv();
 
   if (!cmd || cmd === "help" || cmd === "--help" || cmd === "-h") {
     console.log(helpText());
@@ -91,16 +92,20 @@ async function main() {
     return;
   }
 
-  switch (cmd) {
-    case "new": {
-      const { positionals, flags } = parseFlags(args);
-      if (!positionals[0]) {
-        return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
-      }
-      if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
-      await newTent(positionals[0], flags.vault);
-      break;
+  // `tent new` does not require an existing system root
+  if (cmd === "new") {
+    const { positionals, flags } = parseFlags(args);
+    if (!positionals[0]) {
+      return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
     }
+    if (positionals.length > 1) return fail("Usage: tent new <path> OR tent new <name> --vault <vault-path>");
+    await newTent(positionals[0], flags.vault);
+    return;
+  }
+
+  const env = await makeEnv();
+
+  switch (cmd) {
     case "dispatch": {
       const { positionals, flags } = parseFlags(args);
       const [boxId, role, ...promptParts] = positionals;
@@ -121,17 +126,17 @@ async function main() {
         }
       }
       const tent = await loadTent(env.fs);
-      const workspacePath = resolveTentWorkspace(tent);
+      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : undefined;
       if (!workspacePath) {
-        console.log("Note: this Tent has no workspace pointer box; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no in-workspace layout or workspace field; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Add a box whose base type enables workspace pointer " +
-            "capability, and set `workspace: C:/path/to/git-root` in its frontmatter (or a `workspace: ...` line in its body)."
+            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/ " +
+            "or set `workspace: C:/path/to/git-root` on a concept (legacy migration path)."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -235,7 +240,7 @@ async function main() {
       const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines: string[] = [];
-      const workspacePath = resolveTentWorkspace(tent);
+      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
       if (flags["require-check"]) {
         if (!workspacePath) return fail("--require-check requires a workspace pointer");
         await runWorkspaceCheck(workspacePath, flags["require-check"]);
@@ -365,9 +370,7 @@ async function main() {
         break;
       }
       for (const box of boxes) {
-        const pointer = typeAllowsWorkspacePointer(box.type, tent.typeRegistry)
-          ? outputPointer(box.fm, box.body)
-          : "";
+        const pointer = outputPointer(box.fm, box.body);
         console.log(`${box.id}\t${box.path}\t${box.type}${pointer ? `\t${pointer}` : ""}`);
       }
       break;
@@ -637,7 +640,11 @@ async function readVaultPluginSettings(vault: string): Promise<VaultPluginSettin
   }
 }
 
-/** 建一顶新帐:空骨架(不强制 zone)。genesis 调 CLI,免得手糊脚本。 */
+/**
+ * 建一顶新帐：in-workspace 布局 `<target>/.tent/`。
+ * `target` 为 workspace 根（或 vault 模式下 vault/tentsRoot/name）。
+ * 不写外置双路径；注册表与 RULES 落在 `.tent/` 内。
+ */
 async function newTent(target: string, vault?: string): Promise<void> {
   const fsmod = await import("node:fs/promises");
   let pluginSettings: VaultPluginSettings | undefined;
@@ -651,31 +658,33 @@ async function newTent(target: string, vault?: string): Promise<void> {
     target = path.join(path.resolve(vault), pluginSettings.tentsRoot, target);
   }
 
-  const fsa = new NodeFs(target);
-  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${target}`);
+  const workspaceRoot = path.resolve(target);
+  const fsa = new NodeFs(workspaceRoot);
+  if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
 
-  await fsmod.mkdir(target, { recursive: true });
-  const name = path.basename(path.resolve(target));
+  await fsmod.mkdir(workspaceRoot, { recursive: true });
+  const name = path.basename(workspaceRoot);
   const fallbackRules =
     `# ${name} - Project Rules\n\n` +
       `> Local project rules for this Tent. Created by tent-genesis; edit freely.\n` +
     `> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.\n\n` +
-    `- Output workspace: <real code repository path>\n` +
+    `- Output workspace: ${workspaceRoot.replaceAll("\\", "/")}\n` +
     `- Commit / naming conventions: <fill in>\n` +
     `- Other project rules: <fill in>\n`;
   const rules = pluginSettings?.rulesTemplate
     ? pluginSettings.rulesTemplate.replaceAll("{tent}", name)
     : fallbackRules;
-  await scaffoldTent(fsa, {
+  await scaffoldInWorkspace(fsa, {
     name,
     rules,
     typeRegistry: pluginSettings?.typeRegistry,
     rolesRegistry: pluginSettings?.rolesRegistry,
-  }); // 无 boxes = 空骨架
+  });
 
   console.log(
-    `✓ Created Tent: ${target}\n` +
-      `The root starts empty; add boxes in the panel or create a folder that contains a same-named Markdown note.`
+    `✓ Created Tent: ${path.join(workspaceRoot, ".tent")}\n` +
+      `In-workspace layout: collaboration facts live under <workspace>/.tent/.\n` +
+      `The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );
 }
 
