@@ -42,8 +42,9 @@ Never register as concepts:
 - `.tent/**` system registries, locks, machine-agnostic collaboration facts that are not user notes
 - `temp/**` and other pipeline envelopes
 - Generated OKF helpers such as root/folder `index.md` / `log.md` as *user edit targets* (they may exist on disk for OKF compliance; they are not ordinary notes)
-- Real workspace trees (source, project docs, builds)—only via `artifactRef`
-- Machine-local service data (search index, window state, credentials)
+- Real workspace trees (source, project docs, builds)—only via **`ArtifactRef`**
+- Machine-local service data (search index, window state, credentials, session rows, **AgentProfile** paths)
+- Session registry / PIDs / resume tokens (task may hold `sessionId` only)
 
 Operational Markdown **may** reuse the same renderer component in lifecycle panels. `DocumentController` / concept index **must not** list them as ordinary documents.
 
@@ -85,7 +86,7 @@ title: Optional title  # optional display override
 # Only when type.coordination === true (box):
 status: todo           # todo | doing | done — doing/assignee projected from active task
 # assignee / legacy owner: not independently writable against an active task
-# artifactRef: optional list or structured refs to real deliverables
+# artifactRefs: optional ArtifactRef[] to real deliverables (architecture §5.2)
 ---
 # Markdown body
 ```
@@ -97,7 +98,10 @@ status: todo           # todo | doing | done — doing/assignee projected from a
 | `tags` | Optional; never replace type or hierarchy |
 | `status` | Only meaningful for coordination-enabled types |
 | `assignee` | Projection of active task (Task API); not a competing owner fact |
+| `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
 | Readable/writable axes | Honor contract per type/box; orthogonal to `coordination` |
+
+**Active-task write guard:** when a box has an active task, ordinary **`docs.write`** (and equivalent body/frontmatter patches) **must not** change projected collaboration fields (`status` when service-owned as `doing`, `assignee`, legacy `owner`). Service rejects those field patches; clients use Task API transitions. Non-projection body edits remain allowed subject to etag concurrency.
 
 ---
 
@@ -105,7 +109,7 @@ status: todo           # todo | doing | done — doing/assignee projected from a
 
 ### 3.1 Capability, not name hardcoding
 
-`coordination` is a **base-type capability** on the type registry (alongside existing axes such as `readable` / `writable` / `workspacePointer`):
+`coordination` is a **base-type capability** on the type registry (alongside existing axes such as `readable` / `writable`). Legacy type flags that only existed to mark “this box points at a code root outside the tent” are **retired** with the in-workspace `.tent` model—do not reintroduce a product “workspace pointer” type axis.
 
 ```ts
 // base type only — modifiers do not configure coordination independently
@@ -145,6 +149,19 @@ API sketch: `docs.promote` / `promoteConcept(cx | path, toType)`.
 
 Demote (box → note) is **non-MVP** unless later specified; if added, require no active task, clear collaboration fields, keep `cx-`.
 
+### 3.4 Fork (parallel occupation)
+
+Canonical command: **`docs.fork(boxId | path)`** (CLI alias: `tent fork`).
+
+| Rule | Detail |
+| --- | --- |
+| Effect | Copy concept/box **subtree**; new `cx-` ids; clear owner/status occupation on the fork root |
+| Does **not** | Start a task, claim, or session |
+| Parallelism | After fork, `task.dispatch` on the fork root (Task API §2.4) |
+| Active task | Source box occupation is unchanged unless separately interrupted |
+
+Fork is a **docs** group command, not a Task API verb, and not an AgentRuntime call.
+
 ---
 
 ## 4. Physical layout (document tree, not workspace tree)
@@ -152,7 +169,7 @@ Demote (box → note) is **non-MVP** unless later specified; if added, require n
 Principles:
 
 - Organization follows Tent logical entities.
-- On disk: ordinary directories + Markdown files under the tent system location (see architecture: tent inside workspace).
+- On disk: ordinary directories + Markdown files under the **fixed** tent system location **`<workspace>/.tent/`** (architecture §3.1; name not reopened in B1).
 - MVP **forces note layout isomorphic to box** so promote is zero-move.
 
 | Form | Layout | MVP |
@@ -182,11 +199,19 @@ Agents creating concepts must choose meaningful path/name segments; path remains
 - Machine-local indexes and window state
 - Tent system dir internals by default (diagnostic entry only; architecture)
 
-### 5.3 Artifact association
+### 5.3 Artifact association (`ArtifactRef`)
+
+```ts
+type ArtifactRef = {
+  kind: "path" | "dir" | "commit" | "url" | "other";
+  target: string;
+  label?: string;
+};
+```
 
 | Mechanism | Purpose |
 | --- | --- |
-| `artifactRef` | Points to file, directory, commit, URL, or other real deliverable **outside** concept identity |
+| **`ArtifactRef`** | Points to file, directory, commit, URL, or other real deliverable **outside** concept identity |
 | Open action | Default: open with original tool / OS handler |
 | Search | Artifact **bodies** are not in default concept search |
 
@@ -203,7 +228,7 @@ Agents creating concepts must choose meaningful path/name segments; path remains
 | Authoring | `[[Name]]` / `[[path\|label]]` | User input; editor completion |
 | Resolution keys | path, title/name, `cx-`, legacy `bx-` **during migration only** | Unique hit required to resolve |
 | Backlinks | Inverted from outbound links in index | Side/bottom panel |
-| artifact links | Structured `artifactRef` or dedicated scheme | External open |
+| artifact links | Structured **`ArtifactRef`** or dedicated scheme | External open |
 
 **Resolve vs project split:**
 
@@ -260,9 +285,12 @@ Open tabs, scroll, selection live in **machine-local** window state. They must n
 
 1. Under mutation serialization, re-read disk and compute `diskEtag`.
 2. If `diskEtag !== baseEtag` → **conflict**: reject write; return disk and base snapshots.
-3. Else write, publish `concept.changed`, update callers’ etag.
+3. If the target is a box with an **active task** and the patch attempts to set projected collaboration fields (`status`/`assignee`/legacy `owner` in competition with Task API) → **reject** with a collaboration-field error (not a silent merge). Body text and non-projection frontmatter may still write.
+4. Else write, publish **`concept.changed`** (via **EventEnvelope** — architecture §5.2), update callers’ etag.
 
-Structured mutations (promote, type change, controlled move) continue to use core `withTentMutation` / service command path; they still must not silently clobber a dirty editor buffer (flush or explicit merge of frontmatter-only updates).
+Structured mutations (promote, type change, controlled move, **fork**) continue to use core `withTentMutation` / service command path; they still must not silently clobber a dirty editor buffer (flush or explicit merge of frontmatter-only updates).
+
+**Event channel:** document invalidation uses `concept.changed` / `concept.removed` only. There is **no** `box.changed` dual stream.
 
 ### 7.3 Autosave and watch
 
@@ -306,14 +334,15 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | --- | --- | --- |
 | `docs.list` / `docs.get` | Query | Concept projections |
 | `docs.readForEdit` | Query | Body + etag for editing |
-| `docs.write` | Command | Conditional write with `baseEtag` |
+| `docs.write` | Command | Conditional write with `baseEtag`; **cannot** bypass active-task projections |
 | `docs.createNote` | Command | New concept (`cx-`, type, path) |
 | `docs.promote` | Command | Note → box in place |
+| `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |
 | `docs.search` / `docs.backlinks` / `docs.resolveLink` | Query | Navigation |
 | `docs.importAttachment` | Command | Store attachment + return link target |
-| `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals |
+| `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals (EventEnvelope) |
 
-Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries.
+Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries. Clients use **`docs.*`** and **`task.*`** only; **`AgentRuntimePort.*`** is service-internal.
 
 ---
 
@@ -346,7 +375,8 @@ Aligned with architecture one-shot migration; document-specific requirements:
 | --- | --- |
 | `bx-` handles | `cx-` handles; emit full map in migration report |
 | Box-only tree index | Concept scan of all user-facing notes + boxes |
-| Dual mental model (vault-external tent + pointer) | Single in-workspace tent location |
+| Dual mental model (vault-external tent + separate code-root linkage) | Single in-workspace tent at **`.tent/`** |
+| Product term “workspace pointer” | Retired; WorkspaceLane is a **task** field, not a concept type |
 | Auto OKF project rewriting bodies | Explicit project; default non-destructive resolve |
 
 During migration window only: resolve layer may dual-read `bx-` and `cx-`. After cutover, new writes use `cx-` exclusively.
@@ -364,7 +394,9 @@ During migration window only: resolve layer may dual-read `bx-` and `cx-`. After
 - [ ] Wiki/path/`cx-` resolve, backlinks, title+body search
 - [ ] Image attachment into tent attachment area with Markdown link
 - [ ] Operational docs absent from concept tree / OKF concept index
-- [ ] `artifactRef` opens externally—not an in-app workspace browser
+- [ ] **`ArtifactRef`** opens externally—not an in-app workspace browser
+- [ ] Active-task projection fields rejected on ordinary `docs.write`
+- [ ] `docs.fork` available for parallel box occupation
 
 **Must not have (MVP)**
 
@@ -383,9 +415,12 @@ During migration window only: resolve layer may dual-read `bx-` and `cx-`. After
 2. **`coordination`** is a type capability; box = coordination-enabled concept.
 3. **Promote is in-place**; same path, body, and handle.
 4. **Operational pipeline is outside** concept index and OKF validation.
-5. **Workspace files** enter only as `artifactRef`; Tent is not an IDE or disk browser.
+5. **Workspace files** enter only as **`ArtifactRef`**; Tent is not an IDE or disk browser.
 6. **External edits** use minimal etag optimistic concurrency; dirty tabs never silent-reload.
 7. **Index is rebuildable cache** in machine-local service data, not tent identity truth.
 8. **MVP note layout** is folder + same-named Markdown, isomorphic to boxes.
 9. **Link project** is explicit; resolve and index are non-destructive by default.
-10. Implementation batches refine code under this contract; they do not reopen vocabulary without an explicit revision of this file.
+10. **Events** are `concept.changed` / `concept.removed` only—no `box.changed` dual channel.
+11. **`docs.fork`** is the parallel-occupation command; active-task fields cannot be bypassed via `docs.write`.
+12. Tent system directory name is fixed **`.tent`** under the workspace root.
+13. Implementation batches refine code under this contract; they do not reopen vocabulary without an explicit revision of this file.

@@ -1,10 +1,12 @@
 # B0 · AgentRuntime Adapter Contract
 
 Status: **frozen contract** for Local Service → agent adapter execution boundary.  
-Scope: `AgentRuntimePort`, provider adapters, session registry, process supervision, push/pull host modes, first prototype selection, and per-agent verification discipline.  
+Scope: **service-internal** `AgentRuntimePort`, provider adapters, session registry, process supervision, push/pull host modes, first prototype selection, and per-agent verification discipline.  
 Non-scope: Task/Delivery state machine (`docs/desktop/task-api.md`), service process topology and sole-mutation rules (`docs/desktop/architecture.md`), concept/box document model (`docs/desktop/concept-model.md`). Those contracts own collaboration semantics and stack topology; this document must not invert them.
 
 This document freezes **who starts processes**, **what events adapters may emit**, and **how provider differences are handled**. Implementation batches B9a+ implement this contract; they do not reopen it without an explicit revision.
+
+**Visibility:** `AgentRuntimePort.*` is **not** a client command surface. Desktop, CLI, and MCP call only `task.*` / `docs.*`. The service maps authorized `task.startSession` (or dispatch with `startSession: true`) onto this port after **A2APolicy** evaluation.
 
 Canonical English names are API/schema truth. UI may localize labels via i18n; persisted enums never use localized values.
 
@@ -13,20 +15,20 @@ Canonical English names are API/schema truth. UI may localize labels via i18n; p
 ## 1. Separation of concerns
 
 ```text
-Task API (collaboration)                 AgentRuntimePort (execution)
-────────────────────────                 ───────────────────────────
-dispatch / claim / wait / resume         startSession / resumeSession / stopSession
-deliver / accept / reject / interrupt    probe / subscribe(RuntimeEvent)
-box occupation, review, delivery         process & session lifecycle only
-A2A allow|ask|deny (policy decision)     spawn only after service already authorized
+Task API (external collaboration)        AgentRuntimePort (service-internal execution)
+────────────────────────────────         ────────────────────────────────────────────
+task.dispatch / claim / wait / resume    startSession / resumeSession / stopSession
+task.deliver / accept / reject / interrupt   probe / subscribe(RuntimeEvent)
+docs.fork + box occupation, review       process & session lifecycle only
+A2APolicy allow|ask|deny (policy)        spawn only after service already authorized
 ```
 
 ### Hard rules
 
-1. **Task API owns collaboration.** Adapters never implement box occupancy, claim topology, dispatch, deliver, accept, reject, or proposal review.
-2. **AgentRuntimePort owns execution.** Start, resume, stop, probe, and structured **runtime** events only. No chat message API.
-3. **Service maps events → task states.** Adapter process events never write concept/box frontmatter. Mapping into `running | waiting | failed` (and optional `sessionId` binding) is a service responsibility aligned with the Task API contract.
-4. **A2A hard gate lives only in the service** (`allow | ask | deny` per Task API). When the runtime port is invoked, authorization is already decided. Adapters must not re-interpret skill text, RULES.md, or honor manifests as spawn authority.
+1. **Task API owns collaboration (external).** Adapters never implement box occupancy, claim topology, dispatch, deliver, accept, reject, or proposal review.
+2. **AgentRuntimePort owns execution (internal).** Start, resume, stop, probe, and structured **runtime** events only. No chat message API. **Not** exposed to Desktop/CLI/MCP as a command group.
+3. **Service maps events → task states.** Adapter process events never write concept/box frontmatter. Mapping into `running | waiting | failed` and binding optional **`task.sessionId`** (reference only) is a service responsibility aligned with the Task API contract.
+4. **A2A hard gate lives only in the service** (`A2APolicy` = `allow | ask | deny` per Task API). When the runtime port is invoked, authorization is already decided. Adapters must not re-interpret skill text, RULES.md, or honor manifests as spawn authority.
 5. **Adapters are injected by Local Service.** They must not open a second mutation path into tent operational files or core lifecycle modules (architecture: sole service mutation entry).
 
 Forbidden reverse edges:
@@ -42,20 +44,30 @@ Forbidden reverse edges:
 
 | Canonical | Space | Meaning | Durable? |
 | --- | --- | --- | --- |
-| **role** | project registry | Stable collaboration identity: prompt, A2A policy, workspace lane relationship | yes (project) |
-| **agentProfile** | **machine-local** service config | How to launch a class of agent: binary/app path, default argv templates, auth reference, capability flags | yes on machine; **not** in workspace git |
-| **session** (`ss-`) | **machine-local** session registry | One recoverable runtime instance bound to a profile (+ optional role) and a process handle | replaceable; machine-local |
+| **role** | project registry (under `.tent/`) | Stable collaboration identity: prompt, **A2APolicy**, WorkspaceLane relationship | yes (project) |
+| **AgentProfile** | **machine-local** service config | How to launch a class of agent: binary/app path, default argv templates, auth reference, capability flags | yes on machine; **not** in workspace git |
+| **session** (`ss-`) | **machine-local** session registry | One recoverable runtime instance bound to a profile (+ optional role), process handle, and **RuntimeWorkspace** | replaceable; machine-local |
 | **ProviderAdapter** | `packages/adapters` (or staged `src/adapters`) | Provider-specific launch/resume/stop/probe/event normalization | code artifact |
 | **ProcessSupervisor** | Local Service | Uniform child-process lifecycle; does **not** understand boxes | service component |
-| **task.sessionId** | operational task record | Optional binding of a task attempt to a live/external session | operational |
+| **task.sessionId** | operational task record only | Optional **reference** of a task attempt to a live/external session—**no** session row fields | operational (id only) |
+
+### WorkspaceLane vs RuntimeWorkspace
+
+| Term | Owner | Meaning |
+| --- | --- | --- |
+| **WorkspaceLane** | Task / collaboration | Git lane on the task: workspace, worktree, branch, targetBranch |
+| **RuntimeWorkspace** | This contract / session registry | Process launch binding: cwd, env handles, absolute path caches for a live session |
+
+Do **not** call either a “workspace pointer.” Lane is prepared by service/core **before** internal `startSession`. RuntimeWorkspace may mirror the lane’s worktree path but is not stored on the task.
 
 ### Invariants
 
 1. **role ≠ session.** Changing or replacing a session does not change role identity, queue membership, or box occupation. Role may cache `currentSessionId` as a projection only.
-2. **agentProfile ≠ role.** Temporary one-shot agents may use a profile without entering the durable role registry (Task API already allows `assigneeKind: agentProfile`).
+2. **AgentProfile ≠ role.** Temporary one-shot agents may use a profile without entering the durable role registry (Task API already allows `assigneeKind: agentProfile`). **AgentProfile** configs never enter workspace git.
 3. **ProviderAdapter ≠ Generic “supports all CLIs”.** A shared process skeleton is allowed; each shippable provider still needs its own adapter class (or explicit profile + verified capability set) and verification checklist.
-4. **Legacy `role.cli` is input, not runtime.** Existing `RoleCliConfig { command, resume? }` and SPEC “never spawn” hints are **migration sources for agentProfile drafts**. They are not a second supervisor and must not be invoked by skills as spawn authority.
-5. **Workspace lane is orthogonal to session.** Role worktree/branch (`ensureRoleWorkspace`) is prepared by service/core **before** `startSession`. Replacing a session reuses the same lane conventions unless the task explicitly targets another lane.
+4. **Legacy `role.cli` is input, not runtime.** Existing `RoleCliConfig { command, resume? }` and SPEC “never spawn” hints are **migration sources for AgentProfile drafts**. They are not a second supervisor and must not be invoked by skills as spawn authority.
+5. **WorkspaceLane is orthogonal to session.** Role worktree/branch (`ensureRoleWorkspace`) is prepared by service/core **before** internal `startSession`. Replacing a session reuses the same lane conventions unless the task explicitly targets another lane; the new session gets a fresh RuntimeWorkspace binding.
+6. **Task stores `sessionId` only.** Session rows, PIDs, resume tokens, and RuntimeWorkspace absolute paths stay machine-local.
 
 ---
 
@@ -65,25 +77,27 @@ Forbidden reverse edges:
 | --- | --- | --- |
 | Provider API keys, OAuth tokens, CLI auth blobs | OS credential store / machine-local service data area only | Workspace files, box bodies, git history, tent operational envelopes |
 | Session resume tokens, PIDs, absolute worktree caches | Session registry under service data area (e.g. `%APPDATA%/Tent/sessions/`) | Shipping with workspace copy; treating as collaboration facts |
-| agentProfile binary paths | Machine-local config | Assuming identical absolute paths on another machine |
+| **AgentProfile** binary paths | Machine-local config | Assuming identical absolute paths on another machine; writing profiles into `.tent/` / git |
+| RuntimeWorkspace absolute paths | Session registry | Treating as collaboration facts on the task |
 | Capability / support matrix documentation | Repo docs (honest, versioned) | Claiming support without checklist pass |
 
 Rules:
 
 1. Agents and adapters **never** read raw provider credentials from tent files. Service injects auth via OS-backed slots or provider-native login already present on the machine.
 2. `StartSessionRequest.env` must not carry secret plaintext intended for persistence; any env injection is process-scoped and redacted from logs.
-3. Copying a workspace must preserve collaboration semantics **without** requiring old PIDs, credentials, or absolute session paths (architecture data-placement rule).
+3. Copying a workspace must preserve collaboration semantics **without** requiring old PIDs, credentials, session rows, or absolute session paths (architecture data-placement rule). Task files may retain a stale `sessionId` string that no longer resolves.
 4. Logs and `session.stdout_tail` diagnostics must be treated as potentially sensitive; default UI must not render them as product chat.
 
 ---
 
-## 4. AgentRuntimePort (logical IDL)
+## 4. AgentRuntimePort (logical IDL · **service-internal**)
 
-Transport is an architecture concern (B2: loopback HTTP / named pipe / in-proc). Field names below are English canonical.
+Transport between **service components** is an architecture concern (B2: loopback / in-proc). This port is **not** part of the external client command surface. Field names below are English canonical.
 
 ```ts
+/** Service-internal only — clients use task.startSession / task.* instead. */
 interface AgentRuntimePort {
-  /** Create and start a session. Caller (service) has already passed A2A. */
+  /** Create and start a session. Caller (service) has already passed A2APolicy. */
   startSession(req: StartSessionRequest): Promise<SessionHandle>;
 
   /** Resume using machine-local resume token / provider-specific id. */
@@ -103,16 +117,25 @@ interface AgentRuntimePort {
 
 interface StartSessionRequest {
   sessionId: string; // service-preallocated ss-
-  profileId: string;
+  profileId: string; // machine-local AgentProfile id
   roleName?: string;
+  /** Collaboration lane already prepared by service/core (from task.workspaceLane). */
   workspaceLane?: {
     workspace: string;
     worktree: string;
     branch: string;
   };
+  /**
+   * RuntimeWorkspace for this process — machine-local launch binding.
+   * Usually cwd mirrors workspaceLane.worktree absolute path; not a task field.
+   */
+  runtimeWorkspace?: {
+    cwd: string;
+    // env handles / absolute path caches stay in session registry
+  };
   /** Initial text for the agent (relay prompt / task pointer). Not a multi-turn chat API. */
   bootstrapPrompt?: string;
-  cwd?: string; // usually = worktree absolute path from core
+  cwd?: string; // alias of runtimeWorkspace.cwd when set; worktree absolute path from core
   env?: Record<string, string>; // no secret plaintext for disk
 }
 
@@ -125,25 +148,28 @@ type RuntimeEvent =
   | { type: "session.stdout_tail"; sessionId: string; text: string }; // optional diagnostics only
 ```
 
+Client-visible session projections may be wrapped in the shared **EventEnvelope** (architecture §5.2) as `session.state` events. Adapters emit `RuntimeEvent` only to the service; they do not publish concept or task events.
+
 ### Explicitly outside the port
 
+- External client RPCs (`task.*` / `docs.*` are the client surface; this port is not)
 - `sendChatMessage` / assistant token streaming / cross-session message routing
 - `dispatch` / `claim` / `deliver` / `accept` / box frontmatter writes
 - Model auto-selection or “pick the best agent” router
 - Git integrate / worktree creation (service calls core before start)
-- A2A policy evaluation
+- **A2APolicy** evaluation (already completed before port entry)
 
 ### Event → task mapping (service-owned)
 
 | RuntimeEvent | Typical task projection (Task API) |
 | --- | --- |
-| `session.live` | keep/ensure `running` when bound; bind `task.sessionId` |
+| `session.live` | keep/ensure `running` when bound; bind **`task.sessionId`** (id reference only) |
 | `session.waiting_user` | `task.wait` with reason + summary (user-input / external) |
 | `session.exited` (expected) | no auto-accept; collaboration ends via deliver/interrupt |
 | `session.failed` / dead probe unrecoverable | `failed` or recoverable `waiting` per service policy |
 | `session.stdout_tail` | diagnostics only; **never** product chat transcript |
 
-Adapters do not choose these mappings; the service does, consistent with Task API §2.
+Adapters do not choose these mappings; the service does, consistent with Task API §2. Session row / PID / token updates never land in concept frontmatter or task YAML beyond `sessionId`.
 
 ---
 
@@ -198,24 +224,26 @@ Suggested on-disk shape (final path fixed with architecture B2):
 
 ```yaml
 id: ss-…
-profileId: codex-default
+profileId: codex-default          # machine-local AgentProfile
 adapterId: codex-cli
 roleName: … # optional
 state: live # starting | live | waiting-user | stopped | failed | external
 pid: 12345 # omit for pull/external
 resumeToken: … # provider-specific; OS-protect if sensitive
-cwd: …
-workspace: …
+runtimeWorkspace:
+  cwd: …                          # absolute; not stored on task
+workspace: …                      # mounted workspace key
 createdAt / updatedAt: …
 lastTaskId: tk-… # optional projection
 ```
 
 Rules:
 
-1. **Workspace copy does not carry** session files.
+1. **Workspace copy does not carry** session files (including RuntimeWorkspace absolute paths).
 2. On service start, `probe` all non-terminal sessions: dead PID and not resume-capable → `failed`/`stopped`; resume-capable → keep metadata until explicit resume.
 3. Concurrent live sessions must not cross-contaminate cwd/env; stop validates `sessionId` (+ workspace id when multi-mount).
 4. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
+5. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
 
 ---
 
@@ -250,7 +278,7 @@ Rules:
 
 | Mode | When | Behavior |
 | --- | --- | --- |
-| **Push** | `capabilities.canSpawn === true` and A2A allows (or user grants `ask`) | Service calls `startSession`; bootstrapPrompt delivered to process (prefer stdin/temp file over giant Windows cmdline) |
+| **Push** | `capabilities.canSpawn === true` and **A2APolicy** allows (or user grants `ask`) | Service calls **internal** `AgentRuntimePort.startSession`; bootstrapPrompt delivered to process (prefer stdin/temp file over giant Windows cmdline) |
 | **Pull** | GUI hosts, no CLI, `deny` policy, or user-woken existing session | Write task envelope + relay prompt only; session may be `external`; Tent shows waiting/claim; optional deep-link/jump to official client—no fake spawn |
 
 MVP requirement:
@@ -259,7 +287,7 @@ MVP requirement:
 - Pull path remains first-class (current dogfood: user wake + claim).
 - Not every role must be spawnable.
 
-`task.dispatch` does **not** start a session by default. Session start is explicit (`task.startSession` / `startSession: true` with A2A), per Task API.
+`task.dispatch` does **not** start a session by default. Session start is explicit external **`task.startSession`** / `startSession: true` with A2A, which the service maps to this port—clients never call the port themselves.
 
 ---
 
@@ -297,7 +325,7 @@ Merging a provider adapter without checklist evidence is a contract violation.
 
 Rationale (repo-local, not network research):
 
-1. Existing SPEC / roles examples already describe Codex-shaped `cli.command` + `cli.resume` hints—cheap migration into agentProfile.
+1. Existing SPEC / roles examples already describe Codex-shaped `cli.command` + `cli.resume` hints—cheap migration into **AgentProfile**.
 2. Matches current dogfood: role worktree + `tent` CLI claim/deliver from an agent process.
 3. Clear process boundary for supervisor validation without GUI automation.
 4. Parent desktop goal treats Codex as a primary external agent surface.
@@ -344,7 +372,7 @@ If the spike proves Codex cannot be a reliable push host, the product **falls ba
 | G4 | Stop | Graceful exit; timeout force-kill; no zombies |
 | G5 | Crash | Kill process → probe dead; service maps failed/waiting |
 | G6 | Resume | Cross service restart if claimed; else `canResume=false` |
-| G7 | Task binding | `task.sessionId` set; interrupt stops session and releases occupation via Task API |
+| G7 | Task binding | `task.sessionId` reference set only; interrupt stops session and releases occupation via Task API |
 | G8 | Credentials | No secrets written into tent/workspace; logs redacted |
 | G9 | Concurrency | Two live sessions do not cross cwd/env; lanes isolated |
 | G10 | Non-router | No product path relays chat between agents |
@@ -421,11 +449,11 @@ B8 ─────────── feeds B9c (task binding + A2A)
 
 | Peer contract | This document requires | This document supplies |
 | --- | --- | --- |
-| **architecture.md** | Sole service mutation; adapters under service; close window ≠ stop; machine-local credentials | `AgentRuntimePort` shape; supervisor/session placement; B9 batching |
-| **task-api.md** | Task states, A2A allow\|ask\|deny, `task.sessionId`, no adapter accept | Runtime events only; start after gate; push/pull modes |
-| **concept-model.md** | No operational `ss-` as OKF concepts | Sessions stay machine-local / operational |
+| **architecture.md** | Sole service mutation; adapters under service; close window ≠ stop; machine-local credentials; external cmds = `task.*`/`docs.*` | **Internal** `AgentRuntimePort` shape; RuntimeWorkspace; supervisor/session placement; B9 batching |
+| **task-api.md** | Task states, **A2APolicy**, `task.sessionId` reference only, no adapter accept, WorkspaceLane on task | Runtime events only; start after gate; push/pull modes |
+| **concept-model.md** | No operational `ss-` as OKF concepts; no `box.changed`; active-task docs.write guard | Sessions stay machine-local / operational |
 
-**Conflict rule:** If a proposal reintroduces chat routing, honor-only spawn, dual supervisors, credentials-in-git, or “one generic adapter supports all agents,” parent product goal and these B0 contracts win; escalate to the product owner rather than silently forking.
+**Conflict rule:** If a proposal reintroduces chat routing, honor-only spawn, dual supervisors, credentials-in-git, client-exposed `AgentRuntimePort`, or “one generic adapter supports all agents,” parent product goal and these B0 contracts win; escalate to the product owner rather than silently forking.
 
 ---
 
@@ -446,12 +474,14 @@ B8 ─────────── feeds B9c (task binding + A2A)
 
 | Requirement | Section |
 | --- | --- |
-| Task API = collaboration; AgentRuntimePort = start/resume/stop + structured runtime events | §1, §4 |
-| role / session / agentProfile / ProviderAdapter separation | §2 |
+| Task API = external collaboration; AgentRuntimePort = **internal** start/resume/stop + runtime events | §1, §4 |
+| role / session / **AgentProfile** / ProviderAdapter separation | §2 |
+| WorkspaceLane (task) ≠ RuntimeWorkspace (session); no “workspace pointer” | §2 |
+| Task holds `sessionId` only; rows/tokens/PIDs machine-local | §2, §3, §6 |
 | Credentials and resume tokens only on local service / OS store | §3 |
 | No chat router; no false cross-agent capability equality; per-agent checklists | §9, §11 |
 | First push prototype = Codex CLI; B9a mock before B9b; explicit spike unknowns | §10 |
-| Push vs pull; dispatch does not imply spawn | §8 |
+| Push vs pull; dispatch does not imply spawn; clients use `task.startSession` | §8 |
 | Service stop default kills push children; window close does not | §7 |
 | Adapters never write box occupancy or accept deliveries | §1, §4, §14 |
 

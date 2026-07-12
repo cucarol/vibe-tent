@@ -39,9 +39,9 @@ state: queued                    # see §2
 assigneeKind: role | agentProfile
 assignee: <role-name|profile-id>
 dispatchedBy: user | <role>
-sessionId: ss-…                  # optional until claim/start
+sessionId: ss-…                  # optional until claim/start; **reference only**
 manifestRef: …                   # honor-contract snapshot at dispatch
-workspaceLane:                   # omit when tent has no workspace pointer
+workspaceLane:                   # omit when tent has no Git/workspace lane (pure Tent task)
   workspace: …
   worktree: …
   branch: …
@@ -55,6 +55,23 @@ createdAt / updatedAt: …
 prompt: |                        # immutable after dispatch
   …
 ```
+
+#### WorkspaceLane (task) vs RuntimeWorkspace (runtime)
+
+| Term | Lives on | Meaning |
+| --- | --- | --- |
+| **WorkspaceLane** | Task operational record | Collaboration Git lane: workspace root, role worktree, branch, targetBranch |
+| **RuntimeWorkspace** | Machine-local session / AgentRuntime only | Process cwd and launch binding for a live `ss-` session |
+
+Tasks **must not** embed RuntimeWorkspace, PIDs, resume tokens, or absolute path caches. Only `sessionId` may bind a task to a live session; the session row lives in the service data area (`agent-runtime.md`).
+
+Do **not** use the legacy product phrase “workspace pointer” for either structure.
+
+#### sessionId reference rule
+
+- Task may store `sessionId: ss-…` (optional until claim/start).
+- Session registry rows, resume tokens, PIDs, credentials, and process handles are **machine-local only**.
+- Copying a workspace must not require shipping those facts; rebinding sessions on a new machine is a reconnect problem, not a collaboration-data problem.
 
 ### 1.3 Delivery fields (contract shape)
 
@@ -72,13 +89,22 @@ checks:
   - name: …
     command: …
     exitCode: 0
-artifactRefs: []
+artifactRefs: []                 # ArtifactRef[] — see architecture §5.2
 integrationMode: null | manual-accept | bypass-auto | agent-decided-integrate
 review:
   by: user | <role>
   decision: accept | reject
   note: …
 createdAt / updatedAt: …
+```
+
+```ts
+// Shared with architecture / concept-model — structured real-world deliverable ref
+type ArtifactRef = {
+  kind: "path" | "dir" | "commit" | "url" | "other";
+  target: string;
+  label?: string;
+};
 ```
 
 Chat-facing narrative remains the primary presentation; `delivery.summary` is the same text persisted for review—not a second story.
@@ -142,12 +168,13 @@ Rules:
 | Last terminal state `accepted`, no new task | `done` | empty |
 | After `interrupt` / terminal `rejected` without rework | `todo` | empty |
 
-**Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task. Migration may synthesize a running task from orphan `owner` or force-idle before cutover.
+**Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task—including via ordinary **`docs.write`** / frontmatter body patches. While an active task occupies the box, service/core **must reject** competing writes to projected collaboration fields (`status` when service-owned as `doing`, `assignee`, legacy `owner`). Use Task API transitions only. Migration may synthesize a running task from orphan `owner` or force-idle before cutover.
 
-### 2.4 Parallelism
+### 2.4 Parallelism and `docs.fork`
 
 - Default: second active task on the same box is rejected at dispatch (topology + active-task check).
-- Parallelism: `fork(box)` then dispatch on the fork root.
+- Parallelism: **`docs.fork(boxId | path)`** (canonical command) then `task.dispatch` on the fork root. Legacy CLI `tent fork` is an alias.
+- `docs.fork` copies the concept/box subtree for parallel occupation; it does **not** start a task or session by itself.
 - Multi-role orchestration: dispatch distinct child boxes; parent occupation follows existing ancestor/descendant mutual exclusion.
 
 ---
@@ -156,13 +183,16 @@ Rules:
 
 All mutations go through Local Tent Service → core. Logical verbs below; transport (HTTP / named pipe / in-proc) is an architecture concern.
 
+**Canonical external command groups** for clients: **`task.*`** and **`docs.*`**.  
+`AgentRuntimePort.*` is **service-internal only** (architecture §5). Clients never call the runtime port directly.
+
 ### 3.1 Commands
 
 | API | Default callers | Effect |
 | --- | --- | --- |
 | `task.dispatch` | user; authorized orchestrator role | Create `queued` task + manifest snapshot. Does **not** start a session unless `startSession: true` and A2A allows. |
-| `task.claim` | target role/session (or user on behalf) | `queued → running`; bind session; project assignee |
-| `task.startSession` | service internal / authorized orchestration | Resolve profile, enforce A2A, call AgentRuntimePort |
+| `task.claim` | target role/session (or user on behalf) | `queued → running`; bind `sessionId` reference; project assignee |
+| `task.startSession` | authorized orchestration / user | Resolve **machine-local AgentProfile**, enforce **A2APolicy**, then service calls **internal** `AgentRuntimePort` |
 | `task.wait` | executing session / service | `running → waiting` with reason + summary |
 | `task.resume` | user confirmation / external event | `waiting → running` |
 | `task.deliver` | assignee | Create/update delivery; enter `delivered` (or auto-integrate path per policy) |
@@ -171,15 +201,18 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `task.reject` | same as accept | Reject delivery; default resume rework |
 | `task.interrupt` | user; authorized orchestrator | No integrate; `interrupted`; clear occupation; keep git lane |
 | `task.cancel` | user; `queued` only | Drop unclaimed task |
+| `docs.fork` | user; authorized orchestration | Fork box/concept subtree for parallel work (see §2.4); not a task transition |
 | `proposal.submit` / `proposal.resolve` | existing semantics | **Separate** from delivery review |
 
 ### 3.2 Queries and events
 
 - `task.get` / `task.list({ boxId, role, state })`
 - `delivery.get` / `delivery.list`
-- `session.get` / `session.list`
+- `session.get` / `session.list` (projections; no secrets/tokens in client payloads)
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe`: `task.state`, `delivery.updated`, `session.state`, `a2a.ask`
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, plus document events `concept.changed` / `concept.removed` from the docs group
+
+**No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 
 ### 3.3 CLI compatibility aliases
 
@@ -191,6 +224,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `tent report` | `task.deliver` |
 | `tent complete` / `tent stamp` | `task.accept` |
 | `tent force-release` | `task.interrupt` |
+| `tent fork` | `docs.fork` |
 | `tent propose` | `proposal.submit` |
 | `tent status` | aggregate query |
 
@@ -199,33 +233,42 @@ Aliases may remain for dogfood; SPEC and skills use canonical names.
 ### 3.4 Decoupling from runtime
 
 ```text
-Task API (collaboration)          AgentRuntimePort (execution)
-────────────────────────          ───────────────────────────
-dispatch / claim / wait           start / resume / stop
-deliver / accept / interrupt      process / session events
-box occupation & review           no box-tree writes
+Task API (external, collaboration)     AgentRuntimePort (service-internal execution)
+──────────────────────────────────     ────────────────────────────────────────────
+task.dispatch / claim / wait           startSession / resumeSession / stopSession
+task.deliver / accept / interrupt      process / session events only
+docs.fork + box occupation & review    no box-tree writes; no client exposure
 ```
 
-Agents submit task targets (role/profile/capability). They never read provider credentials. The service resolves authorized profiles and starts adapters.
+Agents submit task targets (role / **AgentProfile** id / capability). They never read provider credentials. The service resolves authorized machine-local profiles and starts adapters **after** A2A.
 
 ---
 
-## 4. A2A hard authority (`allow` / `ask` / `deny`)
+## 4. A2A hard authority (`A2APolicy` = `allow` | `ask` | `deny`)
 
-### 4.1 Policy meanings
+### 4.1 Policy type
+
+```ts
+/** Canonical spawn authority enum — evaluated only inside Local Service. */
+type A2APolicy = "allow" | "ask" | "deny";
+```
+
+Persisted on durable **role** (and optional per-profile override). UI may localize labels; stored values are always English enum strings above.
+
+### 4.2 Policy meanings
 
 | Policy | Behavior |
 | --- | --- |
-| `allow` | Role may autonomously start authorized agent profiles / subagent sessions |
+| `allow` | Role may autonomously start authorized **AgentProfile**s / subagent sessions |
 | `ask` | Start request enters user confirmation (`waiting` + `reason=a2a-approval`); service spawns only after grant |
 | `deny` | Must not create a new runtime instance. Pull-mode file envelopes may still exist for a user-woken existing session |
 
-### 4.2 Hard enforcement (service only)
+### 4.3 Hard enforcement (service only)
 
 Before any of:
 
 1. `task.dispatch` with `startSession: true`
-2. `task.startSession` / adapter spawn / resume that creates a new process
+2. `task.startSession` / internal adapter spawn / resume that creates a new process
 3. A role creating a session for another role (peer or sub)
 
 the service MUST:
@@ -233,29 +276,30 @@ the service MUST:
 ```text
 1. Authenticate caller (user token | role session token)
 2. user caller → allow (user is root authority)
-3. role caller → load role.a2aPolicy (+ optional per-profile override)
-4. allow → target profile ∈ allowedProfiles / auth table → spawn
+3. role caller → load role.a2aPolicy: A2APolicy (+ optional per-profile override)
+4. allow → target AgentProfile ∈ allowedProfiles / auth table → internal AgentRuntimePort.startSession
 5. ask  → enqueue a2a.ask; task.wait; do not spawn
 6. deny → return A2A_DENIED; leave no half-started process state
 ```
 
 **Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization.  
-**Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.
+**Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.  
+**Clients** call `task.startSession` (or dispatch with `startSession: true`); they never call `AgentRuntimePort` directly.
 
-### 4.3 Self-accept ban
+### 4.4 Self-accept ban
 
 - `task.accept` actor **must not** equal the delivery submitter role.
 - An authorized orchestrator may accept deliveries it dispatched (sub chain) subject to service policy; peer deliveries default to user final accept unless explicitly delegated.
 - Recording `review.by = submitter` is a hard error.
 
-### 4.4 Peer vs sub (hardened)
+### 4.5 Peer vs sub (hardened)
 
 | | Peer | Sub (`asSub: true`) |
 | --- | --- | --- |
-| Target | first-class role or profile | tool-like helper of dispatcher |
+| Target | first-class role or **AgentProfile** | tool-like helper of dispatcher |
 | `targetBranch` | workspace mainline (e.g. `main`) | dispatcher role branch |
 | Default accept authority | user (or user-delegated orchestrator) | dispatcher role (still not self) |
-| Workspace pointer | optional (pure Tent tasks legal) | required (dispatch rejected without lane) |
+| **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without lane) |
 
 ---
 
@@ -317,7 +361,7 @@ Hard rules:
 | Collaboration facts | box body conclusions, artifactRefs, accepted commit pointers | durable until user deletes |
 | Active operational | active task, ready delivery, waiting records | until terminal |
 | Terminal operational | accepted / interrupted / failed tasks, old deliveries | **short heat retention** then purge (suggested **30 days**, configurable) |
-| Local runtime only | PID, session tokens, absolute worktree paths | clear with process; never ship in repo |
+| Local runtime only | PID, session registry rows, resume tokens, absolute worktree paths, AgentProfile paths | clear with process / stay machine-local; never ship in repo |
 | Rebuildable | relay prompt copies, redundant manifest dumps | drop after terminal; rebuild from task fields if needed |
 
 ### 6.2 Promotion to OKF
@@ -356,7 +400,8 @@ One-shot cutover; no long-lived dual aliases.
 | `temp/.../reports/<boxId>.md` | `delivery` (`dl-`) on the task |
 | `force-release` | `interrupt` |
 | `complete` / `stamp` | `accept` |
-| honor-only A2A spawn | service `allow|ask|deny` gate |
+| honor-only A2A spawn | service **`A2APolicy`** `allow|ask|deny` gate |
+| “workspace pointer” product term | **WorkspaceLane** on task; tent lives in-workspace at `.tent/` |
 
 Active claims, pending tasks, and ready reports must migrate or block cutover. Other temp may be discarded after dry-run inventory.
 
@@ -381,13 +426,15 @@ This B0 document is satisfied when later implementation matches:
 1. Box/concept longevity vs task-as-attempt; box projects active task state only.
 2. Full state machine including `waiting` for user input and A2A ask.
 3. Task API surface above; CLI aliases do not redefine semantics.
-4. `allow` / `ask` / `deny` enforced only in service at spawn/start.
+4. **`A2APolicy`** `allow` / `ask` / `deny` enforced only in service at spawn/start; clients use `task.*` only.
 5. Delivery policies:
    - `manual` always waits for non-submitter review;
    - `bypass` auto-integrates with audit;
    - `agent-decide` chooses **integrate vs request-review**, never pretends the executor is an independent reviewer, never self-`accept`.
 6. Operational terminal data short-retained then cleaned; promotable to OKF concepts.
-7. Runtime port remains outside this contract’s collaboration verbs.
+7. Runtime port remains **service-internal**; outside this contract’s external collaboration verbs.
+8. Task holds `sessionId` reference only; active-task projections cannot be bypassed via `docs.write`.
+9. Parallelism uses **`docs.fork`**; `ArtifactRef` is the structured deliverable association type.
 
 ---
 

@@ -4,6 +4,8 @@ Status: **frozen contract** for independent desktop product architecture.
 Scope: dependency directions among Desktop shell, Local Service, CLI, core, in-workspace tent data, and machine-local service data.  
 Non-scope: Task/Delivery IDL details (`docs/desktop/task-api.md`), concept/box document model (`docs/desktop/concept-model.md`), AgentRuntimePort/adapters (`docs/desktop/agent-runtime.md`). Those contracts must not invert the rules below.
 
+**External vs internal APIs:** clients (Desktop, CLI, MCP) call only `task.*` and `docs.*` (plus Query/Events). `AgentRuntimePort.*` is **service-internal** — never exposed as a client command surface.
+
 This document freezes **what depends on what** and **who may mutate**. Implementation batches B1+ implement this contract; they do not reopen it without an explicit revision.
 
 ---
@@ -70,22 +72,24 @@ Forbidden reverse edges:
 <workspace>/
   .gitignore                 # ignore tent system dir + operational temp
   <user project files>       # real work / artifacts
-  <tent-system-dir>/         # final directory name fixed in implementation (B1); one active tent per workspace
+  .tent/                     # **fixed** tent system directory name; one active tent per workspace
     … boxes / concepts, RULES, registries, operational pipeline …
 ```
 
 - A **workspace** is the sole root of real files and (when present) Git history.
-- A **tent** is the collaboration instance **owned by** that workspace, not an external vault folder with a pointer back.
+- A **tent** is the collaboration instance **owned by** that workspace, living at `<workspace>/.tent/`. It is **not** an external vault folder that links back to a separate code root.
+- The system directory name is **`.tent`**, fixed in this contract. B1 implements scaffold and migration into `.tent/`; it does **not** reopen naming.
 - Non-git document libraries are still workspaces: skip gitignore/worktree steps; tent semantics unchanged.
-- Tent system directory is **hidden from the workbench tree by default** (diagnostic entry only) and listed in workspace `.gitignore` when the repo uses Git.
+- `.tent/` is **hidden from the workbench tree by default** (diagnostic entry only) and listed in workspace `.gitignore` when the repo uses Git.
 
 ### 3.2 What lives with the workspace (migratable collaboration facts)
 
 - Concept/box tree and frontmatter (`cx-` handles, type, tags, status, …)
 - Project-level type / tags / roles registries
 - Operational records required for recovery (task, handoff, delivery, …) subject to retention
-- artifactRef associations
+- `ArtifactRef` associations on concepts/deliveries (structured refs; see §5.2)
 - RULES / project conventions
+- Task operational records may store **`sessionId` only** as a reference; never session rows, PIDs, or resume tokens
 
 ### 3.3 What lives only on the machine (service data area)
 
@@ -93,14 +97,25 @@ Example root: `%APPDATA%/Tent/` (platform-specific).
 
 - Window / floating-control geometry, recent workspaces
 - Search/index caches, notification read state
-- CLI paths, credentials, PID files, session tokens
+- CLI paths, credentials, PID files, session tokens, full session registry rows
+- **AgentProfile** configs (binary paths, argv templates, auth references)
 - Absolute worktree path caches (rebuildable)
+- **RuntimeWorkspace** bindings used by process supervision (cwd, env handles)—not collaboration facts
 
-Copying a workspace must preserve collaboration semantics. Reconnecting agents on a new machine must not require shipping old PIDs, credentials, or absolute paths.
+Copying a workspace must preserve collaboration semantics. Reconnecting agents on a new machine must not require shipping old PIDs, credentials, session rows, or absolute paths.
 
 ### 3.4 Real deliverables
 
-User-visible workspace trees (code, docs, builds) remain outside Tent’s document browser. Tent associates via **artifactRef** and “open with original tool”; it does not host a source tree, IDE, or disk file manager.
+User-visible workspace trees (code, docs, builds) remain outside Tent’s document browser. Tent associates via **`ArtifactRef`** and “open with original tool”; it does not host a source tree, IDE, or disk file manager.
+
+### 3.5 WorkspaceLane vs RuntimeWorkspace
+
+| Term | Owner | Meaning |
+| --- | --- | --- |
+| **WorkspaceLane** | Task / collaboration (`task-api.md`) | Role worktree + branch + targetBranch prepared for a task attempt (Git lane) |
+| **RuntimeWorkspace** | AgentRuntime / machine-local | Process cwd and launch binding for a live session; may mirror a lane’s worktree path but is **not** a task field |
+
+Do **not** reuse legacy “workspace pointer” product language for either concept. Legacy external-tent → code-root linking is retired by the in-workspace `.tent` model.
 
 ---
 
@@ -144,17 +159,61 @@ Clients must not re-implement claim topology, type resolution, or accept/integra
 
 ## 5. API surface (architectural, not full IDL)
 
-Logical groups shared by Desktop and CLI (transport chosen in B2: loopback HTTP or named pipe + JSON-RPC):
+Logical groups shared by Desktop and CLI (transport chosen in B2: loopback HTTP or named pipe + JSON-RPC).
 
-| Group | Examples | Notes |
+### 5.1 External groups (clients)
+
+| Group | Canonical examples | Notes |
 | --- | --- | --- |
-| **Query** | `getWorkspaceSnapshot`, `getBoxTree` / concept reads, `listTasks`, `listDeliveries`, `listSessions`, `subscribeEvents` | Read projections only |
-| **Command** | box CRUD/place; task `dispatch`/`claim`/`interrupt`/…; delivery `deliver`/`accept`/`reject`; runtime `startSession`/`stopSession` | Serialized mutations |
-| **Events** | `box.changed`, `task.state`, `delivery.updated`, `session.state`, `workspace.switched`, `service.health` | Fan-out to all attached clients |
+| **Query** | `docs.list` / `docs.get` / concept reads; `task.get` / `task.list`; `delivery.*`; `session.get` / `session.list` (projections); `subscribeEvents` | Read projections only |
+| **Command** | **`docs.*`** (create, write, promote, fork, place, …); **`task.*`** (`dispatch` / `claim` / `wait` / `deliver` / `accept` / `reject` / `interrupt` / …) | Serialized mutations; **only** external mutation verbs |
+| **Events** | `concept.changed`, `concept.removed`, `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `workspace.switched`, `service.health` | Single fan-out channel; **no** `box.changed` dual stream |
 
-Field names follow the canonical vocabulary in the Tent concept glossary (`cx-`, `assignee`, `delivery`, `artifact`, …). Detailed task states and A2A policy enums are owned by the Task API contract; detailed runtime port shapes by the AgentRuntime contract.
+**Forbidden as client commands:** `AgentRuntimePort.startSession` / `stopSession` / `resumeSession` / `probe` / `subscribe`. Session lifecycle for agents is invoked **inside** Local Service after `task.startSession` (or equivalent orchestration) has already passed A2A. Clients may issue `task.startSession` where authorized; they never call the runtime port directly.
+
+Field names follow the canonical vocabulary (`cx-`, `assignee`, `delivery`, `ArtifactRef`, …). Detailed task states and **`A2APolicy`** (`allow` \| `ask` \| `deny`) are owned by the Task API contract; detailed runtime port shapes by the AgentRuntime contract.
 
 CLI keeps familiar verbs where possible, but implementation becomes **attach service → command/query**, not re-open tent files as a second writer.
+
+### 5.2 Shared shapes (cross-contract)
+
+```ts
+/** Structured association to a real deliverable outside concept identity. */
+type ArtifactRef = {
+  kind: "path" | "dir" | "commit" | "url" | "other";
+  /** Workspace-relative path, commit SHA, absolute URL, or other stable locator. */
+  target: string;
+  label?: string;
+};
+
+/** Common wire wrapper for all service fan-out events. */
+type EventEnvelope<TType extends string, TPayload> = {
+  id: string;              // unique event id
+  type: TType;             // e.g. "concept.changed", "task.state"
+  workspaceId: string;     // mounted workspace key
+  ts: string;              // ISO-8601
+  source: "service" | "self"; // self = echo of this client's write (may ignore)
+  payload: TPayload;
+};
+
+/** Role / orchestration spawn authority (evaluated only in service). */
+type A2APolicy = "allow" | "ask" | "deny";
+
+/**
+ * Machine-local launch profile — binary paths, argv templates, auth refs.
+ * Lives only in service data area; never in workspace git / concept bodies.
+ */
+type AgentProfile = {
+  id: string;
+  adapterId: string;
+  displayNameKey?: string;
+  // binary path, default argv, authModel, capability flags — machine-local
+};
+```
+
+### 5.3 Active-task field protection
+
+While a box has an **active task**, collaboration projection fields (`status` when projected as `doing`, `assignee` / legacy `owner`) are **not** independently writable through ordinary `docs.write` / body frontmatter patches. Clients must use Task API transitions; service/core reject competing writes (see `task-api.md` §2.3 and `concept-model.md`).
 
 ---
 
@@ -204,11 +263,12 @@ packages/
 
 | From (legacy) | To (desktop model) |
 | --- | --- |
-| External tent under vault/`_tents` + workspace **pointer** box | Tent **inside** the workspace system directory |
+| External tent under vault/`_tents` + separate code root linkage | Tent **inside** the workspace at **`.tent/`** |
 | `bx-` handles | `cx-` handles (full map in migration report) |
 | `owner` fact on box | `assignee` projected from active task |
 | temp `report` without id | `delivery` (`dl-`) under task (per Task API contract) |
 | Dual mental model / dual UI | Single location model only |
+| Product term “workspace pointer” | Retired; use **WorkspaceLane** (task) / **RuntimeWorkspace** (runtime) / in-workspace tent |
 
 ### 7.2 Process requirements
 
@@ -217,8 +277,9 @@ packages/
 3. Single workspace path; refuse dirty multi-pointer tents.
 4. Rewrite rewritable absolute paths; **do not** migrate machine-local runtime facts.
 5. Write workspace `.gitignore` entries when applicable.
-6. Emit a migration report (id map, skips, broken artifactRefs needing human reconnect).
+6. Emit a migration report (id map, skips, broken `ArtifactRef`s needing human reconnect).
 7. Mark old external root with `MIGRATED.md`; user deletes—**no** bidirectional sync.
+8. Land tent data under **`<workspace>/.tent/`** only (name fixed; no alternate system-dir product mode).
 
 ### 7.3 Explicit non-goals
 
@@ -237,7 +298,7 @@ Contract freeze is **B0** (this document + peer B0 contracts). Implementation or
 | --- | --- | --- | --- | --- |
 | **B0** | Architecture + peer contracts | Desktop / collab / docs / ACP roles | — | Frozen boundaries & vocabulary |
 | **B0-doc** | Concept/box document contract | Docs role | Glossary | `concept-model.md` |
-| **B1** | Core location & naming | Desktop architecture | B0 field tables | In-workspace scaffold, `cx-`/capability migration, core tests green |
+| **B1** | Core location & identity | Desktop architecture | B0 field tables | In-workspace **`.tent/`** scaffold, `cx-`/capability migration, core tests green |
 | **B2** | Local Service skeleton | Desktop architecture | B1 | Process model, attach protocol, watch, sole mutation entry |
 | **B3** | Electron shell + workbench vertical slice | Desktop architecture | B2 protocol | Main window tree/attrs/dispatch/review; tray |
 | **B4** | CLI attach service | Desktop architecture | B2 | CLI via service; bootstrap if missing |
@@ -275,7 +336,7 @@ A Windows user opens a workspace with an in-workspace tent, completes **create b
 | --- | --- | --- |
 | **Docs (Markdown)** | Concept query/save commands; hide system dir; event stream for invalidation | Editor, wiki-link, search index consumers |
 | **Collaboration** | Service mount points for authorization hooks & operational storage | Task state machine, delivery fields, A2A policy semantics |
-| **ACP** | `AgentRuntimePort` host (start/stop/resume/events) under service | Per-provider adapters; no lifecycle reimplementation |
+| **ACP** | Hosts **service-internal** `AgentRuntimePort` (start/stop/resume/events); clients use `task.*` only | Per-provider adapters; no lifecycle reimplementation |
 
 Conflict rule: if a peer proposal violates **sole service mutation**, **in-workspace tent**, **no chat product**, or **one-shot migration**, parent product goal wins; escalate to the product owner rather than silently forking the model.
 
@@ -297,6 +358,13 @@ Conflict rule: if a peer proposal violates **sole service mutation**, **in-works
 | Requirement | Section |
 | --- | --- |
 | Service is the sole mutation entry | §1, §4 |
+| External commands = `task.*` / `docs.*`; `AgentRuntimePort` internal only | §5 |
+| Events = `concept.changed/removed` + task/runtime; no `box.changed` | §5 |
+| System dir fixed as `<workspace>/.tent/` | §3.1 |
+| WorkspaceLane ≠ RuntimeWorkspace; no “workspace pointer” product term | §3.5 |
+| `ArtifactRef`, `EventEnvelope`, `A2APolicy`, machine-local `AgentProfile` | §5.2 |
+| Active-task projections not bypassable via `docs.write` | §5.3 |
+| Task stores `sessionId` only; session row/token/PID machine-local | §3.2–3.3 |
 | Foreground single workspace; background multi-workspace | §2 |
 | Closing the window does not stop tasks | §2 |
 | Repo module boundaries | §6 |
