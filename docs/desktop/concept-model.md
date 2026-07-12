@@ -1,0 +1,391 @@
+# Desktop Contract · Concept & Box Document Model
+
+Status: **B0 frozen contract** (implementation follows in B1 / B7)  
+Scope: OKF concept space, box as coordination-enabled concept, `cx-` handles, physical layout, links, attachments, operational exclusion, external-edit concurrency, Markdown MVP boundaries  
+Non-goals: Task/Delivery state machine (`docs/desktop/task-api.md`), service process topology (`docs/desktop/architecture.md`), AgentRuntime adapters (`docs/desktop/agent-runtime.md`)
+
+This document freezes the document model for independent desktop Tent. Canonical English names are API/schema truth. UI may localize labels via i18n; persisted enums never use localized values.
+
+Peer contracts that must not invert these rules:
+
+- Architecture: Local Service is the sole mutation entry; Markdown subsystem is a client of Query/Command.
+- Task API: box occupation, assignee projection, and delivery review live in operational space; documents only supply concept identity and body.
+
+---
+
+## 1. Two spaces
+
+```text
+OKF concept space (user-facing Markdown)
+├── concept (always has non-empty type)
+│   ├── coordination: false  → ordinary note
+│   └── coordination: true   → box (lifecycle-capable)
+└── (non-concept) operational space
+    ├── task          tk-
+    ├── delivery      dl-
+    ├── session       ss-
+    ├── handoff / claim / review records
+    └── pipeline / temp envelopes
+```
+
+| Space | What lives there | Indexed as concept? | OKF validator? |
+| --- | --- | --- | --- |
+| **Concept** | User-facing notes and boxes | yes | yes (subject to generated-file rules) |
+| **Operational** | Task, delivery, session, handoff, claim, review, temp pipeline | **no** | **no** |
+
+**One sentence:** content lives in concepts; collaboration lifecycle attaches only when `coordination` is enabled; pipeline state lives in operational space and is cleaned by retention policy.
+
+### 1.1 Hard exclusions from concept space
+
+Never register as concepts:
+
+- `.tent/**` system registries, locks, machine-agnostic collaboration facts that are not user notes
+- `temp/**` and other pipeline envelopes
+- Generated OKF helpers such as root/folder `index.md` / `log.md` as *user edit targets* (they may exist on disk for OKF compliance; they are not ordinary notes)
+- Real workspace trees (source, project docs, builds)—only via `artifactRef`
+- Machine-local service data (search index, window state, credentials)
+
+Operational Markdown **may** reuse the same renderer component in lifecycle panels. `DocumentController` / concept index **must not** list them as ordinary documents.
+
+---
+
+## 2. Identity model
+
+### 2.1 Dual identity (not dual keys)
+
+| Layer | Field | Role |
+| --- | --- | --- |
+| **OKF identity** | Bundle-relative path of the concept note (canonical path form) | Stable for OKF; changes on controlled rename/move |
+| **Handle** | `cx-` + random collision-checked suffix | Immutable after create; used by task, relations, `contextRef`, migration continuity |
+| **Display name** | Path stem and optional `title` | Human/agent-readable; **not** a third identity |
+
+**Forbidden:**
+
+- A second `boxId` distinct from `cx-`
+- A `key` / semantic-slug identity competing with path
+- Treating `cx-` as OKF concept name or as a second path
+- Long-term dual `bx-` / `cx-` formats after cutover (migration is one-shot; dual-read only during the window)
+
+### 2.2 Invariants
+
+1. Path is the OKF identity. Frontmatter must not invent a parallel semantic key.
+2. Every concept receives a random, stable, immutable `cx-` at creation.
+3. UI does not emphasize `cx-` by default; expose it for copy, drag `contextRef`, diagnostics, and agent tools.
+4. Controlled rename/move **changes** OKF path identity and **must** rewrite internal Markdown links and rebuild/update index entries. `cx-` proves “same concept” across the move.
+5. Promoting note → box keeps the same path, body, and `cx-`.
+
+### 2.3 Frontmatter shape (contract)
+
+```yaml
+---
+id: cx-a1b2c3          # stable handle; migration may rewrite legacy bx- once
+type: note             # non-empty; registry-resolved (base or compound)
+tags: [ui]             # optional lookup facets
+title: Optional title  # optional display override
+# Only when type.coordination === true (box):
+status: todo           # todo | doing | done — doing/assignee projected from active task
+# assignee / legacy owner: not independently writable against an active task
+# artifactRef: optional list or structured refs to real deliverables
+---
+# Markdown body
+```
+
+| Field | Rule |
+| --- | --- |
+| `id` | Required; `cx-…` after migration |
+| `type` | Required, non-empty; resolved via type registry |
+| `tags` | Optional; never replace type or hierarchy |
+| `status` | Only meaningful for coordination-enabled types |
+| `assignee` | Projection of active task (Task API); not a competing owner fact |
+| Readable/writable axes | Honor contract per type/box; orthogonal to `coordination` |
+
+---
+
+## 3. Type registry: `coordination` capability
+
+### 3.1 Capability, not name hardcoding
+
+`coordination` is a **base-type capability** on the type registry (alongside existing axes such as `readable` / `writable` / `workspacePointer`):
+
+```ts
+// base type only — modifiers do not configure coordination independently
+coordination?: boolean; // default false
+```
+
+| Rule | Detail |
+| --- | --- |
+| Default | `false` when omitted |
+| Compound types | Follow the **base** type; modifiers do not flip coordination alone |
+| Built-in tendency | `note` → false; `goal` / `prompt` / `artifact` → true (configurable, not name-matched in code) |
+| Detection | Always read registry capability; **never** `if (type === "goal")` style hardcoding |
+
+`coordination` decides lifecycle eligibility (status, task occupation, delivery projection).  
+Readable/writable remain honor R/W axes and do **not** imply coordination.
+
+### 3.2 Concept vs box
+
+| Term | Definition |
+| --- | --- |
+| **concept** | Any user-facing Markdown in OKF concept space with non-empty `type` and a `cx-` |
+| **box** | A concept whose resolved type has `coordination: true` |
+| **note** | Ordinary concept with coordination disabled (default base type name may be `note`) |
+
+Box is **not** a second file format, folder kind, or identity prefix.
+
+### 3.3 Promote (note → box)
+
+API sketch: `docs.promote` / `promoteConcept(cx | path, toType)`.
+
+| Step | Requirement |
+| --- | --- |
+| 1 | `toType` must resolve with `coordination === true` |
+| 2 | Same path, same body bytes (except frontmatter type/status), same `cx-` |
+| 3 | Set `status: todo` if absent |
+| 4 | **No** file move, **no** copy, **no** new id |
+
+Demote (box → note) is **non-MVP** unless later specified; if added, require no active task, clear collaboration fields, keep `cx-`.
+
+---
+
+## 4. Physical layout (document tree, not workspace tree)
+
+Principles:
+
+- Organization follows Tent logical entities.
+- On disk: ordinary directories + Markdown files under the tent system location (see architecture: tent inside workspace).
+- MVP **forces note layout isomorphic to box** so promote is zero-move.
+
+| Form | Layout | MVP |
+| --- | --- | --- |
+| **Box concept** | `Name/Name.md` (folder + same-named identity note); nested folders express service/organization relations | **required** |
+| **Note concept** | Same `Name/Name.md` isomorphism | **required** |
+| **Transparent group** | Directory without same-named note; organizational only, **not** a concept | retained |
+| **Attachments** | Prefer `.tent/attachments/<cx>/<uuid>.<ext>` (gitignore-friendly) | MVP minimum |
+| **Single-file note** `Name.md` | Compatibility only | **post-MVP** |
+
+Agents creating concepts must choose meaningful path/name segments; path remains OKF identity.
+
+---
+
+## 5. Document tree projection (UI)
+
+### 5.1 Shown in the ordinary document tree
+
+- All concepts (notes + boxes)
+- Type color / badge; boxes additionally show `status` badge
+- Hierarchy from folder nesting / parent relations
+
+### 5.2 Not shown as ordinary tree nodes
+
+- Operational entities (task, delivery, session, …)—lifecycle panels only
+- Workspace source / project files (artifact chips + open-external only)
+- Machine-local indexes and window state
+- Tent system dir internals by default (diagnostic entry only; architecture)
+
+### 5.3 Artifact association
+
+| Mechanism | Purpose |
+| --- | --- |
+| `artifactRef` | Points to file, directory, commit, URL, or other real deliverable **outside** concept identity |
+| Open action | Default: open with original tool / OS handler |
+| Search | Artifact **bodies** are not in default concept search |
+
+**Forbidden in MVP:** workspace file browser, source tree navigator, built-in code editor, LSP, IDE terminal, build panel, in-app commit diff, line-by-line review, full Git client UI.
+
+---
+
+## 6. Links, search, and attachments
+
+### 6.1 Link model
+
+| Layer | Form | Role |
+| --- | --- | --- |
+| Authoring | `[[Name]]` / `[[path\|label]]` | User input; editor completion |
+| Resolution keys | path, title/name, `cx-`, legacy `bx-` **during migration only** | Unique hit required to resolve |
+| Backlinks | Inverted from outbound links in index | Side/bottom panel |
+| artifact links | Structured `artifactRef` or dedicated scheme | External open |
+
+**Resolve vs project split:**
+
+1. **Resolve API** — read-only, for preview/jump (always available).
+2. **Index build** — writes machine-local cache only; **never** rewrites user body by default.
+3. **Optional OKF project** — explicit command/export may rewrite wiki → relative MD for compliance; **never** auto-run on dirty buffers; refuse destructive project when the tab is dirty (or dry-run only).
+
+Default edit path does **not** perform destructive link projection on every save.
+
+### 6.2 Search (MVP)
+
+- Scope: concept titles + bodies (simple tokens / substring).
+- Results: concept hits + snippet offsets; open tab and select match.
+- Out of scope: semantic embedding search, workspace source search.
+
+### 6.3 Attachments (MVP)
+
+- Store under tent attachment root keyed by `cx-` (recommended: `.tent/attachments/…`).
+- Insert ordinary relative Markdown image/file links (or service-logical URLs resolved in preview).
+- No cloud image host; large-file warnings allowed.
+
+### 6.4 Editor session state
+
+Open tabs, scroll, selection live in **machine-local** window state. They must not be written into concept files.
+
+---
+
+## 7. External modification · minimal optimistic concurrency
+
+### 7.1 Sources of truth
+
+| Fact | Authority |
+| --- | --- |
+| On-disk bytes | Last successful write |
+| Editor buffer | Unflushed tab content |
+| Collaboration facts | core mutations under service + mutation lock |
+| Search/link index | Derived cache; **always rebuildable** |
+
+### 7.2 Version token
+
+`docs.readForEdit` returns at least:
+
+```ts
+{
+  cx: string;
+  path: string;
+  body: string;
+  frontmatter: Record<string, unknown>;
+  etag: string; // content hash and/or mtimeMs+size
+}
+```
+
+`docs.write` / `writeBody` **must** supply `baseEtag`:
+
+1. Under mutation serialization, re-read disk and compute `diskEtag`.
+2. If `diskEtag !== baseEtag` → **conflict**: reject write; return disk and base snapshots.
+3. Else write, publish `concept.changed`, update callers’ etag.
+
+Structured mutations (promote, type change, controlled move) continue to use core `withTentMutation` / service command path; they still must not silently clobber a dirty editor buffer (flush or explicit merge of frontmatter-only updates).
+
+### 7.3 Autosave and watch
+
+```text
+Editor buffer
+    │ debounce save
+    ▼
+ConflictGate.write(baseEtag, content)
+    │
+    ├─ ok → update baseEtag, clear dirty
+    └─ conflict → keep dirty buffer, show banner:
+         [Load disk] [Keep mine / overwrite] [Side-by-side plain text]
+```
+
+Watch rules:
+
+- Clean tab + etag change → silent reload allowed.
+- Dirty tab + etag change → banner; **silent reload forbidden**.
+- Self-echo from this service write may be ignored via generation / `source: self`.
+
+### 7.4 Explicit non-goals (concurrency)
+
+- Character-level 3-way merge / CRDT
+- Automatic semantic frontmatter merge
+- Cross-machine sync conflict UI
+- Built-in Git diff as the conflict surface (external tool open is fine)
+
+### 7.5 Index rebuild
+
+- Startup full scan + watch incremental updates.
+- Corruption or version skew → full rebuild from disk.
+- Index never becomes a second source of truth for body text.
+
+---
+
+## 8. Service API surface (document group)
+
+Logical APIs consumed by Desktop Markdown and CLI (transport owned by architecture):
+
+| API | Kind | Effect |
+| --- | --- | --- |
+| `docs.list` / `docs.get` | Query | Concept projections |
+| `docs.readForEdit` | Query | Body + etag for editing |
+| `docs.write` | Command | Conditional write with `baseEtag` |
+| `docs.createNote` | Command | New concept (`cx-`, type, path) |
+| `docs.promote` | Command | Note → box in place |
+| `docs.search` / `docs.backlinks` / `docs.resolveLink` | Query | Navigation |
+| `docs.importAttachment` | Command | Store attachment + return link target |
+| `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals |
+
+Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries.
+
+---
+
+## 9. Module boundary
+
+| Concern | Document system owns | Hand off |
+| --- | --- | --- |
+| Concept load, type/`coordination`, promote, links, search, attachments, conflict gate for bodies | yes | — |
+| Task state machine, occupation, delivery review | no | Task API / collab |
+| Process/session/adapters | no | AgentRuntime |
+| Window shell, multi-workspace mount | no | Architecture / Desktop |
+| Workspace Git integrate-after-accept | no | Architecture + Task API |
+| Editor implementation (e.g. CodeMirror 6) | Markdown package only | Must not be imported by core |
+
+Dependency direction (architecture):
+
+```text
+markdown UI  →  Local Service Query/Command  →  core  →  tent files
+```
+
+Core must not import editor frameworks. Clients must not mutate concept frontmatter or bodies outside the service when a service is available.
+
+---
+
+## 10. Migration notes (document identity only)
+
+Aligned with architecture one-shot migration; document-specific requirements:
+
+| From | To |
+| --- | --- |
+| `bx-` handles | `cx-` handles; emit full map in migration report |
+| Box-only tree index | Concept scan of all user-facing notes + boxes |
+| Dual mental model (vault-external tent + pointer) | Single in-workspace tent location |
+| Auto OKF project rewriting bodies | Explicit project; default non-destructive resolve |
+
+During migration window only: resolve layer may dual-read `bx-` and `cx-`. After cutover, new writes use `cx-` exclusively.
+
+---
+
+## 11. Markdown MVP acceptance (product checklist)
+
+**Must have**
+
+- [ ] Create ordinary note concept (non-empty type, `cx-`)
+- [ ] In-place promote to box (same path / body / `cx-`)
+- [ ] Edit + preview + autosave through service
+- [ ] External edit conflict detectable with explicit user choice
+- [ ] Wiki/path/`cx-` resolve, backlinks, title+body search
+- [ ] Image attachment into tent attachment area with Markdown link
+- [ ] Operational docs absent from concept tree / OKF concept index
+- [ ] `artifactRef` opens externally—not an in-app workspace browser
+
+**Must not have (MVP)**
+
+- [ ] Workspace source tree browser
+- [ ] Code LSP / terminal / build panel
+- [ ] Built-in commit diff / line comments
+- [ ] Automatic destructive OKF body rewrite over dirty buffers
+- [ ] Hardcoded coordination by type **name** instead of registry capability
+- [ ] Semantic `key` field or second box id
+
+---
+
+## 12. Frozen decisions (B0)
+
+1. **OKF path** = concept identity; **`cx-`** = immutable handle; no semantic key.
+2. **`coordination`** is a type capability; box = coordination-enabled concept.
+3. **Promote is in-place**; same path, body, and handle.
+4. **Operational pipeline is outside** concept index and OKF validation.
+5. **Workspace files** enter only as `artifactRef`; Tent is not an IDE or disk browser.
+6. **External edits** use minimal etag optimistic concurrency; dirty tabs never silent-reload.
+7. **Index is rebuildable cache** in machine-local service data, not tent identity truth.
+8. **MVP note layout** is folder + same-named Markdown, isomorphic to boxes.
+9. **Link project** is explicit; resolve and index are non-destructive by default.
+10. Implementation batches refine code under this contract; they do not reopen vocabulary without an explicit revision of this file.
