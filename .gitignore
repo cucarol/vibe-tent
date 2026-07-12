@@ -1,5 +1,6 @@
 temp/
 node_modules/
+release/
 dist-core/
 .playwright-cli/
 output/
