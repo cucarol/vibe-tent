@@ -1,0 +1,224 @@
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as http from "node:http";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { NodeFs } from "../src/fs/node-fs.js";
+import { scaffoldTent } from "../src/core/scaffold.js";
+import { createBox, dispatch, taskAck } from "../src/core/ops.js";
+import { loadTent } from "../src/core/tree.js";
+import { contentEtag } from "../src/markdown/etag.js";
+import { CoreDocsClient } from "../src/markdown/core-docs-client.js";
+import { extractOutLinks, buildBacklinkIndex } from "../src/markdown/links.js";
+import { renderMarkdownToHtml } from "../src/markdown/render.js";
+import { WorkspaceController } from "../src/markdown/workspace-controller.js";
+import { startMarkdownPreviewServer } from "../src/markdown/preview-server.js";
+import { boxNotePath } from "../src/core/tree.js";
+
+async function makeEnv() {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-md-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, { name: "md", rules: "# rules\n" });
+  const env = {
+    fs: fsa,
+    clock: { now: () => "2026-07-12T00:00:00.000Z" },
+    tentName: "md",
+    rand: () => 0.42,
+  };
+  return { dir, env, fsa };
+}
+
+test("contentEtag: stable hash slice", () => {
+  assert.equal(contentEtag("abc"), contentEtag("abc"));
+  assert.notEqual(contentEtag("abc"), contentEtag("abd"));
+  assert.equal(contentEtag("x").length, 24);
+});
+
+test("extractOutLinks: wiki and md", () => {
+  const links = extractOutLinks("See [[Alpha]] and [Beta](beta/beta.md) plus https skip [ext](https://x.test)");
+  assert.equal(links.some((l) => l.kind === "wiki" && l.raw === "Alpha"), true);
+  assert.equal(links.some((l) => l.kind === "md" && l.raw.includes("beta")), true);
+  assert.equal(links.some((l) => l.kind === "artifact"), true);
+});
+
+test("renderMarkdownToHtml: headings wiki and artifacts", () => {
+  const html = renderMarkdownToHtml("# Hi\n\n[[Note]]", {
+    resolveWikiHref: () => "#open=Note",
+    artifactRefs: [{ kind: "path", target: "src/a.ts", label: "a.ts" }],
+  });
+  assert.match(html, /<h1>Hi<\/h1>/);
+  assert.match(html, /wiki-link/);
+  assert.match(html, /artifact-chip/);
+  assert.match(html, /a\.ts/);
+});
+
+test("CoreDocsClient: list excludes temp; create/read/write/search/promote", async () => {
+  const { env, fsa } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+
+  await fsa.mkdir("temp/role/tasks");
+  await fsa.writeFile("temp/role/tasks/task.md", "---\ntype: task\n---\nsecret\n");
+
+  const note = await docs.createNote({ name: "ideas", type: "note", body: "# ideas\nlink [[ideas]]\n" });
+  assert.match(note.cx, /^cx-/);
+
+  const tree = await docs.list();
+  assert.equal(tree.some((n) => n.path === "ideas"), true);
+  assert.equal(tree.some((n) => n.path.startsWith("temp")), false);
+
+  const edit = await docs.readForEdit(note.cx);
+  assert.equal(edit.cx, note.cx);
+  assert.ok(edit.etag);
+
+  const bad = await docs.write({
+    cx: note.cx,
+    baseEtag: "deadbeefdeadbeefdeadbeef",
+    body: "nope",
+  });
+  assert.equal(bad.ok, false);
+  if (!bad.ok) assert.equal(bad.code, "etag_conflict");
+
+  const nextRaw = edit.raw.replace("# ideas", "# ideas v2");
+  const ok = await docs.write({ cx: note.cx, baseEtag: edit.etag, raw: nextRaw });
+  assert.equal(ok.ok, true);
+
+  const hits = await docs.search("ideas v2");
+  assert.ok(hits.some((h) => h.cx === note.cx));
+
+  const promoted = await docs.promote(note.cx, "goal");
+  assert.equal(promoted.cx, note.cx);
+  assert.equal(promoted.toType, "goal");
+  const after = await docs.get(note.cx);
+  assert.equal(after?.coordination, true);
+  assert.equal(after?.status, "todo");
+});
+
+test("CoreDocsClient: active task protects collab fields on write", async () => {
+  const { env, fsa } = await makeEnv();
+  // roles registry needed for dispatch
+  await fsa.writeFile(
+    "roles.json",
+    JSON.stringify({ roles: [{ name: "executor" }] }, null, 2) + "\n"
+  );
+  const boxId = await createBox(env as any, { parentPath: "", name: "work", type: "goal" });
+  const dispatched = await dispatch(env as any, boxId, "executor", "do the work");
+  await taskAck(env as any, dispatched.taskPath);
+
+  const docs = new CoreDocsClient(env as any);
+  const edit = await docs.readForEdit(boxId);
+  const { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } = await import(
+    "../src/core/frontmatter.js"
+  );
+  const { data, body, keyOrder } = parseFrontmatter(edit.raw);
+  data.status = "done";
+  const raw = serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER);
+  const result = await docs.write({ cx: boxId, baseEtag: edit.etag, raw });
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.equal(result.code, "collab_field_protected");
+
+  // body-only write still allowed
+  const edit2 = await docs.readForEdit(boxId);
+  const bodyOnly = await docs.write({
+    cx: boxId,
+    baseEtag: edit2.etag,
+    body: edit2.body + "\nmore\n",
+  });
+  assert.equal(bodyOnly.ok, true);
+});
+
+test("backlinks index from wiki links", async () => {
+  const { env } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const a = await docs.createNote({ name: "alpha", body: "# A\n" });
+  const b = await docs.createNote({ name: "beta", body: "# B\nsee [[alpha]]\n" });
+  const tent = await loadTent(env.fs);
+  const concepts = [...tent.byId.values()].map((box) => ({
+    id: box.id,
+    path: box.path,
+    name: box.name,
+    body: box.body,
+    notePath: boxNotePath(box.path),
+  }));
+  const reverse = buildBacklinkIndex(concepts);
+  const hits = reverse.get(a.cx) ?? [];
+  assert.ok(hits.some((h) => h.fromCx === b.cx));
+  const apiHits = await docs.backlinks(a.cx);
+  assert.ok(apiHits.some((h) => h.fromCx === b.cx));
+});
+
+test("WorkspaceController: tabs dirty conflict and save", async () => {
+  const { env, fsa } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const created = await docs.createNote({ name: "page", body: "# page\n" });
+  const ctl = new WorkspaceController(docs);
+  await ctl.refreshTree();
+  await ctl.openConcept(created.cx);
+  const tab = ctl.getActiveTab()!;
+  assert.equal(tab.dirty, false);
+
+  ctl.updateBuffer(tab.cx, tab.buffer + "\nedit\n");
+  assert.equal(ctl.getActiveTab()!.dirty, true);
+
+  // external change on disk
+  const notePath = boxNotePath("page");
+  const disk = await fsa.readFile(notePath);
+  await fsa.writeFile(notePath, disk + "\nexternal\n");
+
+  const saved = await ctl.save(tab.cx);
+  assert.equal(saved, false);
+  assert.ok(ctl.getActiveTab()!.conflict);
+
+  const overwritten = await ctl.overwriteWithMine(tab.cx);
+  assert.equal(overwritten, true);
+  assert.equal(ctl.getActiveTab()!.dirty, false);
+  assert.equal(ctl.getActiveTab()!.conflict, null);
+});
+
+test("WorkspaceController: tree has no operational paths", async () => {
+  const { env, fsa } = await makeEnv();
+  await fsa.mkdir("temp/x");
+  await fsa.writeFile("temp/x/x.md", "---\nid: cx-temp\ntype: note\n---\n");
+  const docs = new CoreDocsClient(env as any);
+  await docs.createNote({ name: "real", body: "# r\n" });
+  const ctl = new WorkspaceController(docs);
+  await ctl.refreshTree();
+  const snap = ctl.getSnapshot();
+  assert.equal(snap.tree.some((n) => n.name === "real"), true);
+  assert.equal(snap.tree.some((n) => n.name === "temp" || n.path.startsWith("temp")), false);
+});
+
+test("preview server: serves tree and opens concept", async () => {
+  const { dir, env } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const created = await docs.createNote({ name: "hello", body: "# Hello workspace\n" });
+
+  const handle = await startMarkdownPreviewServer({ systemRoot: dir, port: 0 });
+  try {
+    const treeRes = await httpGet(`${handle.url}api/tree`);
+    assert.equal(treeRes.status, 200);
+    assert.match(treeRes.body, /hello/);
+
+    const page = await httpGet(`${handle.url}?open=${encodeURIComponent(created.cx)}`);
+    assert.equal(page.status, 200);
+    assert.match(page.body, /Hello workspace|hello/);
+    assert.match(page.body, /Concept tree|Concepts/);
+    assert.doesNotMatch(page.body, /workspace source tree browser/i);
+  } finally {
+    await handle.close();
+  }
+});
+
+function httpGet(url: string): Promise<{ status: number; body: string }> {
+  return new Promise((resolve, reject) => {
+    http
+      .get(url, (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (c) => chunks.push(c));
+        res.on("end", () =>
+          resolve({ status: res.statusCode || 0, body: Buffer.concat(chunks).toString("utf8") })
+        );
+      })
+      .on("error", reject);
+  });
+}
