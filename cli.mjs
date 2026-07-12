@@ -369,20 +369,16 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-var ORDER_CANDIDATES = [ORDER_PATH, `.tent/${ORDER_PATH}`];
 async function loadOrder(fs4) {
-  for (const candidate of ORDER_CANDIDATES) {
-    if (!await fs4.exists(candidate)) continue;
-    try {
-      return JSON.parse(await fs4.readFile(candidate));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs4, candidate);
-      await saveOrder(fs4, {});
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return {};
-    }
+  if (!await fs4.exists(ORDER_PATH)) return {};
+  try {
+    return JSON.parse(await fs4.readFile(ORDER_PATH));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs4, ORDER_PATH);
+    await saveOrder(fs4, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
+    return {};
   }
-  return {};
 }
 async function saveOrder(fs4, map) {
   await fs4.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
@@ -498,19 +494,15 @@ function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
   return definition.coordination;
 }
-var TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
 async function loadTypeRegistry(fs4) {
-  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
-    if (!await fs4.exists(candidate)) continue;
-    try {
-      const parsed = JSON.parse(await fs4.readFile(candidate));
-      return normalizeRegistry(parsed);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`types.json is corrupt: ${detail}.`);
-    }
+  if (!await fs4.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+  try {
+    const parsed = JSON.parse(await fs4.readFile(TYPE_REGISTRY_PATH));
+    return normalizeRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`types.json is corrupt: ${detail}.`);
   }
-  return cloneDefaults();
 }
 function normalizeRegistry(value) {
   const root = isRecord(value) ? value : {};
@@ -834,7 +826,7 @@ function dirName(path3) {
 
 // src/core/adapter.ts
 function withTentMutation(fs4, action) {
-  return fs4.withLock ? fs4.withLock("mutation.lock", action) : action();
+  return fs4.withLock ? fs4.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/manifest.ts
@@ -986,6 +978,13 @@ function makeUniqueConceptId(existing, rand = Math.random) {
 function canClaim(box) {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  if (!box.coordination) {
+    return {
+      ok: false,
+      blocker: box,
+      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
+    };
+  }
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
@@ -1026,21 +1025,17 @@ function collect(box, out) {
 
 // src/core/tags.ts
 var DEFAULT_TAG_REGISTRY = { tags: [] };
-var TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
 async function loadTagRegistry(fs4) {
-  for (const candidate of TAGS_CANDIDATES) {
-    if (!await fs4.exists(candidate)) continue;
-    try {
-      return normalizeRegistry2(JSON.parse(await fs4.readFile(candidate)));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs4, candidate);
-      const recovered = await recoverTagRegistryFromBoxes(fs4);
-      await saveTagRegistryUnlocked(fs4, recovered);
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return recovered;
-    }
+  if (!await fs4.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+  try {
+    return normalizeRegistry2(JSON.parse(await fs4.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs4, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs4);
+    await saveTagRegistryUnlocked(fs4, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
-  return { tags: [] };
 }
 async function saveTagRegistryUnlocked(fs4, registry) {
   await fs4.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
@@ -1148,30 +1143,23 @@ function isRecord2(value) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-var ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
 async function loadRolesRegistry(fs4) {
-  for (const candidate of ROLES_CANDIDATES) {
-    if (!await fs4.exists(candidate)) continue;
-    try {
-      const parsed = JSON.parse(await fs4.readFile(candidate));
-      return normalizeRolesRegistry(parsed);
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs4, candidate);
-      const reset = cloneDefaultRoles();
-      await writeJson(fs4, candidate, reset);
-      if (candidate !== ROLES_REGISTRY_PATH) {
-        await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
-      }
-      warnRegistryRecovered(
-        candidate,
-        backupPath,
-        "reset",
-        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-      );
-      return reset;
-    }
+  if (!await fs4.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  try {
+    const parsed = JSON.parse(await fs4.readFile(ROLES_REGISTRY_PATH));
+    return normalizeRolesRegistry(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs4, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
-  return cloneDefaultRoles();
 }
 function normalizeRolesRegistry(value) {
   const root = isRecord3(value) ? value : {};
@@ -1654,6 +1642,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
     }
   } else {
+    if (!claim.box.coordination) {
+      throw new Error(
+        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
+      );
+    }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
       throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
@@ -1717,6 +1710,11 @@ async function taskAck(env, taskPath) {
       acceptedBy: box.fm.acceptedBy
     }));
     for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
       const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
     }
@@ -2247,20 +2245,11 @@ import * as path from "node:path";
 import * as nodePath2 from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
-function resolveTentWorkspace(tent, systemRoot) {
-  if (systemRoot) {
-    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
-    if (fromLayout) return nodePath2.resolve(fromLayout);
-  }
-  const workspaces = /* @__PURE__ */ new Set();
-  for (const box of tent.byPath.values()) {
-    const workspace = parseOutputPointer(box.fm, box.body).workspace;
-    if (workspace) workspaces.add(nodePath2.resolve(workspace));
-  }
-  if (workspaces.size > 1) {
-    throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
-  }
-  return [...workspaces][0];
+function resolveTentWorkspace(_tent, systemRoot) {
+  void _tent;
+  if (!systemRoot) return void 0;
+  const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+  return fromLayout ? nodePath2.resolve(fromLayout) : void 0;
 }
 async function runWorkspaceCheck(workspace, command) {
   const root = nodePath2.resolve(workspace);
@@ -2332,7 +2321,7 @@ async function integrateWorkspaceCommits(contract, refs) {
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef);
+      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
@@ -2378,17 +2367,15 @@ async function worktreeForBranch(root, branch) {
   }
   return void 0;
 }
-async function findCherryPick(root, sourceRef) {
+async function findCherryPick(root, sourceRef, targetBranch) {
   const full = await fullRef(root, sourceRef);
   const needle = `(cherry picked from commit ${full})`;
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const body = parts[i + 1] ?? "";
     if (body.includes(needle)) return parts[i].trim();
-    if (body.includes("cherry picked from commit") && body.includes(full)) {
-      return parts[i].trim();
-    }
   }
   return void 0;
 }
@@ -2583,7 +2570,8 @@ function hasUndoneClaim(tent, claims) {
 
 // src/cli/tent.ts
 async function makeEnv() {
-  const systemRoot = await findTentSystemRoot(process.cwd()) ?? process.cwd();
+  const systemRoot = await findTentSystemRoot(process.cwd());
+  if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
   const workspace = workspaceRootFromSystemRoot(systemRoot);
   return {
     fs: new NodeFs(systemRoot),
@@ -2611,6 +2599,50 @@ async function main() {
     await newTent(positionals[0], flags.vault);
     return;
   }
+  if (cmd === "skill-install") {
+    const { positionals, flags } = parseFlags(args);
+    if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
+    const target = flags.target || "claude";
+    const force = flags.force === "true";
+    const dir = flags.dir || defaultSkillInstallDir(target);
+    const installed = await installSkills(dir, { force, target });
+    console.log(
+      `\u2713 Installed ${target} skills in ${dir}
+` + installed.map((name) => `- ${name}`).join("\n")
+    );
+    return;
+  }
+  const tentCommands = /* @__PURE__ */ new Set([
+    "dispatch",
+    "task-ack",
+    "task-cancel",
+    "role-init",
+    "roles",
+    "report",
+    "propose",
+    "complete",
+    "stamp",
+    "status",
+    "grant-readable",
+    "new-box",
+    "tag",
+    "untag",
+    "tag-new",
+    "tag-rm",
+    "tags",
+    "find",
+    "fork",
+    "clean-temp",
+    "force-release",
+    "okf-sync",
+    "tree"
+  ]);
+  if (!tentCommands.has(cmd)) {
+    return fail(
+      `Unknown command: ${cmd || "(empty)"}
+Commands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+    );
+  }
   const env = await makeEnv();
   switch (cmd) {
     case "dispatch": {
@@ -2637,12 +2669,12 @@ async function main() {
       const dispatcher = requestedDispatcher || "user";
       let workspace = workspacePath ? await ensureRoleWorkspace(workspacePath, role) : void 0;
       if (!workspacePath) {
-        console.log("Note: this Tent has no in-workspace layout or workspace field; the task envelope has no workspace contract.");
+        console.log("Note: this Tent has no in-workspace .tent layout; the task envelope has no workspace contract.");
       }
       if (flags["as-sub"]) {
         if (!workspacePath) {
           return fail(
-            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/ or set `workspace: C:/path/to/git-root` on a concept (legacy migration path)."
+            "--as-sub requires a workspace contract. Scaffold an in-workspace tent at <workspace>/.tent/."
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
@@ -2915,19 +2947,6 @@ unresolved wiki links: ${result.unresolved.length}`
       }
       break;
     }
-    case "skill-install": {
-      const { positionals, flags } = parseFlags(args);
-      if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
-      const target = flags.target || "claude";
-      const force = flags.force === "true";
-      const dir = flags.dir || defaultSkillInstallDir(target);
-      const installed = await installSkills(dir, { force, target });
-      console.log(
-        `\u2713 Installed ${target} skills in ${dir}
-` + installed.map((name) => `- ${name}`).join("\n")
-      );
-      break;
-    }
     case "tree": {
       if (args.length > 0) return fail("Usage: tent tree");
       const tent = await loadTent(env.fs);
@@ -2935,10 +2954,7 @@ unresolved wiki links: ${result.unresolved.length}`
       break;
     }
     default:
-      fail(
-        `Unknown command: ${cmd || "(empty)"}
-Commands: new role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
-      );
+      return fail(`Unknown command: ${cmd || "(empty)"}`);
   }
 }
 function readStdin() {

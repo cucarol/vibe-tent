@@ -145,17 +145,14 @@ function setBaseWorkspacePointer(_definition, _value) {
   );
 }
 async function loadTypeRegistry(fs) {
-  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
-    if (!await fs.exists(candidate)) continue;
-    try {
-      const parsed = JSON.parse(await fs.readFile(candidate));
-      return normalizeRegistry(parsed);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`types.json is corrupt: ${detail}.`);
-    }
+  if (!await fs.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+  try {
+    const parsed = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH));
+    return normalizeRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`types.json is corrupt: ${detail}.`);
   }
-  return cloneDefaults();
 }
 function normalizeRegistry(value) {
   const root = isRecord(value) ? value : {};
@@ -239,7 +236,7 @@ function cloneDefaults() {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var TYPE_COLOR_PALETTE, DEFAULT_TYPE_REGISTRY, TYPE_REGISTRY_CANDIDATES;
+var TYPE_COLOR_PALETTE, DEFAULT_TYPE_REGISTRY;
 var init_typeRegistry = __esm({
   "src/core/typeRegistry.ts"() {
     "use strict";
@@ -305,17 +302,17 @@ var init_typeRegistry = __esm({
         description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
       }
     };
-    TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
   }
 });
 
 // src/core/adapter.ts
 function withTentMutation(fs, action) {
-  return fs.withLock ? fs.withLock("mutation.lock", action) : action();
+  return fs.withLock ? fs.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 var init_adapter = __esm({
   "src/core/adapter.ts"() {
     "use strict";
+    init_paths();
   }
 });
 
@@ -563,18 +560,15 @@ var init_registryRecovery = __esm({
 
 // src/core/order.ts
 async function loadOrder(fs) {
-  for (const candidate of ORDER_CANDIDATES) {
-    if (!await fs.exists(candidate)) continue;
-    try {
-      return JSON.parse(await fs.readFile(candidate));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      await saveOrder(fs, {});
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return {};
-    }
+  if (!await fs.exists(ORDER_PATH)) return {};
+  try {
+    return JSON.parse(await fs.readFile(ORDER_PATH));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ORDER_PATH);
+    await saveOrder(fs, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
+    return {};
   }
-  return {};
 }
 async function saveOrder(fs, map) {
   await fs.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
@@ -594,14 +588,13 @@ function sortByOrder(items, order, fallback) {
   });
   return sorted;
 }
-var ROOT_KEY, ORDER_CANDIDATES;
+var ROOT_KEY;
 var init_order = __esm({
   "src/core/order.ts"() {
     "use strict";
     init_registryRecovery();
     init_paths();
     ROOT_KEY = "__root__";
-    ORDER_CANDIDATES = [ORDER_PATH, `.tent/${ORDER_PATH}`];
   }
 });
 
@@ -868,19 +861,16 @@ var init_tree = __esm({
 
 // src/core/tags.ts
 async function loadTagRegistry(fs) {
-  for (const candidate of TAGS_CANDIDATES) {
-    if (!await fs.exists(candidate)) continue;
-    try {
-      return normalizeRegistry2(JSON.parse(await fs.readFile(candidate)));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      const recovered = await recoverTagRegistryFromBoxes(fs);
-      await saveTagRegistryUnlocked(fs, recovered);
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return recovered;
-    }
+  if (!await fs.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+  try {
+    return normalizeRegistry2(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs);
+    await saveTagRegistryUnlocked(fs, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
-  return { tags: [] };
 }
 async function saveTagRegistryUnlocked(fs, registry) {
   await fs.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
@@ -979,7 +969,6 @@ function boxKeyOrder(existing) {
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var TAGS_CANDIDATES;
 var init_tags = __esm({
   "src/core/tags.ts"() {
     "use strict";
@@ -988,34 +977,27 @@ var init_tags = __esm({
     init_tree();
     init_registryRecovery();
     init_paths();
-    TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
   }
 });
 
 // src/core/skillRoleRegistry.ts
 async function loadRolesRegistry(fs) {
-  for (const candidate of ROLES_CANDIDATES) {
-    if (!await fs.exists(candidate)) continue;
-    try {
-      const parsed = JSON.parse(await fs.readFile(candidate));
-      return normalizeRolesRegistry(parsed);
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      const reset = cloneDefaultRoles();
-      await writeJson(fs, candidate, reset);
-      if (candidate !== ROLES_REGISTRY_PATH) {
-        await writeJson(fs, ROLES_REGISTRY_PATH, reset);
-      }
-      warnRegistryRecovered(
-        candidate,
-        backupPath,
-        "reset",
-        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-      );
-      return reset;
-    }
+  if (!await fs.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  try {
+    const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH));
+    return normalizeRolesRegistry(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
-  return cloneDefaultRoles();
 }
 async function createRole(fs, definition) {
   await withTentMutation(fs, async () => {
@@ -1097,7 +1079,7 @@ async function writeJson(fs, path, value) {
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var DEFAULT_ROLES_REGISTRY, ROLES_CANDIDATES;
+var DEFAULT_ROLES_REGISTRY;
 var init_skillRoleRegistry = __esm({
   "src/core/skillRoleRegistry.ts"() {
     "use strict";
@@ -1107,7 +1089,6 @@ var init_skillRoleRegistry = __esm({
     DEFAULT_ROLES_REGISTRY = {
       roles: []
     };
-    ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
   }
 });
 
@@ -1115,6 +1096,13 @@ var init_skillRoleRegistry = __esm({
 function canClaim(box) {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  if (!box.coordination) {
+    return {
+      ok: false,
+      blocker: box,
+      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
+    };
+  }
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
@@ -1777,6 +1765,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
     }
   } else {
+    if (!claim.box.coordination) {
+      throw new Error(
+        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
+      );
+    }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
       throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
@@ -1840,6 +1833,11 @@ async function taskAck(env, taskPath) {
       acceptedBy: box.fm.acceptedBy
     }));
     for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
       const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
     }
@@ -2670,20 +2668,11 @@ var nodePath2 = __toESM(require("node:path"), 1);
 var nodeFs2 = __toESM(require("node:fs/promises"), 1);
 var import_node_child_process = require("node:child_process");
 init_paths();
-function resolveTentWorkspace(tent, systemRoot) {
-  if (systemRoot) {
-    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
-    if (fromLayout) return nodePath2.resolve(fromLayout);
-  }
-  const workspaces = /* @__PURE__ */ new Set();
-  for (const box of tent.byPath.values()) {
-    const workspace = parseOutputPointer(box.fm, box.body).workspace;
-    if (workspace) workspaces.add(nodePath2.resolve(workspace));
-  }
-  if (workspaces.size > 1) {
-    throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
-  }
-  return [...workspaces][0];
+function resolveTentWorkspace(_tent, systemRoot) {
+  void _tent;
+  if (!systemRoot) return void 0;
+  const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+  return fromLayout ? nodePath2.resolve(fromLayout) : void 0;
 }
 async function readWorkspaceHead(workspace) {
   const root = nodePath2.resolve(workspace);
@@ -2757,7 +2746,7 @@ async function integrateWorkspaceCommits(contract, refs) {
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef);
+      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
@@ -2831,17 +2820,15 @@ async function worktreeForBranch(root, branch) {
   }
   return void 0;
 }
-async function findCherryPick(root, sourceRef) {
+async function findCherryPick(root, sourceRef, targetBranch) {
   const full = await fullRef(root, sourceRef);
   const needle = `(cherry picked from commit ${full})`;
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const body = parts[i + 1] ?? "";
     if (body.includes(needle)) return parts[i].trim();
-    if (body.includes("cherry picked from commit") && body.includes(full)) {
-      return parts[i].trim();
-    }
   }
   return void 0;
 }
