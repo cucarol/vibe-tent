@@ -317,7 +317,7 @@ tent new-box <name> <type> [parentId]
 tent fork <boxId>
 tent clean-temp [role]
 tent okf-sync
-tent skill-install [--target claude] [--force]
+tent skill-install [--target claude] [--force]   # default: ~/.claude/skills + ~/.agents/skills
 tent tree
 ```
 

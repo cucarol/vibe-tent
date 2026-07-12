@@ -158,4 +158,4 @@ dispatch 只写入 envelope，不会唤醒目标 agent；由 user 或已授权�
 
 - **不要**在 Desktop 共置、Local Service 已挂载时作为第二写路径使用。
 - 新架构协作生命周期以 service 为唯一 mutation entry：`tent task claim|get|deliver|…`。
-- 若你的本机 skill 仍主推 `task-ack` / `tent report` 作为默认接活/收尾，请用仓库内 `tent skill-install --force` 覆盖安装本 bundled 版本。
+- 若你的本机 skill 仍主推 `task-ack` / `tent report` 作为默认接活/收尾，请用仓库内 `tent skill-install --force` 覆盖安装本 bundled 版本（同步到 `~/.claude/skills` 与共享 `~/.agents/skills`）。

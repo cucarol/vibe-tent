@@ -21,7 +21,7 @@ user 和 coding agent 的协作，本质是把代表你意图的 **goal**，经�
 Install the Tent plugin and CLI for me (github.com/cucarol/tent):
 1. Clone the repo and run `npm ci && npm run build`.
 2. Ask me for my Obsidian vault path, then copy `main.js`, `manifest.json`, and `styles.css` into `<vault>/.obsidian/plugins/tent/`.
-3. Run `npm link`, then run `tent skill-install`.
+3. Run `npm link`, then run `tent skill-install` (syncs bundled skills to `~/.claude/skills` and shared `~/.agents/skills`).
 When done, tell me to enable Tent in Obsidian's community-plugin settings.
 ```
 

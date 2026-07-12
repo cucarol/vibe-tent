@@ -572,11 +572,11 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
   assert.equal(await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8"), "# demo\n\n本机默认规则\n");
 });
 
-test("skill-install:安装内置 skills,重复执行需 --force", async () => {
+test("skill-install:安装内置 skills,重复执行跳过,需 --force 覆盖", async () => {
   const target = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-")));
   const installed = await runCli(repoRoot, "skill-install", "--dir", target);
-  assert.match(installed.stdout, /tent-genesis/);
-  assert.match(installed.stdout, /tent-role/);
+  assert.match(installed.stdout, /tent-genesis: installed/);
+  assert.match(installed.stdout, /tent-role: installed/);
   assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
   assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
   const bundledRoleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
@@ -588,9 +588,15 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
   );
   assertInstalledTentRoleSkill(installedRoleSkill);
 
-  await assert.rejects(
-    () => runCli(repoRoot, "skill-install", "--dir", target),
-    /Skills already exist/,
+  // Idempotent: without --force, existing skills are skipped (not an error).
+  const skipped = await runCli(repoRoot, "skill-install", "--dir", target);
+  assert.match(skipped.stdout, /tent-genesis: skipped/);
+  assert.match(skipped.stdout, /tent-role: skipped/);
+  assert.match(skipped.stdout, /already exists/);
+  assert.equal(
+    await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8"),
+    bundledRoleSkill,
+    "skip must leave existing skill bytes unchanged",
   );
 
   // Simulate stale local skill that still teaches legacy main flow
@@ -617,6 +623,90 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
     () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
     /currently supports only --target claude/,
   );
+});
+
+test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断", async () => {
+  const fakeHome = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-home-")));
+  const claudeSkills = path.join(fakeHome, ".claude", "skills");
+  const agentsSkills = path.join(fakeHome, ".agents", "skills");
+  const homeEnv = { HOME: fakeHome, USERPROFILE: fakeHome };
+
+  const bundledRole = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
+  const bundledGenesis = await fs.readFile(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md"), "utf8");
+
+  const first = await run(
+    process.execPath,
+    ["--import", tsxImport, cliSource, "skill-install"],
+    repoRoot,
+    homeEnv,
+  );
+  assert.match(first.stdout, /skill-install/);
+  assert.match(first.stdout, new RegExp(escapeRegExp(claudeSkills)));
+  assert.match(first.stdout, new RegExp(escapeRegExp(agentsSkills)));
+  assert.match(first.stdout, /tent-genesis: installed/);
+  assert.match(first.stdout, /tent-role: installed/);
+  // Targets must resolve under the temp HOME only (os.homedir via HOME/USERPROFILE).
+  for (const line of first.stdout.split(/\r?\n/)) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith("✓") || trimmed.startsWith("-")) continue;
+    if (trimmed.includes("installed") || trimmed.includes("skipped")) continue;
+    assert.ok(
+      trimmed === claudeSkills || trimmed === agentsSkills || trimmed.startsWith(fakeHome + path.sep),
+      `skill-install target must stay under temp HOME, got: ${trimmed}`,
+    );
+  }
+  // Installer source must use os.homedir(), not a hard-coded developer absolute path.
+  const installerSource = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
+  assert.match(installerSource, /os\.homedir\(\)/);
+  assert.doesNotMatch(installerSource, /C:\\\\Users\\\\|\/Users\/[A-Za-z0-9._-]+\/\.claude/);
+
+  for (const root of [claudeSkills, agentsSkills]) {
+    assert.equal(
+      await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8"),
+      bundledRole,
+      `${root}/tent-role must match bundled bytes`,
+    );
+    assert.equal(
+      await fs.readFile(path.join(root, "tent-genesis", "SKILL.md"), "utf8"),
+      bundledGenesis,
+      `${root}/tent-genesis must match bundled bytes`,
+    );
+    assertInstalledTentRoleSkill(await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8"));
+  }
+
+  // Pre-fill only Claude with stale content; agents dir empty after wipe of one skill.
+  await fs.writeFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "# stale claude only\n", "utf8");
+  await fs.rm(path.join(agentsSkills, "tent-role"), { recursive: true, force: true });
+
+  const partial = await run(
+    process.execPath,
+    ["--import", tsxImport, cliSource, "skill-install"],
+    repoRoot,
+    homeEnv,
+  );
+  // Claude tent-role skipped; agents tent-role installed independently.
+  assert.match(partial.stdout, new RegExp(`${escapeRegExp(claudeSkills)}[\\s\\S]*tent-role: skipped`));
+  assert.match(partial.stdout, new RegExp(`${escapeRegExp(agentsSkills)}[\\s\\S]*tent-role: installed`));
+  assert.equal(
+    await fs.readFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "utf8"),
+    "# stale claude only\n",
+    "without --force, existing Claude skill must not be overwritten",
+  );
+  assert.equal(
+    await fs.readFile(path.join(agentsSkills, "tent-role", "SKILL.md"), "utf8"),
+    bundledRole,
+    "missing agents skill must still install when Claude already has one",
+  );
+
+  const forced = await run(
+    process.execPath,
+    ["--import", tsxImport, cliSource, "skill-install", "--force"],
+    repoRoot,
+    homeEnv,
+  );
+  assert.match(forced.stdout, /tent-role: installed/);
+  assert.equal(await fs.readFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "utf8"), bundledRole);
+  assert.equal(await fs.readFile(path.join(agentsSkills, "tent-role", "SKILL.md"), "utf8"), bundledRole);
 });
 
 /** Assert installed tent-role is the new in-workspace + service lifecycle skill, not legacy main flow. */

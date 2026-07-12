@@ -25,7 +25,7 @@
 //   tent clean-temp [role]
 //   tent force-release <boxId>
 //   tent okf-sync
-//   tent skill-install [--target claude] [--force]
+//   tent skill-install [--target claude] [--force]  // default: ~/.claude/skills + ~/.agents/skills
 //   tent tree                          打印框树(调试)
 
 import * as path from "node:path";
@@ -113,12 +113,10 @@ async function main() {
     if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
     const target = flags.target || "claude";
     const force = flags.force === "true";
-    const dir = flags.dir || defaultSkillInstallDir(target);
-    const installed = await installSkills(dir, { force, target });
-    console.log(
-      `✓ Installed ${target} skills in ${dir}\n` +
-        installed.map((name) => `- ${name}`).join("\n")
-    );
+    // --dir overrides for tests/single-path installs; default syncs Claude + shared agents skills.
+    const targetDirs = flags.dir ? [flags.dir] : defaultSkillInstallDirs(target);
+    const results = await installSkills(targetDirs, { force, target });
+    console.log(formatSkillInstallResults(target, results));
     return;
   }
 
@@ -549,18 +547,38 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Record<stri
   return { positionals, flags };
 }
 
-function defaultSkillInstallDir(target: string): string {
+/** Claude Code skills dir + Grok/Codex shared agents skills dir (homedir, never hardcode user). */
+function defaultSkillInstallDirs(target: string): string[] {
   if (target !== "claude") {
     throw new Error("skill-install currently supports only --target claude; Codex uses a different skill format.");
   }
-  return path.join(os.homedir(), ".claude", "skills");
+  const home = os.homedir();
+  return [
+    path.join(home, ".claude", "skills"),
+    path.join(home, ".agents", "skills"),
+  ];
 }
 
+interface SkillInstallItemResult {
+  targetDir: string;
+  skill: string;
+  status: "installed" | "skipped";
+  reason?: string;
+}
+
+/**
+ * Copy bundled skills into each target dir.
+ * Without --force: each (target, skill) is judged independently — existing skills are skipped,
+ * so one populated dir never blocks install into another.
+ * With --force: overwrite existing skill dirs.
+ */
 async function installSkills(
-  targetDir: string,
+  targetDirs: string[],
   options: { force: boolean; target: string }
-): Promise<string[]> {
-  if (options.target !== "claude") defaultSkillInstallDir(options.target);
+): Promise<SkillInstallItemResult[]> {
+  if (options.target !== "claude") defaultSkillInstallDirs(options.target);
+  if (targetDirs.length === 0) throw new Error("skill-install requires at least one target directory");
+
   const sourceDir = path.join(packageRoot(), "skills");
   const entries = await fs.readdir(sourceDir, { withFileTypes: true });
   const skillNames: string[] = [];
@@ -568,27 +586,52 @@ async function installSkills(
     if (!entry.isDirectory()) continue;
     if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
   }
+  skillNames.sort();
   if (skillNames.length === 0) throw new Error(`No installable skills found in ${sourceDir}`);
 
-  const conflicts: string[] = [];
-  for (const name of skillNames) {
-    if (await existsPath(path.join(targetDir, name))) conflicts.push(name);
+  const results: SkillInstallItemResult[] = [];
+  for (const targetDir of targetDirs) {
+    await fs.mkdir(targetDir, { recursive: true });
+    for (const name of skillNames) {
+      const source = path.join(sourceDir, name);
+      const target = path.join(targetDir, name);
+      assertChildPath(targetDir, target);
+      const exists = await existsPath(target);
+      if (exists && !options.force) {
+        results.push({
+          targetDir,
+          skill: name,
+          status: "skipped",
+          reason: "already exists (use --force to overwrite)",
+        });
+        continue;
+      }
+      if (exists && options.force) {
+        await fs.rm(target, { recursive: true, force: true });
+      }
+      await fs.cp(source, target, { recursive: true, errorOnExist: true });
+      results.push({ targetDir, skill: name, status: "installed" });
+    }
   }
-  if (conflicts.length > 0 && !options.force) {
-    throw new Error(`Skills already exist: ${conflicts.join(", ")}. Add --force to overwrite them.`);
-  }
+  return results;
+}
 
-  await fs.mkdir(targetDir, { recursive: true });
-  const installed: string[] = [];
-  for (const name of skillNames) {
-    const source = path.join(sourceDir, name);
-    const target = path.join(targetDir, name);
-    assertChildPath(targetDir, target);
-    if (options.force) await fs.rm(target, { recursive: true, force: true });
-    await fs.cp(source, target, { recursive: true, errorOnExist: true });
-    installed.push(name);
+function formatSkillInstallResults(target: string, results: SkillInstallItemResult[]): string {
+  const byDir = new Map<string, SkillInstallItemResult[]>();
+  for (const item of results) {
+    const list = byDir.get(item.targetDir) ?? [];
+    list.push(item);
+    byDir.set(item.targetDir, list);
   }
-  return installed.sort();
+  const lines: string[] = [`✓ skill-install (${target} format)`];
+  for (const [dir, items] of byDir) {
+    lines.push(`  ${dir}`);
+    for (const item of items) {
+      const suffix = item.status === "skipped" && item.reason ? ` (${item.reason})` : "";
+      lines.push(`    - ${item.skill}: ${item.status}${suffix}`);
+    }
+  }
+  return lines.join("\n");
 }
 
 function packageRoot(): string {
@@ -655,7 +698,7 @@ Legacy direct-core commands (compatible; not service RPC):
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   okf-sync                           Regenerate OKF indexes and projected links.
-  skill-install [--force]            Install bundled Tent skills for Claude Code.
+  skill-install [--force]            Install bundled skills to ~/.claude/skills and ~/.agents/skills.
   tree                               Print the box tree.
 
 Options:
