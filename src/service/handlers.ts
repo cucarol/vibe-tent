@@ -10,7 +10,8 @@ import {
 } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
-import { loadTaskEnvelope, loadTaskEnvelopes } from "../core/task.js";
+import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../core/task.js";
+import { taskContextCard } from "../core/context-card.js";
 import { loadDeliveries } from "../core/delivery.js";
 import { loadTypeRegistry } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
@@ -953,6 +954,12 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         }
       : undefined;
 
+  // Pointer-first bootstrap: Context Card + relay path — never copy full box/task body
+  // into the agent session (preserves prompt-cache hits on the task envelope itself).
+  const sessionBootstrap =
+    bootstrapPrompt?.trim() ||
+    buildSessionBootstrapPrompt(task, mount.workspaceRoot);
+
   let handle;
   try {
     handle = await ctx.runtime.startSession({
@@ -962,7 +969,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
-      bootstrapPrompt: bootstrapPrompt ?? task.prompt,
+      bootstrapPrompt: sessionBootstrap,
       lastTaskId: task.id || taskPath,
       workspace: workspaceId,
     });
@@ -1357,6 +1364,31 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
     }
   }
   return out;
+}
+
+/**
+ * Build ACP bootstrap text from task pointers only (Context Card + relay).
+ * Does not embed the full user prompt / box body — agent must read the envelope.
+ */
+function buildSessionBootstrapPrompt(
+  task: import("../core/task.js").TaskEnvelope,
+  tentRoot: string
+): string {
+  const card = taskContextCard(task.id || task.path, {
+    path: task.path,
+    tentRootHint: tentRoot,
+    label: `task:${task.role}`,
+  });
+  const relay = relayPromptForTask(task, tentRoot);
+  const aux: string[] = [];
+  if (task.role) aux.push(`role: ${task.role}`);
+  if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
+  return (
+    `${card.prompt}\n\n` +
+    `--- Tent session bootstrap ---\n` +
+    (aux.length ? `${aux.join("\n")}\n` : "") +
+    `${relay}\n`
+  );
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {

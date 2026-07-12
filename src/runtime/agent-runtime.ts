@@ -1,8 +1,9 @@
 // AgentRuntimePort implementation — service-internal only (B0 §4).
 // Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no task/box writes.
 
-import type { ProviderAdapter } from "../adapters/types.js";
+import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
+import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
 import type {
@@ -23,7 +24,7 @@ export interface AgentRuntimeOptions {
   dataDir: string;
   /** Profile catalog (machine-local). */
   profiles?: AgentProfileConfig[];
-  /** Adapter registry; defaults include fake-cli. */
+  /** Adapter registry; defaults include fake-cli + grok-acp. */
   adapters?: ProviderAdapter[];
   /** Graceful stop timeout for supervised children. */
   gracefulMs?: number;
@@ -50,6 +51,7 @@ export class AgentRuntime implements AgentRuntimePort {
   readonly supervisor: ProcessSupervisor;
   private readonly profiles = new Map<string, AgentProfileConfig>();
   private readonly adapters = new Map<string, ProviderAdapter>();
+  private readonly managed = new Map<string, ManagedSession>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private closed = false;
@@ -60,7 +62,7 @@ export class AgentRuntime implements AgentRuntimePort {
     for (const p of options.profiles ?? []) {
       this.profiles.set(p.id, p);
     }
-    // Always ensure a default fake profile for harness tests.
+    // Always ensure a default fake profile for harness tests (tests only; not product default spawn).
     if (!this.profiles.has("fake-default")) {
       this.profiles.set("fake-default", {
         id: "fake-default",
@@ -70,12 +72,16 @@ export class AgentRuntime implements AgentRuntimePort {
       });
     }
 
-    const adapterList = options.adapters ?? [createFakeAdapter()];
+    const adapterList =
+      options.adapters ?? [createFakeAdapter(), createGrokAcpAdapter()];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
     }
     if (!this.adapters.has(FAKE_ADAPTER_ID)) {
       this.adapters.set(FAKE_ADAPTER_ID, createFakeAdapter());
+    }
+    if (!this.adapters.has(GROK_ACP_ADAPTER_ID)) {
+      this.adapters.set(GROK_ACP_ADAPTER_ID, createGrokAcpAdapter());
     }
 
     this.supervisor = new ProcessSupervisor({
@@ -170,7 +176,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.emit({ type: "session.starting", sessionId: req.sessionId });
 
     try {
-      const launch = await adapter.resolveLaunch({
+      const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
@@ -179,27 +185,55 @@ export class AgentRuntime implements AgentRuntimePort {
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
-        extras: { fake: profile.fake },
-      });
+        extras: {
+          fake: profile.fake,
+          grokAcp: profile.grokAcp,
+        },
+      };
 
-      const proc = await this.supervisor.start(req.sessionId, launch);
-      const resumeToken =
-        profile.fake?.canResume || adapter.capabilities().canResume
-          ? `fake-resume:${req.sessionId}`
-          : undefined;
+      let pid: number | undefined;
+      let resumeToken: string | undefined;
+      let sawLive = false;
+
+      if (typeof adapter.startManagedSession === "function") {
+        // ACP / structured transports own stdio — not ProcessSupervisor.
+        const managed = await adapter.startManagedSession(plan, (ev) => {
+          if (ev.type === "session.live") sawLive = true;
+          this.emit(ev);
+        });
+        this.managed.set(req.sessionId, managed);
+        pid = managed.pid;
+        // Provider session id is machine-local resume/debug metadata only — not workspace.
+        if (managed.providerSessionId) {
+          resumeToken = managed.providerSessionId;
+        }
+      } else {
+        const launch = await adapter.resolveLaunch(plan);
+        const proc = await this.supervisor.start(req.sessionId, launch);
+        pid = proc.pid;
+        resumeToken =
+          profile.fake?.canResume || adapter.capabilities().canResume
+            ? `fake-resume:${req.sessionId}`
+            : undefined;
+        this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
+        sawLive = true;
+      }
 
       const live = await this.registry.update(req.sessionId, {
         state: "live",
-        pid: proc.pid,
+        pid,
         resumeToken,
         lastError: undefined,
         exitCode: undefined,
         stopReason: undefined,
       });
 
-      this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
+      if (!sawLive) {
+        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
+      }
       return handleFrom(live);
     } catch (err) {
+      this.managed.delete(req.sessionId);
       const message = err instanceof Error ? err.message : String(err);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
@@ -255,8 +289,14 @@ export class AgentRuntime implements AgentRuntimePort {
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
 
-    const wasAlive = this.supervisor.isAlive(sessionId);
-    if (wasAlive) {
+    const managed = this.managed.get(sessionId);
+    if (managed) {
+      try {
+        await managed.stop(reason);
+      } finally {
+        this.managed.delete(sessionId);
+      }
+    } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
 
@@ -297,7 +337,8 @@ export class AgentRuntime implements AgentRuntimePort {
       };
     }
 
-    const alive = this.supervisor.isAlive(sessionId);
+    const managed = this.managed.get(sessionId);
+    const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
     const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
@@ -307,6 +348,8 @@ export class AgentRuntime implements AgentRuntimePort {
 
     // Reconcile disk state with process reality (service restart / crash).
     if (SessionRegistry.isNonTerminal(record.state) && !alive) {
+      // Managed process exited outside stopSession — clear handle.
+      if (managed) this.managed.delete(sessionId);
       const nextState = resumeCapable ? "stopped" : "failed";
       const updated = await this.registry.update(sessionId, {
         state: nextState,
@@ -341,6 +384,7 @@ export class AgentRuntime implements AgentRuntimePort {
   /**
    * On service start: probe all non-terminal sessions and reconcile.
    * Dead PID + not resume-capable → failed/stopped; resume-capable → keep metadata.
+   * Note: managed ACP clients do not survive process restart — probe marks them dead.
    */
   async reconcileOnBoot(): Promise<SessionProbe[]> {
     const all = await this.registry.list();
@@ -352,15 +396,26 @@ export class AgentRuntime implements AgentRuntimePort {
     return results;
   }
 
-  /** Service shutdown: stop push children this runtime started. */
+  /** Service shutdown: stop push children this runtime started (window close does not call this). */
   async shutdown(): Promise<void> {
     if (this.closed) return;
-    const live = this.supervisor.listLive();
+    const managedIds = [...this.managed.keys()];
+    const live = new Set([...this.supervisor.listLive(), ...managedIds]);
     for (const id of live) {
       try {
         await this.stopSession(id, "shutdown");
       } catch {
-        await this.supervisor.stop(id);
+        const m = this.managed.get(id);
+        if (m) {
+          try {
+            await m.stop("shutdown");
+          } catch {
+            // best-effort
+          }
+          this.managed.delete(id);
+        } else {
+          await this.supervisor.stop(id);
+        }
       }
     }
     await this.supervisor.stopAll("shutdown");

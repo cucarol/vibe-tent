@@ -1,7 +1,7 @@
 // ProviderAdapter surface (B0 agent-runtime.md §5).
 // Adapters depend on runtime types only — never core lifecycle modules.
 
-import type { RuntimeEvent } from "../runtime/types.js";
+import type { RuntimeEvent, StopReason } from "../runtime/types.js";
 
 export interface ProviderCapabilities {
   canSpawn: boolean;
@@ -49,11 +49,33 @@ export interface DiscoveredSession {
   cwd?: string;
 }
 
+/**
+ * Adapter-owned live session (ACP stdio, etc.).
+ * When present, AgentRuntime skips ProcessSupervisor for that session.
+ * PID stays machine-local in the session registry — never written to workspace.
+ */
+export interface ManagedSession {
+  readonly sessionId: string;
+  readonly pid?: number;
+  /** Provider-native session id (e.g. ACP sessionId); machine-local only. */
+  readonly providerSessionId?: string;
+  isAlive(): boolean;
+  stop(reason: StopReason): Promise<void>;
+}
+
 export interface ProviderAdapter {
   readonly id: string;
   readonly displayNameKey: string;
   capabilities(): ProviderCapabilities;
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch | Promise<ResolvedLaunch>;
+  /**
+   * Optional structured transport (ACP stdio). When implemented, runtime uses this
+   * instead of ProcessSupervisor spawn with stdio:ignore.
+   */
+  startManagedSession?(
+    plan: LaunchPlan,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession>;
   parseResumeToken?(raw: string): ResumeToken;
   mapExit(code: number | null, signal?: string): RuntimeEvent;
   discoverSessions?(): Promise<DiscoveredSession[]>;

@@ -238,14 +238,14 @@ var init_frontmatter = __esm({
 });
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs8, path8) {
-  const backupPath = `${path8}.corrupt-${timestamp()}`;
-  await fs8.writeFile(backupPath, await fs8.readFile(path8));
+async function backupCorruptRegistry(fs9, path9) {
+  const backupPath = `${path9}.corrupt-${timestamp()}`;
+  await fs9.writeFile(backupPath, await fs9.readFile(path9));
   return backupPath;
 }
-function warnRegistryRecovered(path8, backupPath, action, extra = "") {
+function warnRegistryRecovered(path9, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path8} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path9} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -264,9 +264,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path8 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path8) return false;
-  const top = path8.split("/")[0] ?? "";
+  const path9 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path9) return false;
+  const top = path9.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function isSystemNoteName(fileName) {
@@ -305,19 +305,19 @@ var init_paths = __esm({
 });
 
 // src/core/order.ts
-async function loadOrder(fs8) {
-  if (!await fs8.exists(ORDER_PATH)) return {};
+async function loadOrder(fs9) {
+  if (!await fs9.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs8.readFile(ORDER_PATH));
+    return JSON.parse(await fs9.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs8, ORDER_PATH);
-    await saveOrder(fs8, {});
+    const backupPath = await backupCorruptRegistry(fs9, ORDER_PATH);
+    await saveOrder(fs9, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs8, map) {
-  await fs8.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs9, map) {
+  await fs9.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -379,10 +379,10 @@ function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
   return definition.coordination;
 }
-async function loadTypeRegistry(fs8) {
-  if (!await fs8.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs9) {
+  if (!await fs9.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs8.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs9.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -543,19 +543,19 @@ var init_typeRegistry = __esm({
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs8) {
+async function loadTent(fs9) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs8);
-  const top = await fs8.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs9);
+  const top = await fs9.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs8, entry.name, null, typeRegistry, roots);
+    await loadBoxInto(fs9, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs8);
+  const order = await loadOrder(fs9);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -594,13 +594,13 @@ function zoneRank(name) {
   const i = ZONE_NAMES.indexOf(name);
   return i === -1 ? 99 : i;
 }
-async function loadBox(fs8, path8, parent, registry) {
-  if (isOperationalPath(path8)) return null;
-  const boxFile = boxNotePath(path8);
-  if (!await fs8.exists(boxFile)) {
+async function loadBox(fs9, path9, parent, registry) {
+  if (isOperationalPath(path9)) return null;
+  const boxFile = boxNotePath(path9);
+  if (!await fs9.exists(boxFile)) {
     return null;
   }
-  const raw = await fs8.readFile(boxFile);
+  const raw = await fs9.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -610,7 +610,7 @@ async function loadBox(fs8, path8, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path8);
+  const name = baseName(path9);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
@@ -621,7 +621,7 @@ async function loadBox(fs8, path8, parent, registry) {
     // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
-    path: path8,
+    path: path9,
     name,
     fm,
     body,
@@ -633,14 +633,14 @@ async function loadBox(fs8, path8, parent, registry) {
     writable: { value: false, source: "type" }
   };
   if (parseError) {
-    box.invalidRootId = path8;
+    box.invalidRootId = path9;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs8.listDir(path8);
+  const sub = await fs9.listDir(path9);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs8, join(path8, entry.name), box, registry, box.children);
+    await loadBoxInto(fs9, join(path9, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -670,18 +670,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs8, path8, parent, registry, target) {
-  if (isOperationalPath(path8)) return;
-  const box = await loadBox(fs8, path8, parent, registry);
+async function loadBoxInto(fs9, path9, parent, registry, target) {
+  if (isOperationalPath(path9)) return;
+  const box = await loadBox(fs9, path9, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs8.listDir(path8);
+  const sub = await fs9.listDir(path9);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs8, join(path8, entry.name), parent, registry, target);
+    await loadBoxInto(fs9, join(path9, entry.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -766,13 +766,13 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path8) {
-  const i = path8.lastIndexOf("/");
-  return i === -1 ? path8 : path8.slice(i + 1);
+function baseName(path9) {
+  const i = path9.lastIndexOf("/");
+  return i === -1 ? path9 : path9.slice(i + 1);
 }
-function dirName(path8) {
-  const i = path8.lastIndexOf("/");
-  return i === -1 ? "" : path8.slice(0, i);
+function dirName(path9) {
+  const i = path9.lastIndexOf("/");
+  return i === -1 ? "" : path9.slice(0, i);
 }
 var ZONE_NAMES;
 var init_tree = __esm({
@@ -947,34 +947,34 @@ __export(task_exports, {
   workspaceLaneOf: () => workspaceLaneOf,
   writeTaskEnvelope: () => writeTaskEnvelope
 });
-async function loadTaskEnvelopes(fs8) {
+async function loadTaskEnvelopes(fs9) {
   const tasks = [];
-  if (!await fs8.exists("temp")) return tasks;
-  for (const roleEntry of await fs8.listDir("temp")) {
+  if (!await fs9.exists("temp")) return tasks;
+  for (const roleEntry of await fs9.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!await fs8.exists(taskDir)) continue;
-    for (const entry of await fs8.listDir(taskDir)) {
+    if (!await fs9.exists(taskDir)) continue;
+    for (const entry of await fs9.listDir(taskDir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path8 = join(taskDir, entry.name);
+      const path9 = join(taskDir, entry.name);
       try {
-        tasks.push(await loadTaskEnvelope(fs8, path8));
+        tasks.push(await loadTaskEnvelope(fs9, path9));
       } catch {
       }
     }
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function loadTaskEnvelope(fs8, path8) {
-  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
-  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+async function loadTaskEnvelope(fs9, path9) {
+  if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-    throw new Error(`Invalid task envelope format: ${path8}.`);
+    throw new Error(`Invalid task envelope format: ${path9}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
   const task = {
-    path: path8,
+    path: path9,
     role: data.role,
     claims: data.claims,
     manifest: data.manifest,
@@ -1008,8 +1008,8 @@ Tent root: ${tentRoot}
 2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
 3. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
-async function ensureRoleInit(fs8, role, tentName) {
-  const path8 = join("temp", role.name, "init.md");
+async function ensureRoleInit(fs9, role, tentName) {
+  const path9 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1024,17 +1024,17 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 `;
-  await fs8.writeFile(path8, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path8;
+  await fs9.writeFile(path9, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path9;
 }
-async function writeTaskEnvelope(fs8, clock, input) {
+async function writeTaskEnvelope(fs9, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const dir = join("temp", input.role, "tasks");
-  await ensureDir(fs8, dir);
+  await ensureDir(fs9, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path8 = await uniqueMarkdownPath(fs8, dir, stem);
+  const path9 = await uniqueMarkdownPath(fs9, dir, stem);
   const now = clock.now();
   const data = {
     type: "task",
@@ -1071,27 +1071,27 @@ ${pointers}
 
 ${userPrompt}
 `;
-  await fs8.writeFile(path8, serializeFrontmatter(data, body));
-  return path8;
+  await fs9.writeFile(path9, serializeFrontmatter(data, body));
+  return path9;
 }
-async function ackTaskEnvelope(fs8, path8) {
-  await patchTaskEnvelope(fs8, path8, {
+async function ackTaskEnvelope(fs9, path9) {
+  await patchTaskEnvelope(fs9, path9, {
     status: "taken",
     state: "running"
   });
 }
-async function cancelTaskEnvelope(fs8, path8) {
-  const task = await loadTaskEnvelope(fs8, path8);
+async function cancelTaskEnvelope(fs9, path9) {
+  const task = await loadTaskEnvelope(fs9, path9);
   if (task.state !== "queued" && task.status !== "pending") {
     throw new Error("Only queued (pending) task envelopes can be cancelled.");
   }
-  await fs8.remove(path8);
+  await fs9.remove(path9);
 }
-async function patchTaskEnvelope(fs8, path8, patch) {
-  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
-  const raw = await fs8.readFile(path8);
+async function patchTaskEnvelope(fs9, path9, patch) {
+  if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
+  const raw = await fs9.readFile(path9);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path8}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path9}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -1112,8 +1112,8 @@ async function patchTaskEnvelope(fs8, path8, patch) {
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
-  await fs8.writeFile(path8, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs8, path8);
+  await fs9.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs9, path9);
 }
 function workspaceLaneOf(task) {
   if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch) return void 0;
@@ -1148,15 +1148,15 @@ function taskStem(now, claimId) {
   const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs8, dir, stem) {
+async function uniqueMarkdownPath(fs9, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path8 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs8.exists(path8)) return path8;
+    const path9 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs9.exists(path9)) return path9;
   }
 }
-async function ensureDir(fs8, path8) {
-  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
+async function ensureDir(fs9, path9) {
+  if (!await fs9.exists(path9)) await fs9.mkdir(path9);
 }
 var init_task = __esm({
   "src/core/task.ts"() {
@@ -1168,7 +1168,7 @@ var init_task = __esm({
 });
 
 // src/service/cli.ts
-import * as path7 from "node:path";
+import * as path8 from "node:path";
 
 // src/service/http-server.ts
 import * as http from "node:http";
@@ -1179,8 +1179,8 @@ init_frontmatter();
 
 // src/core/adapter.ts
 init_paths();
-function withTentMutation(fs8, action) {
-  return fs8.withLock ? fs8.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs9, action) {
+  return fs9.withLock ? fs9.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/ops.ts
@@ -1393,15 +1393,15 @@ init_paths();
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs8) {
-  if (!await fs8.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+async function loadRolesRegistry(fs9) {
+  if (!await fs9.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
   try {
-    const parsed = JSON.parse(await fs8.readFile(ROLES_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs9.readFile(ROLES_REGISTRY_PATH));
     return normalizeRolesRegistry(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs8, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs9, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs8, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs9, ROLES_REGISTRY_PATH, reset);
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -1452,9 +1452,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs8, path8, value) {
-  if (!await fs8.exists(".tent")) await fs8.mkdir(".tent");
-  await fs8.writeFile(path8, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs9, path9, value) {
+  if (!await fs9.exists(".tent")) await fs9.mkdir(".tent");
+  await fs9.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1466,33 +1466,33 @@ init_task();
 // src/core/report.ts
 init_frontmatter();
 init_tree();
-async function loadReports(fs8) {
+async function loadReports(fs9) {
   const reports = [];
-  if (!await fs8.exists("temp")) return reports;
-  for (const roleDir of await fs8.listDir("temp")) {
+  if (!await fs9.exists("temp")) return reports;
+  for (const roleDir of await fs9.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "reports");
-    if (!await fs8.exists(dir)) continue;
-    for (const entry of await fs8.listDir(dir)) {
+    if (!await fs9.exists(dir)) continue;
+    for (const entry of await fs9.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path8 = join(dir, entry.name);
+      const path9 = join(dir, entry.name);
       try {
-        reports.push(await loadReport(fs8, path8));
+        reports.push(await loadReport(fs9, path9));
       } catch {
       }
     }
   }
   return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 }
-async function loadReport(fs8, inputPath) {
-  const path8 = normalizeReportPath(inputPath);
-  if (!await fs8.exists(path8)) throw new Error(`Report not found: ${path8}.`);
-  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+async function loadReport(fs9, inputPath) {
+  const path9 = normalizeReportPath(inputPath);
+  if (!await fs9.exists(path9)) throw new Error(`Report not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
   if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`Invalid report format: ${path8}.`);
+    throw new Error(`Invalid report format: ${path9}.`);
   }
   return {
-    path: path8,
+    path: path9,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -1502,17 +1502,17 @@ async function loadReport(fs8, inputPath) {
     body: body.trim()
   };
 }
-async function removeReportsForBox(fs8, boxId) {
-  for (const report of await loadReports(fs8)) {
-    if (report.boxId === boxId && await fs8.exists(report.path)) await fs8.remove(report.path);
+async function removeReportsForBox(fs9, boxId) {
+  for (const report of await loadReports(fs9)) {
+    if (report.boxId === boxId && await fs9.exists(report.path)) await fs9.remove(report.path);
   }
 }
 function normalizeReportPath(input) {
-  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path8)) {
+  const path9 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path9)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
-  return path8;
+  return path9;
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
@@ -1555,17 +1555,17 @@ var KEY_ORDER = [
   "createdAt",
   "updatedAt"
 ];
-async function createDeliveryUnlocked(fs8, clock, input) {
+async function createDeliveryUnlocked(fs9, clock, input) {
   const summary = input.summary.trim();
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
   const dir = join("temp", input.role, "deliveries");
-  await ensureDir2(fs8, dir);
-  const path8 = join(dir, `${id}.md`);
-  if (await fs8.exists(path8)) throw new Error(`Delivery already exists: ${path8}.`);
+  await ensureDir2(fs9, dir);
+  const path9 = join(dir, `${id}.md`);
+  if (await fs9.exists(path9)) throw new Error(`Delivery already exists: ${path9}.`);
   const record = {
-    path: path8,
+    path: path9,
     id,
     taskId: input.taskId,
     boxId: input.boxId,
@@ -1579,24 +1579,24 @@ async function createDeliveryUnlocked(fs8, clock, input) {
     createdAt: now,
     updatedAt: now
   };
-  await writeDelivery(fs8, record);
+  await writeDelivery(fs9, record);
   return record;
 }
-async function loadDelivery(fs8, inputPath) {
-  const path8 = normalizeDeliveryPath(inputPath);
-  if (!await fs8.exists(path8)) throw new Error(`Delivery not found: ${path8}.`);
-  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+async function loadDelivery(fs9, inputPath) {
+  const path9 = normalizeDeliveryPath(inputPath);
+  if (!await fs9.exists(path9)) throw new Error(`Delivery not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path8}.`);
+    throw new Error(`Invalid delivery format: ${path9}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path8}.`);
+    throw new Error(`Invalid delivery format: ${path9}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
   return {
-    path: path8,
+    path: path9,
     id: data.id,
     taskId: data.taskId,
     boxId: data.boxId,
@@ -1616,17 +1616,17 @@ async function loadDelivery(fs8, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs8, filter) {
+async function loadDeliveries(fs9, filter) {
   const out = [];
-  if (!await fs8.exists("temp")) return out;
-  for (const roleDir of await fs8.listDir("temp")) {
+  if (!await fs9.exists("temp")) return out;
+  for (const roleDir of await fs9.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "deliveries");
-    if (!await fs8.exists(dir)) continue;
-    for (const entry of await fs8.listDir(dir)) {
+    if (!await fs9.exists(dir)) continue;
+    for (const entry of await fs9.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
       try {
-        const d = await loadDelivery(fs8, join(dir, entry.name));
+        const d = await loadDelivery(fs9, join(dir, entry.name));
         if (filter?.taskId && d.taskId !== filter.taskId) continue;
         if (filter?.boxId && d.boxId !== filter.boxId) continue;
         out.push(d);
@@ -1636,7 +1636,7 @@ async function loadDeliveries(fs8, filter) {
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function writeDelivery(fs8, record) {
+async function writeDelivery(fs9, record) {
   const data = {
     type: "delivery",
     id: record.id,
@@ -1654,14 +1654,14 @@ async function writeDelivery(fs8, record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
-  await fs8.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+  await fs9.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
-  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path8)) {
+  const path9 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path9)) {
     throw new Error("Delivery must point to temp/<role>/deliveries/<dl-id>.md.");
   }
-  return path8;
+  return path9;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -1709,8 +1709,8 @@ function parseArtifactRefs(value) {
   }
   return out;
 }
-async function ensureDir2(fs8, path8) {
-  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
+async function ensureDir2(fs9, path9) {
+  if (!await fs9.exists(path9)) await fs9.mkdir(path9);
 }
 function uniqueCommits2(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -1949,38 +1949,38 @@ async function taskCancel(env, taskPath) {
     await env.fs.remove(taskPath);
   });
 }
-async function requireActiveReadyDelivery(fs8, task) {
+async function requireActiveReadyDelivery(fs9, task) {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs8, { taskId: task.id || task.path })).find(
+    const byId = (await loadDeliveries(fs9, { taskId: task.id || task.path })).find(
       (d) => d.id === task.activeDeliveryId
     );
     if (byId && byId.status === "ready") return byId;
     if (byId) {
     }
   }
-  const ready = (await loadDeliveries(fs8, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await loadDeliveries(fs9, { taskId: task.id || task.path })).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
 }
-async function projectAssignee(fs8, box, owner, status, acceptedBy) {
+async function projectAssignee(fs9, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter(fs8, box, patch);
+  await patchFrontmatter(fs9, box, patch);
 }
-async function restoreProjection(fs8, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs8, box, {
+async function restoreProjection(fs9, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs9, box, {
     owner: owner ?? void 0,
     status: status ?? void 0,
     acceptedBy: acceptedBy ?? void 0
   });
 }
-async function patchFrontmatter(fs8, box, patch) {
+async function patchFrontmatter(fs9, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
@@ -1989,7 +1989,7 @@ async function patchFrontmatter(fs8, box, patch) {
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
-  await fs8.writeFile(boxFile, serializeFrontmatter(data, body, order));
+  await fs9.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -1999,8 +1999,8 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs8, action) {
-  return withTentMutation(fs8, action);
+async function withMutation(fs9, action) {
+  return withTentMutation(fs9, action);
 }
 
 // src/core/forkOps.ts
@@ -2058,22 +2058,22 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs8, parentPath, base) {
+async function uniqueSiblingPath(fs9, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join(parentPath, name);
-    if (!await fs8.exists(candidate)) return candidate;
+    if (!await fs9.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs8, from, to) {
-  await fs8.mkdir(to);
-  for (const entry of await fs8.listDir(from)) {
+async function copyTree(fs9, from, to) {
+  await fs9.mkdir(to);
+  for (const entry of await fs9.listDir(from)) {
     const src = join(from, entry.name);
     const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs8, src, dst);
-    else await fs8.writeFile(dst, await fs8.readFile(src));
+    if (entry.isDir) await copyTree(fs9, src, dst);
+    else await fs9.writeFile(dst, await fs9.readFile(src));
   }
 }
 function collectSubtree(box, out = []) {
@@ -2085,12 +2085,12 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs8, newBoxPath, oldBoxPath) {
+async function ensureIdentityFileName(fs9, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs8.exists(expected)) return;
+  if (await fs9.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
   const copied = join(newBoxPath, oldName);
-  if (await fs8.exists(copied)) await fs8.move(copied, expected);
+  if (await fs9.exists(copied)) await fs9.move(copied, expected);
 }
 
 // src/core/ops.ts
@@ -2189,14 +2189,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path8 = join(input.parentPath, name);
-  assertNotTempPath(path8);
-  await ensureDir3(env.fs, path8);
+  const path9 = join(input.parentPath, name);
+  assertNotTempPath(path9);
+  await ensureDir3(env.fs, path9);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path8), content);
+  await env.fs.writeFile(boxNotePath(path9), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -2205,7 +2205,7 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path8);
+    await env.fs.remove(path9);
     throw error;
   }
   return id;
@@ -2258,8 +2258,8 @@ async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
-async function ensureDir3(fs8, path8) {
-  if (path8 && !await fs8.exists(path8)) await fs8.mkdir(path8);
+async function ensureDir3(fs9, path9) {
+  if (path9 && !await fs9.exists(path9)) await fs9.mkdir(path9);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -2278,8 +2278,8 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function assertNotTempPath(path8) {
-  if (path8 === "temp" || path8.startsWith("temp/")) {
+function assertNotTempPath(path9) {
+  if (path9 === "temp" || path9.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -2352,8 +2352,8 @@ function requireBoxById2(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation2(fs8, action) {
-  return withTentMutation(fs8, action);
+async function withMutation2(fs9, action) {
+  return withTentMutation(fs9, action);
 }
 
 // src/core/concept.ts
@@ -2429,6 +2429,45 @@ function resolveConcept(tent, conceptIdOrPath) {
 
 // src/service/handlers.ts
 init_task();
+
+// src/core/context-card.ts
+var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
+function buildContextCard(ref, options) {
+  const kind = ref.kind;
+  const id = ref.id.trim();
+  if (!id) throw new Error("ContextRef.id cannot be empty.");
+  if (!kind) throw new Error("ContextRef.kind is required.");
+  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
+  const prompt = formatContextCardPrompt(ref, options?.tentRootHint);
+  return {
+    contextRef: {
+      kind,
+      id,
+      path: ref.path,
+      fragment: ref.fragment
+    },
+    prompt,
+    label,
+    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
+  };
+}
+function formatContextCardPrompt(ref, tentRootHint) {
+  const lines = [
+    "Tent contextCard v1",
+    `contextRef: ${ref.kind}/${ref.id}`
+  ];
+  if (ref.path) lines.push(`path: ${ref.path}`);
+  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
+  if (tentRootHint) lines.push(`tentRoot: ${tentRootHint}`);
+  lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
+  lines.push("Do not invent missing content; fetch by id before answering.");
+  return lines.join("\n");
+}
+function taskContextCard(taskId, opts) {
+  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
+}
+
+// src/service/handlers.ts
 init_typeRegistry();
 init_task_model();
 
@@ -3479,6 +3518,7 @@ async function taskStartSessionRpc(ctx, p) {
     worktree: task.worktree || mount.workspaceRoot,
     branch: task.branch || "HEAD"
   } : void 0;
+  const sessionBootstrap = bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, mount.workspaceRoot);
   let handle;
   try {
     handle = await ctx.runtime.startSession({
@@ -3488,7 +3528,7 @@ async function taskStartSessionRpc(ctx, p) {
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
-      bootstrapPrompt: bootstrapPrompt ?? task.prompt,
+      bootstrapPrompt: sessionBootstrap,
       lastTaskId: task.id || taskPath,
       workspace: workspaceId
     });
@@ -3772,16 +3812,16 @@ function parseCallerKind(raw) {
 }
 function resolveConcept3(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path8 = optionalString(p, "path");
+  const path9 = optionalString(p, "path");
   if (id) {
     const byId = tent.byId.get(id);
     if (byId) return byId;
     throw new RpcError(-32004, `Concept not found: ${id}`);
   }
-  if (path8) {
-    const byPath = tent.byPath.get(path8);
+  if (path9) {
+    const byPath = tent.byPath.get(path9);
     if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path8}`);
+    throw new RpcError(-32004, `Concept not found: ${path9}`);
   }
   throw new RpcError(-32602, "docs.* requires id or path");
 }
@@ -3826,6 +3866,23 @@ function parseArtifactRefs2(data) {
     }
   }
   return out;
+}
+function buildSessionBootstrapPrompt(task, tentRoot) {
+  const card = taskContextCard(task.id || task.path, {
+    path: task.path,
+    tentRootHint: tentRoot,
+    label: `task:${task.role}`
+  });
+  const relay = relayPromptForTask(task, tentRoot);
+  const aux = [];
+  if (task.role) aux.push(`role: ${task.role}`);
+  if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
+  return `${card.prompt}
+
+--- Tent session bootstrap ---
+` + (aux.length ? `${aux.join("\n")}
+` : "") + `${relay}
+`;
 }
 function projectTask(task) {
   const lane = task.workspace || task.worktree || task.branch || task.targetBranch ? {
@@ -4180,33 +4237,33 @@ var NodeFs = class {
     const entries = await fs2.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path8) {
-    return fs2.readFile(this.abs(path8), "utf8");
+  async readFile(path9) {
+    return fs2.readFile(this.abs(path9), "utf8");
   }
-  async writeFile(path8, content) {
-    await fs2.mkdir(nodePath.dirname(this.abs(path8)), { recursive: true });
-    await fs2.writeFile(this.abs(path8), content, "utf8");
+  async writeFile(path9, content) {
+    await fs2.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
+    await fs2.writeFile(this.abs(path9), content, "utf8");
   }
-  async exists(path8) {
+  async exists(path9) {
     try {
-      await fs2.access(this.abs(path8));
+      await fs2.access(this.abs(path9));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path8) {
-    await fs2.mkdir(this.abs(path8), { recursive: true });
+  async mkdir(path9) {
+    await fs2.mkdir(this.abs(path9), { recursive: true });
   }
   async move(from, to) {
     await fs2.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
     await fs2.rename(this.abs(from), this.abs(to));
   }
-  async remove(path8) {
-    await fs2.rm(this.abs(path8), { recursive: true, force: true });
+  async remove(path9) {
+    await fs2.rm(this.abs(path9), { recursive: true, force: true });
   }
-  async withLock(path8, action) {
-    const lockPath = this.abs(path8);
+  async withLock(path9, action) {
+    const lockPath = this.abs(path9);
     await fs2.mkdir(nodePath.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -4233,9 +4290,9 @@ var NodeFs = class {
 function isAlreadyExists(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-async function isStaleLock(path8) {
+async function isStaleLock(path9) {
   try {
-    const stat2 = await fs2.stat(path8);
+    const stat2 = await fs2.stat(path9);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -4474,8 +4531,8 @@ async function removeServiceEndpoint(dataDir) {
 }
 
 // src/service/profiles.ts
-import * as fs6 from "node:fs/promises";
-import * as path5 from "node:path";
+import * as fs7 from "node:fs/promises";
+import * as path6 from "node:path";
 
 // src/adapters/fake/index.ts
 import * as fs5 from "node:fs";
@@ -4603,14 +4660,585 @@ function createFakeAdapter(options) {
   return new FakeProviderAdapter(options);
 }
 
+// src/adapters/grok-acp/index.ts
+import * as fs6 from "node:fs";
+import * as os3 from "node:os";
+import * as path5 from "node:path";
+
+// src/adapters/grok-acp/client.ts
+import { spawn } from "node:child_process";
+import * as readline from "node:readline";
+
+// src/adapters/grok-acp/types.ts
+var GROK_ACP_ADAPTER_ID = "grok-acp";
+var DEFAULT_GROK_MODEL = "grok-4.5";
+var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
+var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
+var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
+
+// src/adapters/grok-acp/client.ts
+var GrokAcpClient = class {
+  constructor(options) {
+    this.options = options;
+    this.proc = null;
+    this.lines = null;
+    this.nextId = 1;
+    this.pending = /* @__PURE__ */ new Map();
+    this.assistantText = "";
+    this.stderrTail = "";
+    this.closed = false;
+    this.exitCode = null;
+    this.exitSignal = null;
+    this.exitWaiters = [];
+  }
+  get pid() {
+    return this.proc?.pid ?? void 0;
+  }
+  get providerSession() {
+    return this.providerSessionId;
+  }
+  get lastAssistantText() {
+    return this.assistantText;
+  }
+  get lastStderrTail() {
+    return this.stderrTail;
+  }
+  isAlive() {
+    const pid = this.proc?.pid;
+    if (pid == null || pid <= 0 || this.closed) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  /**
+   * Spawn ACP process + initialize/authenticate/session/new.
+   * Emits session.live when the ACP session exists. Does not block on prompt.
+   */
+  async connect() {
+    this.spawnProcess();
+    const pid = this.proc.pid;
+    this.options.emit({
+      type: "session.starting",
+      sessionId: this.options.sessionId
+    });
+    try {
+      const init = await this.request("initialize", {
+        protocolVersion: 1,
+        clientCapabilities: {
+          fs: { readTextFile: false, writeTextFile: false },
+          terminal: false
+        }
+      });
+      const authMethods = new Set((init.authMethods ?? []).map((m) => m.id));
+      const methodId = authMethods.has("xai.api_key") ? "xai.api_key" : authMethods.has("cached_token") ? "cached_token" : null;
+      if (!methodId) {
+        throw new Error(
+          "Grok ACP \u672A\u63D0\u4F9B\u53EF\u7528\u7684\u8BA4\u8BC1\u65B9\u5F0F\uFF08\u9700\u8981 xai.api_key \u6216 cached_token\uFF09\u3002\u8BF7\u786E\u8BA4 grok CLI \u4E0E CPA \u914D\u7F6E\u3002"
+        );
+      }
+      await this.request("authenticate", {
+        methodId,
+        _meta: { headless: true }
+      });
+      const session = await this.request(
+        "session/new",
+        { cwd: this.options.cwd, mcpServers: [] },
+        6e4
+      );
+      if (!session.sessionId) {
+        throw new Error("Grok ACP session/new \u672A\u8FD4\u56DE sessionId");
+      }
+      this.providerSessionId = session.sessionId;
+      this.options.emit({
+        type: "session.live",
+        sessionId: this.options.sessionId,
+        pid
+      });
+      return { pid, providerSessionId: session.sessionId };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      throw new Error(detail);
+    }
+  }
+  /**
+   * Send session/prompt with task pointer / relay text. Maps session/update events.
+   * Safe to call after connect(); failures emit session.failed.
+   */
+  async sendPrompt(bootstrapPrompt) {
+    if (!this.providerSessionId) {
+      throw new Error("Grok ACP session \u5C1A\u672A\u5EFA\u7ACB\uFF0C\u65E0\u6CD5 prompt");
+    }
+    const pid = this.proc?.pid;
+    if (pid == null) {
+      throw new Error("Grok ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
+    }
+    try {
+      const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+      const result = await this.request(
+        "session/prompt",
+        {
+          sessionId: this.providerSessionId,
+          prompt: [{ type: "text", text: bootstrapPrompt }]
+        },
+        promptTimeout
+      );
+      return {
+        pid,
+        providerSessionId: this.providerSessionId,
+        stopReason: result.stopReason,
+        assistantText: this.assistantText.trim()
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      throw new Error(detail);
+    }
+  }
+  /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
+  async stop(reason) {
+    void reason;
+    if (this.closed) return;
+    this.closed = true;
+    this.rejectAllPending(new Error("session stopped"));
+    const proc = this.proc;
+    if (!proc || proc.killed) {
+      this.cleanupStreams();
+      return;
+    }
+    try {
+      proc.kill("SIGTERM");
+    } catch {
+    }
+    await Promise.race([
+      this.waitExit(),
+      sleep(1500).then(() => this.forceKill())
+    ]);
+    this.cleanupStreams();
+  }
+  spawnProcess() {
+    const child = spawn(this.options.command, this.options.args, {
+      cwd: this.options.cwd,
+      env: {
+        ...process.env,
+        ...this.options.env
+      },
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      detached: false
+    });
+    if (child.pid == null) {
+      throw new Error(
+        `\u65E0\u6CD5\u542F\u52A8 Grok ACP \u8FDB\u7A0B: ${this.options.command} ${this.options.args.join(" ")}`
+      );
+    }
+    this.proc = child;
+    this.lines = readline.createInterface({ input: child.stdout });
+    child.stderr?.on("data", (chunk) => {
+      const text = chunk.toString("utf8");
+      this.stderrTail = (this.stderrTail + text).slice(-4e3);
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text
+      });
+    });
+    this.lines.on("line", (line) => this.onLine(line));
+    child.on("exit", (code, signal) => {
+      this.exitCode = code;
+      this.exitSignal = signal;
+      this.closed = true;
+      this.rejectAllPending(
+        new Error(
+          signal ? `Grok ACP \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `Grok ACP \u8FDB\u7A0B\u9000\u51FA code=${code}`
+        )
+      );
+      for (const w of this.exitWaiters) w();
+      this.exitWaiters = [];
+    });
+    child.on("error", (err) => {
+      this.closed = true;
+      this.rejectAllPending(
+        new Error(`Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
+      );
+    });
+  }
+  onLine(line) {
+    let message;
+    try {
+      message = JSON.parse(line);
+    } catch {
+      return;
+    }
+    if ("method" in message && message.method === "session/update") {
+      this.handleSessionUpdate(
+        message.params?.update
+      );
+      return;
+    }
+    if ("method" in message && message.method === "session/request_permission" && message.id !== void 0) {
+      void this.handlePermissionRequest(
+        message.id,
+        message.params
+      );
+      return;
+    }
+    if ("method" in message && message.id !== void 0 && message.method) {
+      this.write({
+        jsonrpc: "2.0",
+        id: message.id,
+        error: {
+          code: -32601,
+          message: "Client-side requests are disabled for Tent grok-acp adapter."
+        }
+      });
+      return;
+    }
+    if (!("id" in message) || message.id === void 0) return;
+    const id = Number(message.id);
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    if ("error" in message && message.error) {
+      pending.reject(
+        new Error(message.error.message || JSON.stringify(message.error))
+      );
+    } else {
+      pending.resolve(("result" in message ? message.result : void 0) ?? {});
+    }
+  }
+  handleSessionUpdate(update) {
+    if (!update) return;
+    const kind = update.sessionUpdate ?? "";
+    if ((kind === "agent_message_chunk" || kind === "agent_thought_chunk") && update.content?.text) {
+      this.assistantText += update.content.text;
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${update.content.text}`
+      });
+      return;
+    }
+    if (kind === "tool_call" || kind === "tool_call_update") {
+      const title = typeof update.title === "string" && update.title || update.toolCallId || "tool";
+      const status = typeof update.status === "string" ? update.status : "";
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[${kind}] ${title}${status ? ` (${status})` : ""}
+`
+      });
+      return;
+    }
+    if (kind) {
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[session/update] ${kind}
+`
+      });
+    }
+  }
+  async handlePermissionRequest(id, params) {
+    const options = params.options ?? [];
+    const toolTitle = params.toolCall?.title || params.toolCall?.toolCallId || "tool";
+    const policy = this.options.permissionPolicy;
+    let decision = "deny";
+    if (policy === "allow") {
+      decision = "allow";
+    } else if (policy === "deny") {
+      decision = "deny";
+    } else {
+      this.options.emit({
+        type: "session.waiting_user",
+        sessionId: this.options.sessionId,
+        summary: `Grok ACP \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
+      });
+      try {
+        if (this.options.onPermissionAsk) {
+          decision = await Promise.race([
+            this.options.onPermissionAsk({ toolTitle, options }),
+            sleep(
+              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
+            ).then(() => "deny")
+          ]);
+        } else {
+          decision = "deny";
+        }
+      } catch {
+        decision = "deny";
+      }
+    }
+    const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
+    this.write({
+      jsonrpc: "2.0",
+      id,
+      result: { outcome }
+    });
+    this.options.emit({
+      type: "session.stdout_tail",
+      sessionId: this.options.sessionId,
+      text: `[permission] ${toolTitle} \u2192 ${decision === "allow" ? "allow_once" : "deny/cancelled"}
+`
+    });
+  }
+  request(method, params, timeoutMs = 3e4) {
+    if (this.closed || !this.proc?.stdin) {
+      return Promise.reject(new Error(`Grok ACP \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`));
+    }
+    const id = this.nextId++;
+    return new Promise((resolve5, reject) => {
+      const timer = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error(`Grok ACP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
+      }, timeoutMs);
+      this.pending.set(id, { resolve: resolve5, reject, timer });
+      this.write({ jsonrpc: "2.0", id, method, params });
+    });
+  }
+  write(payload) {
+    const stdin = this.proc?.stdin;
+    if (!stdin || stdin.destroyed) return;
+    stdin.write(JSON.stringify(payload) + "\n");
+  }
+  rejectAllPending(err) {
+    for (const [id, p] of this.pending) {
+      clearTimeout(p.timer);
+      p.reject(err);
+      this.pending.delete(id);
+    }
+  }
+  waitExit() {
+    if (!this.proc || this.closed) return Promise.resolve();
+    return new Promise((resolve5) => {
+      this.exitWaiters.push(resolve5);
+    });
+  }
+  async forceKill() {
+    const proc = this.proc;
+    const pid = proc?.pid;
+    if (!proc || pid == null) return;
+    if (process.platform === "win32") {
+      await new Promise((resolve5) => {
+        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore"
+        });
+        killer.on("exit", () => resolve5());
+        killer.on("error", () => resolve5());
+        setTimeout(resolve5, 1500);
+      });
+    } else {
+      try {
+        proc.kill("SIGKILL");
+      } catch {
+      }
+    }
+  }
+  cleanupStreams() {
+    try {
+      this.lines?.close();
+    } catch {
+    }
+    this.lines = null;
+  }
+};
+function selectAllowOnce(options) {
+  const once = options.find((o) => o.kind === "allow_once") || options.find((o) => o.optionId === "allow_once");
+  if (once?.optionId) {
+    return { outcome: "selected", optionId: once.optionId };
+  }
+  return { outcome: "cancelled" };
+}
+function sleep(ms) {
+  return new Promise((resolve5) => setTimeout(resolve5, ms));
+}
+
+// src/adapters/grok-acp/index.ts
+function defaultGrokExecutable() {
+  if (process.platform === "win32") {
+    const home2 = process.env.USERPROFILE || os3.homedir();
+    return path5.join(home2, ".grok", "bin", "grok.exe");
+  }
+  const home = process.env.HOME || os3.homedir();
+  return path5.join(home, ".grok", "bin", "grok");
+}
+function normalizeGrokOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  const policy = o.permissionPolicy;
+  const permissionPolicy = policy === "allow" || policy === "ask" || policy === "deny" ? policy : "deny";
+  return {
+    executable: o.executable,
+    model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : DEFAULT_GROK_MODEL,
+    envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : DEFAULT_GROK_ENV_KEY,
+    promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
+    permissionPolicy,
+    permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
+  };
+}
+var GrokManagedSession = class {
+  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
+    this.sessionId = sessionId;
+    this.client = client;
+    this.bootstrapDone = bootstrapDone;
+    this.stopRequested = stopRequested;
+  }
+  get pid() {
+    return this.client.pid;
+  }
+  get providerSessionId() {
+    return this.client.providerSession;
+  }
+  isAlive() {
+    return !this.stopRequested && this.client.isAlive();
+  }
+  async waitBootstrap() {
+    await this.bootstrapDone;
+  }
+  async stop(reason) {
+    this.stopRequested = true;
+    await this.client.stop(reason);
+  }
+};
+var GrokAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = GROK_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.grokAcp.displayName";
+    this.resolveApiKey = options.resolveApiKey ?? ((envKey, planEnv) => planEnv[envKey] ?? process.env[envKey]);
+    this.onPermissionAsk = options.onPermissionAsk;
+  }
+  capabilities() {
+    return {
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "env",
+      observeLevel: "structured"
+    };
+  }
+  /**
+   * Launch plan validation only. Real ACP needs bidirectional stdio —
+   * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
+   */
+  resolveLaunch(plan) {
+    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const command = plan.command || opts.executable || defaultGrokExecutable();
+    const model = opts.model;
+    const envKey = opts.envKey;
+    const apiKey = this.resolveApiKey(envKey, plan.env);
+    if (!apiKey || !apiKey.trim()) {
+      throw new Error(
+        `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${envKey}\uFF1Agrok-acp \u9700\u8981\u672C\u673A CPA Grok API key\uFF08\u4EC5 service \u8FDB\u7A0B\u73AF\u5883\uFF09\u3002\u4E0D\u4F1A\u56DE\u9000\u5B98\u65B9 xAI\uFF08api.x.ai\uFF09\uFF0C\u4E5F\u4E0D\u4F1A\u56DE\u9000 fake provider\u3002\u8BF7\u5728\u542F\u52A8 Local Service \u524D\u8BBE\u7F6E ${envKey}\uFF1BCPA base URL \u7531 ~/.grok/config.toml \u7BA1\u7406\uFF0C\u5207\u52FF\u5199\u5165 workspace/box/task\u3002`
+      );
+    }
+    if (!plan.command && opts.executable) {
+      if (!fs6.existsSync(opts.executable)) {
+        throw new Error(
+          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.grokAcp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
+        );
+      }
+    } else if (!plan.command) {
+      if (!fs6.existsSync(command)) {
+        throw new Error(
+          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E grokAcp.executable\u3002`
+        );
+      }
+    }
+    const args = plan.args && plan.args.length > 0 ? plan.args : ["agent", "--model", model, "stdio"];
+    const env = {
+      ...plan.env,
+      [envKey]: apiKey,
+      // Grok CLI auth method may read XAI_API_KEY; value is the CPA key, not a second secret store.
+      // Base URL still comes from ~/.grok/config.toml (CPA), not hard-coded api.x.ai.
+      XAI_API_KEY: apiKey,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId,
+      TENT_GROK_MODEL: model
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
+    if (!env.GROK_HOME) {
+      env.GROK_HOME = path5.join(home, ".grok");
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const launch = this.resolveLaunch(plan);
+    const bootstrap = plan.bootstrapPrompt?.trim() || "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
+    const client = new GrokAcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      model: opts.model,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      emit: emit2,
+      onPermissionAsk: opts.permissionPolicy === "ask" ? async (info) => {
+        if (!this.onPermissionAsk) return "deny";
+        return this.onPermissionAsk({
+          sessionId: plan.sessionId,
+          toolTitle: info.toolTitle
+        });
+      } : void 0
+    });
+    await client.connect();
+    const promptDone = client.sendPrompt(bootstrap).then(
+      () => void 0,
+      async (err) => {
+        const message = err instanceof Error ? err.message : String(err);
+        emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
+        try {
+          await client.stop("interrupt");
+        } catch {
+        }
+      }
+    );
+    return new GrokManagedSession(plan.sessionId, client, promptDone);
+  }
+  parseResumeToken(raw) {
+    return { raw, providerSessionId: raw };
+  }
+  mapExit(code, signal) {
+    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
+      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
+    }
+    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
+      return { type: "session.exited", sessionId: "", exitCode: code };
+    }
+    if (code !== 0 && code != null) {
+      return { type: "session.failed", sessionId: "", error: `exit:${code}` };
+    }
+    return { type: "session.exited", sessionId: "", exitCode: code };
+  }
+};
+function createGrokAcpAdapter(options) {
+  return new GrokAcpProviderAdapter(options);
+}
+
 // src/service/profiles.ts
 function profilesPath(dataDir) {
-  return path5.join(dataDir, "agent-profiles.json");
+  return path6.join(dataDir, "agent-profiles.json");
 }
 async function loadAgentProfiles(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs6.readFile(file, "utf8");
+    const raw = await fs7.readFile(file, "utf8");
     const parsed = JSON.parse(raw);
     const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
     return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
@@ -4619,8 +5247,8 @@ async function loadAgentProfiles(dataDir) {
   }
 }
 async function saveAgentProfiles(dataDir, profiles) {
-  await fs6.mkdir(dataDir, { recursive: true });
-  await fs6.writeFile(
+  await fs7.mkdir(dataDir, { recursive: true });
+  await fs7.writeFile(
     profilesPath(dataDir),
     JSON.stringify({ profiles }, null, 2) + "\n",
     "utf8"
@@ -4633,19 +5261,39 @@ function defaultAgentProfiles() {
       adapterId: FAKE_ADAPTER_ID,
       displayNameKey: "profile.fake.default",
       fake: { waitForSignal: true, emitStdout: true, canResume: true }
+    },
+    {
+      id: "grok-acp-default",
+      adapterId: GROK_ACP_ADAPTER_ID,
+      displayNameKey: "profile.grokAcp.default",
+      grokAcp: {
+        // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
+        model: DEFAULT_GROK_MODEL,
+        envKey: DEFAULT_GROK_ENV_KEY,
+        // Default deny tool permissions — never unconditional yolo.
+        permissionPolicy: "deny"
+      }
     }
   ];
 }
 async function ensureDefaultProfiles(dataDir) {
   const existing = await loadAgentProfiles(dataDir);
-  if (existing.length > 0) return existing;
+  if (existing.length > 0) {
+    if (!existing.some((p) => p.id === "grok-acp-default")) {
+      const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default");
+      const merged = [...existing, grok];
+      await saveAgentProfiles(dataDir, merged);
+      return merged;
+    }
+    return existing;
+  }
   const defaults = defaultAgentProfiles();
   await saveAgentProfiles(dataDir, defaults);
   return defaults;
 }
 
 // src/runtime/process-supervisor.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 var ProcessSupervisor = class {
   constructor(options = {}) {
     this.children = /* @__PURE__ */ new Map();
@@ -4694,7 +5342,7 @@ var ProcessSupervisor = class {
         delete env[key];
       }
     }
-    const child = spawn(launch.command, launch.args, {
+    const child = spawn2(launch.command, launch.args, {
       cwd: launch.cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -4814,7 +5462,7 @@ var ProcessSupervisor = class {
     if (pid == null) return;
     if (process.platform === "win32") {
       await new Promise((resolve5) => {
-        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
@@ -4841,13 +5489,13 @@ var ProcessSupervisor = class {
 };
 
 // src/runtime/session-registry.ts
-import * as fs7 from "node:fs/promises";
-import * as path6 from "node:path";
+import * as fs8 from "node:fs/promises";
+import * as path7 from "node:path";
 function sessionsDir(dataDir) {
-  return path6.join(dataDir, "sessions");
+  return path7.join(dataDir, "sessions");
 }
 function sessionFilePath(dataDir, sessionId) {
-  return path6.join(sessionsDir(dataDir), `${sessionId}.json`);
+  return path7.join(sessionsDir(dataDir), `${sessionId}.json`);
 }
 function assertSessionId(sessionId) {
   if (!isSessionId(sessionId)) {
@@ -4864,7 +5512,7 @@ var SessionRegistry = class {
     return this.dataDir;
   }
   async ensureDir() {
-    await fs7.mkdir(sessionsDir(this.dataDir), { recursive: true });
+    await fs8.mkdir(sessionsDir(this.dataDir), { recursive: true });
   }
   enqueue(fn) {
     const run = this.writeChain.then(fn, fn);
@@ -4879,14 +5527,14 @@ var SessionRegistry = class {
     return this.enqueue(async () => {
       await this.ensureDir();
       const file = sessionFilePath(this.dataDir, record.id);
-      await fs7.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+      await fs8.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
     });
   }
   async read(sessionId) {
     assertSessionId(sessionId);
     const file = sessionFilePath(this.dataDir, sessionId);
     try {
-      const raw = await fs7.readFile(file, "utf8");
+      const raw = await fs8.readFile(file, "utf8");
       const data = JSON.parse(raw);
       if (data.id !== sessionId) return null;
       return data;
@@ -4907,7 +5555,7 @@ var SessionRegistry = class {
       };
       await this.ensureDir();
       const file = sessionFilePath(this.dataDir, sessionId);
-      await fs7.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
+      await fs8.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
       return next;
     });
   }
@@ -4919,7 +5567,7 @@ var SessionRegistry = class {
     const dir = sessionsDir(this.dataDir);
     let names;
     try {
-      names = await fs7.readdir(dir);
+      names = await fs8.readdir(dir);
     } catch {
       return [];
     }
@@ -4938,7 +5586,7 @@ var SessionRegistry = class {
     assertSessionId(sessionId);
     return this.enqueue(async () => {
       try {
-        await fs7.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+        await fs8.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
       } catch {
       }
     });
@@ -4950,7 +5598,7 @@ var SessionRegistry = class {
   async readUnlocked(sessionId) {
     const file = sessionFilePath(this.dataDir, sessionId);
     try {
-      const raw = await fs7.readFile(file, "utf8");
+      const raw = await fs8.readFile(file, "utf8");
       const data = JSON.parse(raw);
       if (data.id !== sessionId) return null;
       return data;
@@ -4978,6 +5626,7 @@ var AgentRuntime = class {
   constructor(options) {
     this.profiles = /* @__PURE__ */ new Map();
     this.adapters = /* @__PURE__ */ new Map();
+    this.managed = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
     this.closed = false;
@@ -4993,12 +5642,15 @@ var AgentRuntime = class {
         fake: { waitForSignal: true, emitStdout: true }
       });
     }
-    const adapterList = options.adapters ?? [createFakeAdapter()];
+    const adapterList = options.adapters ?? [createFakeAdapter(), createGrokAcpAdapter()];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
     }
     if (!this.adapters.has(FAKE_ADAPTER_ID)) {
       this.adapters.set(FAKE_ADAPTER_ID, createFakeAdapter());
+    }
+    if (!this.adapters.has(GROK_ACP_ADAPTER_ID)) {
+      this.adapters.set(GROK_ACP_ADAPTER_ID, createGrokAcpAdapter());
     }
     this.supervisor = new ProcessSupervisor({
       gracefulMs: options.gracefulMs ?? 2e3,
@@ -5077,7 +5729,7 @@ var AgentRuntime = class {
     await this.registry.write(record);
     this.emit({ type: "session.starting", sessionId: req.sessionId });
     try {
-      const launch = await adapter.resolveLaunch({
+      const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
@@ -5086,21 +5738,46 @@ var AgentRuntime = class {
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
-        extras: { fake: profile.fake }
-      });
-      const proc = await this.supervisor.start(req.sessionId, launch);
-      const resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
+        extras: {
+          fake: profile.fake,
+          grokAcp: profile.grokAcp
+        }
+      };
+      let pid;
+      let resumeToken;
+      let sawLive = false;
+      if (typeof adapter.startManagedSession === "function") {
+        const managed = await adapter.startManagedSession(plan, (ev) => {
+          if (ev.type === "session.live") sawLive = true;
+          this.emit(ev);
+        });
+        this.managed.set(req.sessionId, managed);
+        pid = managed.pid;
+        if (managed.providerSessionId) {
+          resumeToken = managed.providerSessionId;
+        }
+      } else {
+        const launch = await adapter.resolveLaunch(plan);
+        const proc = await this.supervisor.start(req.sessionId, launch);
+        pid = proc.pid;
+        resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
+        this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
+        sawLive = true;
+      }
       const live = await this.registry.update(req.sessionId, {
         state: "live",
-        pid: proc.pid,
+        pid,
         resumeToken,
         lastError: void 0,
         exitCode: void 0,
         stopReason: void 0
       });
-      this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
+      if (!sawLive) {
+        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
+      }
       return handleFrom(live);
     } catch (err) {
+      this.managed.delete(req.sessionId);
       const message = err instanceof Error ? err.message : String(err);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
@@ -5144,8 +5821,14 @@ var AgentRuntime = class {
     this.assertOpen();
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
-    const wasAlive = this.supervisor.isAlive(sessionId);
-    if (wasAlive) {
+    const managed = this.managed.get(sessionId);
+    if (managed) {
+      try {
+        await managed.stop(reason);
+      } finally {
+        this.managed.delete(sessionId);
+      }
+    } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
     const current = await this.registry.read(sessionId);
@@ -5180,13 +5863,15 @@ var AgentRuntime = class {
         lastError: "session not found"
       };
     }
-    const alive = this.supervisor.isAlive(sessionId);
+    const managed = this.managed.get(sessionId);
+    const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
     const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
       record.resumeToken && (adapter?.capabilities().canResume || profile?.fake?.canResume)
     );
     if (SessionRegistry.isNonTerminal(record.state) && !alive) {
+      if (managed) this.managed.delete(sessionId);
       const nextState = resumeCapable ? "stopped" : "failed";
       const updated = await this.registry.update(sessionId, {
         state: nextState,
@@ -5215,6 +5900,7 @@ var AgentRuntime = class {
   /**
    * On service start: probe all non-terminal sessions and reconcile.
    * Dead PID + not resume-capable → failed/stopped; resume-capable → keep metadata.
+   * Note: managed ACP clients do not survive process restart — probe marks them dead.
    */
   async reconcileOnBoot() {
     const all = await this.registry.list();
@@ -5225,15 +5911,25 @@ var AgentRuntime = class {
     }
     return results;
   }
-  /** Service shutdown: stop push children this runtime started. */
+  /** Service shutdown: stop push children this runtime started (window close does not call this). */
   async shutdown() {
     if (this.closed) return;
-    const live = this.supervisor.listLive();
+    const managedIds = [...this.managed.keys()];
+    const live = /* @__PURE__ */ new Set([...this.supervisor.listLive(), ...managedIds]);
     for (const id of live) {
       try {
         await this.stopSession(id, "shutdown");
       } catch {
-        await this.supervisor.stop(id);
+        const m = this.managed.get(id);
+        if (m) {
+          try {
+            await m.stop("shutdown");
+          } catch {
+          }
+          this.managed.delete(id);
+        } else {
+          await this.supervisor.stop(id);
+        }
       }
     }
     await this.supervisor.stopAll("shutdown");
@@ -5426,10 +6122,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path7.resolve(dataDir) : void 0
+    dataDir: dataDir ? path8.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path7.resolve(mountPath));
+    const info = await service.hostApi.mount(path8.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }

@@ -114,15 +114,24 @@ export interface AgentProfileConfig {
   id: string;
   adapterId: string;
   displayNameKey?: string;
-  /** Optional default command override (generic / fake profiles). */
+  /** Optional default command override (generic / fake / mock-acp profiles). */
   command?: string;
   args?: string[];
+  /**
+   * Non-secret process env for launch. Never store API keys / tokens here —
+   * real providers read secrets from the service process environment via envKey.
+   */
   env?: Record<string, string>;
   /**
    * Fake-provider only knobs. Real providers must not use this bag.
    * Kept on profile so tests never hit paid networks.
    */
   fake?: FakeProfileOptions;
+  /**
+   * Grok ACP machine-local options (executable path, model, envKey name, timeouts).
+   * Secret values stay in OS/process env; only the env key *name* is stored here.
+   */
+  grokAcp?: import("../adapters/grok-acp/types.js").GrokAcpProfileOptions;
 }
 
 export interface FakeProfileOptions {
