@@ -40,6 +40,15 @@ async function withService<T>(
   }
 }
 
+/** Authenticated RPC helper bound to a running service token. */
+function rpc(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  method: string,
+  params?: Record<string, unknown>
+) {
+  return rpcCall(svc.url, method, params, { token: svc.token });
+}
+
 test("service.health + endpoint file written for attach discovery", async () => {
   await withService(async (svc, dataDir) => {
     const res = await fetch(`${svc.url}/health`);
@@ -52,6 +61,8 @@ test("service.health + endpoint file written for attach discovery", async () => 
     assert.ok(ep);
     assert.equal(ep!.port, svc.port);
     assert.equal(ep!.host, svc.host);
+    assert.ok(ep!.token);
+    assert.equal(ep!.token, svc.token);
   });
 });
 
@@ -64,20 +75,20 @@ test("WorkspaceHost mount multi-workspace + setForeground emits workspace.switch
       if (ev.type === "workspace.switched") switched.push(ev.workspaceId);
     });
 
-    const m1 = await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws1 });
+    const m1 = await rpc(svc, "workspace.mount", { workspaceRoot: ws1 });
     assert.ok(m1.result);
-    const m2 = await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws2 });
+    const m2 = await rpc(svc, "workspace.mount", { workspaceRoot: ws2 });
     assert.ok(m2.result);
 
-    const list = await rpcCall(svc.url, "workspace.list", {});
+    const list = await rpc(svc, "workspace.list", {});
     const workspaces = (list.result as { workspaces: { workspaceId: string }[] }).workspaces;
     assert.equal(workspaces.length, 2);
 
     const id2 = (m2.result as { workspaceId: string }).workspaceId;
-    await rpcCall(svc.url, "workspace.setForeground", { workspaceId: id2 });
+    await rpc(svc, "workspace.setForeground", { workspaceId: id2 });
     assert.ok(switched.includes(id2));
 
-    const health = await rpcCall(svc.url, "service.health", {});
+    const health = await rpc(svc, "service.health", {});
     assert.equal((health.result as { foregroundWorkspaceId: string }).foregroundWorkspaceId, id2);
   });
 });
@@ -85,10 +96,10 @@ test("WorkspaceHost mount multi-workspace + setForeground emits workspace.switch
 test("docs.createNote / list / get / write with etag; promote + fork", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const mounted = await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws });
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
-    const created = await rpcCall(svc.url, "docs.createNote", {
+    const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "idea",
       type: "note",
@@ -97,15 +108,15 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     const id = (created.result as { id: string }).id;
     assert.match(id, /^cx-/);
 
-    const listed = await rpcCall(svc.url, "docs.list", { workspaceId });
+    const listed = await rpc(svc, "docs.list", { workspaceId });
     const concepts = (listed.result as { concepts: { id: string; name: string }[] }).concepts;
     assert.ok(concepts.some((c) => c.id === id));
 
-    const edit = await rpcCall(svc.url, "docs.readForEdit", { workspaceId, id });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
     assert.ok(!edit.error, JSON.stringify(edit.error));
     const { etag, body } = edit.result as { etag: string; body: string };
 
-    const written = await rpcCall(svc.url, "docs.write", {
+    const written = await rpc(svc, "docs.write", {
       workspaceId,
       id,
       body: body + "\nupdated\n",
@@ -113,7 +124,7 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     });
     assert.ok(!written.error, JSON.stringify(written.error));
 
-    const conflict = await rpcCall(svc.url, "docs.write", {
+    const conflict = await rpc(svc, "docs.write", {
       workspaceId,
       id,
       body: "stale\n",
@@ -122,7 +133,7 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     assert.ok(conflict.error);
     assert.equal(conflict.error!.code, -32009);
 
-    const promoted = await rpcCall(svc.url, "docs.promote", {
+    const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
       id,
       toType: "goal",
@@ -130,7 +141,7 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     assert.ok(!promoted.error, JSON.stringify(promoted.error));
     assert.equal((promoted.result as { toType: string }).toType, "goal");
 
-    const forked = await rpcCall(svc.url, "docs.fork", { workspaceId, id });
+    const forked = await rpc(svc, "docs.fork", { workspaceId, id });
     assert.ok(!forked.error, JSON.stringify(forked.error));
     const forkId = (forked.result as { id: string }).id;
     assert.match(forkId, /^cx-/);
@@ -141,17 +152,17 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
 test("task.dispatch + task.claim project doing; docs.write blocks collab fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const mounted = await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws });
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
-    const created = await rpcCall(svc.url, "docs.createNote", {
+    const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "work-item",
       type: "prompt",
     });
     const boxId = (created.result as { id: string }).id;
 
-    const dispatched = await rpcCall(svc.url, "task.dispatch", {
+    const dispatched = await rpc(svc, "task.dispatch", {
       workspaceId,
       boxId,
       role: "executor",
@@ -162,7 +173,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.match(taskPath, /^temp\//);
 
     // pending task occupies — cannot patch status via docs.write
-    const blockedPending = await rpcCall(svc.url, "docs.write", {
+    const blockedPending = await rpc(svc, "docs.write", {
       workspaceId,
       id: boxId,
       frontmatter: { status: "done" },
@@ -170,16 +181,16 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.ok(blockedPending.error);
     assert.equal(blockedPending.error!.code, -32010);
 
-    const claimed = await rpcCall(svc.url, "task.claim", { workspaceId, taskPath });
+    const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
     assert.ok(!claimed.error, JSON.stringify(claimed.error));
     assert.equal((claimed.result as { state: string }).state, "running");
 
-    const got = await rpcCall(svc.url, "docs.get", { workspaceId, id: boxId });
+    const got = await rpc(svc, "docs.get", { workspaceId, id: boxId });
     const concept = (got.result as { concept: { status?: string; assignee?: string } }).concept;
     assert.equal(concept.status, "doing");
     assert.equal(concept.assignee, "executor");
 
-    const blockedOwner = await rpcCall(svc.url, "docs.write", {
+    const blockedOwner = await rpc(svc, "docs.write", {
       workspaceId,
       id: boxId,
       frontmatter: { assignee: "hacker" },
@@ -188,9 +199,9 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.equal(blockedOwner.error!.code, -32010);
 
     // body-only write still allowed
-    const edit = await rpcCall(svc.url, "docs.readForEdit", { workspaceId, id: boxId });
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
     const { etag, body } = edit.result as { etag: string; body: string };
-    const bodyWrite = await rpcCall(svc.url, "docs.write", {
+    const bodyWrite = await rpc(svc, "docs.write", {
       workspaceId,
       id: boxId,
       body: body + "\nnote\n",
@@ -198,7 +209,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     });
     assert.ok(!bodyWrite.error, JSON.stringify(bodyWrite.error));
 
-    const listed = await rpcCall(svc.url, "task.list", { workspaceId });
+    const listed = await rpc(svc, "task.list", { workspaceId });
     const tasks = (listed.result as { tasks: { path: string; status: string }[] }).tasks;
     assert.ok(tasks.some((t) => t.path === taskPath && t.status === "taken"));
   });
@@ -207,7 +218,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
 test("AgentRuntimePort.* rejected; not in client method table", async () => {
   assert.ok(!CLIENT_METHODS.some((m) => m.startsWith("AgentRuntime")));
   await withService(async (svc) => {
-    const res = await rpcCall(svc.url, "AgentRuntimePort.startSession", { cwd: "." });
+    const res = await rpc(svc, "AgentRuntimePort.startSession", { cwd: "." });
     assert.ok(res.error);
     assert.equal(res.error!.code, -32601);
     assert.match(res.error!.message, /service-internal|not found/i);
@@ -217,7 +228,7 @@ test("AgentRuntimePort.* rejected; not in client method table", async () => {
 test("external concept file change fans concept.changed via watch", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    const mounted = await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws });
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
     const events: string[] = [];
@@ -272,10 +283,13 @@ test("service continues after client disconnect (process independent of UI)", as
   // Simulate: open SSE, close it, still RPC works — closing window ≠ stop service
   const ws = await makeWorkspace();
   await withService(async (svc) => {
-    await rpcCall(svc.url, "workspace.mount", { workspaceRoot: ws });
+    await rpc(svc, "workspace.mount", { workspaceRoot: ws });
 
     const ac = new AbortController();
-    const sse = fetch(`${svc.url}/events`, { signal: ac.signal });
+    const sse = fetch(`${svc.url}/events`, {
+      signal: ac.signal,
+      headers: { "x-tent-token": svc.token },
+    });
     // Give SSE a moment to connect
     await new Promise((r) => setTimeout(r, 50));
     ac.abort();
@@ -285,7 +299,7 @@ test("service continues after client disconnect (process independent of UI)", as
       // aborted
     }
 
-    const health = await rpcCall(svc.url, "service.health", {});
+    const health = await rpc(svc, "service.health", {});
     assert.equal((health.result as { status: string }).status, "ok");
   });
 });

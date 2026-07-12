@@ -1,9 +1,12 @@
 // Loopback HTTP + JSON-RPC 2.0 attach transport for Local Tent Service.
+// B5: loopback token required for /rpc and /events; /health stays open for discovery.
 
 import * as http from "node:http";
 import type { EventEnvelope } from "./types.js";
 import type { EventBus } from "./events.js";
 import { dispatchMethod, RpcError, type HandlerContext } from "./handlers.js";
+import { extractRequestToken, tokensEqual } from "./auth.js";
+import { RPC_UNAUTHORIZED } from "./types.js";
 
 export interface JsonRpcRequest {
   jsonrpc?: string;
@@ -25,6 +28,8 @@ export interface CreateHttpServerOptions {
   port?: number;
   ctx: HandlerContext;
   events: EventBus;
+  /** Required bearer token for mutations and event streams. */
+  token: string;
 }
 
 export async function createServiceHttpServer(options: CreateHttpServerOptions): Promise<ServiceHttpServer> {
@@ -33,7 +38,7 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
 
   const server = http.createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, options.ctx, options.events);
+      await handleRequest(req, res, options);
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
@@ -69,11 +74,12 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  ctx: HandlerContext,
-  events: EventBus
+  options: CreateHttpServerOptions
 ): Promise<void> {
+  const { ctx, events, token } = options;
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
 
+  // Health is open so attach discovery can probe without token (no mutation).
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
     const body = await dispatchMethod(ctx, "service.health", {});
     writeJson(res, 200, body);
@@ -81,11 +87,24 @@ async function handleRequest(
   }
 
   if (req.method === "GET" && url.pathname === "/events") {
+    if (!authorize(req, token)) {
+      writeJson(res, 401, { error: "Unauthorized: invalid or missing service token" });
+      return;
+    }
     handleSse(req, res, events);
     return;
   }
 
   if (req.method === "POST" && (url.pathname === "/rpc" || url.pathname === "/")) {
+    if (!authorize(req, token)) {
+      writeJson(res, 401, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: RPC_UNAUTHORIZED, message: "Unauthorized: invalid or missing service token" },
+      });
+      return;
+    }
+
     const raw = await readBody(req);
     let message: JsonRpcRequest;
     try {
@@ -145,6 +164,11 @@ async function handleRequest(
   writeJson(res, 404, { error: "not found" });
 }
 
+function authorize(req: http.IncomingMessage, expectedToken: string): boolean {
+  const provided = extractRequestToken(req.headers as Record<string, string | string[] | undefined>);
+  return tokensEqual(expectedToken, provided);
+}
+
 function handleSse(req: http.IncomingMessage, res: http.ServerResponse, events: EventBus): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -194,13 +218,23 @@ export async function rpcCall(
   baseUrl: string,
   method: string,
   params?: Record<string, unknown>,
-  id: string | number = 1
+  options?: { id?: string | number; token?: string }
 ): Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }> {
+  const id = options?.id ?? 1;
+  const headers: Record<string, string> = { "content-type": "application/json" };
+  if (options?.token) {
+    headers["x-tent-token"] = options.token;
+  }
   const res = await fetch(`${baseUrl.replace(/\/$/, "")}/rpc`, {
     method: "POST",
-    headers: { "content-type": "application/json" },
+    headers,
     body: JSON.stringify({ jsonrpc: "2.0", id, method, params }),
   });
+  if (res.status === 401) {
+    return {
+      error: { code: RPC_UNAUTHORIZED, message: "Unauthorized: invalid or missing service token" },
+    };
+  }
   const json = (await res.json()) as {
     result?: unknown;
     error?: { code: number; message: string; data?: unknown };

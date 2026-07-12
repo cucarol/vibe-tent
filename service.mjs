@@ -1,16 +1,22 @@
 #!/usr/bin/env node
 #!/usr/bin/env node
 
-
-// src/service/cli.ts
-import * as path3 from "node:path";
-
-// src/service/http-server.ts
-import * as http from "node:http";
+var __defProp = Object.defineProperty;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __esm = (fn, res, err) => function __init() {
+  if (err) throw err[0];
+  try {
+    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
+  } catch (e) {
+    throw err = [e], e;
+  }
+};
+var __export = (target, all) => {
+  for (var name in all)
+    __defProp(target, name, { get: all[name], enumerable: true });
+};
 
 // src/core/frontmatter.ts
-var FENCE = "---";
-var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
 function parseFrontmatter(raw) {
   const text = raw.replace(/\r\n/g, "\n");
   if (!text.startsWith(FENCE + "\n")) {
@@ -223,78 +229,96 @@ function emit(v) {
   }
   return s;
 }
+var FENCE, BOX_FRONTMATTER_KEY_ORDER;
+var init_frontmatter = __esm({
+  "src/core/frontmatter.ts"() {
+    "use strict";
+    FENCE = "---";
+    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+  }
+});
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs4, path4) {
-  const backupPath = `${path4}.corrupt-${timestamp()}`;
-  await fs4.writeFile(backupPath, await fs4.readFile(path4));
+async function backupCorruptRegistry(fs8, path8) {
+  const backupPath = `${path8}.corrupt-${timestamp()}`;
+  await fs8.writeFile(backupPath, await fs8.readFile(path8));
   return backupPath;
 }
-function warnRegistryRecovered(path4, backupPath, action, extra = "") {
+function warnRegistryRecovered(path8, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path4} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path8} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
 }
+var init_registryRecovery = __esm({
+  "src/core/registryRecovery.ts"() {
+    "use strict";
+  }
+});
 
 // src/core/paths.ts
-var TENT_SYSTEM_DIR = ".tent";
-var TYPE_REGISTRY_PATH = "types.json";
-var ROLES_REGISTRY_PATH = "roles.json";
-var TAGS_REGISTRY_PATH = "tags.json";
-var ORDER_PATH = "order.json";
-var MUTATION_LOCK_PATH = "mutation.lock";
-var RULES_PATH = "RULES.md";
-var TEMP_DIR = "temp";
-var ATTACHMENTS_DIR = "attachments";
-var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
-  TEMP_DIR,
-  ATTACHMENTS_DIR,
-  // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
-  TENT_SYSTEM_DIR
-]);
-var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
-  TYPE_REGISTRY_PATH,
-  ROLES_REGISTRY_PATH,
-  TAGS_REGISTRY_PATH,
-  ORDER_PATH,
-  MUTATION_LOCK_PATH,
-  RULES_PATH,
-  "index.md",
-  "log.md"
-]);
 function systemRootFromWorkspace(workspaceRoot) {
   const root = workspaceRoot.replace(/[\\/]+$/, "");
   const sep2 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path4 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path4) return false;
-  const top = path4.split("/")[0] ?? "";
+  const path8 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path8) return false;
+  const top = path8.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }
+var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, TEMP_DIR, ATTACHMENTS_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
+var init_paths = __esm({
+  "src/core/paths.ts"() {
+    "use strict";
+    TENT_SYSTEM_DIR = ".tent";
+    TYPE_REGISTRY_PATH = "types.json";
+    ROLES_REGISTRY_PATH = "roles.json";
+    TAGS_REGISTRY_PATH = "tags.json";
+    ORDER_PATH = "order.json";
+    MUTATION_LOCK_PATH = "mutation.lock";
+    RULES_PATH = "RULES.md";
+    TEMP_DIR = "temp";
+    ATTACHMENTS_DIR = "attachments";
+    OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
+      TEMP_DIR,
+      ATTACHMENTS_DIR,
+      // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+      TENT_SYSTEM_DIR
+    ]);
+    SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
+      TYPE_REGISTRY_PATH,
+      ROLES_REGISTRY_PATH,
+      TAGS_REGISTRY_PATH,
+      ORDER_PATH,
+      MUTATION_LOCK_PATH,
+      RULES_PATH,
+      "index.md",
+      "log.md"
+    ]);
+  }
+});
 
 // src/core/order.ts
-var ROOT_KEY = "__root__";
-async function loadOrder(fs4) {
-  if (!await fs4.exists(ORDER_PATH)) return {};
+async function loadOrder(fs8) {
+  if (!await fs8.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs4.readFile(ORDER_PATH));
+    return JSON.parse(await fs8.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs4, ORDER_PATH);
-    await saveOrder(fs4, {});
+    const backupPath = await backupCorruptRegistry(fs8, ORDER_PATH);
+    await saveOrder(fs8, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs4, map) {
-  await fs4.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs8, map) {
+  await fs8.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -311,68 +335,17 @@ function sortByOrder(items, order, fallback) {
   });
   return sorted;
 }
+var ROOT_KEY;
+var init_order = __esm({
+  "src/core/order.ts"() {
+    "use strict";
+    init_registryRecovery();
+    init_paths();
+    ROOT_KEY = "__root__";
+  }
+});
 
 // src/core/typeRegistry.ts
-var DEFAULT_TYPE_REGISTRY = {
-  note: {
-    readable: true,
-    writable: true,
-    color: "gray",
-    tier: "base",
-    coordination: false,
-    description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
-  },
-  goal: {
-    readable: true,
-    writable: false,
-    color: "blue",
-    tier: "base",
-    coordination: true,
-    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
-  },
-  prompt: {
-    readable: true,
-    writable: true,
-    color: "purple",
-    tier: "base",
-    coordination: true,
-    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
-  },
-  artifact: {
-    readable: true,
-    writable: true,
-    color: "cyan",
-    tier: "base",
-    coordination: true,
-    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
-  },
-  open: {
-    readable: true,
-    writable: true,
-    color: "green",
-    tier: "modifier",
-    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
-  },
-  reference: {
-    readable: true,
-    color: "blue",
-    tier: "modifier",
-    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
-  },
-  asset: {
-    writable: true,
-    color: "purple",
-    tier: "modifier",
-    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
-  },
-  sealed: {
-    readable: false,
-    writable: false,
-    color: "red",
-    tier: "modifier",
-    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
-  }
-};
 function splitType(type) {
   const i = type.indexOf("-");
   if (i === -1) return { base: type };
@@ -407,10 +380,10 @@ function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
   return definition.coordination;
 }
-async function loadTypeRegistry(fs4) {
-  if (!await fs4.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs8) {
+  if (!await fs8.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs4.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs8.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -499,25 +472,91 @@ function cloneDefaults() {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
+var DEFAULT_TYPE_REGISTRY;
+var init_typeRegistry = __esm({
+  "src/core/typeRegistry.ts"() {
+    "use strict";
+    init_paths();
+    DEFAULT_TYPE_REGISTRY = {
+      note: {
+        readable: true,
+        writable: true,
+        color: "gray",
+        tier: "base",
+        coordination: false,
+        description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
+      },
+      goal: {
+        readable: true,
+        writable: false,
+        color: "blue",
+        tier: "base",
+        coordination: true,
+        description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
+      },
+      prompt: {
+        readable: true,
+        writable: true,
+        color: "purple",
+        tier: "base",
+        coordination: true,
+        description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
+      },
+      artifact: {
+        readable: true,
+        writable: true,
+        color: "cyan",
+        tier: "base",
+        coordination: true,
+        description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
+      },
+      open: {
+        readable: true,
+        writable: true,
+        color: "green",
+        tier: "modifier",
+        description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
+      },
+      reference: {
+        readable: true,
+        color: "blue",
+        tier: "modifier",
+        description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
+      },
+      asset: {
+        writable: true,
+        color: "purple",
+        tier: "modifier",
+        description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
+      },
+      sealed: {
+        readable: false,
+        writable: false,
+        color: "red",
+        tier: "modifier",
+        description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
+      }
+    };
+  }
+});
 
 // src/core/tree.ts
-var ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs4) {
+async function loadTent(fs8) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs4);
-  const top = await fs4.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs8);
+  const top = await fs8.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs4, entry.name, null, typeRegistry, roots);
+    await loadBoxInto(fs8, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs4);
+  const order = await loadOrder(fs8);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -556,13 +595,13 @@ function zoneRank(name) {
   const i = ZONE_NAMES.indexOf(name);
   return i === -1 ? 99 : i;
 }
-async function loadBox(fs4, path4, parent, registry) {
-  if (isOperationalPath(path4)) return null;
-  const boxFile = boxNotePath(path4);
-  if (!await fs4.exists(boxFile)) {
+async function loadBox(fs8, path8, parent, registry) {
+  if (isOperationalPath(path8)) return null;
+  const boxFile = boxNotePath(path8);
+  if (!await fs8.exists(boxFile)) {
     return null;
   }
-  const raw = await fs4.readFile(boxFile);
+  const raw = await fs8.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -572,7 +611,7 @@ async function loadBox(fs4, path4, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path4);
+  const name = baseName(path8);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
@@ -583,7 +622,7 @@ async function loadBox(fs4, path4, parent, registry) {
     // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
-    path: path4,
+    path: path8,
     name,
     fm,
     body,
@@ -595,14 +634,14 @@ async function loadBox(fs4, path4, parent, registry) {
     writable: { value: false, source: "type" }
   };
   if (parseError) {
-    box.invalidRootId = path4;
+    box.invalidRootId = path8;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs4.listDir(path4);
+  const sub = await fs8.listDir(path8);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs4, join(path4, entry.name), box, registry, box.children);
+    await loadBoxInto(fs8, join(path8, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -632,18 +671,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs4, path4, parent, registry, target) {
-  if (isOperationalPath(path4)) return;
-  const box = await loadBox(fs4, path4, parent, registry);
+async function loadBoxInto(fs8, path8, parent, registry, target) {
+  if (isOperationalPath(path8)) return;
+  const box = await loadBox(fs8, path8, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs4.listDir(path4);
+  const sub = await fs8.listDir(path8);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs4, join(path4, entry.name), parent, registry, target);
+    await loadBoxInto(fs8, join(path8, entry.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -728,21 +767,429 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path4) {
-  const i = path4.lastIndexOf("/");
-  return i === -1 ? path4 : path4.slice(i + 1);
+function baseName(path8) {
+  const i = path8.lastIndexOf("/");
+  return i === -1 ? path8 : path8.slice(i + 1);
 }
-function dirName(path4) {
-  const i = path4.lastIndexOf("/");
-  return i === -1 ? "" : path4.slice(0, i);
+function dirName(path8) {
+  const i = path8.lastIndexOf("/");
+  return i === -1 ? "" : path8.slice(0, i);
 }
+var ZONE_NAMES;
+var init_tree = __esm({
+  "src/core/tree.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_order();
+    init_typeRegistry();
+    init_paths();
+    ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
+  }
+});
+
+// src/core/id.ts
+function makeConceptId(rand = Math.random, len = 6) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
+  }
+  return CONCEPT_ID_PREFIX + s;
+}
+function makeUniqueConceptId(existing, rand = Math.random) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = makeConceptId(rand);
+    if (!existing.has(id)) return id;
+  }
+  return makeConceptId(rand, 10);
+}
+var ALPHABET, CONCEPT_ID_PREFIX;
+var init_id = __esm({
+  "src/core/id.ts"() {
+    "use strict";
+    ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+    CONCEPT_ID_PREFIX = "cx-";
+  }
+});
+
+// src/core/task-model.ts
+function stateToLegacyStatus(state) {
+  return state === "queued" ? "pending" : "taken";
+}
+function legacyStatusToState(status) {
+  return status === "pending" ? "queued" : "running";
+}
+function makeTaskId(rand = Math.random, len = 8) {
+  const stem = makeConceptId(rand, len).slice(3);
+  return `tk-${stem}`;
+}
+function makeDeliveryId(rand = Math.random, len = 8) {
+  const stem = makeConceptId(rand, len).slice(3);
+  return `dl-${stem}`;
+}
+function isTaskId(id) {
+  return id.startsWith("tk-") && id.length > 3;
+}
+function isDeliveryId(id) {
+  return id.startsWith("dl-") && id.length > 3;
+}
+function assertTransition(from, event, to) {
+  const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
+  if (!ok) {
+    throw new TaskLifecycleError(
+      "INVALID_TRANSITION",
+      `Invalid task transition: ${from} --${event}\u2192 ${to}`
+    );
+  }
+}
+function allowedTransitions(from) {
+  switch (from) {
+    case "queued":
+      return [
+        { event: "claim", to: "running" },
+        { event: "cancel", to: "interrupted" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "running":
+      return [
+        { event: "wait", to: "waiting" },
+        { event: "deliver", to: "delivered" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "waiting":
+      return [
+        { event: "resume", to: "running" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "delivered":
+      return [
+        { event: "accept", to: "accepted" },
+        { event: "reject-resume", to: "running" },
+        { event: "reject-terminal", to: "rejected" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "rejected":
+      return [];
+    default:
+      return [];
+  }
+}
+function resolveDeliverRouting(policy, decision) {
+  if (policy === "bypass") {
+    return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
+  }
+  if (policy === "manual") {
+    if (decision === "integrate") {
+      throw new TaskLifecycleError(
+        "POLICY_FORBIDS_AUTO_INTEGRATE",
+        "deliveryPolicy=manual forbids decision=integrate; use request-review or change policy."
+      );
+    }
+    return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+  }
+  if (!decision) {
+    throw new TaskLifecycleError(
+      "DECISION_REQUIRED",
+      "deliveryPolicy=agent-decide requires decision: integrate | request-review."
+    );
+  }
+  if (decision === "integrate") {
+    return {
+      autoIntegrate: true,
+      integrationMode: "agent-decided-integrate",
+      enterDelivered: false
+    };
+  }
+  return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+}
+function assertNotSelfAccept(actor, submitterRole) {
+  if (actor.trim() === submitterRole.trim()) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.accept actor must not equal delivery submitter (${submitterRole}).`
+    );
+  }
+}
+function evaluateA2A(input) {
+  if (input.callerKind === "user") return "allow";
+  const policy = input.policy ?? "deny";
+  if (policy === "deny") return "deny";
+  if (policy === "ask") return "ask";
+  if (input.profileAllowed === false) return "deny";
+  return "allow";
+}
+var TaskLifecycleError;
+var init_task_model = __esm({
+  "src/core/task-model.ts"() {
+    "use strict";
+    init_id();
+    TaskLifecycleError = class extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = "TaskLifecycleError";
+      }
+    };
+  }
+});
+
+// src/core/task.ts
+var task_exports = {};
+__export(task_exports, {
+  ackTaskEnvelope: () => ackTaskEnvelope,
+  cancelTaskEnvelope: () => cancelTaskEnvelope,
+  ensureRoleInit: () => ensureRoleInit,
+  loadTaskEnvelope: () => loadTaskEnvelope,
+  loadTaskEnvelopes: () => loadTaskEnvelopes,
+  patchTaskEnvelope: () => patchTaskEnvelope,
+  primaryBoxId: () => primaryBoxId,
+  relayPromptForTask: () => relayPromptForTask,
+  workspaceLaneOf: () => workspaceLaneOf,
+  writeTaskEnvelope: () => writeTaskEnvelope
+});
+async function loadTaskEnvelopes(fs8) {
+  const tasks = [];
+  if (!await fs8.exists("temp")) return tasks;
+  for (const roleEntry of await fs8.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    const taskDir = join("temp", roleEntry.name, "tasks");
+    if (!await fs8.exists(taskDir)) continue;
+    for (const entry of await fs8.listDir(taskDir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path8 = join(taskDir, entry.name);
+      try {
+        tasks.push(await loadTaskEnvelope(fs8, path8));
+      } catch {
+      }
+    }
+  }
+  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function loadTaskEnvelope(fs8, path8) {
+  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
+    throw new Error(`Invalid task envelope format: ${path8}.`);
+  }
+  const legacyStatus = data.status === "taken" ? "taken" : "pending";
+  const state = parseTaskState(data.state, legacyStatus);
+  const task = {
+    path: path8,
+    role: data.role,
+    claims: data.claims,
+    manifest: data.manifest,
+    status: stateToLegacyStatus(state),
+    state,
+    prompt: body.trim() || void 0
+  };
+  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
+  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (typeof data.workspace === "string") task.workspace = data.workspace;
+  if (typeof data.worktree === "string") task.worktree = data.worktree;
+  if (typeof data.branch === "string") task.branch = data.branch;
+  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
+  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
+    task.assigneeKind = data.assigneeKind;
+  }
+  if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
+  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
+  const wait = parseWaitFields(data);
+  if (wait) task.wait = wait;
+  return task;
+}
+function relayPromptForTask(task, tentRoot) {
+  const initPath = join("temp", task.role, "init.md");
+  return `A Tent task has been dispatched to role ${task.role}.
+Tent root: ${tentRoot}
+1. Run \`tent task-ack ${task.path}\` to take this task.
+2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
+3. If this is a new session for this role, complete role init first: ${initPath}.`;
+}
+async function ensureRoleInit(fs8, role, tentName) {
+  const path8 = join("temp", role.name, "init.md");
+  const body = `# Role Init
+
+- Tent: ${tentName}
+- Rules: RULES.md
+- Role registry: .tent/roles.json (or run \`tent roles\`)
+
+## Role Prompt
+
+${role.prompt?.trim() || "(no persistent role prompt)"}
+
+## Operating Model
+
+Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
+`;
+  await fs8.writeFile(path8, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path8;
+}
+async function writeTaskEnvelope(fs8, clock, input) {
+  const userPrompt = input.userPrompt?.trim() || "";
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  const dir = join("temp", input.role, "tasks");
+  await ensureDir(fs8, dir);
+  const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
+  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
+  const path8 = await uniqueMarkdownPath(fs8, dir, stem);
+  const now = clock.now();
+  const data = {
+    type: "task",
+    id,
+    status: "pending",
+    state: "queued",
+    role: input.role,
+    assigneeKind: input.assigneeKind ?? "role",
+    dispatchedBy: input.dispatchedBy?.trim() || "user",
+    claims: input.claims.map((claim) => claim.id),
+    manifest: input.manifestPath,
+    deliveryPolicy: input.deliveryPolicy ?? "manual",
+    createdAt: now,
+    updatedAt: now
+  };
+  if (input.sessionId) data.sessionId = input.sessionId;
+  if (input.workspace) {
+    data.workspace = input.workspace.workspace;
+    data.worktree = input.workspace.worktree;
+    data.branch = input.workspace.branch;
+    data.targetBranch = input.workspace.targetBranch;
+  }
+  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
+  const body = `# Task
+
+## Context Pointers
+
+${pointers}
+
+- Manifest: ${input.manifestPath}
+` + (input.id || id ? `- Task id: ${id}
+` : "") + `
+## User Prompt
+
+${userPrompt}
+`;
+  await fs8.writeFile(path8, serializeFrontmatter(data, body));
+  return path8;
+}
+async function ackTaskEnvelope(fs8, path8) {
+  await patchTaskEnvelope(fs8, path8, {
+    status: "taken",
+    state: "running"
+  });
+}
+async function cancelTaskEnvelope(fs8, path8) {
+  const task = await loadTaskEnvelope(fs8, path8);
+  if (task.state !== "queued" && task.status !== "pending") {
+    throw new Error("Only queued (pending) task envelopes can be cancelled.");
+  }
+  await fs8.remove(path8);
+}
+async function patchTaskEnvelope(fs8, path8, patch) {
+  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
+  const raw = await fs8.readFile(path8);
+  const { data, body, keyOrder } = parseFrontmatter(raw);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path8}.`);
+  if (patch.state) {
+    data.state = patch.state;
+    data.status = stateToLegacyStatus(patch.state);
+  } else if (patch.status) {
+    data.status = patch.status;
+    if (!data.state) data.state = legacyStatusToState(patch.status);
+  }
+  if (patch.sessionId === null) delete data.sessionId;
+  else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
+  if (patch.wait === null) {
+    delete data.waitReason;
+    delete data.waitSummary;
+  } else if (patch.wait) {
+    data.waitReason = patch.wait.reason;
+    data.waitSummary = patch.wait.summary;
+  }
+  if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
+  else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
+  if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+  await fs8.writeFile(path8, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs8, path8);
+}
+function workspaceLaneOf(task) {
+  if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch) return void 0;
+  return {
+    workspace: task.workspace,
+    worktree: task.worktree,
+    branch: task.branch,
+    targetBranch: task.targetBranch
+  };
+}
+function primaryBoxId(task) {
+  return task.claims.find((c) => c !== "root");
+}
+function parseTaskState(value, legacy) {
+  if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
+    return value;
+  }
+  return legacyStatusToState(legacy);
+}
+function isDeliveryPolicy(value) {
+  return value === "manual" || value === "bypass" || value === "agent-decide";
+}
+function parseWaitFields(data) {
+  const reason = data.waitReason;
+  const summary = data.waitSummary;
+  if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
+    return { reason, summary };
+  }
+  return void 0;
+}
+function taskStem(now, claimId) {
+  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
+  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
+}
+async function uniqueMarkdownPath(fs8, dir, stem) {
+  for (let n = 1; ; n++) {
+    const suffix = n === 1 ? "" : `-${n}`;
+    const path8 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs8.exists(path8)) return path8;
+  }
+}
+async function ensureDir(fs8, path8) {
+  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
+}
+var init_task = __esm({
+  "src/core/task.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_tree();
+    init_task_model();
+  }
+});
+
+// src/service/cli.ts
+import * as path7 from "node:path";
+
+// src/service/http-server.ts
+import * as http from "node:http";
+
+// src/service/handlers.ts
+init_tree();
+init_frontmatter();
 
 // src/core/adapter.ts
-function withTentMutation(fs4, action) {
-  return fs4.withLock ? fs4.withLock(MUTATION_LOCK_PATH, action) : action();
+init_paths();
+function withTentMutation(fs8, action) {
+  return fs8.withLock ? fs8.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
+// src/core/ops.ts
+init_tree();
+
 // src/core/manifest.ts
+init_tree();
+init_typeRegistry();
 function buildManifest(tent, input) {
   const { role } = input;
   const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
@@ -869,23 +1316,10 @@ function dedupe(entries) {
   return out;
 }
 
-// src/core/id.ts
-var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-var CONCEPT_ID_PREFIX = "cx-";
-function makeConceptId(rand = Math.random, len = 6) {
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
-  }
-  return CONCEPT_ID_PREFIX + s;
-}
-function makeUniqueConceptId(existing, rand = Math.random) {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeConceptId(rand);
-    if (!existing.has(id)) return id;
-  }
-  return makeConceptId(rand, 10);
-}
+// src/core/ops.ts
+init_id();
+init_frontmatter();
+init_order();
 
 // src/core/claim.ts
 function canClaim(box) {
@@ -936,7 +1370,14 @@ function collect(box, out) {
   for (const c of box.children) collect(c, out);
 }
 
+// src/core/ops.ts
+init_tree();
+
 // src/core/tags.ts
+init_frontmatter();
+init_tree();
+init_registryRecovery();
+init_paths();
 function normalizeTagName(name) {
   const tag = name.trim();
   if (!tag) throw new Error("Tag name cannot be empty.");
@@ -944,19 +1385,24 @@ function normalizeTagName(name) {
   return tag;
 }
 
+// src/core/ops.ts
+init_typeRegistry();
+
 // src/core/skillRoleRegistry.ts
+init_registryRecovery();
+init_paths();
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs4) {
-  if (!await fs4.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+async function loadRolesRegistry(fs8) {
+  if (!await fs8.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
   try {
-    const parsed = JSON.parse(await fs4.readFile(ROLES_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs8.readFile(ROLES_REGISTRY_PATH));
     return normalizeRolesRegistry(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs4, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs8, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs4, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs8, ROLES_REGISTRY_PATH, reset);
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -1007,157 +1453,78 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs4, path4, value) {
-  if (!await fs4.exists(".tent")) await fs4.mkdir(".tent");
-  await fs4.writeFile(path4, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs8, path8, value) {
+  if (!await fs8.exists(".tent")) await fs8.mkdir(".tent");
+  await fs8.writeFile(path8, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-// src/core/task.ts
-async function loadTaskEnvelopes(fs4) {
-  const tasks = [];
-  if (!await fs4.exists("temp")) return tasks;
-  for (const roleEntry of await fs4.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!await fs4.exists(taskDir)) continue;
-    for (const entry of await fs4.listDir(taskDir)) {
+// src/core/ops.ts
+init_task();
+
+// src/core/report.ts
+init_frontmatter();
+init_tree();
+async function loadReports(fs8) {
+  const reports = [];
+  if (!await fs8.exists("temp")) return reports;
+  for (const roleDir of await fs8.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join("temp", roleDir.name, "reports");
+    if (!await fs8.exists(dir)) continue;
+    for (const entry of await fs8.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path4 = join(taskDir, entry.name);
+      const path8 = join(dir, entry.name);
       try {
-        const { data } = parseFrontmatter(await fs4.readFile(path4));
-        if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-          continue;
-        }
-        const task = {
-          path: path4,
-          role: data.role,
-          claims: data.claims,
-          manifest: data.manifest,
-          status: data.status === "taken" ? "taken" : "pending"
-        };
-        if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
-        if (typeof data.workspace === "string") task.workspace = data.workspace;
-        if (typeof data.worktree === "string") task.worktree = data.worktree;
-        if (typeof data.branch === "string") task.branch = data.branch;
-        if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-        tasks.push(task);
+        reports.push(await loadReport(fs8, path8));
       } catch {
       }
     }
   }
-  return tasks.sort((a, b) => a.path.localeCompare(b.path));
+  return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 }
-async function loadTaskEnvelope(fs4, path4) {
-  if (!await fs4.exists(path4)) throw new Error(`Task envelope not found: ${path4}.`);
-  const { data } = parseFrontmatter(await fs4.readFile(path4));
-  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-    throw new Error(`Invalid task envelope format: ${path4}.`);
+async function loadReport(fs8, inputPath) {
+  const path8 = normalizeReportPath(inputPath);
+  if (!await fs8.exists(path8)) throw new Error(`Report not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+  if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
+    throw new Error(`Invalid report format: ${path8}.`);
   }
-  const task = {
-    path: path4,
+  return {
+    path: path8,
+    boxId: data.box,
     role: data.role,
-    claims: data.claims,
-    manifest: data.manifest,
-    status: data.status === "taken" ? "taken" : "pending"
+    status: data.status,
+    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((item) => typeof item === "string")) : [],
+    timestamp: typeof data.ts === "string" ? data.ts : void 0,
+    review: typeof data.review === "string" ? data.review : void 0,
+    body: body.trim()
   };
-  if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
-  if (typeof data.workspace === "string") task.workspace = data.workspace;
-  if (typeof data.worktree === "string") task.worktree = data.worktree;
-  if (typeof data.branch === "string") task.branch = data.branch;
-  if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-  return task;
 }
-function relayPromptForTask(task, tentRoot) {
-  const initPath = join("temp", task.role, "init.md");
-  return `A Tent task has been dispatched to role ${task.role}.
-Tent root: ${tentRoot}
-1. Run \`tent task-ack ${task.path}\` to take this task.
-2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
-3. If this is a new session for this role, complete role init first: ${initPath}.`;
-}
-async function ensureRoleInit(fs4, role, tentName) {
-  const path4 = join("temp", role.name, "init.md");
-  const body = `# Role Init
-
-- Tent: ${tentName}
-- Rules: RULES.md
-- Role registry: .tent/roles.json (or run \`tent roles\`)
-
-## Role Prompt
-
-${role.prompt?.trim() || "(no persistent role prompt)"}
-
-## Operating Model
-
-Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
-`;
-  await fs4.writeFile(path4, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path4;
-}
-async function writeTaskEnvelope(fs4, clock, input) {
-  const userPrompt = input.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const dir = join("temp", input.role, "tasks");
-  await ensureDir(fs4, dir);
-  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path4 = await uniqueMarkdownPath(fs4, dir, stem);
-  const data = {
-    type: "task",
-    status: "pending",
-    role: input.role,
-    dispatchedBy: input.dispatchedBy?.trim() || "user",
-    claims: input.claims.map((claim) => claim.id),
-    manifest: input.manifestPath
-  };
-  if (input.workspace) {
-    data.workspace = input.workspace.workspace;
-    data.worktree = input.workspace.worktree;
-    data.branch = input.workspace.branch;
-    data.targetBranch = input.workspace.targetBranch;
-  }
-  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
-  const body = `# Task
-
-## Context Pointers
-
-${pointers}
-
-- Manifest: ${input.manifestPath}
-
-## User Prompt
-
-${userPrompt}
-`;
-  await fs4.writeFile(path4, serializeFrontmatter(data, body));
-  return path4;
-}
-async function ackTaskEnvelope(fs4, path4) {
-  if (!await fs4.exists(path4)) throw new Error(`Task envelope not found: ${path4}.`);
-  const raw = await fs4.readFile(path4);
-  const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path4}.`);
-  data.status = "taken";
-  await fs4.writeFile(path4, serializeFrontmatter(data, body, keyOrder));
-}
-function taskStem(now, claimId) {
-  const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
-  return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
-}
-async function uniqueMarkdownPath(fs4, dir, stem) {
-  for (let n = 1; ; n++) {
-    const suffix = n === 1 ? "" : `-${n}`;
-    const path4 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs4.exists(path4)) return path4;
+async function removeReportsForBox(fs8, boxId) {
+  for (const report of await loadReports(fs8)) {
+    if (report.boxId === boxId && await fs8.exists(report.path)) await fs8.remove(report.path);
   }
 }
-async function ensureDir(fs4, path4) {
-  if (!await fs4.exists(path4)) await fs4.mkdir(path4);
+function normalizeReportPath(input) {
+  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path8)) {
+    throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
+  }
+  return path8;
+}
+function uniqueCommits(commits) {
+  return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
 }
 
 // src/core/scaffold.ts
+init_frontmatter();
+init_typeRegistry();
+init_tree();
+init_id();
+init_paths();
 function validateBoxName(value) {
   const name = value.trim();
   if (!name) throw new Error("Box name cannot be empty.");
@@ -1168,7 +1535,480 @@ function validateBoxName(value) {
   return name;
 }
 
+// src/core/delivery.ts
+init_frontmatter();
+init_tree();
+init_task_model();
+var KEY_ORDER = [
+  "type",
+  "id",
+  "taskId",
+  "boxId",
+  "role",
+  "status",
+  "commits",
+  "checksJson",
+  "artifactRefsJson",
+  "integrationMode",
+  "reviewBy",
+  "reviewDecision",
+  "reviewNote",
+  "createdAt",
+  "updatedAt"
+];
+async function createDeliveryUnlocked(fs8, clock, input) {
+  const summary = input.summary.trim();
+  if (!summary) throw new Error("Delivery summary cannot be empty.");
+  const now = clock.now();
+  const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
+  const dir = join("temp", input.role, "deliveries");
+  await ensureDir2(fs8, dir);
+  const path8 = join(dir, `${id}.md`);
+  if (await fs8.exists(path8)) throw new Error(`Delivery already exists: ${path8}.`);
+  const record = {
+    path: path8,
+    id,
+    taskId: input.taskId,
+    boxId: input.boxId,
+    role: input.role,
+    status: input.status ?? "ready",
+    summary,
+    commits: uniqueCommits2(input.commits ?? []),
+    checks: input.checks ?? [],
+    artifactRefs: input.artifactRefs ?? [],
+    integrationMode: input.integrationMode ?? null,
+    createdAt: now,
+    updatedAt: now
+  };
+  await writeDelivery(fs8, record);
+  return record;
+}
+async function loadDelivery(fs8, inputPath) {
+  const path8 = normalizeDeliveryPath(inputPath);
+  if (!await fs8.exists(path8)) throw new Error(`Delivery not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
+  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+    throw new Error(`Invalid delivery format: ${path8}.`);
+  }
+  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
+    throw new Error(`Invalid delivery format: ${path8}.`);
+  }
+  const status = parseDeliveryStatus(data.status);
+  const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
+  const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  return {
+    path: path8,
+    id: data.id,
+    taskId: data.taskId,
+    boxId: data.boxId,
+    role: data.role,
+    status,
+    summary: body.trim(),
+    commits: Array.isArray(data.commits) ? uniqueCommits2(data.commits.filter((c) => typeof c === "string")) : [],
+    checks: parseJsonArrayField(data.checksJson, parseChecks),
+    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
+    integrationMode: parseIntegrationMode(data.integrationMode),
+    review: reviewBy && reviewDecision ? {
+      by: reviewBy,
+      decision: reviewDecision,
+      note: typeof data.reviewNote === "string" ? data.reviewNote : void 0
+    } : void 0,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
+  };
+}
+async function loadDeliveries(fs8, filter) {
+  const out = [];
+  if (!await fs8.exists("temp")) return out;
+  for (const roleDir of await fs8.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join("temp", roleDir.name, "deliveries");
+    if (!await fs8.exists(dir)) continue;
+    for (const entry of await fs8.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      try {
+        const d = await loadDelivery(fs8, join(dir, entry.name));
+        if (filter?.taskId && d.taskId !== filter.taskId) continue;
+        if (filter?.boxId && d.boxId !== filter.boxId) continue;
+        out.push(d);
+      } catch {
+      }
+    }
+  }
+  return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+async function writeDelivery(fs8, record) {
+  const data = {
+    type: "delivery",
+    id: record.id,
+    taskId: record.taskId,
+    boxId: record.boxId,
+    role: record.role,
+    status: record.status,
+    commits: record.commits,
+    checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
+    artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
+    integrationMode: record.integrationMode,
+    reviewBy: record.review?.by,
+    reviewDecision: record.review?.decision,
+    reviewNote: record.review?.note,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+  await fs8.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+}
+function normalizeDeliveryPath(input) {
+  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path8)) {
+    throw new Error("Delivery must point to temp/<role>/deliveries/<dl-id>.md.");
+  }
+  return path8;
+}
+function parseDeliveryStatus(value) {
+  if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
+  throw new Error(`Invalid delivery status: ${String(value)}`);
+}
+function parseIntegrationMode(value) {
+  if (value === void 0 || value === null || value === "null") return null;
+  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
+    return value;
+  }
+  return null;
+}
+function parseJsonArrayField(value, parse) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    return parse(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+function parseChecks(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.name !== "string" || typeof o.command !== "string" || typeof o.exitCode !== "number") continue;
+    out.push({ name: o.name, command: o.command, exitCode: o.exitCode });
+  }
+  return out;
+}
+function parseArtifactRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
+    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
+    out.push({
+      kind: o.kind,
+      target: o.target,
+      label: typeof o.label === "string" ? o.label : void 0
+    });
+  }
+  return out;
+}
+async function ensureDir2(fs8, path8) {
+  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
+}
+function uniqueCommits2(commits) {
+  return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+
+// src/core/task-lifecycle.ts
+init_frontmatter();
+init_tree();
+init_task();
+init_task_model();
+async function taskClaim(env, taskPath, options = {}) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "running" && task.status === "taken") {
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return task;
+    }
+    assertTransition(task.state, "claim", "running");
+    const tent = await loadTent(env.fs);
+    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
+    const previous = claimedBoxes.map((box) => ({
+      box,
+      owner: box.fm.owner,
+      status: box.fm.status,
+      acceptedBy: box.fm.acceptedBy
+    }));
+    for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
+      const claimable = canClaim(box);
+      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    try {
+      for (const box of claimedBoxes) {
+        await projectAssignee(env.fs, box, task.role, "doing");
+      }
+      await ackTaskEnvelope(env.fs, taskPath);
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return loadTaskEnvelope(env.fs, taskPath);
+    } catch (error) {
+      for (const item of previous) {
+        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
+      }
+      throw error;
+    }
+  });
+}
+async function taskWait(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "wait", "waiting");
+    const summary = options.summary.trim();
+    if (!summary) throw new Error("task.wait requires a non-empty summary.");
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "waiting",
+      wait: { reason: options.reason, summary },
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function taskResume(env, taskPath) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "resume", "running");
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "running",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function taskDeliver(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state !== "running") {
+      throw new TaskLifecycleError(
+        "INVALID_TRANSITION",
+        `task.deliver requires state=running (got ${task.state}).`
+      );
+    }
+    const boxId = primaryBoxId(task);
+    if (!boxId) throw new Error("task.deliver requires a non-root box claim.");
+    const existing = await loadDeliveries(env.fs, { taskId: task.id || taskPath });
+    if (existing.some((d) => d.status === "ready")) {
+      throw new Error("A delivery is already ready for review; accept or reject it first.");
+    }
+    const policy = task.deliveryPolicy ?? "manual";
+    const routing = resolveDeliverRouting(policy, options.decision);
+    const taskId = task.id || taskPath;
+    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
+      taskId,
+      boxId,
+      role: task.role,
+      summary: options.summary,
+      commits: options.commits,
+      checks: options.checks,
+      artifactRefs: options.artifactRefs,
+      status: "ready",
+      integrationMode: routing.integrationMode
+    });
+    if (routing.autoIntegrate) {
+      const commits = delivery.commits;
+      if (commits.length > 0) {
+        if (!options.integrate) {
+          throw new Error("Auto-integrate path requires integrate() when commits are present.");
+        }
+        await options.integrate(commits);
+      }
+      delivery.status = "accepted";
+      delivery.integrationMode = routing.integrationMode;
+      delivery.updatedAt = env.clock.now();
+      await writeDelivery(env.fs, delivery);
+      const tent = await loadTent(env.fs);
+      const box = requireBoxById(tent, boxId);
+      await projectAssignee(env.fs, box, void 0, "done", "service");
+      const next2 = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery.id,
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+      return { task: next2, delivery, autoIntegrated: true };
+    }
+    assertTransition(task.state, "deliver", "delivered");
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: "delivered",
+      activeDeliveryId: delivery.id,
+      updatedAt: env.clock.now()
+    });
+    return { task: next, delivery, autoIntegrated: false };
+  });
+}
+async function taskAccept(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "accept", "accepted");
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    assertNotSelfAccept(options.actor, delivery.role);
+    const commits = options.commits ?? delivery.commits;
+    if (commits.length > 0) {
+      if (!options.integrate) throw new Error("Delivery contains commits; workspace integration is required.");
+      await options.integrate(commits);
+    }
+    delivery.status = "accepted";
+    delivery.integrationMode = "manual-accept";
+    delivery.review = { by: options.actor, decision: "accept" };
+    delivery.updatedAt = env.clock.now();
+    await writeDelivery(env.fs, delivery);
+    const tent = await loadTent(env.fs);
+    const box = requireBoxById(tent, delivery.boxId);
+    await projectAssignee(env.fs, box, void 0, "done", options.actor);
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: "accepted",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+    return { task: next, delivery };
+  });
+}
+async function taskReject(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const resume = options.resume !== false;
+    const event = resume ? "reject-resume" : "reject-terminal";
+    const to = resume ? "running" : "rejected";
+    assertTransition(task.state, event, to);
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    if (options.actor.trim() === delivery.role.trim()) {
+      throw new TaskLifecycleError(
+        "SELF_ACCEPT_FORBIDDEN",
+        `task.reject actor must not equal delivery submitter (${delivery.role}).`
+      );
+    }
+    delivery.status = "rejected";
+    delivery.review = {
+      by: options.actor,
+      decision: "reject",
+      note: options.note?.trim() || "Rejected; waiting for resubmission."
+    };
+    delivery.updatedAt = env.clock.now();
+    await writeDelivery(env.fs, delivery);
+    if (!resume) {
+      const tent = await loadTent(env.fs);
+      const box = requireBoxById(tent, delivery.boxId);
+      await projectAssignee(env.fs, box, void 0, "todo");
+    }
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: to,
+      // Keep activeDeliveryId for history; new deliver checks ready-only.
+      updatedAt: env.clock.now()
+    });
+    return { task: next, delivery };
+  });
+}
+async function taskInterrupt(env, taskPath) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "queued") {
+      assertTransition(task.state, "interrupt", "interrupted");
+      await env.fs.remove(taskPath);
+      return { ...task, state: "interrupted", status: "taken" };
+    }
+    assertTransition(task.state, "interrupt", "interrupted");
+    const tent = await loadTent(env.fs);
+    for (const claimId of task.claims) {
+      if (claimId === "root") continue;
+      const box = tent.byId.get(claimId);
+      if (!box) continue;
+      await projectAssignee(env.fs, box, void 0, "todo");
+      await removeReportsForBox(env.fs, box.id);
+    }
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "interrupted",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function taskCancel(env, taskPath) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "cancel", "interrupted");
+    await env.fs.remove(taskPath);
+  });
+}
+async function requireActiveReadyDelivery(fs8, task) {
+  if (task.activeDeliveryId) {
+    const byId = (await loadDeliveries(fs8, { taskId: task.id || task.path })).find(
+      (d) => d.id === task.activeDeliveryId
+    );
+    if (byId && byId.status === "ready") return byId;
+    if (byId) {
+    }
+  }
+  const ready = (await loadDeliveries(fs8, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  if (!ready) {
+    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
+  }
+  return ready;
+}
+async function projectAssignee(fs8, box, owner, status, acceptedBy) {
+  const patch = { owner: owner ?? void 0 };
+  if (owner) patch.acceptedBy = void 0;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
+  if (status) patch.status = status;
+  await patchFrontmatter(fs8, box, patch);
+}
+async function restoreProjection(fs8, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs8, box, {
+    owner: owner ?? void 0,
+    status: status ?? void 0,
+    acceptedBy: acceptedBy ?? void 0
+  });
+}
+async function patchFrontmatter(fs8, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  const order = [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+  await fs8.writeFile(boxFile, serializeFrontmatter(data, body, order));
+}
+function requireBoxById(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
+async function withMutation(fs8, action) {
+  return withTentMutation(fs8, action);
+}
+
 // src/core/forkOps.ts
+init_frontmatter();
+init_id();
+init_order();
+init_tree();
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
 }
@@ -1219,22 +2059,22 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs4, parentPath, base) {
+async function uniqueSiblingPath(fs8, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join(parentPath, name);
-    if (!await fs4.exists(candidate)) return candidate;
+    if (!await fs8.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs4, from, to) {
-  await fs4.mkdir(to);
-  for (const entry of await fs4.listDir(from)) {
+async function copyTree(fs8, from, to) {
+  await fs8.mkdir(to);
+  for (const entry of await fs8.listDir(from)) {
     const src = join(from, entry.name);
     const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs4, src, dst);
-    else await fs4.writeFile(dst, await fs4.readFile(src));
+    if (entry.isDir) await copyTree(fs8, src, dst);
+    else await fs8.writeFile(dst, await fs8.readFile(src));
   }
 }
 function collectSubtree(box, out = []) {
@@ -1246,17 +2086,17 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs4, newBoxPath, oldBoxPath) {
+async function ensureIdentityFileName(fs8, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs4.exists(expected)) return;
+  if (await fs8.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
   const copied = join(newBoxPath, oldName);
-  if (await fs4.exists(copied)) await fs4.move(copied, expected);
+  if (await fs8.exists(copied)) await fs8.move(copied, expected);
 }
 
 // src/core/ops.ts
 async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
@@ -1294,7 +2134,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const manifestPath = join("temp", roleName, "manifest.yml");
-    await ensureDir2(env.fs, dirName(manifestPath));
+    await ensureDir3(env.fs, dirName(manifestPath));
     await env.fs.writeFile(manifestPath, yaml);
     const registry = await loadRolesRegistry(env.fs);
     const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
@@ -1306,7 +2146,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       manifestPath,
       userPrompt,
       workspace: options.workspace,
-      dispatchedBy: options.dispatchedBy
+      dispatchedBy: options.dispatchedBy,
+      deliveryPolicy: options.deliveryPolicy
     });
     const relayPrompt = relayPromptForTask(
       {
@@ -1314,7 +2155,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         role: roleName,
         claims: taskClaims.map((taskClaim2) => taskClaim2.id),
         manifest: manifestPath,
-        status: "pending"
+        status: "pending",
+        state: "queued"
       },
       env.tentRoot || env.tentName
     );
@@ -1326,56 +2168,16 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     throw error;
   }
 }
-async function taskAck(env, taskPath) {
-  await withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.status === "taken") {
-      await ackTaskEnvelope(env.fs, taskPath);
-      return;
-    }
-    const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy
-    }));
-    for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
-      const claimable = canClaim(box);
-      if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
-    }
-    try {
-      for (const box of claimedBoxes) {
-        await setOwner(env.fs, box, task.role, "doing");
-        box.fm.owner = task.role;
-        box.fm.status = "doing";
-        box.fm.acceptedBy = void 0;
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreOwnerState(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
-    }
-  });
-}
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
     throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
   }
-  const box = requireBoxById(tent, id);
+  const box = requireBoxById2(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
 async function createBox(env, input) {
-  return withMutation(env.fs, async () => createBoxUnlocked(env, input));
+  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
 }
 async function createBoxUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
@@ -1388,14 +2190,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path4 = join(input.parentPath, name);
-  assertNotTempPath(path4);
-  await ensureDir2(env.fs, path4);
+  const path8 = join(input.parentPath, name);
+  assertNotTempPath(path8);
+  await ensureDir3(env.fs, path8);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path4), content);
+  await env.fs.writeFile(boxNotePath(path8), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -1404,13 +2206,13 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path4);
+    await env.fs.remove(path8);
     throw error;
   }
   return id;
 }
 async function patchBox(env, boxPath, patch, loadedTent) {
-  await withMutation(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
+  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
 }
 async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
@@ -1447,7 +2249,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 async function patchBody(env, boxPath, newBody, loadedTent) {
-  await withMutation(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
+  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
 }
 async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
@@ -1457,31 +2259,8 @@ async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
-async function setOwner(fs4, box, owner, status, acceptedBy) {
-  const patch = { owner: owner ?? void 0 };
-  if (owner) patch.acceptedBy = void 0;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs4, box, patch);
-}
-async function restoreOwnerState(fs4, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs4, box, {
-    owner: owner ?? void 0,
-    status: status ?? void 0,
-    acceptedBy: acceptedBy ?? void 0
-  });
-}
-async function patchFrontmatter(fs4, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs4.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  await fs4.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
-}
-async function ensureDir2(fs4, path4) {
-  if (path4 && !await fs4.exists(path4)) await fs4.mkdir(path4);
+async function ensureDir3(fs8, path8) {
+  if (path8 && !await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -1500,8 +2279,8 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function assertNotTempPath(path4) {
-  if (path4 === "temp" || path4.startsWith("temp/")) {
+function assertNotTempPath(path8) {
+  if (path8 === "temp" || path8.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -1522,7 +2301,8 @@ function ownerCovering(box) {
 }
 function pendingClaimCovering(tent, box, tasks) {
   for (const task of tasks) {
-    if (task.status !== "pending") continue;
+    const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
+    if (!active) continue;
     for (const claimId of task.claims) {
       if (claimId === "root") {
         return { reason: `Tent root is awaiting delivery to ${task.role}.` };
@@ -1565,7 +2345,7 @@ function isAncestor(ancestor, child) {
   }
   return false;
 }
-function requireBoxById(tent, boxId) {
+function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
     throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   }
@@ -1573,11 +2353,15 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs4, action) {
-  return withTentMutation(fs4, action);
+async function withMutation2(fs8, action) {
+  return withTentMutation(fs8, action);
 }
 
 // src/core/concept.ts
+init_frontmatter();
+init_task();
+init_typeRegistry();
+init_tree();
 async function promoteConcept(env, conceptIdOrPath, toType) {
   return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
 }
@@ -1644,10 +2428,98 @@ function resolveConcept(tent, conceptIdOrPath) {
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
 
+// src/service/handlers.ts
+init_task();
+init_task_model();
+
+// src/runtime/types.ts
+var SESSION_ID_PREFIX = "ss-";
+var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+function makeSessionId(rand = Math.random, len = 8) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += SESSION_ALPHABET[Math.floor(rand() * SESSION_ALPHABET.length)];
+  }
+  return SESSION_ID_PREFIX + s;
+}
+function isSessionId(id) {
+  return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
+}
+
 // src/service/etag.ts
 import { createHash } from "node:crypto";
 function contentEtag(content) {
   return createHash("sha256").update(content, "utf8").digest("hex").slice(0, 24);
+}
+
+// src/service/a2a-store.ts
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+var A2AApprovalStore = class {
+  constructor(dataDir) {
+    this.items = /* @__PURE__ */ new Map();
+    this.loaded = false;
+    this.file = path.join(dataDir, "a2a-approvals.json");
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    this.loaded = true;
+    try {
+      const raw = await fs.readFile(this.file, "utf8");
+      const parsed = JSON.parse(raw);
+      for (const item of parsed.items ?? []) {
+        if (item?.id) this.items.set(item.id, item);
+      }
+    } catch {
+    }
+  }
+  async listPending(workspaceId) {
+    await this.ensureLoaded();
+    return [...this.items.values()].filter(
+      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
+    );
+  }
+  async get(id) {
+    await this.ensureLoaded();
+    return this.items.get(id);
+  }
+  async add(item) {
+    await this.ensureLoaded();
+    this.items.set(item.id, item);
+    await this.persist();
+    return item;
+  }
+  async resolve(id, decision, resolvedBy) {
+    await this.ensureLoaded();
+    const item = this.items.get(id);
+    if (!item) throw new Error(`A2A approval not found: ${id}`);
+    if (item.status !== "pending") {
+      throw new Error(`A2A approval already ${item.status}: ${id}`);
+    }
+    item.status = decision;
+    item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+    item.resolvedBy = resolvedBy;
+    this.items.set(id, item);
+    await this.persist();
+    return item;
+  }
+  async persist() {
+    await fs.mkdir(path.dirname(this.file), { recursive: true });
+    const items = [...this.items.values()];
+    const pending = items.filter((i) => i.status === "pending");
+    const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
+    await fs.writeFile(
+      this.file,
+      JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n",
+      "utf8"
+    );
+  }
+};
+function makeApprovalId(rand = Math.random) {
+  const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
+  let s = "ap-";
+  for (let i = 0; i < 10; i++) s += alphabet[Math.floor(rand() * alphabet.length)];
+  return s;
 }
 
 // src/service/types.ts
@@ -1667,13 +2539,32 @@ var CLIENT_METHODS = [
   "docs.fork",
   "task.dispatch",
   "task.claim",
+  "task.wait",
+  "task.resume",
+  "task.deliver",
+  "task.requestReview",
+  "task.accept",
+  "task.reject",
+  "task.interrupt",
+  "task.cancel",
+  "task.startSession",
   "task.list",
-  "task.get"
+  "task.get",
+  "delivery.list",
+  "delivery.get",
+  "session.list",
+  "session.get",
+  "a2a.listPending",
+  "a2a.resolve"
 ];
 function isClientMethod(method) {
   return CLIENT_METHODS.includes(method);
 }
 var PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"];
+var RPC_UNAUTHORIZED = -32001;
+var RPC_A2A_DENIED = -32020;
+var RPC_A2A_ASK = -32021;
+var RPC_LIFECYCLE = -32022;
 
 // src/service/handlers.ts
 var RpcError = class extends Error {
@@ -1694,43 +2585,81 @@ async function dispatchMethod(ctx, method, params) {
     throw new RpcError(-32601, `Method not found: ${method}`);
   }
   const p = params ?? {};
-  switch (method) {
-    case "service.health":
-      return health(ctx);
-    case "service.subscribe":
-      return { ok: true, transport: "sse", path: "/events" };
-    case "workspace.mount":
-      return workspaceMount(ctx, p);
-    case "workspace.unmount":
-      return workspaceUnmount(ctx, p);
-    case "workspace.list":
-      return { workspaces: ctx.host.list() };
-    case "workspace.setForeground":
-      return workspaceSetForeground(ctx, p);
-    case "docs.list":
-      return docsList(ctx, p);
-    case "docs.get":
-      return docsGet(ctx, p);
-    case "docs.readForEdit":
-      return docsReadForEdit(ctx, p);
-    case "docs.write":
-      return docsWrite(ctx, p);
-    case "docs.createNote":
-      return docsCreateNote(ctx, p);
-    case "docs.promote":
-      return docsPromote(ctx, p);
-    case "docs.fork":
-      return docsFork(ctx, p);
-    case "task.dispatch":
-      return taskDispatch(ctx, p);
-    case "task.claim":
-      return taskClaim(ctx, p);
-    case "task.list":
-      return taskList(ctx, p);
-    case "task.get":
-      return taskGet(ctx, p);
-    default:
-      throw new RpcError(-32601, `Method not found: ${method}`);
+  try {
+    switch (method) {
+      case "service.health":
+        return health(ctx);
+      case "service.subscribe":
+        return { ok: true, transport: "sse", path: "/events" };
+      case "workspace.mount":
+        return workspaceMount(ctx, p);
+      case "workspace.unmount":
+        return workspaceUnmount(ctx, p);
+      case "workspace.list":
+        return { workspaces: ctx.host.list() };
+      case "workspace.setForeground":
+        return workspaceSetForeground(ctx, p);
+      case "docs.list":
+        return docsList(ctx, p);
+      case "docs.get":
+        return docsGet(ctx, p);
+      case "docs.readForEdit":
+        return docsReadForEdit(ctx, p);
+      case "docs.write":
+        return docsWrite(ctx, p);
+      case "docs.createNote":
+        return docsCreateNote(ctx, p);
+      case "docs.promote":
+        return docsPromote(ctx, p);
+      case "docs.fork":
+        return docsFork(ctx, p);
+      case "task.dispatch":
+        return taskDispatch(ctx, p);
+      case "task.claim":
+        return taskClaimRpc(ctx, p);
+      case "task.wait":
+        return taskWaitRpc(ctx, p);
+      case "task.resume":
+        return taskResumeRpc(ctx, p);
+      case "task.deliver":
+        return taskDeliverRpc(ctx, p);
+      case "task.requestReview":
+        return taskRequestReviewRpc(ctx, p);
+      case "task.accept":
+        return taskAcceptRpc(ctx, p);
+      case "task.reject":
+        return taskRejectRpc(ctx, p);
+      case "task.interrupt":
+        return taskInterruptRpc(ctx, p);
+      case "task.cancel":
+        return taskCancelRpc(ctx, p);
+      case "task.startSession":
+        return taskStartSessionRpc(ctx, p);
+      case "task.list":
+        return taskList(ctx, p);
+      case "task.get":
+        return taskGet(ctx, p);
+      case "delivery.list":
+        return deliveryList(ctx, p);
+      case "delivery.get":
+        return deliveryGet(ctx, p);
+      case "session.list":
+        return sessionList(ctx, p);
+      case "session.get":
+        return sessionGet(ctx, p);
+      case "a2a.listPending":
+        return a2aListPending(ctx, p);
+      case "a2a.resolve":
+        return a2aResolve(ctx, p);
+      default:
+        throw new RpcError(-32601, `Method not found: ${method}`);
+    }
+  } catch (error) {
+    if (error instanceof RpcError) throw error;
+    if (error instanceof TaskLifecycleError) {
+      throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
+    }
+    throw error;
   }
 }
 function health(ctx) {
@@ -1908,17 +2837,23 @@ async function taskDispatch(ctx, p) {
   const role = requireString(p, "role");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
-  return ctx.mutations.run(workspaceId, async () => {
+  const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const startSession = p.startSession === true;
+  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const result = await dispatch(mount.env, boxId, role, {
+    const dispatched = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
-      dispatchedBy
+      dispatchedBy,
+      deliveryPolicy
     });
     ctx.events.emit(
       "task.state",
       workspaceId,
       {
-        path: result.taskPath,
+        path: dispatched.taskPath,
         state: "queued",
         role,
         boxId,
@@ -1926,36 +2861,42 @@ async function taskDispatch(ctx, p) {
       },
       "self"
     );
-    return {
+    return dispatched;
+  });
+  let session = void 0;
+  if (startSession) {
+    await taskClaimRpc(ctx, {
+      workspaceId,
+      taskPath: result.taskPath
+    });
+    session = await taskStartSessionRpc(ctx, {
       workspaceId,
       taskPath: result.taskPath,
-      manifestPath: result.manifestPath,
-      initPath: result.initPath,
-      relayPrompt: result.relayPrompt,
-      state: "queued"
-    };
-  });
+      profileId,
+      callerKind,
+      a2aPolicy,
+      bootstrapPrompt: result.relayPrompt
+    });
+  }
+  return {
+    workspaceId,
+    taskPath: result.taskPath,
+    manifestPath: result.manifestPath,
+    initPath: result.initPath,
+    relayPrompt: result.relayPrompt,
+    state: startSession ? "running" : "queued",
+    session
+  };
 }
-async function taskClaim(ctx, p) {
+async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const sessionId = optionalString(p, "sessionId");
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    await taskAck(mount.env, taskPath);
-    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
-    ctx.events.emit(
-      "task.state",
-      workspaceId,
-      {
-        path: taskPath,
-        state: "running",
-        role: task.role,
-        claims: task.claims,
-        reason: "task.claim"
-      },
-      "self"
-    );
+    const task = await taskClaim(mount.env, taskPath, { sessionId });
+    emitTaskState(ctx, workspaceId, task, "task.claim");
     for (const claimId of task.claims) {
       if (claimId === "root") continue;
       ctx.events.emit(
@@ -1968,11 +2909,359 @@ async function taskClaim(ctx, p) {
     return {
       workspaceId,
       taskPath,
-      state: "running",
+      task: projectTask(task),
+      state: task.state,
       role: task.role,
-      claims: task.claims
+      claims: task.claims,
+      sessionId: task.sessionId
     };
   });
+}
+async function taskWaitRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const reason = requireString(p, "reason");
+  const summary = requireString(p, "summary");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskWait(mount.env, taskPath, { reason, summary });
+    emitTaskState(ctx, workspaceId, task, "task.wait");
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+async function taskResumeRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskResume(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.resume");
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+async function taskDeliverRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const summary = requireString(p, "summary");
+  const commits = optionalStringArray(p, "commits");
+  const decision = optionalString(p, "decision");
+  const checks = Array.isArray(p.checks) ? p.checks : void 0;
+  const artifactRefs = Array.isArray(p.artifactRefs) ? p.artifactRefs : void 0;
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const integrate = async (cs) => {
+      if (ctx.integrateCommits) {
+        await ctx.integrateCommits(mount.workspaceRoot, cs);
+      }
+    };
+    const result = await taskDeliver(mount.env, taskPath, {
+      summary,
+      commits,
+      checks,
+      artifactRefs,
+      decision,
+      integrate
+    });
+    emitTaskState(ctx, workspaceId, result.task, "task.deliver");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.deliver"
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      autoIntegrated: result.autoIntegrated,
+      state: result.task.state
+    };
+  });
+}
+async function taskRequestReviewRpc(ctx, p) {
+  return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
+}
+async function taskAcceptRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const actor = requireString(p, "actor");
+  const commits = optionalStringArray(p, "commits");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await taskAccept(mount.env, taskPath, {
+      actor,
+      commits,
+      // Core requires integrate whenever delivery commits are non-empty.
+      integrate: async (cs) => {
+        if (ctx.integrateCommits) {
+          await ctx.integrateCommits(mount.workspaceRoot, cs);
+        }
+      }
+    });
+    emitTaskState(ctx, workspaceId, result.task, "task.accept");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.accept"
+      },
+      "self"
+    );
+    for (const claimId of result.task.claims) {
+      if (claimId === "root") continue;
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        { id: claimId, reason: "task.accept-projection" },
+        "self"
+      );
+    }
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state
+    };
+  });
+}
+async function taskRejectRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const actor = requireString(p, "actor");
+  const note = optionalString(p, "note");
+  const resume = p.resume !== false;
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await taskReject(mount.env, taskPath, { actor, note, resume });
+    emitTaskState(ctx, workspaceId, result.task, "task.reject");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.reject"
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state
+    };
+  });
+}
+async function taskInterruptRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  return ctx.mutations.run(workspaceId, async () => {
+    const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
+    const sessionId = before?.sessionId;
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskInterrupt(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    if (sessionId) {
+      try {
+        await ctx.runtime.stopSession(sessionId, "interrupt");
+      } catch {
+      }
+    }
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+async function taskCancelRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    await taskCancel(mount.env, taskPath);
+    ctx.events.emit(
+      "task.state",
+      workspaceId,
+      { path: taskPath, state: "interrupted", reason: "task.cancel" },
+      "self"
+    );
+    return { workspaceId, taskPath, state: "interrupted", cancelled: true };
+  });
+}
+async function taskStartSessionRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
+  const approvalId = optionalString(p, "approvalId");
+  if (approvalId) {
+    const approval = await ctx.a2a.get(approvalId);
+    if (!approval || approval.status !== "approved") {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval is missing or not approved", {
+        approvalId,
+        status: approval?.status
+      });
+    }
+    if (approval.taskPath !== taskPath) {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
+    }
+  } else {
+    const decision = evaluateA2A({
+      callerKind,
+      policy: a2aPolicy,
+      profileAllowed: true
+    });
+    if (decision === "deny") {
+      throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
+        policy: a2aPolicy,
+        callerKind
+      });
+    }
+    if (decision === "ask") {
+      const task2 = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const item = await ctx.a2a.add({
+        id: makeApprovalId(),
+        workspaceId,
+        taskPath,
+        taskId: task2.id,
+        role: task2.role,
+        profileId,
+        policy: "ask",
+        callerKind,
+        bootstrapPrompt,
+        status: "pending",
+        createdAt: (/* @__PURE__ */ new Date()).toISOString()
+      });
+      ctx.events.emit(
+        "a2a.ask",
+        workspaceId,
+        {
+          approvalId: item.id,
+          taskPath,
+          role: task2.role,
+          profileId,
+          summary: `Role ${task2.role} requests startSession on profile ${profileId}`
+        },
+        "service"
+      );
+      if (task2.state === "running") {
+        await ctx.mutations.run(workspaceId, async () => {
+          ctx.host.markSelfWrite(workspaceId);
+          const waited = await taskWait(mount.env, taskPath, {
+            reason: "a2a-approval",
+            summary: `Awaiting user A2A approval ${item.id}`
+          });
+          emitTaskState(ctx, workspaceId, waited, "a2a.ask");
+        });
+      }
+      throw new RpcError(RPC_A2A_ASK, "A2A policy requires user approval before startSession", {
+        approvalId: item.id,
+        policy: "ask"
+      });
+    }
+  }
+  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (task.state === "queued" && callerKind === "user") {
+    await taskClaimRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+  if (task.state !== "running" && task.state !== "waiting") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.startSession requires running (or waiting after approval); got ${task.state}`
+    );
+  }
+  if (task.state === "waiting" && task.wait?.reason === "a2a-approval") {
+    await taskResumeRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+  const sessionId = makeSessionId();
+  const cwd = task.worktree || mount.workspaceRoot;
+  const workspaceLane = task.workspace || task.worktree || task.branch ? {
+    workspace: task.workspace || mount.workspaceRoot,
+    worktree: task.worktree || mount.workspaceRoot,
+    branch: task.branch || "HEAD"
+  } : void 0;
+  let handle;
+  try {
+    handle = await ctx.runtime.startSession({
+      sessionId,
+      profileId,
+      roleName: task.role,
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: bootstrapPrompt ?? task.prompt,
+      lastTaskId: task.id || taskPath,
+      workspace: workspaceId
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
+      const failed = await patchTaskEnvelope2(mount.env.fs, taskPath, {
+        state: "failed",
+        wait: null,
+        updatedAt: mount.env.clock.now()
+      });
+      emitTaskState(ctx, workspaceId, failed, "session.failed");
+    });
+    throw new RpcError(-32e3, message);
+  }
+  const bound = await ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
+    const next = await patchTaskEnvelope2(mount.env.fs, taskPath, {
+      sessionId: handle.sessionId,
+      updatedAt: mount.env.clock.now()
+    });
+    emitTaskState(ctx, workspaceId, next, "task.startSession");
+    ctx.events.emit(
+      "session.state",
+      workspaceId,
+      {
+        sessionId: handle.sessionId,
+        state: handle.state,
+        profileId: handle.profileId,
+        taskPath,
+        reason: "task.startSession"
+      },
+      "self"
+    );
+    return next;
+  });
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(bound),
+    session: {
+      sessionId: handle.sessionId,
+      profileId: handle.profileId,
+      adapterId: handle.adapterId,
+      state: handle.state
+      // Do not expose pid in client projection by default — probe is internal.
+    }
+  };
 }
 async function taskList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -1989,6 +3278,176 @@ async function taskGet(ctx, p) {
   const taskPath = requireString(p, "taskPath");
   const task = await loadTaskEnvelope(mount.env.fs, taskPath);
   return { workspaceId, task: projectTask(task) };
+}
+async function deliveryList(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskId = optionalString(p, "taskId");
+  const boxId = optionalString(p, "boxId");
+  const role = optionalString(p, "role");
+  let deliveries = await loadDeliveries(mount.env.fs, { taskId, boxId });
+  if (role) deliveries = deliveries.filter((d) => d.role === role);
+  return { workspaceId, deliveries: deliveries.map(projectDelivery) };
+}
+async function deliveryGet(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id = requireString(p, "id");
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const found = deliveries.find((d) => d.id === id);
+  if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
+  return { workspaceId, delivery: projectDelivery(found) };
+}
+async function sessionList(ctx, p) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const all = await ctx.runtime.registry.list();
+  const projections = [];
+  for (const rec of all) {
+    if (workspaceId && rec.workspace && rec.workspace !== workspaceId) continue;
+    const probe = await ctx.runtime.probe(rec.id);
+    projections.push({
+      sessionId: rec.id,
+      profileId: rec.profileId,
+      adapterId: rec.adapterId,
+      state: probe.state,
+      roleName: rec.roleName,
+      alive: probe.alive,
+      resumeCapable: probe.resumeCapable,
+      lastTaskId: rec.lastTaskId,
+      workspace: rec.workspace,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt
+    });
+  }
+  return { sessions: projections };
+}
+async function sessionGet(ctx, p) {
+  const sessionId = requireString(p, "sessionId");
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const probe = await ctx.runtime.probe(sessionId);
+  const projection = {
+    sessionId: rec.id,
+    profileId: rec.profileId,
+    adapterId: rec.adapterId,
+    state: probe.state,
+    roleName: rec.roleName,
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec.lastTaskId,
+    workspace: rec.workspace,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt
+  };
+  return { session: projection };
+}
+async function a2aListPending(ctx, p) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const pending = await ctx.a2a.listPending(workspaceId);
+  return { approvals: pending };
+}
+async function a2aResolve(ctx, p) {
+  const approvalId = requireString(p, "approvalId");
+  const decisionRaw = requireString(p, "decision");
+  const actor = optionalString(p, "actor") ?? "user";
+  const decision = decisionRaw === "approve" || decisionRaw === "approved" ? "approved" : decisionRaw === "deny" || decisionRaw === "denied" ? "denied" : null;
+  if (!decision) {
+    throw new RpcError(-32602, "decision must be approve|deny");
+  }
+  const item = await ctx.a2a.resolve(approvalId, decision, actor);
+  ctx.events.emit(
+    "a2a.resolved",
+    item.workspaceId,
+    { approvalId, decision, actor, taskPath: item.taskPath },
+    "self"
+  );
+  if (decision === "approved") {
+    const started = await taskStartSessionRpc(ctx, {
+      workspaceId: item.workspaceId,
+      taskPath: item.taskPath,
+      profileId: item.profileId,
+      callerKind: "user",
+      a2aPolicy: "allow",
+      bootstrapPrompt: item.bootstrapPrompt,
+      approvalId: item.id
+    });
+    return { approval: item, started };
+  }
+  return { approval: item, started: null };
+}
+function mapRuntimeEventToService(ctx, ev) {
+  void (async () => {
+    try {
+      const rec = await ctx.runtime.registry.read(ev.sessionId);
+      const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+      if (ev.type === "session.stdout_tail") {
+        return;
+      }
+      ctx.events.emit(
+        "session.state",
+        workspaceId,
+        {
+          sessionId: ev.sessionId,
+          runtimeEvent: ev.type,
+          ..."pid" in ev ? { pid: ev.pid } : {},
+          ..."exitCode" in ev ? { exitCode: ev.exitCode } : {},
+          ..."error" in ev ? { error: ev.error } : {},
+          ..."summary" in ev ? { summary: ev.summary } : {}
+        },
+        "service"
+      );
+      if (!rec?.lastTaskId) return;
+      const mountInfos = ctx.host.list();
+      for (const info of mountInfos) {
+        if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+        const mount = ctx.host.get(info.workspaceId);
+        if (!mount) continue;
+        const tasks = await loadTaskEnvelopes(mount.env.fs);
+        const task = tasks.find(
+          (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId
+        );
+        if (!task) continue;
+        if (ev.type === "session.waiting_user" && task.state === "running") {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const waited = await taskWait(mount.env, task.path, {
+              reason: "user-input",
+              summary: ev.summary
+            });
+            emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
+          });
+        } else if (ev.type === "session.failed" && (task.state === "running" || task.state === "waiting")) {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
+            const failed = await patchTaskEnvelope2(mount.env.fs, task.path, {
+              state: "failed",
+              wait: null,
+              updatedAt: mount.env.clock.now()
+            });
+            emitTaskState(ctx, mount.workspaceId, failed, "session.failed");
+          });
+        }
+      }
+    } catch {
+    }
+  })();
+}
+function emitTaskState(ctx, workspaceId, task, reason) {
+  ctx.events.emit(
+    "task.state",
+    workspaceId,
+    {
+      path: task.path,
+      id: task.id,
+      state: task.state,
+      role: task.role,
+      claims: task.claims,
+      sessionId: task.sessionId,
+      reason
+    },
+    "self"
+  );
 }
 function requireWorkspaceId(ctx, p) {
   const explicit = optionalString(p, "workspaceId");
@@ -2011,18 +3470,40 @@ function optionalString(p, key) {
   const t = v.trim();
   return t || void 0;
 }
+function optionalStringArray(p, key) {
+  const v = p[key];
+  if (v === void 0 || v === null) return void 0;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+    throw new RpcError(-32602, `Invalid string[] param: ${key}`);
+  }
+  return v;
+}
+function parseDeliveryPolicy(raw) {
+  if (!raw) return void 0;
+  if (raw === "manual" || raw === "bypass" || raw === "agent-decide") return raw;
+  throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
+}
+function parseA2APolicy(raw) {
+  if (!raw) return "deny";
+  if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
+  throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
+}
+function parseCallerKind(raw) {
+  if (raw === "user" || raw === "role") return raw;
+  throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
+}
 function resolveConcept2(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path4 = optionalString(p, "path");
+  const path8 = optionalString(p, "path");
   if (id) {
     const byId = tent.byId.get(id);
     if (byId) return byId;
     throw new RpcError(-32004, `Concept not found: ${id}`);
   }
-  if (path4) {
-    const byPath = tent.byPath.get(path4);
+  if (path8) {
+    const byPath = tent.byPath.get(path8);
     if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path4}`);
+    throw new RpcError(-32004, `Concept not found: ${path8}`);
   }
   throw new RpcError(-32602, "docs.* requires id or path");
 }
@@ -2056,12 +3537,38 @@ function projectTask(task) {
   } : void 0;
   return {
     path: task.path,
+    id: task.id,
     role: task.role,
     claims: task.claims,
     status: task.status,
+    state: task.state,
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
-    workspaceLane: lane
+    deliveryPolicy: task.deliveryPolicy,
+    assigneeKind: task.assigneeKind,
+    sessionId: task.sessionId,
+    wait: task.wait,
+    activeDeliveryId: task.activeDeliveryId,
+    workspaceLane: lane,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    prompt: task.prompt
+  };
+}
+function projectDelivery(d) {
+  return {
+    path: d.path,
+    id: d.id,
+    taskId: d.taskId,
+    boxId: d.boxId,
+    role: d.role,
+    status: d.status,
+    summary: d.summary,
+    commits: d.commits,
+    integrationMode: d.integrationMode,
+    review: d.review,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt
   };
 }
 function assertDocsWriteAllowed(tent, conceptId, frontmatter, tasks) {
@@ -2081,6 +3588,12 @@ function assertDocsWriteAllowed(tent, conceptId, frontmatter, tasks) {
 function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
   for (const task of tasks) {
     if (task.status !== "pending" && task.status !== "taken") continue;
+    const state = task.state;
+    if (state && state !== "queued" && state !== "running" && state !== "waiting" && state !== "delivered") {
+      if (state === "accepted" || state === "interrupted" || state === "failed" || state === "rejected") {
+        continue;
+      }
+    }
     if (task.claims.includes(conceptId) || task.claims.includes("root")) return true;
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);
@@ -2097,13 +3610,47 @@ function isAncestorPath2(ancestor, child) {
   return child === ancestor || child.startsWith(ancestor + "/");
 }
 
+// src/service/auth.ts
+import * as crypto from "node:crypto";
+var AUTH_HEADER = "authorization";
+var AUTH_TOKEN_HEADER = "x-tent-token";
+function generateServiceToken() {
+  return crypto.randomBytes(32).toString("base64url");
+}
+function extractRequestToken(headers) {
+  const auth = headerValue(headers, AUTH_HEADER) ?? headerValue(headers, "Authorization");
+  if (auth) {
+    const m = /^Bearer\s+(.+)$/i.exec(auth.trim());
+    if (m?.[1]) return m[1].trim();
+  }
+  const direct = headerValue(headers, AUTH_TOKEN_HEADER) ?? headerValue(headers, "X-Tent-Token");
+  if (direct) return direct.trim() || void 0;
+  return void 0;
+}
+function tokensEqual(expected, provided) {
+  if (!provided) return false;
+  const a = Buffer.from(expected, "utf8");
+  const b = Buffer.from(provided, "utf8");
+  if (a.length !== b.length) return false;
+  return crypto.timingSafeEqual(a, b);
+}
+function headerValue(headers, name) {
+  const lower = name.toLowerCase();
+  for (const [k, v] of Object.entries(headers)) {
+    if (k.toLowerCase() !== lower) continue;
+    if (Array.isArray(v)) return v[0];
+    return v;
+  }
+  return void 0;
+}
+
 // src/service/http-server.ts
 async function createServiceHttpServer(options) {
   const host = options.host ?? "127.0.0.1";
   const preferredPort = options.port ?? 0;
   const server = http.createServer(async (req, res) => {
     try {
-      await handleRequest(req, res, options.ctx, options.events);
+      await handleRequest(req, res, options);
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
@@ -2131,7 +3678,8 @@ async function createServiceHttpServer(options) {
     })
   };
 }
-async function handleRequest(req, res, ctx, events) {
+async function handleRequest(req, res, options) {
+  const { ctx, events, token } = options;
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
     const body = await dispatchMethod(ctx, "service.health", {});
@@ -2139,10 +3687,22 @@ async function handleRequest(req, res, ctx, events) {
     return;
   }
   if (req.method === "GET" && url.pathname === "/events") {
+    if (!authorize(req, token)) {
+      writeJson2(res, 401, { error: "Unauthorized: invalid or missing service token" });
+      return;
+    }
     handleSse(req, res, events);
     return;
   }
   if (req.method === "POST" && (url.pathname === "/rpc" || url.pathname === "/")) {
+    if (!authorize(req, token)) {
+      writeJson2(res, 401, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: RPC_UNAUTHORIZED, message: "Unauthorized: invalid or missing service token" }
+      });
+      return;
+    }
     const raw = await readBody(req);
     let message;
     try {
@@ -2190,6 +3750,10 @@ async function handleRequest(req, res, ctx, events) {
   }
   writeJson2(res, 404, { error: "not found" });
 }
+function authorize(req, expectedToken) {
+  const provided = extractRequestToken(req.headers);
+  return tokensEqual(expectedToken, provided);
+}
 function handleSse(req, res, events) {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
@@ -2233,7 +3797,7 @@ function readBody(req) {
 }
 
 // src/service/events.ts
-import { randomBytes } from "node:crypto";
+import { randomBytes as randomBytes2 } from "node:crypto";
 var EventBus = class {
   constructor() {
     this.listeners = /* @__PURE__ */ new Set();
@@ -2247,7 +3811,7 @@ var EventBus = class {
   }
   emit(type, workspaceId, payload, source = "service") {
     const event = {
-      id: `ev-${Date.now().toString(36)}-${(++this.seq).toString(36)}-${randomBytes(3).toString("hex")}`,
+      id: `ev-${Date.now().toString(36)}-${(++this.seq).toString(36)}-${randomBytes2(3).toString("hex")}`,
       type,
       workspaceId,
       ts: (/* @__PURE__ */ new Date()).toISOString(),
@@ -2294,11 +3858,11 @@ var MutationBus = class {
 
 // src/service/workspace-host.ts
 import { watch } from "node:fs";
-import * as fs2 from "node:fs/promises";
-import * as path from "node:path";
+import * as fs3 from "node:fs/promises";
+import * as path2 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs from "node:fs/promises";
+import * as fs2 from "node:fs/promises";
 import * as nodePath from "node:path";
 var NodeFs = class {
   constructor(root) {
@@ -2314,47 +3878,47 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs2.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path4) {
-    return fs.readFile(this.abs(path4), "utf8");
+  async readFile(path8) {
+    return fs2.readFile(this.abs(path8), "utf8");
   }
-  async writeFile(path4, content) {
-    await fs.mkdir(nodePath.dirname(this.abs(path4)), { recursive: true });
-    await fs.writeFile(this.abs(path4), content, "utf8");
+  async writeFile(path8, content) {
+    await fs2.mkdir(nodePath.dirname(this.abs(path8)), { recursive: true });
+    await fs2.writeFile(this.abs(path8), content, "utf8");
   }
-  async exists(path4) {
+  async exists(path8) {
     try {
-      await fs.access(this.abs(path4));
+      await fs2.access(this.abs(path8));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path4) {
-    await fs.mkdir(this.abs(path4), { recursive: true });
+  async mkdir(path8) {
+    await fs2.mkdir(this.abs(path8), { recursive: true });
   }
   async move(from, to) {
-    await fs.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
-    await fs.rename(this.abs(from), this.abs(to));
+    await fs2.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
+    await fs2.rename(this.abs(from), this.abs(to));
   }
-  async remove(path4) {
-    await fs.rm(this.abs(path4), { recursive: true, force: true });
+  async remove(path8) {
+    await fs2.rm(this.abs(path8), { recursive: true, force: true });
   }
-  async withLock(path4, action) {
-    const lockPath = this.abs(path4);
-    await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
+  async withLock(path8, action) {
+    const lockPath = this.abs(path8);
+    await fs2.mkdir(nodePath.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs.open(lockPath, "wx");
+        handle = await fs2.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs.rm(lockPath, { force: true });
+        await fs2.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -2363,16 +3927,16 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs.rm(lockPath, { force: true });
+      await fs2.rm(lockPath, { force: true });
     }
   }
 };
 function isAlreadyExists(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-async function isStaleLock(path4) {
+async function isStaleLock(path8) {
   try {
-    const stat2 = await fs.stat(path4);
+    const stat2 = await fs2.stat(path8);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -2380,6 +3944,7 @@ async function isStaleLock(path4) {
 }
 
 // src/service/workspace-host.ts
+init_paths();
 var WorkspaceHost = class {
   constructor(options) {
     this.mounts = /* @__PURE__ */ new Map();
@@ -2405,18 +3970,18 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path.resolve(workspaceRoot);
+    const root = path2.resolve(workspaceRoot);
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path.join(systemRoot, "RULES.md");
+    const rulesPath = path2.join(systemRoot, "RULES.md");
     try {
-      await fs2.access(rulesPath);
+      await fs3.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path.resolve(existing.workspaceRoot) === root) {
+      if (path2.resolve(existing.workspaceRoot) === root) {
         return this.toInfo(existing);
       }
     }
@@ -2424,7 +3989,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path2.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -2559,40 +4124,40 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  const base = path2.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path2.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
   return `ws-${base}-${hash}`;
 }
 
 // src/service/data-dir.ts
-import * as fs3 from "node:fs/promises";
+import * as fs4 from "node:fs/promises";
 import * as os from "node:os";
-import * as path2 from "node:path";
+import * as path3 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path2.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path3.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path2.join(os.homedir(), "AppData", "Roaming");
-    return path2.join(base, "Tent");
+    const base = env.APPDATA || path3.join(os.homedir(), "AppData", "Roaming");
+    return path3.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path2.join(os.homedir(), "Library", "Application Support", "Tent");
+    return path3.join(os.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path2.join(os.homedir(), ".local", "state");
-  return path2.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path3.join(os.homedir(), ".local", "state");
+  return path3.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path2.join(dataDir, "service.json");
+  return path3.join(dataDir, "service.json");
 }
 async function writeServiceEndpoint(dataDir, record) {
-  await fs3.mkdir(dataDir, { recursive: true });
+  await fs4.mkdir(dataDir, { recursive: true });
   const file = serviceEndpointPath(dataDir);
-  await fs3.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+  await fs4.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
   return file;
 }
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs3.readFile(file, "utf8");
+    const raw = await fs4.readFile(file, "utf8");
     const data = JSON.parse(raw);
     if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
       return null;
@@ -2604,34 +4169,869 @@ async function readServiceEndpoint(dataDir) {
 }
 async function removeServiceEndpoint(dataDir) {
   try {
-    await fs3.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs4.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
 
+// src/service/profiles.ts
+import * as fs6 from "node:fs/promises";
+import * as path5 from "node:path";
+
+// src/adapters/fake/index.ts
+import * as fs5 from "node:fs";
+import * as os2 from "node:os";
+import * as path4 from "node:path";
+var FAKE_ADAPTER_ID = "fake-cli";
+function buildInlineScript(opts) {
+  return `
+const fs = require('fs');
+const sleepMs = ${opts.sleepMs};
+const exitCode = ${opts.exitCode};
+const waitForSignal = ${opts.waitForSignal ? "true" : "false"};
+const emitStdout = ${opts.emitStdout ? "true" : "false"};
+const promptFile = process.env.TENT_BOOTSTRAP_FILE || '';
+if (emitStdout) {
+  let prompt = '';
+  try { if (promptFile) prompt = fs.readFileSync(promptFile, 'utf8').slice(0, 200); } catch {}
+  process.stdout.write('fake-adapter live' + (prompt ? ' prompt=' + JSON.stringify(prompt) : '') + '\\n');
+}
+function shutdown(code) {
+  try { if (promptFile) fs.unlinkSync(promptFile); } catch {}
+  process.exit(code);
+}
+if (waitForSignal) {
+  const onStop = () => shutdown(0);
+  process.on('SIGTERM', onStop);
+  process.on('SIGINT', onStop);
+  // Windows: taskkill / SIGTERM via child.kill maps here when possible.
+  setInterval(() => {}, 1 << 30);
+} else {
+  setTimeout(() => shutdown(exitCode), sleepMs);
+}
+`.trim();
+}
+function normalizeFakeOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  return {
+    sleepMs: typeof o.sleepMs === "number" ? o.sleepMs : 3e4,
+    exitCode: typeof o.exitCode === "number" ? o.exitCode : 0,
+    waitForSignal: o.waitForSignal !== false,
+    emitStdout: o.emitStdout !== false,
+    failLaunch: o.failLaunch,
+    canResume: o.canResume === true
+  };
+}
+var FakeProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = FAKE_ADAPTER_ID;
+    this.displayNameKey = "adapter.fake.displayName";
+    this.nodePath = options.nodePath ?? process.execPath;
+  }
+  capabilities() {
+    return {
+      canSpawn: true,
+      canResume: false,
+      // default; profile may store resumeToken separately
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "process"
+    };
+  }
+  resolveLaunch(plan) {
+    const fake = normalizeFakeOpts(plan.extras?.fake ?? plan.extras);
+    if (fake.failLaunch) {
+      throw new Error(fake.failLaunch);
+    }
+    let bootstrapFile;
+    if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
+      bootstrapFile = path4.join(
+        os2.tmpdir(),
+        `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
+      );
+      fs5.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+    }
+    const script = buildInlineScript(fake);
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (bootstrapFile) env.TENT_BOOTSTRAP_FILE = bootstrapFile;
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (plan.command) {
+      return {
+        command: plan.command,
+        args: plan.args ?? [],
+        cwd: plan.cwd,
+        env,
+        bootstrapFile,
+        stopSignal: "SIGTERM"
+      };
+    }
+    return {
+      command: this.nodePath,
+      args: ["-e", script],
+      cwd: plan.cwd,
+      env,
+      bootstrapFile,
+      stopSignal: "SIGTERM"
+    };
+  }
+  parseResumeToken(raw) {
+    return { raw, providerSessionId: raw };
+  }
+  mapExit(code, signal) {
+    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
+      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
+    }
+    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
+      return { type: "session.exited", sessionId: "", exitCode: code };
+    }
+    if (code !== 0 && code != null) {
+      return {
+        type: "session.failed",
+        sessionId: "",
+        error: `exit:${code}`
+      };
+    }
+    return { type: "session.exited", sessionId: "", exitCode: code };
+  }
+};
+function createFakeAdapter(options) {
+  return new FakeProviderAdapter(options);
+}
+
+// src/service/profiles.ts
+function profilesPath(dataDir) {
+  return path5.join(dataDir, "agent-profiles.json");
+}
+async function loadAgentProfiles(dataDir) {
+  const file = profilesPath(dataDir);
+  try {
+    const raw = await fs6.readFile(file, "utf8");
+    const parsed = JSON.parse(raw);
+    const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
+    return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
+  } catch {
+    return [];
+  }
+}
+async function saveAgentProfiles(dataDir, profiles) {
+  await fs6.mkdir(dataDir, { recursive: true });
+  await fs6.writeFile(
+    profilesPath(dataDir),
+    JSON.stringify({ profiles }, null, 2) + "\n",
+    "utf8"
+  );
+}
+function defaultAgentProfiles() {
+  return [
+    {
+      id: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      displayNameKey: "profile.fake.default",
+      fake: { waitForSignal: true, emitStdout: true, canResume: true }
+    }
+  ];
+}
+async function ensureDefaultProfiles(dataDir) {
+  const existing = await loadAgentProfiles(dataDir);
+  if (existing.length > 0) return existing;
+  const defaults = defaultAgentProfiles();
+  await saveAgentProfiles(dataDir, defaults);
+  return defaults;
+}
+
+// src/runtime/process-supervisor.ts
+import { spawn } from "node:child_process";
+var ProcessSupervisor = class {
+  constructor(options = {}) {
+    this.children = /* @__PURE__ */ new Map();
+    this.gracefulMs = options.gracefulMs ?? 2e3;
+    this.stdoutRingBytes = options.stdoutRingBytes ?? 0;
+    this.onExit = options.onExit;
+    this.onStdout = options.onStdout;
+  }
+  listLive() {
+    return [...this.children.entries()].filter(([, c]) => !c.exited).map(([id]) => id);
+  }
+  get(sessionId) {
+    const live = this.children.get(sessionId);
+    if (!live) return null;
+    return {
+      sessionId,
+      pid: live.child.pid ?? -1,
+      startedAt: live.startedAt,
+      exitCode: live.exitCode,
+      signal: live.signal,
+      exited: live.exited
+    };
+  }
+  isAlive(sessionId) {
+    const live = this.children.get(sessionId);
+    if (!live || live.exited) return false;
+    const pid = live.child.pid;
+    if (pid == null || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async start(sessionId, launch) {
+    if (this.children.has(sessionId) && this.isAlive(sessionId)) {
+      throw new Error(`Process already live for session ${sessionId}`);
+    }
+    const env = {
+      ...process.env,
+      ...launch.env
+    };
+    for (const key of Object.keys(env)) {
+      if (/^(.*_)?(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key) && launch.env[key] === void 0) {
+        delete env[key];
+      }
+    }
+    const child = spawn(launch.command, launch.args, {
+      cwd: launch.cwd,
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
+      windowsHide: true,
+      // Detached false so service shutdown can reap children as a group.
+      detached: false
+    });
+    if (child.pid == null) {
+      throw new Error(`Failed to spawn process for session ${sessionId}`);
+    }
+    const live = {
+      sessionId,
+      child,
+      startedAt: Date.now(),
+      exitCode: null,
+      signal: null,
+      exited: false,
+      stdoutBuf: ""
+    };
+    this.children.set(sessionId, live);
+    const appendRing = (chunk) => {
+      if (this.stdoutRingBytes <= 0) return;
+      live.stdoutBuf = (live.stdoutBuf + chunk.toString("utf8")).slice(-this.stdoutRingBytes);
+    };
+    child.stdout?.on("data", (chunk) => {
+      appendRing(chunk);
+      this.onStdout?.(sessionId, chunk.toString("utf8"));
+    });
+    child.stderr?.on("data", (chunk) => {
+      appendRing(chunk);
+      this.onStdout?.(sessionId, chunk.toString("utf8"));
+    });
+    child.on("exit", (code, signal) => {
+      live.exited = true;
+      live.exitCode = code;
+      live.signal = signal;
+      if (live.killTimer) {
+        clearTimeout(live.killTimer);
+        live.killTimer = void 0;
+      }
+      this.onExit?.({
+        sessionId,
+        exitCode: code,
+        signal: signal ?? void 0
+      });
+    });
+    child.on("error", () => {
+      if (!live.exited) {
+        live.exited = true;
+        live.exitCode = null;
+        live.signal = "error";
+        this.onExit?.({ sessionId, exitCode: null, signal: "error" });
+      }
+    });
+    return {
+      sessionId,
+      pid: child.pid,
+      startedAt: live.startedAt,
+      exitCode: null,
+      signal: null,
+      exited: false
+    };
+  }
+  /**
+   * Graceful stop → timeout → force kill (Windows: taskkill tree).
+   */
+  async stop(sessionId, options) {
+    const live = this.children.get(sessionId);
+    if (!live || live.exited) {
+      this.children.delete(sessionId);
+      return;
+    }
+    const gracefulMs = options?.gracefulMs ?? this.gracefulMs;
+    const signal = options?.signal ?? "SIGTERM";
+    const pid = live.child.pid;
+    try {
+      live.child.kill(signal);
+    } catch {
+    }
+    if (live.exited) {
+      this.children.delete(sessionId);
+      return;
+    }
+    await new Promise((resolve5) => {
+      const done = () => {
+        if (live.killTimer) {
+          clearTimeout(live.killTimer);
+          live.killTimer = void 0;
+        }
+        resolve5();
+      };
+      if (live.exited) {
+        done();
+        return;
+      }
+      const onExit = () => done();
+      live.child.once("exit", onExit);
+      live.killTimer = setTimeout(() => {
+        live.child.removeListener("exit", onExit);
+        void this.forceKill(live).finally(done);
+      }, gracefulMs);
+    });
+    this.children.delete(sessionId);
+  }
+  /** Stop every live child (service shutdown default for push-mode). */
+  async stopAll(reason = "shutdown") {
+    void reason;
+    const ids = this.listLive();
+    await Promise.all(ids.map((id) => this.stop(id)));
+  }
+  getStdoutTail(sessionId) {
+    return this.children.get(sessionId)?.stdoutBuf ?? "";
+  }
+  async forceKill(live) {
+    if (live.exited) return;
+    const pid = live.child.pid;
+    if (pid == null) return;
+    if (process.platform === "win32") {
+      await new Promise((resolve5) => {
+        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+          windowsHide: true,
+          stdio: "ignore"
+        });
+        killer.on("exit", () => resolve5());
+        killer.on("error", () => resolve5());
+        setTimeout(resolve5, 1500);
+      });
+    } else {
+      try {
+        live.child.kill("SIGKILL");
+      } catch {
+      }
+    }
+    if (!live.exited) {
+      await new Promise((resolve5) => {
+        const t = setTimeout(resolve5, 500);
+        live.child.once("exit", () => {
+          clearTimeout(t);
+          resolve5();
+        });
+      });
+    }
+  }
+};
+
+// src/runtime/session-registry.ts
+import * as fs7 from "node:fs/promises";
+import * as path6 from "node:path";
+function sessionsDir(dataDir) {
+  return path6.join(dataDir, "sessions");
+}
+function sessionFilePath(dataDir, sessionId) {
+  return path6.join(sessionsDir(dataDir), `${sessionId}.json`);
+}
+function assertSessionId(sessionId) {
+  if (!isSessionId(sessionId)) {
+    throw new Error(`Invalid session id: ${sessionId}`);
+  }
+}
+var SessionRegistry = class {
+  constructor(dataDir) {
+    this.dataDir = dataDir;
+    /** Serialize disk mutations so stop + exit handlers cannot race rename. */
+    this.writeChain = Promise.resolve();
+  }
+  get dataRoot() {
+    return this.dataDir;
+  }
+  async ensureDir() {
+    await fs7.mkdir(sessionsDir(this.dataDir), { recursive: true });
+  }
+  enqueue(fn) {
+    const run = this.writeChain.then(fn, fn);
+    this.writeChain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async write(record) {
+    assertSessionId(record.id);
+    return this.enqueue(async () => {
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, record.id);
+      await fs7.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+    });
+  }
+  async read(sessionId) {
+    assertSessionId(sessionId);
+    const file = sessionFilePath(this.dataDir, sessionId);
+    try {
+      const raw = await fs7.readFile(file, "utf8");
+      const data = JSON.parse(raw);
+      if (data.id !== sessionId) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+  async update(sessionId, patch) {
+    return this.enqueue(async () => {
+      const current = await this.readUnlocked(sessionId);
+      if (!current) throw new Error(`Session not found: ${sessionId}`);
+      const next = {
+        ...current,
+        ...patch,
+        id: current.id,
+        createdAt: current.createdAt,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, sessionId);
+      await fs7.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
+      return next;
+    });
+  }
+  async setState(sessionId, state, extra = {}) {
+    return this.update(sessionId, { ...extra, state });
+  }
+  async list() {
+    await this.ensureDir();
+    const dir = sessionsDir(this.dataDir);
+    let names;
+    try {
+      names = await fs7.readdir(dir);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const id = name.slice(0, -".json".length);
+      if (!isSessionId(id)) continue;
+      const rec = await this.read(id);
+      if (rec) out.push(rec);
+    }
+    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return out;
+  }
+  async remove(sessionId) {
+    assertSessionId(sessionId);
+    return this.enqueue(async () => {
+      try {
+        await fs7.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+      } catch {
+      }
+    });
+  }
+  /** Non-terminal states that should be probed after service restart. */
+  static isNonTerminal(state) {
+    return state === "starting" || state === "live" || state === "waiting-user";
+  }
+  async readUnlocked(sessionId) {
+    const file = sessionFilePath(this.dataDir, sessionId);
+    try {
+      const raw = await fs7.readFile(file, "utf8");
+      const data = JSON.parse(raw);
+      if (data.id !== sessionId) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+};
+
+// src/runtime/agent-runtime.ts
+function handleFrom(record) {
+  return {
+    sessionId: record.id,
+    profileId: record.profileId,
+    adapterId: record.adapterId,
+    state: record.state,
+    pid: record.pid,
+    roleName: record.roleName,
+    runtimeWorkspace: record.runtimeWorkspace,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+}
+var AgentRuntime = class {
+  constructor(options) {
+    this.profiles = /* @__PURE__ */ new Map();
+    this.adapters = /* @__PURE__ */ new Map();
+    this.sinks = /* @__PURE__ */ new Map();
+    this.globalSinks = /* @__PURE__ */ new Set();
+    this.closed = false;
+    this.registry = new SessionRegistry(options.dataDir);
+    for (const p of options.profiles ?? []) {
+      this.profiles.set(p.id, p);
+    }
+    if (!this.profiles.has("fake-default")) {
+      this.profiles.set("fake-default", {
+        id: "fake-default",
+        adapterId: FAKE_ADAPTER_ID,
+        displayNameKey: "profile.fake.default",
+        fake: { waitForSignal: true, emitStdout: true }
+      });
+    }
+    const adapterList = options.adapters ?? [createFakeAdapter()];
+    for (const a of adapterList) {
+      this.adapters.set(a.id, a);
+    }
+    if (!this.adapters.has(FAKE_ADAPTER_ID)) {
+      this.adapters.set(FAKE_ADAPTER_ID, createFakeAdapter());
+    }
+    this.supervisor = new ProcessSupervisor({
+      gracefulMs: options.gracefulMs ?? 2e3,
+      stdoutRingBytes: options.captureStdout === false ? 0 : 4096,
+      onExit: (info) => {
+        void this.onChildExit(info.sessionId, info.exitCode, info.signal);
+      },
+      onStdout: (sessionId, text) => {
+        if (options.captureStdout === false) return;
+        this.emit({ type: "session.stdout_tail", sessionId, text });
+      }
+    });
+  }
+  registerProfile(profile) {
+    this.profiles.set(profile.id, profile);
+  }
+  registerAdapter(adapter) {
+    this.adapters.set(adapter.id, adapter);
+  }
+  /** Subscribe to all runtime events (service fan-out helper). */
+  subscribeAll(sink) {
+    this.globalSinks.add(sink);
+    return () => this.globalSinks.delete(sink);
+  }
+  subscribe(sessionId, sink) {
+    let set = this.sinks.get(sessionId);
+    if (!set) {
+      set = /* @__PURE__ */ new Set();
+      this.sinks.set(sessionId, set);
+    }
+    set.add(sink);
+    return () => {
+      set.delete(sink);
+      if (set.size === 0) this.sinks.delete(sessionId);
+    };
+  }
+  async startSession(req) {
+    this.assertOpen();
+    if (!isSessionId(req.sessionId)) {
+      throw new Error(`Invalid session id: ${req.sessionId}`);
+    }
+    const existing = await this.registry.read(req.sessionId);
+    if (existing && SessionRegistry.isNonTerminal(existing.state)) {
+      throw new Error(`Session already active: ${req.sessionId}`);
+    }
+    const profile = this.profiles.get(req.profileId);
+    if (!profile) {
+      throw new Error(`Unknown AgentProfile: ${req.profileId}`);
+    }
+    const adapter = this.adapters.get(profile.adapterId);
+    if (!adapter) {
+      throw new Error(`Unknown adapter: ${profile.adapterId}`);
+    }
+    const caps = adapter.capabilities();
+    if (!caps.canSpawn) {
+      throw new Error(`Adapter ${adapter.id} cannot spawn (pull-host only)`);
+    }
+    const cwd = req.runtimeWorkspace?.cwd ?? req.cwd ?? req.workspaceLane?.worktree;
+    if (!cwd) {
+      throw new Error("startSession requires runtimeWorkspace.cwd, cwd, or workspaceLane.worktree");
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const record = {
+      id: req.sessionId,
+      profileId: profile.id,
+      adapterId: adapter.id,
+      roleName: req.roleName,
+      state: "starting",
+      runtimeWorkspace: { cwd },
+      workspace: req.workspace ?? req.workspaceLane?.workspace,
+      workspaceLane: req.workspaceLane,
+      createdAt: now,
+      updatedAt: now,
+      lastTaskId: req.lastTaskId
+    };
+    await this.registry.write(record);
+    this.emit({ type: "session.starting", sessionId: req.sessionId });
+    try {
+      const launch = await adapter.resolveLaunch({
+        sessionId: req.sessionId,
+        profileId: profile.id,
+        roleName: req.roleName,
+        cwd,
+        env: { ...profile.env ?? {}, ...req.env ?? {} },
+        bootstrapPrompt: req.bootstrapPrompt,
+        command: profile.command,
+        args: profile.args,
+        extras: { fake: profile.fake }
+      });
+      const proc = await this.supervisor.start(req.sessionId, launch);
+      const resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
+      const live = await this.registry.update(req.sessionId, {
+        state: "live",
+        pid: proc.pid,
+        resumeToken,
+        lastError: void 0,
+        exitCode: void 0,
+        stopReason: void 0
+      });
+      this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
+      return handleFrom(live);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      const failed = await this.registry.update(req.sessionId, {
+        state: "failed",
+        lastError: message,
+        pid: void 0
+      });
+      this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+    }
+  }
+  async resumeSession(req) {
+    this.assertOpen();
+    const record = await this.registry.read(req.sessionId);
+    if (!record) throw new Error(`Session not found: ${req.sessionId}`);
+    const profile = this.profiles.get(record.profileId);
+    if (!profile) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
+    const adapter = this.adapters.get(record.adapterId);
+    if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
+    const token = req.resumeToken ?? record.resumeToken;
+    if (!token) {
+      throw new Error(`Session ${req.sessionId} has no resume token`);
+    }
+    if (!adapter.capabilities().canResume && !profile.fake?.canResume) {
+      throw new Error(`Adapter ${adapter.id} cannot resume`);
+    }
+    const cwd = req.runtimeWorkspace?.cwd ?? req.cwd ?? record.runtimeWorkspace?.cwd;
+    if (!cwd) throw new Error("resumeSession requires a cwd");
+    return this.startSession({
+      sessionId: req.sessionId,
+      profileId: record.profileId,
+      roleName: record.roleName,
+      workspaceLane: record.workspaceLane,
+      runtimeWorkspace: { cwd },
+      workspace: record.workspace,
+      lastTaskId: record.lastTaskId,
+      env: req.env,
+      bootstrapPrompt: void 0
+    });
+  }
+  async stopSession(sessionId, reason) {
+    this.assertOpen();
+    const record = await this.registry.read(sessionId);
+    if (!record) throw new Error(`Session not found: ${sessionId}`);
+    const wasAlive = this.supervisor.isAlive(sessionId);
+    if (wasAlive) {
+      await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
+    }
+    const current = await this.registry.read(sessionId);
+    if (!current) return;
+    if (SessionRegistry.isNonTerminal(current.state)) {
+      await this.registry.update(sessionId, {
+        state: "stopped",
+        stopReason: reason,
+        pid: void 0
+      });
+      this.emit({
+        type: "session.exited",
+        sessionId,
+        exitCode: current.exitCode ?? 0
+      });
+    } else {
+      await this.registry.update(sessionId, {
+        stopReason: reason,
+        pid: void 0,
+        state: current.state === "failed" ? "failed" : "stopped"
+      });
+    }
+  }
+  async probe(sessionId) {
+    const record = await this.registry.read(sessionId);
+    if (!record) {
+      return {
+        sessionId,
+        state: "failed",
+        alive: false,
+        resumeCapable: false,
+        lastError: "session not found"
+      };
+    }
+    const alive = this.supervisor.isAlive(sessionId);
+    const profile = this.profiles.get(record.profileId);
+    const adapter = this.adapters.get(record.adapterId);
+    const resumeCapable = Boolean(
+      record.resumeToken && (adapter?.capabilities().canResume || profile?.fake?.canResume)
+    );
+    if (SessionRegistry.isNonTerminal(record.state) && !alive) {
+      const nextState = resumeCapable ? "stopped" : "failed";
+      const updated = await this.registry.update(sessionId, {
+        state: nextState,
+        pid: void 0,
+        lastError: record.lastError ?? (resumeCapable ? "process not alive; resume token retained" : "process not alive and not resume-capable")
+      });
+      return {
+        sessionId,
+        state: updated.state,
+        alive: false,
+        resumeCapable,
+        lastError: updated.lastError,
+        exitCode: updated.exitCode
+      };
+    }
+    return {
+      sessionId,
+      state: record.state,
+      alive,
+      resumeCapable,
+      pid: alive ? record.pid : void 0,
+      lastError: record.lastError,
+      exitCode: record.exitCode
+    };
+  }
+  /**
+   * On service start: probe all non-terminal sessions and reconcile.
+   * Dead PID + not resume-capable → failed/stopped; resume-capable → keep metadata.
+   */
+  async reconcileOnBoot() {
+    const all = await this.registry.list();
+    const results = [];
+    for (const rec of all) {
+      if (!SessionRegistry.isNonTerminal(rec.state)) continue;
+      results.push(await this.probe(rec.id));
+    }
+    return results;
+  }
+  /** Service shutdown: stop push children this runtime started. */
+  async shutdown() {
+    if (this.closed) return;
+    const live = this.supervisor.listLive();
+    for (const id of live) {
+      try {
+        await this.stopSession(id, "shutdown");
+      } catch {
+        await this.supervisor.stop(id);
+      }
+    }
+    await this.supervisor.stopAll("shutdown");
+    this.closed = true;
+  }
+  async onChildExit(sessionId, exitCode, signal) {
+    const record = await this.registry.read(sessionId);
+    if (!record) return;
+    const adapter = this.adapters.get(record.adapterId);
+    let event;
+    if (adapter) {
+      event = adapter.mapExit(exitCode, signal);
+      event = { ...event, sessionId };
+    } else if (exitCode === 0 || signal === "SIGTERM" || signal === "SIGINT") {
+      event = { type: "session.exited", sessionId, exitCode };
+    } else {
+      event = {
+        type: "session.failed",
+        sessionId,
+        error: signal ? `signal:${signal}` : `exit:${exitCode}`
+      };
+    }
+    const terminalState = event.type === "session.failed" ? "failed" : "stopped";
+    if (SessionRegistry.isNonTerminal(record.state) || record.state === "starting") {
+      await this.registry.update(sessionId, {
+        state: terminalState,
+        pid: void 0,
+        exitCode,
+        lastError: event.type === "session.failed" ? event.error : record.lastError
+      });
+    } else {
+      await this.registry.update(sessionId, {
+        pid: void 0,
+        exitCode
+      });
+    }
+    this.emit(event);
+  }
+  emit(ev) {
+    for (const sink of this.globalSinks) {
+      try {
+        sink(ev);
+      } catch {
+      }
+    }
+    const set = this.sinks.get(ev.sessionId);
+    if (!set) return;
+    for (const sink of set) {
+      try {
+        sink(ev);
+      } catch {
+      }
+    }
+  }
+  assertOpen() {
+    if (this.closed) throw new Error("AgentRuntime is shut down");
+  }
+};
+function createAgentRuntime(options) {
+  return new AgentRuntime(options);
+}
+
 // src/service/service.ts
-var SERVICE_VERSION = "0.1.0-b2";
+var SERVICE_VERSION = "0.1.0-b5";
 async function startLocalTentService(options = {}) {
   const dataDir = options.dataDir ?? defaultServiceDataDir();
   const version = options.version ?? SERVICE_VERSION;
   const startedAt = (/* @__PURE__ */ new Date()).toISOString();
   const getPid = options.getPid ?? (() => process.pid);
+  const token = options.token ?? generateServiceToken();
   const events = new EventBus();
   const mutations = new MutationBus();
   const workspaceHost = new WorkspaceHost({ events });
+  const a2a = new A2AApprovalStore(dataDir);
+  await a2a.ensureLoaded();
+  const profiles = options.profiles ?? await ensureDefaultProfiles(dataDir);
+  const runtime = createAgentRuntime({ dataDir, profiles });
+  await runtime.reconcileOnBoot();
   const ctx = {
     host: workspaceHost,
     mutations,
     events,
     version,
     startedAt,
-    getPid
+    getPid,
+    runtime,
+    a2a,
+    dataDir,
+    integrateCommits: options.integrateCommits
   };
+  runtime.subscribeAll((ev) => mapRuntimeEventToService(ctx, ev));
   const httpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",
     port: options.port ?? 0,
     ctx,
-    events
+    events,
+    token
   });
   let endpoint = null;
   if (options.writeEndpoint !== false) {
@@ -2640,7 +5040,8 @@ async function startLocalTentService(options = {}) {
       host: httpServer.host,
       port: httpServer.port,
       startedAt,
-      version
+      version,
+      token
     };
     await writeServiceEndpoint(dataDir, endpoint);
   }
@@ -2654,6 +5055,10 @@ async function startLocalTentService(options = {}) {
     if (stopped) return;
     stopped = true;
     events.emit("service.health", "", { action: "stopping" });
+    try {
+      await runtime.shutdown();
+    } catch {
+    }
     await workspaceHost.dispose();
     await httpServer.close();
     if (options.writeEndpoint !== false) {
@@ -2665,8 +5070,10 @@ async function startLocalTentService(options = {}) {
     host: httpServer.host,
     port: httpServer.port,
     dataDir,
+    token,
     events,
     hostApi: workspaceHost,
+    runtime,
     ctx,
     endpoint,
     stop
@@ -2680,7 +5087,7 @@ async function main() {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     process.stdout.write(
       [
-        "tent-service \u2014 Local Tent Service (B2)",
+        "tent-service \u2014 Local Tent Service (B5)",
         "",
         "Usage:",
         "  tent-service start [--port <n>] [--data-dir <path>] [--mount <workspace>]",
@@ -2688,6 +5095,10 @@ async function main() {
         "",
         "Environment:",
         "  TENT_SERVICE_DATA_DIR  machine-local data area (default: %APPDATA%/Tent)",
+        "",
+        "Auth:",
+        "  Loopback token is written to <dataDir>/service.json and required on /rpc + /events.",
+        "  GET /health remains open for attach discovery (no mutation).",
         ""
       ].join("\n")
     );
@@ -2716,10 +5127,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path3.resolve(dataDir) : void 0
+    dataDir: dataDir ? path7.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path3.resolve(mountPath));
+    const info = await service.hostApi.mount(path7.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }
@@ -2727,7 +5138,8 @@ async function main() {
     `Local Tent Service listening on ${service.url}
 dataDir: ${service.dataDir}
 pid: ${process.pid}
-Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events
+token: (written to service.json under dataDir; required on /rpc and /events)
+Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events  |  health: GET ${service.url}/health
 `
   );
   const shutdown = async (signal) => {

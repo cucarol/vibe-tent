@@ -13,7 +13,7 @@ async function main(): Promise<void> {
   if (cmd === "help" || cmd === "--help" || cmd === "-h") {
     process.stdout.write(
       [
-        "tent-service — Local Tent Service (B2)",
+        "tent-service — Local Tent Service (B5)",
         "",
         "Usage:",
         "  tent-service start [--port <n>] [--data-dir <path>] [--mount <workspace>]",
@@ -21,6 +21,10 @@ async function main(): Promise<void> {
         "",
         "Environment:",
         "  TENT_SERVICE_DATA_DIR  machine-local data area (default: %APPDATA%/Tent)",
+        "",
+        "Auth:",
+        "  Loopback token is written to <dataDir>/service.json and required on /rpc + /events.",
+        "  GET /health remains open for attach discovery (no mutation).",
         "",
       ].join("\n")
     );
@@ -63,7 +67,8 @@ async function main(): Promise<void> {
     `Local Tent Service listening on ${service.url}\n` +
       `dataDir: ${service.dataDir}\n` +
       `pid: ${process.pid}\n` +
-      `Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events\n`
+      `token: (written to service.json under dataDir; required on /rpc and /events)\n` +
+      `Attach: POST ${service.url}/rpc  |  events: GET ${service.url}/events  |  health: GET ${service.url}/health\n`
   );
 
   const shutdown = async (signal: string) => {

@@ -1,4 +1,4 @@
-// Local Service wire types — B0 architecture §5.2 + attach protocol.
+// Local Service wire types — B0 architecture §5.2 + attach protocol + B5 task surface.
 
 /** Structured association to a real deliverable outside concept identity. */
 export type ArtifactRef = {
@@ -18,7 +18,7 @@ export type EventEnvelope<TType extends string = string, TPayload = unknown> = {
   payload: TPayload;
 };
 
-/** Role / orchestration spawn authority (evaluated only in service; B8 hardens). */
+/** Role / orchestration spawn authority (evaluated only in service). */
 export type A2APolicy = "allow" | "ask" | "deny";
 
 /**
@@ -65,20 +65,65 @@ export type ConceptProjection = {
 
 export type TaskProjection = {
   path: string;
+  id?: string;
   role: string;
   claims: string[];
+  /** Legacy envelope status (pending|taken). */
   status: "pending" | "taken";
+  /** Full lifecycle state (task-api §2). */
+  state: string;
   manifest: string;
   dispatchedBy?: string;
+  deliveryPolicy?: string;
+  assigneeKind?: string;
+  sessionId?: string;
+  wait?: { reason: string; summary: string };
+  activeDeliveryId?: string;
   workspaceLane?: {
     workspace?: string;
     worktree?: string;
     branch?: string;
     targetBranch?: string;
   };
+  createdAt?: string;
+  updatedAt?: string;
+  prompt?: string;
 };
 
-/** Methods clients may call. AgentRuntimePort.* is intentionally absent. */
+export type DeliveryProjection = {
+  path: string;
+  id: string;
+  taskId: string;
+  boxId: string;
+  role: string;
+  status: string;
+  summary: string;
+  commits: string[];
+  integrationMode: string | null;
+  review?: { by: string; decision: string; note?: string };
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+export type SessionProjection = {
+  sessionId: string;
+  profileId: string;
+  adapterId: string;
+  state: string;
+  roleName?: string;
+  /** PID is machine-local diagnostic; clients may show status only. */
+  alive: boolean;
+  resumeCapable: boolean;
+  lastTaskId?: string;
+  workspace?: string;
+  createdAt?: string;
+  updatedAt?: string;
+};
+
+/**
+ * Methods clients may call. AgentRuntimePort.* is intentionally absent.
+ * B5 adds full task lifecycle + session projections + a2a resolve.
+ */
 export const CLIENT_METHODS = [
   "service.health",
   "service.subscribe",
@@ -95,8 +140,23 @@ export const CLIENT_METHODS = [
   "docs.fork",
   "task.dispatch",
   "task.claim",
+  "task.wait",
+  "task.resume",
+  "task.deliver",
+  "task.requestReview",
+  "task.accept",
+  "task.reject",
+  "task.interrupt",
+  "task.cancel",
+  "task.startSession",
   "task.list",
   "task.get",
+  "delivery.list",
+  "delivery.get",
+  "session.list",
+  "session.get",
+  "a2a.listPending",
+  "a2a.resolve",
 ] as const;
 
 export type ClientMethod = (typeof CLIENT_METHODS)[number];
@@ -107,3 +167,9 @@ export function isClientMethod(method: string): method is ClientMethod {
 
 /** Collaboration projection fields protected while a box has an active task. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
+
+/** JSON-RPC auth failure. */
+export const RPC_UNAUTHORIZED = -32001;
+export const RPC_A2A_DENIED = -32020;
+export const RPC_A2A_ASK = -32021;
+export const RPC_LIFECYCLE = -32022;

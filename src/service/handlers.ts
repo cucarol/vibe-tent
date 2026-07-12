@@ -1,4 +1,4 @@
-// Service command/query handlers — sole client mutation entry into core.
+// Service command/query handlers — sole client mutation entry into core + runtime.
 
 import { boxNotePath, loadTent, type LoadedTent } from "../core/tree.js";
 import { parseFrontmatter } from "../core/frontmatter.js";
@@ -7,19 +7,47 @@ import {
   dispatch,
   patchBody,
   patchBox,
-  taskAck,
 } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
 import { loadTaskEnvelope, loadTaskEnvelopes } from "../core/task.js";
+import { loadDeliveries } from "../core/delivery.js";
+import {
+  taskAccept,
+  taskCancel,
+  taskClaim,
+  taskDeliver,
+  taskInterrupt,
+  taskReject,
+  taskResume,
+  taskWait,
+} from "../core/task-lifecycle.js";
+import {
+  TaskLifecycleError,
+  type A2APolicy,
+  type DeliverDecision,
+  type DeliveryPolicy,
+  type WaitReason,
+  evaluateA2A,
+} from "../core/task-model.js";
+import type { AgentRuntime } from "../runtime/agent-runtime.js";
+import { makeSessionId } from "../runtime/types.js";
+import type { RuntimeEvent } from "../runtime/types.js";
 import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
 import type { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
+import type { A2AApprovalStore } from "./a2a-store.js";
+import { makeApprovalId } from "./a2a-store.js";
 import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
+  RPC_A2A_ASK,
+  RPC_A2A_DENIED,
+  RPC_LIFECYCLE,
   type ConceptProjection,
+  type DeliveryProjection,
+  type SessionProjection,
   type TaskProjection,
 } from "./types.js";
 
@@ -30,6 +58,12 @@ export interface HandlerContext {
   version: string;
   startedAt: string;
   getPid: () => number;
+  /** Service-internal runtime (never exposed as client methods). */
+  runtime: AgentRuntime;
+  a2a: A2AApprovalStore;
+  dataDir: string;
+  /** Optional integrate hook for auto/manual accept with commits (tests inject). */
+  integrateCommits?: (workspaceRoot: string, commits: string[]) => Promise<void>;
 }
 
 export type JsonRpcError = {
@@ -65,44 +99,81 @@ export async function dispatchMethod(
 
   const p = params ?? {};
 
-  switch (method) {
-    case "service.health":
-      return health(ctx);
-    case "service.subscribe":
-      // Transport layer upgrades to SSE; RPC returns capability flag.
-      return { ok: true, transport: "sse", path: "/events" };
-    case "workspace.mount":
-      return workspaceMount(ctx, p);
-    case "workspace.unmount":
-      return workspaceUnmount(ctx, p);
-    case "workspace.list":
-      return { workspaces: ctx.host.list() };
-    case "workspace.setForeground":
-      return workspaceSetForeground(ctx, p);
-    case "docs.list":
-      return docsList(ctx, p);
-    case "docs.get":
-      return docsGet(ctx, p);
-    case "docs.readForEdit":
-      return docsReadForEdit(ctx, p);
-    case "docs.write":
-      return docsWrite(ctx, p);
-    case "docs.createNote":
-      return docsCreateNote(ctx, p);
-    case "docs.promote":
-      return docsPromote(ctx, p);
-    case "docs.fork":
-      return docsFork(ctx, p);
-    case "task.dispatch":
-      return taskDispatch(ctx, p);
-    case "task.claim":
-      return taskClaim(ctx, p);
-    case "task.list":
-      return taskList(ctx, p);
-    case "task.get":
-      return taskGet(ctx, p);
-    default:
-      throw new RpcError(-32601, `Method not found: ${method}`);
+  try {
+    switch (method) {
+      case "service.health":
+        return health(ctx);
+      case "service.subscribe":
+        return { ok: true, transport: "sse", path: "/events" };
+      case "workspace.mount":
+        return workspaceMount(ctx, p);
+      case "workspace.unmount":
+        return workspaceUnmount(ctx, p);
+      case "workspace.list":
+        return { workspaces: ctx.host.list() };
+      case "workspace.setForeground":
+        return workspaceSetForeground(ctx, p);
+      case "docs.list":
+        return docsList(ctx, p);
+      case "docs.get":
+        return docsGet(ctx, p);
+      case "docs.readForEdit":
+        return docsReadForEdit(ctx, p);
+      case "docs.write":
+        return docsWrite(ctx, p);
+      case "docs.createNote":
+        return docsCreateNote(ctx, p);
+      case "docs.promote":
+        return docsPromote(ctx, p);
+      case "docs.fork":
+        return docsFork(ctx, p);
+      case "task.dispatch":
+        return taskDispatch(ctx, p);
+      case "task.claim":
+        return taskClaimRpc(ctx, p);
+      case "task.wait":
+        return taskWaitRpc(ctx, p);
+      case "task.resume":
+        return taskResumeRpc(ctx, p);
+      case "task.deliver":
+        return taskDeliverRpc(ctx, p);
+      case "task.requestReview":
+        return taskRequestReviewRpc(ctx, p);
+      case "task.accept":
+        return taskAcceptRpc(ctx, p);
+      case "task.reject":
+        return taskRejectRpc(ctx, p);
+      case "task.interrupt":
+        return taskInterruptRpc(ctx, p);
+      case "task.cancel":
+        return taskCancelRpc(ctx, p);
+      case "task.startSession":
+        return taskStartSessionRpc(ctx, p);
+      case "task.list":
+        return taskList(ctx, p);
+      case "task.get":
+        return taskGet(ctx, p);
+      case "delivery.list":
+        return deliveryList(ctx, p);
+      case "delivery.get":
+        return deliveryGet(ctx, p);
+      case "session.list":
+        return sessionList(ctx, p);
+      case "session.get":
+        return sessionGet(ctx, p);
+      case "a2a.listPending":
+        return a2aListPending(ctx, p);
+      case "a2a.resolve":
+        return a2aResolve(ctx, p);
+      default:
+        throw new RpcError(-32601, `Method not found: ${method}`);
+    }
+  } catch (error) {
+    if (error instanceof RpcError) throw error;
+    if (error instanceof TaskLifecycleError) {
+      throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
+    }
+    throw error;
   }
 }
 
@@ -210,7 +281,6 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       await patchBox(mount.env, concept.path, frontmatter, tent);
     }
     if (body !== undefined) {
-      // Re-load tent only if frontmatter changed path identity (it doesn't).
       await patchBody(mount.env, concept.path, body, tent);
     }
 
@@ -277,7 +347,6 @@ async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
   const boxId = optionalString(p, "id") ?? optionalString(p, "boxId") ?? requireString(p, "path");
 
   return ctx.mutations.run(workspaceId, async () => {
-    // Resolve path → id if needed
     let id = boxId;
     if (!id.startsWith("cx-") && !id.startsWith("bx-")) {
       const tent = await loadTent(mount.env.fs);
@@ -297,6 +366,8 @@ async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
   });
 }
 
+// ---- task.* ----
+
 async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -304,18 +375,24 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const role = requireString(p, "role");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
+  const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const startSession = p.startSession === true;
+  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
 
-  return ctx.mutations.run(workspaceId, async () => {
+  const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const result = await dispatch(mount.env, boxId, role, {
+    const dispatched = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
       dispatchedBy,
+      deliveryPolicy,
     });
     ctx.events.emit(
       "task.state",
       workspaceId,
       {
-        path: result.taskPath,
+        path: dispatched.taskPath,
         state: "queued",
         role,
         boxId,
@@ -323,39 +400,47 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       },
       "self"
     );
-    return {
+    return dispatched;
+  });
+
+  let session: unknown = undefined;
+  if (startSession) {
+    // Claim then startSession so running+sessionId bind together.
+    await taskClaimRpc(ctx, {
       workspaceId,
       taskPath: result.taskPath,
-      manifestPath: result.manifestPath,
-      initPath: result.initPath,
-      relayPrompt: result.relayPrompt,
-      state: "queued",
-    };
-  });
+    });
+    session = await taskStartSessionRpc(ctx, {
+      workspaceId,
+      taskPath: result.taskPath,
+      profileId,
+      callerKind,
+      a2aPolicy,
+      bootstrapPrompt: result.relayPrompt,
+    });
+  }
+
+  return {
+    workspaceId,
+    taskPath: result.taskPath,
+    manifestPath: result.manifestPath,
+    initPath: result.initPath,
+    relayPrompt: result.relayPrompt,
+    state: startSession ? "running" : "queued",
+    session,
+  };
 }
 
-async function taskClaim(ctx: HandlerContext, p: Record<string, unknown>) {
+async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  const sessionId = optionalString(p, "sessionId");
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    await taskAck(mount.env, taskPath);
-    const task = await loadTaskEnvelope(mount.env.fs, taskPath);
-    ctx.events.emit(
-      "task.state",
-      workspaceId,
-      {
-        path: taskPath,
-        state: "running",
-        role: task.role,
-        claims: task.claims,
-        reason: "task.claim",
-      },
-      "self"
-    );
-    // Projected status/owner live on concept frontmatter via core taskAck.
+    const task = await taskClaim(mount.env, taskPath, { sessionId });
+    emitTaskState(ctx, workspaceId, task, "task.claim");
     for (const claimId of task.claims) {
       if (claimId === "root") continue;
       ctx.events.emit(
@@ -368,11 +453,402 @@ async function taskClaim(ctx: HandlerContext, p: Record<string, unknown>) {
     return {
       workspaceId,
       taskPath,
-      state: "running",
+      task: projectTask(task),
+      state: task.state,
       role: task.role,
       claims: task.claims,
+      sessionId: task.sessionId,
     };
   });
+}
+
+async function taskWaitRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const reason = requireString(p, "reason") as WaitReason;
+  const summary = requireString(p, "summary");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskWait(mount.env, taskPath, { reason, summary });
+    emitTaskState(ctx, workspaceId, task, "task.wait");
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+
+async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskResume(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.resume");
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+
+async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const summary = requireString(p, "summary");
+  const commits = optionalStringArray(p, "commits");
+  const decision = optionalString(p, "decision") as DeliverDecision | undefined;
+  const checks = Array.isArray(p.checks) ? (p.checks as import("../core/task-model.js").DeliveryCheck[]) : undefined;
+  const artifactRefs = Array.isArray(p.artifactRefs)
+    ? (p.artifactRefs as import("../core/task-model.js").ArtifactRef[])
+    : undefined;
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    // Always provide integrate for auto-integrate policies when commits present.
+    const integrate = async (cs: string[]) => {
+      if (ctx.integrateCommits) {
+        await ctx.integrateCommits(mount.workspaceRoot, cs);
+      }
+      // MVP Windows path: without an injected git hook, commits stay recorded on delivery only.
+    };
+
+    const result = await taskDeliver(mount.env, taskPath, {
+      summary,
+      commits,
+      checks,
+      artifactRefs,
+      decision,
+      integrate,
+    });
+    emitTaskState(ctx, workspaceId, result.task, "task.deliver");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.deliver",
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      autoIntegrated: result.autoIntegrated,
+      state: result.task.state,
+    };
+  });
+}
+
+/** Explicit review-queue path (agent-decide chooses request-review). */
+async function taskRequestReviewRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
+}
+
+async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const actor = requireString(p, "actor");
+  const commits = optionalStringArray(p, "commits");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await taskAccept(mount.env, taskPath, {
+      actor,
+      commits,
+      // Core requires integrate whenever delivery commits are non-empty.
+      integrate: async (cs) => {
+        if (ctx.integrateCommits) {
+          await ctx.integrateCommits(mount.workspaceRoot, cs);
+        }
+      },
+    });
+    emitTaskState(ctx, workspaceId, result.task, "task.accept");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.accept",
+      },
+      "self"
+    );
+    for (const claimId of result.task.claims) {
+      if (claimId === "root") continue;
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        { id: claimId, reason: "task.accept-projection" },
+        "self"
+      );
+    }
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state,
+    };
+  });
+}
+
+async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const actor = requireString(p, "actor");
+  const note = optionalString(p, "note");
+  const resume = p.resume !== false;
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await taskReject(mount.env, taskPath, { actor, note, resume });
+    emitTaskState(ctx, workspaceId, result.task, "task.reject");
+    ctx.events.emit(
+      "delivery.updated",
+      workspaceId,
+      {
+        id: result.delivery.id,
+        taskId: result.delivery.taskId,
+        status: result.delivery.status,
+        reason: "task.reject",
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state,
+    };
+  });
+}
+
+async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
+    const sessionId = before?.sessionId;
+    ctx.host.markSelfWrite(workspaceId);
+    const task = await taskInterrupt(mount.env, taskPath);
+    emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    if (sessionId) {
+      try {
+        await ctx.runtime.stopSession(sessionId, "interrupt");
+      } catch {
+        // session may already be dead
+      }
+    }
+    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+  });
+}
+
+async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    await taskCancel(mount.env, taskPath);
+    ctx.events.emit(
+      "task.state",
+      workspaceId,
+      { path: taskPath, state: "interrupted", reason: "task.cancel" },
+      "self"
+    );
+    return { workspaceId, taskPath, state: "interrupted", cancelled: true };
+  });
+}
+
+/**
+ * A2A gate → AgentRuntimePort.startSession → bind task.sessionId only.
+ * Clients never call AgentRuntimePort.* directly.
+ */
+async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
+  const approvalId = optionalString(p, "approvalId");
+
+  // Resolve prior ask approval
+  if (approvalId) {
+    const approval = await ctx.a2a.get(approvalId);
+    if (!approval || approval.status !== "approved") {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval is missing or not approved", {
+        approvalId,
+        status: approval?.status,
+      });
+    }
+    if (approval.taskPath !== taskPath) {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
+    }
+  } else {
+    const decision = evaluateA2A({
+      callerKind,
+      policy: a2aPolicy,
+      profileAllowed: true,
+    });
+    if (decision === "deny") {
+      throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
+        policy: a2aPolicy,
+        callerKind,
+      });
+    }
+    if (decision === "ask") {
+      const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const item = await ctx.a2a.add({
+        id: makeApprovalId(),
+        workspaceId,
+        taskPath,
+        taskId: task.id,
+        role: task.role,
+        profileId,
+        policy: "ask",
+        callerKind,
+        bootstrapPrompt,
+        status: "pending",
+        createdAt: new Date().toISOString(),
+      });
+      ctx.events.emit(
+        "a2a.ask",
+        workspaceId,
+        {
+          approvalId: item.id,
+          taskPath,
+          role: task.role,
+          profileId,
+          summary: `Role ${task.role} requests startSession on profile ${profileId}`,
+        },
+        "service"
+      );
+      // Park task in waiting(a2a-approval) if running
+      if (task.state === "running") {
+        await ctx.mutations.run(workspaceId, async () => {
+          ctx.host.markSelfWrite(workspaceId);
+          const waited = await taskWait(mount.env, taskPath, {
+            reason: "a2a-approval",
+            summary: `Awaiting user A2A approval ${item.id}`,
+          });
+          emitTaskState(ctx, workspaceId, waited, "a2a.ask");
+        });
+      }
+      throw new RpcError(RPC_A2A_ASK, "A2A policy requires user approval before startSession", {
+        approvalId: item.id,
+        policy: "ask",
+      });
+    }
+  }
+
+  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (task.state === "queued" && callerKind === "user") {
+    // User-driven convenience: claim before start.
+    await taskClaimRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+  if (task.state !== "running" && task.state !== "waiting") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.startSession requires running (or waiting after approval); got ${task.state}`
+    );
+  }
+
+  // Resume from waiting(a2a-approval) after resolve
+  if (task.state === "waiting" && task.wait?.reason === "a2a-approval") {
+    await taskResumeRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+
+  const sessionId = makeSessionId();
+  const cwd = task.worktree || mount.workspaceRoot;
+  const workspaceLane =
+    task.workspace || task.worktree || task.branch
+      ? {
+          workspace: task.workspace || mount.workspaceRoot,
+          worktree: task.worktree || mount.workspaceRoot,
+          branch: task.branch || "HEAD",
+        }
+      : undefined;
+
+  let handle;
+  try {
+    handle = await ctx.runtime.startSession({
+      sessionId,
+      profileId,
+      roleName: task.role,
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: bootstrapPrompt ?? task.prompt,
+      lastTaskId: task.id || taskPath,
+      workspace: workspaceId,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Map unrecoverable launch to task.failed projection
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const { patchTaskEnvelope } = await import("../core/task.js");
+      const failed = await patchTaskEnvelope(mount.env.fs, taskPath, {
+        state: "failed",
+        wait: null,
+        updatedAt: mount.env.clock.now(),
+      });
+      emitTaskState(ctx, workspaceId, failed, "session.failed");
+    });
+    throw new RpcError(-32000, message);
+  }
+
+  // Bind sessionId reference only on task (never PID/token).
+  const bound = await ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const { patchTaskEnvelope } = await import("../core/task.js");
+    const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+      sessionId: handle.sessionId,
+      updatedAt: mount.env.clock.now(),
+    });
+    emitTaskState(ctx, workspaceId, next, "task.startSession");
+    ctx.events.emit(
+      "session.state",
+      workspaceId,
+      {
+        sessionId: handle.sessionId,
+        state: handle.state,
+        profileId: handle.profileId,
+        taskPath,
+        reason: "task.startSession",
+      },
+      "self"
+    );
+    return next;
+  });
+
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(bound),
+    session: {
+      sessionId: handle.sessionId,
+      profileId: handle.profileId,
+      adapterId: handle.adapterId,
+      state: handle.state,
+      // Do not expose pid in client projection by default — probe is internal.
+    },
+  };
 }
 
 async function taskList(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -393,7 +869,209 @@ async function taskGet(ctx: HandlerContext, p: Record<string, unknown>) {
   return { workspaceId, task: projectTask(task) };
 }
 
+async function deliveryList(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskId = optionalString(p, "taskId");
+  const boxId = optionalString(p, "boxId");
+  const role = optionalString(p, "role");
+  let deliveries = await loadDeliveries(mount.env.fs, { taskId, boxId });
+  if (role) deliveries = deliveries.filter((d) => d.role === role);
+  return { workspaceId, deliveries: deliveries.map(projectDelivery) };
+}
+
+async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id = requireString(p, "id");
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const found = deliveries.find((d) => d.id === id);
+  if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
+  return { workspaceId, delivery: projectDelivery(found) };
+}
+
+async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const all = await ctx.runtime.registry.list();
+  const projections: SessionProjection[] = [];
+  for (const rec of all) {
+    if (workspaceId && rec.workspace && rec.workspace !== workspaceId) continue;
+    const probe = await ctx.runtime.probe(rec.id);
+    projections.push({
+      sessionId: rec.id,
+      profileId: rec.profileId,
+      adapterId: rec.adapterId,
+      state: probe.state,
+      roleName: rec.roleName,
+      alive: probe.alive,
+      resumeCapable: probe.resumeCapable,
+      lastTaskId: rec.lastTaskId,
+      workspace: rec.workspace,
+      createdAt: rec.createdAt,
+      updatedAt: rec.updatedAt,
+    });
+  }
+  return { sessions: projections };
+}
+
+async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const sessionId = requireString(p, "sessionId");
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const probe = await ctx.runtime.probe(sessionId);
+  const projection: SessionProjection = {
+    sessionId: rec.id,
+    profileId: rec.profileId,
+    adapterId: rec.adapterId,
+    state: probe.state,
+    roleName: rec.roleName,
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec.lastTaskId,
+    workspace: rec.workspace,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt,
+  };
+  return { session: projection };
+}
+
+async function a2aListPending(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const pending = await ctx.a2a.listPending(workspaceId);
+  return { approvals: pending };
+}
+
+async function a2aResolve(ctx: HandlerContext, p: Record<string, unknown>) {
+  const approvalId = requireString(p, "approvalId");
+  const decisionRaw = requireString(p, "decision");
+  const actor = optionalString(p, "actor") ?? "user";
+  const decision =
+    decisionRaw === "approve" || decisionRaw === "approved"
+      ? "approved"
+      : decisionRaw === "deny" || decisionRaw === "denied"
+        ? "denied"
+        : null;
+  if (!decision) {
+    throw new RpcError(-32602, "decision must be approve|deny");
+  }
+
+  const item = await ctx.a2a.resolve(approvalId, decision, actor);
+  ctx.events.emit(
+    "a2a.resolved",
+    item.workspaceId,
+    { approvalId, decision, actor, taskPath: item.taskPath },
+    "self"
+  );
+
+  if (decision === "approved") {
+    // Start session now with user authority.
+    const started = await taskStartSessionRpc(ctx, {
+      workspaceId: item.workspaceId,
+      taskPath: item.taskPath,
+      profileId: item.profileId,
+      callerKind: "user",
+      a2aPolicy: "allow",
+      bootstrapPrompt: item.bootstrapPrompt,
+      approvalId: item.id,
+    });
+    return { approval: item, started };
+  }
+
+  return { approval: item, started: null };
+}
+
+// ---- runtime event bridge (called from service bootstrap) ----
+
+export function mapRuntimeEventToService(
+  ctx: HandlerContext,
+  ev: RuntimeEvent
+): void {
+  // Find workspace from session registry (async-safe best effort via fire-and-forget).
+  void (async () => {
+    try {
+      const rec = await ctx.runtime.registry.read(ev.sessionId);
+      const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+      if (ev.type === "session.stdout_tail") {
+        // Diagnostics only — never product chat; optional quiet emit.
+        return;
+      }
+      ctx.events.emit(
+        "session.state",
+        workspaceId,
+        {
+          sessionId: ev.sessionId,
+          runtimeEvent: ev.type,
+          ...("pid" in ev ? { pid: ev.pid } : {}),
+          ...("exitCode" in ev ? { exitCode: ev.exitCode } : {}),
+          ...("error" in ev ? { error: ev.error } : {}),
+          ...("summary" in ev ? { summary: ev.summary } : {}),
+        },
+        "service"
+      );
+
+      // Map waiting_user / failed onto bound task when lastTaskId known.
+      if (!rec?.lastTaskId) return;
+      const mountInfos = ctx.host.list();
+      for (const info of mountInfos) {
+        if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+        const mount = ctx.host.get(info.workspaceId);
+        if (!mount) continue;
+        const tasks = await loadTaskEnvelopes(mount.env.fs);
+        const task = tasks.find(
+          (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId
+        );
+        if (!task) continue;
+        if (ev.type === "session.waiting_user" && task.state === "running") {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const waited = await taskWait(mount.env, task.path, {
+              reason: "user-input",
+              summary: ev.summary,
+            });
+            emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
+          });
+        } else if (ev.type === "session.failed" && (task.state === "running" || task.state === "waiting")) {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const { patchTaskEnvelope } = await import("../core/task.js");
+            const failed = await patchTaskEnvelope(mount.env.fs, task.path, {
+              state: "failed",
+              wait: null,
+              updatedAt: mount.env.clock.now(),
+            });
+            emitTaskState(ctx, mount.workspaceId, failed, "session.failed");
+          });
+        }
+      }
+    } catch {
+      // mapping must not crash the runtime
+    }
+  })();
+}
+
 // ---- helpers ----
+
+function emitTaskState(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: import("../core/task.js").TaskEnvelope,
+  reason: string
+): void {
+  ctx.events.emit(
+    "task.state",
+    workspaceId,
+    {
+      path: task.path,
+      id: task.id,
+      state: task.state,
+      role: task.role,
+      claims: task.claims,
+      sessionId: task.sessionId,
+      reason,
+    },
+    "self"
+  );
+}
 
 function requireWorkspaceId(ctx: HandlerContext, p: Record<string, unknown>): string {
   const explicit = optionalString(p, "workspaceId");
@@ -417,6 +1095,32 @@ function optionalString(p: Record<string, unknown>, key: string): string | undef
   if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
   const t = v.trim();
   return t || undefined;
+}
+
+function optionalStringArray(p: Record<string, unknown>, key: string): string[] | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
+    throw new RpcError(-32602, `Invalid string[] param: ${key}`);
+  }
+  return v as string[];
+}
+
+function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefined {
+  if (!raw) return undefined;
+  if (raw === "manual" || raw === "bypass" || raw === "agent-decide") return raw;
+  throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
+}
+
+function parseA2APolicy(raw: string | undefined): A2APolicy {
+  if (!raw) return "deny";
+  if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
+  throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
+}
+
+function parseCallerKind(raw: string): "user" | "role" {
+  if (raw === "user" || raw === "role") return raw;
+  throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
 }
 
 function resolveConcept(tent: LoadedTent, p: Record<string, unknown>) {
@@ -473,12 +1177,39 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
       : undefined;
   return {
     path: task.path,
+    id: task.id,
     role: task.role,
     claims: task.claims,
     status: task.status,
+    state: task.state,
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
+    deliveryPolicy: task.deliveryPolicy,
+    assigneeKind: task.assigneeKind,
+    sessionId: task.sessionId,
+    wait: task.wait,
+    activeDeliveryId: task.activeDeliveryId,
     workspaceLane: lane,
+    createdAt: task.createdAt,
+    updatedAt: task.updatedAt,
+    prompt: task.prompt,
+  };
+}
+
+function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): DeliveryProjection {
+  return {
+    path: d.path,
+    id: d.id,
+    taskId: d.taskId,
+    boxId: d.boxId,
+    role: d.role,
+    status: d.status,
+    summary: d.summary,
+    commits: d.commits,
+    integrationMode: d.integrationMode,
+    review: d.review,
+    createdAt: d.createdAt,
+    updatedAt: d.updatedAt,
   };
 }
 
@@ -495,7 +1226,6 @@ function assertDocsWriteAllowed(
   if (!concept) return;
 
   const active = hasActiveTaskForConcept(tent, conceptId, concept.path, tasks);
-  // Also treat legacy owner lock as active occupation.
   const occupied = active || !!concept.fm.owner || concept.locked;
   if (!occupied) return;
 
@@ -514,6 +1244,20 @@ function hasActiveTaskForConcept(
 ): boolean {
   for (const task of tasks) {
     if (task.status !== "pending" && task.status !== "taken") continue;
+    // Prefer full state when available
+    const state = task.state;
+    if (
+      state &&
+      state !== "queued" &&
+      state !== "running" &&
+      state !== "waiting" &&
+      state !== "delivered"
+    ) {
+      // terminal legacy taken may still show status=taken after interrupt — check state
+      if (state === "accepted" || state === "interrupted" || state === "failed" || state === "rejected") {
+        continue;
+      }
+    }
     if (task.claims.includes(conceptId) || task.claims.includes("root")) return true;
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);
