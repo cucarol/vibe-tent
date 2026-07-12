@@ -1,0 +1,245 @@
+// WorkspaceHost: mount N in-workspace tents; foreground is UI selection only.
+
+import { watch, type FSWatcher } from "node:fs";
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+import { NodeFs } from "../fs/node-fs.js";
+import type { Clock } from "../core/adapter.js";
+import type { OpsEnv } from "../core/ops-context.js";
+import { TENT_SYSTEM_DIR, systemRootFromWorkspace } from "../core/paths.js";
+import { EventBus } from "./events.js";
+import type { MountedWorkspaceInfo } from "./types.js";
+
+export interface MountedWorkspace {
+  workspaceId: string;
+  workspaceRoot: string;
+  systemRoot: string;
+  tentName: string;
+  env: OpsEnv;
+  watcher?: FSWatcher;
+  /** Suppress self-echo concept events for this many ms after a service write. */
+  suppressWatchUntil: number;
+}
+
+export interface WorkspaceHostOptions {
+  events: EventBus;
+  clock?: Clock;
+  /** Injected for tests; default node:fs watch. */
+  watchFn?: typeof watch;
+  /** Debounce external FS events (ms). */
+  watchDebounceMs?: number;
+}
+
+export class WorkspaceHost {
+  private mounts = new Map<string, MountedWorkspace>();
+  private foregroundId: string | null = null;
+  private readonly events: EventBus;
+  private readonly clock: Clock;
+  private readonly watchFn: typeof watch;
+  private readonly watchDebounceMs: number;
+  private watchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+  constructor(options: WorkspaceHostOptions) {
+    this.events = options.events;
+    this.clock = options.clock ?? { now: () => new Date().toISOString() };
+    this.watchFn = options.watchFn ?? watch;
+    this.watchDebounceMs = options.watchDebounceMs ?? 50;
+  }
+
+  list(): MountedWorkspaceInfo[] {
+    return [...this.mounts.values()].map((m) => this.toInfo(m));
+  }
+
+  get(workspaceId: string): MountedWorkspace | undefined {
+    return this.mounts.get(workspaceId);
+  }
+
+  require(workspaceId: string): MountedWorkspace {
+    const m = this.mounts.get(workspaceId);
+    if (!m) throw new Error(`Workspace not mounted: ${workspaceId}`);
+    return m;
+  }
+
+  getForegroundId(): string | null {
+    return this.foregroundId;
+  }
+
+  async mount(workspaceRoot: string, opts?: { workspaceId?: string; tentName?: string }): Promise<MountedWorkspaceInfo> {
+    const root = path.resolve(workspaceRoot);
+    const systemRoot = systemRootFromWorkspace(root);
+    const rulesPath = path.join(systemRoot, "RULES.md");
+    try {
+      await fs.access(rulesPath);
+    } catch {
+      throw new Error(
+        `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
+      );
+    }
+
+    for (const existing of this.mounts.values()) {
+      if (path.resolve(existing.workspaceRoot) === root) {
+        return this.toInfo(existing);
+      }
+    }
+
+    const workspaceId = opts?.workspaceId?.trim() || makeWorkspaceId(root);
+    if (this.mounts.has(workspaceId)) {
+      throw new Error(`workspaceId already mounted: ${workspaceId}`);
+    }
+
+    const tentName = opts?.tentName?.trim() || path.basename(root) || "tent";
+    const fsa = new NodeFs(systemRoot);
+    const env: OpsEnv = {
+      fs: fsa,
+      clock: this.clock,
+      tentName,
+      tentRoot: systemRoot,
+    };
+
+    const mount: MountedWorkspace = {
+      workspaceId,
+      workspaceRoot: root,
+      systemRoot,
+      tentName,
+      env,
+      suppressWatchUntil: 0,
+    };
+
+    mount.watcher = this.startWatch(mount);
+    this.mounts.set(workspaceId, mount);
+
+    if (!this.foregroundId) {
+      this.foregroundId = workspaceId;
+      this.events.emit("workspace.switched", workspaceId, {
+        workspaceId,
+        workspaceRoot: root,
+        reason: "mount-default-foreground",
+      });
+    }
+
+    this.events.emit("service.health", workspaceId, {
+      action: "workspace.mounted",
+      workspaceId,
+      workspaceRoot: root,
+    });
+
+    return this.toInfo(mount);
+  }
+
+  async unmount(workspaceId: string): Promise<void> {
+    const mount = this.mounts.get(workspaceId);
+    if (!mount) return;
+    this.stopWatch(mount);
+    this.mounts.delete(workspaceId);
+    if (this.foregroundId === workspaceId) {
+      const next = this.mounts.keys().next();
+      this.foregroundId = next.done ? null : next.value;
+      if (this.foregroundId) {
+        this.events.emit("workspace.switched", this.foregroundId, {
+          workspaceId: this.foregroundId,
+          reason: "unmount-reselect",
+        });
+      }
+    }
+    this.events.emit("service.health", workspaceId, {
+      action: "workspace.unmounted",
+      workspaceId,
+    });
+  }
+
+  setForeground(workspaceId: string): MountedWorkspaceInfo {
+    const mount = this.require(workspaceId);
+    if (this.foregroundId !== workspaceId) {
+      this.foregroundId = workspaceId;
+      this.events.emit("workspace.switched", workspaceId, {
+        workspaceId,
+        workspaceRoot: mount.workspaceRoot,
+        reason: "setForeground",
+      });
+    }
+    return this.toInfo(mount);
+  }
+
+  /** Call before service-originated disk writes to reduce watch self-echo noise. */
+  markSelfWrite(workspaceId: string, holdMs = 200): void {
+    const mount = this.mounts.get(workspaceId);
+    if (!mount) return;
+    mount.suppressWatchUntil = Date.now() + holdMs;
+  }
+
+  async dispose(): Promise<void> {
+    for (const id of [...this.mounts.keys()]) {
+      await this.unmount(id);
+    }
+    for (const timer of this.watchTimers.values()) clearTimeout(timer);
+    this.watchTimers.clear();
+  }
+
+  private toInfo(m: MountedWorkspace): MountedWorkspaceInfo {
+    return {
+      workspaceId: m.workspaceId,
+      workspaceRoot: m.workspaceRoot,
+      systemRoot: m.systemRoot,
+      tentName: m.tentName,
+      foreground: this.foregroundId === m.workspaceId,
+    };
+  }
+
+  private startWatch(mount: MountedWorkspace): FSWatcher {
+    const watcher = this.watchFn(
+      mount.systemRoot,
+      { recursive: true },
+      (_event, filename) => {
+        if (!filename) return;
+        const rel = String(filename).replace(/\\/g, "/");
+        if (rel === "mutation.lock" || rel.endsWith("/mutation.lock")) return;
+        if (Date.now() < mount.suppressWatchUntil) return;
+
+        const prev = this.watchTimers.get(mount.workspaceId);
+        if (prev) clearTimeout(prev);
+        this.watchTimers.set(
+          mount.workspaceId,
+          setTimeout(() => {
+            this.watchTimers.delete(mount.workspaceId);
+            // Operational pipeline changes may still matter for task.state; concept paths fan concept.changed.
+            if (rel.startsWith("temp/") || rel === "temp") {
+              this.events.emit("task.state", mount.workspaceId, {
+                reason: "watch",
+                path: rel,
+              });
+              return;
+            }
+            this.events.emit("concept.changed", mount.workspaceId, {
+              reason: "watch",
+              path: rel,
+            });
+          }, this.watchDebounceMs)
+        );
+      }
+    );
+    watcher.on("error", () => {
+      // Watcher errors are non-fatal; clients can re-query.
+    });
+    return watcher;
+  }
+
+  private stopWatch(mount: MountedWorkspace): void {
+    const timer = this.watchTimers.get(mount.workspaceId);
+    if (timer) {
+      clearTimeout(timer);
+      this.watchTimers.delete(mount.workspaceId);
+    }
+    try {
+      mount.watcher?.close();
+    } catch {
+      // ignore
+    }
+    mount.watcher = undefined;
+  }
+}
+
+function makeWorkspaceId(workspaceRoot: string): string {
+  const base = path.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  return `ws-${base}-${hash}`;
+}
