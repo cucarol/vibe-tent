@@ -313,6 +313,43 @@ function suggestBoxName(typeName, now = Date.now()) {
   return `${safe}-${now.toString(36).slice(-4)}`;
 }
 
+// src/desktop/renderer/context-card-drag.ts
+function applyContextCardDragStart(dataTransfer, text) {
+  if (!dataTransfer) return;
+  dataTransfer.clearData();
+  dataTransfer.setData("text/plain", text);
+  dataTransfer.effectAllowed = "copy";
+}
+function bindContextCardDrag(node, text, options = {}) {
+  node.draggable = true;
+  node.setAttribute("title", "\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846 \xB7 \u5355\u51FB\u590D\u5236");
+  node.addEventListener("dragstart", (ev) => {
+    applyContextCardDragStart(ev.dataTransfer, text);
+    node.classList.add("is-dragging");
+  });
+  node.addEventListener("dragend", () => {
+    node.classList.remove("is-dragging");
+  });
+  node.addEventListener("click", () => {
+    void copyContextCardText(text, options);
+  });
+}
+async function copyContextCardText(text, options = {}) {
+  const write = options.writeClipboard ?? (async (value) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    throw new Error("Clipboard API unavailable");
+  });
+  try {
+    await write(text);
+    options.onCopied?.(text);
+  } catch (err) {
+    options.onCopyError?.(err);
+  }
+}
+
 // src/desktop/renderer/main-ui.ts
 var localTabs = /* @__PURE__ */ new Map();
 var activeCx = null;
@@ -866,14 +903,18 @@ async function loadCards() {
     (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}">
         <div><strong>${escapeHtml(c.label)}</strong></div>
         <div class="muted">${escapeHtml(c.kind)}/${escapeHtml(c.refId)}</div>
+        <div class="card-hint muted">\u62D6\u51FA \xB7 \u5355\u51FB\u590D\u5236</div>
       </li>`
   ).join("");
   el.cards.querySelectorAll("[data-card-idx]").forEach((node) => {
     const idx = Number(node.getAttribute("data-card-idx"));
     const card = cards[idx];
-    node.addEventListener("dragstart", (ev) => {
-      ev.dataTransfer?.setData("text/plain", card.text);
-      void window.tentDesktop.startDrag(card.text);
+    if (!card?.text) return;
+    bindContextCardDrag(node, card.text, {
+      onCopied: () => {
+        el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u590D\u5236\uFF08\u8F85\u52A9\uFF09\uFF1B\u62D6\u51FA\u4E0D\u4F9D\u8D56\u526A\u8D34\u677F\u3002";
+      },
+      onCopyError: (err) => setError(err)
     });
   });
 }
@@ -966,7 +1007,7 @@ async function onEmitCard() {
     label: tab.name
   });
   await loadCards();
-  el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u53EF\u4ECE\u5217\u8868\u62D6\u51FA\u3002";
+  el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u5DE6\u952E\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846\uFF08text/plain\uFF09\u3002";
 }
 function setError(err) {
   const msg = err instanceof Error ? err.message : String(err);

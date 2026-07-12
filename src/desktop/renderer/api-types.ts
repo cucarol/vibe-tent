@@ -33,7 +33,6 @@ export type TentDesktopBridge = {
     }>;
     foregroundRoot?: string | null;
   }>;
-  startDrag: (text: string) => Promise<{ ok: boolean; text: string; mime?: string }>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
 };
 

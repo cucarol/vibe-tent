@@ -408,7 +408,6 @@ var DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  startDrag: "tent:start-drag",
   onStateChanged: "tent:state-changed"
 };
 
@@ -486,26 +485,6 @@ function taskContextCard(taskId, opts) {
 }
 function contextCardToDragText(card) {
   return card.prompt;
-}
-function parseContextCardText(text) {
-  const lines = text.replace(/\r\n/g, "\n").split("\n");
-  if (!lines[0]?.startsWith("Tent contextCard v1")) return null;
-  const refLine = lines.find((l) => l.startsWith("contextRef: "));
-  if (!refLine) return null;
-  const rest = refLine.slice("contextRef: ".length).trim();
-  const slash = rest.indexOf("/");
-  if (slash <= 0) return null;
-  const kind = rest.slice(0, slash);
-  const id = rest.slice(slash + 1).trim();
-  if (!id) return null;
-  const pathLine = lines.find((l) => l.startsWith("path: "));
-  const fragmentLine = lines.find((l) => l.startsWith("fragment: "));
-  return {
-    kind,
-    id,
-    path: pathLine ? pathLine.slice("path: ".length).trim() : void 0,
-    fragment: fragmentLine ? fragmentLine.slice("fragment: ".length).trim() : void 0
-  };
 }
 
 // src/desktop/main/ipc.ts
@@ -596,13 +575,6 @@ function registerDesktopIpc(ctx) {
     await ctx.model.refreshHealth();
     await ctx.model.refreshTasks();
     return ctx.model.floatingStatus();
-  });
-  import_electron2.ipcMain.handle(DESKTOP_IPC.startDrag, async (_e, text) => {
-    const parsed = parseContextCardText(text);
-    if (!parsed && !text.startsWith("Tent contextCard")) {
-    }
-    import_electron2.clipboard.writeText(text);
-    return { ok: true, text, mime: "text/plain" };
   });
 }
 

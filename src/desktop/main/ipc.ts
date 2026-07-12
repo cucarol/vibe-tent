@@ -1,6 +1,6 @@
 // Main-process IPC handlers (minimal surface for secure preload bridge).
 
-import { BrowserWindow, clipboard, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
+import { BrowserWindow, dialog, ipcMain, type IpcMainInvokeEvent } from "electron";
 import type { DesktopServiceHost } from "./service-host.js";
 import { DesktopShellModel } from "../workbench/shell-model.js";
 import {
@@ -9,7 +9,7 @@ import {
   saveDesktopPrefs,
 } from "../prefs.js";
 import { DESKTOP_IPC, type DesktopPreferences, type RecentContextCard } from "../types.js";
-import { contextCardToDragText, parseContextCardText } from "../../core/context-card.js";
+import { contextCardToDragText } from "../../core/context-card.js";
 
 export type IpcContext = {
   host: DesktopServiceHost;
@@ -142,19 +142,9 @@ export function registerDesktopIpc(ctx: IpcContext): void {
     return ctx.model.floatingStatus();
   });
 
-  /**
-   * Start OS drag of text/plain context card payload.
-   * Electron supports startDrag for files; for text we copy to clipboard as
-   * fallback and return the drag text for HTML5 drag in renderer.
-   */
-  ipcMain.handle(DESKTOP_IPC.startDrag, async (_e: unknown, text: string) => {
-    const parsed = parseContextCardText(text);
-    if (!parsed && !text.startsWith("Tent contextCard")) {
-      // Still allow raw text drag payloads that look like cards.
-    }
-    clipboard.writeText(text);
-    return { ok: true, text, mime: "text/plain" };
-  });
+  // Context Card cross-app drag is renderer HTML5 text/plain (Chromium OLE on
+  // Windows). Electron webContents.startDrag is file-path only — do not expose
+  // a clipboard-write IPC as if it were native text drag.
 }
 
 export function pushCardFromModel(model: DesktopShellModel): RecentContextCard | null {

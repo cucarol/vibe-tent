@@ -35,7 +35,6 @@ var DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  startDrag: "tent:start-drag",
   onStateChanged: "tent:state-changed"
 };
 
@@ -56,7 +55,6 @@ var api = {
   hideFloat: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.hideFloat),
   pushContextCard: (payload) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.pushContextCard, payload),
   getFloatingStatus: () => import_electron.ipcRenderer.invoke(DESKTOP_IPC.getFloatingStatus),
-  startDrag: (text) => import_electron.ipcRenderer.invoke(DESKTOP_IPC.startDrag, text),
   onStateChanged: (handler) => {
     const listener = (_event, state) => handler(state);
     import_electron.ipcRenderer.on(DESKTOP_IPC.onStateChanged, listener);

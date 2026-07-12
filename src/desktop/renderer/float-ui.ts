@@ -2,14 +2,14 @@
 
 import "./api-types.js";
 import { escapeHtml } from "../../markdown/render.js";
-
-type FloatingStatus = Awaited<ReturnType<Window["tentDesktop"]["getFloatingStatus"]>>;
+import { bindContextCardDrag } from "./context-card-drag.js";
 
 const healthEl = document.getElementById("health-pill")!;
 const pendingEl = document.getElementById("n-pending")!;
 const takenEl = document.getElementById("n-taken")!;
 const cardsEl = document.getElementById("cards")!;
 const fgEl = document.getElementById("fg-root")!;
+const headHint = document.querySelector(".float-shell .panel-head");
 
 async function refresh(): Promise<void> {
   const s = await window.tentDesktop.getFloatingStatus();
@@ -29,6 +29,7 @@ async function refresh(): Promise<void> {
       (c, i) => `<li class="card-item" draggable="true" data-idx="${i}">
         <div><strong>${escapeHtml(c.label)}</strong></div>
         <div class="muted">${escapeHtml(c.kind)}/${escapeHtml(c.refId)}</div>
+        <div class="card-hint muted">拖出 · 单击复制</div>
       </li>`
     )
     .join("");
@@ -36,10 +37,12 @@ async function refresh(): Promise<void> {
   cardsEl.querySelectorAll<HTMLElement>("[data-idx]").forEach((node) => {
     const idx = Number(node.getAttribute("data-idx"));
     const card = s.recentCards[idx];
-    node.addEventListener("dragstart", (ev) => {
-      ev.dataTransfer?.setData("text/plain", card.text);
-      ev.dataTransfer!.effectAllowed = "copy";
-      void window.tentDesktop.startDrag(card.text);
+    if (!card?.text) return;
+    // HTML5 text/plain only — no clipboard IPC on dragstart.
+    bindContextCardDrag(node, card.text, {
+      onCopied: () => {
+        if (headHint) headHint.textContent = "上下文卡 · 已复制";
+      },
     });
   });
 }

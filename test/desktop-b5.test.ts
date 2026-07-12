@@ -287,7 +287,8 @@ test("drop target receives full text/plain context card payload", async () => {
   const card = boxContextCard("cx-drop", "path/to/box", { label: "drop-me" });
   const payload = contextCardToDragText(card);
 
-  // Minimal HTTP drop target simulating external app paste/drop
+  // Minimal HTTP drop target simulating external app receiving text/plain
+  // (cross-app HTML5 drag on Windows; not a clipboard or file path).
   const received: string[] = [];
   const server = http.createServer((req, res) => {
     if (req.method === "POST" && req.url === "/drop") {
@@ -315,5 +316,6 @@ test("drop target receives full text/plain context card payload", async () => {
   assert.equal(received[0], payload);
   assert.match(received[0], /Tent contextCard v1/);
   assert.match(received[0], /cx-drop/);
+  assert.doesNotMatch(received[0], /\.md\b/);
   await new Promise<void>((r) => server.close(() => r()));
 });

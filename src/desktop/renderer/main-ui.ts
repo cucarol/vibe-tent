@@ -22,6 +22,7 @@ import {
   type RoleOption,
   type TaskReviewItem,
 } from "../workbench/collaboration-ui.js";
+import { bindContextCardDrag } from "./context-card-drag.js";
 
 type ConceptNode = {
   id: string;
@@ -741,15 +742,20 @@ async function loadCards(): Promise<void> {
       (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}">
         <div><strong>${escapeHtml(c.label)}</strong></div>
         <div class="muted">${escapeHtml(c.kind)}/${escapeHtml(c.refId)}</div>
+        <div class="card-hint muted">拖出 · 单击复制</div>
       </li>`
     )
     .join("");
   el.cards.querySelectorAll<HTMLElement>("[data-card-idx]").forEach((node) => {
     const idx = Number(node.getAttribute("data-card-idx"));
     const card = cards[idx];
-    node.addEventListener("dragstart", (ev) => {
-      ev.dataTransfer?.setData("text/plain", card.text);
-      void window.tentDesktop.startDrag(card.text);
+    if (!card?.text) return;
+    // HTML5 text/plain only — no clipboard IPC on dragstart.
+    bindContextCardDrag(node, card.text, {
+      onCopied: () => {
+        el.status.textContent = "上下文卡已复制（辅助）；拖出不依赖剪贴板。";
+      },
+      onCopyError: (err) => setError(err),
     });
   });
 }
@@ -850,7 +856,7 @@ async function onEmitCard(): Promise<void> {
     label: tab.name,
   });
   await loadCards();
-  el.status.textContent = "上下文卡已就绪 — 可从列表拖出。";
+  el.status.textContent = "上下文卡已就绪 — 左键拖到外部输入框（text/plain）。";
 }
 
 function setError(err: unknown): void {

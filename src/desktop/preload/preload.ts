@@ -24,7 +24,6 @@ export type TentDesktopApi = {
     label?: string;
   }) => Promise<unknown>;
   getFloatingStatus: () => Promise<unknown>;
-  startDrag: (text: string) => Promise<{ ok: boolean; text: string; mime: string }>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
 };
 
@@ -48,7 +47,6 @@ const api: TentDesktopApi = {
   hideFloat: () => ipcRenderer.invoke(DESKTOP_IPC.hideFloat),
   pushContextCard: (payload) => ipcRenderer.invoke(DESKTOP_IPC.pushContextCard, payload),
   getFloatingStatus: () => ipcRenderer.invoke(DESKTOP_IPC.getFloatingStatus),
-  startDrag: (text: string) => ipcRenderer.invoke(DESKTOP_IPC.startDrag, text),
   onStateChanged: (handler) => {
     const listener = (_event: unknown, state: unknown) => handler(state);
     ipcRenderer.on(DESKTOP_IPC.onStateChanged, listener);

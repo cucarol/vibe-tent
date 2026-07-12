@@ -105,7 +105,7 @@ export function deliveryContextCard(
   return buildContextCard({ kind: "delivery", id: deliveryId, path: opts?.path }, opts);
 }
 
-/** Serialize for native drag / clipboard as plain text. */
+/** Serialize for HTML5 text/plain drag (and optional click-to-copy) as plain text. */
 export function contextCardToDragText(card: ContextCard): string {
   return card.prompt;
 }

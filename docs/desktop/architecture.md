@@ -32,7 +32,7 @@ Workspace-resident tent system dir + machine-local service data area
 1. **core** owns domain rules (concept/box tree, types/capabilities, claim topology, task/delivery semantics as data+ops, workspace ports). Core does not own windows, process supervision, or provider credentials.
 2. **Local Service** is the **only mutation entry** for tent operational and concept writes in the desktop product path. Desktop renderer, Electron main (except bootstrap), CLI, MCP tools, and adapters **must not** call core mutation paths that bypass the service when a service is available.
 3. **CLI** remains a first-class client: short-lived process that **attaches** to a running service; if none is reachable it may **bootstrap** a lightweight service and retry. CLI must not maintain a second lifecycle implementation.
-4. **Desktop shell** is a client: main process owns OS windows/tray/native drag; renderer shows projections and issues commands. Closing the main window must not stop the service or in-flight tasks.
+4. **Desktop shell** is a client: main process owns OS windows/tray; renderer shows projections and issues commands (including HTML5 contextCard drag). Closing the main window must not stop the service or in-flight tasks.
 5. **Adapters** (ACP/CLI agents) are execution ports injected by the service. They emit process/session events only; they do not implement box occupancy, dispatch/claim/accept, or chat routing.
 6. **Markdown subsystem** consumes Query/Command APIs; Tent core/service must not import editor implementations.
 
@@ -48,8 +48,8 @@ Forbidden reverse edges:
 
 | Component | Responsibility | Lifetime |
 | --- | --- | --- |
-| **Electron main** | Windows, tray, floating control, native drag, discover/start service | User session; may exit while service continues |
-| **Renderer** | Workbench UI: tree, attributes, dispatch draft, review surface, projections | Restartable; truth is service state |
+| **Electron main** | Windows, tray, floating control, discover/start service | User session; may exit while service continues |
+| **Renderer** | Workbench UI: tree, attributes, dispatch draft, review surface, projections; contextCard HTML5 `text/plain` drag | Restartable; truth is service state |
 | **Local Service** | WorkspaceHost, mutation bus, file watch, event fan-out, Task/Query API, A2A gate, Git/worktree orchestration, session/process supervision | Longer than main window; recoverable from disk + process probe after crash |
 | **CLI** | Agent/automation entry | Short-lived; attach → bootstrap → retry |
 | **Adapter workers** | Provider-specific agent processes | Supervised by service; bound to replaceable sessions |
@@ -150,10 +150,25 @@ Client query / subscribe
 ### 4.4 What may stay local without inventing domain rules
 
 - Pure UI draft state (unsaved editor buffer until save command)
-- Ephemeral drag of contextCard payloads (pointer + fixed prompt template)
+- Ephemeral drag of contextCard payloads (pointer + fixed prompt template) — see **B6** below
 - Machine-local preferences in the service data area
 
 Clients must not re-implement claim topology, type resolution, or accept/integrate separation.
+
+### 4.5 Context Card drag (B6 · Windows MVP)
+
+**Goal:** left-drag a small card from the main window or floating control into an external official agent GUI input, delivering a stable Tent pointer + fixed auxiliary prompt as **plain text**.
+
+| Rule | Detail |
+| --- | --- |
+| Payload | Strictly `contextCardToDragText` → Context Card **v1** template (`text/plain` only). No document snapshots, no compatibility bags. |
+| Mechanism | Chromium/Electron **HTML5 drag** (`dataTransfer.setData("text/plain", …)`). On Windows this crosses apps as OLE text. |
+| Not used | `webContents.startDrag` — Electron API is **file-path only** (icon + file(s)); it cannot carry arbitrary text. |
+| Forbidden “completion” | Clipboard-only fallback sold as drag; generating temp `.md` / dragging files to impersonate a text card. |
+| Click | Optional **copy** on click remains an auxiliary path; drag must not depend on prior clipboard write. |
+| Surfaces | Main workbench “最近上下文卡” list and floating control card list. |
+
+External drop into third-party agent GUIs is validated manually by the user; automated tests cover payload integrity, renderer `dataTransfer` wiring, and IPC surface (no fake native-drag channel).
 
 ---
 
@@ -303,7 +318,7 @@ Contract freeze is **B0** (this document + peer B0 contracts). Implementation or
 | **B3** | Electron shell + workbench vertical slice | Desktop architecture | B2 protocol | Main window tree/attrs/dispatch/review; tray |
 | **B4** | CLI attach service | Desktop architecture | B2 | CLI via service; bootstrap if missing （实现见 `docs/desktop/cli-service.md`，`tent task *`） |
 | **B5** | Migration tool | Desktop architecture | B1 | dry-run / migrate / rollback report |
-| **B6** | contextCard native drag | Desktop architecture | B3 | Windows cross-app drag gate |
+| **B6** | contextCard HTML5 text/plain drag (Windows MVP) | Desktop architecture | B3 | Cross-app text drag via Chromium; no file/clipboard fake |
 | **B7** | Markdown MVP | Docs role | B2 Query API | Editor/links/search |
 | **B8** | Task API + A2A hard gate | Collab role | B2 | States, delivery, allow\|ask\|deny in service |
 | **B9** | ACP adapters | ACP role | B2 + B8 | Provider/session/supervisor |

@@ -65,6 +65,5 @@ export const DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  startDrag: "tent:start-drag",
   onStateChanged: "tent:state-changed",
 } as const;
