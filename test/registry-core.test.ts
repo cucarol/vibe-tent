@@ -58,14 +58,15 @@ test("scaffoldTent:core 生成自包含帐骨架(RULES,不进 SPEC/CLAUDE/AGENTS
   assert.equal(await fsa.exists("CLAUDE.md"), false);
   assert.equal(await fsa.exists("AGENTS.md"), false);
   assert.equal(await fsa.exists(".claude"), false);
+  assert.equal(await fsa.exists("skills.json"), false);
   assert.equal(await fsa.exists(".tent/skills.json"), false);
   assert.deepEqual((await loadRolesRegistry(fsa)).roles, []);
   assert.deepEqual((await loadTagRegistry(fsa)).tags, []);
   assert.deepEqual(
-    JSON.parse(await fsa.readFile(".tent/types.json")),
+    JSON.parse(await fsa.readFile("types.json")),
     tent.typeRegistry,
   );
-  assert.equal(await fsa.exists(".gitignore"), false, "Tent 本身不创建 Git 配置");
+  assert.equal(await fsa.exists(".gitignore"), false, "system-root scaffold 不写 workspace gitignore");
 
   const invalidDir = await fs.mkdtemp(
     path.join(os.tmpdir(), "tent-scaffold-invalid-"),

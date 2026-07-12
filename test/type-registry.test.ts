@@ -8,9 +8,10 @@ import { canClaim } from "../src/core/claim.js";
 import { buildManifest } from "../src/core/manifest.js";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import {
-  baseDefinitionWorkspacePointer,
+  baseDefinitionCoordination,
   loadTypeRegistry,
   normalizeRegistry,
+  typeHasCoordination,
   typeAllowsWorkspacePointer,
 } from "../src/core/typeRegistry.js";
 import {
@@ -22,7 +23,7 @@ import {
 } from "../src/core/typeManagement.js";
 import { makeTent } from "./helpers.js";
 
-test("一级 type 默认:goal/prompt/output 来自注册表", async () => {
+test("一级 type 默认:goal/prompt/artifact + coordination 来自注册表", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
 
@@ -30,74 +31,83 @@ test("一级 type 默认:goal/prompt/output 来自注册表", async () => {
   assert.equal(g2.readable.value, true, "goal 可读");
   assert.equal(g2.writable.value, false, "goal 不可写");
   assert.equal(g2.writable.source, "type");
+  assert.equal(g2.coordination, true, "goal 默认可作 box");
 
   const p1 = tent.byId.get("bx-p1")!;
   assert.equal(p1.writable.value, true, "prompt 默认可写");
   assert.equal(p1.writable.source, "type");
+  assert.equal(p1.coordination, true);
 
   const p2 = tent.byId.get("bx-p2")!;
   assert.equal(p2.writable.value, true, "草稿显式开 writable");
   assert.equal(p2.writable.source, "self");
 
   const out = tent.byId.get("bx-o1")!;
-  assert.equal(out.writable.value, true, "output 默认可写");
+  assert.equal(out.writable.value, true, "legacy output 映射后默认可写");
   assert.equal(out.writable.source, "type");
-  assert.equal(baseDefinitionWorkspacePointer(tent.typeRegistry.output), true, "默认 output 开启 workspace 指针");
-  assert.equal(baseDefinitionWorkspacePointer(tent.typeRegistry.goal), undefined);
-  assert.equal(typeAllowsWorkspacePointer("output", tent.typeRegistry), true);
-  assert.equal(typeAllowsWorkspacePointer("output-reference", tent.typeRegistry), true);
-  assert.equal(typeAllowsWorkspacePointer("goal", tent.typeRegistry), false);
+  assert.equal(out.coordination, true, "legacy output 解析为 coordination box");
+  assert.equal(baseDefinitionCoordination(tent.typeRegistry.artifact), true);
+  assert.equal(baseDefinitionCoordination(tent.typeRegistry.goal), true);
+  assert.equal(baseDefinitionCoordination(tent.typeRegistry.note), false);
+  assert.equal(typeHasCoordination("artifact", tent.typeRegistry), true);
+  assert.equal(typeHasCoordination("output", tent.typeRegistry), true, "迁移窗口 output 名映射到 artifact");
+  assert.equal(typeHasCoordination("output-reference", tent.typeRegistry), true);
+  assert.equal(typeHasCoordination("note", tent.typeRegistry), false);
+  assert.equal(typeAllowsWorkspacePointer("artifact", tent.typeRegistry), false, "workspacePointer 运行时已退役");
 });
 
-test("workspacePointer:旧帐无字段时仅名为 output 的一级 type 兼容开启", async () => {
+test("coordination:旧帐无字段时内置倾向 goal/prompt/artifact/output=true, note=false", async () => {
   const legacy = normalizeRegistry({
     goal: { tier: "base", readable: true, writable: false },
     prompt: { tier: "base", readable: true, writable: true },
     output: { tier: "base", readable: true, writable: true },
+    note: { tier: "base", readable: true, writable: true },
     repo: { tier: "base", readable: true, writable: true },
   });
-  assert.equal(baseDefinitionWorkspacePointer(legacy.output), true);
-  assert.equal(baseDefinitionWorkspacePointer(legacy.repo), undefined);
-  assert.equal(typeAllowsWorkspacePointer("output", legacy), true);
-  assert.equal(typeAllowsWorkspacePointer("repo", legacy), false);
+  assert.equal(baseDefinitionCoordination(legacy.goal), true);
+  assert.equal(baseDefinitionCoordination(legacy.artifact), true);
+  assert.equal(baseDefinitionCoordination(legacy.note), false);
+  assert.equal(baseDefinitionCoordination(legacy.repo), undefined);
+  assert.equal(typeHasCoordination("output", legacy), true);
+  assert.equal(typeHasCoordination("repo", legacy), false);
 
-  const renamed = normalizeRegistry({
-    delivery: { tier: "base", readable: true, writable: true, workspacePointer: true },
-    output: { tier: "base", readable: true, writable: true, workspacePointer: false },
+  const custom = normalizeRegistry({
+    delivery: { tier: "base", readable: true, writable: true, coordination: true },
+    note: { tier: "base", readable: true, writable: true, coordination: false },
   });
-  assert.equal(typeAllowsWorkspacePointer("delivery", renamed), true);
-  assert.equal(typeAllowsWorkspacePointer("delivery-asset", renamed), true);
-  assert.equal(typeAllowsWorkspacePointer("output", renamed), false);
+  assert.equal(typeHasCoordination("delivery", custom), true);
+  assert.equal(typeHasCoordination("delivery-asset", custom), true);
+  assert.equal(typeHasCoordination("note", custom), false);
 });
 
-test("workspacePointer:可在一级 type 上更新,二级 type 拒绝", async () => {
+test("coordination:可在一级 type 上更新,二级 type 拒绝; workspacePointer 写入被拒", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   await createPrimaryType(fsa, "repo", {
     tier: "base",
     readable: true,
     writable: true,
-    workspacePointer: true,
+    coordination: true,
   });
   let registry = await loadTypeRegistry(fsa);
-  assert.equal(baseDefinitionWorkspacePointer(registry.repo), true);
+  assert.equal(baseDefinitionCoordination(registry.repo), true);
 
-  await updateTypeMetadata(fsa, "type", "repo", { workspacePointer: false });
+  await updateTypeMetadata(fsa, "type", "repo", { coordination: false });
   registry = await loadTypeRegistry(fsa);
-  assert.equal(baseDefinitionWorkspacePointer(registry.repo), false);
-  assert.equal(typeAllowsWorkspacePointer("repo", registry), false);
+  assert.equal(baseDefinitionCoordination(registry.repo), false);
+  assert.equal(typeHasCoordination("repo", registry), false);
 
-  await updateTypeMetadata(fsa, "type", "output", { workspacePointer: false });
+  await updateTypeMetadata(fsa, "type", "note", { coordination: true });
   registry = await loadTypeRegistry(fsa);
-  assert.equal(baseDefinitionWorkspacePointer(registry.output), false);
-  assert.equal(typeAllowsWorkspacePointer("output", registry), false);
-  // 落盘后重载仍保持关闭，不被默认兼容逻辑吞回。
-  registry = await loadTypeRegistry(fsa);
-  assert.equal(typeAllowsWorkspacePointer("output", registry), false);
+  assert.equal(typeHasCoordination("note", registry), true);
 
   await assert.rejects(
-    () => updateTypeMetadata(fsa, "type", "reference", { workspacePointer: true }),
-    /Modifier types cannot configure workspace pointer/,
+    () => updateTypeMetadata(fsa, "type", "reference", { coordination: true }),
+    /Modifier types cannot configure coordination/,
+  );
+  await assert.rejects(
+    () => updateTypeMetadata(fsa, "type", "repo", { workspacePointer: true }),
+    /workspacePointer capability is retired/,
   );
 });
 

@@ -8,42 +8,39 @@ import { loadTent } from "../src/core/tree.js";
 import { createPrimaryType, updateTypeMetadata } from "../src/core/typeManagement.js";
 import { configureTestGitIdentity, git, makeTent } from "./helpers.js";
 
-test("resolveTentWorkspace:按一级 type 的 workspacePointer 解析,不依赖 output 名称", async () => {
+test("resolveTentWorkspace:优先 in-workspace 布局,否则读 concept 上的 workspace 字段", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  const { resolveTentWorkspace } = await import("../src/core/workspace.js");
+  const { resolveTentWorkspace, findIntegratedCommit } = await import("../src/core/workspace.js");
 
   await fs.writeFile(
     path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"),
-    "---\nid: bx-o1\ntype: output\nworkspace: C:/legacy/repo\n---\n",
+    "---\nid: bx-o1\ntype: artifact\nworkspace: C:/legacy/repo\n---\n",
   );
   let tent = await loadTent(fsa);
   assert.equal(path.resolve(resolveTentWorkspace(tent)!), path.resolve("C:/legacy/repo"));
 
-  await updateTypeMetadata(fsa, "type", "output", { workspacePointer: false });
-  tent = await loadTent(fsa);
-  assert.equal(resolveTentWorkspace(tent), undefined, "关闭能力后即使有 workspace 字段也不注册");
-
-  await createPrimaryType(fsa, "repo", {
-    tier: "base",
-    readable: true,
-    writable: true,
-    workspacePointer: true,
-  });
-  await fs.mkdir(path.join(dir, "repo-pointer"), { recursive: true });
+  // 去掉所有 workspace 字段后无契约
   await fs.writeFile(
-    path.join(dir, "repo-pointer", "repo-pointer.md"),
-    "---\nid: bx-repo1\ntype: repo\nworkspace: C:/custom/repo\n---\n",
+    path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md"),
+    "---\nid: bx-o1\ntype: artifact\n---\n",
   );
   tent = await loadTent(fsa);
-  assert.equal(path.resolve(resolveTentWorkspace(tent)!), path.resolve("C:/custom/repo"));
+  assert.equal(resolveTentWorkspace(tent), undefined, "无 workspace 字段不产生契约");
 
-  await fs.writeFile(
-    path.join(dir, "repo-pointer", "repo-pointer.md"),
-    "---\nid: bx-repo1\ntype: repo\n---\n",
-  );
-  tent = await loadTent(fsa);
-  assert.equal(resolveTentWorkspace(tent), undefined, "开启能力但无 workspace 字段不产生契约");
+  // system root 名为 .tent 时父目录即 workspace
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ws-layout-"));
+  const workspace = path.join(parent, "repo");
+  const systemRoot = path.join(workspace, ".tent");
+  await fs.mkdir(systemRoot, { recursive: true });
+  await fs.writeFile(path.join(systemRoot, "RULES.md"), "# r\n");
+  const layoutFs = new NodeFs(systemRoot);
+  tent = await loadTent(layoutFs);
+  assert.equal(path.resolve(resolveTentWorkspace(tent, systemRoot)!), path.resolve(workspace));
+
+  void findIntegratedCommit;
+  void createPrimaryType;
+  void updateTypeMetadata;
 });
 
 test("workspaceCheckShell:POSIX require-check uses portable sh -c", async () => {

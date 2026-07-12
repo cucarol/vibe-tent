@@ -6,7 +6,7 @@ import {
   pendingDispatches,
 } from "../src/plugin/pending-dispatch.js";
 import type { TaskEnvelope } from "../src/core/task.js";
-import { baseDefinitionWorkspacePointer } from "../src/core/typeRegistry.js";
+import { baseDefinitionCoordination, typeAllowsWorkspacePointer } from "../src/core/typeRegistry.js";
 import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
@@ -233,13 +233,14 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.equal(settings.tentsRoot, "vault-tents");
   assert.equal(settings.appearance, "light");
   assert.equal(settings.dispatchPrefs.copyPromptToClipboard, false);
-  assert.equal(settings.newTentDefaults.typeRegistry.note.description, undefined);
+  assert.equal(settings.newTentDefaults.typeRegistry.note.readable, true);
+  assert.equal(settings.newTentDefaults.typeRegistry.note.writable, false, "legacy note writable=false from template is preserved");
   assert.equal(
-    baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.output),
+    baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.output ?? settings.newTentDefaults.typeRegistry.artifact),
     true,
-    "旧默认 Type 无字段时 output 仍兼容开启 workspace 指针"
+    "旧 output 定义映射后仍可作 coordination box"
   );
-  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.repo), true);
+  assert.equal(typeAllowsWorkspacePointer("repo", settings.newTentDefaults.typeRegistry), false, "workspacePointer 运行时退役");
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   assert.deepEqual(settings.newTentDefaults.rolesRegistry.roles[0], {
     name: "planner",
@@ -249,11 +250,13 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.equal(settings.newTentDefaults.rulesTemplate, "# Custom");
 });
 
-test("plugin settings:default type registry exposes workspacePointer on output", () => {
+test("plugin settings:default type registry exposes coordination on goal/prompt/artifact", () => {
   const settings = mergeSettings({});
-  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.output), true);
-  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.goal), undefined);
-  assert.equal(baseDefinitionWorkspacePointer(settings.newTentDefaults.typeRegistry.prompt), undefined);
+  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.artifact), true);
+  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.goal), true);
+  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.prompt), true);
+  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.note), false);
+  assert.equal(typeAllowsWorkspacePointer("artifact", settings.newTentDefaults.typeRegistry), false);
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

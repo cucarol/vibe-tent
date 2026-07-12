@@ -136,7 +136,7 @@ test("manifest:可读集=全帐 readable,可写集=认领子树 writable + temp 
     writablePaths.some((p) => p === "temp/executor/"),
     "temp 格在可写集",
   );
-  assert.ok(readablePaths.includes(".tent/roles.json"), "role 注册表是 agent 的系统只读上下文");
+  assert.ok(readablePaths.includes("roles.json"), "role 注册表是 agent 的系统只读上下文");
   assert.ok(readablePaths.includes("temp/"), "整个 temp 系统管道在可读集");
 
   const yaml = manifestToYaml(m);
@@ -763,15 +763,15 @@ test("Tent mutation lock:并发写入被短期互斥,释放后可继续", async 
   const second = new NodeFs(dir);
   let release!: () => void;
   const held = new Promise<void>((resolve) => (release = resolve));
-  const active = first.withLock!(".tent/mutation.lock", async () => held);
-  while (!(await first.exists(".tent/mutation.lock"))) {
+  const active = first.withLock!("mutation.lock", async () => held);
+  while (!(await first.exists("mutation.lock"))) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
   await assert.rejects(
-    () => second.withLock!(".tent/mutation.lock", async () => undefined),
+    () => second.withLock!("mutation.lock", async () => undefined),
     /already running another write operation/,
   );
   release();
   await active;
-  await second.withLock!(".tent/mutation.lock", async () => undefined);
+  await second.withLock!("mutation.lock", async () => undefined);
 });
