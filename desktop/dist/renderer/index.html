@@ -23,7 +23,13 @@
     <aside class="panel tree-panel">
       <div class="panel-head">
         <span>概念树</span>
-        <button type="button" id="btn-new-note" title="新建笔记">+</button>
+        <div class="row tree-actions">
+          <button type="button" id="btn-new-note" title="新建普通笔记">笔记</button>
+        </div>
+      </div>
+      <div class="create-row">
+        <select id="create-type" title="可协调一级类型" aria-label="协作框类型"></select>
+        <button type="button" id="btn-new-box" class="primary" title="一键新建协作框">新建协作框</button>
       </div>
       <div class="search-row">
         <input id="search-input" placeholder="搜索标题 / 正文" />
@@ -42,7 +48,11 @@
     <aside class="panel side-panel">
       <div class="panel-head">属性</div>
       <div id="meta" class="meta muted">未选择</div>
-      <div class="panel-head">任务</div>
+      <div class="panel-head">派活</div>
+      <div id="dispatch-panel" class="dispatch-panel">
+        <div class="muted dispatch-empty">选中协作框后可派活</div>
+      </div>
+      <div class="panel-head">任务 / 待裁</div>
       <ul id="tasks" class="task-list"></ul>
       <div class="panel-head">最近上下文卡</div>
       <ul id="cards" class="card-list"></ul>

@@ -2429,6 +2429,7 @@ function resolveConcept(tent, conceptIdOrPath) {
 
 // src/service/handlers.ts
 init_task();
+init_typeRegistry();
 init_task_model();
 
 // src/runtime/types.ts
@@ -2670,6 +2671,8 @@ var CLIENT_METHODS = [
   "docs.fork",
   "docs.search",
   "docs.backlinks",
+  "registry.types",
+  "registry.roles",
   "task.dispatch",
   "task.claim",
   "task.wait",
@@ -2750,6 +2753,10 @@ async function dispatchMethod(ctx, method, params) {
         return docsSearch(ctx, p);
       case "docs.backlinks":
         return docsBacklinks(ctx, p);
+      case "registry.types":
+        return registryTypes(ctx, p);
+      case "registry.roles":
+        return registryRoles(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -3006,6 +3013,37 @@ async function docsBacklinks(ctx, p) {
     cx: concept.id,
     backlinks: reverse.get(concept.id) ?? []
   };
+}
+async function registryTypes(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadTypeRegistry(mount.env.fs);
+  const types = Object.entries(registry).map(([name, def]) => {
+    const tier = def.tier === "modifier" ? "modifier" : "base";
+    const coordination = tier === "base" && "coordination" in def ? def.coordination === true : false;
+    return {
+      name,
+      tier,
+      readable: def.readable,
+      writable: def.writable,
+      coordination,
+      color: def.color,
+      description: def.description
+    };
+  }).sort((a, b) => a.name.localeCompare(b.name));
+  return { workspaceId, types };
+}
+async function registryRoles(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadRolesRegistry(mount.env.fs);
+  const roles = registry.roles.map((role) => ({
+    name: role.name,
+    description: role.description,
+    color: role.color,
+    prompt: role.prompt
+  })).sort((a, b) => a.name.localeCompare(b.name));
+  return { workspaceId, roles };
 }
 async function docsCreateNote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);

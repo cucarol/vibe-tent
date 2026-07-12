@@ -1,7 +1,27 @@
 // Main workbench renderer — talks only to preload bridge → service.
+// P0-1: collaboration closed loop — create box → dispatch → review accept/reject.
 
 import "./api-types.js";
 import { renderMarkdownToHtml, escapeHtml } from "../../markdown/render.js";
+import type {
+  DeliveryProjection,
+  RoleRegistryEntryProjection,
+  TaskProjection,
+  TypeRegistryEntryProjection,
+} from "../../service/types.js";
+import {
+  buildAcceptPayload,
+  buildRejectPayload,
+  buildTaskReviewItems,
+  listCoordinationTypeOptions,
+  listRoleOptions,
+  pickDefaultCoordinationType,
+  suggestBoxName,
+  validateDispatchForm,
+  type CoordinationTypeOption,
+  type RoleOption,
+  type TaskReviewItem,
+} from "../workbench/collaboration-ui.js";
 
 type ConceptNode = {
   id: string;
@@ -50,7 +70,19 @@ type ShellState = {
     searchHits: Array<{ cx: string; name: string; snippet: string; match: string }>;
     statusMessage: string | null;
   } | null;
-  tasks: Array<{ path: string; role: string; status: string; claims: string[] }>;
+  tasks: Array<{
+    path: string;
+    role: string;
+    status: string;
+    claims: string[];
+    state?: string;
+    id?: string;
+    prompt?: string;
+    activeDeliveryId?: string;
+  }>;
+  taskReview?: TaskReviewItem[];
+  roles?: RoleOption[];
+  coordinationTypes?: CoordinationTypeOption[];
   statusMessage: string | null;
 };
 
@@ -61,6 +93,19 @@ let tree: ConceptNode[] = [];
 let state: ShellState | null = null;
 let workspaceId: string | null = null;
 
+/** Cached registry projections for create/dispatch pickers. */
+let coordinationTypes: CoordinationTypeOption[] = [];
+let roles: RoleOption[] = [];
+let taskReview: TaskReviewItem[] = [];
+let deliveries: DeliveryProjection[] = [];
+
+/** Draft form state (pure UI). */
+let createTypePick = "";
+let dispatchRole = "";
+let dispatchPrompt = "";
+/** taskPath → inline reject reason draft */
+const rejectDrafts = new Map<string, string>();
+
 const el = {
   health: document.getElementById("health-pill")!,
   wsSelect: document.getElementById("workspace-select") as HTMLSelectElement,
@@ -70,16 +115,23 @@ const el = {
   toolbar: document.getElementById("toolbar")!,
   editor: document.getElementById("editor-host")!,
   meta: document.getElementById("meta")!,
+  dispatch: document.getElementById("dispatch-panel")!,
   tasks: document.getElementById("tasks")!,
   cards: document.getElementById("cards")!,
   searchInput: document.getElementById("search-input") as HTMLInputElement,
   searchHits: document.getElementById("search-hits")!,
+  createType: document.getElementById("create-type") as HTMLSelectElement,
+  btnNewBox: document.getElementById("btn-new-box") as HTMLButtonElement,
 };
 
 async function boot(): Promise<void> {
   document.getElementById("btn-open-ws")!.addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh")!.addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note")!.addEventListener("click", () => void onCreateNote());
+  el.btnNewBox.addEventListener("click", () => void onCreateCoordBox());
+  el.createType.addEventListener("change", () => {
+    createTypePick = el.createType.value;
+  });
   document.getElementById("btn-search")!.addEventListener("click", () => void onSearch());
   document.getElementById("btn-card")!.addEventListener("click", () => void onEmitCard());
   document.getElementById("btn-float")!.addEventListener("click", () => void window.tentDesktop.showFloat());
@@ -101,7 +153,7 @@ async function refresh(): Promise<void> {
   const s = (await window.tentDesktop.getState()) as ShellState;
   applyShell(s);
   if (workspaceId) {
-    await reloadTree();
+    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks()]);
   }
 }
 
@@ -129,7 +181,36 @@ function applyShell(s: ShellState): void {
     renderTree();
   }
 
-  renderTasks(s.tasks || []);
+  if (s.coordinationTypes?.length) {
+    coordinationTypes = s.coordinationTypes;
+    renderCreateTypeSelect();
+  }
+  if (s.roles) {
+    roles = s.roles;
+  }
+  if (s.taskReview?.length) {
+    taskReview = s.taskReview;
+  } else if (s.tasks?.length) {
+    taskReview = buildTaskReviewItems(
+      s.tasks.map((t) => ({
+        path: t.path,
+        id: t.id,
+        role: t.role,
+        claims: t.claims || [],
+        status: (t.status === "taken" ? "taken" : "pending") as "pending" | "taken",
+        state: t.state || t.status,
+        prompt: t.prompt,
+        activeDeliveryId: t.activeDeliveryId,
+        manifest: "",
+      })),
+      deliveries
+    );
+  } else {
+    taskReview = [];
+  }
+
+  renderTasks();
+  renderDispatchPanel();
   void loadCards();
 }
 
@@ -140,6 +221,70 @@ async function reloadTree(): Promise<void> {
   };
   tree = result.concepts || [];
   renderTree();
+}
+
+async function reloadRegistry(): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const [typesResult, rolesResult] = await Promise.all([
+      window.tentDesktop.rpc("registry.types", { workspaceId }) as Promise<{
+        types: TypeRegistryEntryProjection[];
+      }>,
+      window.tentDesktop.rpc("registry.roles", { workspaceId }) as Promise<{
+        roles: RoleRegistryEntryProjection[];
+      }>,
+    ]);
+    coordinationTypes = listCoordinationTypeOptions(typesResult.types || []);
+    roles = listRoleOptions(rolesResult.roles || []);
+    if (!createTypePick || !coordinationTypes.some((t) => t.name === createTypePick)) {
+      createTypePick = pickDefaultCoordinationType(coordinationTypes) || "";
+    }
+    if (!dispatchRole || !roles.some((r) => r.name === dispatchRole)) {
+      dispatchRole = roles[0]?.name || "";
+    }
+    renderCreateTypeSelect();
+    renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function reloadTasks(): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const [taskResult, deliveryResult] = await Promise.all([
+      window.tentDesktop.rpc("task.list", { workspaceId }) as Promise<{ tasks: TaskProjection[] }>,
+      window.tentDesktop.rpc("delivery.list", { workspaceId }) as Promise<{
+        deliveries: DeliveryProjection[];
+      }>,
+    ]);
+    deliveries = deliveryResult.deliveries || [];
+    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries);
+    renderTasks();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+function renderCreateTypeSelect(): void {
+  const prev = createTypePick || pickDefaultCoordinationType(coordinationTypes) || "";
+  createTypePick = prev;
+  if (!coordinationTypes.length) {
+    el.createType.innerHTML = `<option value="">无可协调类型</option>`;
+    el.createType.disabled = true;
+    el.btnNewBox.disabled = true;
+    el.btnNewBox.title = "当前 types 注册表没有 coordination=true 的一级类型";
+    return;
+  }
+  el.createType.disabled = false;
+  el.btnNewBox.disabled = false;
+  el.btnNewBox.title = "使用所选可协调类型新建协作框";
+  el.createType.innerHTML = coordinationTypes
+    .map(
+      (t) =>
+        `<option value="${escapeHtml(t.name)}"${t.name === createTypePick ? " selected" : ""}>${escapeHtml(t.name)}</option>`
+    )
+    .join("");
 }
 
 function renderTree(): void {
@@ -228,6 +373,7 @@ function renderAll(): void {
   renderToolbar();
   renderEditor();
   renderMeta();
+  renderDispatchPanel();
   renderTree();
 }
 
@@ -253,11 +399,16 @@ function renderToolbar(): void {
     el.toolbar.innerHTML = "";
     return;
   }
+  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   el.toolbar.innerHTML = `
     <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
     <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
     <button type="button" data-act="save" class="primary">保存</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote">提升为 goal</button>` : ""}
+    ${
+      !tab.coordination
+        ? `<button type="button" data-act="promote">提升为 ${escapeHtml(promoteTarget)}</button>`
+        : ""
+    }
     <button type="button" data-act="card">上下文卡</button>
     <span class="muted">${tab.dirty ? "未保存" : "已保存"} · ${escapeHtml(tab.cx)}</span>
   `;
@@ -280,14 +431,19 @@ async function onToolbar(act: string): Promise<void> {
   }
   if (act === "promote") {
     if (tab.dirty) await saveTab(tab);
-    await window.tentDesktop.rpc("docs.promote", {
-      workspaceId,
-      id: tab.cx,
-      toType: "goal",
-    });
-    el.status.textContent = "已提升为 goal";
-    await openConcept(tab.cx);
-    await reloadTree();
+    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
+    try {
+      await window.tentDesktop.rpc("docs.promote", {
+        workspaceId,
+        id: tab.cx,
+        toType,
+      });
+      el.status.textContent = `已提升为 ${toType}`;
+      await openConcept(tab.cx);
+      await reloadTree();
+    } catch (err) {
+      setError(err);
+    }
     return;
   }
   if (act === "card") {
@@ -315,7 +471,7 @@ async function saveTab(tab: TabView): Promise<void> {
     await reloadTree();
     renderAll();
   } catch (err) {
-    el.status.textContent = err instanceof Error ? err.message : String(err);
+    setError(err);
   }
 }
 
@@ -368,20 +524,209 @@ function renderMeta(): void {
   </dl>`;
 }
 
-function renderTasks(tasks: ShellState["tasks"]): void {
-  if (!tasks.length) {
+function renderDispatchPanel(): void {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">选中协作框后可派活</div>`;
+    return;
+  }
+  if (!tab.coordination) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">「${escapeHtml(tab.name)}」不可协调（普通笔记）。请新建协作框或提升类型。</div>`;
+    return;
+  }
+
+  const roleOpts =
+    roles.length > 0
+      ? roles
+          .map(
+            (r) =>
+              `<option value="${escapeHtml(r.name)}"${r.name === dispatchRole ? " selected" : ""}>${escapeHtml(r.name)}</option>`
+          )
+          .join("")
+      : `<option value="">（无 role）</option>`;
+
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles,
+  });
+
+  el.dispatch.innerHTML = `
+    <div class="dispatch-form">
+      <div class="field-row">
+        <label for="dispatch-role">目标 role</label>
+        <select id="dispatch-role"${roles.length ? "" : " disabled"}>${roleOpts}</select>
+      </div>
+      <div class="field-row">
+        <label for="dispatch-prompt">user prompt</label>
+        <textarea id="dispatch-prompt" rows="3" placeholder="写给目标 role 的任务说明…">${escapeHtml(dispatchPrompt)}</textarea>
+      </div>
+      <div class="row dispatch-actions">
+        <button type="button" class="primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>派活</button>
+        ${
+          validation.ok
+            ? ""
+            : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`
+        }
+      </div>
+    </div>
+  `;
+
+  const roleSel = document.getElementById("dispatch-role") as HTMLSelectElement | null;
+  const promptTa = document.getElementById("dispatch-prompt") as HTMLTextAreaElement | null;
+  const btn = document.getElementById("btn-dispatch") as HTMLButtonElement | null;
+
+  roleSel?.addEventListener("change", () => {
+    dispatchRole = roleSel.value;
+    renderDispatchPanel();
+  });
+  promptTa?.addEventListener("input", () => {
+    dispatchPrompt = promptTa.value;
+    // Lightweight re-validate without full rebuild of textarea focus:
+    if (btn) {
+      const v = validateDispatchForm({
+        boxId: tab.cx,
+        coordination: tab.coordination,
+        role: dispatchRole,
+        prompt: dispatchPrompt,
+        roles,
+      });
+      btn.disabled = !v.ok;
+      const hint = el.dispatch.querySelector(".dispatch-actions .faint");
+      if (hint) hint.textContent = v.ok ? "" : v.reason || "";
+      else if (!v.ok) {
+        const span = document.createElement("span");
+        span.className = "faint";
+        span.textContent = v.reason || "";
+        el.dispatch.querySelector(".dispatch-actions")?.appendChild(span);
+      }
+    }
+  });
+  btn?.addEventListener("click", () => void onDispatch());
+}
+
+async function onDispatch(): Promise<void> {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab || !workspaceId) return;
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles,
+  });
+  if (!validation.ok || !validation.payload) {
+    el.status.textContent = validation.reason || "无法派活";
+    return;
+  }
+  try {
+    const result = (await window.tentDesktop.rpc("task.dispatch", {
+      workspaceId,
+      boxId: validation.payload.boxId,
+      role: validation.payload.role,
+      prompt: validation.payload.prompt,
+      dispatchedBy: validation.payload.dispatchedBy,
+      deliveryPolicy: "manual",
+    })) as { taskPath: string; state: string };
+    el.status.textContent = `已派活 → ${result.taskPath}（${result.state}）`;
+    dispatchPrompt = "";
+    await Promise.all([reloadTasks(), reloadTree()]);
+    renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+function renderTasks(): void {
+  if (!taskReview.length) {
     el.tasks.innerHTML = `<li class="muted">暂无任务</li>`;
     return;
   }
-  el.tasks.innerHTML = tasks
-    .map(
-      (t) => `<li class="task-item">
-        <div><strong>${escapeHtml(t.status)}</strong> · ${escapeHtml(t.role)}</div>
+  el.tasks.innerHTML = taskReview
+    .map((t) => {
+      const commits =
+        t.commits.length > 0
+          ? `<div class="muted">commits：${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>`
+          : "";
+      const summary = t.deliverySummary
+        ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>`
+        : t.prompt
+          ? `<div class="muted">prompt：${escapeHtml(t.prompt)}</div>`
+          : "";
+      const rejectDraft = rejectDrafts.get(t.path) || "";
+      const actions = t.canAcceptOrReject
+        ? `<div class="task-actions">
+            <button type="button" class="primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
+            <div class="reject-inline">
+              <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
+              <button type="button" data-reject="${escapeHtml(t.path)}">驳回</button>
+            </div>
+          </div>`
+        : "";
+      return `<li class="task-item" data-task="${escapeHtml(t.path)}">
+        <div><strong>${escapeHtml(t.summaryLine.split(" · ")[0] || t.state)}</strong> · ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">认领：${escapeHtml((t.claims || []).join(", ") || "—")}</div>
-      </li>`
-    )
+        <div class="muted">认领：${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "—")}</div>
+        ${summary}
+        ${commits}
+        ${actions}
+      </li>`;
+    })
     .join("");
+
+  el.tasks.querySelectorAll<HTMLElement>("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")!));
+  });
+  el.tasks.querySelectorAll<HTMLInputElement>("[data-reject-reason]").forEach((input) => {
+    input.addEventListener("input", () => {
+      rejectDrafts.set(input.getAttribute("data-reject-reason")!, input.value);
+    });
+  });
+  el.tasks.querySelectorAll<HTMLElement>("[data-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")!));
+  });
+}
+
+async function onAccept(taskPath: string): Promise<void> {
+  if (!workspaceId) return;
+  const payload = buildAcceptPayload(taskPath, "user");
+  try {
+    await window.tentDesktop.rpc("task.accept", {
+      workspaceId,
+      taskPath: payload.taskPath,
+      actor: payload.actor,
+    });
+    el.status.textContent = `已确认交付：${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onReject(taskPath: string): Promise<void> {
+  if (!workspaceId) return;
+  const reason = rejectDrafts.get(taskPath) || "";
+  const built = buildRejectPayload(taskPath, reason, "user");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("task.reject", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      actor: built.payload.actor,
+      note: built.payload.note,
+      resume: built.payload.resume,
+    });
+    el.status.textContent = `已驳回：${taskPath}`;
+    rejectDrafts.delete(taskPath);
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
 }
 
 async function loadCards(): Promise<void> {
@@ -416,7 +761,7 @@ async function onOpenWorkspace(): Promise<void> {
     await window.tentDesktop.mountWorkspace(folder);
     await refresh();
   } catch (err) {
-    el.status.textContent = err instanceof Error ? err.message : String(err);
+    setError(err);
   }
 }
 
@@ -426,13 +771,42 @@ async function onCreateNote(): Promise<void> {
     return;
   }
   const name = `note-${Date.now().toString(36).slice(-4)}`;
-  const created = (await window.tentDesktop.rpc("docs.createNote", {
-    workspaceId,
-    name,
-    type: "note",
-  })) as { id: string };
-  await reloadTree();
-  await openConcept(created.id);
+  try {
+    const created = (await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: "note",
+    })) as { id: string };
+    await reloadTree();
+    await openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onCreateCoordBox(): Promise<void> {
+  if (!workspaceId) {
+    el.status.textContent = "请先挂载工作区。";
+    return;
+  }
+  const typeName = createTypePick || pickDefaultCoordinationType(coordinationTypes);
+  if (!typeName) {
+    el.status.textContent = "当前 types 注册表没有可协调的一级类型。";
+    return;
+  }
+  const name = suggestBoxName(typeName);
+  try {
+    const created = (await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: typeName,
+    })) as { id: string; type?: string };
+    el.status.textContent = `已新建协作框「${name}」（${created.type || typeName}）`;
+    await reloadTree();
+    await openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
 }
 
 async function onSearch(): Promise<void> {
@@ -442,21 +816,25 @@ async function onSearch(): Promise<void> {
     el.searchHits.innerHTML = "";
     return;
   }
-  const result = (await window.tentDesktop.rpc("docs.search", {
-    workspaceId,
-    query: q,
-  })) as { hits: Array<{ cx: string; name: string; snippet: string; match: string }> };
-  const hits = result.hits || [];
-  el.searchHits.innerHTML = hits
-    .map(
-      (h) =>
-        `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
-         <div class="muted">${escapeHtml(h.match)} · ${escapeHtml(h.snippet)}</div></li>`
-    )
-    .join("");
-  el.searchHits.querySelectorAll<HTMLElement>("[data-open]").forEach((n) => {
-    n.addEventListener("click", () => void openConcept(n.getAttribute("data-open")!));
-  });
+  try {
+    const result = (await window.tentDesktop.rpc("docs.search", {
+      workspaceId,
+      query: q,
+    })) as { hits: Array<{ cx: string; name: string; snippet: string; match: string }> };
+    const hits = result.hits || [];
+    el.searchHits.innerHTML = hits
+      .map(
+        (h) =>
+          `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
+           <div class="muted">${escapeHtml(h.match)} · ${escapeHtml(h.snippet)}</div></li>`
+      )
+      .join("");
+    el.searchHits.querySelectorAll<HTMLElement>("[data-open]").forEach((n) => {
+      n.addEventListener("click", () => void openConcept(n.getAttribute("data-open")!));
+    });
+  } catch (err) {
+    setError(err);
+  }
 }
 
 async function onEmitCard(): Promise<void> {
@@ -473,6 +851,12 @@ async function onEmitCard(): Promise<void> {
   });
   await loadCards();
   el.status.textContent = "上下文卡已就绪 — 可从列表拖出。";
+}
+
+function setError(err: unknown): void {
+  const msg = err instanceof Error ? err.message : String(err);
+  el.status.textContent = msg;
+  el.status.title = msg;
 }
 
 void boot();

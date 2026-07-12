@@ -153,12 +153,180 @@ function applyLinksFromOriginal(text, options) {
   }).join("");
 }
 
+// src/desktop/workbench/collaboration-ui.ts
+function pickDefaultCoordinationType(types) {
+  const names = listCoordinationTypeNames(types);
+  if (names.includes("goal")) return "goal";
+  return names[0] ?? null;
+}
+function listCoordinationTypeNames(types) {
+  return types.filter((t) => {
+    const tier = "tier" in t ? t.tier : "base";
+    return (tier === void 0 || tier === "base") && t.coordination === true;
+  }).map((t) => t.name).sort((a, b) => a.localeCompare(b));
+}
+function listCoordinationTypeOptions(types) {
+  return listCoordinationTypeNames(types).map((name) => {
+    const row = types.find((t) => t.name === name);
+    return {
+      name,
+      description: row?.description,
+      color: row?.color
+    };
+  });
+}
+function listRoleOptions(roles2) {
+  return roles2.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function validateDispatchForm(form) {
+  if (!form.boxId) {
+    return { ok: false, reason: "\u8BF7\u5148\u9009\u4E2D\u4E00\u4E2A\u534F\u4F5C\u6846\u3002", payload: null };
+  }
+  if (!form.coordination) {
+    return {
+      ok: false,
+      reason: "\u5F53\u524D\u6982\u5FF5\u4E0D\u53EF\u534F\u8C03\uFF08coordination=false\uFF09\uFF0C\u65E0\u6CD5\u6D3E\u6D3B\u3002",
+      payload: null
+    };
+  }
+  if (!form.roles.length) {
+    return {
+      ok: false,
+      reason: "\u5E10\u5185\u5C1A\u65E0 role\uFF0C\u8BF7\u5148\u5728 roles \u6CE8\u518C\u8868\u6DFB\u52A0\u76EE\u6807\u89D2\u8272\u3002",
+      payload: null
+    };
+  }
+  const role = form.role.trim();
+  if (!role) {
+    return { ok: false, reason: "\u8BF7\u9009\u62E9\u76EE\u6807 role\u3002", payload: null };
+  }
+  if (!form.roles.some((r) => r.name === role)) {
+    return { ok: false, reason: `\u76EE\u6807 role\u300C${role}\u300D\u4E0D\u5728\u6CE8\u518C\u8868\u4E2D\u3002`, payload: null };
+  }
+  const prompt = form.prompt.trim();
+  if (!prompt) {
+    return { ok: false, reason: "\u8BF7\u586B\u5199 user prompt\u3002", payload: null };
+  }
+  return {
+    ok: true,
+    reason: null,
+    payload: {
+      boxId: form.boxId,
+      role,
+      prompt,
+      dispatchedBy: "user"
+    }
+  };
+}
+function buildAcceptPayload(taskPath, actor = "user") {
+  return { taskPath, actor };
+}
+function buildRejectPayload(taskPath, reason, actor = "user") {
+  const note = reason.trim();
+  if (!note) {
+    return { ok: false, reason: "\u9A73\u56DE\u9700\u8981\u586B\u5199\u7B80\u77ED\u539F\u56E0\u3002" };
+  }
+  return {
+    ok: true,
+    payload: {
+      taskPath,
+      actor,
+      note,
+      resume: true
+    }
+  };
+}
+function taskStateLabel(state2, legacyStatus) {
+  const s = state2 || legacyStatus || "";
+  switch (s) {
+    case "queued":
+    case "pending":
+      return "\u6392\u961F\u4E2D";
+    case "running":
+    case "taken":
+      return "\u6267\u884C\u4E2D";
+    case "waiting":
+      return "\u7B49\u5F85\u4E2D";
+    case "delivered":
+      return "\u5F85\u786E\u8BA4\u4EA4\u4ED8";
+    case "accepted":
+      return "\u5DF2\u63A5\u53D7";
+    case "rejected":
+      return "\u5DF2\u9A73\u56DE";
+    case "interrupted":
+      return "\u5DF2\u4E2D\u65AD";
+    default:
+      return s || "\u672A\u77E5";
+  }
+}
+function buildTaskReviewItems(tasks, deliveries2 = []) {
+  const byId = /* @__PURE__ */ new Map();
+  const byTaskId = /* @__PURE__ */ new Map();
+  for (const d of deliveries2) {
+    byId.set(d.id, d);
+    const list = byTaskId.get(d.taskId) ?? [];
+    list.push(d);
+    byTaskId.set(d.taskId, list);
+  }
+  return tasks.map((task) => {
+    const state2 = task.state || task.status;
+    let delivery;
+    if (task.activeDeliveryId) {
+      delivery = byId.get(task.activeDeliveryId);
+    }
+    if (!delivery && task.id) {
+      const list = byTaskId.get(task.id) ?? [];
+      delivery = list.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
+    }
+    const commits = delivery?.commits ?? [];
+    const deliverySummary = delivery?.summary;
+    const label = taskStateLabel(state2, task.status);
+    const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
+    const summaryLine = [
+      label,
+      task.role,
+      deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
+    ].filter(Boolean).join(" \xB7 ");
+    return {
+      path: task.path,
+      id: task.id,
+      role: task.role,
+      status: task.status,
+      state: state2,
+      claims: task.claims ?? [],
+      prompt: task.prompt,
+      activeDeliveryId: task.activeDeliveryId,
+      deliverySummary,
+      commits,
+      canAcceptOrReject: state2 === "delivered",
+      summaryLine
+    };
+  });
+}
+function truncate(text, max) {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + "\u2026";
+}
+function suggestBoxName(typeName, now = Date.now()) {
+  const safe = typeName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "box";
+  return `${safe}-${now.toString(36).slice(-4)}`;
+}
+
 // src/desktop/renderer/main-ui.ts
 var localTabs = /* @__PURE__ */ new Map();
 var activeCx = null;
 var tree = [];
 var state = null;
 var workspaceId = null;
+var coordinationTypes = [];
+var roles = [];
+var taskReview = [];
+var deliveries = [];
+var createTypePick = "";
+var dispatchRole = "";
+var dispatchPrompt = "";
+var rejectDrafts = /* @__PURE__ */ new Map();
 var el = {
   health: document.getElementById("health-pill"),
   wsSelect: document.getElementById("workspace-select"),
@@ -168,15 +336,22 @@ var el = {
   toolbar: document.getElementById("toolbar"),
   editor: document.getElementById("editor-host"),
   meta: document.getElementById("meta"),
+  dispatch: document.getElementById("dispatch-panel"),
   tasks: document.getElementById("tasks"),
   cards: document.getElementById("cards"),
   searchInput: document.getElementById("search-input"),
-  searchHits: document.getElementById("search-hits")
+  searchHits: document.getElementById("search-hits"),
+  createType: document.getElementById("create-type"),
+  btnNewBox: document.getElementById("btn-new-box")
 };
 async function boot() {
   document.getElementById("btn-open-ws").addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh").addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note").addEventListener("click", () => void onCreateNote());
+  el.btnNewBox.addEventListener("click", () => void onCreateCoordBox());
+  el.createType.addEventListener("change", () => {
+    createTypePick = el.createType.value;
+  });
   document.getElementById("btn-search").addEventListener("click", () => void onSearch());
   document.getElementById("btn-card").addEventListener("click", () => void onEmitCard());
   document.getElementById("btn-float").addEventListener("click", () => void window.tentDesktop.showFloat());
@@ -196,7 +371,7 @@ async function refresh() {
   const s = await window.tentDesktop.getState();
   applyShell(s);
   if (workspaceId) {
-    await reloadTree();
+    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks()]);
   }
 }
 function applyShell(s) {
@@ -218,7 +393,35 @@ function applyShell(s) {
     tree = s.workspace.tree;
     renderTree();
   }
-  renderTasks(s.tasks || []);
+  if (s.coordinationTypes?.length) {
+    coordinationTypes = s.coordinationTypes;
+    renderCreateTypeSelect();
+  }
+  if (s.roles) {
+    roles = s.roles;
+  }
+  if (s.taskReview?.length) {
+    taskReview = s.taskReview;
+  } else if (s.tasks?.length) {
+    taskReview = buildTaskReviewItems(
+      s.tasks.map((t) => ({
+        path: t.path,
+        id: t.id,
+        role: t.role,
+        claims: t.claims || [],
+        status: t.status === "taken" ? "taken" : "pending",
+        state: t.state || t.status,
+        prompt: t.prompt,
+        activeDeliveryId: t.activeDeliveryId,
+        manifest: ""
+      })),
+      deliveries
+    );
+  } else {
+    taskReview = [];
+  }
+  renderTasks();
+  renderDispatchPanel();
   void loadCards();
 }
 async function reloadTree() {
@@ -226,6 +429,58 @@ async function reloadTree() {
   const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
   tree = result.concepts || [];
   renderTree();
+}
+async function reloadRegistry() {
+  if (!workspaceId) return;
+  try {
+    const [typesResult, rolesResult] = await Promise.all([
+      window.tentDesktop.rpc("registry.types", { workspaceId }),
+      window.tentDesktop.rpc("registry.roles", { workspaceId })
+    ]);
+    coordinationTypes = listCoordinationTypeOptions(typesResult.types || []);
+    roles = listRoleOptions(rolesResult.roles || []);
+    if (!createTypePick || !coordinationTypes.some((t) => t.name === createTypePick)) {
+      createTypePick = pickDefaultCoordinationType(coordinationTypes) || "";
+    }
+    if (!dispatchRole || !roles.some((r) => r.name === dispatchRole)) {
+      dispatchRole = roles[0]?.name || "";
+    }
+    renderCreateTypeSelect();
+    renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function reloadTasks() {
+  if (!workspaceId) return;
+  try {
+    const [taskResult, deliveryResult] = await Promise.all([
+      window.tentDesktop.rpc("task.list", { workspaceId }),
+      window.tentDesktop.rpc("delivery.list", { workspaceId })
+    ]);
+    deliveries = deliveryResult.deliveries || [];
+    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries);
+    renderTasks();
+  } catch (err) {
+    setError(err);
+  }
+}
+function renderCreateTypeSelect() {
+  const prev = createTypePick || pickDefaultCoordinationType(coordinationTypes) || "";
+  createTypePick = prev;
+  if (!coordinationTypes.length) {
+    el.createType.innerHTML = `<option value="">\u65E0\u53EF\u534F\u8C03\u7C7B\u578B</option>`;
+    el.createType.disabled = true;
+    el.btnNewBox.disabled = true;
+    el.btnNewBox.title = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709 coordination=true \u7684\u4E00\u7EA7\u7C7B\u578B";
+    return;
+  }
+  el.createType.disabled = false;
+  el.btnNewBox.disabled = false;
+  el.btnNewBox.title = "\u4F7F\u7528\u6240\u9009\u53EF\u534F\u8C03\u7C7B\u578B\u65B0\u5EFA\u534F\u4F5C\u6846";
+  el.createType.innerHTML = coordinationTypes.map(
+    (t) => `<option value="${escapeHtml(t.name)}"${t.name === createTypePick ? " selected" : ""}>${escapeHtml(t.name)}</option>`
+  ).join("");
 }
 function renderTree() {
   el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
@@ -292,6 +547,7 @@ function renderAll() {
   renderToolbar();
   renderEditor();
   renderMeta();
+  renderDispatchPanel();
   renderTree();
 }
 function renderTabs() {
@@ -313,11 +569,12 @@ function renderToolbar() {
     el.toolbar.innerHTML = "";
     return;
   }
+  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   el.toolbar.innerHTML = `
     <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
     <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
     <button type="button" data-act="save" class="primary">\u4FDD\u5B58</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote">\u63D0\u5347\u4E3A goal</button>` : ""}
+    ${!tab.coordination ? `<button type="button" data-act="promote">\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}</button>` : ""}
     <button type="button" data-act="card">\u4E0A\u4E0B\u6587\u5361</button>
     <span class="muted">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"} \xB7 ${escapeHtml(tab.cx)}</span>
   `;
@@ -339,14 +596,19 @@ async function onToolbar(act) {
   }
   if (act === "promote") {
     if (tab.dirty) await saveTab(tab);
-    await window.tentDesktop.rpc("docs.promote", {
-      workspaceId,
-      id: tab.cx,
-      toType: "goal"
-    });
-    el.status.textContent = "\u5DF2\u63D0\u5347\u4E3A goal";
-    await openConcept(tab.cx);
-    await reloadTree();
+    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
+    try {
+      await window.tentDesktop.rpc("docs.promote", {
+        workspaceId,
+        id: tab.cx,
+        toType
+      });
+      el.status.textContent = `\u5DF2\u63D0\u5347\u4E3A ${toType}`;
+      await openConcept(tab.cx);
+      await reloadTree();
+    } catch (err) {
+      setError(err);
+    }
     return;
   }
   if (act === "card") {
@@ -373,7 +635,7 @@ async function saveTab(tab) {
     await reloadTree();
     renderAll();
   } catch (err) {
-    el.status.textContent = err instanceof Error ? err.message : String(err);
+    setError(err);
   }
 }
 function renderEditor() {
@@ -421,18 +683,177 @@ function renderMeta() {
     <dt>\u534F\u4F5C\u6846</dt><dd>${tab.coordination ? "\u662F" : "\u5426"}</dd>
   </dl>`;
 }
-function renderTasks(tasks) {
-  if (!tasks.length) {
+function renderDispatchPanel() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u9009\u4E2D\u534F\u4F5C\u6846\u540E\u53EF\u6D3E\u6D3B</div>`;
+    return;
+  }
+  if (!tab.coordination) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u300C${escapeHtml(tab.name)}\u300D\u4E0D\u53EF\u534F\u8C03\uFF08\u666E\u901A\u7B14\u8BB0\uFF09\u3002\u8BF7\u65B0\u5EFA\u534F\u4F5C\u6846\u6216\u63D0\u5347\u7C7B\u578B\u3002</div>`;
+    return;
+  }
+  const roleOpts = roles.length > 0 ? roles.map(
+    (r) => `<option value="${escapeHtml(r.name)}"${r.name === dispatchRole ? " selected" : ""}>${escapeHtml(r.name)}</option>`
+  ).join("") : `<option value="">\uFF08\u65E0 role\uFF09</option>`;
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles
+  });
+  el.dispatch.innerHTML = `
+    <div class="dispatch-form">
+      <div class="field-row">
+        <label for="dispatch-role">\u76EE\u6807 role</label>
+        <select id="dispatch-role"${roles.length ? "" : " disabled"}>${roleOpts}</select>
+      </div>
+      <div class="field-row">
+        <label for="dispatch-prompt">user prompt</label>
+        <textarea id="dispatch-prompt" rows="3" placeholder="\u5199\u7ED9\u76EE\u6807 role \u7684\u4EFB\u52A1\u8BF4\u660E\u2026">${escapeHtml(dispatchPrompt)}</textarea>
+      </div>
+      <div class="row dispatch-actions">
+        <button type="button" class="primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
+        ${validation.ok ? "" : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`}
+      </div>
+    </div>
+  `;
+  const roleSel = document.getElementById("dispatch-role");
+  const promptTa = document.getElementById("dispatch-prompt");
+  const btn = document.getElementById("btn-dispatch");
+  roleSel?.addEventListener("change", () => {
+    dispatchRole = roleSel.value;
+    renderDispatchPanel();
+  });
+  promptTa?.addEventListener("input", () => {
+    dispatchPrompt = promptTa.value;
+    if (btn) {
+      const v = validateDispatchForm({
+        boxId: tab.cx,
+        coordination: tab.coordination,
+        role: dispatchRole,
+        prompt: dispatchPrompt,
+        roles
+      });
+      btn.disabled = !v.ok;
+      const hint = el.dispatch.querySelector(".dispatch-actions .faint");
+      if (hint) hint.textContent = v.ok ? "" : v.reason || "";
+      else if (!v.ok) {
+        const span = document.createElement("span");
+        span.className = "faint";
+        span.textContent = v.reason || "";
+        el.dispatch.querySelector(".dispatch-actions")?.appendChild(span);
+      }
+    }
+  });
+  btn?.addEventListener("click", () => void onDispatch());
+}
+async function onDispatch() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab || !workspaceId) return;
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles
+  });
+  if (!validation.ok || !validation.payload) {
+    el.status.textContent = validation.reason || "\u65E0\u6CD5\u6D3E\u6D3B";
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("task.dispatch", {
+      workspaceId,
+      boxId: validation.payload.boxId,
+      role: validation.payload.role,
+      prompt: validation.payload.prompt,
+      dispatchedBy: validation.payload.dispatchedBy,
+      deliveryPolicy: "manual"
+    });
+    el.status.textContent = `\u5DF2\u6D3E\u6D3B \u2192 ${result.taskPath}\uFF08${result.state}\uFF09`;
+    dispatchPrompt = "";
+    await Promise.all([reloadTasks(), reloadTree()]);
+    renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+function renderTasks() {
+  if (!taskReview.length) {
     el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
     return;
   }
-  el.tasks.innerHTML = tasks.map(
-    (t) => `<li class="task-item">
-        <div><strong>${escapeHtml(t.status)}</strong> \xB7 ${escapeHtml(t.role)}</div>
+  el.tasks.innerHTML = taskReview.map((t) => {
+    const commits = t.commits.length > 0 ? `<div class="muted">commits\uFF1A${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : "";
+    const summary = t.deliverySummary ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>` : t.prompt ? `<div class="muted">prompt\uFF1A${escapeHtml(t.prompt)}</div>` : "";
+    const rejectDraft = rejectDrafts.get(t.path) || "";
+    const actions = t.canAcceptOrReject ? `<div class="task-actions">
+            <button type="button" class="primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
+            <div class="reject-inline">
+              <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
+              <button type="button" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
+            </div>
+          </div>` : "";
+    return `<li class="task-item" data-task="${escapeHtml(t.path)}">
+        <div><strong>${escapeHtml(t.summaryLine.split(" \xB7 ")[0] || t.state)}</strong> \xB7 ${escapeHtml(t.role)}</div>
         <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">\u8BA4\u9886\uFF1A${escapeHtml((t.claims || []).join(", ") || "\u2014")}</div>
-      </li>`
-  ).join("");
+        <div class="muted">\u8BA4\u9886\uFF1A${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "\u2014")}</div>
+        ${summary}
+        ${commits}
+        ${actions}
+      </li>`;
+  }).join("");
+  el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
+  });
+  el.tasks.querySelectorAll("[data-reject-reason]").forEach((input) => {
+    input.addEventListener("input", () => {
+      rejectDrafts.set(input.getAttribute("data-reject-reason"), input.value);
+    });
+  });
+  el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
+  });
+}
+async function onAccept(taskPath) {
+  if (!workspaceId) return;
+  const payload = buildAcceptPayload(taskPath, "user");
+  try {
+    await window.tentDesktop.rpc("task.accept", {
+      workspaceId,
+      taskPath: payload.taskPath,
+      actor: payload.actor
+    });
+    el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onReject(taskPath) {
+  if (!workspaceId) return;
+  const reason = rejectDrafts.get(taskPath) || "";
+  const built = buildRejectPayload(taskPath, reason, "user");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("task.reject", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      actor: built.payload.actor,
+      note: built.payload.note,
+      resume: built.payload.resume
+    });
+    el.status.textContent = `\u5DF2\u9A73\u56DE\uFF1A${taskPath}`;
+    rejectDrafts.delete(taskPath);
+    await Promise.all([reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
 }
 async function loadCards() {
   const snap = await window.tentDesktop.getFloatingStatus();
@@ -463,7 +884,7 @@ async function onOpenWorkspace() {
     await window.tentDesktop.mountWorkspace(folder);
     await refresh();
   } catch (err) {
-    el.status.textContent = err instanceof Error ? err.message : String(err);
+    setError(err);
   }
 }
 async function onCreateNote() {
@@ -472,13 +893,41 @@ async function onCreateNote() {
     return;
   }
   const name = `note-${Date.now().toString(36).slice(-4)}`;
-  const created = await window.tentDesktop.rpc("docs.createNote", {
-    workspaceId,
-    name,
-    type: "note"
-  });
-  await reloadTree();
-  await openConcept(created.id);
+  try {
+    const created = await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: "note"
+    });
+    await reloadTree();
+    await openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onCreateCoordBox() {
+  if (!workspaceId) {
+    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
+    return;
+  }
+  const typeName = createTypePick || pickDefaultCoordinationType(coordinationTypes);
+  if (!typeName) {
+    el.status.textContent = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709\u53EF\u534F\u8C03\u7684\u4E00\u7EA7\u7C7B\u578B\u3002";
+    return;
+  }
+  const name = suggestBoxName(typeName);
+  try {
+    const created = await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: typeName
+    });
+    el.status.textContent = `\u5DF2\u65B0\u5EFA\u534F\u4F5C\u6846\u300C${name}\u300D\uFF08${created.type || typeName}\uFF09`;
+    await reloadTree();
+    await openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
 }
 async function onSearch() {
   if (!workspaceId) return;
@@ -487,18 +936,22 @@ async function onSearch() {
     el.searchHits.innerHTML = "";
     return;
   }
-  const result = await window.tentDesktop.rpc("docs.search", {
-    workspaceId,
-    query: q
-  });
-  const hits = result.hits || [];
-  el.searchHits.innerHTML = hits.map(
-    (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
-         <div class="muted">${escapeHtml(h.match)} \xB7 ${escapeHtml(h.snippet)}</div></li>`
-  ).join("");
-  el.searchHits.querySelectorAll("[data-open]").forEach((n) => {
-    n.addEventListener("click", () => void openConcept(n.getAttribute("data-open")));
-  });
+  try {
+    const result = await window.tentDesktop.rpc("docs.search", {
+      workspaceId,
+      query: q
+    });
+    const hits = result.hits || [];
+    el.searchHits.innerHTML = hits.map(
+      (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
+           <div class="muted">${escapeHtml(h.match)} \xB7 ${escapeHtml(h.snippet)}</div></li>`
+    ).join("");
+    el.searchHits.querySelectorAll("[data-open]").forEach((n) => {
+      n.addEventListener("click", () => void openConcept(n.getAttribute("data-open")));
+    });
+  } catch (err) {
+    setError(err);
+  }
 }
 async function onEmitCard() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -514,6 +967,11 @@ async function onEmitCard() {
   });
   await loadCards();
   el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u53EF\u4ECE\u5217\u8868\u62D6\u51FA\u3002";
+}
+function setError(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  el.status.textContent = msg;
+  el.status.title = msg;
 }
 void boot();
 //# sourceMappingURL=main-ui.js.map

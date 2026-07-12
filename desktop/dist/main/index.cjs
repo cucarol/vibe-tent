@@ -1268,6 +1268,99 @@ var ContextCardStore = class {
   }
 };
 
+// src/desktop/workbench/collaboration-ui.ts
+function listCoordinationTypeNames(types) {
+  return types.filter((t) => {
+    const tier = "tier" in t ? t.tier : "base";
+    return (tier === void 0 || tier === "base") && t.coordination === true;
+  }).map((t) => t.name).sort((a, b) => a.localeCompare(b));
+}
+function listCoordinationTypeOptions(types) {
+  return listCoordinationTypeNames(types).map((name) => {
+    const row = types.find((t) => t.name === name);
+    return {
+      name,
+      description: row?.description,
+      color: row?.color
+    };
+  });
+}
+function listRoleOptions(roles) {
+  return roles.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
+}
+function taskStateLabel(state, legacyStatus) {
+  const s = state || legacyStatus || "";
+  switch (s) {
+    case "queued":
+    case "pending":
+      return "\u6392\u961F\u4E2D";
+    case "running":
+    case "taken":
+      return "\u6267\u884C\u4E2D";
+    case "waiting":
+      return "\u7B49\u5F85\u4E2D";
+    case "delivered":
+      return "\u5F85\u786E\u8BA4\u4EA4\u4ED8";
+    case "accepted":
+      return "\u5DF2\u63A5\u53D7";
+    case "rejected":
+      return "\u5DF2\u9A73\u56DE";
+    case "interrupted":
+      return "\u5DF2\u4E2D\u65AD";
+    default:
+      return s || "\u672A\u77E5";
+  }
+}
+function buildTaskReviewItems(tasks, deliveries = []) {
+  const byId = /* @__PURE__ */ new Map();
+  const byTaskId = /* @__PURE__ */ new Map();
+  for (const d of deliveries) {
+    byId.set(d.id, d);
+    const list = byTaskId.get(d.taskId) ?? [];
+    list.push(d);
+    byTaskId.set(d.taskId, list);
+  }
+  return tasks.map((task) => {
+    const state = task.state || task.status;
+    let delivery;
+    if (task.activeDeliveryId) {
+      delivery = byId.get(task.activeDeliveryId);
+    }
+    if (!delivery && task.id) {
+      const list = byTaskId.get(task.id) ?? [];
+      delivery = list.slice().sort((a, b) => (b.updatedAt || b.createdAt || "").localeCompare(a.updatedAt || a.createdAt || ""))[0];
+    }
+    const commits = delivery?.commits ?? [];
+    const deliverySummary = delivery?.summary;
+    const label = taskStateLabel(state, task.status);
+    const promptBit = task.prompt ? truncate(task.prompt, 48) : "";
+    const summaryLine = [
+      label,
+      task.role,
+      deliverySummary ? truncate(deliverySummary, 64) : promptBit || null
+    ].filter(Boolean).join(" \xB7 ");
+    return {
+      path: task.path,
+      id: task.id,
+      role: task.role,
+      status: task.status,
+      state,
+      claims: task.claims ?? [],
+      prompt: task.prompt,
+      activeDeliveryId: task.activeDeliveryId,
+      deliverySummary,
+      commits,
+      canAcceptOrReject: state === "delivered",
+      summaryLine
+    };
+  });
+}
+function truncate(text, max) {
+  const t = text.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  return t.slice(0, max - 1) + "\u2026";
+}
+
 // src/desktop/workbench/shell-model.ts
 var DesktopShellModel = class {
   constructor(rpc = null) {
@@ -1278,6 +1371,9 @@ var DesktopShellModel = class {
     this.docs = null;
     this.controller = null;
     this.tasks = [];
+    this.deliveries = [];
+    this.roles = [];
+    this.coordinationTypes = [];
     this.statusMessage = null;
     this.listeners = /* @__PURE__ */ new Set();
     this.cards = new ContextCardStore();
@@ -1296,6 +1392,22 @@ var DesktopShellModel = class {
       foregroundWorkspaceId: this.foregroundWorkspaceId,
       workspace: this.controller?.getSnapshot() ?? null,
       tasks: this.tasks,
+      taskReview: buildTaskReviewItems(
+        this.tasks.map((t) => ({
+          path: t.path,
+          id: t.id,
+          role: t.role,
+          claims: t.claims,
+          status: t.status === "taken" ? "taken" : "pending",
+          state: t.state || t.status,
+          prompt: t.prompt,
+          activeDeliveryId: t.activeDeliveryId,
+          manifest: ""
+        })),
+        this.deliveries
+      ),
+      roles: this.roles,
+      coordinationTypes: this.coordinationTypes,
       statusMessage: this.statusMessage
     };
   }
@@ -1370,20 +1482,63 @@ var DesktopShellModel = class {
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
-    await this.refreshTasks();
+    await Promise.all([this.refreshTasks(), this.refreshRegistry()]);
     this.emit();
   }
   async refreshTasks() {
     if (!this.rpc || !this.foregroundWorkspaceId) {
       this.tasks = [];
+      this.deliveries = [];
       this.emit();
       return;
     }
     try {
-      const result = await this.rpc.call("task.list", { workspaceId: this.foregroundWorkspaceId });
-      this.tasks = result.tasks ?? [];
+      const [taskResult, deliveryResult] = await Promise.all([
+        this.rpc.call("task.list", {
+          workspaceId: this.foregroundWorkspaceId
+        }),
+        this.rpc.call("delivery.list", {
+          workspaceId: this.foregroundWorkspaceId
+        })
+      ]);
+      this.tasks = (taskResult.tasks ?? []).map((t) => ({
+        path: t.path,
+        role: t.role,
+        status: t.status,
+        claims: t.claims ?? [],
+        state: t.state,
+        id: t.id,
+        prompt: t.prompt,
+        activeDeliveryId: t.activeDeliveryId
+      }));
+      this.deliveries = deliveryResult.deliveries ?? [];
     } catch {
       this.tasks = [];
+      this.deliveries = [];
+    }
+    this.emit();
+  }
+  async refreshRegistry() {
+    if (!this.rpc || !this.foregroundWorkspaceId) {
+      this.roles = [];
+      this.coordinationTypes = [];
+      this.emit();
+      return;
+    }
+    try {
+      const [typesResult, rolesResult] = await Promise.all([
+        this.rpc.call("registry.types", {
+          workspaceId: this.foregroundWorkspaceId
+        }),
+        this.rpc.call("registry.roles", {
+          workspaceId: this.foregroundWorkspaceId
+        })
+      ]);
+      this.coordinationTypes = listCoordinationTypeOptions(typesResult.types ?? []);
+      this.roles = listRoleOptions(rolesResult.roles ?? []);
+    } catch {
+      this.roles = [];
+      this.coordinationTypes = [];
     }
     this.emit();
   }
@@ -1397,8 +1552,12 @@ var DesktopShellModel = class {
     const fg = this.workspaces.find((w) => w.workspaceId === this.foregroundWorkspaceId);
     return {
       health: this.health,
-      pendingTasks: this.tasks.filter((t) => t.status === "pending").length,
-      takenTasks: this.tasks.filter((t) => t.status === "taken").length,
+      pendingTasks: this.tasks.filter(
+        (t) => t.status === "pending" || t.state === "queued" || t.state === "pending"
+      ).length,
+      takenTasks: this.tasks.filter(
+        (t) => t.status === "taken" || t.state === "running" || t.state === "taken" || t.state === "waiting" || t.state === "delivered"
+      ).length,
       recentCards: this.cards.list(),
       foregroundRoot: fg?.workspaceRoot ?? null
     };

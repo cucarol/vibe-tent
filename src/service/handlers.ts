@@ -12,6 +12,8 @@ import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
 import { loadTaskEnvelope, loadTaskEnvelopes } from "../core/task.js";
 import { loadDeliveries } from "../core/delivery.js";
+import { loadTypeRegistry } from "../core/typeRegistry.js";
+import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import {
   taskAccept,
   taskCancel,
@@ -49,8 +51,10 @@ import {
   type ArtifactRef,
   type ConceptProjection,
   type DeliveryProjection,
+  type RoleRegistryEntryProjection,
   type SessionProjection,
   type TaskProjection,
+  type TypeRegistryEntryProjection,
 } from "./types.js";
 
 export interface HandlerContext {
@@ -133,6 +137,10 @@ export async function dispatchMethod(
         return docsSearch(ctx, p);
       case "docs.backlinks":
         return docsBacklinks(ctx, p);
+      case "registry.types":
+        return registryTypes(ctx, p);
+      case "registry.roles":
+        return registryRoles(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -416,6 +424,46 @@ async function docsBacklinks(ctx: HandlerContext, p: Record<string, unknown>) {
     cx: concept.id,
     backlinks: reverse.get(concept.id) ?? [],
   };
+}
+
+/** Read-only type registry projection (coordination capability for desktop pickers). */
+async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadTypeRegistry(mount.env.fs);
+  const types: TypeRegistryEntryProjection[] = Object.entries(registry)
+    .map(([name, def]) => {
+      const tier: "base" | "modifier" = def.tier === "modifier" ? "modifier" : "base";
+      const coordination =
+        tier === "base" && "coordination" in def ? def.coordination === true : false;
+      return {
+        name,
+        tier,
+        readable: def.readable,
+        writable: def.writable,
+        coordination,
+        color: def.color,
+        description: def.description,
+      };
+    })
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { workspaceId, types };
+}
+
+/** Read-only role registry projection (dispatch target picker). */
+async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadRolesRegistry(mount.env.fs);
+  const roles: RoleRegistryEntryProjection[] = registry.roles
+    .map((role) => ({
+      name: role.name,
+      description: role.description,
+      color: role.color,
+      prompt: role.prompt,
+    }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  return { workspaceId, roles };
 }
 
 async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {

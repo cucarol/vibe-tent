@@ -250,12 +250,152 @@ textarea:focus {
   color: var(--text-normal);
 }
 
+.create-row {
+  margin: 0 10px 8px;
+  display: flex;
+  gap: 6px;
+  min-width: 0;
+  flex: none;
+  align-items: center;
+}
+
+.create-row select {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-secondary);
+  border: none;
+  border-radius: var(--radius-m);
+}
+
+.create-row button {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--font-ui-smaller);
+}
+
+.tree-actions button {
+  width: auto;
+  height: 26px;
+  padding: 0 8px;
+  font-size: var(--font-ui-smaller);
+}
+
 .search-row {
   margin: 0 10px 8px;
   display: flex;
   gap: 6px;
   min-width: 0;
   flex: none;
+}
+
+/* —— 派活 / 任务待裁 —— */
+.dispatch-panel {
+  padding: 0 12px 10px;
+  min-width: 0;
+  flex: none;
+}
+
+.dispatch-empty {
+  padding: 4px 0 2px;
+  line-height: 1.5;
+}
+
+.dispatch-form {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-width: 0;
+}
+
+.dispatch-form .field-row {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  min-width: 0;
+}
+
+.dispatch-form label {
+  font-size: var(--font-ui-smaller);
+  color: var(--text-muted);
+  font-weight: 500;
+}
+
+.dispatch-form select,
+.dispatch-form textarea {
+  width: 100%;
+  min-width: 0;
+  background: var(--background-modifier-form-field);
+  border: 1px solid var(--background-modifier-border);
+  border-radius: var(--radius-s);
+  font-size: var(--font-ui-smaller);
+}
+
+.dispatch-form textarea {
+  resize: vertical;
+  min-height: 56px;
+  line-height: 1.45;
+  padding: 6px 8px;
+}
+
+.dispatch-actions {
+  gap: 8px;
+  align-items: center;
+}
+
+.dispatch-actions button {
+  height: 28px;
+  padding: 0 12px;
+  font-size: var(--font-ui-smaller);
+}
+
+.task-summary {
+  margin-top: 4px;
+  font-size: var(--font-ui-smaller);
+  color: var(--text-normal);
+  line-height: 1.4;
+  word-break: break-word;
+}
+
+.task-actions {
+  margin-top: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.task-actions > button {
+  align-self: flex-start;
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--font-ui-smaller);
+}
+
+.reject-inline {
+  display: flex;
+  gap: 6px;
+  align-items: center;
+  min-width: 0;
+}
+
+.reject-inline input {
+  flex: 1 1 auto;
+  min-width: 0;
+  height: 28px;
+  padding: 0 8px;
+  font-size: var(--font-ui-smaller);
+  background: var(--background-modifier-form-field);
+}
+
+.reject-inline button {
+  flex: none;
+  height: 28px;
+  padding: 0 10px;
+  font-size: var(--font-ui-smaller);
 }
 
 .search-row input {

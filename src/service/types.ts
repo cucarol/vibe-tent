@@ -120,9 +120,30 @@ export type SessionProjection = {
   updatedAt?: string;
 };
 
+/** Project type registry row (read-only projection for clients). */
+export type TypeRegistryEntryProjection = {
+  name: string;
+  tier: "base" | "modifier";
+  readable?: boolean;
+  writable?: boolean;
+  /** Only meaningful for base types; modifiers omit / false. */
+  coordination: boolean;
+  color?: string;
+  description?: string;
+};
+
+/** Project role registry row (read-only projection for clients). */
+export type RoleRegistryEntryProjection = {
+  name: string;
+  description?: string;
+  color?: string;
+  prompt?: string;
+};
+
 /**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * B5 adds full task lifecycle + session projections + a2a resolve.
+ * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
  */
 export const CLIENT_METHODS = [
   "service.health",
@@ -140,6 +161,8 @@ export const CLIENT_METHODS = [
   "docs.fork",
   "docs.search",
   "docs.backlinks",
+  "registry.types",
+  "registry.roles",
   "task.dispatch",
   "task.claim",
   "task.wait",

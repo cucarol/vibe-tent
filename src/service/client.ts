@@ -120,6 +120,14 @@ export class ServiceClient {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
   }
 
+  // ---- convenience: registry (read-only) ----
+  registryTypes(workspaceId: string) {
+    return this.call("registry.types", { workspaceId });
+  }
+  registryRoles(workspaceId: string) {
+    return this.call("registry.roles", { workspaceId });
+  }
+
   // ---- convenience: task ----
   taskDispatch(
     workspaceId: string,
