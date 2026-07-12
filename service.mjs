@@ -1,5 +1,4 @@
 #!/usr/bin/env node
-#!/usr/bin/env node
 
 var __defProp = Object.defineProperty;
 var __getOwnPropNames = Object.getOwnPropertyNames;
@@ -2446,6 +2445,138 @@ function isSessionId(id) {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
 }
 
+// src/core/okf.ts
+init_frontmatter();
+init_tree();
+function resolveConcept2(index, target) {
+  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
+  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
+  if (matches?.length === 1) return matches[0];
+  const normalized = normalizeLookupKey(clean);
+  if (normalized.length >= 4) {
+    const all = index.get("__all__") ?? [];
+    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    if (fuzzy.length === 1) return fuzzy[0];
+  }
+  return matches?.length === 1 ? matches[0] : void 0;
+}
+function normalizeLookupKey(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+
+// src/markdown/links.ts
+var WIKI_RE = /(?<!!)\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g;
+var MD_LINK_RE = /(?<!!)\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\)/g;
+function extractOutLinks(body) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const match of body.matchAll(WIKI_RE)) {
+    const raw = match[1].trim();
+    const label = match[2]?.trim();
+    const key = `wiki:${raw}|${label ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ raw, kind: "wiki", label });
+  }
+  for (const match of body.matchAll(MD_LINK_RE)) {
+    const label = match[1]?.trim() || void 0;
+    const href = match[2].trim();
+    if (/^(https?:|mailto:|tent-artifact:)/i.test(href)) {
+      const key2 = `artifact:${href}`;
+      if (seen.has(key2)) continue;
+      seen.add(key2);
+      out.push({ raw: href, kind: "artifact", label });
+      continue;
+    }
+    const key = `md:${href}|${label ?? ""}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ raw: href, kind: "md", label });
+  }
+  return out;
+}
+function resolveOutLink(index, link, fromNotePath) {
+  if (link.kind === "artifact") {
+    return { raw: link.raw, kind: "artifact", label: link.label };
+  }
+  const target = normalizeTarget(link.raw, fromNotePath);
+  const concept = resolveConcept2(index, target) ?? resolveConcept2(index, link.raw);
+  if (!concept) {
+    return { raw: link.raw, kind: "unresolved", label: link.label };
+  }
+  return {
+    raw: link.raw,
+    kind: link.kind,
+    targetCx: concept.id,
+    targetPath: concept.path,
+    label: link.label ?? concept.name
+  };
+}
+function buildBacklinkIndex(concepts) {
+  const boxesAsConcepts = [];
+  const byId = /* @__PURE__ */ new Map();
+  const list = [...concepts];
+  for (const c of list) byId.set(c.id, c);
+  const index = /* @__PURE__ */ new Map();
+  for (const c of list) {
+    const concept = {
+      id: c.id,
+      boxId: c.id,
+      path: c.path,
+      notePath: c.notePath,
+      name: c.name,
+      type: "note"
+    };
+    add(index, concept.id, concept);
+    add(index, concept.path, concept);
+    add(index, concept.notePath, concept);
+    add(index, concept.name, concept);
+  }
+  const reverse = /* @__PURE__ */ new Map();
+  for (const c of list) {
+    for (const link of extractOutLinks(c.body)) {
+      if (link.kind === "artifact") continue;
+      const resolved = resolveOutLink(index, link, c.notePath);
+      if (!resolved.targetCx) continue;
+      const hit = {
+        fromCx: c.id,
+        fromPath: c.path,
+        fromName: c.name,
+        raw: link.raw,
+        kind: link.kind === "wiki" ? "wiki" : "md"
+      };
+      const arr = reverse.get(resolved.targetCx) ?? [];
+      arr.push(hit);
+      reverse.set(resolved.targetCx, arr);
+    }
+  }
+  return reverse;
+}
+function add(index, key, concept) {
+  if (!key) return;
+  const list = index.get(key) ?? [];
+  if (!list.some((c) => c.id === concept.id)) list.push(concept);
+  index.set(key, list);
+  const all = index.get("__all__") ?? [];
+  if (!all.some((c) => c.id === concept.id)) all.push(concept);
+  index.set("__all__", all);
+}
+function normalizeTarget(raw, fromNotePath) {
+  let t = raw.trim().replace(/\\/g, "/");
+  if (t.startsWith("./") || t.startsWith("../")) {
+    if (fromNotePath) {
+      const base = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
+      for (const part of t.split("/")) {
+        if (part === "." || part === "") continue;
+        if (part === "..") base.pop();
+        else base.push(part);
+      }
+      t = base.join("/");
+    }
+  }
+  return t.replace(/\.md$/i, "");
+}
+
 // src/service/etag.ts
 import { createHash } from "node:crypto";
 function contentEtag(content) {
@@ -2537,6 +2668,8 @@ var CLIENT_METHODS = [
   "docs.createNote",
   "docs.promote",
   "docs.fork",
+  "docs.search",
+  "docs.backlinks",
   "task.dispatch",
   "task.claim",
   "task.wait",
@@ -2613,6 +2746,10 @@ async function dispatchMethod(ctx, method, params) {
         return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
+      case "docs.search":
+        return docsSearch(ctx, p);
+      case "docs.backlinks":
+        return docsBacklinks(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -2703,7 +2840,7 @@ async function docsGet(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
+  const concept = resolveConcept3(tent, p);
   return {
     workspaceId,
     concept: projectConcept(concept, true, false)
@@ -2713,31 +2850,38 @@ async function docsReadForEdit(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept2(tent, p);
+  const concept = resolveConcept3(tent, p);
   const notePath = boxNotePath(concept.path);
   const raw = await mount.env.fs.readFile(notePath);
-  const { body } = parseFrontmatter(raw);
+  const { data, body } = parseFrontmatter(raw);
   return {
     workspaceId,
     id: concept.id,
+    cx: concept.id,
     path: concept.path,
+    name: concept.name,
+    type: concept.type,
+    coordination: concept.coordination,
     body,
+    raw,
     etag: contentEtag(raw),
-    frontmatter: concept.fm
+    frontmatter: data,
+    artifactRefs: parseArtifactRefs2(data)
   };
 }
 async function docsWrite(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const rawInput = typeof p.raw === "string" ? p.raw : void 0;
   const body = typeof p.body === "string" ? p.body : void 0;
   const frontmatter = p.frontmatter && typeof p.frontmatter === "object" && !Array.isArray(p.frontmatter) ? p.frontmatter : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept2(tent, p);
+    const concept = resolveConcept3(tent, p);
     const notePath = boxNotePath(concept.path);
-    const raw = await mount.env.fs.readFile(notePath);
-    const currentEtag = contentEtag(raw);
+    const diskRaw = await mount.env.fs.readFile(notePath);
+    const currentEtag = contentEtag(diskRaw);
     if (baseEtag && baseEtag !== currentEtag) {
       throw new RpcError(-32009, "etag conflict", {
         currentEtag,
@@ -2745,15 +2889,35 @@ async function docsWrite(ctx, p) {
         path: concept.path
       });
     }
-    if (frontmatter) {
-      assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
-    }
-    ctx.host.markSelfWrite(workspaceId);
-    if (frontmatter && Object.keys(frontmatter).length > 0) {
-      await patchBox(mount.env, concept.path, frontmatter, tent);
-    }
-    if (body !== void 0) {
-      await patchBody(mount.env, concept.path, body, tent);
+    if (rawInput !== void 0) {
+      const diskParsed = parseFrontmatter(diskRaw);
+      const nextParsed = parseFrontmatter(rawInput);
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      const changed = {};
+      for (const field of PROTECTED_COLLAB_FIELDS) {
+        if (String(nextParsed.data[field] ?? "") !== String(diskParsed.data[field] ?? "")) {
+          changed[field] = nextParsed.data[field];
+        }
+      }
+      if (Object.keys(changed).length > 0) {
+        assertDocsWriteAllowed(tent, concept.id, changed, tasks);
+      }
+      ctx.host.markSelfWrite(workspaceId);
+      await mount.env.fs.writeFile(notePath, rawInput);
+    } else {
+      if (frontmatter) {
+        assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
+      }
+      ctx.host.markSelfWrite(workspaceId);
+      if (frontmatter && Object.keys(frontmatter).length > 0) {
+        await patchBox(mount.env, concept.path, frontmatter, tent);
+      }
+      if (body !== void 0) {
+        await patchBody(mount.env, concept.path, body, tent);
+      }
+      if (body === void 0 && (!frontmatter || Object.keys(frontmatter).length === 0)) {
+        throw new RpcError(-32602, "docs.write requires raw, body, and/or frontmatter");
+      }
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
     const after = parseFrontmatter(afterRaw);
@@ -2766,11 +2930,82 @@ async function docsWrite(ctx, p) {
     return {
       workspaceId,
       id: concept.id,
+      cx: concept.id,
       path: concept.path,
       etag: contentEtag(afterRaw),
-      body: after.body
+      body: after.body,
+      raw: afterRaw
     };
   });
+}
+async function docsSearch(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const query = optionalString(p, "query") ?? optionalString(p, "q") ?? "";
+  const q = query.trim().toLowerCase();
+  if (!q) return { workspaceId, hits: [] };
+  const tent = await loadTent(mount.env.fs);
+  const hits = [];
+  for (const box of tent.byId.values()) {
+    if (box.archived || box.invalid) continue;
+    const title = typeof box.fm.title === "string" ? box.fm.title : box.name;
+    if (box.name.toLowerCase().includes(q) || title.toLowerCase().includes(q)) {
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: title,
+        match: "title"
+      });
+      continue;
+    }
+    if (box.path.toLowerCase().includes(q)) {
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: box.path,
+        match: "path"
+      });
+      continue;
+    }
+    const body = box.body ?? "";
+    const idx = body.toLowerCase().indexOf(q);
+    if (idx >= 0) {
+      const start = Math.max(0, idx - 40);
+      const end = Math.min(body.length, idx + q.length + 40);
+      hits.push({
+        cx: box.id,
+        path: box.path,
+        name: box.name,
+        title,
+        snippet: body.slice(start, end).replace(/\s+/g, " ").trim(),
+        match: "body"
+      });
+    }
+  }
+  return { workspaceId, hits: hits.slice(0, 50) };
+}
+async function docsBacklinks(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept3(tent, p);
+  const concepts = [...tent.byId.values()].map((b) => ({
+    id: b.id,
+    path: b.path,
+    name: b.name,
+    body: b.body,
+    notePath: boxNotePath(b.path)
+  }));
+  const reverse = buildBacklinkIndex(concepts);
+  return {
+    workspaceId,
+    cx: concept.id,
+    backlinks: reverse.get(concept.id) ?? []
+  };
 }
 async function docsCreateNote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -2778,16 +3013,21 @@ async function docsCreateNote(ctx, p) {
   const name = requireString(p, "name");
   const type = optionalString(p, "type") ?? "note";
   const parentPath = optionalString(p, "parentPath") ?? "";
+  const body = typeof p.body === "string" ? p.body : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const id = await createBox(mount.env, { parentPath, name, type });
+    const notePath = parentPath ? `${parentPath}/${name}` : name;
+    if (body !== void 0) {
+      await patchBody(mount.env, notePath, body.endsWith("\n") ? body : body + "\n");
+    }
     ctx.events.emit(
       "concept.changed",
       workspaceId,
-      { id, path: parentPath ? `${parentPath}/${name}` : name, reason: "docs.createNote" },
+      { id, path: notePath, reason: "docs.createNote" },
       "self"
     );
-    return { workspaceId, id, path: parentPath ? `${parentPath}/${name}` : name, type };
+    return { workspaceId, id, path: notePath, type };
   });
 }
 async function docsPromote(ctx, p) {
@@ -3492,7 +3732,7 @@ function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;
   throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
 }
-function resolveConcept2(tent, p) {
+function resolveConcept3(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
   const path8 = optionalString(p, "path");
   if (id) {
@@ -3508,6 +3748,7 @@ function resolveConcept2(tent, p) {
   throw new RpcError(-32602, "docs.* requires id or path");
 }
 function projectConcept(box, includeBody, withChildren) {
+  const title = typeof box.fm.title === "string" ? box.fm.title : void 0;
   const proj = {
     id: box.id,
     path: box.path,
@@ -3520,6 +3761,7 @@ function projectConcept(box, includeBody, withChildren) {
     archived: box.archived,
     invalid: box.invalid
   };
+  if (title) proj.title = title;
   if (includeBody) {
     proj.bodyPreview = box.body.slice(0, 500);
   }
@@ -3527,6 +3769,25 @@ function projectConcept(box, includeBody, withChildren) {
     proj.children = box.children.map((c) => projectConcept(c, includeBody, true));
   }
   return proj;
+}
+function parseArtifactRefs2(data) {
+  const raw = data.artifactRefs;
+  if (!Array.isArray(raw)) return [];
+  const out = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object") continue;
+    const rec = item;
+    const kind = rec.kind;
+    const target = rec.target;
+    if ((kind === "path" || kind === "dir" || kind === "commit" || kind === "url" || kind === "other") && typeof target === "string") {
+      out.push({
+        kind,
+        target,
+        label: typeof rec.label === "string" ? rec.label : void 0
+      });
+    }
+  }
+  return out;
 }
 function projectTask(task) {
   const lane = task.workspace || task.worktree || task.branch || task.targetBranch ? {
