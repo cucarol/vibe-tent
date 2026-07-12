@@ -1210,6 +1210,71 @@ function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/core/task-model.ts
+function stateToLegacyStatus(state) {
+  return state === "queued" ? "pending" : "taken";
+}
+function legacyStatusToState(status) {
+  return status === "pending" ? "queued" : "running";
+}
+function makeTaskId(rand = Math.random, len = 8) {
+  const stem = makeConceptId(rand, len).slice(3);
+  return `tk-${stem}`;
+}
+function isTaskId(id) {
+  return id.startsWith("tk-") && id.length > 3;
+}
+var TaskLifecycleError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+};
+function assertTransition(from, event, to) {
+  const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
+  if (!ok) {
+    throw new TaskLifecycleError(
+      "INVALID_TRANSITION",
+      `Invalid task transition: ${from} --${event}\u2192 ${to}`
+    );
+  }
+}
+function allowedTransitions(from) {
+  switch (from) {
+    case "queued":
+      return [
+        { event: "claim", to: "running" },
+        { event: "cancel", to: "interrupted" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "running":
+      return [
+        { event: "wait", to: "waiting" },
+        { event: "deliver", to: "delivered" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "waiting":
+      return [
+        { event: "resume", to: "running" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "delivered":
+      return [
+        { event: "accept", to: "accepted" },
+        { event: "reject-resume", to: "running" },
+        { event: "reject-terminal", to: "rejected" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "rejected":
+      return [];
+    default:
+      return [];
+  }
+}
+
 // src/core/task.ts
 async function loadTaskEnvelopes(fs4) {
   const tasks = [];
@@ -1222,23 +1287,7 @@ async function loadTaskEnvelopes(fs4) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
       const path3 = join(taskDir, entry.name);
       try {
-        const { data } = parseFrontmatter(await fs4.readFile(path3));
-        if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-          continue;
-        }
-        const task = {
-          path: path3,
-          role: data.role,
-          claims: data.claims,
-          manifest: data.manifest,
-          status: data.status === "taken" ? "taken" : "pending"
-        };
-        if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
-        if (typeof data.workspace === "string") task.workspace = data.workspace;
-        if (typeof data.worktree === "string") task.worktree = data.worktree;
-        if (typeof data.branch === "string") task.branch = data.branch;
-        if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
-        tasks.push(task);
+        tasks.push(await loadTaskEnvelope(fs4, path3));
       } catch {
       }
     }
@@ -1247,22 +1296,37 @@ async function loadTaskEnvelopes(fs4) {
 }
 async function loadTaskEnvelope(fs4, path3) {
   if (!await fs4.exists(path3)) throw new Error(`Task envelope not found: ${path3}.`);
-  const { data } = parseFrontmatter(await fs4.readFile(path3));
+  const { data, body } = parseFrontmatter(await fs4.readFile(path3));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
     throw new Error(`Invalid task envelope format: ${path3}.`);
   }
+  const legacyStatus = data.status === "taken" ? "taken" : "pending";
+  const state = parseTaskState(data.state, legacyStatus);
   const task = {
     path: path3,
     role: data.role,
     claims: data.claims,
     manifest: data.manifest,
-    status: data.status === "taken" ? "taken" : "pending"
+    status: stateToLegacyStatus(state),
+    state,
+    prompt: body.trim() || void 0
   };
+  if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
+  if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
+    task.assigneeKind = data.assigneeKind;
+  }
+  if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
+  if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
+  if (typeof data.createdAt === "string") task.createdAt = data.createdAt;
+  if (typeof data.updatedAt === "string") task.updatedAt = data.updatedAt;
+  const wait = parseWaitFields(data);
+  if (wait) task.wait = wait;
   return task;
 }
 function relayPromptForTask(task, tentRoot) {
@@ -1297,16 +1361,25 @@ async function writeTaskEnvelope(fs4, clock, input) {
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const dir = join("temp", input.role, "tasks");
   await ensureDir(fs4, dir);
+  const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
   const path3 = await uniqueMarkdownPath(fs4, dir, stem);
+  const now = clock.now();
   const data = {
     type: "task",
+    id,
     status: "pending",
+    state: "queued",
     role: input.role,
+    assigneeKind: input.assigneeKind ?? "role",
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
-    manifest: input.manifestPath
+    manifest: input.manifestPath,
+    deliveryPolicy: input.deliveryPolicy ?? "manual",
+    createdAt: now,
+    updatedAt: now
   };
+  if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
     data.worktree = input.workspace.worktree;
@@ -1321,7 +1394,8 @@ async function writeTaskEnvelope(fs4, clock, input) {
 ${pointers}
 
 - Manifest: ${input.manifestPath}
-
+` + (input.id || id ? `- Task id: ${id}
+` : "") + `
 ## User Prompt
 
 ${userPrompt}
@@ -1330,17 +1404,62 @@ ${userPrompt}
   return path3;
 }
 async function ackTaskEnvelope(fs4, path3) {
+  await patchTaskEnvelope(fs4, path3, {
+    status: "taken",
+    state: "running"
+  });
+}
+async function cancelTaskEnvelope(fs4, path3) {
+  const task = await loadTaskEnvelope(fs4, path3);
+  if (task.state !== "queued" && task.status !== "pending") {
+    throw new Error("Only queued (pending) task envelopes can be cancelled.");
+  }
+  await fs4.remove(path3);
+}
+async function patchTaskEnvelope(fs4, path3, patch) {
   if (!await fs4.exists(path3)) throw new Error(`Task envelope not found: ${path3}.`);
   const raw = await fs4.readFile(path3);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path3}.`);
-  data.status = "taken";
+  if (patch.state) {
+    data.state = patch.state;
+    data.status = stateToLegacyStatus(patch.state);
+  } else if (patch.status) {
+    data.status = patch.status;
+    if (!data.state) data.state = legacyStatusToState(patch.status);
+  }
+  if (patch.sessionId === null) delete data.sessionId;
+  else if (typeof patch.sessionId === "string") data.sessionId = patch.sessionId;
+  if (patch.wait === null) {
+    delete data.waitReason;
+    delete data.waitSummary;
+  } else if (patch.wait) {
+    data.waitReason = patch.wait.reason;
+    data.waitSummary = patch.wait.summary;
+  }
+  if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
+  else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
+  if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
+  if (patch.updatedAt) data.updatedAt = patch.updatedAt;
   await fs4.writeFile(path3, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs4, path3);
 }
-async function cancelTaskEnvelope(fs4, path3) {
-  const task = await loadTaskEnvelope(fs4, path3);
-  if (task.status === "taken") throw new Error("Only pending task envelopes can be cancelled.");
-  await fs4.remove(path3);
+function parseTaskState(value, legacy) {
+  if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
+    return value;
+  }
+  return legacyStatusToState(legacy);
+}
+function isDeliveryPolicy(value) {
+  return value === "manual" || value === "bypass" || value === "agent-decide";
+}
+function parseWaitFields(data) {
+  const reason = data.waitReason;
+  const summary = data.waitSummary;
+  if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
+    return { reason, summary };
+  }
+  return void 0;
 }
 function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
@@ -1536,6 +1655,96 @@ function validateBoxName(value) {
   return name;
 }
 
+// src/core/task-lifecycle.ts
+async function taskClaim(env, taskPath, options = {}) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "running" && task.status === "taken") {
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return task;
+    }
+    assertTransition(task.state, "claim", "running");
+    const tent = await loadTent(env.fs);
+    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
+    const previous = claimedBoxes.map((box) => ({
+      box,
+      owner: box.fm.owner,
+      status: box.fm.status,
+      acceptedBy: box.fm.acceptedBy
+    }));
+    for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
+      const claimable = canClaim(box);
+      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    try {
+      for (const box of claimedBoxes) {
+        await projectAssignee(env.fs, box, task.role, "doing");
+      }
+      await ackTaskEnvelope(env.fs, taskPath);
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return loadTaskEnvelope(env.fs, taskPath);
+    } catch (error) {
+      for (const item of previous) {
+        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
+      }
+      throw error;
+    }
+  });
+}
+async function projectAssignee(fs4, box, owner, status, acceptedBy) {
+  const patch = { owner: owner ?? void 0 };
+  if (owner) patch.acceptedBy = void 0;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
+  if (status) patch.status = status;
+  await patchFrontmatter(fs4, box, patch);
+}
+async function restoreProjection(fs4, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs4, box, {
+    owner: owner ?? void 0,
+    status: status ?? void 0,
+    acceptedBy: acceptedBy ?? void 0
+  });
+}
+async function patchFrontmatter(fs4, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs4.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  const order = [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+  await fs4.writeFile(boxFile, serializeFrontmatter(data, body, order));
+}
+function requireBoxById(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
+async function withMutation(fs4, action) {
+  return withTentMutation(fs4, action);
+}
+
 // src/core/forkOps.ts
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
@@ -1624,7 +1833,7 @@ async function ensureIdentityFileName(fs4, newBoxPath, oldBoxPath) {
 
 // src/core/ops.ts
 async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
@@ -1674,15 +1883,17 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       manifestPath,
       userPrompt,
       workspace: options.workspace,
-      dispatchedBy: options.dispatchedBy
+      dispatchedBy: options.dispatchedBy,
+      deliveryPolicy: options.deliveryPolicy
     });
     const relayPrompt = relayPromptForTask(
       {
         path: taskPath,
         role: roleName,
-        claims: taskClaims.map((taskClaim) => taskClaim.id),
+        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
         manifest: manifestPath,
-        status: "pending"
+        status: "pending",
+        state: "queued"
       },
       env.tentRoot || env.tentName
     );
@@ -1695,73 +1906,36 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   }
 }
 async function taskAck(env, taskPath) {
-  await withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.status === "taken") {
-      await ackTaskEnvelope(env.fs, taskPath);
-      return;
-    }
-    const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy
-    }));
-    for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
-      const claimable = canClaim(box);
-      if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
-    }
-    try {
-      for (const box of claimedBoxes) {
-        await setOwner(env.fs, box, task.role, "doing");
-        box.fm.owner = task.role;
-        box.fm.status = "doing";
-        box.fm.acceptedBy = void 0;
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreOwnerState(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
-    }
-  });
+  await taskClaim(env, taskPath);
 }
 async function cancelPendingTask(env, taskPath) {
-  await withMutation(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
+  await withMutation2(env.fs, () => cancelTaskEnvelope(env.fs, taskPath));
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
   if (id === "." || id === "root" || id === tentName) {
     throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
   }
-  const box = requireBoxById(tent, id);
+  const box = requireBoxById2(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
 async function stamp(env, boxId, acceptedBy = "user") {
   await completeClaim(env, boxId, void 0, acceptedBy);
 }
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
-  await withMutation(env.fs, async () => {
+  await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
+    const box = requireBoxById2(tent, boxId);
     if (integrate) await integrate();
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
 async function acceptReport(env, reportPath2, options = {}) {
-  await withMutation(env.fs, async () => {
+  await withMutation2(env.fs, async () => {
     const report = await loadReport(env.fs, reportPath2);
     if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, report.boxId);
+    const box = requireBoxById2(tent, report.boxId);
     if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
     const commits = options.commits ?? report.commits;
     if (commits.length > 0) {
@@ -1773,16 +1947,16 @@ async function acceptReport(env, reportPath2, options = {}) {
   });
 }
 async function grantReadable(env, boxId) {
-  await withMutation(env.fs, async () => {
+  await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
+    const box = requireBoxById2(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
-    await patchFrontmatter(env.fs, box, { readable: true });
+    await patchFrontmatter2(env.fs, box, { readable: true });
   });
 }
 async function cleanTemp(env, role) {
   const roleName = role === void 0 ? void 0 : assertRoleName(role);
-  await withMutation(env.fs, async () => {
+  await withMutation2(env.fs, async () => {
     const target = roleName ? join("temp", roleName) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
@@ -1791,9 +1965,9 @@ async function cleanTemp(env, role) {
   });
 }
 async function forceRelease(env, boxId) {
-  await withMutation(env.fs, async () => {
+  await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
+    const box = requireBoxById2(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
     await removeReportsForBox(env.fs, box.id);
@@ -1812,7 +1986,7 @@ async function deleteTag(env, name) {
   await removeRegistryTag(env.fs, normalizeTagName(name));
 }
 async function createBox(env, input) {
-  return withMutation(env.fs, async () => createBoxUnlocked(env, input));
+  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
 }
 async function createBoxUnlocked(env, input) {
   assertNotTempPath(input.parentPath);
@@ -1851,16 +2025,9 @@ async function setOwner(fs4, box, owner, status, acceptedBy) {
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter(fs4, box, patch);
+  await patchFrontmatter2(fs4, box, patch);
 }
-async function restoreOwnerState(fs4, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs4, box, {
-    owner: owner ?? void 0,
-    status: status ?? void 0,
-    acceptedBy: acceptedBy ?? void 0
-  });
-}
-async function patchFrontmatter(fs4, box, patch) {
+async function patchFrontmatter2(fs4, box, patch) {
   const boxFile = boxNotePath(box.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs4.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
@@ -1900,7 +2067,8 @@ function ownerCovering(box) {
 }
 function pendingClaimCovering(tent, box, tasks) {
   for (const task of tasks) {
-    if (task.status !== "pending") continue;
+    const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
+    if (!active) continue;
     for (const claimId of task.claims) {
       if (claimId === "root") {
         return { reason: `Tent root is awaiting delivery to ${task.role}.` };
@@ -1943,7 +2111,7 @@ function isAncestor(ancestor, child) {
   }
   return false;
 }
-function requireBoxById(tent, boxId) {
+function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
     throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   }
@@ -1951,7 +2119,7 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs4, action) {
+async function withMutation2(fs4, action) {
   return withTentMutation(fs4, action);
 }
 
