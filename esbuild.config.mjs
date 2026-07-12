@@ -30,12 +30,32 @@ const cliCtx = await esbuild.context({
   platform: "node",
 });
 
+// Local Tent Service (B2): attach via loopback HTTP / JSON-RPC
+const serviceCtx = await esbuild.context({
+  entryPoints: ["src/service/cli.ts"],
+  bundle: true,
+  external: ["node:*"],
+  format: "esm",
+  target: "es2021",
+  logLevel: "info",
+  sourcemap: false,
+  treeShaking: true,
+  outfile: "service.mjs",
+  platform: "node",
+  banner: {
+    js: "#!/usr/bin/env node\n",
+  },
+});
+
 if (prod) {
   await pluginCtx.rebuild();
   await cliCtx.rebuild();
+  await serviceCtx.rebuild();
   await pluginCtx.dispose();
   await cliCtx.dispose();
+  await serviceCtx.dispose();
 } else {
   await pluginCtx.watch();
   await cliCtx.watch();
+  await serviceCtx.watch();
 }
