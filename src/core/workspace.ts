@@ -2,7 +2,6 @@ import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
 import type { LoadedTent } from "./tree.js";
-import { parseOutputPointer } from "./output.js";
 import type { RoleWorkspaceContract } from "./task.js";
 import { workspaceRootFromSystemRoot } from "./paths.js";
 
@@ -33,25 +32,15 @@ export interface WorkspaceCheckResult {
 /**
  * 解析一顶 Tent 对应的真实 workspace 根。
  *
- * B1 起：优先从 in-workspace 布局推导（system root 目录名为 `.tent` 时父目录即 workspace）。
- * 兼容迁移前：仍可读 concept 上的 `workspace:` 指针字段（不再依赖 type.workspacePointer 能力轴）。
- * 多指针冲突仍报错。不再使用「workspace pointer type」产品语义。
+ * B1 hardening：只从 in-workspace 布局推导（system root 目录名为 `.tent` 时父目录即 workspace）。
+ * 不再扫描 concept 上任意 `workspace:` 字段作为长期 legacy pointer fallback。
+ * 不再使用「workspace pointer type」产品语义。
  */
-export function resolveTentWorkspace(tent: LoadedTent, systemRoot?: string): string | undefined {
-  if (systemRoot) {
-    const fromLayout = workspaceRootFromSystemRoot(systemRoot);
-    if (fromLayout) return nodePath.resolve(fromLayout);
-  }
-
-  const workspaces = new Set<string>();
-  for (const box of tent.byPath.values()) {
-    const workspace = parseOutputPointer(box.fm, box.body).workspace;
-    if (workspace) workspaces.add(nodePath.resolve(workspace));
-  }
-  if (workspaces.size > 1) {
-    throw new Error(`A Tent can reference only one workspace; found: ${[...workspaces].join(", ")}.`);
-  }
-  return [...workspaces][0];
+export function resolveTentWorkspace(_tent: LoadedTent, systemRoot?: string): string | undefined {
+  void _tent;
+  if (!systemRoot) return undefined;
+  const fromLayout = workspaceRootFromSystemRoot(systemRoot);
+  return fromLayout ? nodePath.resolve(fromLayout) : undefined;
 }
 
 /**
@@ -68,7 +57,7 @@ export async function findIntegratedCommit(
   const full = await fullRef(root, sourceRef);
   const ancestor = await findAncestorIntegration(root, full, targetBranch);
   if (ancestor) return { integratedRef: full, reason: "ancestor" };
-  const prior = await findCherryPick(root, full);
+  const prior = await findCherryPick(root, full, targetBranch);
   if (prior) return { integratedRef: prior, reason: "cherry-pick" };
   return undefined;
 }
@@ -168,7 +157,7 @@ export async function integrateWorkspaceCommits(
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef);
+      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
@@ -260,19 +249,25 @@ async function worktreeForBranch(root: string, branch: string): Promise<string |
   return undefined;
 }
 
-async function findCherryPick(root: string, sourceRef: string): Promise<string | undefined> {
+/**
+ * 在目标分支可达历史上查找精确的 `cherry picked from commit <fullSha>` 痕迹。
+ * 禁止 `git log --all`：其他分支上的同文案不得造成「已合入」误判。
+ */
+async function findCherryPick(
+  root: string,
+  sourceRef: string,
+  targetBranch: string
+): Promise<string | undefined> {
   const full = await fullRef(root, sourceRef);
   const needle = `(cherry picked from commit ${full})`;
-  // 扫描目标历史上足够深的提交；短窗口会导致「已合入」误判为需再次 cherry-pick。
-  const output = await git(root, ["log", "--format=%H%x00%B%x00", "--all", "-n", "5000"]);
+  const targetRef = `refs/heads/${targetBranch}`;
+  // 仅扫描目标分支可达历史；短窗口会导致「已合入」误判为需再次 cherry-pick。
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
   const parts = output.split("\0");
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const body = parts[i + 1] ?? "";
+    // 精确匹配完整 sha 的标准 -x 文案；拒绝子串/截断误判。
     if (body.includes(needle)) return parts[i].trim();
-    // 兼容部分 git 前端截断 message 时仍保留完整 sha 的变体
-    if (body.includes("cherry picked from commit") && body.includes(full)) {
-      return parts[i].trim();
-    }
   }
   return undefined;
 }

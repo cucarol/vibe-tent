@@ -12,22 +12,18 @@ export interface TagRegistry {
   tags: string[];
 }
 
-const TAGS_CANDIDATES = [TAGS_REGISTRY_PATH, `.tent/${TAGS_REGISTRY_PATH}`];
-
+/** 正常路径只读扁平 tags.json；嵌套 `.tent/tags.json` 由一次性迁移搬迁。 */
 export async function loadTagRegistry(fs: FsAdapter): Promise<TagRegistry> {
-  for (const candidate of TAGS_CANDIDATES) {
-    if (!(await fs.exists(candidate))) continue;
-    try {
-      return normalizeRegistry(JSON.parse(await fs.readFile(candidate)));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      const recovered = await recoverTagRegistryFromBoxes(fs);
-      await saveTagRegistryUnlocked(fs, recovered);
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return recovered;
-    }
+  if (!(await fs.exists(TAGS_REGISTRY_PATH))) return { tags: [] };
+  try {
+    return normalizeRegistry(JSON.parse(await fs.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs);
+    await saveTagRegistryUnlocked(fs, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
   }
-  return { tags: [] };
 }
 
 export async function saveTagRegistry(fs: FsAdapter, registry: TagRegistry): Promise<void> {

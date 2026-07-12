@@ -1,5 +1,6 @@
 // 一次性 legacy schema migration（纯函数 + 可对 FsAdapter 执行）。
 // 不做长期 alias / 双解析产品路径：迁移报告写出后，新写入只用 cx- / artifact。
+// 正常运行路径不得 dual-read 嵌套 `.tent/*`；本文件负责读旧布局并切断。
 
 import { FsAdapter } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
@@ -11,7 +12,15 @@ import {
   TYPE_REGISTRY_PATH,
   type TypeRegistry,
 } from "./typeRegistry.js";
-import { TEMP_DIR } from "./paths.js";
+import {
+  MUTATION_LOCK_PATH,
+  ORDER_PATH,
+  ROLES_REGISTRY_PATH,
+  RULES_PATH,
+  TAGS_REGISTRY_PATH,
+  TEMP_DIR,
+  TENT_SYSTEM_DIR,
+} from "./paths.js";
 
 export interface IdRemap {
   from: string;
@@ -34,6 +43,15 @@ export interface MigrateLegacySchemaOptions {
   /** 额外扫描 temp 内 envelope 的 box id 引用并改写。 */
   rewriteOperationalRefs?: boolean;
 }
+
+/** 嵌套旧布局下的注册表路径（相对 system root）。 */
+const NESTED_REGISTRY_FILES = [
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH,
+  ORDER_PATH,
+  RULES_PATH,
+] as const;
 
 /**
  * 纯：给定 legacy id 集合，生成 bx- → cx- 映射（确定性取决于 rand）。
@@ -68,10 +86,11 @@ export function rewriteOutputType(type: string): string | undefined {
 
 /**
  * 纯：从 types.json 对象去掉 workspacePointer，并把 output 键合并为 artifact。
+ * 同时处理 flat 与 { primary, secondary } 旧 schema，幂等。
  */
 export function migrateTypeRegistryJson(value: unknown): { registry: TypeRegistry; changes: string[] } {
   const changes: string[] = [];
-  const root: Record<string, unknown> = isRecord(value) ? { ...value } : {};
+  const root: Record<string, unknown> = isRecord(value) ? deepClone(value) : {};
 
   const stripPointer = (def: unknown): unknown => {
     if (!isRecord(def)) return def;
@@ -84,45 +103,85 @@ export function migrateTypeRegistryJson(value: unknown): { registry: TypeRegistr
 
   if (isRecord(root.primary) || isRecord(root.secondary)) {
     if (isRecord(root.primary)) {
-      root.primary = Object.fromEntries(
-        Object.entries(root.primary).map(([k, v]) => [k, stripPointer(v)])
-      );
+      root.primary = migratePrimarySecondaryBucket(root.primary, stripPointer, changes, "primary");
     }
     if (isRecord(root.secondary)) {
-      root.secondary = Object.fromEntries(
-        Object.entries(root.secondary).map(([k, v]) => [k, stripPointer(v)])
-      );
+      root.secondary = migratePrimarySecondaryBucket(root.secondary, stripPointer, changes, "secondary");
     }
   } else {
     for (const key of Object.keys(root)) {
       root[key] = stripPointer(root[key]);
     }
-    if (isRecord(root.output)) {
-      if (!root.artifact) {
-        const out = { ...root.output, coordination: true };
-        delete (out as Record<string, unknown>).workspacePointer;
-        root.artifact = out;
-        changes.push("promoted output definition to artifact");
-      }
-      delete root.output;
-      changes.push("removed legacy output type key");
-    }
+    promoteOutputKey(root, changes);
   }
 
   const registry = normalizeRegistry(root);
-  // ensure no workspacePointer leaked into normalized objects
+  // ensure no workspacePointer / output key leaked into normalized objects
   for (const def of Object.values(registry)) {
     if (def && typeof def === "object" && "workspacePointer" in def) {
       delete (def as { workspacePointer?: boolean }).workspacePointer;
       changes.push("stripped workspacePointer after normalize");
     }
   }
+  if ("output" in registry) {
+    delete registry.output;
+    changes.push("removed residual output key after normalize");
+  }
   void DEFAULT_TYPE_REGISTRY;
   return { registry, changes };
 }
 
+function migratePrimarySecondaryBucket(
+  bucket: Record<string, unknown>,
+  stripPointer: (def: unknown) => unknown,
+  changes: string[],
+  label: string
+): Record<string, unknown> {
+  const next: Record<string, unknown> = {};
+  for (const [key, raw] of Object.entries(bucket)) {
+    const stripped = stripPointer(raw);
+    if (key === "output") {
+      if (next.artifact === undefined) {
+        if (isRecord(stripped)) {
+          const out = { ...stripped };
+          if (out.coordination === undefined && label === "primary") out.coordination = true;
+          delete out.workspacePointer;
+          next.artifact = out;
+        } else {
+          next.artifact = stripped;
+        }
+        changes.push(`promoted ${label}.output definition to ${label}.artifact`);
+      } else {
+        changes.push(`dropped duplicate ${label}.output; kept existing ${label}.artifact`);
+      }
+      changes.push(`removed legacy ${label}.output type key`);
+      continue;
+    }
+    next[key] = stripped;
+  }
+  return next;
+}
+
+function promoteOutputKey(root: Record<string, unknown>, changes: string[]): void {
+  if (!isRecord(root.output)) return;
+  if (!root.artifact) {
+    const out = { ...root.output, coordination: (root.output as { coordination?: boolean }).coordination ?? true };
+    delete (out as Record<string, unknown>).workspacePointer;
+    root.artifact = out;
+    changes.push("promoted output definition to artifact");
+  } else {
+    changes.push("dropped duplicate output; kept existing artifact");
+  }
+  delete root.output;
+  changes.push("removed legacy output type key");
+}
+
 /**
- * 对当前 system root 执行一次性 legacy migration。
+ * 对当前 system root 执行一次性 legacy migration：
+ * 1) 嵌套 `.tent/*` 注册表 → 扁平 system root 并切断 dual-read
+ * 2) types.json output→artifact（含 primary/secondary）
+ * 3) bx-→cx- + concept type rewrite
+ * 4) 有界 operational 引用改写（非全局 split/join）
  */
 export async function migrateLegacySchema(
   fs: FsAdapter,
@@ -139,18 +198,9 @@ export async function migrateLegacySchema(
     warnings: [],
   };
 
-  if (await fs.exists(TYPE_REGISTRY_PATH)) {
-    try {
-      const raw = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH)) as unknown;
-      const { registry, changes } = migrateTypeRegistryJson(raw);
-      report.registryChanges.push(...changes);
-      if (!dryRun && changes.length > 0) {
-        await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
-      }
-    } catch (error) {
-      report.warnings.push(`types.json migration skipped: ${error instanceof Error ? error.message : String(error)}`);
-    }
-  }
+  await liftNestedRegistries(fs, report, dryRun);
+  await migrateFlatTypeRegistry(fs, report, dryRun);
+  await unifyMutationLock(fs, report, dryRun);
 
   const tent = await loadTent(fs);
   const legacyIds = [...tent.byId.keys()].filter(isLegacyBoxId);
@@ -193,9 +243,9 @@ export async function migrateLegacySchema(
     }
   }
 
-  if (await fs.exists("order.json")) {
+  if (await fs.exists(ORDER_PATH)) {
     try {
-      const order = JSON.parse(await fs.readFile("order.json")) as Record<string, string[]>;
+      const order = JSON.parse(await fs.readFile(ORDER_PATH)) as Record<string, string[]>;
       let dirty = false;
       const next: Record<string, string[]> = {};
       for (const [key, list] of Object.entries(order)) {
@@ -212,7 +262,7 @@ export async function migrateLegacySchema(
       }
       if (dirty) {
         report.registryChanges.push(dryRun ? "would rewrite order.json ids" : "rewrote order.json ids");
-        if (!dryRun) await fs.writeFile("order.json", JSON.stringify(next, null, 2) + "\n");
+        if (!dryRun) await fs.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
       }
     } catch (error) {
       report.warnings.push(`order.json: ${error instanceof Error ? error.message : String(error)}`);
@@ -234,6 +284,88 @@ export async function migrateLegacySchema(
   return report;
 }
 
+/**
+ * 读取旧的嵌套 `.tent/*` 后写入扁平布局，并删除嵌套副本以切断 dual-read。
+ * 幂等：扁平已存在且内容一致时仅清理嵌套；扁平不存在则搬迁。
+ */
+async function liftNestedRegistries(
+  fs: FsAdapter,
+  report: MigrationReport,
+  dryRun: boolean
+): Promise<void> {
+  if (!(await fs.exists(TENT_SYSTEM_DIR))) return;
+  for (const name of NESTED_REGISTRY_FILES) {
+    const nested = join(TENT_SYSTEM_DIR, name);
+    if (!(await fs.exists(nested))) continue;
+    const flatExists = await fs.exists(name);
+    if (!flatExists) {
+      report.registryChanges.push(
+        dryRun ? `would lift nested ${nested} → ${name}` : `lifted nested ${nested} → ${name}`
+      );
+      if (!dryRun) {
+        const text = await fs.readFile(nested);
+        await fs.writeFile(name, text);
+      }
+    } else {
+      report.registryChanges.push(`nested ${nested} ignored; flat ${name} already present`);
+    }
+    report.registryChanges.push(dryRun ? `would remove nested ${nested}` : `removed nested ${nested}`);
+    if (!dryRun) await fs.remove(nested);
+  }
+
+  // 嵌套 mutation.lock 一律删除，统一到扁平唯一锁
+  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs.exists(nestedLock)) {
+    report.registryChanges.push(
+      dryRun ? `would remove nested ${nestedLock}` : `removed nested ${nestedLock}`
+    );
+    if (!dryRun) await fs.remove(nestedLock);
+  }
+}
+
+async function migrateFlatTypeRegistry(
+  fs: FsAdapter,
+  report: MigrationReport,
+  dryRun: boolean
+): Promise<void> {
+  if (!(await fs.exists(TYPE_REGISTRY_PATH))) return;
+  try {
+    const raw = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH)) as unknown;
+    const { registry, changes } = migrateTypeRegistryJson(raw);
+    report.registryChanges.push(...changes);
+    if (!dryRun && changes.length > 0) {
+      await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+    }
+  } catch (error) {
+    report.warnings.push(
+      `types.json migration skipped: ${error instanceof Error ? error.message : String(error)}`
+    );
+  }
+}
+
+/** 若仅有嵌套锁残留，确保扁平唯一锁路径可用（不创建活跃锁文件）。 */
+async function unifyMutationLock(
+  fs: FsAdapter,
+  report: MigrationReport,
+  dryRun: boolean
+): Promise<void> {
+  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs.exists(nestedLock)) {
+    report.registryChanges.push(
+      dryRun ? `would remove nested lock ${nestedLock}` : `removed nested lock ${nestedLock}`
+    );
+    if (!dryRun) await fs.remove(nestedLock);
+  }
+  // 文档/报告：唯一锁路径固定为 system root mutation.lock
+  if (!report.registryChanges.some((c) => c.includes(MUTATION_LOCK_PATH))) {
+    report.registryChanges.push(`unique lock path: ${MUTATION_LOCK_PATH}`);
+  }
+}
+
+/**
+ * 有界 operational 引用改写：只改 frontmatter/YAML 结构化字段与精确 token，
+ * 禁止无边界全局 split/join。重跑幂等。
+ */
 async function rewriteOperationalTree(
   fs: FsAdapter,
   idMap: Map<string, string>,
@@ -249,30 +381,79 @@ async function rewriteOperationalTree(
         await walk(path);
         continue;
       }
-      if (!entry.name.endsWith(".md") && !entry.name.endsWith(".yml") && !entry.name.endsWith(".yaml")) {
-        continue;
-      }
+      const lower = entry.name.toLowerCase();
+      if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
+
       const text = await fs.readFile(path);
-      let next = text;
-      for (const [from, to] of idMap) next = next.split(from).join(to);
-      let targetPath = path;
+      const rewritten = rewriteOperationalText(text, idMap);
+      let targetName = entry.name;
       for (const [from, to] of idMap) {
-        if (entry.name.includes(from)) targetPath = join(dir, entry.name.split(from).join(to));
+        // 文件名中的精确 id token（如 task-…-bx-xxx.md）
+        if (targetName.includes(from)) {
+          targetName = replaceExactIdTokens(targetName, from, to);
+        }
       }
-      if (next !== text || targetPath !== path) {
-        report.registryChanges.push(`operational rewrite: ${path}`);
-        if (!dryRun) {
-          if (targetPath !== path) {
-            await fs.writeFile(targetPath, next);
-            await fs.remove(path);
-          } else {
-            await fs.writeFile(path, next);
-          }
+      const targetPath = join(dir, targetName);
+
+      if (rewritten === text && targetPath === path) continue;
+      report.registryChanges.push(`operational rewrite: ${path}`);
+      if (!dryRun) {
+        if (targetPath !== path) {
+          await fs.writeFile(targetPath, rewritten);
+          await fs.remove(path);
+        } else {
+          await fs.writeFile(path, rewritten);
         }
       }
     }
   };
   await walk(TEMP_DIR);
+}
+
+/**
+ * 改写 operational 文本中的 id 引用：
+ * - YAML/frontmatter 行：`claims: [bx-…]`、`box: bx-…`、`id: bx-…` 等
+ * - 独立 token（词边界），避免把 `bx-abc` 嵌在更长字符串里误伤
+ */
+export function rewriteOperationalText(text: string, idMap: Map<string, string>): string {
+  if (idMap.size === 0) return text;
+  let next = text;
+  // 1) 结构化 frontmatter / yaml 标量与列表项
+  next = next.replace(
+    /^([ \t]*(?:claims|box|id|claim|parent|from|to|root)[ \t]*:[ \t]*)(.+)$/gim,
+    (full, prefix: string, value: string) => {
+      return prefix + replaceIdsInStructuredValue(value, idMap);
+    }
+  );
+  // 2) claims 行内数组与 body 中的精确 token
+  for (const [from, to] of idMap) {
+    next = replaceExactIdTokens(next, from, to);
+  }
+  return next;
+}
+
+function replaceIdsInStructuredValue(value: string, idMap: Map<string, string>): string {
+  let next = value;
+  for (const [from, to] of idMap) {
+    next = replaceExactIdTokens(next, from, to);
+  }
+  return next;
+}
+
+/**
+ * 仅替换完整 id token。
+ * 边界用「非字母数字」：允许 `task-…-bx-xxx.md` 文件名中的 `-` 分隔，
+ * 同时拒绝 `bx-abc` 嵌在 `bx-abc1234` / `mybx-abc` 等更长串中。
+ */
+export function replaceExactIdTokens(text: string, from: string, to: string): string {
+  if (!from || from === to) return text;
+  const escaped = from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+  const re = new RegExp(`(?<![A-Za-z0-9])${escaped}(?![A-Za-z0-9])`, "g");
+  return text.replace(re, to);
+}
+
+function deepClone(value: Record<string, unknown>): Record<string, unknown> {
+  return JSON.parse(JSON.stringify(value)) as Record<string, unknown>;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

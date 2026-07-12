@@ -3,6 +3,8 @@
 // - CLI 实现一版走 node:fs(给 skill 调用)
 // 同一份核心逻辑两处复用,绝不各算各的。
 
+import { MUTATION_LOCK_PATH } from "./paths.js";
+
 export interface FsAdapter {
   /** 列出 dir 下的直接子项(相对帐根的路径)。 */
   listDir(dir: string): Promise<{ name: string; isDir: boolean }[]>;
@@ -23,5 +25,6 @@ export interface Clock {
 }
 
 export function withTentMutation<T>(fs: FsAdapter, action: () => Promise<T>): Promise<T> {
-  return fs.withLock ? fs.withLock("mutation.lock", action) : action();
+  // 唯一锁：始终 system root 下 mutation.lock，不使用嵌套 .tent/ 或其他路径。
+  return fs.withLock ? fs.withLock(MUTATION_LOCK_PATH, action) : action();
 }

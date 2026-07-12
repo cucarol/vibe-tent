@@ -28,32 +28,24 @@ const DEFAULT_ROLES_REGISTRY: RolesRegistry = {
   roles: [],
 };
 
-const ROLES_CANDIDATES = [ROLES_REGISTRY_PATH, `.tent/${ROLES_REGISTRY_PATH}`];
-
+/** 正常路径只读扁平 roles.json；嵌套 `.tent/roles.json` 由一次性迁移搬迁。 */
 export async function loadRolesRegistry(fs: FsAdapter): Promise<RolesRegistry> {
-  for (const candidate of ROLES_CANDIDATES) {
-    if (!(await fs.exists(candidate))) continue;
-    try {
-      const parsed = JSON.parse(await fs.readFile(candidate)) as unknown;
-      return normalizeRolesRegistry(parsed);
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      const reset = cloneDefaultRoles();
-      // 写回被损坏的候选路径（兼容迁移窗口的嵌套 .tent/roles.json）
-      await writeJson(fs, candidate, reset);
-      if (candidate !== ROLES_REGISTRY_PATH) {
-        await writeJson(fs, ROLES_REGISTRY_PATH, reset);
-      }
-      warnRegistryRecovered(
-        candidate,
-        backupPath,
-        "reset",
-        "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-      );
-      return reset;
-    }
+  if (!(await fs.exists(ROLES_REGISTRY_PATH))) return cloneDefaultRoles();
+  try {
+    const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH)) as unknown;
+    return normalizeRolesRegistry(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
   }
-  return cloneDefaultRoles();
 }
 
 export async function createRole(fs: FsAdapter, definition: RoleDefinition): Promise<void> {

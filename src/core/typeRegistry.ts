@@ -201,21 +201,19 @@ export function setBaseWorkspacePointer(_definition: TypeDefinition, _value: boo
   );
 }
 
-/** 新布局 types.json；迁移窗口兼容嵌套 .tent/types.json。 */
-const TYPE_REGISTRY_CANDIDATES = [TYPE_REGISTRY_PATH, `.tent/${TYPE_REGISTRY_PATH}`];
-
+/**
+ * 正常运行路径只读 system root 扁平 `types.json`。
+ * 嵌套 `.tent/types.json` 仅由一次性迁移函数搬迁，不做长期 dual-read。
+ */
 export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
-  for (const candidate of TYPE_REGISTRY_CANDIDATES) {
-    if (!(await fs.exists(candidate))) continue;
-    try {
-      const parsed = JSON.parse(await fs.readFile(candidate)) as unknown;
-      return normalizeRegistry(parsed);
-    } catch (error) {
-      const detail = error instanceof Error ? error.message : String(error);
-      throw new Error(`types.json is corrupt: ${detail}.`);
-    }
+  if (!(await fs.exists(TYPE_REGISTRY_PATH))) return cloneDefaults();
+  try {
+    const parsed = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH)) as unknown;
+    return normalizeRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`types.json is corrupt: ${detail}.`);
   }
-  return cloneDefaults();
 }
 
 export function normalizeRegistry(value: unknown): TypeRegistry {

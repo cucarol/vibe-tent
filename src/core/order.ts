@@ -11,21 +11,17 @@ export type OrderMap = Record<string, string[]>;
 export const ROOT_KEY = "__root__";
 export { ORDER_PATH };
 
-const ORDER_CANDIDATES = [ORDER_PATH, `.tent/${ORDER_PATH}`];
-
+/** 正常路径只读扁平 order.json；嵌套 `.tent/order.json` 由一次性迁移搬迁。 */
 export async function loadOrder(fs: FsAdapter): Promise<OrderMap> {
-  for (const candidate of ORDER_CANDIDATES) {
-    if (!(await fs.exists(candidate))) continue;
-    try {
-      return JSON.parse(await fs.readFile(candidate));
-    } catch {
-      const backupPath = await backupCorruptRegistry(fs, candidate);
-      await saveOrder(fs, {});
-      warnRegistryRecovered(candidate, backupPath, "recovered");
-      return {};
-    }
+  if (!(await fs.exists(ORDER_PATH))) return {};
+  try {
+    return JSON.parse(await fs.readFile(ORDER_PATH));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs, ORDER_PATH);
+    await saveOrder(fs, {});
+    warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
+    return {};
   }
-  return {};
 }
 
 export async function saveOrder(fs: FsAdapter, map: OrderMap): Promise<void> {

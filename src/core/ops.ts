@@ -78,6 +78,11 @@ async function dispatchUnlocked(
       throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
     }
   } else {
+    if (!claim.box.coordination) {
+      throw new Error(
+        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
+      );
+    }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
       throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
@@ -158,6 +163,11 @@ export async function taskAck(env: OpsEnv, taskPath: string): Promise<void> {
     }));
 
     for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot acknowledge task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
       const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot acknowledge task: ${claimable.reason || "box cannot be claimed"}`);
     }

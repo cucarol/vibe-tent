@@ -11,10 +11,17 @@ export interface ClaimCheck {
   reason?: string;
 }
 
-/** 能否把 box 认领给某角色?检查 box 自身、祖先、子孙是否已被占。 */
+/** 能否把 box 认领给某角色?检查 coordination、box 自身、祖先、子孙是否已被占。 */
 export function canClaim(box: Box): ClaimCheck {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  if (!box.coordination) {
+    return {
+      ok: false,
+      blocker: box,
+      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`,
+    };
+  }
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
