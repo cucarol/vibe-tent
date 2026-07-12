@@ -276,14 +276,15 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
 
   const tasks = await loadTaskEnvelopes(env.fs);
   assert.deepEqual(tasks.map((task) => task.path), [first.taskPath, second.taskPath]);
-  assert.deepEqual(tasks[0], {
-    path: first.taskPath,
-    role: "analyst",
-    claims: ["bx-p1"],
-    manifest: "temp/analyst/manifest.yml",
-    status: "pending",
-    dispatchedBy: "user",
-  });
+  assert.equal(tasks[0].path, first.taskPath);
+  assert.equal(tasks[0].role, "analyst");
+  assert.deepEqual(tasks[0].claims, ["bx-p1"]);
+  assert.equal(tasks[0].manifest, "temp/analyst/manifest.yml");
+  assert.equal(tasks[0].status, "pending");
+  assert.equal(tasks[0].state, "queued");
+  assert.equal(tasks[0].dispatchedBy, "user");
+  assert.equal(tasks[0].deliveryPolicy, "manual");
+  assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
   assert.match(relay, /^A Tent task has been dispatched to role reviewer\./);
   assert.match(relay, new RegExp(`Tent root: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
