@@ -14,7 +14,7 @@ import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../core
 import { taskContextCard } from "../core/context-card.js";
 import { loadDeliveries } from "../core/delivery.js";
 import { loadTypeRegistry } from "../core/typeRegistry.js";
-import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
+import { loadRolesRegistry, roleA2APolicy } from "../core/skillRoleRegistry.js";
 import {
   taskAccept,
   taskCancel,
@@ -465,6 +465,7 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
       description: role.description,
       color: role.color,
       prompt: role.prompt,
+      a2aPolicy: roleA2APolicy(role),
     }))
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
@@ -569,9 +570,17 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const profileId = optionalString(p, "profileId") ?? "fake-default";
-  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  // Trusted override only (harness / internal). Ordinary a2aPolicy param is ignored.
+  const a2aPolicyOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
+
+  if (startSession && !profileId) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch with startSession requires explicit profileId (no fake-default fallback)"
+    );
+  }
 
   const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
@@ -607,7 +616,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       taskPath: result.taskPath,
       profileId,
       callerKind,
-      a2aPolicy,
+      ...(a2aPolicyOverride !== undefined ? { a2aPolicyOverride } : {}),
       bootstrapPrompt: result.relayPrompt,
     });
   }
@@ -871,9 +880,11 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const profileId = requireProfileId(p);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  // Trusted internal override only (a2a.resolve re-entry, explicit harness).
+  // Client-supplied a2aPolicy is NOT trusted for role callers — load from role registry.
+  const trustedOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
 
@@ -890,6 +901,12 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
     }
   } else {
+    const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
+      callerKind,
+      taskRole: taskForPolicy.role,
+      trustedOverride,
+    });
     const decision = evaluateA2A({
       callerKind,
       policy: a2aPolicy,
@@ -899,10 +916,11 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
         policy: a2aPolicy,
         callerKind,
+        role: taskForPolicy.role,
       });
     }
     if (decision === "ask") {
-      const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const task = taskForPolicy;
       const item = await ctx.a2a.add({
         id: makeApprovalId(),
         workspaceId,
@@ -1162,13 +1180,12 @@ async function a2aResolve(ctx: HandlerContext, p: Record<string, unknown>) {
   );
 
   if (decision === "approved") {
-    // Start session now with user authority.
+    // Start session now with user authority (approval already recorded).
     const started = await taskStartSessionRpc(ctx, {
       workspaceId: item.workspaceId,
       taskPath: item.taskPath,
       profileId: item.profileId,
       callerKind: "user",
-      a2aPolicy: "allow",
       bootstrapPrompt: item.bootstrapPrompt,
       approvalId: item.id,
     });
@@ -1310,10 +1327,43 @@ function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefine
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
 
-function parseA2APolicy(raw: string | undefined): A2APolicy {
-  if (!raw) return "deny";
+function parseOptionalA2APolicy(raw: string | undefined): A2APolicy | undefined {
+  if (!raw) return undefined;
   if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
   throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
+}
+
+function requireProfileId(p: Record<string, unknown>): string {
+  const profileId = optionalString(p, "profileId");
+  if (!profileId) {
+    throw new RpcError(
+      -32602,
+      "task.startSession requires explicit profileId (no fake-default or product-profile fallback)"
+    );
+  }
+  return profileId;
+}
+
+/**
+ * Resolve A2A policy for startSession.
+ * - user caller → always allow (root authority; registry unused)
+ * - role caller → load role.a2aPolicy from registry (default deny)
+ * - trustedOverride → only when service-internal / harness passes a2aPolicyOverride
+ * Ordinary client `a2aPolicy` params are not applied here.
+ */
+async function resolveStartSessionA2APolicy(
+  fs: import("../core/adapter.js").FsAdapter,
+  input: {
+    callerKind: "user" | "role";
+    taskRole: string;
+    trustedOverride?: A2APolicy;
+  }
+): Promise<A2APolicy> {
+  if (input.callerKind === "user") return "allow";
+  if (input.trustedOverride !== undefined) return input.trustedOverride;
+  const registry = await loadRolesRegistry(fs);
+  const role = registry.roles.find((r) => r.name === input.taskRole);
+  return roleA2APolicy(role);
 }
 
 function parseCallerKind(raw: string): "user" | "role" {

@@ -275,16 +275,19 @@ the service MUST:
 
 ```text
 1. Authenticate caller (user token | role session token)
-2. user caller → allow (user is root authority)
-3. role caller → load role.a2aPolicy: A2APolicy (+ optional per-profile override)
-4. allow → target AgentProfile ∈ allowedProfiles / auth table → internal AgentRuntimePort.startSession
-5. ask  → enqueue a2a.ask; task.wait; do not spawn
-6. deny → return A2A_DENIED; leave no half-started process state
+2. Require explicit profileId (no fake-default / product-profile silent fallback)
+3. user caller → allow (user is root authority)
+4. role caller → load role.a2aPolicy from .tent/roles.json (default deny);
+   ignore client-supplied a2aPolicy; only trusted a2aPolicyOverride (internal/harness)
+5. allow → target AgentProfile ∈ allowedProfiles / auth table → internal AgentRuntimePort.startSession
+6. ask  → enqueue a2a.ask; task.wait; do not spawn
+7. deny → return A2A_DENIED; leave no half-started process state
 ```
 
-**Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization.  
+**Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority.
 **Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.  
 **Clients** call `task.startSession` (or dispatch with `startSession: true`); they never call `AgentRuntimePort` directly.
+**Roles** may store `a2aPolicy` only — never provider secrets or tokens.
 
 ### 4.4 Self-accept ban
 

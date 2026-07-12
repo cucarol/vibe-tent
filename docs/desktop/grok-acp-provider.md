@@ -71,11 +71,29 @@ Optional `grokAcp` fields:
 | `permissionPolicy` | `deny` | `allow` \| `ask` \| `deny` — **never** unconditional yolo / `allow_always` |
 | `permissionTimeoutMs` | 120000 | When `ask`, timeout → deny |
 
-`fake-default` remains the **test** default for harnesses. Product `task.startSession` should pass `profileId: "grok-acp-default"` (or your custom id) when you want the real provider.
+`fake-default` remains available for **tests only** when harnesses pass `profileId: "fake-default"` explicitly. Product `task.startSession` / `task.dispatch` with `startSession: true` **requires** an explicit `profileId` — there is **no** silent fallback to fake or to a product default.
 
 ## Role wiring
 
 Roles stay in the **project** registry (`.tent/roles.json`). They do **not** embed provider secrets.
+
+Optional machine-readable spawn authority on the role (default **deny**):
+
+```json
+{
+  "name": "orchestrator",
+  "prompt": "…",
+  "a2aPolicy": "ask"
+}
+```
+
+| `a2aPolicy` | Role caller `task.startSession` |
+| --- | --- |
+| `allow` | May start authorized AgentProfiles |
+| `ask` | Enters user confirmation (`a2a.ask`) |
+| `deny` (default / omitted) | Hard deny |
+
+User callers always allow. Ordinary RPC clients **cannot** elevate policy via an `a2aPolicy` param; service loads policy from the role registry. Trusted harness may pass `a2aPolicyOverride` only.
 
 Example: use a role for collaboration identity; choose the machine profile at startSession:
 
@@ -93,13 +111,12 @@ RPC sketch:
     "workspaceId": "…",
     "taskPath": "temp/<role>/tasks/….md",
     "profileId": "grok-acp-default",
-    "callerKind": "user",
-    "a2aPolicy": "allow"
+    "callerKind": "user"
   }
 }
 ```
 
-Optional `bootstrapPrompt` overrides the default **pointer** bootstrap (Context Card + relay). If omitted, service builds a short pointer text — it does **not** copy the full task/box body.
+Optional `bootstrapPrompt` overrides the default **pointer** bootstrap (Context Card + relay with `tent task claim` / `tent task deliver`). If omitted, service builds a short pointer text — it does **not** copy the full task/box body.
 
 ## Permission policy (tools)
 

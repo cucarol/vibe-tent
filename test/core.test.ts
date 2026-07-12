@@ -288,8 +288,20 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   const relay = relayPromptForTask(tasks[1], dir);
   assert.match(relay, /^A Tent task has been dispatched to role reviewer\./);
   assert.match(relay, new RegExp(`Tent root: ${dir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
-  assert.match(relay, new RegExp(`1\\. Run \`tent task-ack ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task\\.`));
-  assert.match(relay, /3\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
+  assert.match(
+    relay,
+    new RegExp(
+      `1\\. Run \`tent task claim ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}\` to take this task`
+    )
+  );
+  assert.match(
+    relay,
+    new RegExp(
+      `3\\. When finished, run \`tent task deliver ${second.taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} --summary <text>\``
+    )
+  );
+  assert.match(relay, /4\. If this is a new session for this role, complete role init first: temp\/reviewer\/init\.md\./);
+  assert.doesNotMatch(relay, /task-ack|tent report\b/);
   assert.doesNotMatch(relay, /whether to reuse|是否复用/i);
 });
 

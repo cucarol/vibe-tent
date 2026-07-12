@@ -215,8 +215,13 @@ test("tent dispatch:task ack lifecycle and sub target branch", async () => {
   assert.match(peerDispatch.stdout, new RegExp(`Tent root: ${escapeRegExp(systemRoot)}`));
   assert.match(
     peerDispatch.stdout,
-    new RegExp(`1\\. Run \`tent task-ack ${escapeRegExp(peerTask)}\` to take this task\\.`),
+    new RegExp(`1\\. Run \`tent task claim ${escapeRegExp(peerTask)}\` to take this task`),
   );
+  assert.match(
+    peerDispatch.stdout,
+    new RegExp(`3\\. When finished, run \`tent task deliver ${escapeRegExp(peerTask)} --summary <text>\``),
+  );
+  assert.doesNotMatch(peerDispatch.stdout, /task-ack/);
   const peerBoxPath = systemPath(tent, "peer", "peer.md");
   let peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
   assert.equal(peerBox.owner, undefined);
@@ -570,7 +575,8 @@ test("skill-install:安装内置 skills,重复执行需 --force", async () => {
   assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
   assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
   const installedRoleSkill = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
-  assert.match(installedRoleSkill, /tent task-ack <taskPath>/);
+  assert.match(installedRoleSkill, /tent task claim <taskPath>/);
+  assert.match(installedRoleSkill, /tent task deliver/);
   assert.doesNotMatch(installedRoleSkill, /tent handoff/);
 
   await assert.rejects(

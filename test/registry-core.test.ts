@@ -15,6 +15,7 @@ import {
   createRole,
   deleteRole,
   loadRolesRegistry,
+  roleA2APolicy,
   updateRole,
 } from "../src/core/skillRoleRegistry.js";
 import {
@@ -271,6 +272,44 @@ test("role 注册表:可选 cli 宿主配置会校验并保留", async () => {
     () => createRole(fsa, { name: "broken", cli: { command: "" } }),
     /cli\.command/,
   );
+});
+
+test("role 注册表: a2aPolicy allow|ask|deny 默认为 deny，不存 secret", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-a2a-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, {
+    name: "demo",
+    rules: "# RULES\n",
+    rolesRegistry: {
+      roles: [
+        { name: "plain" },
+        { name: "orch", a2aPolicy: "allow" },
+        { name: "gate", a2aPolicy: "ask" },
+        { name: "blocked", a2aPolicy: "deny" },
+      ],
+    },
+  });
+  const roles = await loadRolesRegistry(fsa);
+  assert.equal(roleA2APolicy(roles.roles.find((r) => r.name === "plain")), "deny");
+  assert.equal(roles.roles.find((r) => r.name === "plain")?.a2aPolicy, undefined);
+  assert.equal(roles.roles.find((r) => r.name === "orch")?.a2aPolicy, "allow");
+  assert.equal(roles.roles.find((r) => r.name === "gate")?.a2aPolicy, "ask");
+  assert.equal(roles.roles.find((r) => r.name === "blocked")?.a2aPolicy, "deny");
+
+  await createRole(fsa, { name: "worker", a2aPolicy: "ask" });
+  assert.equal((await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.a2aPolicy, "ask");
+  await updateRole(fsa, "worker", { a2aPolicy: "allow" });
+  assert.equal((await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.a2aPolicy, "allow");
+
+  // Invalid policy ignored (effective deny); registry still loads.
+  await fsa.writeFile(
+    "roles.json",
+    JSON.stringify({ roles: [{ name: "bad", a2aPolicy: "yolo" }] }, null, 2) + "\n"
+  );
+  const bad = await loadRolesRegistry(fsa);
+  assert.equal(bad.roles[0].name, "bad");
+  assert.equal(bad.roles[0].a2aPolicy, undefined);
+  assert.equal(roleA2APolicy(bad.roles[0]), "deny");
 });
 
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {

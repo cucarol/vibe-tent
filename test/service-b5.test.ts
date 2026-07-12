@@ -16,7 +16,10 @@ import { readServiceEndpoint } from "../src/service/data-dir.js";
 import { CLIENT_METHODS, RPC_A2A_ASK, RPC_A2A_DENIED, RPC_UNAUTHORIZED } from "../src/service/types.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 
-async function makeWorkspace(name = "b5"): Promise<string> {
+async function makeWorkspace(
+  name = "b5",
+  rolePolicies?: Record<string, "allow" | "ask" | "deny">
+): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
@@ -29,8 +32,16 @@ async function makeWorkspace(name = "b5"): Promise<string> {
     JSON.stringify(
       {
         roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch work" },
+          {
+            name: "executor",
+            prompt: "do work",
+            ...(rolePolicies?.executor ? { a2aPolicy: rolePolicies.executor } : {}),
+          },
+          {
+            name: "orchestrator",
+            prompt: "dispatch work",
+            ...(rolePolicies?.orchestrator ? { a2aPolicy: rolePolicies.orchestrator } : {}),
+          },
         ],
       },
       null,
@@ -301,9 +312,76 @@ test("B5: agent-decide integrate vs request-review", async () => {
   });
 });
 
-// ---- A2A allow / ask / deny ----
+// ---- A2A allow / ask / deny (server loads role.a2aPolicy; no client override) ----
 
-test("B5: A2A deny blocks startSession for role callers", async () => {
+test("B5: missing profileId fails loud (no fake-default fallback)", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "need profile",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const missing = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    });
+    assert.ok(missing.error);
+    assert.equal(missing.error!.code, -32602);
+    assert.match(String(missing.error!.message), /profileId/i);
+
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "dispatch-start-miss-profile",
+      type: "prompt",
+    });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    const startMiss = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: (note.result as { id: string }).id,
+      role: "executor",
+      prompt: "dispatch start needs profile",
+      startSession: true,
+    });
+    assert.ok(startMiss.error);
+    assert.equal(startMiss.error!.code, -32602);
+    assert.match(String(startMiss.error!.message), /profileId/i);
+  });
+});
+
+test("B5: explicit fake-default profile still works when passed", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "explicit fake",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.equal(
+      (started.result as { session: { profileId: string } }).session.profileId,
+      "fake-default"
+    );
+  });
+});
+
+test("B5: role a2aPolicy default deny; client a2aPolicy cannot elevate", async () => {
+  // No a2aPolicy on role → deny. Client passes a2aPolicy: allow — must still deny.
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -319,16 +397,51 @@ test("B5: A2A deny blocks startSession for role callers", async () => {
       workspaceId,
       taskPath,
       callerKind: "role",
-      a2aPolicy: "deny",
+      a2aPolicy: "allow",
       profileId: "fake-default",
     });
     assert.ok(denied.error);
     assert.equal(denied.error!.code, RPC_A2A_DENIED);
+
+    const stillDenied = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+    });
+    assert.ok(stillDenied.error);
+    assert.equal(stillDenied.error!.code, RPC_A2A_DENIED);
   });
 });
 
-test("B5: A2A ask creates pending approval; resolve approve starts session", async () => {
-  const ws = await makeWorkspace();
+test("B5: role a2aPolicy=allow from registry permits role startSession", async () => {
+  const ws = await makeWorkspace("b5-allow", { executor: "allow" });
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "allow path",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.match(
+      (started.result as { session: { sessionId: string } }).session.sessionId,
+      /^ss-/
+    );
+  });
+});
+
+test("B5: A2A ask from role registry; resolve approve starts session", async () => {
+  const ws = await makeWorkspace("b5-ask", { executor: "ask" });
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -340,11 +453,12 @@ test("B5: A2A ask creates pending approval; resolve approve starts session", asy
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
+    // Client a2aPolicy=allow must not skip ask when role says ask.
     const ask = await rpc(svc, "task.startSession", {
       workspaceId,
       taskPath,
       callerKind: "role",
-      a2aPolicy: "ask",
+      a2aPolicy: "allow",
       profileId: "fake-default",
     });
     assert.ok(ask.error);
@@ -377,7 +491,7 @@ test("B5: A2A ask creates pending approval; resolve approve starts session", asy
 });
 
 test("B5: A2A ask deny leaves no live session", async () => {
-  const ws = await makeWorkspace();
+  const ws = await makeWorkspace("b5-ask-deny", { executor: "ask" });
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -392,7 +506,7 @@ test("B5: A2A ask deny leaves no live session", async () => {
       workspaceId,
       taskPath,
       callerKind: "role",
-      a2aPolicy: "ask",
+      profileId: "fake-default",
     });
     const approvalId = (ask.error!.data as { approvalId: string }).approvalId;
     const denied = await rpc(svc, "a2a.resolve", {
@@ -408,8 +522,31 @@ test("B5: A2A ask deny leaves no live session", async () => {
   });
 });
 
-test("B5: user callerKind always allows startSession even if a2aPolicy=deny", async () => {
-  const ws = await makeWorkspace();
+test("B5: trusted a2aPolicyOverride can raise policy for harness only", async () => {
+  const ws = await makeWorkspace(); // role default deny
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "override allow",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+      a2aPolicyOverride: "allow",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+  });
+});
+
+test("B5: user callerKind always allows startSession even if role a2aPolicy=deny", async () => {
+  const ws = await makeWorkspace("b5-user", { executor: "deny" });
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -424,6 +561,7 @@ test("B5: user callerKind always allows startSession even if a2aPolicy=deny", as
       workspaceId,
       taskPath,
       callerKind: "user",
+      profileId: "fake-default",
       a2aPolicy: "deny",
     });
     assert.ok(!started.error, JSON.stringify(started.error));
@@ -431,6 +569,25 @@ test("B5: user callerKind always allows startSession even if a2aPolicy=deny", as
       (started.result as { session: { sessionId: string } }).session.sessionId,
       /^ss-/
     );
+  });
+});
+
+test("B5: dispatch relayPrompt uses task claim/deliver (not task-ack)", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "relay text",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const relay = (d.result as { relayPrompt: string; taskPath: string }).relayPrompt;
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    assert.match(relay, new RegExp(`tent task claim ${taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}`));
+    assert.match(relay, new RegExp(`tent task deliver ${taskPath.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")} --summary`));
+    assert.doesNotMatch(relay, /task-ack|tent report\b/);
   });
 });
 
@@ -452,6 +609,7 @@ test("B5: task.interrupt stops bound session", async () => {
       workspaceId,
       taskPath,
       callerKind: "user",
+      profileId: "fake-default",
     });
     const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
     assert.equal((await svc.runtime.probe(sessionId)).alive, true);
@@ -534,6 +692,7 @@ test("B5: service restart reconciles dead sessions without workspace PID data", 
         workspaceId,
         taskPath,
         callerKind: "user",
+        profileId: "fake-default",
       });
       sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
       // Force-kill child without clean stop to leave a stale registry row after process death

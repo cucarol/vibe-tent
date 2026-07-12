@@ -1638,7 +1638,7 @@ export class TentView extends ItemView {
       });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: "复制后可新开或复用目标 role 的会话；只有 agent 执行 task-ack 后，此条目才会清除。",
+        text: "复制后可新开或复用目标 role 的会话；只有 agent 执行 tent task claim 后，此条目才会清除。",
       });
       const acts = item.createDiv({ cls: "tent-triage-acts" });
       const copy = acts.createEl("button", { text: "复制投递 prompt" });

@@ -144,8 +144,13 @@ export class ServiceClient {
       dispatchedBy?: string;
       deliveryPolicy?: string;
       startSession?: boolean;
+      /** Required when startSession is true — no fake-default fallback. */
       profileId?: string;
-      a2aPolicy?: string;
+      /**
+       * Trusted harness/internal only. Role callers' policy is loaded from
+       * role registry; ordinary clients cannot raise A2A via this field.
+       */
+      a2aPolicyOverride?: string;
     }
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });
@@ -198,9 +203,14 @@ export class ServiceClient {
     workspaceId: string,
     args: {
       taskPath: string;
-      profileId?: string;
+      /** Required — no fake-default or product-profile fallback. */
+      profileId: string;
       callerKind?: "user" | "role";
-      a2aPolicy?: string;
+      /**
+       * Trusted harness/internal only. Role policy comes from roles.json;
+       * ordinary clients cannot override via RPC.
+       */
+      a2aPolicyOverride?: string;
       bootstrapPrompt?: string;
       approvalId?: string;
     }

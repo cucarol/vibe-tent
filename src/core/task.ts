@@ -138,9 +138,10 @@ export function relayPromptForTask(task: TaskEnvelope, tentRoot: string): string
   return (
     `A Tent task has been dispatched to role ${task.role}.\n` +
     `Tent root: ${tentRoot}\n` +
-    `1. Run \`tent task-ack ${task.path}\` to take this task.\n` +
+    `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
     `2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.\n` +
-    `3. If this is a new session for this role, complete role init first: ${initPath}.`
+    `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
+    `4. If this is a new session for this role, complete role init first: ${initPath}.`
   );
 }
 

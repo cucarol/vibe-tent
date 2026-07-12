@@ -1004,9 +1004,10 @@ function relayPromptForTask(task, tentRoot) {
   const initPath = join("temp", task.role, "init.md");
   return `A Tent task has been dispatched to role ${task.role}.
 Tent root: ${tentRoot}
-1. Run \`tent task-ack ${task.path}\` to take this task.
+1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
-3. If this is a new session for this role, complete role init first: ${initPath}.`;
+3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
+4. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs9, role, tentName) {
   const path9 = join("temp", role.name, "init.md");
@@ -1430,9 +1431,19 @@ function normalizeRoleDefinition(value) {
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const a2a = normalizeA2APolicy(value.a2aPolicy);
+  if (a2a) role.a2aPolicy = a2a;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+function roleA2APolicy(role) {
+  return role?.a2aPolicy ?? "deny";
+}
+function normalizeA2APolicy(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (value === "allow" || value === "ask" || value === "deny") return value;
+  return void 0;
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -3872,7 +3883,8 @@ async function registryRoles(ctx, p) {
     name: role.name,
     description: role.description,
     color: role.color,
-    prompt: role.prompt
+    prompt: role.prompt,
+    a2aPolicy: roleA2APolicy(role)
   })).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, roles };
 }
@@ -3958,9 +3970,15 @@ async function taskDispatch(ctx, p) {
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const profileId = optionalString(p, "profileId") ?? "fake-default";
-  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  const a2aPolicyOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
+  if (startSession && !profileId) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch with startSession requires explicit profileId (no fake-default fallback)"
+    );
+  }
   const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const dispatched = await dispatch(mount.env, boxId, role, {
@@ -3993,7 +4011,7 @@ async function taskDispatch(ctx, p) {
       taskPath: result.taskPath,
       profileId,
       callerKind,
-      a2aPolicy,
+      ...a2aPolicyOverride !== void 0 ? { a2aPolicyOverride } : {},
       bootstrapPrompt: result.relayPrompt
     });
   }
@@ -4227,9 +4245,9 @@ async function taskStartSessionRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  const profileId = optionalString(p, "profileId") ?? "fake-default";
+  const profileId = requireProfileId(p);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  const a2aPolicy = parseA2APolicy(optionalString(p, "a2aPolicy"));
+  const trustedOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
   if (approvalId) {
@@ -4244,6 +4262,12 @@ async function taskStartSessionRpc(ctx, p) {
       throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
     }
   } else {
+    const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
+      callerKind,
+      taskRole: taskForPolicy.role,
+      trustedOverride
+    });
     const decision = evaluateA2A({
       callerKind,
       policy: a2aPolicy,
@@ -4252,11 +4276,12 @@ async function taskStartSessionRpc(ctx, p) {
     if (decision === "deny") {
       throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
         policy: a2aPolicy,
-        callerKind
+        callerKind,
+        role: taskForPolicy.role
       });
     }
     if (decision === "ask") {
-      const task2 = await loadTaskEnvelope(mount.env.fs, taskPath);
+      const task2 = taskForPolicy;
       const item = await ctx.a2a.add({
         id: makeApprovalId(),
         workspaceId,
@@ -4487,7 +4512,6 @@ async function a2aResolve(ctx, p) {
       taskPath: item.taskPath,
       profileId: item.profileId,
       callerKind: "user",
-      a2aPolicy: "allow",
       bootstrapPrompt: item.bootstrapPrompt,
       approvalId: item.id
     });
@@ -4603,10 +4627,27 @@ function parseDeliveryPolicy(raw) {
   if (raw === "manual" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
-function parseA2APolicy(raw) {
-  if (!raw) return "deny";
+function parseOptionalA2APolicy(raw) {
+  if (!raw) return void 0;
   if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
   throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
+}
+function requireProfileId(p) {
+  const profileId = optionalString(p, "profileId");
+  if (!profileId) {
+    throw new RpcError(
+      -32602,
+      "task.startSession requires explicit profileId (no fake-default or product-profile fallback)"
+    );
+  }
+  return profileId;
+}
+async function resolveStartSessionA2APolicy(fs9, input) {
+  if (input.callerKind === "user") return "allow";
+  if (input.trustedOverride !== void 0) return input.trustedOverride;
+  const registry = await loadRolesRegistry(fs9);
+  const role = registry.roles.find((r) => r.name === input.taskRole);
+  return roleA2APolicy(role);
 }
 function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;

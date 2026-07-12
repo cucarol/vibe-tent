@@ -138,6 +138,8 @@ export type RoleRegistryEntryProjection = {
   description?: string;
   color?: string;
   prompt?: string;
+  /** Spawn authority; omitted means deny. Never includes secrets. */
+  a2aPolicy?: "allow" | "ask" | "deny";
 };
 
 /**

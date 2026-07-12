@@ -102,7 +102,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(spec, /handoff/i);
   assert.match(roleSkill, /内容住 box，状态住 envelope/);
   assert.match(roleSkill, /编排者手册/);
-  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> receive report -> review -> complete/);
+  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> claim -> deliver -> review -> accept/);
   assert.doesNotMatch(roleSkill, /tent handoff/i);
 });
 

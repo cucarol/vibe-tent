@@ -4,6 +4,9 @@ import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery
 import { ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
 
+/** Machine-readable A2A spawn authority (task-api §4). Default deny when omitted. */
+export type RoleA2APolicy = "allow" | "ask" | "deny";
+
 export interface RoleDefinition {
   name: string;
   prompt?: string;
@@ -11,6 +14,12 @@ export interface RoleDefinition {
   description?: string;
   /** 色板色名(gray/red/.../brown);注册表行左侧强调条 + owner 取色用。 */
   color?: string;
+  /**
+   * Whether this role may start AgentProfile sessions for other roles / itself via service.
+   * Server-enforced; clients cannot override for ordinary role callers. Never store secrets here.
+   * Default: deny.
+   */
+  a2aPolicy?: RoleA2APolicy;
   /** Optional host-orchestrator hint. Tent records this but never spawns it. */
   cli?: RoleCliConfig;
 }
@@ -102,9 +111,23 @@ export function normalizeRoleDefinition(value: Partial<RoleDefinition> | Record<
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const a2a = normalizeA2APolicy(value.a2aPolicy);
+  if (a2a) role.a2aPolicy = a2a;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+
+/** Resolve effective policy for a role definition (missing → deny). */
+export function roleA2APolicy(role: RoleDefinition | undefined): RoleA2APolicy {
+  return role?.a2aPolicy ?? "deny";
+}
+
+function normalizeA2APolicy(value: unknown): RoleA2APolicy | undefined {
+  if (value === undefined || value === null || value === "") return undefined;
+  if (value === "allow" || value === "ask" || value === "deny") return value;
+  // Invalid values are ignored (effective deny) so a bad field cannot wipe the registry.
+  return undefined;
 }
 
 function normalizeRole(value: Partial<RoleDefinition> | Record<string, unknown>): RoleDefinition {

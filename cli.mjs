@@ -1180,9 +1180,16 @@ function normalizeRoleDefinition(value) {
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const a2a = normalizeA2APolicy(value.a2aPolicy);
+  if (a2a) role.a2aPolicy = a2a;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+function normalizeA2APolicy(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (value === "allow" || value === "ask" || value === "deny") return value;
+  return void 0;
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -1333,9 +1340,10 @@ function relayPromptForTask(task, tentRoot) {
   const initPath = join("temp", task.role, "init.md");
   return `A Tent task has been dispatched to role ${task.role}.
 Tent root: ${tentRoot}
-1. Run \`tent task-ack ${task.path}\` to take this task.
+1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
-3. If this is a new session for this role, complete role init first: ${initPath}.`;
+3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
+4. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs6, role, tentName) {
   const path6 = join("temp", role.name, "init.md");

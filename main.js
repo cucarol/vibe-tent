@@ -1047,9 +1047,16 @@ function normalizeRoleDefinition(value) {
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
   if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const a2a = normalizeA2APolicy(value.a2aPolicy);
+  if (a2a) role.a2aPolicy = a2a;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+function normalizeA2APolicy(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (value === "allow" || value === "ask" || value === "deny") return value;
+  return void 0;
 }
 function normalizeRole(value) {
   return normalizeRoleDefinition(value);
@@ -1388,9 +1395,10 @@ function relayPromptForTask(task, tentRoot) {
   const initPath = join2("temp", task.role, "init.md");
   return `A Tent task has been dispatched to role ${task.role}.
 Tent root: ${tentRoot}
-1. Run \`tent task-ack ${task.path}\` to take this task.
+1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Read the envelope, then open the claimed boxes; the box notes contain the task definition.
-3. If this is a new session for this role, complete role init first: ${initPath}.`;
+3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
+4. If this is a new session for this role, complete role init first: ${initPath}.`;
 }
 async function ensureRoleInit(fs, role, tentName) {
   const path = join2("temp", role.name, "init.md");
@@ -5334,7 +5342,7 @@ var TentView = class extends import_obsidian4.ItemView {
       });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: "\u590D\u5236\u540E\u53EF\u65B0\u5F00\u6216\u590D\u7528\u76EE\u6807 role \u7684\u4F1A\u8BDD\uFF1B\u53EA\u6709 agent \u6267\u884C task-ack \u540E\uFF0C\u6B64\u6761\u76EE\u624D\u4F1A\u6E05\u9664\u3002"
+        text: "\u590D\u5236\u540E\u53EF\u65B0\u5F00\u6216\u590D\u7528\u76EE\u6807 role \u7684\u4F1A\u8BDD\uFF1B\u53EA\u6709 agent \u6267\u884C tent task claim \u540E\uFF0C\u6B64\u6761\u76EE\u624D\u4F1A\u6E05\u9664\u3002"
       });
       const acts = item.createDiv({ cls: "tent-triage-acts" });
       const copy = acts.createEl("button", { text: "\u590D\u5236\u6295\u9012 prompt" });
