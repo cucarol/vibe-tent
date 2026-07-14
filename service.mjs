@@ -4280,6 +4280,18 @@ function optionalNonEmptyString(raw, key) {
   }
   return v;
 }
+function clearableNonEmptyString(raw, key) {
+  if (!(key in raw) || raw[key] === void 0) return void 0;
+  if (raw[key] === null) return null;
+  if (typeof raw[key] !== "string") {
+    throw new RpcError(-32602, `Invalid string param: ${key}`);
+  }
+  const v = raw[key].trim();
+  if (!v) {
+    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
+  }
+  return v;
+}
 function optionalEnvKey(raw, key) {
   const v = optionalNonEmptyString(raw, key);
   if (v === void 0) return void 0;
@@ -4291,9 +4303,18 @@ function optionalEnvKey(raw, key) {
   }
   return v;
 }
-function optionalBaseUrl(raw) {
-  const v = optionalNonEmptyString(raw, "baseUrl");
-  if (v === void 0) return void 0;
+function clearableEnvKey(raw, key) {
+  const v = clearableNonEmptyString(raw, key);
+  if (v === void 0 || v === null) return v;
+  if (!ENV_KEY_RE.test(v)) {
+    throw new RpcError(
+      -32602,
+      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return v;
+}
+function validateBaseUrl(v) {
   let parsed;
   try {
     parsed = new URL(v);
@@ -4303,10 +4324,46 @@ function optionalBaseUrl(raw) {
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
     throw new RpcError(-32602, "Invalid baseUrl: only http: and https: are allowed");
   }
+  if (parsed.username || parsed.password) {
+    throw new RpcError(
+      -32602,
+      "Invalid baseUrl: username/password in URL are not allowed"
+    );
+  }
+  if (parsed.search || parsed.hash) {
+    throw new RpcError(
+      -32602,
+      "Invalid baseUrl: query string and hash fragment are not allowed"
+    );
+  }
   return v;
 }
+function optionalBaseUrl(raw) {
+  const v = optionalNonEmptyString(raw, "baseUrl");
+  if (v === void 0) return void 0;
+  return validateBaseUrl(v);
+}
+function clearableBaseUrl(raw) {
+  const v = clearableNonEmptyString(raw, "baseUrl");
+  if (v === void 0 || v === null) return v;
+  return validateBaseUrl(v);
+}
 function optionalPermissionPolicy(raw) {
+  if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0 || raw.permissionPolicy === null) {
+    return void 0;
+  }
+  if (typeof raw.permissionPolicy !== "string") {
+    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  const v = raw.permissionPolicy;
+  if (!PERMISSION_POLICIES.has(v)) {
+    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  return v;
+}
+function clearablePermissionPolicy(raw) {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0) return void 0;
+  if (raw.permissionPolicy === null) return null;
   if (typeof raw.permissionPolicy !== "string") {
     throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
   }
@@ -4324,7 +4381,16 @@ function optionalPositiveInt(raw, key) {
   }
   return v;
 }
-function parseGrokFields(raw) {
+function clearablePositiveInt(raw, key) {
+  if (!(key in raw) || raw[key] === void 0) return void 0;
+  if (raw[key] === null) return null;
+  const v = raw[key];
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+    throw new RpcError(-32602, `Invalid ${key}: must be a positive integer`);
+  }
+  return v;
+}
+function parseGrokFieldsCreate(raw) {
   const displayName = optionalNonEmptyString(raw, "displayName");
   const grokAcp = {};
   const model = optionalNonEmptyString(raw, "model");
@@ -4345,16 +4411,71 @@ function parseGrokFields(raw) {
   if (permissionTimeoutMs !== void 0) grokAcp.permissionTimeoutMs = permissionTimeoutMs;
   return { displayName, grokAcp };
 }
-function mergeGrokAcp(base, patch) {
-  return { ...base ?? {}, ...patch };
+function parseGrokFieldsUpdate(raw) {
+  return {
+    displayName: clearableNonEmptyString(raw, "displayName"),
+    model: clearableNonEmptyString(raw, "model"),
+    executable: clearableNonEmptyString(raw, "executable"),
+    envKey: clearableEnvKey(raw, "envKey"),
+    baseUrlEnvKey: clearableEnvKey(raw, "baseUrlEnvKey"),
+    baseUrl: clearableBaseUrl(raw),
+    permissionPolicy: clearablePermissionPolicy(raw),
+    promptTimeoutMs: clearablePositiveInt(raw, "promptTimeoutMs"),
+    permissionTimeoutMs: clearablePositiveInt(raw, "permissionTimeoutMs")
+  };
+}
+function applyClearablePatch(current, patch) {
+  const next = {
+    ...current,
+    grokAcp: current.grokAcp ? { ...current.grokAcp } : {}
+  };
+  const g = next.grokAcp;
+  if (patch.displayName === null) {
+    delete next.displayName;
+  } else if (patch.displayName !== void 0) {
+    next.displayName = patch.displayName;
+  }
+  const assign = (key, value) => {
+    if (value === void 0) return;
+    if (value === null) {
+      delete g[key];
+      return;
+    }
+    g[key] = value;
+  };
+  assign("model", patch.model);
+  assign("executable", patch.executable);
+  assign("envKey", patch.envKey);
+  assign(
+    "baseUrlEnvKey",
+    patch.baseUrlEnvKey
+  );
+  assign("baseUrl", patch.baseUrl);
+  assign(
+    "permissionPolicy",
+    patch.permissionPolicy
+  );
+  assign(
+    "promptTimeoutMs",
+    patch.promptTimeoutMs
+  );
+  assign(
+    "permissionTimeoutMs",
+    patch.permissionTimeoutMs
+  );
+  return next;
 }
 var AgentProfileCatalog = class {
   constructor(dataDir, runtime, initial, opts) {
     this.dataDir = dataDir;
     this.runtime = runtime;
     this.chain = Promise.resolve();
-    this.profiles = initial.map((p) => ({ ...p, grokAcp: p.grokAcp ? { ...p.grokAcp } : void 0 }));
+    this.profiles = initial.map((p) => ({
+      ...p,
+      grokAcp: p.grokAcp ? { ...p.grokAcp } : void 0
+    }));
     this.persistToDisk = opts?.persistToDisk !== false;
+    this.saveProfiles = opts?.saveProfiles ?? saveAgentProfiles;
     this.runtime.replaceProfileCatalog(this.profiles);
   }
   enqueue(fn) {
@@ -4376,10 +4497,15 @@ var AgentProfileCatalog = class {
     if (!p) return void 0;
     return { ...p, grokAcp: p.grokAcp ? { ...p.grokAcp } : void 0 };
   }
-  async persistAndSync() {
+  /**
+   * Atomic commit: persist next first (when enabled); only then swap memory + runtime.
+   * Write failure leaves this.profiles and runtime on the previous snapshot.
+   */
+  async commit(next) {
     if (this.persistToDisk) {
-      await saveAgentProfiles(this.dataDir, this.profiles);
+      await this.saveProfiles(this.dataDir, next);
     }
+    this.profiles = next;
     this.runtime.replaceProfileCatalog(this.profiles);
   }
   async create(raw) {
@@ -4392,7 +4518,7 @@ var AgentProfileCatalog = class {
       if (id === FAKE_DEFAULT_PROFILE_ID) {
         throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
       }
-      const { displayName, grokAcp } = parseGrokFields(raw);
+      const { displayName, grokAcp } = parseGrokFieldsCreate(raw);
       if (!grokAcp.model) grokAcp.model = DEFAULT_GROK_MODEL;
       if (!grokAcp.envKey) grokAcp.envKey = DEFAULT_GROK_ENV_KEY;
       if (!grokAcp.baseUrlEnvKey) grokAcp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
@@ -4403,8 +4529,7 @@ var AgentProfileCatalog = class {
         ...displayName !== void 0 ? { displayName } : {},
         grokAcp
       };
-      this.profiles = [...this.profiles, profile];
-      await this.persistAndSync();
+      await this.commit([...this.profiles, profile]);
       return this.get(id);
     });
   }
@@ -4432,16 +4557,8 @@ var AgentProfileCatalog = class {
           `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
         );
       }
-      const { displayName, grokAcp: patch } = parseGrokFields(raw);
-      const next = {
-        ...current,
-        grokAcp: mergeGrokAcp(current.grokAcp, patch)
-      };
-      if (displayName !== void 0) {
-        next.displayName = displayName;
-      }
-      this.profiles = this.profiles.map((p, i) => i === idx ? next : p);
-      await this.persistAndSync();
+      const nextProfile = applyClearablePatch(current, parseGrokFieldsUpdate(raw));
+      await this.commit(this.profiles.map((p, i) => i === idx ? nextProfile : p));
       return this.get(id);
     });
   }
@@ -4479,8 +4596,7 @@ var AgentProfileCatalog = class {
           { sessionIds: active.map((s) => s.id) }
         );
       }
-      this.profiles = this.profiles.filter((p) => p.id !== id);
-      await this.persistAndSync();
+      await this.commit(this.profiles.filter((p) => p.id !== id));
       return { deleted: id };
     });
   }
@@ -4885,10 +5001,7 @@ async function registryRoles(ctx, p) {
 }
 async function profileList(ctx, p) {
   const includeTest = p.includeTest === true;
-  const fromCatalog = ctx.profileCatalog.list();
-  const fromRuntime = ctx.runtime.listProfiles();
-  const source = fromCatalog.length > 0 ? fromCatalog : fromRuntime.length > 0 ? fromRuntime : await loadAgentProfiles(ctx.dataDir);
-  let profiles = projectAgentProfiles(source);
+  let profiles = projectAgentProfiles(ctx.profileCatalog.list());
   if (!includeTest) {
     profiles = profiles.filter((pr) => !pr.testOnly);
   }
@@ -4896,24 +5009,32 @@ async function profileList(ctx, p) {
 }
 async function profileGet(ctx, p) {
   const id = requireString(p, "id");
-  const profile = ctx.profileCatalog.get(id) ?? ctx.runtime.getProfile(id) ?? (await loadAgentProfiles(ctx.dataDir)).find((x) => x.id === id);
+  const profile = ctx.profileCatalog.get(id);
   if (!profile) {
     throw new RpcError(-32004, `Profile not found: ${id}`);
   }
   return { profile: projectAgentProfile(profile) };
 }
 async function profileCreate(ctx, p) {
-  const raw = p.profile && typeof p.profile === "object" && !Array.isArray(p.profile) ? p.profile : p;
-  const created = await ctx.profileCatalog.create(raw);
+  if ("profile" in p) {
+    throw new RpcError(
+      -32602,
+      "profile.create does not accept nested profile; pass fields at the top level"
+    );
+  }
+  const created = await ctx.profileCatalog.create(p);
   return { profile: projectAgentProfile(created) };
 }
 async function profileUpdate(ctx, p) {
+  if ("profile" in p) {
+    throw new RpcError(
+      -32602,
+      "profile.update does not accept nested profile; pass { id, ...patch }"
+    );
+  }
   const id = requireString(p, "id");
-  const raw = p.profile && typeof p.profile === "object" && !Array.isArray(p.profile) ? p.profile : (() => {
-    const { id: _id, ...rest } = p;
-    return rest;
-  })();
-  const updated = await ctx.profileCatalog.update(id, raw);
+  const { id: _id, ...patch } = p;
+  const updated = await ctx.profileCatalog.update(id, patch);
   return { profile: projectAgentProfile(updated) };
 }
 async function profileDelete(ctx, p) {
@@ -7237,6 +7358,15 @@ function handleFrom(record) {
     updatedAt: record.updatedAt
   };
 }
+function cloneProfileConfig(p) {
+  return {
+    ...p,
+    grokAcp: p.grokAcp ? { ...p.grokAcp } : void 0,
+    fake: p.fake ? { ...p.fake } : void 0,
+    env: p.env ? { ...p.env } : void 0,
+    args: p.args ? [...p.args] : void 0
+  };
+}
 var AgentRuntime = class {
   constructor(options) {
     this.profiles = /* @__PURE__ */ new Map();
@@ -7286,12 +7416,13 @@ var AgentRuntime = class {
    * Full replace of the in-memory profile catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
    * Always re-ensures fake-default for harness (same rule as constructor).
+   * Stores shallow clones of profile + grokAcp so callers cannot mutate the map.
    */
   replaceProfileCatalog(profiles) {
     this.profiles.clear();
     for (const p of profiles) {
       if (p && typeof p.id === "string") {
-        this.profiles.set(p.id, p);
+        this.profiles.set(p.id, cloneProfileConfig(p));
       }
     }
     if (!this.profiles.has("fake-default")) {
@@ -7303,13 +7434,14 @@ var AgentRuntime = class {
       });
     }
   }
-  /** Lookup a single machine-local profile from the current runtime catalog. */
+  /** Lookup a single machine-local profile (cloned; mutating the return does not corrupt the Map). */
   getProfile(profileId) {
-    return this.profiles.get(profileId);
+    const p = this.profiles.get(profileId);
+    return p ? cloneProfileConfig(p) : void 0;
   }
-  /** Machine-local catalog snapshot (for profile.list projection). */
+  /** Machine-local catalog snapshot (cloned entries). */
   listProfiles() {
-    return [...this.profiles.values()];
+    return [...this.profiles.values()].map(cloneProfileConfig);
   }
   registerAdapter(adapter) {
     this.adapters.set(adapter.id, adapter);
@@ -7805,9 +7937,9 @@ async function startLocalTentService(options = {}) {
   });
   runtimeHolder.current = runtime;
   const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
-    // Always persist CRUD to this service dataDir. Inject only skips boot seed;
-    // tests must pass a temp dataDir so host default catalog is never touched.
-    persistToDisk: true
+    // Normal boot: persist CRUD to this service dataDir.
+    // options.profiles inject: in-memory only — no agent-profiles.json writes.
+    persistToDisk: !profilesInjected
   });
   await runtime.reconcileOnBoot();
   const ctx = {

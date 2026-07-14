@@ -46,6 +46,17 @@ function handleFrom(record: SessionRecord): SessionHandle {
   };
 }
 
+/** Shallow clone profile + one level of grokAcp (callers must not mutate the Map). */
+function cloneProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
+  return {
+    ...p,
+    grokAcp: p.grokAcp ? { ...p.grokAcp } : undefined,
+    fake: p.fake ? { ...p.fake } : undefined,
+    env: p.env ? { ...p.env } : undefined,
+    args: p.args ? [...p.args] : undefined,
+  };
+}
+
 export class AgentRuntime implements AgentRuntimePort {
   readonly registry: SessionRegistry;
   readonly supervisor: ProcessSupervisor;
@@ -105,12 +116,13 @@ export class AgentRuntime implements AgentRuntimePort {
    * Full replace of the in-memory profile catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
    * Always re-ensures fake-default for harness (same rule as constructor).
+   * Stores shallow clones of profile + grokAcp so callers cannot mutate the map.
    */
   replaceProfileCatalog(profiles: AgentProfileConfig[]): void {
     this.profiles.clear();
     for (const p of profiles) {
       if (p && typeof p.id === "string") {
-        this.profiles.set(p.id, p);
+        this.profiles.set(p.id, cloneProfileConfig(p));
       }
     }
     if (!this.profiles.has("fake-default")) {
@@ -123,14 +135,15 @@ export class AgentRuntime implements AgentRuntimePort {
     }
   }
 
-  /** Lookup a single machine-local profile from the current runtime catalog. */
+  /** Lookup a single machine-local profile (cloned; mutating the return does not corrupt the Map). */
   getProfile(profileId: string): AgentProfileConfig | undefined {
-    return this.profiles.get(profileId);
+    const p = this.profiles.get(profileId);
+    return p ? cloneProfileConfig(p) : undefined;
   }
 
-  /** Machine-local catalog snapshot (for profile.list projection). */
+  /** Machine-local catalog snapshot (cloned entries). */
   listProfiles(): AgentProfileConfig[] {
-    return [...this.profiles.values()];
+    return [...this.profiles.values()].map(cloneProfileConfig);
   }
 
   registerAdapter(adapter: ProviderAdapter): void {

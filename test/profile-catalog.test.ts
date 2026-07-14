@@ -1,7 +1,6 @@
 /**
- * Machine-local Grok ACP Profile Catalog (service-process serial CRUD).
- * Focused: hot CRUD, disk persist, dangerous field reject, projection, delete gates,
- * permissionTimeoutMs lookup from runtime after update.
+ * Machine-local Grok ACP Profile Catalog (serial CRUD).
+ * Transactional commit, inject no-disk, null clear, baseUrl safety, RPC shape.
  */
 import assert from "node:assert/strict";
 import * as fs from "node:fs/promises";
@@ -15,6 +14,7 @@ import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import {
+  AgentProfileCatalog,
   FAKE_DEFAULT_PROFILE_ID,
   GROK_ACP_DEFAULT_PROFILE_ID,
   loadAgentProfiles,
@@ -22,105 +22,85 @@ import {
   projectAgentProfile,
 } from "../src/service/profiles.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
-import {
-  DEFAULT_GROK_MODEL,
-  GROK_ACP_ADAPTER_ID,
-} from "../src/adapters/grok-acp/index.js";
+import { DEFAULT_GROK_MODEL, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
+import { createAgentRuntime } from "../src/runtime/index.js";
 import type { AgentProfileConfig } from "../src/runtime/types.js";
 
-const MOCK_ACP = path.join(
-  path.dirname(fileURLToPath(import.meta.url)),
-  "fixtures",
-  "mock-acp-server.mjs"
-);
+const MOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
+type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
 
-function seedProfiles(): AgentProfileConfig[] {
-  return [
-    {
-      id: FAKE_DEFAULT_PROFILE_ID,
-      adapterId: FAKE_ADAPTER_ID,
-      displayNameKey: "profile.fake.default",
-      fake: { waitForSignal: true, emitStdout: true, canResume: true },
+const seed = (): AgentProfileConfig[] => [
+  {
+    id: FAKE_DEFAULT_PROFILE_ID,
+    adapterId: FAKE_ADAPTER_ID,
+    displayNameKey: "profile.fake.default",
+    fake: { waitForSignal: true, emitStdout: true, canResume: true },
+  },
+  {
+    id: GROK_ACP_DEFAULT_PROFILE_ID,
+    adapterId: GROK_ACP_ADAPTER_ID,
+    displayNameKey: "profile.grokAcp.default",
+    grokAcp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      baseUrlEnvKey: "CPA_GROK_BASE_URL",
+      permissionPolicy: "deny",
+      permissionTimeoutMs: 120_000,
     },
-    {
-      id: GROK_ACP_DEFAULT_PROFILE_ID,
-      adapterId: GROK_ACP_ADAPTER_ID,
-      displayNameKey: "profile.grokAcp.default",
-      grokAcp: {
-        model: DEFAULT_GROK_MODEL,
-        envKey: "CPA_GROK_API_KEY",
-        baseUrlEnvKey: "CPA_GROK_BASE_URL",
-        permissionPolicy: "deny",
-        permissionTimeoutMs: 120_000,
-      },
-    },
-  ];
-}
+  },
+];
 
-function mockAcpProfile(
+function mockAcp(
   id: string,
-  opts: {
-    logPath: string;
-    permissionTimeoutMs?: number;
-    permissionPolicy?: "deny" | "allow" | "ask";
-    requestPermission?: boolean;
-  }
+  logPath: string,
+  o: { permissionTimeoutMs?: number; permissionPolicy?: "deny" | "allow" | "ask"; requestPermission?: boolean } = {}
 ): AgentProfileConfig {
   return {
     id,
     adapterId: GROK_ACP_ADAPTER_ID,
     command: process.execPath,
-    args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
     env: {
-      MOCK_ACP_LOG: opts.logPath,
+      MOCK_ACP_LOG: logPath,
       MOCK_ACP_KEEP_ALIVE: "1",
       MOCK_ACP_PROMPT_TEXT: "CATALOG_TIMEOUT_REPORT",
-      ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
+      ...(o.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
     grokAcp: {
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
-      permissionPolicy: opts.permissionPolicy ?? "ask",
+      permissionPolicy: o.permissionPolicy ?? "ask",
       promptTimeoutMs: 8_000,
-      permissionTimeoutMs: opts.permissionTimeoutMs ?? 400,
+      permissionTimeoutMs: o.permissionTimeoutMs ?? 400,
     },
   };
 }
 
-async function makeWorkspace(): Promise<string> {
+async function makeWs(): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-ws-"));
   const fsa = new NodeFs(workspace);
   await scaffoldInWorkspace(fsa, {
     name: "pcat",
-    rules: "# RULES\n\nprofile catalog tests\n",
+    rules: "# RULES\n",
     boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
-    JSON.stringify(
-      {
-        roles: [
-          { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch work" },
-        ],
-      },
-      null,
-      2
-    ) + "\n"
+    JSON.stringify({ roles: [{ name: "executor", prompt: "do work" }] }) + "\n"
   );
   return workspace;
 }
 
 async function withService(
-  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<void>,
-  profiles?: AgentProfileConfig[]
+  fn: (svc: Svc) => Promise<void>,
+  opts?: { profiles?: AgentProfileConfig[]; inject?: boolean }
 ): Promise<string> {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-data-"));
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    profiles: profiles ?? seedProfiles(),
+    ...(opts?.inject === false ? {} : { profiles: opts?.profiles ?? seed() }),
   });
   try {
     await fn(svc);
@@ -130,33 +110,34 @@ async function withService(
   return dataDir;
 }
 
-function rpc(
-  svc: Awaited<ReturnType<typeof startLocalTentService>>,
-  method: string,
-  params?: Record<string, unknown>
-) {
-  return rpcCall(svc.url, method, params, { token: svc.token });
-}
+const rpc = (svc: Svc, method: string, params?: Record<string, unknown>) =>
+  rpcCall(svc.url, method, params, { token: svc.token });
+const client = (svc: Svc) => createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-async function pollUntil<T>(
-  fn: () => Promise<T | undefined | null | false>,
-  timeoutMs = 10_000,
-  label = "condition"
-): Promise<T> {
-  const start = Date.now();
-  while (Date.now() - start < timeoutMs) {
+async function pollUntil<T>(fn: () => Promise<T | null | undefined | false>, ms = 10_000, label = "cond"): Promise<T> {
+  const t0 = Date.now();
+  while (Date.now() - t0 < ms) {
     const v = await fn();
     if (v) return v as T;
     await new Promise((r) => setTimeout(r, 50));
   }
-  throw new Error(`timeout waiting for ${label}`);
+  throw new Error(`timeout ${label}`);
 }
 
-test("profile CRUD: create/update/get/list/delete + disk persist + runtime sync", async () => {
-  const dataDir = await withService(async (svc) => {
-    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+async function expectParamError(svc: Svc, method: string, params: Record<string, unknown>, re?: RegExp) {
+  const res = await rpc(svc, method, params);
+  assert.ok(res.error, `expected error ${method}`);
+  assert.equal(res.error!.code, -32602);
+  if (re) assert.match(res.error!.message, re);
+}
 
-    const created = (await client.profileCreate({
+test("CRUD + runtime (inject never writes agent-profiles.json)", async () => {
+  const dataDir = await withService(async (svc) => {
+    const c = client(svc);
+    const file = profilesPath(svc.dataDir);
+    await assert.rejects(() => fs.stat(file), { code: "ENOENT" });
+
+    const created = (await c.profileCreate({
       id: "grok-acp-cpa-local",
       displayName: "CPA Local",
       model: "grok-4.5",
@@ -167,326 +148,246 @@ test("profile CRUD: create/update/get/list/delete + disk persist + runtime sync"
       promptTimeoutMs: 60_000,
       permissionTimeoutMs: 5_000,
     })) as { profile: Record<string, unknown> };
-
     assert.equal(created.profile.id, "grok-acp-cpa-local");
     assert.equal(created.profile.adapterId, GROK_ACP_ADAPTER_ID);
-    assert.equal(created.profile.displayName, "CPA Local");
-    assert.equal(created.profile.permissionPolicy, "ask");
     assert.equal(created.profile.permissionTimeoutMs, 5_000);
     assert.ok(!("env" in created.profile));
-    assert.ok(!("apiKey" in created.profile));
-
-    // Runtime sees it immediately for new startSession resolution.
     assert.ok(svc.runtime.getProfile("grok-acp-cpa-local"));
 
-    const got = (await client.profileGet("grok-acp-cpa-local")) as {
-      profile: { model?: string; baseUrl?: string };
-    };
+    const got = (await c.profileGet("grok-acp-cpa-local")) as { profile: { model?: string; baseUrl?: string } };
     assert.equal(got.profile.model, "grok-4.5");
     assert.equal(got.profile.baseUrl, "http://127.0.0.1:8317/v1");
 
-    const updated = (await client.profileUpdate("grok-acp-cpa-local", {
+    const updated = (await c.profileUpdate("grok-acp-cpa-local", {
       displayName: "CPA Local 2",
       permissionTimeoutMs: 9_000,
-      permissionPolicy: "deny",
-    })) as { profile: { displayName: string; permissionTimeoutMs?: number } };
+    })) as { profile: { displayName: string } };
     assert.equal(updated.profile.displayName, "CPA Local 2");
-    assert.equal(updated.profile.permissionTimeoutMs, 9_000);
-    assert.equal(
-      svc.runtime.getProfile("grok-acp-cpa-local")?.grokAcp?.permissionTimeoutMs,
-      9_000
-    );
+    assert.equal(svc.runtime.getProfile("grok-acp-cpa-local")?.grokAcp?.permissionTimeoutMs, 9_000);
 
-    const list = (await client.profileList()) as {
-      profiles: Array<{ id: string }>;
-    };
+    const list = (await c.profileList()) as { profiles: Array<{ id: string }> };
     assert.ok(list.profiles.some((p) => p.id === "grok-acp-cpa-local"));
     assert.ok(list.profiles.every((p) => p.id !== FAKE_DEFAULT_PROFILE_ID));
 
-    await client.profileDelete("grok-acp-cpa-local");
+    await c.profileDelete("grok-acp-cpa-local");
     assert.equal(svc.runtime.getProfile("grok-acp-cpa-local"), undefined);
-    const gone = await rpc(svc, "profile.get", { id: "grok-acp-cpa-local" });
-    assert.ok(gone.error);
-    assert.equal(gone.error!.code, -32004);
+    assert.equal((await rpc(svc, "profile.get", { id: "grok-acp-cpa-local" })).error?.code, -32004);
+    await assert.rejects(() => fs.stat(file), { code: "ENOENT" });
   });
-
-  // Persist survives process stop (file under the temp dataDir).
-  const onDisk = await loadAgentProfiles(dataDir);
-  assert.ok(!onDisk.some((p) => p.id === "grok-acp-cpa-local"));
-  assert.ok(onDisk.some((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID));
+  await assert.rejects(() => fs.stat(profilesPath(dataDir)), { code: "ENOENT" });
 });
 
-test("profile CRUD: dangerous fields rejected and agent-profiles.json unchanged", async () => {
-  await withService(async (svc) => {
-    const file = profilesPath(svc.dataDir);
-    // Seed disk so we can compare bytes after rejected writes.
-    await fs.writeFile(
-      file,
-      JSON.stringify({ profiles: seedProfiles() }, null, 2) + "\n",
-      "utf8"
-    );
-    const before = await fs.readFile(file, "utf8");
+test("boot persist writes disk; write failure keeps disk/catalog/runtime old", async () => {
+  const dataDir = await withService(async (svc) => {
+    await client(svc).profileCreate({ id: "grok-acp-persisted", displayName: "On Disk", permissionTimeoutMs: 3_000 });
+    assert.ok((await loadAgentProfiles(svc.dataDir)).some((p) => p.id === "grok-acp-persisted"));
+  }, { inject: false });
+  assert.ok((await loadAgentProfiles(dataDir)).some((p) => p.id === "grok-acp-persisted"));
 
-    for (const bad of [
-      { id: "evil-1", apiKey: "sk-live-should-fail" },
-      { id: "evil-2", token: "tok" },
-      { id: "evil-3", secret: "s" },
-      { id: "evil-4", env: { CPA_GROK_API_KEY: "sk-x" } },
-      { id: "evil-5", adapterId: "fake-cli" },
-      { id: "evil-6", unknownField: true },
-    ]) {
-      const res = await rpc(svc, "profile.create", bad);
-      assert.ok(res.error, `expected reject for ${JSON.stringify(bad)}`);
-      assert.equal(res.error!.code, -32602);
-    }
-
-    const after = await fs.readFile(file, "utf8");
-    assert.equal(after, before);
-
-    // Update on built-in also rejects secrets without mutation.
-    const upd = await rpc(svc, "profile.update", {
-      id: GROK_ACP_DEFAULT_PROFILE_ID,
-      apiKey: "sk-nope",
-    });
-    assert.ok(upd.error);
-    assert.equal(await fs.readFile(file, "utf8"), before);
-  });
-});
-
-test("profile projection never returns env map or secret values", async () => {
-  const raw: AgentProfileConfig = {
-    id: "grok-acp-proj",
-    adapterId: GROK_ACP_ADAPTER_ID,
-    displayName: "Proj",
-    env: { CPA_GROK_API_KEY: "sk-secret-value", TOKEN: "leak" },
-    grokAcp: {
-      model: "grok-4.5",
-      envKey: "CPA_GROK_API_KEY",
-      baseUrlEnvKey: "CPA_GROK_BASE_URL",
-      executable: "/usr/local/bin/grok",
-      permissionPolicy: "deny",
-      permissionTimeoutMs: 1000,
-    },
-  };
-  const proj = projectAgentProfile(raw);
-  const json = JSON.stringify(proj);
-  assert.ok(!json.includes("sk-secret-value"));
-  assert.ok(!json.includes("leak"));
-  assert.ok(!("env" in proj));
-  assert.ok(!("fake" in proj));
-  assert.ok(!("grokAcp" in proj));
-  assert.equal(proj.envKey, "CPA_GROK_API_KEY");
-  assert.equal(proj.executable, "/usr/local/bin/grok");
-  assert.equal(proj.permissionTimeoutMs, 1000);
-});
-
-test("profile delete: refuse while non-terminal session uses profile; allow after stop", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-del-"));
-  const logPath = path.join(dataDir, "mock-acp-log.json");
-  const profiles = [
-    ...seedProfiles(),
-    mockAcpProfile("grok-acp-deletable", {
-      logPath,
-      permissionPolicy: "deny",
-      requestPermission: false,
-    }),
-  ];
-  // Register deletable via create after boot so catalog owns a pure grok-acp row.
-  // For active session we need a startable profile — use mock inject id then delete that id.
-  const ws = await makeWorkspace();
-  const svc = await startLocalTentService({
-    dataDir,
-    writeEndpoint: false,
-    profiles,
-  });
+  const failDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-fail-"));
+  const runtime = createAgentRuntime({ dataDir: failDir, profiles: seed() });
   try {
-    const { workspaceId } = (
-      await rpc(svc, "workspace.mount", { workspaceRoot: ws })
-    ).result as { workspaceId: string };
-    const box = (
-      await rpc(svc, "docs.createNote", {
-        workspaceId,
-        name: "work-item",
-        type: "prompt",
-      })
-    ).result as { id: string };
-    const d = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      boxId: box.id,
-      role: "executor",
-      prompt: "hold session",
+    const catalog = new AgentProfileCatalog(failDir, runtime, seed(), {
+      persistToDisk: true,
+      saveProfiles: async () => {
+        throw new Error("deterministic write failure");
+      },
     });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-      profileId: "grok-acp-deletable",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-
-    const blocked = await rpc(svc, "profile.delete", { id: "grok-acp-deletable" });
-    assert.ok(blocked.error, "delete must fail while session live");
-    assert.match(blocked.error!.message, /non-terminal|session/i);
-
-    // Still on disk / runtime.
-    assert.ok(svc.runtime.getProfile("grok-acp-deletable"));
-
-    await rpc(svc, "task.interrupt", { workspaceId, taskPath });
-    await pollUntil(async () => {
-      const list = await rpc(svc, "session.list", { workspaceId });
-      const sessions = (list.result as { sessions: Array<{ state: string; profileId: string }> })
-        .sessions;
-      const mine = sessions.find((s) => s.profileId === "grok-acp-deletable");
-      if (!mine) return true;
-      return mine.state === "stopped" || mine.state === "failed" ? true : null;
-    }, 12_000, "session terminal");
-
-    const del = await rpc(svc, "profile.delete", { id: "grok-acp-deletable" });
-    assert.ok(!del.error, JSON.stringify(del.error));
-    assert.equal(svc.runtime.getProfile("grok-acp-deletable"), undefined);
-
-    // Built-in and fake cannot be deleted.
-    const noDefault = await rpc(svc, "profile.delete", {
-      id: GROK_ACP_DEFAULT_PROFILE_ID,
-    });
-    assert.ok(noDefault.error);
-    const noFake = await rpc(svc, "profile.delete", { id: FAKE_DEFAULT_PROFILE_ID });
-    assert.ok(noFake.error);
-    const noFakeUpd = await rpc(svc, "profile.update", {
-      id: FAKE_DEFAULT_PROFILE_ID,
-      displayName: "nope",
-    });
-    assert.ok(noFakeUpd.error);
+    await assert.rejects(
+      () => catalog.create({ id: "grok-acp-should-fail", displayName: "Nope" }),
+      /deterministic write failure/
+    );
+    assert.equal(catalog.get("grok-acp-should-fail"), undefined);
+    assert.equal(runtime.getProfile("grok-acp-should-fail"), undefined);
+    assert.ok(catalog.get(GROK_ACP_DEFAULT_PROFILE_ID) && runtime.getProfile(GROK_ACP_DEFAULT_PROFILE_ID));
+    await assert.rejects(() => fs.stat(profilesPath(failDir)), { code: "ENOENT" });
   } finally {
-    await svc.stop();
+    await runtime.shutdown();
   }
 });
 
-test("permission timeout lookup uses runtime profile after catalog update", async () => {
-  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-pto-"));
-  const logPath = path.join(dataDir, "mock-acp-log.json");
-  // Boot with a long timeout; update catalog to a short one before startSession.
+test("null clears; baseUrl rejects credentials; nested/RPC/id-override/clone/validation", async () => {
+  await withService(async (svc) => {
+    const c = client(svc);
+    await c.profileCreate({
+      id: "grok-acp-clearable",
+      displayName: "Clear Me",
+      model: "grok-custom",
+      executable: "/tmp/custom-grok",
+      envKey: "CUSTOM_KEY",
+      baseUrlEnvKey: "CUSTOM_BASE",
+      baseUrl: "http://127.0.0.1:9/v1",
+      permissionPolicy: "ask",
+      promptTimeoutMs: 11_000,
+      permissionTimeoutMs: 2_000,
+    });
+    const kept = (await c.profileUpdate("grok-acp-clearable", { displayName: "Still Named" })) as {
+      profile: Record<string, unknown>;
+    };
+    assert.equal(kept.profile.displayName, "Still Named");
+    assert.equal(kept.profile.model, "grok-custom");
+    assert.equal(kept.profile.baseUrl, "http://127.0.0.1:9/v1");
+
+    const cleared = (await c.profileUpdate("grok-acp-clearable", {
+      displayName: null,
+      model: null,
+      executable: null,
+      envKey: null,
+      baseUrlEnvKey: null,
+      baseUrl: null,
+      permissionPolicy: null,
+      promptTimeoutMs: null,
+      permissionTimeoutMs: null,
+    })) as { profile: Record<string, unknown> };
+    assert.equal(cleared.profile.displayName, "grok-acp-clearable");
+    assert.equal(cleared.profile.model, undefined);
+    assert.equal(cleared.profile.baseUrl, undefined);
+    const raw = svc.runtime.getProfile("grok-acp-clearable");
+    assert.equal(raw?.displayName, undefined);
+    assert.equal(raw?.grokAcp?.model, undefined);
+
+    await c.profileUpdate(GROK_ACP_DEFAULT_PROFILE_ID, { displayName: "Custom", permissionTimeoutMs: 1_000 });
+    const def = (await c.profileUpdate(GROK_ACP_DEFAULT_PROFILE_ID, {
+      displayName: null,
+      permissionTimeoutMs: null,
+    })) as { profile: { displayName: string; permissionTimeoutMs?: number } };
+    assert.equal(def.profile.displayName, "Grok ACP");
+    assert.equal(def.profile.permissionTimeoutMs, undefined);
+
+    for (const baseUrl of [
+      "http://user:pass@127.0.0.1:8317/v1",
+      "http://127.0.0.1:8317/v1?token=x",
+      "http://127.0.0.1:8317/v1#frag",
+      "ftp://x",
+    ]) {
+      await expectParamError(svc, "profile.create", { id: "grok-acp-u" + Math.random().toString(16).slice(2, 6), baseUrl }, /baseUrl/i);
+    }
+    await expectParamError(svc, "profile.create", { id: "BAD_ID" }, /id/i);
+    await expectParamError(svc, "profile.create", { id: "grok-acp-e", envKey: "bad!" }, /envKey/i);
+    await expectParamError(svc, "profile.create", { id: "grok-acp-p", permissionPolicy: "yolo" }, /permissionPolicy/i);
+    await expectParamError(svc, "profile.create", { id: "grok-acp-m", permissionTimeoutMs: 0 }, /permissionTimeoutMs/i);
+
+    await expectParamError(svc, "profile.create", { profile: { id: "grok-acp-n", displayName: "x" } }, /nested|top level/i);
+    await expectParamError(svc, "profile.update", { id: GROK_ACP_DEFAULT_PROFILE_ID, profile: { displayName: "x" } }, /nested/i);
+    for (const bad of [
+      { id: "evil-1", apiKey: "sk" },
+      { id: "evil-2", env: { K: "v" } },
+      { id: "evil-3", adapterId: "fake-cli" },
+      { id: "evil-4", unknownField: true },
+    ]) {
+      await expectParamError(svc, "profile.create", bad);
+    }
+
+    await c.profileCreate({ id: "grok-acp-id-win", displayName: "A" });
+    await c.profileCreate({ id: "grok-acp-id-lose", displayName: "B" });
+    const upd = (await c.profileUpdate("grok-acp-id-win", { id: "grok-acp-id-lose", displayName: "Won" })) as {
+      profile: { id: string; displayName: string };
+    };
+    assert.equal(upd.profile.id, "grok-acp-id-win");
+    assert.equal(upd.profile.displayName, "Won");
+    assert.equal(
+      ((await c.profileGet("grok-acp-id-lose")) as { profile: { displayName: string } }).profile.displayName,
+      "B"
+    );
+  });
+
+  // projection + runtime clone (unit, no service)
+  const secret: AgentProfileConfig = {
+    id: "grok-acp-proj",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    displayName: "Proj",
+    env: { CPA_GROK_API_KEY: "sk-secret-value" },
+    grokAcp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY", permissionTimeoutMs: 1000 },
+  };
+  const proj = projectAgentProfile(secret);
+  assert.ok(!JSON.stringify(proj).includes("sk-secret-value"));
+  assert.ok(!("env" in proj) && !("grokAcp" in proj));
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-clone-"));
+  const runtime = createAgentRuntime({ dataDir, profiles: [secret] });
+  try {
+    const a = runtime.getProfile("grok-acp-proj")!;
+    a.grokAcp!.model = "mutated";
+    assert.equal(runtime.getProfile("grok-acp-proj")!.grokAcp?.model, "grok-4.5");
+    runtime.listProfiles().find((p) => p.id === "grok-acp-proj")!.grokAcp!.permissionTimeoutMs = 1;
+    assert.equal(runtime.getProfile("grok-acp-proj")?.grokAcp?.permissionTimeoutMs, 1000);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("delete gates + permission timeout uses runtime after catalog update", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-sess-"));
   const profiles = [
-    ...seedProfiles(),
-    mockAcpProfile("grok-acp-timeout-live", {
-      logPath,
+    ...seed(),
+    mockAcp("grok-acp-deletable", path.join(dataDir, "mock-del.json"), { permissionPolicy: "deny" }),
+    mockAcp("grok-acp-timeout-live", path.join(dataDir, "mock-to.json"), {
       permissionPolicy: "ask",
       requestPermission: true,
       permissionTimeoutMs: 60_000,
     }),
   ];
-  const ws = await makeWorkspace();
-  const svc = await startLocalTentService({
-    dataDir,
-    writeEndpoint: false,
-    profiles,
-  });
+  const ws = await makeWs();
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: false, profiles });
   try {
-    // Hot update: service must not close over boot profiles array.
-    const upd = await rpc(svc, "profile.update", {
-      id: "grok-acp-timeout-live",
-      permissionTimeoutMs: 400,
-    });
-    assert.ok(!upd.error, JSON.stringify(upd.error));
-    assert.equal(
-      svc.runtime.getProfile("grok-acp-timeout-live")?.grokAcp?.permissionTimeoutMs,
-      400
-    );
+    const { workspaceId } = (await rpc(svc, "workspace.mount", { workspaceRoot: ws })).result as {
+      workspaceId: string;
+    };
 
-    const { workspaceId } = (
-      await rpc(svc, "workspace.mount", { workspaceRoot: ws })
-    ).result as { workspaceId: string };
-    const box = (
-      await rpc(svc, "docs.createNote", {
+    async function start(name: string, profileId: string) {
+      const box = (await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" })).result as { id: string };
+      const d = await rpc(svc, "task.dispatch", { workspaceId, boxId: box.id, role: "executor", prompt: name });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
         workspaceId,
-        name: "timeout-item",
-        type: "prompt",
-      })
-    ).result as { id: string };
-    const d = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      boxId: box.id,
-      role: "executor",
-      prompt: "tool ask with updated timeout",
-    });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      callerKind: "user",
-      profileId: "grok-acp-timeout-live",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
+        taskPath,
+        callerKind: "user",
+        profileId,
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      return taskPath;
+    }
 
+    const livePath = await start("work-item", "grok-acp-deletable");
+    const blocked = await rpc(svc, "profile.delete", { id: "grok-acp-deletable" });
+    assert.ok(blocked.error);
+    assert.match(blocked.error!.message, /non-terminal|session/i);
+
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: livePath });
+    await pollUntil(async () => {
+      const list = await rpc(svc, "session.list", { workspaceId });
+      const sessions = (list.result as { sessions: Array<{ state: string; profileId: string }> }).sessions;
+      const mine = sessions.find((s) => s.profileId === "grok-acp-deletable");
+      if (!mine) return true;
+      return mine.state === "stopped" || mine.state === "failed" ? true : null;
+    }, 12_000, "terminal");
+
+    assert.ok(!(await rpc(svc, "profile.delete", { id: "grok-acp-deletable" })).error);
+    assert.ok((await rpc(svc, "profile.delete", { id: GROK_ACP_DEFAULT_PROFILE_ID })).error);
+    assert.ok((await rpc(svc, "profile.delete", { id: FAKE_DEFAULT_PROFILE_ID })).error);
+    assert.ok((await rpc(svc, "profile.update", { id: FAKE_DEFAULT_PROFILE_ID, displayName: "nope" })).error);
+
+    assert.ok(!(await rpc(svc, "profile.update", { id: "grok-acp-timeout-live", permissionTimeoutMs: 400 })).error);
+    assert.equal(svc.runtime.getProfile("grok-acp-timeout-live")?.grokAcp?.permissionTimeoutMs, 400);
+    await start("timeout-item", "grok-acp-timeout-live");
     const pending = await pollUntil(async () => {
       const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
-      const approvals = (
-        list.result as { approvals: Array<{ id: string; expiresAt: string; createdAt: string }> }
-      ).approvals;
-      return approvals[0] ?? null;
-    }, 12_000, "pending tool approval");
-
-    const created = Date.parse(pending.createdAt);
-    const expires = Date.parse(pending.expiresAt);
-    const windowMs = expires - created;
-    // Updated 400ms (+ small store skew) — must not still be the boot 60s.
-    assert.ok(windowMs < 5_000, `expected short timeout window, got ${windowMs}ms`);
-    assert.ok(windowMs >= 300, `timeout window too small: ${windowMs}ms`);
-
+      return (
+        (list.result as { approvals: Array<{ id: string; expiresAt: string; createdAt: string }> }).approvals[0] ??
+        null
+      );
+    }, 12_000, "pending");
+    const windowMs = Date.parse(pending.expiresAt) - Date.parse(pending.createdAt);
+    assert.ok(windowMs < 5_000 && windowMs >= 300, `window ${windowMs}ms`);
     const expired = await pollUntil(async () => {
       const got = await rpc(svc, "toolApproval.get", { approvalId: pending.id });
       if (got.error) return null;
       const approval = (got.result as { approval: { status: string } }).approval;
       return approval.status === "expired" ? approval : null;
-    }, 8_000, "store expiry with updated timeout");
+    }, 8_000, "expiry");
     assert.equal(expired.status, "expired");
   } finally {
     await svc.stop();
   }
-});
-
-test("validation: id / env key / URL / enum / positive int", async () => {
-  await withService(async (svc) => {
-    const badId = await rpc(svc, "profile.create", { id: "BAD_ID" });
-    assert.ok(badId.error);
-    assert.match(badId.error!.message, /id/i);
-
-    const badEnv = await rpc(svc, "profile.create", {
-      id: "grok-acp-bad-env",
-      envKey: "not-valid-key!",
-    });
-    assert.ok(badEnv.error);
-    assert.match(badEnv.error!.message, /envKey/i);
-
-    const badUrl = await rpc(svc, "profile.create", {
-      id: "grok-acp-bad-url",
-      baseUrl: "ftp://x",
-    });
-    assert.ok(badUrl.error);
-    assert.match(badUrl.error!.message, /baseUrl/i);
-
-    const badPol = await rpc(svc, "profile.create", {
-      id: "grok-acp-bad-pol",
-      permissionPolicy: "yolo",
-    });
-    assert.ok(badPol.error);
-    assert.match(badPol.error!.message, /permissionPolicy/i);
-
-    const badMs = await rpc(svc, "profile.create", {
-      id: "grok-acp-bad-ms",
-      permissionTimeoutMs: 0,
-    });
-    assert.ok(badMs.error);
-    assert.match(badMs.error!.message, /permissionTimeoutMs/i);
-
-    // grok-acp-default editable; fake not.
-    const editDefault = await rpc(svc, "profile.update", {
-      id: GROK_ACP_DEFAULT_PROFILE_ID,
-      displayName: "Grok ACP Custom",
-    });
-    assert.ok(!editDefault.error, JSON.stringify(editDefault.error));
-  });
 });

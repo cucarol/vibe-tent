@@ -76,7 +76,6 @@ import {
   type TypeRegistryEntryProjection,
 } from "./types.js";
 import {
-  loadAgentProfiles,
   projectAgentProfile,
   projectAgentProfiles,
   type AgentProfileCatalog,
@@ -602,16 +601,8 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
  */
 async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
   const includeTest = p.includeTest === true;
-  // Catalog / runtime holds the live set; disk is fallback if catalog empty.
-  const fromCatalog = ctx.profileCatalog.list();
-  const fromRuntime = ctx.runtime.listProfiles();
-  const source =
-    fromCatalog.length > 0
-      ? fromCatalog
-      : fromRuntime.length > 0
-        ? fromRuntime
-        : await loadAgentProfiles(ctx.dataDir);
-  let profiles = projectAgentProfiles(source);
+  // Single source of truth: injected catalog only (no runtime/disk fallback).
+  let profiles = projectAgentProfiles(ctx.profileCatalog.list());
   if (!includeTest) {
     profiles = profiles.filter((pr) => !pr.testOnly);
   }
@@ -620,10 +611,7 @@ async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
 
 async function profileGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const id = requireString(p, "id");
-  const profile =
-    ctx.profileCatalog.get(id) ??
-    ctx.runtime.getProfile(id) ??
-    (await loadAgentProfiles(ctx.dataDir)).find((x) => x.id === id);
+  const profile = ctx.profileCatalog.get(id);
   if (!profile) {
     throw new RpcError(-32004, `Profile not found: ${id}`);
   }
@@ -631,25 +619,28 @@ async function profileGet(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
-  // Accept either top-level fields or nested `profile` object.
-  const raw =
-    p.profile && typeof p.profile === "object" && !Array.isArray(p.profile)
-      ? (p.profile as Record<string, unknown>)
-      : p;
-  const created = await ctx.profileCatalog.create(raw);
+  // Single top-level shape: create fields directly on params (no nested profile).
+  if ("profile" in p) {
+    throw new RpcError(
+      -32602,
+      "profile.create does not accept nested profile; pass fields at the top level"
+    );
+  }
+  const created = await ctx.profileCatalog.create(p);
   return { profile: projectAgentProfile(created) };
 }
 
 async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
+  // Single top-level shape: { id, ...patch } (no nested profile).
+  if ("profile" in p) {
+    throw new RpcError(
+      -32602,
+      "profile.update does not accept nested profile; pass { id, ...patch }"
+    );
+  }
   const id = requireString(p, "id");
-  const raw =
-    p.profile && typeof p.profile === "object" && !Array.isArray(p.profile)
-      ? (p.profile as Record<string, unknown>)
-      : (() => {
-          const { id: _id, ...rest } = p;
-          return rest;
-        })();
-  const updated = await ctx.profileCatalog.update(id, raw);
+  const { id: _id, ...patch } = p;
+  const updated = await ctx.profileCatalog.update(id, patch);
   return { profile: projectAgentProfile(updated) };
 }
 

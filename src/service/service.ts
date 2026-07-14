@@ -80,7 +80,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   await toolApprovals.ensureLoaded();
 
   // options.profiles: in-memory inject for tests (skip ensureDefaultProfiles disk seed).
-  // Catalog mutations still write to this service's dataDir (tests pass a temp dir).
+  // Injected catalogs never persist CRUD to dataDir/agent-profiles.json.
   const profilesInjected = options.profiles !== undefined;
   const profiles = profilesInjected
     ? options.profiles!
@@ -214,9 +214,9 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   runtimeHolder.current = runtime;
 
   const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
-    // Always persist CRUD to this service dataDir. Inject only skips boot seed;
-    // tests must pass a temp dataDir so host default catalog is never touched.
-    persistToDisk: true,
+    // Normal boot: persist CRUD to this service dataDir.
+    // options.profiles inject: in-memory only — no agent-profiles.json writes.
+    persistToDisk: !profilesInjected,
   });
 
   // Reconcile orphan sessions after crash / restart.

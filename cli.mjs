@@ -3487,8 +3487,9 @@ var ServiceClient = class {
   profileCreate(profile) {
     return this.call("profile.create", profile);
   }
-  profileUpdate(id, profile) {
-    return this.call("profile.update", { id, ...profile });
+  /** Method `id` always wins over any `id` inside patch (spread cannot override). */
+  profileUpdate(id, patch) {
+    return this.call("profile.update", { ...patch, id });
   }
   profileDelete(id) {
     return this.call("profile.delete", { id });

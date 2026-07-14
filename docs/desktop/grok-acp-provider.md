@@ -100,15 +100,15 @@ Local Service owns a **single-process serial** catalog for `agent-profiles.json`
 
 | RPC | Notes |
 | --- | --- |
-| `profile.list` | Editor-safe projection list; default hides `testOnly` (`includeTest: true` for harness) |
-| `profile.get` | Same projection for one id |
-| `profile.create` | New id; forced `adapterId=grok-acp` |
-| `profile.update` | Patch whitelist fields; **id immutable** |
+| `profile.list` | Editor-safe projection from the **injected catalog only** (no runtime/disk fallback); default hides `testOnly` (`includeTest: true` for harness) |
+| `profile.get` | Same single-source projection for one id |
+| `profile.create` | Top-level fields only (`{ id, displayName, … }`); forced `adapterId=grok-acp`; **no** nested `profile` object |
+| `profile.update` | Top-level `{ id, …patch }` only; **id immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
 | `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK |
 
 **Whitelist body fields:** `id` (create only), `displayName`, `model`, `executable`, `envKey`, `baseUrlEnvKey`, `baseUrl`, `permissionPolicy`, `promptTimeoutMs`, `permissionTimeoutMs`.
 
-Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / …) are **rejected with RpcError** — never silently stripped and written.
+Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / …) are **rejected with RpcError** — never silently stripped and written. `baseUrl` must be absolute `http(s)` **without** username/password, query, or hash.
 
 | Id | Create | Update | Delete |
 | --- | --- | --- | --- |
@@ -116,7 +116,11 @@ Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / …) 
 | `grok-acp-default` | n/a (boot seed) | yes | **no** |
 | other `grok-acp` | yes | yes | yes (if no active session) |
 
-After successful create/update/delete: **atomic disk write** then **full runtime catalog replace**. New `startSession` sees the new config immediately; **live sessions are not hot-reconfigured**. Permission timeout lookup for `permissionPolicy=ask` reads the **current** runtime profile (not a boot-time closed-over array).
+**Mutation transaction:** build `next` from the previous snapshot → **atomic disk save(`next`)** (when persistence is enabled) → only then replace in-memory catalog + full runtime catalog. Write failure leaves disk, catalog, and runtime on the old values.
+
+**When disk is written:** normal service boot (`ensureDefaultProfiles`) enables `persistToDisk`. Explicit `options.profiles` inject (tests / harness) sets `persistToDisk=false` — CRUD stays in-memory and **never** writes `dataDir/agent-profiles.json`.
+
+New `startSession` sees the new config immediately; **live sessions are not hot-reconfigured**. Permission timeout lookup for `permissionPolicy=ask` reads the **current** runtime profile (not a boot-time closed-over array). Clearing a field with `null` removes it so adapter defaults apply again.
 
 Editor projection may include non-secret fields above (including env **key names**, paths, timeouts). It must **not** return env maps or API key / token **values**.
 

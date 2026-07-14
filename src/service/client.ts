@@ -138,8 +138,9 @@ export class ServiceClient {
   profileCreate(profile: Record<string, unknown>) {
     return this.call("profile.create", profile);
   }
-  profileUpdate(id: string, profile: Record<string, unknown>) {
-    return this.call("profile.update", { id, ...profile });
+  /** Method `id` always wins over any `id` inside patch (spread cannot override). */
+  profileUpdate(id: string, patch: Record<string, unknown>) {
+    return this.call("profile.update", { ...patch, id });
   }
   profileDelete(id: string) {
     return this.call("profile.delete", { id });
