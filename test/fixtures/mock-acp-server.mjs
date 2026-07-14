@@ -31,6 +31,9 @@ const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
 const logPath = process.env.MOCK_ACP_LOG || "";
+/** After session/new, die with this code (spontaneous exit; no pending prompt required). */
+const dieAfterSessionMs = Number(process.env.MOCK_ACP_DIE_AFTER_SESSION_MS || "0");
+const dieExitCode = Number(process.env.MOCK_ACP_DIE_EXIT_CODE || "1");
 
 const log = {
   argv: process.argv.slice(1),
@@ -124,6 +127,13 @@ rl.on("line", (line) => {
       id: msg.id,
       result: { sessionId },
     });
+    // Spontaneous death after live session exists — even with no pending prompt/RPC.
+    if (Number.isFinite(dieAfterSessionMs) && dieAfterSessionMs > 0) {
+      setTimeout(() => {
+        flushLog();
+        process.exit(Number.isFinite(dieExitCode) ? dieExitCode : 1);
+      }, dieAfterSessionMs);
+    }
     return;
   }
 

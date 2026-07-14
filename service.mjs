@@ -3189,6 +3189,7 @@ var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
 // src/adapters/grok-acp/client.ts
+var PERMISSION_FAILSAFE_SLACK_MS = 5e3;
 var GrokAcpClient = class {
   constructor(options) {
     this.options = options;
@@ -3201,6 +3202,8 @@ var GrokAcpClient = class {
     this.stderrTail = "";
     this.closed = false;
     this.stopRequested = false;
+    /** Dedupe spontaneous exit vs prompt-failure / intentional stop terminal events. */
+    this.terminalEmitted = false;
     this.exitCode = null;
     this.exitSignal = null;
     this.exitWaiters = [];
@@ -3323,7 +3326,7 @@ var GrokAcpClient = class {
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
   async stop(reason) {
     void reason;
-    if (this.closed) return;
+    if (this.closed && this.stopRequested) return;
     this.stopRequested = true;
     this.closed = true;
     this.rejectAllPending(new Error("session stopped"));
@@ -3341,6 +3344,32 @@ var GrokAcpClient = class {
       sleep(1500).then(() => this.forceKill())
     ]);
     this.cleanupStreams();
+  }
+  /**
+   * Emit session.failed once (prompt failure / logical error). Dedupes against
+   * spontaneous child-exit terminal emission.
+   */
+  reportFailed(error) {
+    if (this.terminalEmitted) return;
+    this.terminalEmitted = true;
+    this.options.emit({
+      type: "session.failed",
+      sessionId: this.options.sessionId,
+      error
+    });
+  }
+  /**
+   * Emit session.exited once (clean managed completion path). Dedupes against
+   * spontaneous child-exit and reportFailed.
+   */
+  reportExited(exitCode = 0) {
+    if (this.terminalEmitted) return;
+    this.terminalEmitted = true;
+    this.options.emit({
+      type: "session.exited",
+      sessionId: this.options.sessionId,
+      exitCode
+    });
   }
   spawnProcess() {
     const child = spawn2(this.options.command, this.options.args, {
@@ -3379,6 +3408,22 @@ var GrokAcpClient = class {
           signal ? `Grok ACP \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `Grok ACP \u8FDB\u7A0B\u9000\u51FA code=${code}`
         )
       );
+      if (!this.stopRequested && !this.terminalEmitted) {
+        this.terminalEmitted = true;
+        if (signal && signal !== "SIGTERM" && signal !== "SIGINT" || code !== 0 && code != null) {
+          this.options.emit({
+            type: "session.failed",
+            sessionId: this.options.sessionId,
+            error: signal ? `Grok ACP spontaneous exit signal:${signal}` : `Grok ACP spontaneous exit code=${code}`
+          });
+        } else {
+          this.options.emit({
+            type: "session.exited",
+            sessionId: this.options.sessionId,
+            exitCode: code
+          });
+        }
+      }
       for (const w of this.exitWaiters) w();
       this.exitWaiters = [];
     });
@@ -3387,6 +3432,14 @@ var GrokAcpClient = class {
       this.rejectAllPending(
         new Error(`Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
       );
+      if (!this.stopRequested && !this.terminalEmitted) {
+        this.terminalEmitted = true;
+        this.options.emit({
+          type: "session.failed",
+          sessionId: this.options.sessionId,
+          error: `Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`
+        });
+      }
     });
   }
   onLine(line) {
@@ -3493,10 +3546,25 @@ var GrokAcpClient = class {
       try {
         if (this.options.onPermissionAsk) {
           const timeoutMs = this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-          decision = await Promise.race([
-            this.options.onPermissionAsk({ toolTitle, toolCallId, options }),
-            sleep(timeoutMs + 1e3).then(() => "deny")
-          ]);
+          const askInfo = { toolTitle, toolCallId, options };
+          let settled = false;
+          const askPromise = this.options.onPermissionAsk(askInfo).then((d) => {
+            settled = true;
+            return d;
+          });
+          const failSafePromise = sleep(
+            timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
+          ).then(async () => {
+            if (settled) return "deny";
+            if (this.options.onPermissionAskFailSafe) {
+              try {
+                await this.options.onPermissionAskFailSafe(askInfo);
+              } catch {
+              }
+            }
+            return "deny";
+          });
+          decision = await Promise.race([askPromise, failSafePromise]);
         } else {
           decision = "deny";
         }
@@ -3658,6 +3726,7 @@ var GrokAcpProviderAdapter = class {
       planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
     ));
     this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return {
@@ -3747,6 +3816,16 @@ var GrokAcpProviderAdapter = class {
     const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
     const launch = this.resolveLaunch(plan);
     const bootstrap = plan.bootstrapPrompt?.trim() || "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
+    const mapPermInfo = (info) => ({
+      sessionId: plan.sessionId,
+      toolTitle: info.toolTitle,
+      toolCallId: info.toolCallId,
+      options: (info.options ?? []).map((o) => ({
+        optionId: o.optionId,
+        kind: o.kind,
+        name: o.name
+      }))
+    });
     const client = new GrokAcpClient({
       command: launch.command,
       args: launch.args,
@@ -3760,16 +3839,10 @@ var GrokAcpProviderAdapter = class {
       emit: emit2,
       onPermissionAsk: opts.permissionPolicy === "ask" ? async (info) => {
         if (!this.onPermissionAsk) return "deny";
-        return this.onPermissionAsk({
-          sessionId: plan.sessionId,
-          toolTitle: info.toolTitle,
-          toolCallId: info.toolCallId,
-          options: (info.options ?? []).map((o) => ({
-            optionId: o.optionId,
-            kind: o.kind,
-            name: o.name
-          }))
-        });
+        return this.onPermissionAsk(mapPermInfo(info));
+      } : void 0,
+      onPermissionAskFailSafe: opts.permissionPolicy === "ask" && this.onPermissionAskFailSafe ? async (info) => {
+        await this.onPermissionAskFailSafe(mapPermInfo(info));
       } : void 0
     });
     await client.connect();
@@ -3777,20 +3850,14 @@ var GrokAcpProviderAdapter = class {
       const stopReason = (result.stopReason || "end_turn").toLowerCase();
       const assistantText = (result.assistantText || "").trim();
       if (stopReason !== "end_turn") {
-        emit2({
-          type: "session.failed",
-          sessionId: plan.sessionId,
-          error: `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
-        });
+        client.reportFailed(
+          `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
+        );
         await stopClientQuiet(client);
         return;
       }
       if (!assistantText) {
-        emit2({
-          type: "session.failed",
-          sessionId: plan.sessionId,
-          error: "ACP assistant response empty (no auto-delivery)"
-        });
+        client.reportFailed("ACP assistant response empty (no auto-delivery)");
         await stopClientQuiet(client);
         return;
       }
@@ -3803,15 +3870,11 @@ var GrokAcpProviderAdapter = class {
     }).catch(async (err) => {
       const message = err instanceof Error ? err.message : String(err);
       if (/interrupted|session stopped/i.test(message)) {
-        emit2({
-          type: "session.failed",
-          sessionId: plan.sessionId,
-          error: `session interrupted: ${message}`
-        });
+        client.reportFailed(`session interrupted: ${message}`);
         await stopClientQuiet(client);
         return;
       }
-      emit2({ type: "session.failed", sessionId: plan.sessionId, error: message });
+      client.reportFailed(message);
       await stopClientQuiet(client);
     });
     return new GrokManagedSession(plan.sessionId, client, promptDone);
@@ -6184,19 +6247,32 @@ var ToolApprovalStore = class {
     this.items = /* @__PURE__ */ new Map();
     this.waiters = /* @__PURE__ */ new Map();
     this.loaded = false;
+    /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
+    this.chain = Promise.resolve();
     this.file = path8.join(dataDir, "tool-approvals.json");
+  }
+  enqueue(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
   }
   async ensureLoaded() {
     if (this.loaded) return;
-    this.loaded = true;
-    try {
-      const raw = await fs9.readFile(this.file, "utf8");
-      const parsed = JSON.parse(raw);
-      for (const item of parsed.items ?? []) {
-        if (item?.id) this.items.set(item.id, item);
+    return this.enqueue(async () => {
+      if (this.loaded) return;
+      this.loaded = true;
+      try {
+        const raw = await fs9.readFile(this.file, "utf8");
+        const parsed = JSON.parse(raw);
+        for (const item of parsed.items ?? []) {
+          if (item?.id) this.items.set(item.id, item);
+        }
+      } catch {
       }
-    } catch {
-    }
+    });
   }
   async listPending(workspaceId) {
     await this.ensureLoaded();
@@ -6212,37 +6288,46 @@ var ToolApprovalStore = class {
   }
   async add(item) {
     await this.ensureLoaded();
-    this.items.set(item.id, item);
-    await this.persist();
-    return item;
+    return this.enqueue(async () => {
+      this.items.set(item.id, { ...item });
+      await this.persistUnlocked();
+      return this.items.get(item.id);
+    });
   }
   /**
    * User-only resolve. Agent callers must not reach this via RPC auth (handlers enforce).
    * approve → allow_once at ACP layer; deny → cancelled.
+   * Late approve after expire/deny/cancel fails (status !== pending).
    */
   async resolve(id, decision, resolvedBy) {
     await this.ensureLoaded();
-    await this.expireStale(id);
-    const item = this.items.get(id);
-    if (!item) throw new Error(`Tool approval not found: ${id}`);
-    if (item.status !== "pending") {
-      throw new Error(`Tool approval already ${item.status}: ${id}`);
-    }
-    item.status = decision;
-    item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-    item.resolvedBy = resolvedBy;
-    this.items.set(id, item);
-    await this.persist();
-    this.notifyWaiters(id, decision);
-    return item;
+    return this.enqueue(async () => {
+      await this.expireStaleUnlocked(id);
+      const item = this.items.get(id);
+      if (!item) throw new Error(`Tool approval not found: ${id}`);
+      if (item.status !== "pending") {
+        throw new Error(`Tool approval already ${item.status}: ${id}`);
+      }
+      item.status = decision;
+      item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+      item.resolvedBy = resolvedBy;
+      this.items.set(id, item);
+      await this.persistUnlocked();
+      this.notifyWaiters(id, decision);
+      return item;
+    });
   }
   /**
-   * Wait until user resolves or expiry. Returns approved | denied | expired.
+   * Wait until user resolves or store-authoritative expiry. Returns approved | denied | expired.
    * Used by adapter onPermissionAsk bridge (service-owned).
+   * timeoutMs bounds the wait; expireOne mutates the same record so late approve fails.
    */
   waitForDecision(id, timeoutMs) {
     return new Promise((resolve7) => {
+      let settled = false;
       const finish = (status) => {
+        if (settled) return;
+        settled = true;
         clearTimeout(timer);
         const list = this.waiters.get(id);
         if (list) {
@@ -6255,6 +6340,7 @@ var ToolApprovalStore = class {
         resolve7(status);
       };
       void this.get(id).then((item) => {
+        if (settled) return;
         if (!item) {
           finish("expired");
           return;
@@ -6273,7 +6359,11 @@ var ToolApprovalStore = class {
       });
       const timer = setTimeout(() => {
         void this.expireOne(id).then((status) => {
-          finish(status === "expired" || status === "denied" ? status : "expired");
+          if (status === "approved" || status === "denied") {
+            finish(status);
+            return;
+          }
+          finish("expired");
         });
       }, Math.max(1, timeoutMs));
     });
@@ -6281,17 +6371,38 @@ var ToolApprovalStore = class {
   /** Cancel all pending for a session (session stop / fail). */
   async cancelSession(sessionId, reason = "denied") {
     await this.ensureLoaded();
-    let changed = false;
-    for (const item of this.items.values()) {
-      if (item.sessionId !== sessionId || item.status !== "pending") continue;
-      item.status = reason;
+    return this.enqueue(async () => {
+      let changed = false;
+      for (const item of this.items.values()) {
+        if (item.sessionId !== sessionId || item.status !== "pending") continue;
+        item.status = reason;
+        item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
+        item.resolvedBy = "service";
+        this.items.set(item.id, item);
+        this.notifyWaiters(item.id, reason === "expired" ? "expired" : "denied");
+        changed = true;
+      }
+      if (changed) await this.persistUnlocked();
+    });
+  }
+  /**
+   * Force-expire one pending item (timeout authority / fail-safe).
+   * Idempotent: returns current terminal status if already resolved.
+   */
+  async expireOne(id) {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const item = this.items.get(id);
+      if (!item) return "expired";
+      if (item.status !== "pending") return item.status;
+      item.status = "expired";
       item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-      item.resolvedBy = "service";
-      this.items.set(item.id, item);
-      this.notifyWaiters(item.id, reason === "expired" ? "expired" : "denied");
-      changed = true;
-    }
-    if (changed) await this.persist();
+      item.resolvedBy = "timeout";
+      this.items.set(id, item);
+      await this.persistUnlocked();
+      this.notifyWaiters(id, "expired");
+      return "expired";
+    });
   }
   notifyWaiters(id, status) {
     const list = this.waiters.get(id);
@@ -6300,6 +6411,11 @@ var ToolApprovalStore = class {
     for (const w of list) w.resolve(status);
   }
   async expireStale(onlyId) {
+    return this.enqueue(async () => {
+      await this.expireStaleUnlocked(onlyId);
+    });
+  }
+  async expireStaleUnlocked(onlyId) {
     const now = Date.now();
     let changed = false;
     for (const item of this.items.values()) {
@@ -6314,31 +6430,29 @@ var ToolApprovalStore = class {
       this.notifyWaiters(item.id, "expired");
       changed = true;
     }
-    if (changed) await this.persist();
+    if (changed) await this.persistUnlocked();
   }
-  async expireOne(id) {
-    await this.ensureLoaded();
-    const item = this.items.get(id);
-    if (!item) return "expired";
-    if (item.status !== "pending") return item.status;
-    item.status = "expired";
-    item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-    item.resolvedBy = "timeout";
-    this.items.set(id, item);
-    await this.persist();
-    this.notifyWaiters(id, "expired");
-    return "expired";
-  }
-  async persist() {
+  /**
+   * Atomic temp-file + rename so a crashed mid-write cannot leave a partial file,
+   * and concurrent readers never observe a torn document. Call only under enqueue.
+   */
+  async persistUnlocked() {
     await fs9.mkdir(path8.dirname(this.file), { recursive: true });
     const items = [...this.items.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await fs9.writeFile(
-      this.file,
-      JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n",
-      "utf8"
-    );
+    const body = JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n";
+    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
+    try {
+      await fs9.writeFile(tmp, body, "utf8");
+      await fs9.rename(tmp, this.file);
+    } catch (err) {
+      try {
+        await fs9.unlink(tmp);
+      } catch {
+      }
+      throw err;
+    }
   }
 };
 function makeToolApprovalId(rand = Math.random) {
@@ -6984,6 +7098,7 @@ async function startLocalTentService(options = {}) {
   await toolApprovals.ensureLoaded();
   const profiles = options.profiles ?? await ensureDefaultProfiles(dataDir);
   const runtimeHolder = { current: null };
+  const openToolApprovalBySession = /* @__PURE__ */ new Map();
   const grokAdapter = createGrokAcpAdapter({
     onPermissionAsk: async (info) => {
       const runtime2 = runtimeHolder.current;
@@ -7031,6 +7146,7 @@ async function startLocalTentService(options = {}) {
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString()
       });
+      openToolApprovalBySession.set(info.sessionId, item.id);
       events.emit(
         "toolApproval.pending",
         workspaceId,
@@ -7044,8 +7160,28 @@ async function startLocalTentService(options = {}) {
         },
         "service"
       );
-      const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
-      return decision === "approved" ? "allow" : "deny";
+      try {
+        const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
+        return decision === "approved" ? "allow" : "deny";
+      } finally {
+        if (openToolApprovalBySession.get(info.sessionId) === item.id) {
+          openToolApprovalBySession.delete(info.sessionId);
+        }
+      }
+    },
+    onPermissionAskFailSafe: async (info) => {
+      const openId = openToolApprovalBySession.get(info.sessionId);
+      if (openId) {
+        try {
+          await toolApprovals.expireOne(openId);
+        } catch {
+        }
+        openToolApprovalBySession.delete(info.sessionId);
+      }
+      try {
+        await toolApprovals.cancelSession(info.sessionId, "expired");
+      } catch {
+      }
     }
   });
   const runtime = createAgentRuntime({

@@ -54,6 +54,9 @@ function mockAcpProfile(
     requestPermission?: boolean;
     permissionTimeoutMs?: number;
     keepAlive?: boolean;
+    /** Spontaneous child death after session/new (no pending prompt required). */
+    dieAfterSessionMs?: number;
+    dieExitCode?: number;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -70,6 +73,14 @@ function mockAcpProfile(
         : {}),
       ...(opts.stopReason ? { MOCK_ACP_STOP_REASON: opts.stopReason } : {}),
       ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
+      ...(opts.dieAfterSessionMs != null
+        ? {
+            MOCK_ACP_DIE_AFTER_SESSION_MS: String(opts.dieAfterSessionMs),
+            MOCK_ACP_DIE_EXIT_CODE: String(opts.dieExitCode ?? 1),
+            // Hang on prompt if it arrives before death — spontaneous path still fires.
+            MOCK_ACP_PROMPT_MODE: "interrupt",
+          }
+        : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
     grokAcp: {
@@ -1246,7 +1257,7 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
   );
 });
 
-test("B5 tool approval: deny cancels tool; timeout expires pending", async () => {
+test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-deny-"));
@@ -1307,6 +1318,90 @@ test("B5 tool approval: deny cancels tool; timeout expires pending", async () =>
           permissionPolicy: "ask",
           requestPermission: true,
           permissionTimeoutMs: 30_000,
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 tool approval: ask timeout expires pending; late approve fails", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-timeout-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  // Short store-authoritative timeout; client fail-safe is timeout + 5s slack.
+  const permissionTimeoutMs = 400;
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "will timeout tool ask",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-tool-timeout",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+
+      const pending = await pollUntil(async () => {
+        const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
+        const approvals = (
+          list.result as { approvals: Array<{ id: string; status?: string }> }
+        ).approvals;
+        return approvals[0] ?? null;
+      }, 12_000, "pending tool approval for timeout");
+
+      // Wait for store-authoritative expiry (not a second client-only deny path).
+      const expired = await pollUntil(async () => {
+        const got = await rpc(svc, "toolApproval.get", { approvalId: pending.id });
+        if (got.error) return null;
+        const approval = (got.result as { approval: { status: string } }).approval;
+        return approval.status === "expired" ? approval : null;
+      }, 8_000, "tool approval expired by store timeout");
+      assert.equal(expired.status, "expired");
+
+      // Late approve must fail — cannot resurrect pending / dual-timeout allow.
+      const late = await rpc(svc, "toolApproval.approveOnce", {
+        approvalId: pending.id,
+        actor: "user",
+      });
+      assert.ok(late.error, "late approve after expiry must fail");
+      assert.match(late.error!.message, /already expired|not found|already/i);
+
+      // ACP path must cancel (deny), never allow_once after timeout.
+      const outcome = await pollUntil(async () => {
+        try {
+          const raw = await fs.readFile(logPath, "utf8");
+          const log = JSON.parse(raw) as {
+            permissionOutcomes: Array<{ outcome?: string; optionId?: string }>;
+          };
+          return log.permissionOutcomes?.[0] ?? null;
+        } catch {
+          return null;
+        }
+      }, 12_000, "timeout permission outcome");
+      assert.equal(outcome.outcome, "cancelled");
+      assert.notEqual(outcome.optionId, "allow_once");
+
+      // No lingering pending for this workspace.
+      const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
+      assert.equal((list.result as { approvals: unknown[] }).approvals.length, 0);
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-tool-timeout", {
+          logPath,
+          promptText: "AFTER_TIMEOUT",
+          permissionPolicy: "ask",
+          requestPermission: true,
+          permissionTimeoutMs,
         }),
       ],
     }
@@ -1397,6 +1492,76 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
         mockAcpProfile("mock-acp-fail-clean", {
           logPath,
           promptMode: "error",
+          keepAlive: false,
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 spontaneous managed child exit emits terminal and taskFail releases occupation", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-spontaneous-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "child will die spontaneously",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-spontaneous-die",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      // Child dies after session/new with non-zero code even if prompt never settles.
+      const failed = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "failed" ? task : null;
+      }, 12_000, "task failed after spontaneous child exit");
+      assert.equal(failed.state, "failed");
+
+      const probe = await svc.runtime.probe(sessionId);
+      assert.equal(probe.alive, false);
+      assert.ok(probe.state === "failed" || probe.state === "stopped");
+
+      const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+      const data = edit.result as {
+        frontmatter?: { owner?: string; status?: string };
+        data?: { owner?: string; status?: string };
+      };
+      const owner = data.frontmatter?.owner ?? data.data?.owner;
+      const status = data.frontmatter?.status ?? data.data?.status;
+      assert.ok(owner === undefined || owner === null || owner === "");
+      assert.notEqual(status, "doing");
+
+      // Re-dispatch same box proves occupation fully released.
+      const d2 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "retry after spontaneous death",
+      });
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-spontaneous-die", {
+          logPath,
+          dieAfterSessionMs: 120,
+          dieExitCode: 7,
           keepAlive: false,
         }),
       ],

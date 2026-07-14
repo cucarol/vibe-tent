@@ -55,6 +55,7 @@ export interface GrokAcpAdapterOptions {
    * Optional permission ask resolver (Local Service tool-approval bridge / tests).
    * When omitted and policy=ask, permissions deny (safe default; never auto-allow).
    * Distinct from A2A spawn approval — this is ACP session/request_permission only.
+   * Store expiry is authoritative; late approve after expire must fail.
    */
   onPermissionAsk?: (info: {
     sessionId: string;
@@ -62,6 +63,16 @@ export interface GrokAcpAdapterOptions {
     toolCallId?: string;
     options: Array<{ optionId: string; kind?: string; name?: string }>;
   }) => Promise<"allow" | "deny">;
+  /**
+   * Bounded fail-safe if onPermissionAsk hangs past store timeout + slack.
+   * Must expire/cancel the same pending store item (not leave an approvable pending).
+   */
+  onPermissionAskFailSafe?: (info: {
+    sessionId: string;
+    toolTitle: string;
+    toolCallId?: string;
+    options: Array<{ optionId: string; kind?: string; name?: string }>;
+  }) => Promise<void>;
 }
 
 function defaultGrokExecutable(): string {
@@ -163,6 +174,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     profileBaseUrl?: string
   ) => string | undefined;
   private readonly onPermissionAsk?: GrokAcpAdapterOptions["onPermissionAsk"];
+  private readonly onPermissionAskFailSafe?: GrokAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: GrokAcpAdapterOptions = {}) {
     this.resolveApiKey =
@@ -175,6 +187,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
           planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
         ));
     this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -295,6 +308,21 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       plan.bootstrapPrompt?.trim() ||
       "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
 
+    const mapPermInfo = (info: {
+      toolTitle: string;
+      toolCallId?: string;
+      options: Array<{ optionId: string; kind?: string; name?: string }>;
+    }) => ({
+      sessionId: plan.sessionId,
+      toolTitle: info.toolTitle,
+      toolCallId: info.toolCallId,
+      options: (info.options ?? []).map((o) => ({
+        optionId: o.optionId,
+        kind: o.kind,
+        name: o.name,
+      })),
+    });
+
     const client = new GrokAcpClient({
       command: launch.command,
       args: launch.args,
@@ -310,16 +338,13 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
         opts.permissionPolicy === "ask"
           ? async (info) => {
               if (!this.onPermissionAsk) return "deny";
-              return this.onPermissionAsk({
-                sessionId: plan.sessionId,
-                toolTitle: info.toolTitle,
-                toolCallId: info.toolCallId,
-                options: (info.options ?? []).map((o) => ({
-                  optionId: o.optionId,
-                  kind: o.kind,
-                  name: o.name,
-                })),
-              });
+              return this.onPermissionAsk(mapPermInfo(info));
+            }
+          : undefined,
+      onPermissionAskFailSafe:
+        opts.permissionPolicy === "ask" && this.onPermissionAskFailSafe
+          ? async (info) => {
+              await this.onPermissionAskFailSafe!(mapPermInfo(info));
             }
           : undefined,
     });
@@ -331,6 +356,8 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     // On successful end_turn, emit session.prompt_complete so Local Service can
     // auto-deliver the final assistant reply as the task report.
     // All failure paths stop the managed process so no orphan live provider remains.
+    // Spontaneous child exit (even with no pending RPC) emits terminal events from
+    // the client; reportFailed dedupes against that path.
     const promptDone = client
       .sendPrompt(bootstrap)
       .then(async (result) => {
@@ -339,20 +366,14 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
         // Only successful end_turn with non-empty message is a deliverable report.
         // cancelled / max_tokens / refused / interrupted → no delivery (service maps failure).
         if (stopReason !== "end_turn") {
-          emit({
-            type: "session.failed",
-            sessionId: plan.sessionId,
-            error: `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`,
-          });
+          client.reportFailed(
+            `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
+          );
           await stopClientQuiet(client);
           return;
         }
         if (!assistantText) {
-          emit({
-            type: "session.failed",
-            sessionId: plan.sessionId,
-            error: "ACP assistant response empty (no auto-delivery)",
-          });
+          client.reportFailed("ACP assistant response empty (no auto-delivery)");
           await stopClientQuiet(client);
           return;
         }
@@ -367,15 +388,11 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
         const message = err instanceof Error ? err.message : String(err);
         // Stop/interrupt should not look like a provider crash when user cancelled.
         if (/interrupted|session stopped/i.test(message)) {
-          emit({
-            type: "session.failed",
-            sessionId: plan.sessionId,
-            error: `session interrupted: ${message}`,
-          });
+          client.reportFailed(`session interrupted: ${message}`);
           await stopClientQuiet(client);
           return;
         }
-        emit({ type: "session.failed", sessionId: plan.sessionId, error: message });
+        client.reportFailed(message);
         await stopClientQuiet(client);
       });
 

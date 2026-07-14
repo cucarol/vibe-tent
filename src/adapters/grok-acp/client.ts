@@ -16,6 +16,9 @@ import {
   DEFAULT_PROMPT_TIMEOUT_MS,
 } from "./types.js";
 
+/** Slack after store-authoritative permission timeout before client fail-safe denies. */
+export const PERMISSION_FAILSAFE_SLACK_MS = 5_000;
+
 export type GrokAcpClientOptions = {
   command: string;
   args: string[];
@@ -31,13 +34,22 @@ export type GrokAcpClientOptions = {
   /**
    * When permissionPolicy is "ask", resolve allow/deny via Local Service
    * tool-approval store (never agent self-approve). Return "allow" | "deny".
-   * Timeout / missing callback → deny (cancelled).
+   * Store expiry is authoritative; missing callback → deny (cancelled).
    */
   onPermissionAsk?: (info: {
     toolTitle: string;
     toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
+  /**
+   * Bounded fail-safe when onPermissionAsk does not settle past store timeout + slack.
+   * Must cancel/expire the same store item so nothing remains user-approvable.
+   */
+  onPermissionAskFailSafe?: (info: {
+    toolTitle: string;
+    toolCallId?: string;
+    options: AcpPermissionOption[];
+  }) => Promise<void>;
 };
 
 export type GrokAcpStartResult = {
@@ -63,6 +75,8 @@ export class GrokAcpClient {
   private stderrTail = "";
   private closed = false;
   private stopRequested = false;
+  /** Dedupe spontaneous exit vs prompt-failure / intentional stop terminal events. */
+  private terminalEmitted = false;
   private providerSessionId: string | undefined;
   private exitCode: number | null = null;
   private exitSignal: string | null = null;
@@ -213,7 +227,7 @@ export class GrokAcpClient {
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
   async stop(reason: "user" | "interrupt" | "shutdown"): Promise<void> {
     void reason;
-    if (this.closed) return;
+    if (this.closed && this.stopRequested) return;
     this.stopRequested = true;
     this.closed = true;
     this.rejectAllPending(new Error("session stopped"));
@@ -235,6 +249,34 @@ export class GrokAcpClient {
       sleep(1500).then(() => this.forceKill()),
     ]);
     this.cleanupStreams();
+  }
+
+  /**
+   * Emit session.failed once (prompt failure / logical error). Dedupes against
+   * spontaneous child-exit terminal emission.
+   */
+  reportFailed(error: string): void {
+    if (this.terminalEmitted) return;
+    this.terminalEmitted = true;
+    this.options.emit({
+      type: "session.failed",
+      sessionId: this.options.sessionId,
+      error,
+    });
+  }
+
+  /**
+   * Emit session.exited once (clean managed completion path). Dedupes against
+   * spontaneous child-exit and reportFailed.
+   */
+  reportExited(exitCode: number | null = 0): void {
+    if (this.terminalEmitted) return;
+    this.terminalEmitted = true;
+    this.options.emit({
+      type: "session.exited",
+      sessionId: this.options.sessionId,
+      exitCode,
+    });
   }
 
   private spawnProcess(): void {
@@ -281,6 +323,31 @@ export class GrokAcpClient {
             : `Grok ACP 进程退出 code=${code}`
         )
       );
+      // Spontaneous child exit (no intentional stop / already-reported terminal):
+      // always emit a managed terminal event even when no JSON-RPC request is pending,
+      // so service can taskFail / release occupation. Dedupe against prompt failure.
+      // Non-zero / abnormal signal → failed (occupation release). Clean 0 → exited.
+      if (!this.stopRequested && !this.terminalEmitted) {
+        this.terminalEmitted = true;
+        if (
+          (signal && signal !== "SIGTERM" && signal !== "SIGINT") ||
+          (code !== 0 && code != null)
+        ) {
+          this.options.emit({
+            type: "session.failed",
+            sessionId: this.options.sessionId,
+            error: signal
+              ? `Grok ACP spontaneous exit signal:${signal}`
+              : `Grok ACP spontaneous exit code=${code}`,
+          });
+        } else {
+          this.options.emit({
+            type: "session.exited",
+            sessionId: this.options.sessionId,
+            exitCode: code,
+          });
+        }
+      }
       for (const w of this.exitWaiters) w();
       this.exitWaiters = [];
     });
@@ -290,6 +357,14 @@ export class GrokAcpClient {
       this.rejectAllPending(
         new Error(`Grok ACP 进程错误: ${err.message}`)
       );
+      if (!this.stopRequested && !this.terminalEmitted) {
+        this.terminalEmitted = true;
+        this.options.emit({
+          type: "session.failed",
+          sessionId: this.options.sessionId,
+          error: `Grok ACP 进程错误: ${err.message}`,
+        });
+      }
     });
   }
 
@@ -416,7 +491,7 @@ export class GrokAcpClient {
     } else if (policy === "deny") {
       decision = "deny";
     } else {
-      // ask — never auto-yolo; Local Service owns pending approval + user decide.
+      // ask — never auto-yolo; Local Service store is the sole expiry authority.
       this.options.emit({
         type: "session.waiting_user",
         sessionId: this.options.sessionId,
@@ -426,11 +501,31 @@ export class GrokAcpClient {
         if (this.options.onPermissionAsk) {
           const timeoutMs =
             this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-          // Service waiter enforces expiry; client race is a safety net only.
-          decision = await Promise.race([
-            this.options.onPermissionAsk({ toolTitle, toolCallId, options }),
-            sleep(timeoutMs + 1_000).then((): "deny" => "deny"),
-          ]);
+          // Do not invent a second timeout outcome here: store waitForDecision /
+          // expireOne is authoritative. Fail-safe only if the bridge hangs past
+          // store timeout + slack — and must expire the same store item.
+          const askInfo = { toolTitle, toolCallId, options };
+          let settled = false;
+          const askPromise = this.options
+            .onPermissionAsk(askInfo)
+            .then((d) => {
+              settled = true;
+              return d;
+            });
+          const failSafePromise = sleep(
+            timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
+          ).then(async (): Promise<"deny"> => {
+            if (settled) return "deny";
+            if (this.options.onPermissionAskFailSafe) {
+              try {
+                await this.options.onPermissionAskFailSafe(askInfo);
+              } catch {
+                // best-effort store cancel
+              }
+            }
+            return "deny";
+          });
+          decision = await Promise.race([askPromise, failSafePromise]);
         } else {
           // No service bridge → deny (safe default; never promote ask→allow).
           decision = "deny";

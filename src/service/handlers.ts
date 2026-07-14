@@ -1570,6 +1570,8 @@ export function mapRuntimeEventToService(
           ev.type === "session.failed" &&
           (task.state === "running" || task.state === "waiting")
         ) {
+          // Spontaneous managed child death (including exit with no pending RPC)
+          // arrives as session.failed and releases occupation via taskFail.
           await failTaskFromRuntime(ctx, {
             workspaceId: mount.workspaceId,
             taskPath: task.path,

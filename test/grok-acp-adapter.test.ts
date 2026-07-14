@@ -59,6 +59,10 @@ function mockProfile(
     requestPermission?: boolean;
     apiKey?: string;
     envKey?: string;
+    dieAfterSessionMs?: number;
+    dieExitCode?: number;
+    keepAlive?: boolean;
+    promptMode?: string;
   }
 ) {
   return {
@@ -68,8 +72,16 @@ function mockProfile(
     args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
     env: {
       MOCK_ACP_LOG: opts.logPath,
-      MOCK_ACP_KEEP_ALIVE: "1",
+      MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
       ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
+      ...(opts.promptMode ? { MOCK_ACP_PROMPT_MODE: opts.promptMode } : {}),
+      ...(opts.dieAfterSessionMs != null
+        ? {
+            MOCK_ACP_DIE_AFTER_SESSION_MS: String(opts.dieAfterSessionMs),
+            MOCK_ACP_DIE_EXIT_CODE: String(opts.dieExitCode ?? 1),
+            MOCK_ACP_PROMPT_MODE: opts.promptMode ?? "interrupt",
+          }
+        : {}),
       // Inject test key via plan env only when provided — still not workspace.
       ...(opts.apiKey
         ? { [opts.envKey ?? DEFAULT_GROK_ENV_KEY]: opts.apiKey }
@@ -580,6 +592,58 @@ test("permission policy ask → onPermissionAsk deny cancels", async () => {
   }
 
   await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("spontaneous child exit emits session.failed once (deduped)", async () => {
+  const dataDir = await tempDir("tent-grok-spontaneous-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-spontaneous", {
+        logPath,
+        apiKey: "test-key",
+        dieAfterSessionMs: 80,
+        dieExitCode: 9,
+        keepAlive: false,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpspawn";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-spontaneous",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+
+  await waitFor(events, "session.failed", sessionId, 8000);
+  // Allow a short window for a second terminal emission race.
+  await new Promise((r) => setTimeout(r, 200));
+  const failed = events.filter(
+    (e) => e.type === "session.failed" && e.sessionId === sessionId
+  );
+  assert.ok(failed.length >= 1);
+  // Dedupe: at most one spontaneous + prompt-path failure pair should collapse to 1.
+  assert.equal(failed.length, 1, `expected single session.failed, got ${failed.length}`);
+  assert.match(
+    (failed[0] as { error: string }).error,
+    /spontaneous exit|code=9|exit/i
+  );
+
+  const probe = await runtime.probe(sessionId);
+  assert.equal(probe.alive, false);
+
   await runtime.shutdown();
 });
 

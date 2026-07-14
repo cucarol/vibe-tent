@@ -80,7 +80,7 @@ Optional `grokAcp` fields:
 | `baseUrl` | _(unset)_ | Optional machine-local literal URL if env cannot be set; still not for git |
 | `promptTimeoutMs` | 1800000 (30m) | ACP `session/prompt` wait |
 | `permissionPolicy` | `deny` | `allow` \| `ask` \| `deny` — **never** unconditional yolo / `allow_always` |
-| `permissionTimeoutMs` | 120000 | When `ask`, timeout → deny |
+| `permissionTimeoutMs` | 120000 | When `ask`, **store-authoritative** timeout → expire pending + ACP `cancelled`; late approve fails |
 
 ### How base URL is passed to Grok
 
@@ -165,9 +165,22 @@ ACP may send `session/request_permission`. Mapping:
 | --- | --- |
 | `deny` (default) | Reply `cancelled` — tools not auto-approved; **tool-less managed tasks still complete** via final reply auto-deliver |
 | `allow` | Select **`allow_once` only**; never `allow_always` |
-| `ask` | Emit `session.waiting_user`; Local Service stores a **machine-local tool approval**; user must `approve once` / `deny`; timeout → `cancelled` |
+| `ask` | Emit `session.waiting_user`; Local Service stores a **machine-local tool approval**; user must `approve once` / `deny`; **store** timeout → `expired` + ACP `cancelled` |
 
 There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding tasks that need tools may set machine-local profile `permissionPolicy: allow` (still `allow_once` only) or `ask` with user RPC — not unconditional always-allow.
+
+### Tool approval timeout authority
+
+There is **one** authoritative expiry: the Local Service `ToolApprovalStore` record (`expiresAt` / `waitForDecision` / `expireOne`).
+
+| Layer | Role |
+| --- | --- |
+| `ToolApprovalStore` | Sole mutation authority for pending → approved / denied / expired. Mutations + `tool-approvals.json` persistence are **serialized**; persist uses **temp-file + rename**. Concurrent resolve/cancel/expire cannot resurrect a pending row. |
+| `onPermissionAsk` bridge | Adds pending, waits on store, maps `approved` → allow else deny. |
+| `GrokAcpClient` fail-safe | Only if the service bridge hangs past `permissionTimeoutMs + slack` (default +5s). Must **expire/cancel the same store item** — never leave an approvable pending while ACP already cancelled. |
+| Late `toolApproval.approveOnce` | **Fails** after expire/deny/cancel (`already expired` / `already …`). |
+
+Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired).
 
 ### A2A spawn approval vs tool permission approval
 
@@ -181,7 +194,7 @@ These are **two different gates**. Do not merge them.
 Rules:
 
 1. Tool approvals are **user-only** (`actor` must be `user`). Agents cannot self-approve.
-2. Pending tool approval projects task → `waiting` (`reason: user-input`) and session → `waiting-user`. Approve once → ACP `allow_once` + resume `running` / `live`. Deny or timeout → ACP `cancelled` + pending cleared.
+2. Pending tool approval projects task → `waiting` (`reason: user-input`) and session → `waiting-user`. Approve once → ACP `allow_once` + resume `running` / `live`. Deny or timeout → ACP `cancelled` + pending cleared (timeout status is **`expired`**).
 3. Neither store is workspace collaboration data: **never** written into `.tent/` or git.
 4. Default remains safe: no user decision never becomes auto-`allow`; missing bridge still denies.
 
@@ -214,8 +227,9 @@ Prompt/provider failure paths must leave **task / session / process** consistent
 1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` so no live orphan remains.
 2. Service maps `session.failed` through core **`taskFail`**: `running|waiting → failed`, clears `wait`, and **releases box occupation** (`owner`/`assignee` cleared, service-owned `doing` → `todo`).
 3. `failed` is terminal non-active: the **same box** can be re-dispatched without manual frontmatter edits or `docs.fork`.
-4. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error).
-5. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
+4. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error). Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
+5. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal). Service maps that to `taskFail` + occupation release — probe must not claim a live orphan.
+6. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
 
 ## Lifecycle
 
@@ -225,8 +239,9 @@ Prompt/provider failure paths must leave **task / session / process** consistent
 | Local Service stop / shutdown | Stops push children this service started |
 | `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery |
 | `session.waiting_user` (tool ask) | Task `waiting(user-input)`; pending tool approval in service data dir |
-| Tool approve once / deny / timeout | Resume or cancel tool; clear pending |
+| Tool approve once / deny / timeout | Resume or cancel tool; clear pending (timeout → store `expired`; late approve fails) |
 | `session.prompt_complete` | Service auto-deliver (see above) |
+| Spontaneous child exit | Terminal runtime event even with no pending RPC; deduped vs prompt failure / intentional stop |
 | `session.failed` | Stop process (idempotent) → `taskFail` + occupation release |
 | PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
 
