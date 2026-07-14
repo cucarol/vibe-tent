@@ -1499,7 +1499,7 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
   );
 });
 
-test("B5 spontaneous managed child exit emits terminal and taskFail releases occupation", async () => {
+for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${exitCode} releases occupation`, async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-spontaneous-"));
@@ -1525,7 +1525,8 @@ test("B5 spontaneous managed child exit emits terminal and taskFail releases occ
       const sessionId = (started.result as { session: { sessionId: string } }).session
         .sessionId;
 
-      // Child dies after session/new with non-zero code even if prompt never settles.
+      // Child exits after session/new even if prompt never settles. Both abnormal
+      // and clean exit without delivery are terminal for the bound task.
       const failed = await pollUntil(async () => {
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
         const task = (g.result as { task: { state: string } }).task;
@@ -1561,7 +1562,7 @@ test("B5 spontaneous managed child exit emits terminal and taskFail releases occ
         mockAcpProfile("mock-acp-spontaneous-die", {
           logPath,
           dieAfterSessionMs: 120,
-          dieExitCode: 7,
+          dieExitCode: exitCode,
           keepAlive: false,
         }),
       ],

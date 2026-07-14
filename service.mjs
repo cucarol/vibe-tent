@@ -5213,13 +5213,13 @@ function mapRuntimeEventToService(ctx, ev) {
             const resumed = await taskResume(mount.env, task.path);
             emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
           });
-        } else if (ev.type === "session.failed" && (task.state === "running" || task.state === "waiting")) {
+        } else if ((ev.type === "session.failed" || ev.type === "session.exited") && (task.state === "running" || task.state === "waiting")) {
           await failTaskFromRuntime(ctx, {
             workspaceId: mount.workspaceId,
             taskPath: task.path,
             sessionId: ev.sessionId,
-            reason: "session.failed",
-            summary: "error" in ev ? ev.error : void 0
+            reason: ev.type,
+            summary: ev.type === "session.failed" ? ev.error : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`
           });
         } else if (ev.type === "session.prompt_complete") {
           await tryManagedAutoDeliver(ctx, {

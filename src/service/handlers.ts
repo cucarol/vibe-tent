@@ -1567,17 +1567,21 @@ export function mapRuntimeEventToService(
             emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
           });
         } else if (
-          ev.type === "session.failed" &&
+          (ev.type === "session.failed" || ev.type === "session.exited") &&
           (task.state === "running" || task.state === "waiting")
         ) {
-          // Spontaneous managed child death (including exit with no pending RPC)
-          // arrives as session.failed and releases occupation via taskFail.
+          // Any terminal session without a delivery releases the task occupation.
+          // Intentional interrupt is already terminal before stopSession emits exited,
+          // so it never enters this active-task branch.
           await failTaskFromRuntime(ctx, {
             workspaceId: mount.workspaceId,
             taskPath: task.path,
             sessionId: ev.sessionId,
-            reason: "session.failed",
-            summary: "error" in ev ? ev.error : undefined,
+            reason: ev.type,
+            summary:
+              ev.type === "session.failed"
+                ? ev.error
+                : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`,
           });
         } else if (ev.type === "session.prompt_complete") {
           await tryManagedAutoDeliver(ctx, {
