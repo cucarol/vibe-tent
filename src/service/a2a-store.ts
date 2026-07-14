@@ -57,7 +57,6 @@ export class A2AApprovalStore {
     if (this.loaded) return;
     return this.enqueue(async () => {
       if (this.loaded) return;
-      this.loaded = true;
       try {
         const raw = await fs.readFile(this.file, "utf8");
         let parsed: unknown;
@@ -65,22 +64,29 @@ export class A2AApprovalStore {
           parsed = JSON.parse(raw);
         } catch {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         const items = (parsed as { items?: unknown }).items;
         if (items !== undefined && !Array.isArray(items)) {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         for (const item of (items as A2APendingApproval[] | undefined) ?? []) {
           if (item?.id) this.items.set(item.id, item);
         }
+        this.loaded = true;
       } catch (err) {
-        if (isNotFoundError(err)) return;
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
         throw err;
       }
     });

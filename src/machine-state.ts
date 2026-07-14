@@ -62,16 +62,8 @@ async function renameReplace(tmp: string, filePath: string): Promise<void> {
       await new Promise((r) => setTimeout(r, 5 + i * 5));
     }
   }
-  // Last resort on Windows: replace via unlink + rename (narrow non-atomic window).
-  if (process.platform === "win32") {
-    try {
-      await fs.unlink(filePath);
-    } catch {
-      // dest may not exist
-    }
-    await fs.rename(tmp, filePath);
-    return;
-  }
+  // Preserve the previous valid file when replacement still fails. Deleting the
+  // destination here would reintroduce the torn/missing window this helper avoids.
   throw lastErr;
 }
 

@@ -26,6 +26,7 @@ import {
   serviceEndpointPath,
 } from "../src/service/data-dir.js";
 import { writeJsonAtomic } from "../src/machine-state.js";
+import { ToolApprovalStore } from "../src/service/tool-approval-store.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -136,6 +137,37 @@ test("A2AApprovalStore: concurrent add leaves valid atomic JSON", async () => {
   assert.equal(parsed.items.length, 8);
   assert.equal(parsed.items.filter((i) => i.status === "pending").length, 8);
   assert.equal(raw.endsWith("\n"), true);
+});
+
+test("machine stores retry loading after a transient non-ENOENT read error", async () => {
+  const dataDir = await tempDir("tent-store-retry-");
+
+  const a2aPath = path.join(dataDir, "a2a-approvals.json");
+  await fs.mkdir(a2aPath);
+  const a2a = new A2AApprovalStore(dataDir);
+  await assert.rejects(() => a2a.ensureLoaded());
+  await fs.rm(a2aPath, { recursive: true });
+  const a2aItem = a2aPending({ id: makeApprovalId(() => 0.51) });
+  await fs.writeFile(a2aPath, JSON.stringify({ items: [a2aItem] }), "utf8");
+  assert.equal((await a2a.get(a2aItem.id))?.id, a2aItem.id);
+
+  const toolPath = path.join(dataDir, "tool-approvals.json");
+  await fs.mkdir(toolPath);
+  const tools = new ToolApprovalStore(dataDir);
+  await assert.rejects(() => tools.ensureLoaded());
+  await fs.rm(toolPath, { recursive: true });
+  const toolItem = {
+    id: "ta-retry0001",
+    workspaceId: "ws-1",
+    sessionId: "ss-retry01",
+    toolTitle: "read_file",
+    options: [{ optionId: "allow_once", kind: "allow_once" }],
+    status: "pending" as const,
+    createdAt: "2026-01-01T00:00:00.000Z",
+    expiresAt: "2099-01-01T00:00:00.000Z",
+  };
+  await fs.writeFile(toolPath, JSON.stringify({ items: [toolItem] }), "utf8");
+  assert.equal((await tools.get(toolItem.id))?.id, toolItem.id);
 });
 
 test("profiles: corrupt catalog is backed up before defaults; warning has no secrets", async () => {

@@ -2701,14 +2701,6 @@ async function renameReplace(tmp, filePath) {
       await new Promise((r) => setTimeout(r, 5 + i * 5));
     }
   }
-  if (process.platform === "win32") {
-    try {
-      await fs.unlink(filePath);
-    } catch {
-    }
-    await fs.rename(tmp, filePath);
-    return;
-  }
   throw lastErr;
 }
 async function backupCorruptMachineFile(filePath) {
@@ -3034,7 +3026,6 @@ var A2AApprovalStore = class {
     if (this.loaded) return;
     return this.enqueue(async () => {
       if (this.loaded) return;
-      this.loaded = true;
       try {
         const raw = await fs3.readFile(this.file, "utf8");
         let parsed;
@@ -3042,22 +3033,29 @@ var A2AApprovalStore = class {
           parsed = JSON.parse(raw);
         } catch {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         const items = parsed.items;
         if (items !== void 0 && !Array.isArray(items)) {
           await this.quarantineCorrupt("reset");
+          this.loaded = true;
           return;
         }
         for (const item of items ?? []) {
           if (item?.id) this.items.set(item.id, item);
         }
+        this.loaded = true;
       } catch (err) {
-        if (isNotFoundError(err)) return;
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
         throw err;
       }
     });
@@ -6411,14 +6409,37 @@ var ToolApprovalStore = class {
     if (this.loaded) return;
     return this.enqueue(async () => {
       if (this.loaded) return;
-      this.loaded = true;
       try {
         const raw = await fs10.readFile(this.file, "utf8");
-        const parsed = JSON.parse(raw);
-        for (const item of parsed.items ?? []) {
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        const items = parsed.items;
+        if (items !== void 0 && !Array.isArray(items)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        for (const item of items ?? []) {
           if (item?.id) this.items.set(item.id, item);
         }
-      } catch {
+        this.loaded = true;
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
+        throw err;
       }
     });
   }
@@ -6585,22 +6606,15 @@ var ToolApprovalStore = class {
    * and concurrent readers never observe a torn document. Call only under enqueue.
    */
   async persistUnlocked() {
-    await fs10.mkdir(path9.dirname(this.file), { recursive: true });
     const items = [...this.items.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    const body = JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n";
-    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      await fs10.writeFile(tmp, body, "utf8");
-      await fs10.rename(tmp, this.file);
-    } catch (err) {
-      try {
-        await fs10.unlink(tmp);
-      } catch {
-      }
-      throw err;
-    }
+    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+  }
+  async quarantineCorrupt() {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, "reset");
+    this.items.clear();
   }
 };
 function makeToolApprovalId(rand = Math.random) {

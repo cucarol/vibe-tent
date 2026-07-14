@@ -3,6 +3,12 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+  backupCorruptMachineFile,
+  isNotFoundError,
+  warnCorruptMachineState,
+  writeJsonAtomic,
+} from "../machine-state.js";
 
 export type ToolApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
@@ -66,15 +72,37 @@ export class ToolApprovalStore {
     if (this.loaded) return;
     return this.enqueue(async () => {
       if (this.loaded) return;
-      this.loaded = true;
       try {
         const raw = await fs.readFile(this.file, "utf8");
-        const parsed = JSON.parse(raw) as { items?: ToolPendingApproval[] };
-        for (const item of parsed.items ?? []) {
+        let parsed: unknown;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        const items = (parsed as { items?: unknown }).items;
+        if (items !== undefined && !Array.isArray(items)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        for (const item of (items as ToolPendingApproval[] | undefined) ?? []) {
           if (item?.id) this.items.set(item.id, item);
         }
-      } catch {
-        // fresh store
+        this.loaded = true;
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
+        throw err;
       }
     });
   }
@@ -268,26 +296,19 @@ export class ToolApprovalStore {
    * and concurrent readers never observe a torn document. Call only under enqueue.
    */
   private async persistUnlocked(): Promise<void> {
-    await fs.mkdir(path.dirname(this.file), { recursive: true });
     const items = [...this.items.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items
       .filter((i) => i.status !== "pending")
       .sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""))
       .slice(0, 50);
-    const body = JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n";
-    const tmp = `${this.file}.${process.pid}.${Date.now()}.tmp`;
-    try {
-      await fs.writeFile(tmp, body, "utf8");
-      await fs.rename(tmp, this.file);
-    } catch (err) {
-      try {
-        await fs.unlink(tmp);
-      } catch {
-        // ignore cleanup
-      }
-      throw err;
-    }
+    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+  }
+
+  private async quarantineCorrupt(): Promise<void> {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, "reset");
+    this.items.clear();
   }
 }
 
