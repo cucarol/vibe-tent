@@ -4317,9 +4317,8 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
     if (task.state !== "running" && task.state !== "waiting") continue;
     const sessionId = task.sessionId?.trim();
     if (!sessionId) continue;
-    const record = await ctx.runtime.registry.read(sessionId);
-    const sessionGone = !record || record.state === "stopped" || record.state === "failed";
-    if (!sessionGone) continue;
+    const probe = await ctx.runtime.probe(sessionId);
+    if (probe.alive) continue;
     const alreadyParked = task.state === "waiting" && task.wait?.reason === "external" && task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
     if (alreadyParked) continue;
     await ctx.mutations.run(workspaceId, async () => {
@@ -4327,8 +4326,8 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
       const current = await loadTaskEnvelope(mount.env.fs, task.path);
       if (current.state !== "running" && current.state !== "waiting") return;
       if (current.sessionId?.trim() !== sessionId) return;
-      const rec2 = await ctx.runtime.registry.read(sessionId);
-      if (rec2 && rec2.state !== "stopped" && rec2.state !== "failed") return;
+      const probe2 = await ctx.runtime.probe(sessionId);
+      if (probe2.alive) return;
       const parkedAlready = current.state === "waiting" && current.wait?.reason === "external" && current.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
       if (parkedAlready) return;
       let next = current;

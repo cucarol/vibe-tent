@@ -1616,6 +1616,118 @@ test("B5: service restart reconciles dead sessions without workspace PID data", 
   }
 });
 
+/**
+ * Crash/restart → remount task-side evidence (not only session.probe).
+ * Same-lifetime exit→failed projection is covered elsewhere and left unchanged.
+ * Here we unmount before service stop so exit events cannot project the task, then
+ * remount after restart — mount reconcile must park waiting(external) and keep occupation.
+ * A separate test covers disk-live + no process registry correction via probe.
+ */
+test("B5: crash restart + mount parks running task bound to dead session (task-side)", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-crash-mount-"));
+  const ws = await makeWorkspace("crash-mount");
+  let sessionId = "";
+  let taskPath = "";
+  let boxId = "";
+
+  {
+    const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+    try {
+      const mounted = await mountWorkItem(svc, ws);
+      boxId = mounted.boxId;
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId: mounted.workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "crash mid-session",
+      });
+      taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId: mounted.workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId: mounted.workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "fake-default",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+      assert.equal((await svc.runtime.probe(sessionId)).alive, true);
+
+      // Snapshot: task running + bound, occupation held, process alive.
+      const pre = await loadTaskEnvelope(
+        svc.hostApi.require(mounted.workspaceId).env.fs,
+        taskPath
+      );
+      assert.equal(pre.state, "running");
+      assert.equal(pre.sessionId, sessionId);
+
+      // Unmount so service shutdown / child stop cannot project exit→failed onto the task.
+      // That same-lifetime path is intentional product behavior; restart mount is the heal.
+      await rpc(svc, "workspace.unmount", { workspaceId: mounted.workspaceId });
+    } finally {
+      await svc.stop();
+    }
+  }
+
+  // Optionally re-mark registry live on disk (simulates crash before registry flush of exit).
+  // Probe on the new service must correct it; mount reconcile parks the task.
+  {
+    const { sessionFilePath } = await import("../src/runtime/session-registry.js");
+    const file = sessionFilePath(dataDir, sessionId);
+    const rec = JSON.parse(await fs.readFile(file, "utf8")) as Record<string, unknown>;
+    rec.state = "live";
+    rec.pid = 888_001;
+    delete rec.exitCode;
+    delete rec.lastError;
+    delete rec.stopReason;
+    rec.updatedAt = new Date().toISOString();
+    await fs.writeFile(file, JSON.stringify(rec, null, 2) + "\n", "utf8");
+  }
+
+  const svc2 = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    const bootProbe = await svc2.runtime.probe(sessionId);
+    assert.equal(bootProbe.alive, false);
+    assert.ok(
+      bootProbe.state === "failed" || bootProbe.state === "stopped",
+      `boot probe must correct stale live, got ${bootProbe.state}`
+    );
+
+    const remounted = await rpc(svc2, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!remounted.error, JSON.stringify(remounted.error));
+    const workspaceId = (remounted.result as { workspaceId: string }).workspaceId;
+
+    const got = await rpc(svc2, "task.get", { workspaceId, taskPath });
+    assert.ok(!got.error, JSON.stringify(got.error));
+    const task = (got.result as {
+      task: {
+        state: string;
+        wait?: { reason: string; summary: string } | null;
+        sessionId?: string;
+      };
+    }).task;
+    assert.equal(task.state, "waiting", "mount reconcile must park task, not leave running");
+    assert.equal(task.wait?.reason, "external");
+    assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(task.sessionId, sessionId);
+
+    const rec = await svc2.runtime.registry.read(sessionId);
+    assert.ok(rec);
+    assert.ok(
+      rec!.state === "failed" || rec!.state === "stopped",
+      `registry remains corrected after mount, got ${rec!.state}`
+    );
+
+    const box = await rpc(svc2, "docs.get", { workspaceId, id: boxId });
+    assert.ok(!box.error, JSON.stringify(box.error));
+    const concept = (box.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.ok(concept.assignee || concept.owner, "occupation must remain after crash→mount");
+  } finally {
+    await svc2.stop();
+  }
+});
+
 // ---- P0-1 / P0-2: WorkspaceLane + real Git integrate ----
 
 async function initGitOnWorkspace(workspace: string): Promise<void> {
@@ -2182,7 +2294,7 @@ test("P0 fix: same role only one active managed session; same-task start is idem
   });
 });
 
-test("mount reconcile: dead/missing session → waiting(external); live/no-sessionId/terminal untouched; multi-ws; idempotent", async () => {
+test("mount reconcile: dead/missing/stale-live session → waiting(external); truly-alive/no-sessionId/terminal untouched; multi-ws; idempotent", async () => {
   const wsA = await makeWorkspace("reconcile-a");
   const wsB = await makeWorkspace("reconcile-b");
   await withService(async (svc) => {
@@ -2206,6 +2318,8 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
       role: string,
       opts: {
         bindSession?: { id: string; state: "stopped" | "failed" | "live" | "starting" | "waiting-user" | "missing" };
+        /** Start a real managed session so probe.alive stays true across remount. */
+        realLiveSession?: boolean;
         noSession?: boolean;
         terminal?: boolean;
         waitingReason?: "user-input" | "a2a-approval";
@@ -2222,16 +2336,29 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
 
+      let sessionId: string | undefined;
+
       if (opts.terminal) {
         await rpc(svc, "task.interrupt", { workspaceId, taskPath });
-        return { taskPath, boxId };
+        return { taskPath, boxId, sessionId };
       }
 
       if (opts.noSession) {
-        return { taskPath, boxId };
+        return { taskPath, boxId, sessionId };
       }
 
-      if (opts.bindSession) {
+      if (opts.realLiveSession) {
+        const started = await rpc(svc, "task.startSession", {
+          workspaceId,
+          taskPath,
+          profileId: "fake-default",
+          callerKind: "user",
+        });
+        assert.ok(!started.error, JSON.stringify(started.error));
+        sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+        const probe = await svc.runtime.probe(sessionId);
+        assert.equal(probe.alive, true, "seeded live session must be process-alive");
+      } else if (opts.bindSession) {
         const sid = opts.bindSession.id;
         if (opts.bindSession.state !== "missing") {
           const now = new Date().toISOString();
@@ -2252,6 +2379,7 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
           sessionId: sid,
           updatedAt: mount.env.clock.now(),
         });
+        sessionId = sid;
       }
 
       if (opts.waitingReason) {
@@ -2263,9 +2391,14 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
         });
       }
 
-      return { taskPath, boxId };
+      return { taskPath, boxId, sessionId };
     }
 
+    // A: running + truly alive managed process → leave (seed first so role sole-session
+    // check is not blocked by a later forged nonterminal registry row).
+    const live = await seedTask(idA, "live-session", "executor", {
+      realLiveSession: true,
+    });
     // A: running + stopped session → must park
     const dead = await seedTask(idA, "dead-session", "executor", {
       bindSession: { id: "ss-dead0001", state: "stopped" },
@@ -2274,9 +2407,10 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
     const missing = await seedTask(idA, "missing-session", "orchestrator", {
       bindSession: { id: "ss-miss0001", state: "missing" },
     });
-    // A: running + live session → leave
-    const live = await seedTask(idA, "live-session", "executor", {
-      bindSession: { id: "ss-live0001", state: "live" },
+    // A: running + disk "live" but no process → park (probe corrects registry).
+    // Use orchestrator so forged live row does not collide with real executor session.
+    const staleLive = await seedTask(idA, "stale-live-session", "orchestrator", {
+      bindSession: { id: "ss-stale001", state: "live" },
     });
     // A: running without sessionId (manual/external) → leave
     const manual = await seedTask(idA, "manual-run", "orchestrator", { noSession: true });
@@ -2322,9 +2456,27 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
     assert.equal(missingTask.state, "waiting");
     assert.equal(missingTask.wait?.reason, "external");
 
+    // Stale disk-live without process: park + registry corrected by probe
+    const staleTask = await get(idA2, staleLive.taskPath);
+    assert.equal(staleTask.state, "waiting");
+    assert.equal(staleTask.wait?.reason, "external");
+    assert.equal(staleTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(staleTask.sessionId, "ss-stale001");
+    const staleRec = await svc.runtime.registry.read("ss-stale001");
+    assert.ok(staleRec, "stale session row retained after probe correction");
+    assert.ok(
+      staleRec!.state === "failed" || staleRec!.state === "stopped",
+      `expected registry corrected to terminal, got ${staleRec!.state}`
+    );
+    const staleProbe = await svc.runtime.probe("ss-stale001");
+    assert.equal(staleProbe.alive, false);
+
+    // Truly alive process must remain running
     const liveTask = await get(idA2, live.taskPath);
     assert.equal(liveTask.state, "running");
     assert.equal(liveTask.wait ?? null, null);
+    assert.equal(liveTask.sessionId, live.sessionId);
+    assert.equal((await svc.runtime.probe(live.sessionId!)).alive, true);
 
     const manualTask = await get(idA2, manual.taskPath);
     assert.equal(manualTask.state, "running");
@@ -2349,11 +2501,18 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
     assert.equal(concept.status, "doing");
     assert.ok(concept.assignee || concept.owner, "occupation must remain after reconcile");
 
+    // Stale-live occupation also retained
+    const staleBox = await rpc(svc, "docs.get", { workspaceId: idA2, id: staleLive.boxId });
+    assert.ok(!staleBox.error, JSON.stringify(staleBox.error));
+    const staleConcept = (staleBox.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
+    assert.equal(staleConcept.status, "doing");
+    assert.ok(staleConcept.assignee || staleConcept.owner, "stale-live occupation must remain");
+
     // Events fired with session.reconcile reason
     const reconcileEvents = events.filter(
       (e) => e.type === "task.state" && e.payload.reason === "session.reconcile"
     );
-    assert.ok(reconcileEvents.length >= 3, `expected reconcile events, got ${reconcileEvents.length}`);
+    assert.ok(reconcileEvents.length >= 4, `expected reconcile events, got ${reconcileEvents.length}`);
 
     // Idempotent: second reconcile does not re-emit / re-mutate
     events.length = 0;
@@ -2368,6 +2527,86 @@ test("mount reconcile: dead/missing session → waiting(external); live/no-sessi
     );
 
     unsub();
+  });
+});
+
+test("mount reconcile: disk live + no process → waiting(external), occupation kept, registry corrected", async () => {
+  const ws = await makeWorkspace("reconcile-stale-live");
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "stale-live-item",
+      type: "prompt",
+    });
+    const boxId = (created.result as { id: string }).id;
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "stale live session on disk",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const sessionId = "ss-diskli01";
+    const now = new Date().toISOString();
+    // Disk claims live with a fake pid, but no supervisor/managed process exists.
+    await svc.runtime.registry.write({
+      id: sessionId,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "live",
+      pid: 999_001,
+      workspace: workspaceId,
+      lastTaskId: taskPath,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const mount = svc.hostApi.require(workspaceId);
+    await patchTaskEnvelope(mount.env.fs, taskPath, {
+      sessionId,
+      updatedAt: mount.env.clock.now(),
+    });
+
+    const before = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(before.state, "running");
+    assert.equal(before.sessionId, sessionId);
+    const beforeRec = await svc.runtime.registry.read(sessionId);
+    assert.equal(beforeRec?.state, "live");
+
+    const result = await reconcileTaskSessionsOnMount(svc.ctx, workspaceId);
+    assert.ok(result.reconciled.includes(taskPath), `expected ${taskPath} reconciled`);
+
+    const after = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(after.state, "waiting");
+    assert.equal(after.wait?.reason, "external");
+    assert.equal(after.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(after.sessionId, sessionId);
+
+    const afterRec = await svc.runtime.registry.read(sessionId);
+    assert.ok(afterRec);
+    assert.ok(
+      afterRec!.state === "failed" || afterRec!.state === "stopped",
+      `registry must be corrected off live, got ${afterRec!.state}`
+    );
+    assert.equal(afterRec!.pid, undefined);
+    const probe = await svc.runtime.probe(sessionId);
+    assert.equal(probe.alive, false);
+
+    // Occupation retained — never auto done/release on session loss.
+    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+    assert.ok(!box.error, JSON.stringify(box.error));
+    const concept = (box.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.ok(concept.assignee || concept.owner, "occupation must remain");
+
+    // Idempotent second pass
+    const again = await reconcileTaskSessionsOnMount(svc.ctx, workspaceId);
+    assert.deepEqual(again.reconciled, []);
   });
 });
 

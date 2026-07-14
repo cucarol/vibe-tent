@@ -262,13 +262,17 @@ export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
 
 /**
  * After workspace mount (and SessionRegistry.reconcileOnBoot already ran on service start):
- * scan non-terminal running/waiting tasks with sessionId; if the session record is
- * stopped/failed/missing, park the task in waiting(reason=external) via MutationBus + core
- * taskWait / patch. Keeps occupation; never auto done/release.
+ * scan non-terminal running/waiting tasks with sessionId; decide via runtime.probe(sessionId)
+ * (process truth), not SessionRecord.state alone. missing / terminal / dead → park the task in
+ * waiting(reason=external) via MutationBus + core taskWait / patch. Keeps occupation; never
+ * auto done/release. Truly alive managed sessions are left alone.
+ *
+ * Note: probe may correct a stale nonterminal registry row to failed/stopped when the process
+ * is gone. That correction is intentional and happens before the task park decision.
  *
  * Idempotent: already waiting with the same reason+summary is a no-op.
- * Leaves live/starting/waiting-user sessions alone; tasks without sessionId (external/manual) alone;
- * terminal and other non-running/waiting states alone.
+ * Leaves tasks without sessionId (external/manual) alone; terminal and other non-running/waiting
+ * states alone. MutationBus re-probes for races.
  */
 export async function reconcileTaskSessionsOnMount(
   ctx: HandlerContext,
@@ -283,11 +287,10 @@ export async function reconcileTaskSessionsOnMount(
     const sessionId = task.sessionId?.trim();
     if (!sessionId) continue;
 
-    const record = await ctx.runtime.registry.read(sessionId);
-    const sessionGone =
-      !record || record.state === "stopped" || record.state === "failed";
-    if (!sessionGone) continue;
-    // live | starting | waiting-user | external (registry) → leave task as-is
+    // Process truth — do not trust a stale disk "live"/"starting"/"waiting-user" row alone.
+    // probe() may rewrite nonterminal registry → failed/stopped when the child is dead.
+    const probe = await ctx.runtime.probe(sessionId);
+    if (probe.alive) continue;
 
     const alreadyParked =
       task.state === "waiting" &&
@@ -297,12 +300,12 @@ export async function reconcileTaskSessionsOnMount(
 
     await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
-      // Re-load inside the bus for races; re-check still non-terminal + session gone.
+      // Re-load + re-probe inside the bus for races; only park when still non-terminal + dead.
       const current = await loadTaskEnvelope(mount.env.fs, task.path);
       if (current.state !== "running" && current.state !== "waiting") return;
       if (current.sessionId?.trim() !== sessionId) return;
-      const rec2 = await ctx.runtime.registry.read(sessionId);
-      if (rec2 && rec2.state !== "stopped" && rec2.state !== "failed") return;
+      const probe2 = await ctx.runtime.probe(sessionId);
+      if (probe2.alive) return;
       const parkedAlready =
         current.state === "waiting" &&
         current.wait?.reason === "external" &&
