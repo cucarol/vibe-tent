@@ -126,6 +126,8 @@ export interface SessionRecord {
 export interface AgentProfileConfig {
   id: string;
   adapterId: string;
+  /** Optional human label (machine-local editor); preferred over displayNameKey for projection. */
+  displayName?: string;
   displayNameKey?: string;
   /** Optional default command override (generic / fake / mock-acp profiles). */
   command?: string;

@@ -75,7 +75,16 @@ import {
   type TaskProjection,
   type TypeRegistryEntryProjection,
 } from "./types.js";
-import { loadAgentProfiles, projectAgentProfiles } from "./profiles.js";
+import {
+  loadAgentProfiles,
+  projectAgentProfile,
+  projectAgentProfiles,
+  type AgentProfileCatalog,
+} from "./profiles.js";
+import { RpcError, type JsonRpcError } from "./rpc-error.js";
+
+export type { JsonRpcError };
+export { RpcError };
 
 export interface HandlerContext {
   host: WorkspaceHost;
@@ -90,6 +99,8 @@ export interface HandlerContext {
   /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
   toolApprovals: ToolApprovalStore;
   dataDir: string;
+  /** Machine-local AgentProfile catalog (serial CRUD + runtime sync). */
+  profileCatalog: AgentProfileCatalog;
   /**
    * Optional integrate hook for tests.
    * Production path uses real workspace Git via ensureRoleWorkspace + integrateWorkspaceCommits.
@@ -100,22 +111,6 @@ export interface HandlerContext {
     commits: string[],
     role: string
   ) => Promise<void>;
-}
-
-export type JsonRpcError = {
-  code: number;
-  message: string;
-  data?: unknown;
-};
-
-export class RpcError extends Error {
-  code: number;
-  data?: unknown;
-  constructor(code: number, message: string, data?: unknown) {
-    super(message);
-    this.code = code;
-    this.data = data;
-  }
 }
 
 export async function dispatchMethod(
@@ -173,6 +168,14 @@ export async function dispatchMethod(
         return registryRoles(ctx, p);
       case "profile.list":
         return profileList(ctx, p);
+      case "profile.get":
+        return profileGet(ctx, p);
+      case "profile.create":
+        return profileCreate(ctx, p);
+      case "profile.update":
+        return profileUpdate(ctx, p);
+      case "profile.delete":
+        return profileDelete(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -592,22 +595,67 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * Machine-local AgentProfile catalog for desktop launch picker.
- * Safe metadata only — no keys, tokens, env values, or executable secrets.
+ * Machine-local AgentProfile catalog for desktop launch picker / editor.
+ * Safe projection only — no env maps, API keys, tokens, or secret values.
  * Optional includeTest: when true, also return fake/harness profiles (tests/dev).
  * Default product list hides testOnly profiles so fake is not a product default.
  */
 async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
   const includeTest = p.includeTest === true;
-  // Runtime holds the live catalog (service start + test injects); disk is fallback.
+  // Catalog / runtime holds the live set; disk is fallback if catalog empty.
+  const fromCatalog = ctx.profileCatalog.list();
   const fromRuntime = ctx.runtime.listProfiles();
   const source =
-    fromRuntime.length > 0 ? fromRuntime : await loadAgentProfiles(ctx.dataDir);
+    fromCatalog.length > 0
+      ? fromCatalog
+      : fromRuntime.length > 0
+        ? fromRuntime
+        : await loadAgentProfiles(ctx.dataDir);
   let profiles = projectAgentProfiles(source);
   if (!includeTest) {
     profiles = profiles.filter((pr) => !pr.testOnly);
   }
   return { profiles };
+}
+
+async function profileGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const id = requireString(p, "id");
+  const profile =
+    ctx.profileCatalog.get(id) ??
+    ctx.runtime.getProfile(id) ??
+    (await loadAgentProfiles(ctx.dataDir)).find((x) => x.id === id);
+  if (!profile) {
+    throw new RpcError(-32004, `Profile not found: ${id}`);
+  }
+  return { profile: projectAgentProfile(profile) };
+}
+
+async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  // Accept either top-level fields or nested `profile` object.
+  const raw =
+    p.profile && typeof p.profile === "object" && !Array.isArray(p.profile)
+      ? (p.profile as Record<string, unknown>)
+      : p;
+  const created = await ctx.profileCatalog.create(raw);
+  return { profile: projectAgentProfile(created) };
+}
+
+async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
+  const id = requireString(p, "id");
+  const raw =
+    p.profile && typeof p.profile === "object" && !Array.isArray(p.profile)
+      ? (p.profile as Record<string, unknown>)
+      : (() => {
+          const { id: _id, ...rest } = p;
+          return rest;
+        })();
+  const updated = await ctx.profileCatalog.update(id, raw);
+  return { profile: projectAgentProfile(updated) };
+}
+
+async function profileDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  const id = requireString(p, "id");
+  return ctx.profileCatalog.delete(id);
 }
 
 async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {

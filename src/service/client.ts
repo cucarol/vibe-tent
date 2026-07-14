@@ -128,9 +128,21 @@ export class ServiceClient {
     return this.call("registry.roles", { workspaceId });
   }
 
-  // ---- convenience: machine-local profiles (safe metadata only) ----
+  // ---- convenience: machine-local profiles (safe metadata / editor projection) ----
   profileList(opts?: { includeTest?: boolean }) {
     return this.call("profile.list", opts ?? {});
+  }
+  profileGet(id: string) {
+    return this.call("profile.get", { id });
+  }
+  profileCreate(profile: Record<string, unknown>) {
+    return this.call("profile.create", profile);
+  }
+  profileUpdate(id: string, profile: Record<string, unknown>) {
+    return this.call("profile.update", { id, ...profile });
+  }
+  profileDelete(id: string) {
+    return this.call("profile.delete", { id });
   }
 
   // ---- convenience: task ----

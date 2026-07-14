@@ -3477,9 +3477,21 @@ var ServiceClient = class {
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
   }
-  // ---- convenience: machine-local profiles (safe metadata only) ----
+  // ---- convenience: machine-local profiles (safe metadata / editor projection) ----
   profileList(opts) {
     return this.call("profile.list", opts ?? {});
+  }
+  profileGet(id) {
+    return this.call("profile.get", { id });
+  }
+  profileCreate(profile) {
+    return this.call("profile.create", profile);
+  }
+  profileUpdate(id, profile) {
+    return this.call("profile.update", { id, ...profile });
+  }
+  profileDelete(id) {
+    return this.call("profile.delete", { id });
   }
   // ---- convenience: task ----
   taskDispatch(workspaceId, args) {

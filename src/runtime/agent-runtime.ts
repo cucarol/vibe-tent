@@ -101,6 +101,33 @@ export class AgentRuntime implements AgentRuntimePort {
     this.profiles.set(profile.id, profile);
   }
 
+  /**
+   * Full replace of the in-memory profile catalog (machine-local CRUD sync).
+   * Does not touch live sessions — only new startSession sees the new map.
+   * Always re-ensures fake-default for harness (same rule as constructor).
+   */
+  replaceProfileCatalog(profiles: AgentProfileConfig[]): void {
+    this.profiles.clear();
+    for (const p of profiles) {
+      if (p && typeof p.id === "string") {
+        this.profiles.set(p.id, p);
+      }
+    }
+    if (!this.profiles.has("fake-default")) {
+      this.profiles.set("fake-default", {
+        id: "fake-default",
+        adapterId: FAKE_ADAPTER_ID,
+        displayNameKey: "profile.fake.default",
+        fake: { waitForSignal: true, emitStdout: true },
+      });
+    }
+  }
+
+  /** Lookup a single machine-local profile from the current runtime catalog. */
+  getProfile(profileId: string): AgentProfileConfig | undefined {
+    return this.profiles.get(profileId);
+  }
+
   /** Machine-local catalog snapshot (for profile.list projection). */
   listProfiles(): AgentProfileConfig[] {
     return [...this.profiles.values()];

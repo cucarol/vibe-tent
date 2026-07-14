@@ -18,7 +18,7 @@ import {
   makeToolApprovalId,
   ToolApprovalStore,
 } from "./tool-approval-store.js";
-import { ensureDefaultProfiles } from "./profiles.js";
+import { AgentProfileCatalog, ensureDefaultProfiles } from "./profiles.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
 import {
@@ -79,9 +79,14 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
 
-  const profiles = options.profiles ?? (await ensureDefaultProfiles(dataDir));
+  // options.profiles: in-memory inject for tests (skip ensureDefaultProfiles disk seed).
+  // Catalog mutations still write to this service's dataDir (tests pass a temp dir).
+  const profilesInjected = options.profiles !== undefined;
+  const profiles = profilesInjected
+    ? options.profiles!
+    : await ensureDefaultProfiles(dataDir);
 
-  // Mutable holder so onPermissionAsk can read registry after runtime is created.
+  // Mutable holder so onPermissionAsk can read runtime after it is created.
   const runtimeHolder: { current: AgentRuntime | null } = { current: null };
 
   /**
@@ -126,7 +131,10 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
         // binding is best-effort; still record pending for session
       }
 
-      const profile = profiles.find((p) => p.id === rec?.profileId);
+      // Always read the current runtime profile — never close over boot profiles array.
+      const profile = rec?.profileId
+        ? runtime.getProfile(rec.profileId)
+        : undefined;
       const timeoutMs =
         typeof profile?.grokAcp?.permissionTimeoutMs === "number" &&
         profile.grokAcp.permissionTimeoutMs > 0
@@ -204,6 +212,13 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     adapters: [createFakeAdapter(), grokAdapter],
   });
   runtimeHolder.current = runtime;
+
+  const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
+    // Always persist CRUD to this service dataDir. Inject only skips boot seed;
+    // tests must pass a temp dataDir so host default catalog is never touched.
+    persistToDisk: true,
+  });
+
   // Reconcile orphan sessions after crash / restart.
   await runtime.reconcileOnBoot();
 
@@ -218,6 +233,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     a2a,
     toolApprovals,
     dataDir,
+    profileCatalog,
     integrateCommits: options.integrateCommits,
   };
 

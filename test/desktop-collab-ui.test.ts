@@ -213,10 +213,14 @@ test("suggestBoxName embeds type without hardcoding goal", () => {
   assert.match(suggestBoxName("mission", 1_700_000_000_000), /^mission-/);
 });
 
-test("CLIENT_METHODS includes registry.types/roles and profile.list", () => {
+test("CLIENT_METHODS includes registry.types/roles and profile CRUD", () => {
   assert.ok(CLIENT_METHODS.includes("registry.types"));
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
   assert.ok(CLIENT_METHODS.includes("profile.list"));
+  assert.ok(CLIENT_METHODS.includes("profile.get"));
+  assert.ok(CLIENT_METHODS.includes("profile.create"));
+  assert.ok(CLIENT_METHODS.includes("profile.update"));
+  assert.ok(CLIENT_METHODS.includes("profile.delete"));
 });
 
 test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
@@ -224,14 +228,20 @@ test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
   // Inject a secret-looking env bag — must never appear in projection.
   raw[0].env = { CPA_GROK_API_KEY: "sk-secret-value", PATH: "/tmp" };
   raw[1].env = { TOKEN: "should-not-leak" };
+  raw[1].grokAcp = {
+    ...raw[1].grokAcp,
+    executable: "C:\\\\tools\\\\grok.exe",
+    envKey: "CPA_GROK_API_KEY",
+  };
 
   const projected = projectAgentProfiles(raw);
   const json = JSON.stringify(projected);
   assert.ok(!json.includes("sk-secret-value"));
   assert.ok(!json.includes("should-not-leak"));
-  assert.ok(!json.includes("CPA_GROK_API_KEY"));
-  assert.ok(!json.includes("env"));
-  assert.ok(!json.includes("executable"));
+  // Env key *names* may appear; secret *values* must not.
+  assert.ok(!json.includes("TOKEN"));
+  // No raw env map object in projection payload.
+  assert.ok(!/"env"\s*:/.test(json));
 
   const fake = projected.find((p) => p.id === "fake-default")!;
   const grok = projected.find((p) => p.id === "grok-acp-default")!;
@@ -240,6 +250,8 @@ test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
   assert.equal(grok.testOnly, false);
   assert.equal(grok.adapterId, GROK_ACP_ADAPTER_ID);
   assert.equal(grok.model, "grok-4.5");
+  assert.equal(grok.envKey, "CPA_GROK_API_KEY");
+  assert.equal(grok.executable, "C:\\\\tools\\\\grok.exe");
   // Product profiles sort before test-only.
   assert.equal(projected[0].id, "grok-acp-default");
 
@@ -512,13 +524,13 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
   try {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
 
-    // Product list: no testOnly, no secret fields.
+    // Product list: no testOnly, no secret values / env maps.
     const productList = (await client.profileList()) as {
       profiles: Array<Record<string, unknown>>;
     };
     const productJson = JSON.stringify(productList);
     assert.ok(!productJson.includes("fake-default"));
-    assert.ok(!productJson.includes("env"));
+    assert.ok(!/"env"\s*:/.test(productJson));
     assert.ok(!productJson.includes("sk-"));
     assert.ok(productList.profiles.some((p) => p.id === "grok-acp-default"));
     assert.ok(productList.profiles.every((p) => p.testOnly === false));

@@ -1,14 +1,19 @@
 // Machine-local AgentProfile catalog (architecture §3.3). Never in workspace git.
+// Single-process serial CRUD for grok-acp product profiles; disk: dataDir/agent-profiles.json.
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import type { AgentProfileConfig } from "../runtime/types.js";
+import type { AgentRuntime } from "../runtime/agent-runtime.js";
+import { SessionRegistry } from "../runtime/session-registry.js";
 import { FAKE_ADAPTER_ID } from "../adapters/fake/index.js";
 import {
   DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_GROK_ENV_KEY,
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
+  type GrokAcpPermissionPolicy,
+  type GrokAcpProfileOptions,
 } from "../adapters/grok-acp/index.js";
 import {
   backupCorruptMachineFile,
@@ -17,6 +22,63 @@ import {
   writeJsonAtomic,
 } from "../machine-state.js";
 import type { AgentProfileProjection } from "./types.js";
+import { RpcError } from "./rpc-error.js";
+
+export const FAKE_DEFAULT_PROFILE_ID = "fake-default";
+export const GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
+
+/** Product CRUD only allows this adapter (no general provider router). */
+export const PRODUCT_CRUD_ADAPTER_ID = GROK_ACP_ADAPTER_ID;
+
+/** Whitelist of client-writable profile fields (create). id is create-only. */
+export const PROFILE_CREATE_FIELDS = [
+  "id",
+  "displayName",
+  "model",
+  "executable",
+  "envKey",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "permissionPolicy",
+  "promptTimeoutMs",
+  "permissionTimeoutMs",
+] as const;
+
+/** Whitelist of client-writable profile fields (update). id is immutable. */
+export const PROFILE_UPDATE_FIELDS = [
+  "displayName",
+  "model",
+  "executable",
+  "envKey",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "permissionPolicy",
+  "promptTimeoutMs",
+  "permissionTimeoutMs",
+] as const;
+
+const PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+const PERMISSION_POLICIES = new Set<GrokAcpPermissionPolicy>(["allow", "ask", "deny"]);
+
+/** Field names that must never be accepted via product CRUD (explicit reject). */
+const DANGEROUS_FIELD_HINTS = [
+  "apiKey",
+  "api_key",
+  "token",
+  "secret",
+  "password",
+  "credential",
+  "authorization",
+  "bearer",
+  "env",
+  "fake",
+  "command",
+  "args",
+  "adapterId",
+  "displayNameKey",
+  "grokAcp",
+] as const;
 
 export function profilesPath(dataDir: string): string {
   return path.join(dataDir, "agent-profiles.json");
@@ -70,13 +132,13 @@ export async function saveAgentProfiles(
 export function defaultAgentProfiles(): AgentProfileConfig[] {
   return [
     {
-      id: "fake-default",
+      id: FAKE_DEFAULT_PROFILE_ID,
       adapterId: FAKE_ADAPTER_ID,
       displayNameKey: "profile.fake.default",
       fake: { waitForSignal: true, emitStdout: true, canResume: true },
     },
     {
-      id: "grok-acp-default",
+      id: GROK_ACP_DEFAULT_PROFILE_ID,
       adapterId: GROK_ACP_ADAPTER_ID,
       displayNameKey: "profile.grokAcp.default",
       grokAcp: {
@@ -98,8 +160,8 @@ export async function ensureDefaultProfiles(dataDir: string): Promise<AgentProfi
     let changed = false;
     let next = existing;
     // Migrate older catalogs that only had fake: ensure grok-acp-default is present.
-    if (!existing.some((p) => p.id === "grok-acp-default")) {
-      const grok = defaultAgentProfiles().find((p) => p.id === "grok-acp-default")!;
+    if (!existing.some((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)) {
+      const grok = defaultAgentProfiles().find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)!;
       next = [...existing, grok];
       changed = true;
     }
@@ -135,24 +197,32 @@ const DISPLAY_NAME_BY_KEY: Record<string, string> = {
 };
 
 /**
- * Project a machine-local profile for clients.
- * Strips env maps, executable paths that may leak layout, and all secret-bearing fields.
- * Never includes API keys, tokens, or env *values*.
+ * Project a machine-local profile for clients / editors.
+ * Non-secret fields only. Never includes env maps, API keys, tokens, or secret values.
  */
 export function projectAgentProfile(profile: AgentProfileConfig): AgentProfileProjection {
   const testOnly = isTestOnlyProfile(profile);
   const displayName =
+    (typeof profile.displayName === "string" && profile.displayName.trim()
+      ? profile.displayName.trim()
+      : undefined) ||
     (profile.displayNameKey && DISPLAY_NAME_BY_KEY[profile.displayNameKey]) ||
     profile.id;
+  const g = profile.grokAcp;
   return {
     id: profile.id,
     adapterId: profile.adapterId,
     displayName,
     displayNameKey: profile.displayNameKey,
-    // Model id only — never env values, keys, or executable paths.
-    model: profile.grokAcp?.model,
+    model: g?.model,
+    executable: g?.executable,
+    envKey: g?.envKey,
+    baseUrlEnvKey: g?.baseUrlEnvKey,
+    baseUrl: g?.baseUrl,
     testOnly,
-    permissionPolicy: profile.grokAcp?.permissionPolicy,
+    permissionPolicy: g?.permissionPolicy,
+    promptTimeoutMs: g?.promptTimeoutMs,
+    permissionTimeoutMs: g?.permissionTimeoutMs,
   };
 }
 
@@ -165,4 +235,304 @@ export function projectAgentProfiles(profiles: AgentProfileConfig[]): AgentProfi
       if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;
       return a.id.localeCompare(b.id);
     });
+}
+
+// ---------------------------------------------------------------------------
+// Validation helpers (clear RpcError, never silent discard of bad input)
+// ---------------------------------------------------------------------------
+
+function rejectUnknownAndDangerous(
+  raw: Record<string, unknown>,
+  allowed: readonly string[]
+): void {
+  const allowedSet = new Set(allowed);
+  for (const key of Object.keys(raw)) {
+    if (allowedSet.has(key)) continue;
+    const lower = key.toLowerCase();
+    const dangerous = DANGEROUS_FIELD_HINTS.some(
+      (d) => lower === d.toLowerCase() || lower.includes(d.toLowerCase())
+    );
+    if (dangerous || lower.includes("secret") || lower.includes("token") || lower.includes("apikey")) {
+      throw new RpcError(
+        -32602,
+        `Rejected dangerous or unsupported profile field: ${key}`
+      );
+    }
+    throw new RpcError(-32602, `Unknown profile field: ${key}`);
+  }
+}
+
+function requireProfileId(raw: unknown, field = "id"): string {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new RpcError(-32602, `Missing or invalid string param: ${field}`);
+  }
+  const id = raw.trim();
+  if (!PROFILE_ID_RE.test(id)) {
+    throw new RpcError(
+      -32602,
+      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
+    );
+  }
+  return id;
+}
+
+function optionalNonEmptyString(
+  raw: Record<string, unknown>,
+  key: string
+): string | undefined {
+  if (!(key in raw) || raw[key] === undefined || raw[key] === null) return undefined;
+  if (typeof raw[key] !== "string") {
+    throw new RpcError(-32602, `Invalid string param: ${key}`);
+  }
+  const v = (raw[key] as string).trim();
+  if (!v) {
+    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
+  }
+  return v;
+}
+
+function optionalEnvKey(raw: Record<string, unknown>, key: string): string | undefined {
+  const v = optionalNonEmptyString(raw, key);
+  if (v === undefined) return undefined;
+  if (!ENV_KEY_RE.test(v)) {
+    throw new RpcError(
+      -32602,
+      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return v;
+}
+
+function optionalBaseUrl(raw: Record<string, unknown>): string | undefined {
+  const v = optionalNonEmptyString(raw, "baseUrl");
+  if (v === undefined) return undefined;
+  let parsed: URL;
+  try {
+    parsed = new URL(v);
+  } catch {
+    throw new RpcError(-32602, "Invalid baseUrl: must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    throw new RpcError(-32602, "Invalid baseUrl: only http: and https: are allowed");
+  }
+  return v;
+}
+
+function optionalPermissionPolicy(
+  raw: Record<string, unknown>
+): GrokAcpPermissionPolicy | undefined {
+  if (!("permissionPolicy" in raw) || raw.permissionPolicy === undefined) return undefined;
+  if (typeof raw.permissionPolicy !== "string") {
+    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  const v = raw.permissionPolicy as string;
+  if (!PERMISSION_POLICIES.has(v as GrokAcpPermissionPolicy)) {
+    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  return v as GrokAcpPermissionPolicy;
+}
+
+function optionalPositiveInt(raw: Record<string, unknown>, key: string): number | undefined {
+  if (!(key in raw) || raw[key] === undefined || raw[key] === null) return undefined;
+  const v = raw[key];
+  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0) {
+    throw new RpcError(-32602, `Invalid ${key}: must be a positive integer`);
+  }
+  return v;
+}
+
+function parseGrokFields(raw: Record<string, unknown>): {
+  displayName?: string;
+  grokAcp: GrokAcpProfileOptions;
+} {
+  const displayName = optionalNonEmptyString(raw, "displayName");
+  const grokAcp: GrokAcpProfileOptions = {};
+  const model = optionalNonEmptyString(raw, "model");
+  if (model !== undefined) grokAcp.model = model;
+  const executable = optionalNonEmptyString(raw, "executable");
+  if (executable !== undefined) grokAcp.executable = executable;
+  const envKey = optionalEnvKey(raw, "envKey");
+  if (envKey !== undefined) grokAcp.envKey = envKey;
+  const baseUrlEnvKey = optionalEnvKey(raw, "baseUrlEnvKey");
+  if (baseUrlEnvKey !== undefined) grokAcp.baseUrlEnvKey = baseUrlEnvKey;
+  const baseUrl = optionalBaseUrl(raw);
+  if (baseUrl !== undefined) grokAcp.baseUrl = baseUrl;
+  const permissionPolicy = optionalPermissionPolicy(raw);
+  if (permissionPolicy !== undefined) grokAcp.permissionPolicy = permissionPolicy;
+  const promptTimeoutMs = optionalPositiveInt(raw, "promptTimeoutMs");
+  if (promptTimeoutMs !== undefined) grokAcp.promptTimeoutMs = promptTimeoutMs;
+  const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
+  if (permissionTimeoutMs !== undefined) grokAcp.permissionTimeoutMs = permissionTimeoutMs;
+  return { displayName, grokAcp };
+}
+
+function mergeGrokAcp(
+  base: GrokAcpProfileOptions | undefined,
+  patch: GrokAcpProfileOptions
+): GrokAcpProfileOptions {
+  return { ...(base ?? {}), ...patch };
+}
+
+/**
+ * In-process machine-local profile catalog.
+ * Mutations are serialized; disk write uses existing atomic write; runtime is replaced after persist.
+ * options.profiles injects stay in-memory unless persistToDisk is true (default when not inject-only).
+ */
+export class AgentProfileCatalog {
+  private profiles: AgentProfileConfig[];
+  private chain: Promise<void> = Promise.resolve();
+  private readonly persistToDisk: boolean;
+
+  constructor(
+    private readonly dataDir: string,
+    private readonly runtime: AgentRuntime,
+    initial: AgentProfileConfig[],
+    opts?: { persistToDisk?: boolean }
+  ) {
+    this.profiles = initial.map((p) => ({ ...p, grokAcp: p.grokAcp ? { ...p.grokAcp } : undefined }));
+    // Test inject via options.profiles must not write the host default dataDir.
+    this.persistToDisk = opts?.persistToDisk !== false;
+    this.runtime.replaceProfileCatalog(this.profiles);
+  }
+
+  private enqueue<T>(fn: () => Promise<T>): Promise<T> {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => undefined,
+      () => undefined
+    );
+    return run;
+  }
+
+  list(): AgentProfileConfig[] {
+    return this.profiles.map((p) => ({
+      ...p,
+      grokAcp: p.grokAcp ? { ...p.grokAcp } : undefined,
+    }));
+  }
+
+  get(id: string): AgentProfileConfig | undefined {
+    const p = this.profiles.find((x) => x.id === id);
+    if (!p) return undefined;
+    return { ...p, grokAcp: p.grokAcp ? { ...p.grokAcp } : undefined };
+  }
+
+  private async persistAndSync(): Promise<void> {
+    if (this.persistToDisk) {
+      await saveAgentProfiles(this.dataDir, this.profiles);
+    }
+    this.runtime.replaceProfileCatalog(this.profiles);
+  }
+
+  async create(raw: Record<string, unknown>): Promise<AgentProfileConfig> {
+    return this.enqueue(async () => {
+      rejectUnknownAndDangerous(raw, PROFILE_CREATE_FIELDS);
+      const id = requireProfileId(raw.id);
+      if (this.profiles.some((p) => p.id === id)) {
+        throw new RpcError(-32009, `Profile already exists: ${id}`);
+      }
+      if (id === FAKE_DEFAULT_PROFILE_ID) {
+        throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
+      }
+      const { displayName, grokAcp } = parseGrokFields(raw);
+      // Product defaults for create when omitted.
+      if (!grokAcp.model) grokAcp.model = DEFAULT_GROK_MODEL;
+      if (!grokAcp.envKey) grokAcp.envKey = DEFAULT_GROK_ENV_KEY;
+      if (!grokAcp.baseUrlEnvKey) grokAcp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
+      if (!grokAcp.permissionPolicy) grokAcp.permissionPolicy = "deny";
+
+      const profile: AgentProfileConfig = {
+        id,
+        adapterId: PRODUCT_CRUD_ADAPTER_ID,
+        ...(displayName !== undefined ? { displayName } : {}),
+        grokAcp,
+      };
+      this.profiles = [...this.profiles, profile];
+      await this.persistAndSync();
+      return this.get(id)!;
+    });
+  }
+
+  async update(idRaw: unknown, raw: Record<string, unknown>): Promise<AgentProfileConfig> {
+    return this.enqueue(async () => {
+      const id = requireProfileId(idRaw);
+      // id must not appear as a mutable body field.
+      if ("id" in raw) {
+        throw new RpcError(-32602, "id cannot be updated; omit id from profile body");
+      }
+      rejectUnknownAndDangerous(raw, PROFILE_UPDATE_FIELDS);
+
+      const idx = this.profiles.findIndex((p) => p.id === id);
+      if (idx < 0) {
+        throw new RpcError(-32004, `Profile not found: ${id}`);
+      }
+      const current = this.profiles[idx]!;
+      if (isTestOnlyProfile(current) || current.id === FAKE_DEFAULT_PROFILE_ID) {
+        throw new RpcError(
+          -32602,
+          "Test-only profile fake-default cannot be modified via product CRUD"
+        );
+      }
+      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
+        throw new RpcError(
+          -32602,
+          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
+        );
+      }
+
+      const { displayName, grokAcp: patch } = parseGrokFields(raw);
+      const next: AgentProfileConfig = {
+        ...current,
+        grokAcp: mergeGrokAcp(current.grokAcp, patch),
+      };
+      if (displayName !== undefined) {
+        next.displayName = displayName;
+      }
+      this.profiles = this.profiles.map((p, i) => (i === idx ? next : p));
+      await this.persistAndSync();
+      return this.get(id)!;
+    });
+  }
+
+  async delete(idRaw: unknown): Promise<{ deleted: string }> {
+    return this.enqueue(async () => {
+      const id = requireProfileId(idRaw);
+      const idx = this.profiles.findIndex((p) => p.id === id);
+      if (idx < 0) {
+        throw new RpcError(-32004, `Profile not found: ${id}`);
+      }
+      const current = this.profiles[idx]!;
+      if (isTestOnlyProfile(current) || current.id === FAKE_DEFAULT_PROFILE_ID) {
+        throw new RpcError(
+          -32602,
+          "Test-only profile fake-default cannot be deleted via product CRUD"
+        );
+      }
+      if (current.id === GROK_ACP_DEFAULT_PROFILE_ID) {
+        throw new RpcError(-32602, "Built-in profile grok-acp-default cannot be deleted");
+      }
+      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
+        throw new RpcError(
+          -32602,
+          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
+        );
+      }
+
+      const sessions = await this.runtime.registry.list();
+      const active = sessions.filter(
+        (s) => s.profileId === id && SessionRegistry.isNonTerminal(s.state)
+      );
+      if (active.length > 0) {
+        throw new RpcError(
+          -32022,
+          `Cannot delete profile ${id}: ${active.length} non-terminal session(s) still use it`,
+          { sessionIds: active.map((s) => s.id) }
+        );
+      }
+
+      this.profiles = this.profiles.filter((p) => p.id !== id);
+      await this.persistAndSync();
+      return { deleted: id };
+    });
+  }
 }

@@ -94,6 +94,32 @@ Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
 
 `fake-default` remains available for **tests only** when harnesses pass `profileId: "fake-default"` explicitly. Product `task.startSession` / `task.dispatch` with `startSession: true` **requires** an explicit `profileId` — there is **no** silent fallback to fake or to a product default.
 
+## Machine-local profile catalog CRUD (service)
+
+Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD is **grok-acp only** — no generic provider router, no revision/etag, no profile change events in this version.
+
+| RPC | Notes |
+| --- | --- |
+| `profile.list` | Editor-safe projection list; default hides `testOnly` (`includeTest: true` for harness) |
+| `profile.get` | Same projection for one id |
+| `profile.create` | New id; forced `adapterId=grok-acp` |
+| `profile.update` | Patch whitelist fields; **id immutable** |
+| `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK |
+
+**Whitelist body fields:** `id` (create only), `displayName`, `model`, `executable`, `envKey`, `baseUrlEnvKey`, `baseUrl`, `permissionPolicy`, `promptTimeoutMs`, `permissionTimeoutMs`.
+
+Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / …) are **rejected with RpcError** — never silently stripped and written.
+
+| Id | Create | Update | Delete |
+| --- | --- | --- | --- |
+| `fake-default` | no | no | no (tests only) |
+| `grok-acp-default` | n/a (boot seed) | yes | **no** |
+| other `grok-acp` | yes | yes | yes (if no active session) |
+
+After successful create/update/delete: **atomic disk write** then **full runtime catalog replace**. New `startSession` sees the new config immediately; **live sessions are not hot-reconfigured**. Permission timeout lookup for `permissionPolicy=ask` reads the **current** runtime profile (not a boot-time closed-over array).
+
+Editor projection may include non-secret fields above (including env **key names**, paths, timeouts). It must **not** return env maps or API key / token **values**.
+
 ## Role wiring
 
 Roles stay in the **project** registry (`.tent/roles.json`). They do **not** embed provider secrets.

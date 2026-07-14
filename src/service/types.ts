@@ -143,30 +143,41 @@ export type RoleRegistryEntryProjection = {
 };
 
 /**
- * Machine-local AgentProfile projection for clients.
- * Safe metadata only — never secrets, tokens, env *values*, or raw env maps.
+ * Machine-local AgentProfile projection for clients / editors.
+ * Non-secret fields only — never env maps, API keys, tokens, or secret values.
+ * Env *key names* and machine-local paths/URLs are allowed (not secret values).
  */
 export type AgentProfileProjection = {
   id: string;
   adapterId: string;
-  /** Human label for pickers (resolved from displayNameKey when needed). */
+  /** Human label for pickers (displayName, else displayNameKey map, else id). */
   displayName: string;
   displayNameKey?: string;
   /** Model id when known (e.g. grok-4.5); never credentials. */
   model?: string;
+  /** Absolute path to provider executable on this machine (optional). */
+  executable?: string;
+  /** Process env *name* for API token — never the value. */
+  envKey?: string;
+  /** Process env *name* for base URL — never the value. */
+  baseUrlEnvKey?: string;
+  /** Optional machine-local literal base URL (not a workspace secret). */
+  baseUrl?: string;
   /**
    * true = harness/test profile (fake-cli). Product UI should not default to these.
    */
   testOnly: boolean;
   /** Non-secret permission policy name for real providers. */
   permissionPolicy?: string;
+  promptTimeoutMs?: number;
+  permissionTimeoutMs?: number;
 };
 
 /**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * B5 adds full task lifecycle + session projections + a2a resolve.
  * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
- * Desktop ACP launch surface adds profile.list (safe metadata only).
+ * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
  */
 export const CLIENT_METHODS = [
   "service.health",
@@ -187,6 +198,10 @@ export const CLIENT_METHODS = [
   "registry.types",
   "registry.roles",
   "profile.list",
+  "profile.get",
+  "profile.create",
+  "profile.update",
+  "profile.delete",
   "task.dispatch",
   "task.claim",
   "task.wait",
