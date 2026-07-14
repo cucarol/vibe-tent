@@ -56,7 +56,7 @@ import * as nodePath from "node:path";
 import { buildBacklinkIndex } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
-import type { MutationBus } from "./mutation-bus.js";
+import { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
 import type { A2AApprovalStore } from "./a2a-store.js";
 import { makeApprovalId } from "./a2a-store.js";
@@ -1466,136 +1466,288 @@ function projectToolApproval(item: ToolPendingApproval) {
 const managedAutoDeliverInFlight = new Set<string>();
 const managedAutoDeliverDone = new Set<string>();
 
+/**
+ * Per-session projection queue (key = sessionId). Different sessions proceed
+ * independently; failures do not poison later events for the same session.
+ * Reuses MutationBus bookkeeping (bounded tails, catch-through).
+ */
+const runtimeProjectionQueue = new MutationBus();
+
+/** Single bounded retry delay for a failed projection (deterministic, short). */
+const PROJECTION_RETRY_DELAY_MS = 40;
+
+type RuntimeProjectionTestHooks = {
+  /** Runs at the start of each projection attempt (including retries). */
+  beforeProject?: (ev: RuntimeEvent, attempt: number) => Promise<void> | void;
+  /**
+   * Fail this many projection attempts (decremented across events/retries),
+   * then succeed. Used to simulate transient vs permanent mutation failures.
+   */
+  failAttemptsRemaining?: number;
+  /** Override retry delay (default PROJECTION_RETRY_DELAY_MS). */
+  retryDelayMs?: number;
+};
+
+let runtimeProjectionTestHooks: RuntimeProjectionTestHooks | null = null;
+
+/** Test helper: inject delay / transient failures into runtime projection. */
+export function setRuntimeProjectionTestHooksForTests(
+  hooks: RuntimeProjectionTestHooks | null
+): void {
+  runtimeProjectionTestHooks = hooks;
+}
+
+/** Test helper: clear projection test hooks (queue drains via MutationBus). */
+export function resetRuntimeProjectionForTests(): void {
+  runtimeProjectionTestHooks = null;
+}
+
 function managedDeliverKey(sessionId: string, taskPath: string): string {
   return `${sessionId}::${taskPath}`;
 }
 
+function projectionRetryDelayMs(): number {
+  return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
+}
+
+function sleepMs(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function classifyProjectionError(err: unknown): {
+  errorClass: string;
+  errorCode?: string | number;
+} {
+  if (err instanceof TaskLifecycleError) {
+    return { errorClass: "TaskLifecycleError", errorCode: err.code };
+  }
+  if (err instanceof RpcError) {
+    return { errorClass: "RpcError", errorCode: err.code };
+  }
+  if (err && typeof err === "object") {
+    const e = err as { name?: unknown; code?: unknown; constructor?: { name?: string } };
+    const errorClass =
+      (typeof e.name === "string" && e.name) ||
+      e.constructor?.name ||
+      "Error";
+    const errorCode =
+      typeof e.code === "string" || typeof e.code === "number" ? e.code : undefined;
+    return errorCode !== undefined ? { errorClass, errorCode } : { errorClass };
+  }
+  return { errorClass: "UnknownError" };
+}
+
+/**
+ * Bridge RuntimeEvent → session registry / task lifecycle / client events.
+ *
+ * Returns a Promise callers may ignore. Projection is serialized per sessionId
+ * (not process-wide). On failure: one bounded retry; after exhaustion emit a
+ * safe service.health diagnostic and resolve without throwing (no unhandled rejection).
+ */
 export function mapRuntimeEventToService(
   ctx: HandlerContext,
   ev: RuntimeEvent
-): void {
-  // Find workspace from session registry (async-safe best effort via fire-and-forget).
-  void (async () => {
+): Promise<void> {
+  return runtimeProjectionQueue.run(ev.sessionId, async () => {
     try {
-      const rec = await ctx.runtime.registry.read(ev.sessionId);
-      const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
-      if (ev.type === "session.stdout_tail") {
-        // Diagnostics only — never product chat; optional quiet emit.
-        return;
-      }
+      await projectRuntimeEventWithRetry(ctx, ev);
+    } catch (err) {
+      await reportRuntimeProjectionFailure(ctx, ev, err);
+      // Exhausted retry: do not throw — later events for this session must still run.
+    }
+  });
+}
 
-      // Reflect waiting-user on session row for probe honesty (no chat).
-      if (ev.type === "session.waiting_user") {
-        try {
-          await ctx.runtime.registry.update(ev.sessionId, {
-            state: "waiting-user",
-          });
-        } catch {
-          // session may already be terminal
-        }
-      } else if (ev.type === "session.live") {
-        try {
-          const current = await ctx.runtime.registry.read(ev.sessionId);
-          if (current && current.state === "waiting-user") {
-            await ctx.runtime.registry.update(ev.sessionId, {
-              state: "live",
-              ...(ev.pid != null ? { pid: ev.pid } : {}),
-            });
-          }
-        } catch {
-          // ignore
-        }
-      } else if (ev.type === "session.failed" || ev.type === "session.exited") {
-        // Pending tool approvals must not hang after process death.
-        try {
-          await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-        } catch {
-          // ignore
-        }
-      }
+async function projectRuntimeEventWithRetry(
+  ctx: HandlerContext,
+  ev: RuntimeEvent
+): Promise<void> {
+  try {
+    await projectRuntimeEventOnce(ctx, ev, 1);
+  } catch {
+    await sleepMs(projectionRetryDelayMs());
+    await projectRuntimeEventOnce(ctx, ev, 2);
+  }
+}
 
-      ctx.events.emit(
-        "session.state",
-        workspaceId,
-        {
-          sessionId: ev.sessionId,
-          runtimeEvent: ev.type,
-          ...("pid" in ev ? { pid: ev.pid } : {}),
-          ...("exitCode" in ev ? { exitCode: ev.exitCode } : {}),
-          ...("error" in ev ? { error: ev.error } : {}),
-          ...("summary" in ev ? { summary: ev.summary } : {}),
-          ...(ev.type === "session.prompt_complete"
-            ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason }
-            : {}),
-        },
-        "service"
-      );
+async function reportRuntimeProjectionFailure(
+  ctx: HandlerContext,
+  ev: RuntimeEvent,
+  err: unknown
+): Promise<void> {
+  const classified = classifyProjectionError(err);
+  let workspaceId = "";
+  try {
+    const rec = await ctx.runtime.registry.read(ev.sessionId);
+    workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+  } catch {
+    workspaceId = ctx.host.getForegroundId() ?? "";
+  }
 
-      // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
-      if (!rec?.lastTaskId) return;
-      const mountInfos = ctx.host.list();
-      for (const info of mountInfos) {
-        if (rec.workspace && info.workspaceId !== rec.workspace) continue;
-        const mount = ctx.host.get(info.workspaceId);
-        if (!mount) continue;
-        const tasks = await loadTaskEnvelopes(mount.env.fs);
-        const task = tasks.find(
-          (t) =>
-            t.sessionId === ev.sessionId ||
-            t.id === rec.lastTaskId ||
-            t.path === rec.lastTaskId
-        );
-        if (!task) continue;
-        if (ev.type === "session.waiting_user" && task.state === "running") {
-          await ctx.mutations.run(mount.workspaceId, async () => {
-            ctx.host.markSelfWrite(mount.workspaceId);
-            const waited = await taskWait(mount.env, task.path, {
-              reason: "user-input",
-              summary: ev.summary,
-            });
-            emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
-          });
-        } else if (
-          ev.type === "session.live" &&
-          task.state === "waiting" &&
-          task.wait?.reason === "user-input"
-        ) {
-          // Tool approval resolved (or session resumed) → running again.
-          await ctx.mutations.run(mount.workspaceId, async () => {
-            ctx.host.markSelfWrite(mount.workspaceId);
-            const resumed = await taskResume(mount.env, task.path);
-            emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
-          });
-        } else if (
-          (ev.type === "session.failed" || ev.type === "session.exited") &&
-          (task.state === "running" || task.state === "waiting")
-        ) {
-          // Any terminal session without a delivery releases the task occupation.
-          // Intentional interrupt is already terminal before stopSession emits exited,
-          // so it never enters this active-task branch.
-          await failTaskFromRuntime(ctx, {
-            workspaceId: mount.workspaceId,
-            taskPath: task.path,
-            sessionId: ev.sessionId,
-            reason: ev.type,
-            summary:
-              ev.type === "session.failed"
-                ? ev.error
-                : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`,
-          });
-        } else if (ev.type === "session.prompt_complete") {
-          await tryManagedAutoDeliver(ctx, {
-            workspaceId: mount.workspaceId,
-            taskPath: task.path,
-            sessionId: ev.sessionId,
-            assistantText: ev.assistantText,
-          });
-        }
+  // Safe diagnostic only — no stdout tails, prompts, tokens, or full error objects.
+  console.error(
+    `[tent-service] runtime projection failed sessionId=${ev.sessionId} event=${ev.type}` +
+      ` class=${classified.errorClass}` +
+      (classified.errorCode !== undefined ? ` code=${classified.errorCode}` : "")
+  );
+
+  ctx.events.emit(
+    "service.health",
+    workspaceId,
+    {
+      action: "runtime-projection-failed",
+      sessionId: ev.sessionId,
+      runtimeEvent: ev.type,
+      errorClass: classified.errorClass,
+      ...(classified.errorCode !== undefined ? { errorCode: classified.errorCode } : {}),
+    },
+    "service"
+  );
+}
+
+/**
+ * Single projection attempt. Emits client-visible session.state only after
+ * internal session projection succeeds (stdout_tail remains diagnostics-only).
+ */
+async function projectRuntimeEventOnce(
+  ctx: HandlerContext,
+  ev: RuntimeEvent,
+  attempt: number
+): Promise<void> {
+  if (runtimeProjectionTestHooks?.beforeProject) {
+    await runtimeProjectionTestHooks.beforeProject(ev, attempt);
+  }
+  if (
+    runtimeProjectionTestHooks &&
+    typeof runtimeProjectionTestHooks.failAttemptsRemaining === "number" &&
+    runtimeProjectionTestHooks.failAttemptsRemaining > 0
+  ) {
+    runtimeProjectionTestHooks.failAttemptsRemaining -= 1;
+    const injected = new Error("injected runtime projection failure");
+    injected.name = "ProjectionInjectedError";
+    (injected as Error & { code: string }).code = "PROJECTION_INJECTED";
+    throw injected;
+  }
+
+  const rec = await ctx.runtime.registry.read(ev.sessionId);
+  const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+  if (ev.type === "session.stdout_tail") {
+    // Diagnostics only — never product chat; optional quiet emit.
+    return;
+  }
+
+  // Reflect waiting-user on session row for probe honesty (no chat).
+  if (ev.type === "session.waiting_user") {
+    try {
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "waiting-user",
+      });
+    } catch {
+      // session may already be terminal
+    }
+  } else if (ev.type === "session.live") {
+    try {
+      const current = await ctx.runtime.registry.read(ev.sessionId);
+      if (current && current.state === "waiting-user") {
+        await ctx.runtime.registry.update(ev.sessionId, {
+          state: "live",
+          ...(ev.pid != null ? { pid: ev.pid } : {}),
+        });
       }
     } catch {
-      // mapping must not crash the runtime
+      // ignore
     }
-  })();
+  } else if (ev.type === "session.failed" || ev.type === "session.exited") {
+    // Pending tool approvals must not hang after process death.
+    try {
+      await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+  }
+
+  // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
+  // Task lifecycle ops are idempotent; failures throw so the outer retry can re-run.
+  if (rec?.lastTaskId) {
+    const mountInfos = ctx.host.list();
+    for (const info of mountInfos) {
+      if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+      const mount = ctx.host.get(info.workspaceId);
+      if (!mount) continue;
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      const task = tasks.find(
+        (t) =>
+          t.sessionId === ev.sessionId ||
+          t.id === rec.lastTaskId ||
+          t.path === rec.lastTaskId
+      );
+      if (!task) continue;
+      if (ev.type === "session.waiting_user" && task.state === "running") {
+        await ctx.mutations.run(mount.workspaceId, async () => {
+          ctx.host.markSelfWrite(mount.workspaceId);
+          const waited = await taskWait(mount.env, task.path, {
+            reason: "user-input",
+            summary: ev.summary,
+          });
+          emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
+        });
+      } else if (
+        ev.type === "session.live" &&
+        task.state === "waiting" &&
+        task.wait?.reason === "user-input"
+      ) {
+        // Tool approval resolved (or session resumed) → running again.
+        await ctx.mutations.run(mount.workspaceId, async () => {
+          ctx.host.markSelfWrite(mount.workspaceId);
+          const resumed = await taskResume(mount.env, task.path);
+          emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
+        });
+      } else if (
+        (ev.type === "session.failed" || ev.type === "session.exited") &&
+        (task.state === "running" || task.state === "waiting")
+      ) {
+        // Any terminal session without a delivery releases the task occupation.
+        // Intentional interrupt is already terminal before stopSession emits exited,
+        // so it never enters this active-task branch.
+        await failTaskFromRuntime(ctx, {
+          workspaceId: mount.workspaceId,
+          taskPath: task.path,
+          sessionId: ev.sessionId,
+          reason: ev.type,
+          summary:
+            ev.type === "session.failed"
+              ? ev.error
+              : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`,
+        });
+      } else if (ev.type === "session.prompt_complete") {
+        await tryManagedAutoDeliver(ctx, {
+          workspaceId: mount.workspaceId,
+          taskPath: task.path,
+          sessionId: ev.sessionId,
+          assistantText: ev.assistantText,
+        });
+      }
+    }
+  }
+
+  // Client-visible session.state only after full internal projection succeeds.
+  // Failed attempts never reach here, so a single retry does not duplicate this event.
+  ctx.events.emit(
+    "session.state",
+    workspaceId,
+    {
+      sessionId: ev.sessionId,
+      runtimeEvent: ev.type,
+      ...("pid" in ev ? { pid: ev.pid } : {}),
+      ...("exitCode" in ev ? { exitCode: ev.exitCode } : {}),
+      ...("error" in ev ? { error: ev.error } : {}),
+      ...("summary" in ev ? { summary: ev.summary } : {}),
+      ...(ev.type === "session.prompt_complete"
+        ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason }
+        : {}),
+    },
+    "service"
+  );
 }
 
 /**

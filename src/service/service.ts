@@ -222,7 +222,11 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   };
 
   // Bridge runtime events → EventEnvelope (no chat tokens).
-  runtime.subscribeAll((ev) => mapRuntimeEventToService(ctx, ev));
+  // mapRuntimeEventToService returns a Promise; callers may ignore it.
+  // Projection is serialized per sessionId with one bounded retry on failure.
+  runtime.subscribeAll((ev) => {
+    void mapRuntimeEventToService(ctx, ev);
+  });
 
   const httpServer: ServiceHttpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",

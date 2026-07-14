@@ -3003,6 +3003,31 @@ function contentEtag(content) {
   return createHash("sha256").update(content, "utf8").digest("hex").slice(0, 24);
 }
 
+// src/service/mutation-bus.ts
+var MutationBus = class {
+  constructor() {
+    this.tails = /* @__PURE__ */ new Map();
+  }
+  async run(workspaceId, action) {
+    const prev = this.tails.get(workspaceId) ?? Promise.resolve();
+    let release;
+    const gate = new Promise((resolve7) => {
+      release = resolve7;
+    });
+    const chain = prev.catch(() => void 0).then(() => gate);
+    this.tails.set(workspaceId, chain);
+    await prev.catch(() => void 0);
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.tails.get(workspaceId) === chain) {
+        this.tails.delete(workspaceId);
+      }
+    }
+  }
+};
+
 // src/service/a2a-store.ts
 import * as fs3 from "node:fs/promises";
 import * as path3 from "node:path";
@@ -5279,101 +5304,173 @@ function projectToolApproval(item) {
 }
 var managedAutoDeliverInFlight = /* @__PURE__ */ new Set();
 var managedAutoDeliverDone = /* @__PURE__ */ new Set();
+var runtimeProjectionQueue = new MutationBus();
+var PROJECTION_RETRY_DELAY_MS = 40;
+var runtimeProjectionTestHooks = null;
 function managedDeliverKey(sessionId, taskPath) {
   return `${sessionId}::${taskPath}`;
 }
+function projectionRetryDelayMs() {
+  return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
+}
+function sleepMs(ms) {
+  return new Promise((resolve7) => setTimeout(resolve7, ms));
+}
+function classifyProjectionError(err) {
+  if (err instanceof TaskLifecycleError) {
+    return { errorClass: "TaskLifecycleError", errorCode: err.code };
+  }
+  if (err instanceof RpcError) {
+    return { errorClass: "RpcError", errorCode: err.code };
+  }
+  if (err && typeof err === "object") {
+    const e = err;
+    const errorClass = typeof e.name === "string" && e.name || e.constructor?.name || "Error";
+    const errorCode = typeof e.code === "string" || typeof e.code === "number" ? e.code : void 0;
+    return errorCode !== void 0 ? { errorClass, errorCode } : { errorClass };
+  }
+  return { errorClass: "UnknownError" };
+}
 function mapRuntimeEventToService(ctx, ev) {
-  void (async () => {
+  return runtimeProjectionQueue.run(ev.sessionId, async () => {
     try {
-      const rec = await ctx.runtime.registry.read(ev.sessionId);
-      const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
-      if (ev.type === "session.stdout_tail") {
-        return;
-      }
-      if (ev.type === "session.waiting_user") {
-        try {
-          await ctx.runtime.registry.update(ev.sessionId, {
-            state: "waiting-user"
-          });
-        } catch {
-        }
-      } else if (ev.type === "session.live") {
-        try {
-          const current = await ctx.runtime.registry.read(ev.sessionId);
-          if (current && current.state === "waiting-user") {
-            await ctx.runtime.registry.update(ev.sessionId, {
-              state: "live",
-              ...ev.pid != null ? { pid: ev.pid } : {}
-            });
-          }
-        } catch {
-        }
-      } else if (ev.type === "session.failed" || ev.type === "session.exited") {
-        try {
-          await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-        } catch {
-        }
-      }
-      ctx.events.emit(
-        "session.state",
-        workspaceId,
-        {
-          sessionId: ev.sessionId,
-          runtimeEvent: ev.type,
-          ..."pid" in ev ? { pid: ev.pid } : {},
-          ..."exitCode" in ev ? { exitCode: ev.exitCode } : {},
-          ..."error" in ev ? { error: ev.error } : {},
-          ..."summary" in ev ? { summary: ev.summary } : {},
-          ...ev.type === "session.prompt_complete" ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason } : {}
-        },
-        "service"
-      );
-      if (!rec?.lastTaskId) return;
-      const mountInfos = ctx.host.list();
-      for (const info of mountInfos) {
-        if (rec.workspace && info.workspaceId !== rec.workspace) continue;
-        const mount = ctx.host.get(info.workspaceId);
-        if (!mount) continue;
-        const tasks = await loadTaskEnvelopes(mount.env.fs);
-        const task = tasks.find(
-          (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId || t.path === rec.lastTaskId
-        );
-        if (!task) continue;
-        if (ev.type === "session.waiting_user" && task.state === "running") {
-          await ctx.mutations.run(mount.workspaceId, async () => {
-            ctx.host.markSelfWrite(mount.workspaceId);
-            const waited = await taskWait(mount.env, task.path, {
-              reason: "user-input",
-              summary: ev.summary
-            });
-            emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
-          });
-        } else if (ev.type === "session.live" && task.state === "waiting" && task.wait?.reason === "user-input") {
-          await ctx.mutations.run(mount.workspaceId, async () => {
-            ctx.host.markSelfWrite(mount.workspaceId);
-            const resumed = await taskResume(mount.env, task.path);
-            emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
-          });
-        } else if ((ev.type === "session.failed" || ev.type === "session.exited") && (task.state === "running" || task.state === "waiting")) {
-          await failTaskFromRuntime(ctx, {
-            workspaceId: mount.workspaceId,
-            taskPath: task.path,
-            sessionId: ev.sessionId,
-            reason: ev.type,
-            summary: ev.type === "session.failed" ? ev.error : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`
-          });
-        } else if (ev.type === "session.prompt_complete") {
-          await tryManagedAutoDeliver(ctx, {
-            workspaceId: mount.workspaceId,
-            taskPath: task.path,
-            sessionId: ev.sessionId,
-            assistantText: ev.assistantText
-          });
-        }
+      await projectRuntimeEventWithRetry(ctx, ev);
+    } catch (err) {
+      await reportRuntimeProjectionFailure(ctx, ev, err);
+    }
+  });
+}
+async function projectRuntimeEventWithRetry(ctx, ev) {
+  try {
+    await projectRuntimeEventOnce(ctx, ev, 1);
+  } catch {
+    await sleepMs(projectionRetryDelayMs());
+    await projectRuntimeEventOnce(ctx, ev, 2);
+  }
+}
+async function reportRuntimeProjectionFailure(ctx, ev, err) {
+  const classified = classifyProjectionError(err);
+  let workspaceId = "";
+  try {
+    const rec = await ctx.runtime.registry.read(ev.sessionId);
+    workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+  } catch {
+    workspaceId = ctx.host.getForegroundId() ?? "";
+  }
+  console.error(
+    `[tent-service] runtime projection failed sessionId=${ev.sessionId} event=${ev.type} class=${classified.errorClass}` + (classified.errorCode !== void 0 ? ` code=${classified.errorCode}` : "")
+  );
+  ctx.events.emit(
+    "service.health",
+    workspaceId,
+    {
+      action: "runtime-projection-failed",
+      sessionId: ev.sessionId,
+      runtimeEvent: ev.type,
+      errorClass: classified.errorClass,
+      ...classified.errorCode !== void 0 ? { errorCode: classified.errorCode } : {}
+    },
+    "service"
+  );
+}
+async function projectRuntimeEventOnce(ctx, ev, attempt) {
+  if (runtimeProjectionTestHooks?.beforeProject) {
+    await runtimeProjectionTestHooks.beforeProject(ev, attempt);
+  }
+  if (runtimeProjectionTestHooks && typeof runtimeProjectionTestHooks.failAttemptsRemaining === "number" && runtimeProjectionTestHooks.failAttemptsRemaining > 0) {
+    runtimeProjectionTestHooks.failAttemptsRemaining -= 1;
+    const injected = new Error("injected runtime projection failure");
+    injected.name = "ProjectionInjectedError";
+    injected.code = "PROJECTION_INJECTED";
+    throw injected;
+  }
+  const rec = await ctx.runtime.registry.read(ev.sessionId);
+  const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
+  if (ev.type === "session.stdout_tail") {
+    return;
+  }
+  if (ev.type === "session.waiting_user") {
+    try {
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "waiting-user"
+      });
+    } catch {
+    }
+  } else if (ev.type === "session.live") {
+    try {
+      const current = await ctx.runtime.registry.read(ev.sessionId);
+      if (current && current.state === "waiting-user") {
+        await ctx.runtime.registry.update(ev.sessionId, {
+          state: "live",
+          ...ev.pid != null ? { pid: ev.pid } : {}
+        });
       }
     } catch {
     }
-  })();
+  } else if (ev.type === "session.failed" || ev.type === "session.exited") {
+    try {
+      await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
+    } catch {
+    }
+  }
+  if (rec?.lastTaskId) {
+    const mountInfos = ctx.host.list();
+    for (const info of mountInfos) {
+      if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+      const mount = ctx.host.get(info.workspaceId);
+      if (!mount) continue;
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      const task = tasks.find(
+        (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId || t.path === rec.lastTaskId
+      );
+      if (!task) continue;
+      if (ev.type === "session.waiting_user" && task.state === "running") {
+        await ctx.mutations.run(mount.workspaceId, async () => {
+          ctx.host.markSelfWrite(mount.workspaceId);
+          const waited = await taskWait(mount.env, task.path, {
+            reason: "user-input",
+            summary: ev.summary
+          });
+          emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
+        });
+      } else if (ev.type === "session.live" && task.state === "waiting" && task.wait?.reason === "user-input") {
+        await ctx.mutations.run(mount.workspaceId, async () => {
+          ctx.host.markSelfWrite(mount.workspaceId);
+          const resumed = await taskResume(mount.env, task.path);
+          emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
+        });
+      } else if ((ev.type === "session.failed" || ev.type === "session.exited") && (task.state === "running" || task.state === "waiting")) {
+        await failTaskFromRuntime(ctx, {
+          workspaceId: mount.workspaceId,
+          taskPath: task.path,
+          sessionId: ev.sessionId,
+          reason: ev.type,
+          summary: ev.type === "session.failed" ? ev.error : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`
+        });
+      } else if (ev.type === "session.prompt_complete") {
+        await tryManagedAutoDeliver(ctx, {
+          workspaceId: mount.workspaceId,
+          taskPath: task.path,
+          sessionId: ev.sessionId,
+          assistantText: ev.assistantText
+        });
+      }
+    }
+  }
+  ctx.events.emit(
+    "session.state",
+    workspaceId,
+    {
+      sessionId: ev.sessionId,
+      runtimeEvent: ev.type,
+      ..."pid" in ev ? { pid: ev.pid } : {},
+      ..."exitCode" in ev ? { exitCode: ev.exitCode } : {},
+      ..."error" in ev ? { error: ev.error } : {},
+      ..."summary" in ev ? { summary: ev.summary } : {},
+      ...ev.type === "session.prompt_complete" ? { assistantChars: ev.assistantText.length, stopReason: ev.stopReason } : {}
+    },
+    "service"
+  );
 }
 async function failTaskFromRuntime(ctx, input) {
   const mount = ctx.host.get(input.workspaceId);
@@ -6035,31 +6132,6 @@ var EventBus = class {
   }
   listenerCount() {
     return this.listeners.size;
-  }
-};
-
-// src/service/mutation-bus.ts
-var MutationBus = class {
-  constructor() {
-    this.tails = /* @__PURE__ */ new Map();
-  }
-  async run(workspaceId, action) {
-    const prev = this.tails.get(workspaceId) ?? Promise.resolve();
-    let release;
-    const gate = new Promise((resolve7) => {
-      release = resolve7;
-    });
-    const chain = prev.catch(() => void 0).then(() => gate);
-    this.tails.set(workspaceId, chain);
-    await prev.catch(() => void 0);
-    try {
-      return await action();
-    } finally {
-      release();
-      if (this.tails.get(workspaceId) === chain) {
-        this.tails.delete(workspaceId);
-      }
-    }
   }
 };
 
@@ -7389,7 +7461,9 @@ async function startLocalTentService(options = {}) {
     dataDir,
     integrateCommits: options.integrateCommits
   };
-  runtime.subscribeAll((ev) => mapRuntimeEventToService(ctx, ev));
+  runtime.subscribeAll((ev) => {
+    void mapRuntimeEventToService(ctx, ev);
+  });
   const httpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",
     port: options.port ?? 0,

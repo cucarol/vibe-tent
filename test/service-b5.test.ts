@@ -30,6 +30,8 @@ import {
   mapRuntimeEventToService,
   reconcileTaskSessionsOnMount,
   resetManagedAutoDeliverDedupForTests,
+  resetRuntimeProjectionForTests,
+  setRuntimeProjectionTestHooksForTests,
   SESSION_UNAVAILABLE_WAIT_SUMMARY,
 } from "../src/service/handlers.js";
 import { ensureRoleWorkspace } from "../src/core/workspace.js";
@@ -2571,3 +2573,251 @@ test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", 
 function normalizeLf(value: string): string {
   return value.replace(/\r\n/g, "\n");
 }
+
+// ---- runtime projection reliability (per-session queue + one retry) ----
+
+test("runtime projection: same-session waiting_user → live preserves order under delay", async () => {
+  await withService(async (svc) => {
+    const sessionId = "ss-projord1";
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: sessionId,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      state: "live",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const sessionStateOrder: string[] = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") {
+        sessionStateOrder.push(
+          String((ev.payload as { runtimeEvent?: string }).runtimeEvent ?? "")
+        );
+      }
+    });
+
+    let releaseWait!: () => void;
+    const waitGate = new Promise<void>((resolve) => {
+      releaseWait = resolve;
+    });
+    setRuntimeProjectionTestHooksForTests({
+      beforeProject: async (ev, attempt) => {
+        if (ev.type === "session.waiting_user" && attempt === 1) {
+          await waitGate;
+        }
+      },
+      retryDelayMs: 5,
+    });
+
+    try {
+      const pWait = mapRuntimeEventToService(svc.ctx, {
+        type: "session.waiting_user",
+        sessionId,
+        summary: "need tool approval",
+      });
+      // Ensure waiting_user holds the per-session queue before live is enqueued.
+      await new Promise((r) => setTimeout(r, 30));
+      const pLive = mapRuntimeEventToService(svc.ctx, {
+        type: "session.live",
+        sessionId,
+        pid: 4242,
+      });
+      await new Promise((r) => setTimeout(r, 20));
+      releaseWait();
+      await Promise.all([pWait, pLive]);
+
+      const rec = await svc.runtime.registry.read(sessionId);
+      assert.equal(rec?.state, "live", "final session state must be live after ordered projection");
+      assert.deepEqual(sessionStateOrder, ["session.waiting_user", "session.live"]);
+    } finally {
+      unsub();
+      resetRuntimeProjectionForTests();
+    }
+  });
+});
+
+test("runtime projection: transient failure retries once and emits one session.state", async () => {
+  await withService(async (svc) => {
+    const sessionId = "ss-projretry1";
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: sessionId,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      state: "live",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const sessionStates: Array<Record<string, unknown>> = [];
+    const health: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") {
+        sessionStates.push(ev.payload as Record<string, unknown>);
+      }
+      if (ev.type === "service.health") {
+        health.push(ev.payload as Record<string, unknown>);
+      }
+    });
+
+    const attempts: number[] = [];
+    setRuntimeProjectionTestHooksForTests({
+      failAttemptsRemaining: 1,
+      retryDelayMs: 5,
+      beforeProject: (_ev, attempt) => {
+        attempts.push(attempt);
+      },
+    });
+
+    try {
+      await mapRuntimeEventToService(svc.ctx, {
+        type: "session.waiting_user",
+        sessionId,
+        summary: "transient",
+      });
+
+      assert.deepEqual(attempts, [1, 2], "exactly one retry after first failure");
+      assert.equal(sessionStates.length, 1, "one normal session.state after successful retry");
+      assert.equal(sessionStates[0].runtimeEvent, "session.waiting_user");
+      assert.equal(sessionStates[0].sessionId, sessionId);
+      assert.ok(
+        !health.some((h) => h.action === "runtime-projection-failed"),
+        "successful retry must not emit projection-failed health"
+      );
+
+      const rec = await svc.runtime.registry.read(sessionId);
+      assert.equal(rec?.state, "waiting-user");
+    } finally {
+      unsub();
+      resetRuntimeProjectionForTests();
+    }
+  });
+});
+
+test("runtime projection: permanent failure emits diagnostic, no unhandled rejection, queue continues", async () => {
+  await withService(async (svc) => {
+    const sessionId = "ss-projperm1";
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: sessionId,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      state: "live",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const sessionStates: Array<Record<string, unknown>> = [];
+    const health: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") {
+        sessionStates.push(ev.payload as Record<string, unknown>);
+      }
+      if (ev.type === "service.health") {
+        health.push(ev.payload as Record<string, unknown>);
+      }
+    });
+
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => {
+      unhandled.push(reason);
+    };
+    process.on("unhandledRejection", onUnhandled);
+
+    setRuntimeProjectionTestHooksForTests({
+      // Both attempt 1 and the single retry fail.
+      failAttemptsRemaining: 2,
+      retryDelayMs: 5,
+    });
+
+    try {
+      // Must resolve (not reject) after exhaustion so callers/void do not get unhandled rejections.
+      await mapRuntimeEventToService(svc.ctx, {
+        type: "session.waiting_user",
+        sessionId,
+        summary: "permanent inject",
+      });
+      // Allow any stray rejection microtasks to surface.
+      await new Promise((r) => setTimeout(r, 40));
+
+      assert.equal(unhandled.length, 0, "projection failure must not produce unhandledRejection");
+      assert.equal(sessionStates.length, 0, "failed projection must not emit session.state");
+
+      const failed = health.filter((h) => h.action === "runtime-projection-failed");
+      assert.equal(failed.length, 1);
+      assert.equal(failed[0].sessionId, sessionId);
+      assert.equal(failed[0].runtimeEvent, "session.waiting_user");
+      assert.equal(failed[0].errorClass, "ProjectionInjectedError");
+      assert.equal(failed[0].errorCode, "PROJECTION_INJECTED");
+      assert.ok(!("error" in failed[0] && typeof failed[0].error === "object"));
+
+      // Queue must not be poisoned: next event for same session still projects.
+      resetRuntimeProjectionForTests();
+      await mapRuntimeEventToService(svc.ctx, {
+        type: "session.live",
+        sessionId,
+        pid: 99,
+      });
+      assert.equal(sessionStates.length, 1);
+      assert.equal(sessionStates[0].runtimeEvent, "session.live");
+    } finally {
+      process.off("unhandledRejection", onUnhandled);
+      unsub();
+      resetRuntimeProjectionForTests();
+    }
+  });
+});
+
+test("runtime projection: different sessions are not process-wide serialized", async () => {
+  await withService(async (svc) => {
+    const now = new Date().toISOString();
+    for (const id of ["ss-proj-a", "ss-proj-b"] as const) {
+      await svc.runtime.registry.write({
+        id,
+        profileId: "fake-default",
+        adapterId: FAKE_ADAPTER_ID,
+        state: "starting",
+        createdAt: now,
+        updatedAt: now,
+      });
+    }
+
+    const finishOrder: string[] = [];
+    setRuntimeProjectionTestHooksForTests({
+      beforeProject: async (ev) => {
+        // A is slow; B is fast. Independent queues → B completes first.
+        if (ev.sessionId === "ss-proj-a") {
+          await new Promise((r) => setTimeout(r, 120));
+        } else if (ev.sessionId === "ss-proj-b") {
+          await new Promise((r) => setTimeout(r, 10));
+        }
+        finishOrder.push(ev.sessionId);
+      },
+      retryDelayMs: 5,
+    });
+
+    try {
+      const pa = mapRuntimeEventToService(svc.ctx, {
+        type: "session.live",
+        sessionId: "ss-proj-a",
+        pid: 1,
+      });
+      const pb = mapRuntimeEventToService(svc.ctx, {
+        type: "session.live",
+        sessionId: "ss-proj-b",
+        pid: 2,
+      });
+      await Promise.all([pa, pb]);
+
+      assert.deepEqual(
+        finishOrder,
+        ["ss-proj-b", "ss-proj-a"],
+        "faster session must not wait on a process-wide single queue"
+      );
+    } finally {
+      resetRuntimeProjectionForTests();
+    }
+  });
+});
