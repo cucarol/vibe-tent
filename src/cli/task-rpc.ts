@@ -362,8 +362,9 @@ Service options:
   --attach-only           Fail if no healthy service (do not bootstrap)
   --service-entry <path>  Path to service.mjs when bootstrapping
 
-Legacy CLI (direct core write, not service RPC):
-  tent dispatch / task-ack / report / complete / stamp …
-  Prefer \`tent task *\` for Desktop co-located agents and in-workspace tents.
+Legacy CLI direct core write is blocked on in-workspace <workspace>/.tent
+(fail-loud; use tent task * / Desktop Service). External tent roots keep
+dispatch / task-ack / report / complete / stamp … for the migration window only.
+Derived role-init remains available because it regenerates bootstrap context only.
 `;
 }

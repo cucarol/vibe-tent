@@ -28,7 +28,9 @@ import {
 import {
   invokeManagedAutoDeliverForTests,
   mapRuntimeEventToService,
+  reconcileTaskSessionsOnMount,
   resetManagedAutoDeliverDedupForTests,
+  SESSION_UNAVAILABLE_WAIT_SUMMARY,
 } from "../src/service/handlers.js";
 import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
@@ -1721,6 +1723,236 @@ test("P0 fix: same role only one active managed session; same-task start is idem
       (s4.result as { session: { sessionId: string } }).session.sessionId,
       sessionId1
     );
+  });
+});
+
+test("mount reconcile: dead/missing session → waiting(external); live/no-sessionId/terminal untouched; multi-ws; idempotent", async () => {
+  const wsA = await makeWorkspace("reconcile-a");
+  const wsB = await makeWorkspace("reconcile-b");
+  await withService(async (svc) => {
+    const events: { type: string; workspaceId: string; payload: Record<string, unknown> }[] = [];
+    const unsub = svc.events.subscribe((env) => {
+      events.push({
+        type: env.type,
+        workspaceId: env.workspaceId,
+        payload: env.payload as Record<string, unknown>,
+      });
+    });
+
+    const mA = await rpc(svc, "workspace.mount", { workspaceRoot: wsA });
+    const mB = await rpc(svc, "workspace.mount", { workspaceRoot: wsB });
+    const idA = (mA.result as { workspaceId: string }).workspaceId;
+    const idB = (mB.result as { workspaceId: string }).workspaceId;
+
+    async function seedTask(
+      workspaceId: string,
+      name: string,
+      role: string,
+      opts: {
+        bindSession?: { id: string; state: "stopped" | "failed" | "live" | "starting" | "waiting-user" | "missing" };
+        noSession?: boolean;
+        terminal?: boolean;
+        waitingReason?: "user-input" | "a2a-approval";
+      } = {}
+    ) {
+      const created = await rpc(svc, "docs.createNote", { workspaceId, name, type: "prompt" });
+      const boxId = (created.result as { id: string }).id;
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role,
+        prompt: `seed ${name}`,
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+      if (opts.terminal) {
+        await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+        return { taskPath, boxId };
+      }
+
+      if (opts.noSession) {
+        return { taskPath, boxId };
+      }
+
+      if (opts.bindSession) {
+        const sid = opts.bindSession.id;
+        if (opts.bindSession.state !== "missing") {
+          const now = new Date().toISOString();
+          await svc.runtime.registry.write({
+            id: sid,
+            profileId: "fake-default",
+            adapterId: FAKE_ADAPTER_ID,
+            roleName: role,
+            state: opts.bindSession.state,
+            workspace: workspaceId,
+            lastTaskId: taskPath,
+            createdAt: now,
+            updatedAt: now,
+          });
+        }
+        const mount = svc.hostApi.require(workspaceId);
+        await patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: sid,
+          updatedAt: mount.env.clock.now(),
+        });
+      }
+
+      if (opts.waitingReason) {
+        await rpc(svc, "task.wait", {
+          workspaceId,
+          taskPath,
+          reason: opts.waitingReason,
+          summary: `parked for ${opts.waitingReason}`,
+        });
+      }
+
+      return { taskPath, boxId };
+    }
+
+    // A: running + stopped session → must park
+    const dead = await seedTask(idA, "dead-session", "executor", {
+      bindSession: { id: "ss-dead0001", state: "stopped" },
+    });
+    // A: running + missing session record → park
+    const missing = await seedTask(idA, "missing-session", "orchestrator", {
+      bindSession: { id: "ss-miss0001", state: "missing" },
+    });
+    // A: running + live session → leave
+    const live = await seedTask(idA, "live-session", "executor", {
+      bindSession: { id: "ss-live0001", state: "live" },
+    });
+    // A: running without sessionId (manual/external) → leave
+    const manual = await seedTask(idA, "manual-run", "orchestrator", { noSession: true });
+    // A: waiting(user-input) + failed session → rewrite to external
+    const waitUser = await seedTask(idA, "wait-user", "executor", {
+      bindSession: { id: "ss-fail0001", state: "failed" },
+      waitingReason: "user-input",
+    });
+    // A: terminal interrupted → leave
+    const terminal = await seedTask(idA, "terminal-task", "orchestrator", { terminal: true });
+
+    // B: independent workspace also parks its own dead session
+    const deadB = await seedTask(idB, "dead-b", "executor", {
+      bindSession: { id: "ss-dead000b", state: "stopped" },
+    });
+
+    // Simulate remount: unmount + mount triggers reconcile again
+    await rpc(svc, "workspace.unmount", { workspaceId: idA });
+    await rpc(svc, "workspace.unmount", { workspaceId: idB });
+    events.length = 0;
+    const remA = await rpc(svc, "workspace.mount", { workspaceRoot: wsA });
+    const remB = await rpc(svc, "workspace.mount", { workspaceRoot: wsB });
+    const idA2 = (remA.result as { workspaceId: string }).workspaceId;
+    const idB2 = (remB.result as { workspaceId: string }).workspaceId;
+
+    const get = async (workspaceId: string, taskPath: string) => {
+      const r = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.ok(!r.error, JSON.stringify(r.error));
+      return (r.result as { task: {
+        state: string;
+        wait?: { reason: string; summary: string } | null;
+        sessionId?: string;
+      } }).task;
+    };
+
+    const deadTask = await get(idA2, dead.taskPath);
+    assert.equal(deadTask.state, "waiting");
+    assert.equal(deadTask.wait?.reason, "external");
+    assert.equal(deadTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(deadTask.sessionId, "ss-dead0001");
+
+    const missingTask = await get(idA2, missing.taskPath);
+    assert.equal(missingTask.state, "waiting");
+    assert.equal(missingTask.wait?.reason, "external");
+
+    const liveTask = await get(idA2, live.taskPath);
+    assert.equal(liveTask.state, "running");
+    assert.equal(liveTask.wait ?? null, null);
+
+    const manualTask = await get(idA2, manual.taskPath);
+    assert.equal(manualTask.state, "running");
+    assert.equal(manualTask.sessionId ?? undefined, undefined);
+
+    const waitUserTask = await get(idA2, waitUser.taskPath);
+    assert.equal(waitUserTask.state, "waiting");
+    assert.equal(waitUserTask.wait?.reason, "external");
+    assert.equal(waitUserTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+
+    const terminalTask = await get(idA2, terminal.taskPath);
+    assert.equal(terminalTask.state, "interrupted");
+
+    const deadBTask = await get(idB2, deadB.taskPath);
+    assert.equal(deadBTask.state, "waiting");
+    assert.equal(deadBTask.wait?.reason, "external");
+
+    // Occupation kept: box still doing / assignee present
+    const box = await rpc(svc, "docs.get", { workspaceId: idA2, id: dead.boxId });
+    assert.ok(!box.error, JSON.stringify(box.error));
+    const concept = (box.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.ok(concept.assignee || concept.owner, "occupation must remain after reconcile");
+
+    // Events fired with session.reconcile reason
+    const reconcileEvents = events.filter(
+      (e) => e.type === "task.state" && e.payload.reason === "session.reconcile"
+    );
+    assert.ok(reconcileEvents.length >= 3, `expected reconcile events, got ${reconcileEvents.length}`);
+
+    // Idempotent: second reconcile does not re-emit / re-mutate
+    events.length = 0;
+    const again = await reconcileTaskSessionsOnMount(svc.ctx, idA2);
+    assert.deepEqual(again.reconciled, []);
+    const after = await get(idA2, dead.taskPath);
+    assert.equal(after.state, "waiting");
+    assert.equal(after.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(
+      events.filter((e) => e.payload.reason === "session.reconcile").length,
+      0
+    );
+
+    unsub();
+  });
+});
+
+test("task.startSession resumes any waiting (external/a2a) before launch", async () => {
+  const ws = await makeWorkspace("start-from-wait");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "resume external wait",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    // Simulate post-restart parked task
+    await rpc(svc, "task.wait", {
+      workspaceId,
+      taskPath,
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+    let parked = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((parked.result as { task: { state: string } }).task.state, "waiting");
+
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const result = started.result as {
+      task: { state: string; wait?: unknown; sessionId?: string };
+      session: { sessionId: string };
+    };
+    assert.equal(result.task.state, "running");
+    assert.equal(result.task.wait ?? null, null);
+    assert.match(result.session.sessionId, /^ss-/);
+    assert.equal(result.task.sessionId, result.session.sessionId);
   });
 });
 

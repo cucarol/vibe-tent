@@ -1529,6 +1529,11 @@ async function patchTaskEnvelope(fs, path, patch) {
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+  for (const key of ["workspace", "worktree", "branch", "targetBranch"]) {
+    const value = patch[key];
+    if (value === null) delete data[key];
+    else if (typeof value === "string") data[key] = value;
+  }
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs, path);
 }

@@ -1,21 +1,15 @@
 #!/usr/bin/env node
 
-var __defProp = Object.defineProperty;
-var __getOwnPropNames = Object.getOwnPropertyNames;
-var __esm = (fn, res, err) => function __init() {
-  if (err) throw err[0];
-  try {
-    return fn && (res = (0, fn[__getOwnPropNames(fn)[0]])(fn = 0)), res;
-  } catch (e) {
-    throw err = [e], e;
-  }
-};
-var __export = (target, all) => {
-  for (var name in all)
-    __defProp(target, name, { get: all[name], enumerable: true });
-};
+
+// src/service/cli.ts
+import * as path8 from "node:path";
+
+// src/service/http-server.ts
+import * as http from "node:http";
 
 // src/core/frontmatter.ts
+var FENCE = "---";
+var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
 function parseFrontmatter(raw) {
   const text = raw.replace(/\r\n/g, "\n");
   if (!text.startsWith(FENCE + "\n")) {
@@ -228,14 +222,6 @@ function emit(v) {
   }
   return s;
 }
-var FENCE, BOX_FRONTMATTER_KEY_ORDER;
-var init_frontmatter = __esm({
-  "src/core/frontmatter.ts"() {
-    "use strict";
-    FENCE = "---";
-    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
-  }
-});
 
 // src/core/registryRecovery.ts
 async function backupCorruptRegistry(fs9, path9) {
@@ -251,13 +237,33 @@ function warnRegistryRecovered(path9, backupPath, action, extra = "") {
 function timestamp() {
   return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
 }
-var init_registryRecovery = __esm({
-  "src/core/registryRecovery.ts"() {
-    "use strict";
-  }
-});
 
 // src/core/paths.ts
+var TENT_SYSTEM_DIR = ".tent";
+var TYPE_REGISTRY_PATH = "types.json";
+var ROLES_REGISTRY_PATH = "roles.json";
+var TAGS_REGISTRY_PATH = "tags.json";
+var ORDER_PATH = "order.json";
+var MUTATION_LOCK_PATH = "mutation.lock";
+var RULES_PATH = "RULES.md";
+var TEMP_DIR = "temp";
+var ATTACHMENTS_DIR = "attachments";
+var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
+  TEMP_DIR,
+  ATTACHMENTS_DIR,
+  // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
+  TENT_SYSTEM_DIR
+]);
+var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
+  TYPE_REGISTRY_PATH,
+  ROLES_REGISTRY_PATH,
+  TAGS_REGISTRY_PATH,
+  ORDER_PATH,
+  MUTATION_LOCK_PATH,
+  RULES_PATH,
+  "index.md",
+  "log.md"
+]);
 function systemRootFromWorkspace(workspaceRoot) {
   const root = workspaceRoot.replace(/[\\/]+$/, "");
   const sep2 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
@@ -272,39 +278,9 @@ function isOperationalPath(relativePath2) {
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }
-var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, TEMP_DIR, ATTACHMENTS_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
-var init_paths = __esm({
-  "src/core/paths.ts"() {
-    "use strict";
-    TENT_SYSTEM_DIR = ".tent";
-    TYPE_REGISTRY_PATH = "types.json";
-    ROLES_REGISTRY_PATH = "roles.json";
-    TAGS_REGISTRY_PATH = "tags.json";
-    ORDER_PATH = "order.json";
-    MUTATION_LOCK_PATH = "mutation.lock";
-    RULES_PATH = "RULES.md";
-    TEMP_DIR = "temp";
-    ATTACHMENTS_DIR = "attachments";
-    OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
-      TEMP_DIR,
-      ATTACHMENTS_DIR,
-      // 历史残留：若仍见嵌套 .tent，视为系统区而非 concept
-      TENT_SYSTEM_DIR
-    ]);
-    SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
-      TYPE_REGISTRY_PATH,
-      ROLES_REGISTRY_PATH,
-      TAGS_REGISTRY_PATH,
-      ORDER_PATH,
-      MUTATION_LOCK_PATH,
-      RULES_PATH,
-      "index.md",
-      "log.md"
-    ]);
-  }
-});
 
 // src/core/order.ts
+var ROOT_KEY = "__root__";
 async function loadOrder(fs9) {
   if (!await fs9.exists(ORDER_PATH)) return {};
   try {
@@ -334,17 +310,68 @@ function sortByOrder(items, order, fallback) {
   });
   return sorted;
 }
-var ROOT_KEY;
-var init_order = __esm({
-  "src/core/order.ts"() {
-    "use strict";
-    init_registryRecovery();
-    init_paths();
-    ROOT_KEY = "__root__";
-  }
-});
 
 // src/core/typeRegistry.ts
+var DEFAULT_TYPE_REGISTRY = {
+  note: {
+    readable: true,
+    writable: true,
+    color: "gray",
+    tier: "base",
+    coordination: false,
+    description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
+  },
+  goal: {
+    readable: true,
+    writable: false,
+    color: "blue",
+    tier: "base",
+    coordination: true,
+    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
+  },
+  prompt: {
+    readable: true,
+    writable: true,
+    color: "purple",
+    tier: "base",
+    coordination: true,
+    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
+  },
+  artifact: {
+    readable: true,
+    writable: true,
+    color: "cyan",
+    tier: "base",
+    coordination: true,
+    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
+  },
+  open: {
+    readable: true,
+    writable: true,
+    color: "green",
+    tier: "modifier",
+    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
+  },
+  reference: {
+    readable: true,
+    color: "blue",
+    tier: "modifier",
+    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
+  },
+  asset: {
+    writable: true,
+    color: "purple",
+    tier: "modifier",
+    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
+  },
+  sealed: {
+    readable: false,
+    writable: false,
+    color: "red",
+    tier: "modifier",
+    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
+  }
+};
 function splitType(type) {
   const i = type.indexOf("-");
   if (i === -1) return { base: type };
@@ -471,75 +498,9 @@ function cloneDefaults() {
 function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
-var DEFAULT_TYPE_REGISTRY;
-var init_typeRegistry = __esm({
-  "src/core/typeRegistry.ts"() {
-    "use strict";
-    init_paths();
-    DEFAULT_TYPE_REGISTRY = {
-      note: {
-        readable: true,
-        writable: true,
-        color: "gray",
-        tier: "base",
-        coordination: false,
-        description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
-      },
-      goal: {
-        readable: true,
-        writable: false,
-        color: "blue",
-        tier: "base",
-        coordination: true,
-        description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
-      },
-      prompt: {
-        readable: true,
-        writable: true,
-        color: "purple",
-        tier: "base",
-        coordination: true,
-        description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
-      },
-      artifact: {
-        readable: true,
-        writable: true,
-        color: "cyan",
-        tier: "base",
-        coordination: true,
-        description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
-      },
-      open: {
-        readable: true,
-        writable: true,
-        color: "green",
-        tier: "modifier",
-        description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
-      },
-      reference: {
-        readable: true,
-        color: "blue",
-        tier: "modifier",
-        description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
-      },
-      asset: {
-        writable: true,
-        color: "purple",
-        tier: "modifier",
-        description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
-      },
-      sealed: {
-        readable: false,
-        writable: false,
-        color: "red",
-        tier: "modifier",
-        description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
-      }
-    };
-  }
-});
 
 // src/core/tree.ts
+var ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
@@ -774,19 +735,142 @@ function dirName(path9) {
   const i = path9.lastIndexOf("/");
   return i === -1 ? "" : path9.slice(0, i);
 }
-var ZONE_NAMES;
-var init_tree = __esm({
-  "src/core/tree.ts"() {
-    "use strict";
-    init_frontmatter();
-    init_order();
-    init_typeRegistry();
-    init_paths();
-    ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
+
+// src/core/adapter.ts
+function withTentMutation(fs9, action) {
+  return fs9.withLock ? fs9.withLock(MUTATION_LOCK_PATH, action) : action();
+}
+
+// src/core/manifest.ts
+function buildManifest(tent, input) {
+  const { role } = input;
+  const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
+  const claimScope = input.claimRoot ? allBoxes(tent).filter(isUsableBox) : claimBoxes.flatMap(subtree);
+  const readable = [];
+  const writable = [];
+  for (const box of allBoxes(tent)) {
+    if (isUsableBox(box) && box.readable.value) {
+      readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
+    }
   }
-});
+  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
+  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
+  for (const box of claimScope) {
+    if (isUsableBox(box) && box.writable.value) {
+      writable.push({ id: box.id, path: box.path });
+    }
+  }
+  if (input.claimRoot) {
+    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
+  }
+  for (const box of claimScope) {
+    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
+  }
+  writable.push({ path: join("temp", role) + "/" });
+  return {
+    tent: input.tentName,
+    role,
+    claims: input.claimRoot ? ["root"] : claimBoxes.map((box) => box.id),
+    ...input.workspace ? { workspace: input.workspace } : {},
+    ...input.worktree ? { worktree: input.worktree } : {},
+    ...input.branch ? { branch: input.branch } : {},
+    ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
+    readable: dedupe(readable),
+    writable: dedupe(writable),
+    preloaded: buildPreloaded(tent)
+  };
+}
+function manifestToYaml(m) {
+  const lines = [];
+  lines.push(`tent: ${m.tent}`);
+  lines.push(`role: ${m.role}`);
+  lines.push(`claims: [${m.claims.join(", ")}]`);
+  if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
+  if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
+  if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
+  if (m.targetBranch) lines.push(`targetBranch: ${yamlStr(m.targetBranch)}`);
+  lines.push(`readable:`);
+  for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
+  lines.push(`writable:`);
+  for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
+  lines.push(`preloaded:`);
+  for (const p of m.preloaded) lines.push(`  - ${p}`);
+  return lines.join("\n") + "\n";
+}
+function entryLine(e) {
+  const parts = [];
+  if (e.id) parts.push(`id: ${e.id}`);
+  parts.push(`path: ${yamlStr(e.path)}`);
+  if (e.note) parts.push(`note: ${yamlStr(e.note)}`);
+  return `{${parts.join(", ")}}`;
+}
+function yamlStr(s) {
+  return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
+}
+function oneLineNote(box) {
+  const firstLine = box.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
+  return firstLine ? firstLine.slice(0, 40) : box.type;
+}
+function allBoxes(tent) {
+  return [...tent.byPath.values()];
+}
+function buildPreloaded(tent) {
+  const order = treeOrder(tent);
+  const entries = allBoxes(tent).filter((box) => isUsableBox(box) && box.readable.value).sort((a, b) => {
+    const stable = preloadStabilityRank(a) - preloadStabilityRank(b);
+    if (stable !== 0) return stable;
+    const type = preloadTypeRank(a) - preloadTypeRank(b);
+    if (type !== 0) return type;
+    return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
+  }).map((box) => `${box.path} body`);
+  return ["RULES.md", ...entries];
+}
+function preloadStabilityRank(box) {
+  const status = box.fm.status || "todo";
+  if (box.writable.value || box.fm.owner || status === "doing") return 1;
+  return 0;
+}
+function preloadTypeRank(box) {
+  const base = splitType(box.type).base;
+  if (base === "goal") return 0;
+  if (base === "prompt") return 1;
+  if (base === "artifact" || base === "output") return 2;
+  if (base === "note") return 3;
+  return 4;
+}
+function treeOrder(tent) {
+  const order = /* @__PURE__ */ new Map();
+  let n = 0;
+  const visit = (box) => {
+    order.set(box.id, n++);
+    for (const child of box.children) visit(child);
+  };
+  for (const root of tent.roots) visit(root);
+  return order;
+}
+function subtree(box) {
+  const out = [box];
+  for (const c of box.children) out.push(...subtree(c));
+  return out;
+}
+function requireClaimBoxes(input) {
+  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
+  return input.claimBoxes;
+}
+function dedupe(entries) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const e of entries) {
+    if (seen.has(e.path)) continue;
+    seen.add(e.path);
+    out.push(e);
+  }
+  return out;
+}
 
 // src/core/id.ts
+var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+var CONCEPT_ID_PREFIX = "cx-";
 function makeConceptId(rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
@@ -801,14 +885,144 @@ function makeUniqueConceptId(existing, rand = Math.random) {
   }
   return makeConceptId(rand, 10);
 }
-var ALPHABET, CONCEPT_ID_PREFIX;
-var init_id = __esm({
-  "src/core/id.ts"() {
-    "use strict";
-    ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-    CONCEPT_ID_PREFIX = "cx-";
+
+// src/core/claim.ts
+function canClaim(box) {
+  if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
+  if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  if (!box.coordination) {
+    return {
+      ok: false,
+      blocker: box,
+      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
+    };
   }
-});
+  if (box.fm.owner) {
+    return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
+  }
+  let anc = box.parent;
+  while (anc) {
+    if (anc.fm.owner) {
+      return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
+    }
+    anc = anc.parent;
+  }
+  const occupiedChild = findOccupied(box.children);
+  if (occupiedChild) {
+    return {
+      ok: false,
+      blocker: occupiedChild,
+      reason: `Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
+    };
+  }
+  return { ok: true };
+}
+function findOccupied(boxes) {
+  for (const b of boxes) {
+    if (b.fm.owner) return b;
+    const deep = findOccupied(b.children);
+    if (deep) return deep;
+  }
+  return void 0;
+}
+function occupiedBoxes(tent) {
+  const out = [];
+  for (const root of tent.roots) collect(root, out);
+  return out;
+}
+function collect(box, out) {
+  if (box.fm.owner) out.push(box);
+  for (const c of box.children) collect(c, out);
+}
+
+// src/core/tags.ts
+function normalizeTagName(name) {
+  const tag = name.trim();
+  if (!tag) throw new Error("Tag name cannot be empty.");
+  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
+  return tag;
+}
+
+// src/core/skillRoleRegistry.ts
+var DEFAULT_ROLES_REGISTRY = {
+  roles: []
+};
+async function loadRolesRegistry(fs9) {
+  if (!await fs9.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  try {
+    const parsed = JSON.parse(await fs9.readFile(ROLES_REGISTRY_PATH));
+    return normalizeRolesRegistry(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs9, ROLES_REGISTRY_PATH);
+    const reset = cloneDefaultRoles();
+    await writeJson(fs9, ROLES_REGISTRY_PATH, reset);
+    warnRegistryRecovered(
+      ROLES_REGISTRY_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
+    );
+    return reset;
+  }
+}
+function normalizeRolesRegistry(value) {
+  const root = isRecord2(value) ? value : {};
+  const roles = [];
+  if (Array.isArray(root.roles)) {
+    for (const item of root.roles) {
+      if (!isRecord2(item)) continue;
+      const role = normalizeRoleDefinition(item);
+      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      roles.push(role);
+    }
+  }
+  return { roles };
+}
+function normalizeRoleDefinition(value) {
+  const name = typeof value.name === "string" ? value.name.trim() : "";
+  const role = { name };
+  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
+  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
+  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
+  const a2a = normalizeA2APolicy(value.a2aPolicy);
+  if (a2a) role.a2aPolicy = a2a;
+  const cli = normalizeCliConfig(value.cli);
+  if (cli) role.cli = cli;
+  return role;
+}
+function roleA2APolicy(role) {
+  return role?.a2aPolicy ?? "deny";
+}
+function normalizeA2APolicy(value) {
+  if (value === void 0 || value === null || value === "") return void 0;
+  if (value === "allow" || value === "ask" || value === "deny") return value;
+  return void 0;
+}
+function normalizeCliConfig(value) {
+  if (value === void 0) return void 0;
+  if (!isRecord2(value)) throw new Error("role.cli must be an object.");
+  const command = typeof value.command === "string" ? value.command.trim() : "";
+  if (!command) throw new Error("role.cli.command must be a non-empty string.");
+  const cli = { command };
+  if (value.resume !== void 0) {
+    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
+    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
+    cli.resume = resume;
+  }
+  return cli;
+}
+function cloneDefaultRoles() {
+  return {
+    roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
+  };
+}
+async function writeJson(fs9, path9, value) {
+  if (!await fs9.exists(".tent")) await fs9.mkdir(".tent");
+  await fs9.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 
 // src/core/task-model.ts
 function stateToLegacyStatus(state) {
@@ -831,6 +1045,13 @@ function isTaskId(id) {
 function isDeliveryId(id) {
   return id.startsWith("dl-") && id.length > 3;
 }
+var TaskLifecycleError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+};
 function assertTransition(from, event, to) {
   const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
   if (!ok) {
@@ -918,38 +1139,8 @@ function evaluateA2A(input) {
   if (input.profileAllowed === false) return "deny";
   return "allow";
 }
-var TaskLifecycleError;
-var init_task_model = __esm({
-  "src/core/task-model.ts"() {
-    "use strict";
-    init_id();
-    TaskLifecycleError = class extends Error {
-      constructor(code, message) {
-        super(message);
-        this.code = code;
-        this.name = "TaskLifecycleError";
-      }
-    };
-  }
-});
 
 // src/core/task.ts
-var task_exports = {};
-__export(task_exports, {
-  ackTaskEnvelope: () => ackTaskEnvelope,
-  cancelTaskEnvelope: () => cancelTaskEnvelope,
-  ensureRoleInit: () => ensureRoleInit,
-  extractTaskUserPrompt: () => extractTaskUserPrompt,
-  loadTaskEnvelope: () => loadTaskEnvelope,
-  loadTaskEnvelopes: () => loadTaskEnvelopes,
-  patchTaskEnvelope: () => patchTaskEnvelope,
-  primaryBoxId: () => primaryBoxId,
-  relayPromptForTask: () => relayPromptForTask,
-  resolveTaskPromptRoots: () => resolveTaskPromptRoots,
-  sessionBootstrapPromptForTask: () => sessionBootstrapPromptForTask,
-  workspaceLaneOf: () => workspaceLaneOf,
-  writeTaskEnvelope: () => writeTaskEnvelope
-});
 async function loadTaskEnvelopes(fs9) {
   const tasks = [];
   if (!await fs9.exists("temp")) return tasks;
@@ -1135,13 +1326,6 @@ async function ackTaskEnvelope(fs9, path9) {
     state: "running"
   });
 }
-async function cancelTaskEnvelope(fs9, path9) {
-  const task = await loadTaskEnvelope(fs9, path9);
-  if (task.state !== "queued" && task.status !== "pending") {
-    throw new Error("Only queued (pending) task envelopes can be cancelled.");
-  }
-  await fs9.remove(path9);
-}
 async function patchTaskEnvelope(fs9, path9, patch) {
   if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
   const raw = await fs9.readFile(path9);
@@ -1167,17 +1351,13 @@ async function patchTaskEnvelope(fs9, path9, patch) {
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+  for (const key of ["workspace", "worktree", "branch", "targetBranch"]) {
+    const value = patch[key];
+    if (value === null) delete data[key];
+    else if (typeof value === "string") data[key] = value;
+  }
   await fs9.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs9, path9);
-}
-function workspaceLaneOf(task) {
-  if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch) return void 0;
-  return {
-    workspace: task.workspace,
-    worktree: task.worktree,
-    branch: task.branch,
-    targetBranch: task.targetBranch
-  };
 }
 function primaryBoxId(task) {
   return task.claims.find((c) => c !== "root");
@@ -1213,324 +1393,8 @@ async function uniqueMarkdownPath(fs9, dir, stem) {
 async function ensureDir(fs9, path9) {
   if (!await fs9.exists(path9)) await fs9.mkdir(path9);
 }
-var init_task = __esm({
-  "src/core/task.ts"() {
-    "use strict";
-    init_frontmatter();
-    init_tree();
-    init_task_model();
-  }
-});
-
-// src/service/cli.ts
-import * as path8 from "node:path";
-
-// src/service/http-server.ts
-import * as http from "node:http";
-
-// src/service/handlers.ts
-init_tree();
-init_frontmatter();
-
-// src/core/adapter.ts
-init_paths();
-function withTentMutation(fs9, action) {
-  return fs9.withLock ? fs9.withLock(MUTATION_LOCK_PATH, action) : action();
-}
-
-// src/core/ops.ts
-init_tree();
-
-// src/core/manifest.ts
-init_tree();
-init_typeRegistry();
-function buildManifest(tent, input) {
-  const { role } = input;
-  const claimBoxes = input.claimRoot ? tent.roots : requireClaimBoxes(input);
-  const claimScope = input.claimRoot ? allBoxes(tent).filter(isUsableBox) : claimBoxes.flatMap(subtree);
-  const readable = [];
-  const writable = [];
-  for (const box of allBoxes(tent)) {
-    if (isUsableBox(box) && box.readable.value) {
-      readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
-    }
-  }
-  readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
-  readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
-  for (const box of claimScope) {
-    if (isUsableBox(box) && box.writable.value) {
-      writable.push({ id: box.id, path: box.path });
-    }
-  }
-  if (input.claimRoot) {
-    writable.push({ path: "./", note: "Structural permission: may create/move top-level boxes at the Tent root." });
-  }
-  for (const box of claimScope) {
-    writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
-  }
-  writable.push({ path: join("temp", role) + "/" });
-  return {
-    tent: input.tentName,
-    role,
-    claims: input.claimRoot ? ["root"] : claimBoxes.map((box) => box.id),
-    ...input.workspace ? { workspace: input.workspace } : {},
-    ...input.worktree ? { worktree: input.worktree } : {},
-    ...input.branch ? { branch: input.branch } : {},
-    ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
-    readable: dedupe(readable),
-    writable: dedupe(writable),
-    preloaded: buildPreloaded(tent)
-  };
-}
-function manifestToYaml(m) {
-  const lines = [];
-  lines.push(`tent: ${m.tent}`);
-  lines.push(`role: ${m.role}`);
-  lines.push(`claims: [${m.claims.join(", ")}]`);
-  if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
-  if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
-  if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
-  if (m.targetBranch) lines.push(`targetBranch: ${yamlStr(m.targetBranch)}`);
-  lines.push(`readable:`);
-  for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
-  lines.push(`writable:`);
-  for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
-  lines.push(`preloaded:`);
-  for (const p of m.preloaded) lines.push(`  - ${p}`);
-  return lines.join("\n") + "\n";
-}
-function entryLine(e) {
-  const parts = [];
-  if (e.id) parts.push(`id: ${e.id}`);
-  parts.push(`path: ${yamlStr(e.path)}`);
-  if (e.note) parts.push(`note: ${yamlStr(e.note)}`);
-  return `{${parts.join(", ")}}`;
-}
-function yamlStr(s) {
-  return /[:#{}\[\],]/.test(s) ? JSON.stringify(s) : s;
-}
-function oneLineNote(box) {
-  const firstLine = box.body.split("\n").map((l) => l.trim()).find((l) => l && !l.startsWith("#"));
-  return firstLine ? firstLine.slice(0, 40) : box.type;
-}
-function allBoxes(tent) {
-  return [...tent.byPath.values()];
-}
-function buildPreloaded(tent) {
-  const order = treeOrder(tent);
-  const entries = allBoxes(tent).filter((box) => isUsableBox(box) && box.readable.value).sort((a, b) => {
-    const stable = preloadStabilityRank(a) - preloadStabilityRank(b);
-    if (stable !== 0) return stable;
-    const type = preloadTypeRank(a) - preloadTypeRank(b);
-    if (type !== 0) return type;
-    return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
-  }).map((box) => `${box.path} body`);
-  return ["RULES.md", ...entries];
-}
-function preloadStabilityRank(box) {
-  const status = box.fm.status || "todo";
-  if (box.writable.value || box.fm.owner || status === "doing") return 1;
-  return 0;
-}
-function preloadTypeRank(box) {
-  const base = splitType(box.type).base;
-  if (base === "goal") return 0;
-  if (base === "prompt") return 1;
-  if (base === "artifact" || base === "output") return 2;
-  if (base === "note") return 3;
-  return 4;
-}
-function treeOrder(tent) {
-  const order = /* @__PURE__ */ new Map();
-  let n = 0;
-  const visit = (box) => {
-    order.set(box.id, n++);
-    for (const child of box.children) visit(child);
-  };
-  for (const root of tent.roots) visit(root);
-  return order;
-}
-function subtree(box) {
-  const out = [box];
-  for (const c of box.children) out.push(...subtree(c));
-  return out;
-}
-function requireClaimBoxes(input) {
-  if (!input.claimBoxes || input.claimBoxes.length === 0) throw new Error("Missing claim boxes.");
-  return input.claimBoxes;
-}
-function dedupe(entries) {
-  const seen = /* @__PURE__ */ new Set();
-  const out = [];
-  for (const e of entries) {
-    if (seen.has(e.path)) continue;
-    seen.add(e.path);
-    out.push(e);
-  }
-  return out;
-}
-
-// src/core/ops.ts
-init_id();
-init_frontmatter();
-init_order();
-
-// src/core/claim.ts
-function canClaim(box) {
-  if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
-  if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
-  if (!box.coordination) {
-    return {
-      ok: false,
-      blocker: box,
-      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
-    };
-  }
-  if (box.fm.owner) {
-    return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
-  }
-  let anc = box.parent;
-  while (anc) {
-    if (anc.fm.owner) {
-      return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
-    }
-    anc = anc.parent;
-  }
-  const occupiedChild = findOccupied(box.children);
-  if (occupiedChild) {
-    return {
-      ok: false,
-      blocker: occupiedChild,
-      reason: `Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
-    };
-  }
-  return { ok: true };
-}
-function findOccupied(boxes) {
-  for (const b of boxes) {
-    if (b.fm.owner) return b;
-    const deep = findOccupied(b.children);
-    if (deep) return deep;
-  }
-  return void 0;
-}
-function occupiedBoxes(tent) {
-  const out = [];
-  for (const root of tent.roots) collect(root, out);
-  return out;
-}
-function collect(box, out) {
-  if (box.fm.owner) out.push(box);
-  for (const c of box.children) collect(c, out);
-}
-
-// src/core/ops.ts
-init_tree();
-
-// src/core/tags.ts
-init_frontmatter();
-init_tree();
-init_registryRecovery();
-init_paths();
-function normalizeTagName(name) {
-  const tag = name.trim();
-  if (!tag) throw new Error("Tag name cannot be empty.");
-  if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
-  return tag;
-}
-
-// src/core/ops.ts
-init_typeRegistry();
-
-// src/core/skillRoleRegistry.ts
-init_registryRecovery();
-init_paths();
-var DEFAULT_ROLES_REGISTRY = {
-  roles: []
-};
-async function loadRolesRegistry(fs9) {
-  if (!await fs9.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
-  try {
-    const parsed = JSON.parse(await fs9.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs9, ROLES_REGISTRY_PATH);
-    const reset = cloneDefaultRoles();
-    await writeJson(fs9, ROLES_REGISTRY_PATH, reset);
-    warnRegistryRecovered(
-      ROLES_REGISTRY_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
-    );
-    return reset;
-  }
-}
-function normalizeRolesRegistry(value) {
-  const root = isRecord2(value) ? value : {};
-  const roles = [];
-  if (Array.isArray(root.roles)) {
-    for (const item of root.roles) {
-      if (!isRecord2(item)) continue;
-      const role = normalizeRoleDefinition(item);
-      if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
-      roles.push(role);
-    }
-  }
-  return { roles };
-}
-function normalizeRoleDefinition(value) {
-  const name = typeof value.name === "string" ? value.name.trim() : "";
-  const role = { name };
-  if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
-  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
-  if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
-  const a2a = normalizeA2APolicy(value.a2aPolicy);
-  if (a2a) role.a2aPolicy = a2a;
-  const cli = normalizeCliConfig(value.cli);
-  if (cli) role.cli = cli;
-  return role;
-}
-function roleA2APolicy(role) {
-  return role?.a2aPolicy ?? "deny";
-}
-function normalizeA2APolicy(value) {
-  if (value === void 0 || value === null || value === "") return void 0;
-  if (value === "allow" || value === "ask" || value === "deny") return value;
-  return void 0;
-}
-function normalizeCliConfig(value) {
-  if (value === void 0) return void 0;
-  if (!isRecord2(value)) throw new Error("role.cli must be an object.");
-  const command = typeof value.command === "string" ? value.command.trim() : "";
-  if (!command) throw new Error("role.cli.command must be a non-empty string.");
-  const cli = { command };
-  if (value.resume !== void 0) {
-    const resume = typeof value.resume === "string" ? value.resume.trim() : "";
-    if (!resume) throw new Error("role.cli.resume must be a non-empty string.");
-    cli.resume = resume;
-  }
-  return cli;
-}
-function cloneDefaultRoles() {
-  return {
-    roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
-  };
-}
-async function writeJson(fs9, path9, value) {
-  if (!await fs9.exists(".tent")) await fs9.mkdir(".tent");
-  await fs9.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
-}
-function isRecord2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/core/ops.ts
-init_task();
 
 // src/core/report.ts
-init_frontmatter();
-init_tree();
 async function loadReports(fs9) {
   const reports = [];
   if (!await fs9.exists("temp")) return reports;
@@ -1584,11 +1448,6 @@ function uniqueCommits(commits) {
 }
 
 // src/core/scaffold.ts
-init_frontmatter();
-init_typeRegistry();
-init_tree();
-init_id();
-init_paths();
 function validateBoxName(value) {
   const name = value.trim();
   if (!name) throw new Error("Box name cannot be empty.");
@@ -1600,9 +1459,6 @@ function validateBoxName(value) {
 }
 
 // src/core/delivery.ts
-init_frontmatter();
-init_tree();
-init_task_model();
 var KEY_ORDER = [
   "type",
   "id",
@@ -1782,10 +1638,6 @@ function uniqueCommits2(commits) {
 }
 
 // src/core/task-lifecycle.ts
-init_frontmatter();
-init_tree();
-init_task();
-init_task_model();
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
@@ -1878,6 +1730,36 @@ async function taskDeliver(env, taskPath, options) {
     const policy = task.deliveryPolicy ?? "manual";
     const routing = resolveDeliverRouting(policy, options.decision);
     const taskId = task.id || taskPath;
+    if (routing.autoIntegrate) {
+      const pendingCommits = [...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean))];
+      if (pendingCommits.length > 0) {
+        if (!options.integrate) {
+          throw new Error("Auto-integrate path requires integrate() when commits are present.");
+        }
+        await options.integrate(pendingCommits);
+      }
+      const delivery2 = await createDeliveryUnlocked(env.fs, env.clock, {
+        taskId,
+        boxId,
+        role: task.role,
+        summary: options.summary,
+        commits: options.commits,
+        checks: options.checks,
+        artifactRefs: options.artifactRefs,
+        status: "accepted",
+        integrationMode: routing.integrationMode
+      });
+      const tent = await loadTent(env.fs);
+      const box = requireBoxById(tent, boxId);
+      await projectAssignee(env.fs, box, void 0, "done", "service");
+      const next2 = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        activeDeliveryId: delivery2.id,
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+      return { task: next2, delivery: delivery2, autoIntegrated: true };
+    }
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
       taskId,
       boxId,
@@ -1889,29 +1771,6 @@ async function taskDeliver(env, taskPath, options) {
       status: "ready",
       integrationMode: routing.integrationMode
     });
-    if (routing.autoIntegrate) {
-      const commits = delivery.commits;
-      if (commits.length > 0) {
-        if (!options.integrate) {
-          throw new Error("Auto-integrate path requires integrate() when commits are present.");
-        }
-        await options.integrate(commits);
-      }
-      delivery.status = "accepted";
-      delivery.integrationMode = routing.integrationMode;
-      delivery.updatedAt = env.clock.now();
-      await writeDelivery(env.fs, delivery);
-      const tent = await loadTent(env.fs);
-      const box = requireBoxById(tent, boxId);
-      await projectAssignee(env.fs, box, void 0, "done", "service");
-      const next2 = await patchTaskEnvelope(env.fs, taskPath, {
-        state: "accepted",
-        activeDeliveryId: delivery.id,
-        wait: null,
-        updatedAt: env.clock.now()
-      });
-      return { task: next2, delivery, autoIntegrated: true };
-    }
     assertTransition(task.state, "deliver", "delivered");
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "delivered",
@@ -2069,10 +1928,6 @@ async function withMutation(fs9, action) {
 }
 
 // src/core/forkOps.ts
-init_frontmatter();
-init_id();
-init_order();
-init_tree();
 async function forkNode(env, boxId) {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
 }
@@ -2422,10 +2277,6 @@ async function withMutation2(fs9, action) {
 }
 
 // src/core/concept.ts
-init_frontmatter();
-init_task();
-init_typeRegistry();
-init_tree();
 async function promoteConcept(env, conceptIdOrPath, toType) {
   return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
 }
@@ -2492,9 +2343,6 @@ function resolveConcept(tent, conceptIdOrPath) {
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
 
-// src/service/handlers.ts
-init_task();
-
 // src/core/context-card.ts
 var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
 function buildContextCard(ref, options) {
@@ -2549,10 +2397,224 @@ function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
 }
 
-// src/service/handlers.ts
-init_paths();
-init_typeRegistry();
-init_task_model();
+// src/core/workspace.ts
+import * as nodePath from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn } from "node:child_process";
+async function isGitWorkspace(workspace) {
+  try {
+    await assertGitWorkspace(nodePath.resolve(workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function ensureRoleWorkspaceIfGit(workspace, role) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureRoleWorkspace(workspace, role);
+}
+async function ensureRoleWorkspace(workspace, role) {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath.join(
+    nodePath.dirname(root),
+    `${nodePath.basename(root)}-worktrees`,
+    roleSlug
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath.resolve(existing)), branch, targetBranch };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+async function integrateWorkspaceCommits(contract, refs) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (current !== contract.targetBranch) {
+    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
+  }
+  const dirty = (await git(root, ["status", "--porcelain"])).trim();
+  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const resolved = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  if (fastForwardRef) {
+    try {
+      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false
+      }));
+    } catch (error) {
+      await rollbackIntegration(root, originalRef, error);
+    }
+  }
+  const results = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(root, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(root, originalRef, error);
+  }
+  return results;
+}
+async function assertGitWorkspace(root) {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath.resolve(top)),
+    nodeFs.realpath(root)
+  ]);
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
+    throw new Error(`Workspace must be a Git root: ${root}.`);
+  }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
+}
+async function resolveTargetBranch(root) {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
+  return current;
+}
+async function worktreeForBranch(root, branch) {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function findCherryPick(root, sourceRef, targetBranch) {
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+async function findAncestorIntegration(root, sourceRef, targetBranch) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
+  }
+  return void 0;
+}
+async function completeFastForwardRef(root, targetRef, commits) {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return void 0;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  if (range.length !== commits.length) return void 0;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
+}
+async function rollbackIntegration(root, originalRef, cause) {
+  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  try {
+    await git(root, ["reset", "--hard", originalRef]);
+  } catch (rollbackError) {
+    throw new Error(
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+    );
+  }
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function fullRef(root, ref) {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+function safeComponent(value) {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+async function pathExists(path9) {
+  try {
+    await nodeFs.access(path9);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk(cwd, args) {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git(cwd, args) {
+  return new Promise((resolve7, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve7(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
 
 // src/runtime/types.ts
 var SESSION_ID_PREFIX = "ss-";
@@ -2568,9 +2630,130 @@ function isSessionId(id) {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
 }
 
+// src/runtime/session-registry.ts
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+function sessionsDir(dataDir) {
+  return path.join(dataDir, "sessions");
+}
+function sessionFilePath(dataDir, sessionId) {
+  return path.join(sessionsDir(dataDir), `${sessionId}.json`);
+}
+function assertSessionId(sessionId) {
+  if (!isSessionId(sessionId)) {
+    throw new Error(`Invalid session id: ${sessionId}`);
+  }
+}
+var SessionRegistry = class {
+  constructor(dataDir) {
+    this.dataDir = dataDir;
+    /** Serialize disk mutations so stop + exit handlers cannot race rename. */
+    this.writeChain = Promise.resolve();
+  }
+  get dataRoot() {
+    return this.dataDir;
+  }
+  async ensureDir() {
+    await fs.mkdir(sessionsDir(this.dataDir), { recursive: true });
+  }
+  enqueue(fn) {
+    const run = this.writeChain.then(fn, fn);
+    this.writeChain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async write(record) {
+    assertSessionId(record.id);
+    return this.enqueue(async () => {
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, record.id);
+      await fs.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+    });
+  }
+  async read(sessionId) {
+    assertSessionId(sessionId);
+    const file = sessionFilePath(this.dataDir, sessionId);
+    try {
+      const raw = await fs.readFile(file, "utf8");
+      const data = JSON.parse(raw);
+      if (data.id !== sessionId) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+  async update(sessionId, patch) {
+    return this.enqueue(async () => {
+      const current = await this.readUnlocked(sessionId);
+      if (!current) throw new Error(`Session not found: ${sessionId}`);
+      const next = {
+        ...current,
+        ...patch,
+        id: current.id,
+        createdAt: current.createdAt,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, sessionId);
+      await fs.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
+      return next;
+    });
+  }
+  async setState(sessionId, state, extra = {}) {
+    return this.update(sessionId, { ...extra, state });
+  }
+  async list() {
+    await this.ensureDir();
+    const dir = sessionsDir(this.dataDir);
+    let names;
+    try {
+      names = await fs.readdir(dir);
+    } catch {
+      return [];
+    }
+    const out = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      const id = name.slice(0, -".json".length);
+      if (!isSessionId(id)) continue;
+      const rec = await this.read(id);
+      if (rec) out.push(rec);
+    }
+    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return out;
+  }
+  async remove(sessionId) {
+    assertSessionId(sessionId);
+    return this.enqueue(async () => {
+      try {
+        await fs.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+      } catch {
+      }
+    });
+  }
+  /** Non-terminal states that should be probed after service restart. */
+  static isNonTerminal(state) {
+    return state === "starting" || state === "live" || state === "waiting-user";
+  }
+  async readUnlocked(sessionId) {
+    const file = sessionFilePath(this.dataDir, sessionId);
+    try {
+      const raw = await fs.readFile(file, "utf8");
+      const data = JSON.parse(raw);
+      if (data.id !== sessionId) return null;
+      return data;
+    } catch {
+      return null;
+    }
+  }
+};
+
+// src/service/handlers.ts
+import * as nodePath2 from "node:path";
+
 // src/core/okf.ts
-init_frontmatter();
-init_tree();
 function resolveConcept2(index, target) {
   const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
   const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
@@ -2707,19 +2890,19 @@ function contentEtag(content) {
 }
 
 // src/service/a2a-store.ts
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
+import * as fs2 from "node:fs/promises";
+import * as path2 from "node:path";
 var A2AApprovalStore = class {
   constructor(dataDir) {
     this.items = /* @__PURE__ */ new Map();
     this.loaded = false;
-    this.file = path.join(dataDir, "a2a-approvals.json");
+    this.file = path2.join(dataDir, "a2a-approvals.json");
   }
   async ensureLoaded() {
     if (this.loaded) return;
     this.loaded = true;
     try {
-      const raw = await fs.readFile(this.file, "utf8");
+      const raw = await fs2.readFile(this.file, "utf8");
       const parsed = JSON.parse(raw);
       for (const item of parsed.items ?? []) {
         if (item?.id) this.items.set(item.id, item);
@@ -2758,11 +2941,11 @@ var A2AApprovalStore = class {
     return item;
   }
   async persist() {
-    await fs.mkdir(path.dirname(this.file), { recursive: true });
+    await fs2.mkdir(path2.dirname(this.file), { recursive: true });
     const items = [...this.items.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await fs.writeFile(
+    await fs2.writeFile(
       this.file,
       JSON.stringify({ items: [...pending, ...terminal] }, null, 2) + "\n",
       "utf8"
@@ -2826,13 +3009,13 @@ var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/profiles.ts
-import * as fs4 from "node:fs/promises";
-import * as path4 from "node:path";
+import * as fs5 from "node:fs/promises";
+import * as path5 from "node:path";
 
 // src/adapters/fake/index.ts
-import * as fs2 from "node:fs";
+import * as fs3 from "node:fs";
 import * as os from "node:os";
-import * as path2 from "node:path";
+import * as path3 from "node:path";
 var FAKE_ADAPTER_ID = "fake-cli";
 function buildInlineScript(opts) {
   return `
@@ -2898,11 +3081,11 @@ var FakeProviderAdapter = class {
     }
     let bootstrapFile;
     if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
-      bootstrapFile = path2.join(
+      bootstrapFile = path3.join(
         os.tmpdir(),
         `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
       );
-      fs2.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+      fs3.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
     }
     const script = buildInlineScript(fake);
     const env = {
@@ -2956,12 +3139,12 @@ function createFakeAdapter(options) {
 }
 
 // src/adapters/grok-acp/index.ts
-import * as fs3 from "node:fs";
+import * as fs4 from "node:fs";
 import * as os2 from "node:os";
-import * as path3 from "node:path";
+import * as path4 from "node:path";
 
 // src/adapters/grok-acp/client.ts
-import { spawn } from "node:child_process";
+import { spawn as spawn2 } from "node:child_process";
 import * as readline from "node:readline";
 
 // src/adapters/grok-acp/types.ts
@@ -3127,7 +3310,7 @@ var GrokAcpClient = class {
     this.cleanupStreams();
   }
   spawnProcess() {
-    const child = spawn(this.options.command, this.options.args, {
+    const child = spawn2(this.options.command, this.options.args, {
       cwd: this.options.cwd,
       env: {
         ...process.env,
@@ -3306,12 +3489,12 @@ var GrokAcpClient = class {
       return Promise.reject(new Error(`Grok ACP \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`));
     }
     const id = this.nextId++;
-    return new Promise((resolve5, reject) => {
+    return new Promise((resolve7, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`Grok ACP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve5, reject, timer });
+      this.pending.set(id, { resolve: resolve7, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
@@ -3329,8 +3512,8 @@ var GrokAcpClient = class {
   }
   waitExit() {
     if (!this.proc || this.closed) return Promise.resolve();
-    return new Promise((resolve5) => {
-      this.exitWaiters.push(resolve5);
+    return new Promise((resolve7) => {
+      this.exitWaiters.push(resolve7);
     });
   }
   async forceKill() {
@@ -3338,14 +3521,14 @@ var GrokAcpClient = class {
     const pid = proc?.pid;
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve5) => {
-        const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      await new Promise((resolve7) => {
+        const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve5());
-        killer.on("error", () => resolve5());
-        setTimeout(resolve5, 1500);
+        killer.on("exit", () => resolve7());
+        killer.on("error", () => resolve7());
+        setTimeout(resolve7, 1500);
       });
     } else {
       try {
@@ -3370,17 +3553,17 @@ function selectAllowOnce(options) {
   return { outcome: "cancelled" };
 }
 function sleep(ms) {
-  return new Promise((resolve5) => setTimeout(resolve5, ms));
+  return new Promise((resolve7) => setTimeout(resolve7, ms));
 }
 
 // src/adapters/grok-acp/index.ts
 function defaultGrokExecutable() {
   if (process.platform === "win32") {
     const home2 = process.env.USERPROFILE || os2.homedir();
-    return path3.join(home2, ".grok", "bin", "grok.exe");
+    return path4.join(home2, ".grok", "bin", "grok.exe");
   }
   const home = process.env.HOME || os2.homedir();
-  return path3.join(home, ".grok", "bin", "grok");
+  return path4.join(home, ".grok", "bin", "grok");
 }
 function normalizeGrokOpts(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -3465,13 +3648,13 @@ var GrokAcpProviderAdapter = class {
       );
     }
     if (!plan.command && opts.executable) {
-      if (!fs3.existsSync(opts.executable)) {
+      if (!fs4.existsSync(opts.executable)) {
         throw new Error(
           `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.grokAcp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
-      if (!fs3.existsSync(command)) {
+      if (!fs4.existsSync(command)) {
         throw new Error(
           `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E grokAcp.executable\u3002`
         );
@@ -3510,7 +3693,7 @@ var GrokAcpProviderAdapter = class {
     }
     const home = process.env.USERPROFILE || process.env.HOME || os2.homedir();
     if (!env.GROK_HOME) {
-      env.GROK_HOME = path3.join(home, ".grok");
+      env.GROK_HOME = path4.join(home, ".grok");
     }
     return {
       command,
@@ -3609,12 +3792,12 @@ function createGrokAcpAdapter(options) {
 
 // src/service/profiles.ts
 function profilesPath(dataDir) {
-  return path4.join(dataDir, "agent-profiles.json");
+  return path5.join(dataDir, "agent-profiles.json");
 }
 async function loadAgentProfiles(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs4.readFile(file, "utf8");
+    const raw = await fs5.readFile(file, "utf8");
     const parsed = JSON.parse(raw);
     const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
     return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
@@ -3623,8 +3806,8 @@ async function loadAgentProfiles(dataDir) {
   }
 }
 async function saveAgentProfiles(dataDir, profiles) {
-  await fs4.mkdir(dataDir, { recursive: true });
-  await fs4.writeFile(
+  await fs5.mkdir(dataDir, { recursive: true });
+  await fs5.writeFile(
     profilesPath(dataDir),
     JSON.stringify({ profiles }, null, 2) + "\n",
     "utf8"
@@ -3833,7 +4016,50 @@ async function workspaceMount(ctx, p) {
     workspaceId: optionalString(p, "workspaceId"),
     tentName: optionalString(p, "tentName")
   });
+  await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+var SESSION_UNAVAILABLE_WAIT_SUMMARY = "\u7ED1\u5B9A\u7684 session \u5DF2\u4E0D\u53EF\u7528\uFF08\u670D\u52A1\u91CD\u542F\u6216 session \u5DF2\u7ED3\u675F\uFF09\u3002\u53EF\u91CD\u65B0\u542F\u52A8 session\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const reconciled = [];
+  for (const task of tasks) {
+    if (task.state !== "running" && task.state !== "waiting") continue;
+    const sessionId = task.sessionId?.trim();
+    if (!sessionId) continue;
+    const record = await ctx.runtime.registry.read(sessionId);
+    const sessionGone = !record || record.state === "stopped" || record.state === "failed";
+    if (!sessionGone) continue;
+    const alreadyParked = task.state === "waiting" && task.wait?.reason === "external" && task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
+    if (alreadyParked) continue;
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const current = await loadTaskEnvelope(mount.env.fs, task.path);
+      if (current.state !== "running" && current.state !== "waiting") return;
+      if (current.sessionId?.trim() !== sessionId) return;
+      const rec2 = await ctx.runtime.registry.read(sessionId);
+      if (rec2 && rec2.state !== "stopped" && rec2.state !== "failed") return;
+      const parkedAlready = current.state === "waiting" && current.wait?.reason === "external" && current.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
+      if (parkedAlready) return;
+      let next = current;
+      if (current.state === "running") {
+        next = await taskWait(mount.env, task.path, {
+          reason: "external",
+          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY
+        });
+      } else {
+        next = await patchTaskEnvelope(mount.env.fs, task.path, {
+          state: "waiting",
+          wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
+          updatedAt: mount.env.clock.now()
+        });
+      }
+      emitTaskState(ctx, workspaceId, next, "session.reconcile");
+      reconciled.push(task.path);
+    });
+  }
+  return { reconciled };
 }
 async function workspaceUnmount(ctx, p) {
   const workspaceId = requireString(p, "workspaceId");
@@ -4149,17 +4375,19 @@ async function taskDispatch(ctx, p) {
     );
   }
   const result = await ctx.mutations.run(workspaceId, async () => {
+    const roleLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
     ctx.host.markSelfWrite(workspaceId);
-    const dispatched = await dispatch(mount.env, boxId, role, {
+    const dispatched2 = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
       dispatchedBy,
-      deliveryPolicy
+      deliveryPolicy,
+      workspace: roleLane2
     });
     ctx.events.emit(
       "task.state",
       workspaceId,
       {
-        path: dispatched.taskPath,
+        path: dispatched2.taskPath,
         state: "queued",
         role,
         boxId,
@@ -4167,30 +4395,39 @@ async function taskDispatch(ctx, p) {
       },
       "self"
     );
-    return dispatched;
+    return { dispatched: dispatched2, roleLane: roleLane2 };
   });
+  const roleLane = result.roleLane;
+  const dispatched = result.dispatched;
   let session = void 0;
   if (startSession) {
     await taskClaimRpc(ctx, {
       workspaceId,
-      taskPath: result.taskPath
+      taskPath: dispatched.taskPath
     });
     session = await taskStartSessionRpc(ctx, {
       workspaceId,
-      taskPath: result.taskPath,
+      taskPath: dispatched.taskPath,
       profileId,
       callerKind,
       ...a2aPolicyOverride !== void 0 ? { a2aPolicyOverride } : {}
     });
   }
+  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
   return {
     workspaceId,
-    taskPath: result.taskPath,
-    manifestPath: result.manifestPath,
-    initPath: result.initPath,
-    relayPrompt: result.relayPrompt,
+    taskPath: dispatched.taskPath,
+    manifestPath: dispatched.manifestPath,
+    initPath: dispatched.initPath,
+    relayPrompt: dispatched.relayPrompt,
     state: startSession ? "running" : "queued",
-    session
+    session,
+    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane ? {
+      workspace: roleLane.workspace,
+      worktree: roleLane.worktree,
+      branch: roleLane.branch,
+      targetBranch: roleLane.targetBranch
+    } : void 0
   };
 }
 async function taskClaimRpc(ctx, p) {
@@ -4257,11 +4494,8 @@ async function taskDeliverRpc(ctx, p) {
   const artifactRefs = Array.isArray(p.artifactRefs) ? p.artifactRefs : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const integrate = async (cs) => {
-      if (ctx.integrateCommits) {
-        await ctx.integrateCommits(mount.workspaceRoot, cs);
-      }
-    };
+    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
     const result = await taskDeliver(mount.env, taskPath, {
       summary,
       commits,
@@ -4303,15 +4537,13 @@ async function taskAcceptRpc(ctx, p) {
   const commits = optionalStringArray(p, "commits");
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
+    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
     const result = await taskAccept(mount.env, taskPath, {
       actor,
       commits,
       // Core requires integrate whenever delivery commits are non-empty.
-      integrate: async (cs) => {
-        if (ctx.integrateCommits) {
-          await ctx.integrateCommits(mount.workspaceRoot, cs);
-        }
-      }
+      // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
+      integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate)
     });
     emitTaskState(ctx, workspaceId, result.task, "task.accept");
     ctx.events.emit(
@@ -4502,16 +4734,44 @@ async function taskStartSessionRpc(ctx, p) {
       `task.startSession requires running (or waiting after approval); got ${task.state}`
     );
   }
-  if (task.state === "waiting" && task.wait?.reason === "a2a-approval") {
+  if (task.state === "waiting") {
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
+  const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
+  if (activeForRole) {
+    const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
+    if (boundToThisTask) {
+      const boundTask = task.sessionId === activeForRole.id ? task : await ctx.mutations.run(workspaceId, async () => {
+        ctx.host.markSelfWrite(workspaceId);
+        return patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: activeForRole.id,
+          updatedAt: mount.env.clock.now()
+        });
+      });
+      return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+        cwd: boundTask.worktree || mount.workspaceRoot
+      });
+    }
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
+      {
+        role: task.role,
+        existingSessionId: activeForRole.id,
+        existingState: activeForRole.state,
+        existingTaskId: activeForRole.lastTaskId
+      }
+    );
   }
   const sessionId = makeSessionId();
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane = task.workspace || task.worktree || task.branch ? {
     workspace: task.workspace || mount.workspaceRoot,
     worktree: task.worktree || mount.workspaceRoot,
-    branch: task.branch || "HEAD"
+    branch: task.branch || "HEAD",
+    targetBranch: task.targetBranch
   } : void 0;
   const sessionBootstrap = bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, {
     workspaceRoot: mount.workspaceRoot,
@@ -4534,8 +4794,7 @@ async function taskStartSessionRpc(ctx, p) {
     const message = err instanceof Error ? err.message : String(err);
     await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
-      const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
-      const failed = await patchTaskEnvelope2(mount.env.fs, taskPath, {
+      const failed = await patchTaskEnvelope(mount.env.fs, taskPath, {
         state: "failed",
         wait: null,
         updatedAt: mount.env.clock.now()
@@ -4546,8 +4805,7 @@ async function taskStartSessionRpc(ctx, p) {
   }
   const bound = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
-    const next = await patchTaskEnvelope2(mount.env.fs, taskPath, {
+    const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now()
     });
@@ -4566,18 +4824,14 @@ async function taskStartSessionRpc(ctx, p) {
     );
     return next;
   });
-  return {
-    workspaceId,
-    taskPath,
-    task: projectTask(bound),
-    session: {
-      sessionId: handle.sessionId,
-      profileId: handle.profileId,
-      adapterId: handle.adapterId,
-      state: handle.state
-      // Do not expose pid in client projection by default — probe is internal.
-    }
-  };
+  return projectStartSessionResult(workspaceId, taskPath, bound, {
+    id: handle.sessionId,
+    profileId: handle.profileId,
+    adapterId: handle.adapterId,
+    state: handle.state,
+    roleName: handle.roleName,
+    runtimeWorkspace: handle.runtimeWorkspace
+  }, { cwd });
 }
 async function taskList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -4740,8 +4994,7 @@ function mapRuntimeEventToService(ctx, ev) {
         } else if (ev.type === "session.failed" && (task.state === "running" || task.state === "waiting")) {
           await ctx.mutations.run(mount.workspaceId, async () => {
             ctx.host.markSelfWrite(mount.workspaceId);
-            const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
-            const failed = await patchTaskEnvelope2(mount.env.fs, task.path, {
+            const failed = await patchTaskEnvelope(mount.env.fs, task.path, {
               state: "failed",
               wait: null,
               updatedAt: mount.env.clock.now()
@@ -4790,17 +5043,15 @@ async function tryManagedAutoDeliver(ctx, input) {
         return;
       }
       ctx.host.markSelfWrite(input.workspaceId);
-      const integrate = async (cs) => {
-        if (ctx.integrateCommits) {
-          await ctx.integrateCommits(mount.workspaceRoot, cs);
-        }
-      };
+      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
       const policy = task.deliveryPolicy ?? "manual";
       const decision = policy === "agent-decide" ? "request-review" : void 0;
       const result = await taskDeliver(mount.env, input.taskPath, {
         summary,
         decision,
-        integrate
+        integrate,
+        // Never invent commits here — only forward an explicit list when provided.
+        ...input.commits && input.commits.length > 0 ? { commits: input.commits } : {}
       });
       managedAutoDeliverDone.add(key);
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
@@ -4824,23 +5075,23 @@ async function tryManagedAutoDeliver(ctx, input) {
       if (!mount) return;
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (task.state === "running" || task.state === "waiting") {
-        await ctx.mutations.run(input.workspaceId, async () => {
-          ctx.host.markSelfWrite(input.workspaceId);
-          const { patchTaskEnvelope: patchTaskEnvelope2 } = await Promise.resolve().then(() => (init_task(), task_exports));
-          const failed = await patchTaskEnvelope2(mount.env.fs, input.taskPath, {
-            state: "failed",
-            wait: null,
-            updatedAt: mount.env.clock.now()
+        try {
+          await ctx.runtime.registry.update(input.sessionId, {
+            lastError: `managed auto-deliver failed: ${message}`
           });
-          emitTaskState(ctx, input.workspaceId, failed, "session.prompt_complete.failed");
-        });
+        } catch {
+        }
         ctx.events.emit(
           "session.state",
           input.workspaceId,
           {
             sessionId: input.sessionId,
+            taskPath: input.taskPath,
+            taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
-            error: message
+            error: message,
+            // Explicit: task remains non-terminal for retry.
+            taskFailed: false
           },
           "service"
         );
@@ -4983,6 +5234,94 @@ function parseArtifactRefs2(data) {
     }
   }
   return out;
+}
+function makeCommitIntegrator(ctx, workspaceRoot, task) {
+  return async (commits) => {
+    const refs = [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+    if (refs.length === 0) return;
+    if (ctx.integrateCommits) {
+      await ctx.integrateCommits(workspaceRoot, refs, task.role);
+      return;
+    }
+    await integrateWorkspaceCommitsForTask(workspaceRoot, task, refs);
+  };
+}
+async function integrateWorkspaceCommitsForTask(workspaceRoot, task, commits) {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  await integrateWorkspaceCommits(contract, commits);
+}
+async function resolveIntegrationContract(workspaceRoot, task) {
+  const mountedRoot = nodePath2.resolve(workspaceRoot);
+  if (task.workspace) {
+    const claimed = nodePath2.resolve(task.workspace);
+    if (!isSameWorkspaceRoot(claimed, mountedRoot)) {
+      throw new Error(
+        `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`
+      );
+    }
+  }
+  const real = await ensureRoleWorkspace(mountedRoot, task.role);
+  if (task.branch && task.branch !== real.branch) {
+    throw new Error(
+      `Task envelope branch mismatch for role ${task.role}: envelope=${task.branch} expected=${real.branch}`
+    );
+  }
+  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
+    throw new Error(
+      `Task envelope targetBranch mismatch for role ${task.role}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+    );
+  }
+  if (task.worktree) {
+    const claimedWt = nodePath2.resolve(task.worktree);
+    const realWt = nodePath2.resolve(real.worktree);
+    if (!isSameWorkspaceRoot(claimedWt, realWt)) {
+      throw new Error(
+        `Task envelope worktree mismatch for role ${task.role}: envelope=${task.worktree} expected=${real.worktree}`
+      );
+    }
+  }
+  return real;
+}
+async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
+  if (task.worktree && task.branch && task.workspace && task.targetBranch) {
+    return task;
+  }
+  const mount = ctx.host.require(workspaceId);
+  return ctx.mutations.run(workspaceId, async () => {
+    const lane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, task.role);
+    if (!lane) return task;
+    ctx.host.markSelfWrite(workspaceId);
+    return patchTaskEnvelope(mount.env.fs, task.path, {
+      workspace: lane.workspace,
+      worktree: lane.worktree,
+      branch: lane.branch,
+      targetBranch: lane.targetBranch,
+      updatedAt: mount.env.clock.now()
+    });
+  });
+}
+async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {
+  if (!roleName) return void 0;
+  const all = await ctx.runtime.registry.list();
+  return all.find(
+    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && SessionRegistry.isNonTerminal(rec.state) && rec.state !== "external"
+  );
+}
+function projectStartSessionResult(workspaceId, taskPath, task, session, extra) {
+  const cwd = extra?.cwd ?? session.runtimeWorkspace?.cwd ?? task.worktree ?? void 0;
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(task),
+    session: {
+      sessionId: session.id,
+      profileId: session.profileId,
+      adapterId: session.adapterId,
+      state: session.state,
+      cwd
+      // Do not expose pid in client projection by default — probe is internal.
+    }
+  };
 }
 function buildSessionBootstrapPrompt(task, roots) {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
@@ -5137,9 +5476,9 @@ async function createServiceHttpServer(options) {
       }
     }
   });
-  await new Promise((resolve5, reject) => {
+  await new Promise((resolve7, reject) => {
     server.once("error", reject);
-    server.listen(preferredPort, host, () => resolve5());
+    server.listen(preferredPort, host, () => resolve7());
   });
   const addr = server.address();
   if (!addr || typeof addr === "string") {
@@ -5152,8 +5491,8 @@ async function createServiceHttpServer(options) {
     host,
     port,
     url: `http://${host}:${port}`,
-    close: () => new Promise((resolve5, reject) => {
-      server.close((err) => err ? reject(err) : resolve5());
+    close: () => new Promise((resolve7, reject) => {
+      server.close((err) => err ? reject(err) : resolve7());
     })
   };
 }
@@ -5267,10 +5606,10 @@ function writeJson2(res, status, body) {
   res.end(payload);
 }
 function readBody(req) {
-  return new Promise((resolve5, reject) => {
+  return new Promise((resolve7, reject) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve5(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => resolve7(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
@@ -5318,8 +5657,8 @@ var MutationBus = class {
   async run(workspaceId, action) {
     const prev = this.tails.get(workspaceId) ?? Promise.resolve();
     let release;
-    const gate = new Promise((resolve5) => {
-      release = resolve5;
+    const gate = new Promise((resolve7) => {
+      release = resolve7;
     });
     const chain = prev.catch(() => void 0).then(() => gate);
     this.tails.set(workspaceId, chain);
@@ -5337,67 +5676,67 @@ var MutationBus = class {
 
 // src/service/workspace-host.ts
 import { watch } from "node:fs";
-import * as fs6 from "node:fs/promises";
-import * as path5 from "node:path";
+import * as fs7 from "node:fs/promises";
+import * as path6 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs5 from "node:fs/promises";
-import * as nodePath from "node:path";
+import * as fs6 from "node:fs/promises";
+import * as nodePath3 from "node:path";
 var NodeFs = class {
   constructor(root) {
-    this.root = nodePath.resolve(root);
+    this.root = nodePath3.resolve(root);
   }
   abs(p) {
-    const resolved = nodePath.resolve(this.root, p);
+    const resolved = nodePath3.resolve(this.root, p);
     const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
     const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-    if (candidate !== root && !candidate.startsWith(root + nodePath.sep)) {
+    if (candidate !== root && !candidate.startsWith(root + nodePath3.sep)) {
       throw new Error(`Path escapes Tent root: ${p}`);
     }
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs5.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs6.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path9) {
-    return fs5.readFile(this.abs(path9), "utf8");
+    return fs6.readFile(this.abs(path9), "utf8");
   }
   async writeFile(path9, content) {
-    await fs5.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
-    await fs5.writeFile(this.abs(path9), content, "utf8");
+    await fs6.mkdir(nodePath3.dirname(this.abs(path9)), { recursive: true });
+    await fs6.writeFile(this.abs(path9), content, "utf8");
   }
   async exists(path9) {
     try {
-      await fs5.access(this.abs(path9));
+      await fs6.access(this.abs(path9));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path9) {
-    await fs5.mkdir(this.abs(path9), { recursive: true });
+    await fs6.mkdir(this.abs(path9), { recursive: true });
   }
   async move(from, to) {
-    await fs5.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
-    await fs5.rename(this.abs(from), this.abs(to));
+    await fs6.mkdir(nodePath3.dirname(this.abs(to)), { recursive: true });
+    await fs6.rename(this.abs(from), this.abs(to));
   }
   async remove(path9) {
-    await fs5.rm(this.abs(path9), { recursive: true, force: true });
+    await fs6.rm(this.abs(path9), { recursive: true, force: true });
   }
   async withLock(path9, action) {
     const lockPath = this.abs(path9);
-    await fs5.mkdir(nodePath.dirname(lockPath), { recursive: true });
+    await fs6.mkdir(nodePath3.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs5.open(lockPath, "wx");
+        handle = await fs6.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs5.rm(lockPath, { force: true });
+        await fs6.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -5406,7 +5745,7 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs5.rm(lockPath, { force: true });
+      await fs6.rm(lockPath, { force: true });
     }
   }
 };
@@ -5415,7 +5754,7 @@ function isAlreadyExists(error) {
 }
 async function isStaleLock(path9) {
   try {
-    const stat2 = await fs5.stat(path9);
+    const stat2 = await fs6.stat(path9);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -5423,7 +5762,6 @@ async function isStaleLock(path9) {
 }
 
 // src/service/workspace-host.ts
-init_paths();
 var WorkspaceHost = class {
   constructor(options) {
     this.mounts = /* @__PURE__ */ new Map();
@@ -5449,18 +5787,18 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path5.resolve(workspaceRoot);
+    const root = path6.resolve(workspaceRoot);
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path5.join(systemRoot, "RULES.md");
+    const rulesPath = path6.join(systemRoot, "RULES.md");
     try {
-      await fs6.access(rulesPath);
+      await fs7.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path5.resolve(existing.workspaceRoot) === root) {
+      if (path6.resolve(existing.workspaceRoot) === root) {
         return this.toInfo(existing);
       }
     }
@@ -5468,7 +5806,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path5.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path6.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -5603,40 +5941,40 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path5.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path5.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  const base = path6.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path6.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
   return `ws-${base}-${hash}`;
 }
 
 // src/service/data-dir.ts
-import * as fs7 from "node:fs/promises";
+import * as fs8 from "node:fs/promises";
 import * as os3 from "node:os";
-import * as path6 from "node:path";
+import * as path7 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path6.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path7.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path6.join(os3.homedir(), "AppData", "Roaming");
-    return path6.join(base, "Tent");
+    const base = env.APPDATA || path7.join(os3.homedir(), "AppData", "Roaming");
+    return path7.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path6.join(os3.homedir(), "Library", "Application Support", "Tent");
+    return path7.join(os3.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path6.join(os3.homedir(), ".local", "state");
-  return path6.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path7.join(os3.homedir(), ".local", "state");
+  return path7.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path6.join(dataDir, "service.json");
+  return path7.join(dataDir, "service.json");
 }
 async function writeServiceEndpoint(dataDir, record) {
-  await fs7.mkdir(dataDir, { recursive: true });
+  await fs8.mkdir(dataDir, { recursive: true });
   const file = serviceEndpointPath(dataDir);
-  await fs7.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+  await fs8.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
   return file;
 }
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs7.readFile(file, "utf8");
+    const raw = await fs8.readFile(file, "utf8");
     const data = JSON.parse(raw);
     if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
       return null;
@@ -5648,13 +5986,13 @@ async function readServiceEndpoint(dataDir) {
 }
 async function removeServiceEndpoint(dataDir) {
   try {
-    await fs7.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs8.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
 
 // src/runtime/process-supervisor.ts
-import { spawn as spawn2 } from "node:child_process";
+import { spawn as spawn3 } from "node:child_process";
 var ProcessSupervisor = class {
   constructor(options = {}) {
     this.children = /* @__PURE__ */ new Map();
@@ -5703,7 +6041,7 @@ var ProcessSupervisor = class {
         delete env[key];
       }
     }
-    const child = spawn2(launch.command, launch.args, {
+    const child = spawn3(launch.command, launch.args, {
       cwd: launch.cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -5787,13 +6125,13 @@ var ProcessSupervisor = class {
       this.children.delete(sessionId);
       return;
     }
-    await new Promise((resolve5) => {
+    await new Promise((resolve7) => {
       const done = () => {
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = void 0;
         }
-        resolve5();
+        resolve7();
       };
       if (live.exited) {
         done();
@@ -5822,14 +6160,14 @@ var ProcessSupervisor = class {
     const pid = live.child.pid;
     if (pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve5) => {
-        const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      await new Promise((resolve7) => {
+        const killer = spawn3("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve5());
-        killer.on("error", () => resolve5());
-        setTimeout(resolve5, 1500);
+        killer.on("exit", () => resolve7());
+        killer.on("error", () => resolve7());
+        setTimeout(resolve7, 1500);
       });
     } else {
       try {
@@ -5838,133 +6176,13 @@ var ProcessSupervisor = class {
       }
     }
     if (!live.exited) {
-      await new Promise((resolve5) => {
-        const t = setTimeout(resolve5, 500);
+      await new Promise((resolve7) => {
+        const t = setTimeout(resolve7, 500);
         live.child.once("exit", () => {
           clearTimeout(t);
-          resolve5();
+          resolve7();
         });
       });
-    }
-  }
-};
-
-// src/runtime/session-registry.ts
-import * as fs8 from "node:fs/promises";
-import * as path7 from "node:path";
-function sessionsDir(dataDir) {
-  return path7.join(dataDir, "sessions");
-}
-function sessionFilePath(dataDir, sessionId) {
-  return path7.join(sessionsDir(dataDir), `${sessionId}.json`);
-}
-function assertSessionId(sessionId) {
-  if (!isSessionId(sessionId)) {
-    throw new Error(`Invalid session id: ${sessionId}`);
-  }
-}
-var SessionRegistry = class {
-  constructor(dataDir) {
-    this.dataDir = dataDir;
-    /** Serialize disk mutations so stop + exit handlers cannot race rename. */
-    this.writeChain = Promise.resolve();
-  }
-  get dataRoot() {
-    return this.dataDir;
-  }
-  async ensureDir() {
-    await fs8.mkdir(sessionsDir(this.dataDir), { recursive: true });
-  }
-  enqueue(fn) {
-    const run = this.writeChain.then(fn, fn);
-    this.writeChain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async write(record) {
-    assertSessionId(record.id);
-    return this.enqueue(async () => {
-      await this.ensureDir();
-      const file = sessionFilePath(this.dataDir, record.id);
-      await fs8.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
-    });
-  }
-  async read(sessionId) {
-    assertSessionId(sessionId);
-    const file = sessionFilePath(this.dataDir, sessionId);
-    try {
-      const raw = await fs8.readFile(file, "utf8");
-      const data = JSON.parse(raw);
-      if (data.id !== sessionId) return null;
-      return data;
-    } catch {
-      return null;
-    }
-  }
-  async update(sessionId, patch) {
-    return this.enqueue(async () => {
-      const current = await this.readUnlocked(sessionId);
-      if (!current) throw new Error(`Session not found: ${sessionId}`);
-      const next = {
-        ...current,
-        ...patch,
-        id: current.id,
-        createdAt: current.createdAt,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      await this.ensureDir();
-      const file = sessionFilePath(this.dataDir, sessionId);
-      await fs8.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
-      return next;
-    });
-  }
-  async setState(sessionId, state, extra = {}) {
-    return this.update(sessionId, { ...extra, state });
-  }
-  async list() {
-    await this.ensureDir();
-    const dir = sessionsDir(this.dataDir);
-    let names;
-    try {
-      names = await fs8.readdir(dir);
-    } catch {
-      return [];
-    }
-    const out = [];
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
-      const id = name.slice(0, -".json".length);
-      if (!isSessionId(id)) continue;
-      const rec = await this.read(id);
-      if (rec) out.push(rec);
-    }
-    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return out;
-  }
-  async remove(sessionId) {
-    assertSessionId(sessionId);
-    return this.enqueue(async () => {
-      try {
-        await fs8.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
-      } catch {
-      }
-    });
-  }
-  /** Non-terminal states that should be probed after service restart. */
-  static isNonTerminal(state) {
-    return state === "starting" || state === "live" || state === "waiting-user";
-  }
-  async readUnlocked(sessionId) {
-    const file = sessionFilePath(this.dataDir, sessionId);
-    try {
-      const raw = await fs8.readFile(file, "utf8");
-      const data = JSON.parse(raw);
-      if (data.id !== sessionId) return null;
-      return data;
-    } catch {
-      return null;
     }
   }
 };

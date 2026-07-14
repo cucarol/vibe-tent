@@ -3,31 +3,13 @@
 // 用法(cwd = 帐根 / workspace 根, new 例外):
 //   --- 新架构协作生命周期（Local Service RPC；不直写）---
 //   tent task list|get|claim|deliver|…  attach → mount → task.* （见 task-rpc.ts）
-//   --- Legacy in-workspace / 纯 core 直写（兼容；Desktop 共置 agent 请用 task *）---
+//   --- Legacy 直写：仅 external / 非 <ws>/.tent system root；in-workspace 协作 mutate 已封死 ---
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
-//   tent dispatch <boxId> <role> <localPrompt...> [--prompt <text>|-]  派活,打印接力 prompt
-//   tent stamp <boxId> [--by <role>]   盖章
-//   tent grant-readable <boxId>
-//   tent new-box <name> <type> [parentId]
-//   tent tag <boxId> <name>
-//   tent untag <boxId> <name>
-//   tent tag-new <name>
-//   tent tag-rm <name> --yes
-//   tent tags
-//   tent find <name>
-//   tent fork <boxId>
-//   tent propose <boxId> <bodyFile|->
-//   tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
-//   tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
-//   tent status
-//   tent task-cancel <taskPath>
-//   tent clean-temp [role]
-//   tent force-release <boxId>
-//   tent okf-sync
-//   tent skill-install [--target claude] [--force]  // default: ~/.claude/skills + ~/.agents/skills
-//   tent tree                          打印框树(调试)
+//   tent skill-install [--target claude] [--force]  // 机器配置；default: ~/.claude/skills + ~/.agents/skills
+//   tent tree | status | roles | find | tags       // 只读
+//   tent dispatch / task-ack / report / …          // external root migration window only
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -71,9 +53,62 @@ import {
   resolveTentWorkspace,
   runWorkspaceCheck,
 } from "../core/workspace.js";
-import { workspaceRootFromSystemRoot } from "../core/paths.js";
+import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
 import { importExternalTentRoot } from "../core/migration.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
+
+/**
+ * Legacy CLI commands that still direct-write core.
+ * On in-workspace system root (`<workspace>/.tent`) these fail-loud — use tent task * / Desktop Service.
+ * External / flat collab roots keep them for the migration window (no env escape hatch).
+ */
+const LEGACY_MUTATION_COMMANDS = new Set([
+  "dispatch",
+  "task-ack",
+  "task-cancel",
+  "report",
+  "propose",
+  "complete",
+  "stamp",
+  "grant-readable",
+  "new-box",
+  "tag",
+  "untag",
+  "tag-new",
+  "tag-rm",
+  "fork",
+  "clean-temp",
+  "force-release",
+  "okf-sync",
+]);
+
+/** Read-only legacy commands allowed on in-workspace `.tent`. */
+const LEGACY_READONLY_COMMANDS = new Set(["tree", "status", "roles", "find", "tags"]);
+
+export function isInWorkspaceSystemRoot(systemRoot: string): boolean {
+  return workspaceRootFromSystemRoot(systemRoot) !== undefined;
+}
+
+export function isLegacyMutationCommand(cmd: string): boolean {
+  return LEGACY_MUTATION_COMMANDS.has(cmd);
+}
+
+export function listLegacyMutationCommands(): string[] {
+  return [...LEGACY_MUTATION_COMMANDS].sort();
+}
+
+export function inWorkspaceLegacyMutationMessage(cmd: string, systemRoot: string): string {
+  const workspace = workspaceRootFromSystemRoot(systemRoot);
+  return (
+    `Legacy CLI command "${cmd}" refuses to direct-write an in-workspace Tent at ${systemRoot}.\n` +
+    `Desktop co-located collaboration must go through Local Service (tent task * / Desktop).\n` +
+    `systemRoot is <workspace>/${TENT_SYSTEM_DIR}` +
+    (workspace ? ` (workspace: ${workspace})` : "") +
+    `.\n` +
+    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install.\n` +
+    `External (non-${TENT_SYSTEM_DIR}) Tent roots still accept legacy mutation commands during the migration window.`
+  );
+}
 
 async function makeEnv(): Promise<OpsEnv> {
   // 找不到 system root 时明确失败；禁止回退 cwd 把系统数据写到项目根。
@@ -86,6 +121,16 @@ async function makeEnv(): Promise<OpsEnv> {
     tentName: path.basename(workspace ?? systemRoot),
     tentRoot: systemRoot,
   };
+}
+
+/**
+ * Fail-loud before any core mutate when cwd resolves to in-workspace `.tent`.
+ * No env escape hatch, no dual-write, no silent compat.
+ */
+function assertLegacyDirectWriteAllowed(cmd: string, systemRoot: string): void {
+  if (!LEGACY_MUTATION_COMMANDS.has(cmd)) return;
+  if (!isInWorkspaceSystemRoot(systemRoot)) return;
+  throw new Error(inWorkspaceLegacyMutationMessage(cmd, systemRoot));
 }
 
 async function main() {
@@ -173,29 +218,9 @@ async function main() {
 
   // Unknown commands fail before system-root resolution (no cwd fallback writes).
   const tentCommands = new Set([
-    "dispatch",
-    "task-ack",
-    "task-cancel",
+    ...LEGACY_MUTATION_COMMANDS,
+    ...LEGACY_READONLY_COMMANDS,
     "role-init",
-    "roles",
-    "report",
-    "propose",
-    "complete",
-    "stamp",
-    "status",
-    "grant-readable",
-    "new-box",
-    "tag",
-    "untag",
-    "tag-new",
-    "tag-rm",
-    "tags",
-    "find",
-    "fork",
-    "clean-temp",
-    "force-release",
-    "okf-sync",
-    "tree",
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
@@ -204,6 +229,15 @@ async function main() {
   }
 
   const env = await makeEnv();
+  // Seal legacy core mutates against Desktop in-workspace `.tent` (sole mutation = Service).
+  if (!cmd) return fail("Unknown command: (empty)");
+  const systemRoot = env.tentRoot;
+  if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
+  try {
+    assertLegacyDirectWriteAllowed(cmd, systemRoot);
+  } catch (error) {
+    return fail(error instanceof Error ? error.message : String(error));
+  }
 
   switch (cmd) {
     case "dispatch": {
@@ -706,22 +740,32 @@ function helpText(): string {
 Usage:
   tent <command> [args]
 
-Run commands from a workspace with <workspace>/.tent/ (or legacy tent root) unless noted.
+Run commands from a workspace with <workspace>/.tent/ (or legacy external tent root) unless noted.
 
-Service-backed task lifecycle (preferred for Desktop / external agents):
+Service-backed task lifecycle (required for Desktop / in-workspace collaboration mutates):
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
-Legacy direct-core commands (compatible; not service RPC):
-  new <path>                         Create an empty Tent.
+Init / machine config (always allowed):
+  new <path>                         Create an empty in-workspace Tent at <path>/.tent.
   new <name> --vault <vault>         Create a Tent under the vault's configured tents root.
   migrate --source <root> --workspace <ws>
                                      Copy legacy external tent root into <ws>/.tent (alias: import).
                                      Refuses if <ws>/.tent exists. Never deletes source.
                                      Options: --dry-run --force --json
-  role-init <role>                   Prepare stable role init context.
+  skill-install [--force]            Install bundled skills to ~/.claude/skills and ~/.agents/skills.
+  role-init <role>                   Regenerate the derived stable role init document.
+
+Read-only (allowed on in-workspace .tent):
+  status                             Print a read-only Tent status summary.
   roles                              Print the role registry.
+  tags                               List registered tags.
+  find <tag>                         Find boxes by tag.
+  tree                               Print the box tree.
+
+Legacy direct-core mutations (external / non-.tent system root only — migration window):
+  On <workspace>/.tent these fail-loud; use tent task * or Desktop Service instead.
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
@@ -729,18 +773,14 @@ Legacy direct-core commands (compatible; not service RPC):
   propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
-  status                             Print a read-only Tent status summary.
   force-release <boxId>              Release owner without accepting delivery.
   grant-readable <boxId>             Mark a box readable.
   new-box <name> <type> [parentId]   Create a box.
   tag|untag <boxId> <tag>            Add or remove a tag.
-  tags | tag-new | tag-rm            Manage the tag registry.
-  find <tag>                         Find boxes by tag.
+  tag-new | tag-rm                   Manage the tag registry.
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   okf-sync                           Regenerate OKF indexes and projected links.
-  skill-install [--force]            Install bundled skills to ~/.claude/skills and ~/.agents/skills.
-  tree                               Print the box tree.
 
 Options:
   -h, --help                         Show this help.

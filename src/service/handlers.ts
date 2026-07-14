@@ -236,7 +236,88 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
     workspaceId: optionalString(p, "workspaceId"),
     tentName: optionalString(p, "tentName"),
   });
+  // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
+  await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+
+/**
+ * Chinese summary when a bound managed session is gone after service restart / remount.
+ * Kept as a constant so tests and UI can match the exact contract text.
+ */
+export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
+  "绑定的 session 已不可用（服务重启或 session 已结束）。可重新启动 session，或 interrupt 任务；occupation 保持。";
+
+/**
+ * After workspace mount (and SessionRegistry.reconcileOnBoot already ran on service start):
+ * scan non-terminal running/waiting tasks with sessionId; if the session record is
+ * stopped/failed/missing, park the task in waiting(reason=external) via MutationBus + core
+ * taskWait / patch. Keeps occupation; never auto done/release.
+ *
+ * Idempotent: already waiting with the same reason+summary is a no-op.
+ * Leaves live/starting/waiting-user sessions alone; tasks without sessionId (external/manual) alone;
+ * terminal and other non-running/waiting states alone.
+ */
+export async function reconcileTaskSessionsOnMount(
+  ctx: HandlerContext,
+  workspaceId: string
+): Promise<{ reconciled: string[] }> {
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const reconciled: string[] = [];
+
+  for (const task of tasks) {
+    if (task.state !== "running" && task.state !== "waiting") continue;
+    const sessionId = task.sessionId?.trim();
+    if (!sessionId) continue;
+
+    const record = await ctx.runtime.registry.read(sessionId);
+    const sessionGone =
+      !record || record.state === "stopped" || record.state === "failed";
+    if (!sessionGone) continue;
+    // live | starting | waiting-user | external (registry) → leave task as-is
+
+    const alreadyParked =
+      task.state === "waiting" &&
+      task.wait?.reason === "external" &&
+      task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
+    if (alreadyParked) continue;
+
+    await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      // Re-load inside the bus for races; re-check still non-terminal + session gone.
+      const current = await loadTaskEnvelope(mount.env.fs, task.path);
+      if (current.state !== "running" && current.state !== "waiting") return;
+      if (current.sessionId?.trim() !== sessionId) return;
+      const rec2 = await ctx.runtime.registry.read(sessionId);
+      if (rec2 && rec2.state !== "stopped" && rec2.state !== "failed") return;
+      const parkedAlready =
+        current.state === "waiting" &&
+        current.wait?.reason === "external" &&
+        current.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
+      if (parkedAlready) return;
+
+      let next = current;
+      if (current.state === "running") {
+        next = await taskWait(mount.env, task.path, {
+          reason: "external",
+          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+        });
+      } else {
+        // waiting with another reason (user-input / a2a-approval / …): overwrite wait.
+        // taskWait only allows running→waiting; MutationBus already serializes this path.
+        next = await patchTaskEnvelope(mount.env.fs, task.path, {
+          state: "waiting",
+          wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
+          updatedAt: mount.env.clock.now(),
+        });
+      }
+      emitTaskState(ctx, workspaceId, next, "session.reconcile");
+      reconciled.push(task.path);
+    });
+  }
+
+  return { reconciled };
 }
 
 async function workspaceUnmount(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -1011,8 +1092,10 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     );
   }
 
-  // Resume from waiting(a2a-approval) after resolve
-  if (task.state === "waiting" && task.wait?.reason === "a2a-approval") {
+  // Any waiting (a2a-approval, external after restart, user-input, …) must resume to
+  // running and clear wait *before* launching a new session. A2A ask path still parks
+  // running→waiting earlier in this function when policy requires approval.
+  if (task.state === "waiting") {
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }

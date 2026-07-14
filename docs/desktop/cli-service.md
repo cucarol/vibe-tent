@@ -47,11 +47,13 @@ Workspace must be an **in-workspace tent** (`<workspace>/.tent/RULES.md`). CLI m
 
 ## Legacy CLI (not service RPC)
 
-These remain for package tests / offline pure-core workflows. They **direct-write** core and must **not** be used as the Desktop co-located agent path:
+Legacy commands that **direct-write** core are **blocked on in-workspace** system roots (`<workspace>/.tent`): they **fail-loud** and tell the agent to use `tent task *` / Desktop Service. There is **no** env escape hatch, dual-write, or silent compat path.
 
-- `tent dispatch`, `tent task-ack`, `tent task-cancel`
-- `tent report`, `tent propose`, `tent complete`, `tent stamp`
-- structure commands: `new-box`, `tag`, `fork`, …
+| Class | Commands | In-workspace `.tent` | External / flat system root |
+| --- | --- | --- | --- |
+| Read-only | `tree`, `status`, `roles`, `find`, `tags` | allowed | allowed |
+| Init / derived / machine | `new`, `migrate`/`import`, `role-init`, `skill-install` | allowed | allowed |
+| Mutation | `dispatch`, `task-ack`, `task-cancel`, `report`, `propose`, `complete`, `stamp`, `grant-readable`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` | **fail-loud** | allowed (migration window) |
 
 Prefer `tent task *` whenever Desktop or another client shares the same Local Service.
 
