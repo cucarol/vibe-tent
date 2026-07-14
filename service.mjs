@@ -5390,28 +5390,21 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
     return;
   }
   if (ev.type === "session.waiting_user") {
-    try {
+    if (rec && SessionRegistry.isNonTerminal(rec.state)) {
       await ctx.runtime.registry.update(ev.sessionId, {
         state: "waiting-user"
       });
-    } catch {
     }
   } else if (ev.type === "session.live") {
-    try {
-      const current = await ctx.runtime.registry.read(ev.sessionId);
-      if (current && current.state === "waiting-user") {
-        await ctx.runtime.registry.update(ev.sessionId, {
-          state: "live",
-          ...ev.pid != null ? { pid: ev.pid } : {}
-        });
-      }
-    } catch {
+    const current = await ctx.runtime.registry.read(ev.sessionId);
+    if (current && current.state === "waiting-user") {
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "live",
+        ...ev.pid != null ? { pid: ev.pid } : {}
+      });
     }
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
-    try {
-      await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    } catch {
-    }
+    await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
   }
   if (rec?.lastTaskId) {
     const mountInfos = ctx.host.list();

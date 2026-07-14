@@ -1638,32 +1638,22 @@ async function projectRuntimeEventOnce(
 
   // Reflect waiting-user on session row for probe honesty (no chat).
   if (ev.type === "session.waiting_user") {
-    try {
+    if (rec && SessionRegistry.isNonTerminal(rec.state)) {
       await ctx.runtime.registry.update(ev.sessionId, {
         state: "waiting-user",
       });
-    } catch {
-      // session may already be terminal
     }
   } else if (ev.type === "session.live") {
-    try {
-      const current = await ctx.runtime.registry.read(ev.sessionId);
-      if (current && current.state === "waiting-user") {
-        await ctx.runtime.registry.update(ev.sessionId, {
-          state: "live",
-          ...(ev.pid != null ? { pid: ev.pid } : {}),
-        });
-      }
-    } catch {
-      // ignore
+    const current = await ctx.runtime.registry.read(ev.sessionId);
+    if (current && current.state === "waiting-user") {
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "live",
+        ...(ev.pid != null ? { pid: ev.pid } : {}),
+      });
     }
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     // Pending tool approvals must not hang after process death.
-    try {
-      await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    } catch {
-      // ignore
-    }
+    await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.

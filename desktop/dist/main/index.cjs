@@ -35,6 +35,13 @@ var import_node_child_process = require("node:child_process");
 var fs = __toESM(require("node:fs/promises"), 1);
 var os = __toESM(require("node:os"), 1);
 var path = __toESM(require("node:path"), 1);
+
+// src/machine-state.ts
+function isNotFoundError(err) {
+  return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
+}
+
+// src/service/data-dir.ts
 function defaultServiceDataDir(env = process.env) {
   if (env.TENT_SERVICE_DATA_DIR) return path.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
@@ -54,13 +61,19 @@ async function readServiceEndpoint(dataDir2) {
   const file = serviceEndpointPath(dataDir2);
   try {
     const raw = await fs.readFile(file, "utf8");
-    const data = JSON.parse(raw);
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
     if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
       return null;
     }
     return data;
-  } catch {
-    return null;
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
   }
 }
 
