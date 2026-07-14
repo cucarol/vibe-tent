@@ -165,9 +165,36 @@ ACP may send `session/request_permission`. Mapping:
 | --- | --- |
 | `deny` (default) | Reply `cancelled` — tools not auto-approved; **tool-less managed tasks still complete** via final reply auto-deliver |
 | `allow` | Select **`allow_once` only**; never `allow_always` |
-| `ask` | Emit `session.waiting_user`; without a UI grant, timeout → deny |
+| `ask` | Emit `session.waiting_user`; Local Service stores a **machine-local tool approval**; user must `approve once` / `deny`; timeout → `cancelled` |
 
-There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding tasks that need tools may set machine-local profile `permissionPolicy: allow` (still `allow_once` only) or future UI `ask` — not unconditional always-allow.
+There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding tasks that need tools may set machine-local profile `permissionPolicy: allow` (still `allow_once` only) or `ask` with user RPC — not unconditional always-allow.
+
+### A2A spawn approval vs tool permission approval
+
+These are **two different gates**. Do not merge them.
+
+| Gate | When | Store (machine-local) | RPC | Effect |
+| --- | --- | --- | --- | --- |
+| **A2A spawn** | Role caller `task.startSession` with `roles.json` `a2aPolicy: ask` | `a2a-approvals.json` under service data dir | `a2a.listPending` / `a2a.resolve` | Whether a **new** managed session may start |
+| **Tool permission** | Live ACP session, profile `permissionPolicy: ask`, agent sends `session/request_permission` | `tool-approvals.json` under service data dir | `toolApproval.listPending` / `get` / `approveOnce` / `deny` | Whether **one tool call** is `allow_once` or `cancelled` |
+
+Rules:
+
+1. Tool approvals are **user-only** (`actor` must be `user`). Agents cannot self-approve.
+2. Pending tool approval projects task → `waiting` (`reason: user-input`) and session → `waiting-user`. Approve once → ACP `allow_once` + resume `running` / `live`. Deny or timeout → ACP `cancelled` + pending cleared.
+3. Neither store is workspace collaboration data: **never** written into `.tent/` or git.
+4. Default remains safe: no user decision never becomes auto-`allow`; missing bridge still denies.
+
+### Tool approval RPC sketch
+
+```json
+{ "method": "toolApproval.listPending", "params": { "workspaceId": "…" } }
+{ "method": "toolApproval.get", "params": { "approvalId": "ta-…" } }
+{ "method": "toolApproval.approveOnce", "params": { "approvalId": "ta-…", "actor": "user" } }
+{ "method": "toolApproval.deny", "params": { "approvalId": "ta-…", "actor": "user" } }
+```
+
+Pending item fields (projection only): `id`, `workspaceId`, `sessionId`, `taskId`/`taskPath`, `role`, `toolTitle`, optional `options`, `createdAt`/`expiresAt`. No stdout tails, tokens, or secrets.
 
 ## Fail-loud rules
 
@@ -180,6 +207,16 @@ If executable or `envKey` is missing / empty:
 
 CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `~/.grok/config.toml`). Tent does not invent `api.x.ai`.
 
+## Failure cleanup & occupation release
+
+Prompt/provider failure paths must leave **task / session / process** consistent:
+
+1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` so no live orphan remains.
+2. Service maps `session.failed` through core **`taskFail`**: `running|waiting → failed`, clears `wait`, and **releases box occupation** (`owner`/`assignee` cleared, service-owned `doing` → `todo`).
+3. `failed` is terminal non-active: the **same box** can be re-dispatched without manual frontmatter edits or `docs.fork`.
+4. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error).
+5. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
+
 ## Lifecycle
 
 | Event | Behavior |
@@ -187,7 +224,10 @@ CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `
 | Desktop UI close | Does **not** stop agent sessions |
 | Local Service stop / shutdown | Stops push children this service started |
 | `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery |
+| `session.waiting_user` (tool ask) | Task `waiting(user-input)`; pending tool approval in service data dir |
+| Tool approve once / deny / timeout | Resume or cancel tool; clear pending |
 | `session.prompt_complete` | Service auto-deliver (see above) |
+| `session.failed` | Stop process (idempotent) → `taskFail` + occupation release |
 | PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
 
 ## Verification (dev)

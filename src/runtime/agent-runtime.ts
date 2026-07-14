@@ -204,6 +204,24 @@ export class AgentRuntime implements AgentRuntimePort {
         // ACP / structured transports own stdio — not ProcessSupervisor.
         const managed = await adapter.startManagedSession(plan, (ev) => {
           if (ev.type === "session.live") sawLive = true;
+          // Managed failure: mark terminal + drop handle so probe never claims live orphan.
+          // Service maps task failed separately (idempotent). Process stop is adapter-owned.
+          if (ev.type === "session.failed") {
+            void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+          } else if (ev.type === "session.exited") {
+            void this.onManagedTerminal(req.sessionId, "stopped", undefined, ev.exitCode);
+          } else if (ev.type === "session.waiting_user") {
+            void this.registry
+              .update(req.sessionId, { state: "waiting-user" })
+              .catch(() => undefined);
+          } else if (ev.type === "session.live") {
+            void this.registry
+              .update(req.sessionId, {
+                state: "live",
+                ...(ev.pid != null ? { pid: ev.pid } : {}),
+              })
+              .catch(() => undefined);
+          }
           this.emit(ev);
         });
         this.managed.set(req.sessionId, managed);
@@ -425,6 +443,36 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     await this.supervisor.stopAll("shutdown");
     this.closed = true;
+  }
+
+  /**
+   * Managed ACP terminal path (no ProcessSupervisor exit). Idempotent:
+   * second failure/exit does not illegal-transition the session row.
+   */
+  private async onManagedTerminal(
+    sessionId: string,
+    terminalState: "failed" | "stopped",
+    lastError?: string,
+    exitCode?: number | null
+  ): Promise<void> {
+    this.managed.delete(sessionId);
+    const record = await this.registry.read(sessionId);
+    if (!record) return;
+    if (!SessionRegistry.isNonTerminal(record.state) && record.state !== "starting") {
+      // Already terminal — only refresh diagnostics.
+      await this.registry.update(sessionId, {
+        pid: undefined,
+        ...(lastError ? { lastError } : {}),
+        ...(exitCode !== undefined ? { exitCode } : {}),
+      });
+      return;
+    }
+    await this.registry.update(sessionId, {
+      state: terminalState,
+      pid: undefined,
+      lastError: lastError ?? record.lastError,
+      ...(exitCode !== undefined ? { exitCode } : {}),
+    });
   }
 
   private async onChildExit(

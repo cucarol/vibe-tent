@@ -29,11 +29,13 @@ export type GrokAcpClientOptions = {
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
-   * When permissionPolicy is "ask", resolve allow/deny.
-   * Return "allow" | "deny". Timeout → deny.
+   * When permissionPolicy is "ask", resolve allow/deny via Local Service
+   * tool-approval store (never agent self-approve). Return "allow" | "deny".
+   * Timeout / missing callback → deny (cancelled).
    */
   onPermissionAsk?: (info: {
     toolTitle: string;
+    toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
 };
@@ -402,6 +404,10 @@ export class GrokAcpClient {
     const options = params.options ?? [];
     const toolTitle =
       params.toolCall?.title || params.toolCall?.toolCallId || "tool";
+    const toolCallId =
+      typeof params.toolCall?.toolCallId === "string"
+        ? params.toolCall.toolCallId
+        : undefined;
     const policy = this.options.permissionPolicy;
 
     let decision: "allow" | "deny" = "deny";
@@ -410,7 +416,7 @@ export class GrokAcpClient {
     } else if (policy === "deny") {
       decision = "deny";
     } else {
-      // ask — never auto-yolo
+      // ask — never auto-yolo; Local Service owns pending approval + user decide.
       this.options.emit({
         type: "session.waiting_user",
         sessionId: this.options.sessionId,
@@ -418,17 +424,28 @@ export class GrokAcpClient {
       });
       try {
         if (this.options.onPermissionAsk) {
+          const timeoutMs =
+            this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
+          // Service waiter enforces expiry; client race is a safety net only.
           decision = await Promise.race([
-            this.options.onPermissionAsk({ toolTitle, options }),
-            sleep(
-              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS
-            ).then((): "deny" => "deny"),
+            this.options.onPermissionAsk({ toolTitle, toolCallId, options }),
+            sleep(timeoutMs + 1_000).then((): "deny" => "deny"),
           ]);
         } else {
+          // No service bridge → deny (safe default; never promote ask→allow).
           decision = "deny";
         }
       } catch {
         decision = "deny";
+      }
+
+      // After user decision / timeout, session is no longer blocked on user.
+      if (!this.stopRequested && !this.closed) {
+        this.options.emit({
+          type: "session.live",
+          sessionId: this.options.sessionId,
+          pid: this.proc?.pid,
+        });
       }
     }
 

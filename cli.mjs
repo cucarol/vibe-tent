@@ -3515,6 +3515,21 @@ var ServiceClient = class {
   a2aResolve(approvalId, decision, actor = "user") {
     return this.call("a2a.resolve", { approvalId, decision, actor });
   }
+  /** ACP tool permission pending list (permissionPolicy=ask). Not A2A spawn. */
+  toolApprovalListPending(workspaceId) {
+    return this.call("toolApproval.listPending", workspaceId ? { workspaceId } : {});
+  }
+  toolApprovalGet(approvalId) {
+    return this.call("toolApproval.get", { approvalId });
+  }
+  /** User-only: allow_once for one ACP tool request. */
+  toolApprovalApproveOnce(approvalId, actor = "user") {
+    return this.call("toolApproval.approveOnce", { approvalId, actor });
+  }
+  /** User-only: deny/cancel one ACP tool request. */
+  toolApprovalDeny(approvalId, actor = "user") {
+    return this.call("toolApproval.deny", { approvalId, actor });
+  }
   /**
    * Subscribe to SSE events. Returns an abort handle.
    * Requires a global EventSource-compatible environment; for Node tests prefer

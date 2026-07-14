@@ -180,9 +180,9 @@ Logical groups shared by Desktop and CLI (transport chosen in B2: loopback HTTP 
 
 | Group | Canonical examples | Notes |
 | --- | --- | --- |
-| **Query** | `docs.list` / `docs.get` / concept reads; `task.get` / `task.list`; `delivery.*`; `session.get` / `session.list` (projections); `subscribeEvents` | Read projections only |
-| **Command** | **`docs.*`** (create, write, promote, fork, place, …); **`task.*`** (`dispatch` / `claim` / `wait` / `deliver` / `accept` / `reject` / `interrupt` / …) | Serialized mutations; **only** external mutation verbs |
-| **Events** | `concept.changed`, `concept.removed`, `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `workspace.switched`, `service.health` | Single fan-out channel; **no** `box.changed` dual stream |
+| **Query** | `docs.list` / `docs.get` / concept reads; `task.get` / `task.list`; `delivery.*`; `session.get` / `session.list` (projections); `a2a.listPending`; `toolApproval.listPending` / `toolApproval.get`; `subscribeEvents` | Read projections only |
+| **Command** | **`docs.*`** (create, write, promote, fork, place, …); **`task.*`** (`dispatch` / `claim` / `wait` / `deliver` / `accept` / `reject` / `interrupt` / …); **`a2a.resolve`**; **`toolApproval.approveOnce` / `toolApproval.deny`** (user-only) | Serialized mutations; **only** external mutation verbs |
+| **Events** | `concept.changed`, `concept.removed`, `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, `workspace.switched`, `service.health` | Single fan-out channel; **no** `box.changed` dual stream |
 
 **Forbidden as client commands:** `AgentRuntimePort.startSession` / `stopSession` / `resumeSession` / `probe` / `subscribe`. Session lifecycle for agents is invoked **inside** Local Service after `task.startSession` (or equivalent orchestration) has already passed A2A. Clients may issue `task.startSession` where authorized; they never call the runtime port directly.
 

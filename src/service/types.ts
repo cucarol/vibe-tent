@@ -206,6 +206,11 @@ export const CLIENT_METHODS = [
   "session.get",
   "a2a.listPending",
   "a2a.resolve",
+  /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */
+  "toolApproval.listPending",
+  "toolApproval.get",
+  "toolApproval.approveOnce",
+  "toolApproval.deny",
 ] as const;
 
 export type ClientMethod = (typeof CLIENT_METHODS)[number];

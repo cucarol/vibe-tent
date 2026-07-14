@@ -14,6 +14,7 @@ import {
   taskCancel,
   taskClaim,
   taskDeliver,
+  taskFail,
   taskInterrupt,
   taskReject,
   taskResume,
@@ -256,6 +257,52 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   assert.equal(box.fm.status, "todo");
   const task = await loadTaskEnvelope(e.fs, r2.taskPath);
   assert.equal(task.state, "interrupted");
+});
+
+test("lifecycle: taskFail releases occupation; idempotent; re-dispatch same box", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  const claimed = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(claimed.fm.owner, "executor");
+  assert.equal(claimed.fm.status, "doing");
+
+  const failed = await taskFail(e as any, result.taskPath, { summary: "provider crash" });
+  assert.equal(failed.state, "failed");
+  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, "todo");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+
+  // Idempotent second fail — no throw, occupation stays clear.
+  const again = await taskFail(e as any, result.taskPath);
+  assert.equal(again.state, "failed");
+  const box2 = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(box2.fm.owner, undefined);
+  assert.equal(box2.fm.status, "todo");
+
+  // Same box can be re-dispatched without fork / manual frontmatter edit.
+  const r2 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "retry after fail" });
+  await taskClaim(e as any, r2.taskPath);
+  const reclaimed = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(reclaimed.fm.owner, "executor");
+  assert.equal(reclaimed.fm.status, "doing");
+});
+
+test("lifecycle: taskFail from waiting also clears occupation", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  await taskWait(e as any, result.taskPath, {
+    reason: "user-input",
+    summary: "await tool approval",
+  });
+  const failed = await taskFail(e as any, result.taskPath);
+  assert.equal(failed.state, "failed");
+  assert.ok(failed.wait == null, "wait must be cleared");
+  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, "todo");
 });
 
 test("lifecycle: A2A gate deny/ask/allow", () => {

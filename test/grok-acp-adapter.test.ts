@@ -465,6 +465,124 @@ test("permission policy ask emits waiting_user then denies without handler", asy
   await runtime.shutdown();
 });
 
+test("permission policy ask → onPermissionAsk allow selects allow_once", async () => {
+  const dataDir = await tempDir("tent-grok-ask-allow-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  let asked = false;
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+    onPermissionAsk: async (info) => {
+      asked = true;
+      assert.equal(info.sessionId, "ss-acpaskal");
+      assert.match(info.toolTitle, /read_file|tool/);
+      return "allow";
+    },
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-ask-allow", {
+        logPath,
+        apiKey: "test-key",
+        permissionPolicy: "ask",
+        requestPermission: true,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpaskal";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-ask-allow",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.waiting_user", sessionId, 3000);
+
+  const start = Date.now();
+  let outcome: { outcome?: string; optionId?: string } | undefined;
+  while (Date.now() - start < 5000) {
+    try {
+      const raw = await fs.readFile(logPath, "utf8");
+      const log = JSON.parse(raw) as {
+        permissionOutcomes: Array<{ outcome?: string; optionId?: string }>;
+      };
+      if (log.permissionOutcomes?.length) {
+        outcome = log.permissionOutcomes[0];
+        break;
+      }
+    } catch {
+      // wait
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  assert.ok(asked);
+  assert.ok(outcome);
+  assert.equal(outcome!.outcome, "selected");
+  assert.equal(outcome!.optionId, "allow_once");
+  assert.ok(events.some((e) => e.type === "session.live" && e.sessionId === sessionId));
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("permission policy ask → onPermissionAsk deny cancels", async () => {
+  const dataDir = await tempDir("tent-grok-ask-deny-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+    onPermissionAsk: async () => "deny",
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-ask-deny", {
+        logPath,
+        apiKey: "test-key",
+        permissionPolicy: "ask",
+        requestPermission: true,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpaskdn";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-ask-deny",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.waiting_user", sessionId, 3000);
+
+  const start = Date.now();
+  while (Date.now() - start < 5000) {
+    try {
+      const raw = await fs.readFile(logPath, "utf8");
+      const log = JSON.parse(raw) as { permissionOutcomes: Array<{ outcome?: string }> };
+      if (log.permissionOutcomes?.length) {
+        assert.equal(log.permissionOutcomes[0].outcome, "cancelled");
+        break;
+      }
+    } catch {
+      // wait
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
 test("startSession with missing key fails without spawning mock as fake fallback", async () => {
   const dataDir = await tempDir("tent-grok-fail-");
   const cwd = await tempDir("tent-grok-cwd-");

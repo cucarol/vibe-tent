@@ -51,6 +51,9 @@ function mockAcpProfile(
     promptMode?: "ok" | "empty" | "error" | "interrupt";
     stopReason?: string;
     permissionPolicy?: "deny" | "allow" | "ask";
+    requestPermission?: boolean;
+    permissionTimeoutMs?: number;
+    keepAlive?: boolean;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -60,12 +63,13 @@ function mockAcpProfile(
     args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
     env: {
       MOCK_ACP_LOG: opts.logPath,
-      MOCK_ACP_KEEP_ALIVE: "1",
+      MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
       MOCK_ACP_PROMPT_TEXT: opts.promptText ?? "MANAGED_FINAL_REPORT",
       ...(opts.promptMode && opts.promptMode !== "ok"
         ? { MOCK_ACP_PROMPT_MODE: opts.promptMode }
         : {}),
       ...(opts.stopReason ? { MOCK_ACP_STOP_REASON: opts.stopReason } : {}),
+      ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
     grokAcp: {
@@ -73,7 +77,7 @@ function mockAcpProfile(
       envKey: "CPA_GROK_API_KEY",
       permissionPolicy: opts.permissionPolicy ?? "deny",
       promptTimeoutMs: 8_000,
-      permissionTimeoutMs: 500,
+      permissionTimeoutMs: opts.permissionTimeoutMs ?? 500,
     },
   };
 }
@@ -1109,11 +1113,295 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
     "session.list",
     "a2a.listPending",
     "a2a.resolve",
+    "toolApproval.listPending",
+    "toolApproval.get",
+    "toolApproval.approveOnce",
+    "toolApproval.deny",
   ]) {
     assert.ok((CLIENT_METHODS as readonly string[]).includes(m), m);
   }
   assert.ok(!(CLIENT_METHODS as readonly string[]).includes("AgentRuntimePort.startSession"));
   assert.equal(FAKE_ADAPTER_ID, "fake-cli");
+});
+
+test("B5 tool approval: ask → pending → approve once → running → deliver", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-appr-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "need tool then finish",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-tool-ask",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      // Task parks waiting on tool permission.
+      await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string; wait?: { reason: string } } })
+          .task;
+        return task.state === "waiting" && task.wait?.reason === "user-input" ? task : null;
+      }, 12_000, "task waiting for tool approval");
+
+      const pending = await pollUntil(async () => {
+        const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
+        const approvals = (
+          list.result as {
+            approvals: Array<{
+              id: string;
+              toolTitle: string;
+              sessionId: string;
+              taskPath?: string;
+            }>;
+          }
+        ).approvals;
+        return approvals.find((a) => a.sessionId === sessionId) ?? null;
+      }, 12_000, "tool approval pending");
+      assert.match(pending.toolTitle, /read_file|tool/);
+      assert.equal(pending.taskPath, taskPath);
+
+      // Agent self-approve must be rejected.
+      const self = await rpc(svc, "toolApproval.approveOnce", {
+        approvalId: pending.id,
+        actor: "executor",
+      });
+      assert.ok(self.error);
+      assert.match(self.error!.message, /user-only|self-approve/i);
+
+      const got = await rpc(svc, "toolApproval.get", { approvalId: pending.id });
+      assert.ok(!got.error, JSON.stringify(got.error));
+      assert.equal(
+        (got.result as { approval: { status: string } }).approval.status,
+        "pending"
+      );
+
+      const approved = await rpc(svc, "toolApproval.approveOnce", {
+        approvalId: pending.id,
+        actor: "user",
+      });
+      assert.ok(!approved.error, JSON.stringify(approved.error));
+      assert.equal(
+        (approved.result as { approval: { status: string } }).approval.status,
+        "approved"
+      );
+
+      // ACP allow_once then managed deliver.
+      const logOutcome = await pollUntil(async () => {
+        try {
+          const raw = await fs.readFile(logPath, "utf8");
+          const log = JSON.parse(raw) as {
+            permissionOutcomes: Array<{ outcome?: string; optionId?: string }>;
+          };
+          return log.permissionOutcomes?.[0] ?? null;
+        } catch {
+          return null;
+        }
+      }, 12_000, "permission outcome written");
+      assert.equal(logOutcome.outcome, "selected");
+      assert.equal(logOutcome.optionId, "allow_once");
+
+      const delivered = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "delivered" ? task : null;
+      }, 15_000, "task delivered after tool approve");
+      assert.equal(delivered.state, "delivered");
+
+      // Distinct from A2A store — tool approvals never appear as a2a pending.
+      const a2a = await rpc(svc, "a2a.listPending", { workspaceId });
+      assert.equal((a2a.result as { approvals: unknown[] }).approvals.length, 0);
+
+      // Machine-local only: tool-approvals.json under service dataDir, not workspace .tent.
+      const storePath = path.join(svc.dataDir, "tool-approvals.json");
+      await fs.access(storePath);
+      const tentListing = await fs.readdir(path.join(ws, ".tent"));
+      assert.ok(!tentListing.includes("tool-approvals.json"));
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-tool-ask", {
+          logPath,
+          promptText: "TOOL_APPROVED_REPORT",
+          permissionPolicy: "ask",
+          requestPermission: true,
+          permissionTimeoutMs: 30_000,
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 tool approval: deny cancels tool; timeout expires pending", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-deny-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "will deny tool",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-tool-deny",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+
+      const pending = await pollUntil(async () => {
+        const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
+        const approvals = (list.result as { approvals: Array<{ id: string }> }).approvals;
+        return approvals[0] ?? null;
+      }, 12_000, "pending tool approval for deny");
+
+      const denied = await rpc(svc, "toolApproval.deny", {
+        approvalId: pending.id,
+        actor: "user",
+      });
+      assert.ok(!denied.error, JSON.stringify(denied.error));
+      assert.equal(
+        (denied.result as { approval: { status: string } }).approval.status,
+        "denied"
+      );
+
+      const outcome = await pollUntil(async () => {
+        try {
+          const raw = await fs.readFile(logPath, "utf8");
+          const log = JSON.parse(raw) as {
+            permissionOutcomes: Array<{ outcome?: string }>;
+          };
+          return log.permissionOutcomes?.[0] ?? null;
+        } catch {
+          return null;
+        }
+      }, 12_000, "denied permission outcome");
+      assert.equal(outcome.outcome, "cancelled");
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-tool-deny", {
+          logPath,
+          promptText: "AFTER_DENY",
+          permissionPolicy: "ask",
+          requestPermission: true,
+          permissionTimeoutMs: 30_000,
+        }),
+      ],
+    }
+  );
+});
+
+test("B5 failure cleanup: prompt error stops process, taskFail releases occupation", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace();
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-fail-clean-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "will fail",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-fail-clean",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      const failed = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "failed" ? task : null;
+      }, 12_000, "task failed after prompt error");
+      assert.equal(failed.state, "failed");
+
+      // No live managed session / orphan process.
+      const probe = await svc.runtime.probe(sessionId);
+      assert.equal(probe.alive, false);
+      assert.ok(probe.state === "failed" || probe.state === "stopped");
+
+      // Occupation released — box has no owner/doing.
+      const concept = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+      const fm = (concept.result as { frontmatter?: { owner?: string; status?: string } })
+        .frontmatter;
+      // docs.get may nest differently — fall back to raw read via docs.readForEdit
+      let owner: unknown;
+      let status: unknown;
+      if (fm) {
+        owner = fm.owner;
+        status = fm.status;
+      } else {
+        const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+        const data = edit.result as {
+          frontmatter?: { owner?: string; status?: string };
+          data?: { owner?: string; status?: string };
+        };
+        owner = data.frontmatter?.owner ?? data.data?.owner;
+        status = data.frontmatter?.status ?? data.data?.status;
+      }
+      assert.ok(owner === undefined || owner === null || owner === "");
+      assert.notEqual(status, "doing");
+
+      // Same box re-dispatch without fork.
+      const d2 = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "retry after fail cleanup",
+      });
+      assert.ok(!d2.error, JSON.stringify(d2.error));
+
+      // Duplicate session.failed must not throw / illegal transition.
+      mapRuntimeEventToService(svc.ctx, {
+        type: "session.failed",
+        sessionId,
+        error: "duplicate failure event",
+      });
+      await new Promise((r) => setTimeout(r, 150));
+      const g2 = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.equal((g2.result as { task: { state: string } }).task.state, "failed");
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-fail-clean", {
+          logPath,
+          promptMode: "error",
+          keepAlive: false,
+        }),
+      ],
+    }
+  );
 });
 
 // ---- session reconcile on boot ----

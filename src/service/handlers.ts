@@ -28,6 +28,7 @@ import {
   taskCancel,
   taskClaim,
   taskDeliver,
+  taskFail,
   taskInterrupt,
   taskReject,
   taskResume,
@@ -59,6 +60,7 @@ import type { MutationBus } from "./mutation-bus.js";
 import type { WorkspaceHost } from "./workspace-host.js";
 import type { A2AApprovalStore } from "./a2a-store.js";
 import { makeApprovalId } from "./a2a-store.js";
+import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
 import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
@@ -85,6 +87,8 @@ export interface HandlerContext {
   /** Service-internal runtime (never exposed as client methods). */
   runtime: AgentRuntime;
   a2a: A2AApprovalStore;
+  /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
+  toolApprovals: ToolApprovalStore;
   dataDir: string;
   /**
    * Optional integrate hook for tests.
@@ -207,6 +211,14 @@ export async function dispatchMethod(
         return a2aListPending(ctx, p);
       case "a2a.resolve":
         return a2aResolve(ctx, p);
+      case "toolApproval.listPending":
+        return toolApprovalListPending(ctx, p);
+      case "toolApproval.get":
+        return toolApprovalGet(ctx, p);
+      case "toolApproval.approveOnce":
+        return toolApprovalResolve(ctx, p, "approved");
+      case "toolApproval.deny":
+        return toolApprovalResolve(ctx, p, "denied");
       default:
         throw new RpcError(-32601, `Method not found: ${method}`);
     }
@@ -1177,15 +1189,13 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Only true session launch/process failure maps task → failed.
-    await ctx.mutations.run(workspaceId, async () => {
-      ctx.host.markSelfWrite(workspaceId);
-      const failed = await patchTaskEnvelope(mount.env.fs, taskPath, {
-        state: "failed",
-        wait: null,
-        updatedAt: mount.env.clock.now(),
-      });
-      emitTaskState(ctx, workspaceId, failed, "session.failed");
+    // Launch/process failure → taskFail (releases occupation) + no live session.
+    await failTaskFromRuntime(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: undefined,
+      reason: "session.failed",
+      summary: message,
     });
     throw new RpcError(-32000, message);
   }
@@ -1351,6 +1361,101 @@ async function a2aResolve(ctx: HandlerContext, p: Record<string, unknown>) {
   return { approval: item, started: null };
 }
 
+// ---- ACP tool permission approvals (permissionPolicy=ask; not A2A spawn) ----
+
+async function toolApprovalListPending(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const pending = await ctx.toolApprovals.listPending(workspaceId);
+  return { approvals: pending.map(projectToolApproval) };
+}
+
+async function toolApprovalGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const approvalId = requireString(p, "approvalId");
+  const item = await ctx.toolApprovals.get(approvalId);
+  if (!item) throw new RpcError(-32004, `Tool approval not found: ${approvalId}`);
+  return { approval: projectToolApproval(item) };
+}
+
+/**
+ * User-only resolve for ACP tool permission.
+ * approveOnce → allow_once at adapter; deny → cancelled.
+ * Agent self-approve is not accepted: actor must be "user" (or empty → user).
+ */
+async function toolApprovalResolve(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  decision: "approved" | "denied"
+) {
+  const approvalId = requireString(p, "approvalId");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  // Hard user authority — roles/agents cannot approve their own tool calls.
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "toolApproval resolve is user-only; agent self-approve is forbidden",
+      { actor: actorRaw }
+    );
+  }
+
+  const item = await ctx.toolApprovals.resolve(approvalId, decision, actorRaw);
+  ctx.events.emit(
+    "toolApproval.resolved",
+    item.workspaceId,
+    {
+      approvalId: item.id,
+      decision,
+      actor: actorRaw,
+      sessionId: item.sessionId,
+      taskPath: item.taskPath,
+      toolTitle: item.toolTitle,
+    },
+    "self"
+  );
+
+  // Resume task projection if it was parked on tool approval wait.
+  // Adapter re-emits session.live after decision; service also resumes here for
+  // approve path so UI does not wait solely on racey runtime events.
+  if (decision === "approved" && item.taskPath) {
+    try {
+      const mount = ctx.host.get(item.workspaceId);
+      if (mount) {
+        const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+        if (task.state === "waiting" && task.wait?.reason === "user-input") {
+          await ctx.mutations.run(item.workspaceId, async () => {
+            ctx.host.markSelfWrite(item.workspaceId);
+            const resumed = await taskResume(mount.env, item.taskPath!);
+            emitTaskState(ctx, item.workspaceId, resumed, "toolApproval.approveOnce");
+          });
+        }
+      }
+    } catch {
+      // resume is best-effort; adapter session.live also maps resume
+    }
+  }
+
+  return { approval: projectToolApproval(item) };
+}
+
+function projectToolApproval(item: ToolPendingApproval) {
+  // Never include secrets, stdout, tokens — only safe UI fields.
+  return {
+    id: item.id,
+    workspaceId: item.workspaceId,
+    sessionId: item.sessionId,
+    taskId: item.taskId,
+    taskPath: item.taskPath,
+    role: item.role,
+    toolTitle: item.toolTitle,
+    toolCallId: item.toolCallId,
+    options: item.options,
+    status: item.status,
+    createdAt: item.createdAt,
+    expiresAt: item.expiresAt,
+    resolvedAt: item.resolvedAt,
+    resolvedBy: item.resolvedBy,
+  };
+}
+
 // ---- runtime event bridge (called from service bootstrap) ----
 
 /**
@@ -1378,6 +1483,37 @@ export function mapRuntimeEventToService(
         // Diagnostics only — never product chat; optional quiet emit.
         return;
       }
+
+      // Reflect waiting-user on session row for probe honesty (no chat).
+      if (ev.type === "session.waiting_user") {
+        try {
+          await ctx.runtime.registry.update(ev.sessionId, {
+            state: "waiting-user",
+          });
+        } catch {
+          // session may already be terminal
+        }
+      } else if (ev.type === "session.live") {
+        try {
+          const current = await ctx.runtime.registry.read(ev.sessionId);
+          if (current && current.state === "waiting-user") {
+            await ctx.runtime.registry.update(ev.sessionId, {
+              state: "live",
+              ...(ev.pid != null ? { pid: ev.pid } : {}),
+            });
+          }
+        } catch {
+          // ignore
+        }
+      } else if (ev.type === "session.failed" || ev.type === "session.exited") {
+        // Pending tool approvals must not hang after process death.
+        try {
+          await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
+        } catch {
+          // ignore
+        }
+      }
+
       ctx.events.emit(
         "session.state",
         workspaceId,
@@ -1404,7 +1540,10 @@ export function mapRuntimeEventToService(
         if (!mount) continue;
         const tasks = await loadTaskEnvelopes(mount.env.fs);
         const task = tasks.find(
-          (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId
+          (t) =>
+            t.sessionId === ev.sessionId ||
+            t.id === rec.lastTaskId ||
+            t.path === rec.lastTaskId
         );
         if (!task) continue;
         if (ev.type === "session.waiting_user" && task.state === "running") {
@@ -1417,17 +1556,26 @@ export function mapRuntimeEventToService(
             emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
           });
         } else if (
+          ev.type === "session.live" &&
+          task.state === "waiting" &&
+          task.wait?.reason === "user-input"
+        ) {
+          // Tool approval resolved (or session resumed) → running again.
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const resumed = await taskResume(mount.env, task.path);
+            emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
+          });
+        } else if (
           ev.type === "session.failed" &&
           (task.state === "running" || task.state === "waiting")
         ) {
-          await ctx.mutations.run(mount.workspaceId, async () => {
-            ctx.host.markSelfWrite(mount.workspaceId);
-            const failed = await patchTaskEnvelope(mount.env.fs, task.path, {
-              state: "failed",
-              wait: null,
-              updatedAt: mount.env.clock.now(),
-            });
-            emitTaskState(ctx, mount.workspaceId, failed, "session.failed");
+          await failTaskFromRuntime(ctx, {
+            workspaceId: mount.workspaceId,
+            taskPath: task.path,
+            sessionId: ev.sessionId,
+            reason: "session.failed",
+            summary: "error" in ev ? ev.error : undefined,
           });
         } else if (ev.type === "session.prompt_complete") {
           await tryManagedAutoDeliver(ctx, {
@@ -1442,6 +1590,54 @@ export function mapRuntimeEventToService(
       // mapping must not crash the runtime
     }
   })();
+}
+
+/**
+ * Single core path for runtime→task failed: taskFail (occupation release) +
+ * idempotent session stop. Duplicate failure/exit events are safe.
+ */
+async function failTaskFromRuntime(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId?: string;
+    reason: string;
+    summary?: string;
+  }
+): Promise<void> {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return;
+
+  // Stop managed process first when still live (idempotent).
+  if (input.sessionId) {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    try {
+      const probe = await ctx.runtime.probe(input.sessionId);
+      if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+        await ctx.runtime.stopSession(input.sessionId, "interrupt");
+      }
+    } catch {
+      // already dead / already stopped
+    }
+  }
+
+  await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    if (current.state !== "running" && current.state !== "waiting" && current.state !== "failed") {
+      // delivered / terminal other — do not force fail
+      return;
+    }
+    const failed = await taskFail(mount.env, input.taskPath, {
+      summary: input.summary,
+    });
+    emitTaskState(ctx, input.workspaceId, failed, input.reason);
+  });
 }
 
 /**

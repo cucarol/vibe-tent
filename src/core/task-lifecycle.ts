@@ -153,6 +153,8 @@ export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitO
 export async function taskResume(env: OpsEnv, taskPath: string): Promise<TaskEnvelope> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
+    // Idempotent: already running after concurrent approve + session.live is fine.
+    if (task.state === "running" && !task.wait) return task;
     assertTransition(task.state, "resume", "running");
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "running",
@@ -361,6 +363,51 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
       updatedAt: env.clock.now(),
     });
   });
+}
+
+export interface TaskFailOptions {
+  /** Optional diagnostic summary (not written as collaboration chat). */
+  summary?: string;
+}
+
+/**
+ * Unrecoverable failure: running|waiting → failed.
+ * Releases box occupation (owner/assignee + service-owned doing → todo) so the same
+ * box can be re-dispatched without manual frontmatter edits or docs.fork.
+ * Idempotent when already failed (no second occupation release error).
+ */
+export async function taskFail(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskFailOptions = {}
+): Promise<TaskEnvelope> {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "failed") {
+      // Already terminal non-active — ensure occupation is cleared (repair path).
+      await releaseOccupationForTask(env, task);
+      return task;
+    }
+    assertTransition(task.state, "fail", "failed");
+    await releaseOccupationForTask(env, task);
+    void options.summary;
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "failed",
+      wait: null,
+      updatedAt: env.clock.now(),
+    });
+  });
+}
+
+async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
+  const tent = await loadTent(env.fs);
+  for (const claimId of task.claims) {
+    if (claimId === "root") continue;
+    const box = tent.byId.get(claimId);
+    if (!box) continue;
+    await projectAssignee(env.fs, box, undefined, "todo");
+    await removeReportsForBox(env.fs, box.id);
+  }
 }
 
 export async function taskCancel(env: OpsEnv, taskPath: string): Promise<void> {

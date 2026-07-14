@@ -167,6 +167,7 @@ Rules:
 | Active task present | `doing` | task.assignee |
 | Last terminal state `accepted`, no new task | `done` | empty |
 | After `interrupt` / terminal `rejected` without rework | `todo` | empty |
+| After `failed` (unrecoverable) | `todo` | empty |
 
 **Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task—including via ordinary **`docs.write`** / frontmatter body patches. While an active task occupies the box, service/core **must reject** competing writes to projected collaboration fields (`status` when service-owned as `doing`, `assignee`, legacy `owner`). Use Task API transitions only. Migration may synthesize a running task from orphan `owner` or force-idle before cutover.
 
@@ -209,8 +210,10 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `task.get` / `task.list({ boxId, role, state })`
 - `delivery.get` / `delivery.list`
 - `session.get` / `session.list` (projections; no secrets/tokens in client payloads)
+- `a2a.listPending` / `a2a.resolve` — **spawn** gate only (role `a2aPolicy`); not tool permissions
+- `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, plus document events `concept.changed` / `concept.removed` from the docs group
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 

@@ -52,12 +52,15 @@ export interface GrokAcpAdapterOptions {
     profileBaseUrl?: string
   ) => string | undefined;
   /**
-   * Optional permission ask resolver (tests / future service UI).
-   * When omitted and policy=ask, permissions deny after timeout.
+   * Optional permission ask resolver (Local Service tool-approval bridge / tests).
+   * When omitted and policy=ask, permissions deny (safe default; never auto-allow).
+   * Distinct from A2A spawn approval — this is ACP session/request_permission only.
    */
   onPermissionAsk?: (info: {
     sessionId: string;
     toolTitle: string;
+    toolCallId?: string;
+    options: Array<{ optionId: string; kind?: string; name?: string }>;
   }) => Promise<"allow" | "deny">;
 }
 
@@ -310,6 +313,12 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
               return this.onPermissionAsk({
                 sessionId: plan.sessionId,
                 toolTitle: info.toolTitle,
+                toolCallId: info.toolCallId,
+                options: (info.options ?? []).map((o) => ({
+                  optionId: o.optionId,
+                  kind: o.kind,
+                  name: o.name,
+                })),
               });
             }
           : undefined,
@@ -321,9 +330,10 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     // Managed bootstrap runs in background — Tent is not a chat router.
     // On successful end_turn, emit session.prompt_complete so Local Service can
     // auto-deliver the final assistant reply as the task report.
+    // All failure paths stop the managed process so no orphan live provider remains.
     const promptDone = client
       .sendPrompt(bootstrap)
-      .then((result) => {
+      .then(async (result) => {
         const stopReason = (result.stopReason || "end_turn").toLowerCase();
         const assistantText = (result.assistantText || "").trim();
         // Only successful end_turn with non-empty message is a deliverable report.
@@ -334,6 +344,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
             sessionId: plan.sessionId,
             error: `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`,
           });
+          await stopClientQuiet(client);
           return;
         }
         if (!assistantText) {
@@ -342,6 +353,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
             sessionId: plan.sessionId,
             error: "ACP assistant response empty (no auto-delivery)",
           });
+          await stopClientQuiet(client);
           return;
         }
         emit({
@@ -360,14 +372,11 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
             sessionId: plan.sessionId,
             error: `session interrupted: ${message}`,
           });
+          await stopClientQuiet(client);
           return;
         }
         emit({ type: "session.failed", sessionId: plan.sessionId, error: message });
-        try {
-          await client.stop("interrupt");
-        } catch {
-          // ignore
-        }
+        await stopClientQuiet(client);
       });
 
     return new GrokManagedSession(plan.sessionId, client, promptDone);
@@ -395,6 +404,14 @@ export function createGrokAcpAdapter(
   options?: GrokAcpAdapterOptions
 ): GrokAcpProviderAdapter {
   return new GrokAcpProviderAdapter(options);
+}
+
+async function stopClientQuiet(client: GrokAcpClient): Promise<void> {
+  try {
+    await client.stop("interrupt");
+  } catch {
+    // best-effort — process may already be dead
+  }
 }
 
 /** Machine-local profile template — secrets only via env key *names* / optional machine-local baseUrl, never workspace. */
