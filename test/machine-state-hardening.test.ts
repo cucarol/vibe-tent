@@ -1,0 +1,289 @@
+/**
+ * Machine-local JSON store hardening:
+ * atomic temp+rename writes, A2A mutation serialization, corrupt backup.
+ * Deterministic on Windows (no timers, no network).
+ */
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { SessionRegistry } from "../src/runtime/session-registry.js";
+import {
+  A2AApprovalStore,
+  makeApprovalId,
+  type A2APendingApproval,
+} from "../src/service/a2a-store.js";
+import {
+  ensureDefaultProfiles,
+  loadAgentProfiles,
+  profilesPath,
+  saveAgentProfiles,
+} from "../src/service/profiles.js";
+import {
+  readServiceEndpoint,
+  writeServiceEndpoint,
+  serviceEndpointPath,
+} from "../src/service/data-dir.js";
+import { writeJsonAtomic } from "../src/machine-state.js";
+
+async function tempDir(prefix: string): Promise<string> {
+  return fs.mkdtemp(path.join(os.tmpdir(), prefix));
+}
+
+function captureConsoleError(): { lines: string[]; restore: () => void } {
+  const lines: string[] = [];
+  const orig = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(args.map(String).join(" "));
+  };
+  return {
+    lines,
+    restore: () => {
+      console.error = orig;
+    },
+  };
+}
+
+function a2aPending(partial: Partial<A2APendingApproval> & { id: string }): A2APendingApproval {
+  return {
+    workspaceId: "ws-1",
+    taskPath: "tasks/t1.md",
+    role: "worker",
+    profileId: "fake-default",
+    policy: "ask",
+    callerKind: "user",
+    status: "pending",
+    createdAt: "2026-01-01T00:00:00.000Z",
+    ...partial,
+  };
+}
+
+test("writeJsonAtomic: sequential replace leaves parseable pretty JSON", async () => {
+  const dataDir = await tempDir("tent-ms-atomic-");
+  const file = path.join(dataDir, "payload.json");
+
+  // Stores serialize mutations; atomic helper itself is temp+rename per write.
+  // Sequential replaces exercise Windows rename-over-existing without races.
+  for (let i = 0; i < 12; i++) {
+    await writeJsonAtomic(file, { seq: i, items: Array.from({ length: i + 1 }, (_, j) => j) });
+  }
+
+  const raw = await fs.readFile(file, "utf8");
+  const parsed = JSON.parse(raw) as { seq: number; items: number[] };
+  assert.equal(parsed.seq, 11);
+  assert.ok(Array.isArray(parsed.items));
+  assert.equal(parsed.items.length, 12);
+  // Pretty UTF-8 + trailing newline preserved.
+  assert.ok(raw.includes("\n  "));
+  assert.equal(raw.endsWith("\n"), true);
+  // No leftover temp files in the directory.
+  const names = await fs.readdir(dataDir);
+  assert.equal(
+    names.filter((n) => n.endsWith(".tmp")).length,
+    0,
+    "temp files must be cleaned or renamed away"
+  );
+});
+
+test("A2AApprovalStore: concurrent resolve cannot resurrect pending", async () => {
+  const dataDir = await tempDir("tent-a2a-race-");
+  const store = new A2AApprovalStore(dataDir);
+  const id = makeApprovalId(() => 0.33);
+  await store.add(a2aPending({ id }));
+
+  const results = await Promise.allSettled([
+    store.resolve(id, "approved", "user-a"),
+    store.resolve(id, "denied", "user-b"),
+    store.resolve(id, "approved", "user-c"),
+  ]);
+
+  const item = await store.get(id);
+  assert.ok(item);
+  assert.notEqual(item!.status, "pending");
+  assert.ok(item!.status === "approved" || item!.status === "denied");
+
+  await assert.rejects(
+    () => store.resolve(id, "approved", "late"),
+    /already (approved|denied)/
+  );
+
+  const reloaded = new A2AApprovalStore(dataDir);
+  const disk = await reloaded.get(id);
+  assert.ok(disk);
+  assert.equal(disk!.status, item!.status);
+  assert.notEqual(disk!.status, "pending");
+
+  const fulfilled = results.filter((r) => r.status === "fulfilled");
+  assert.equal(fulfilled.length, 1);
+  const rejected = results.filter((r) => r.status === "rejected");
+  assert.equal(rejected.length, 2);
+
+  const raw = await fs.readFile(path.join(dataDir, "a2a-approvals.json"), "utf8");
+  const parsed = JSON.parse(raw) as { items: A2APendingApproval[] };
+  assert.equal(parsed.items.filter((i) => i.status === "pending").length, 0);
+});
+
+test("A2AApprovalStore: concurrent add leaves valid atomic JSON", async () => {
+  const dataDir = await tempDir("tent-a2a-atomic-");
+  const store = new A2AApprovalStore(dataDir);
+  const ids = Array.from({ length: 8 }, (_, i) => makeApprovalId(() => (i + 1) / 20));
+
+  await Promise.all(ids.map((id, i) => store.add(a2aPending({ id, role: `r${i}` }))));
+
+  const raw = await fs.readFile(path.join(dataDir, "a2a-approvals.json"), "utf8");
+  const parsed = JSON.parse(raw) as { items: A2APendingApproval[] };
+  assert.equal(parsed.items.length, 8);
+  assert.equal(parsed.items.filter((i) => i.status === "pending").length, 8);
+  assert.equal(raw.endsWith("\n"), true);
+});
+
+test("profiles: corrupt catalog is backed up before defaults; warning has no secrets", async () => {
+  const dataDir = await tempDir("tent-profiles-corrupt-");
+  const file = profilesPath(dataDir);
+  const secret = "sk-live-secret-token-SHOULD-NOT-LEAK";
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(file, `{ "profiles": [ {"id":"x","adapterId":"y","apiKey":"${secret}"`, "utf8");
+
+  const cap = captureConsoleError();
+  try {
+    const profiles = await ensureDefaultProfiles(dataDir);
+    assert.ok(profiles.length >= 2);
+    assert.ok(profiles.some((p) => p.id === "fake-default"));
+    assert.ok(profiles.some((p) => p.id === "grok-acp-default"));
+
+    const names = await fs.readdir(dataDir);
+    const backups = names.filter((n) => n.startsWith("agent-profiles.json.corrupt-"));
+    assert.equal(backups.length, 1);
+    // Backup name is path + timestamp only — never embeds content/secrets.
+    assert.equal(backups[0].includes(secret), false);
+    assert.match(backups[0], /^agent-profiles\.json\.corrupt-\d{4}-\d{2}-\d{2}T/);
+
+    const backupRaw = await fs.readFile(path.join(dataDir, backups[0]), "utf8");
+    assert.ok(backupRaw.includes(secret), "backup body preserves original bytes for operator review");
+
+    assert.ok(cap.lines.some((l) => /agent-profiles\.json was corrupt/.test(l)));
+    assert.ok(cap.lines.every((l) => !l.includes(secret)));
+
+    // Reloaded catalog is valid defaults, not the torn file.
+    const reloaded = await loadAgentProfiles(dataDir);
+    assert.ok(reloaded.some((p) => p.id === "grok-acp-default"));
+    const raw = await fs.readFile(file, "utf8");
+    JSON.parse(raw);
+    assert.equal(raw.includes(secret), false);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("SessionRegistry: corrupt row is backed up, ignored, and does not poison list", async () => {
+  const dataDir = await tempDir("tent-sess-corrupt-");
+  const reg = new SessionRegistry(dataDir);
+  const now = "2026-01-01T00:00:00.000Z";
+  await reg.write({
+    id: "ss-good01",
+    profileId: "fake-default",
+    adapterId: "fake",
+    state: "live",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const badId = "ss-bad001";
+  const badFile = path.join(dataDir, "sessions", `${badId}.json`);
+  await fs.writeFile(badFile, "{ not-json", "utf8");
+
+  const cap = captureConsoleError();
+  try {
+    const read = await reg.read(badId);
+    assert.equal(read, null);
+
+    const listed = await reg.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, "ss-good01");
+
+    const names = await fs.readdir(path.join(dataDir, "sessions"));
+    const backups = names.filter((n) => n.startsWith(`${badId}.json.corrupt-`));
+    assert.equal(backups.length, 1);
+    // Original path is renamed away so list/read do not re-quarantine.
+    assert.equal(names.includes(`${badId}.json`), false);
+    assert.match(cap.lines.join("\n"), /ss-bad001\.json was corrupt.*ignored/);
+    // Second read of the same id must not emit another warning.
+    const warnCount = cap.lines.filter((l) => /ss-bad001\.json was corrupt/.test(l)).length;
+    await reg.read(badId);
+    const warnCountAfter = cap.lines.filter((l) => /ss-bad001\.json was corrupt/.test(l)).length;
+    assert.equal(warnCountAfter, warnCount);
+
+    // Fresh write of same id must succeed atomically.
+    await reg.write({
+      id: badId,
+      profileId: "fake-default",
+      adapterId: "fake",
+      state: "stopped",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const repaired = await reg.read(badId);
+    assert.ok(repaired);
+    assert.equal(repaired!.state, "stopped");
+  } finally {
+    cap.restore();
+  }
+});
+
+test("SessionRegistry: missing session is null without corrupt backup", async () => {
+  const dataDir = await tempDir("tent-sess-missing-");
+  const reg = new SessionRegistry(dataDir);
+  const cap = captureConsoleError();
+  try {
+    const read = await reg.read("ss-missing");
+    assert.equal(read, null);
+    assert.equal(cap.lines.length, 0);
+    const names = await fs.readdir(dataDir).catch(() => [] as string[]);
+    assert.equal(
+      names.some((n) => n.includes(".corrupt-")),
+      false
+    );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("service endpoint write is atomic pretty JSON; malformed read is null", async () => {
+  const dataDir = await tempDir("tent-svc-ep-");
+  await writeServiceEndpoint(dataDir, {
+    pid: 1234,
+    host: "127.0.0.1",
+    port: 7788,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    version: "0.1.0",
+    token: "tok-test",
+  });
+  const file = serviceEndpointPath(dataDir);
+  const raw = await fs.readFile(file, "utf8");
+  assert.equal(raw.endsWith("\n"), true);
+  const parsed = JSON.parse(raw);
+  assert.equal(parsed.port, 7788);
+
+  await fs.writeFile(file, "{ broken", "utf8");
+  const cap = captureConsoleError();
+  try {
+    const ep = await readServiceEndpoint(dataDir);
+    assert.equal(ep, null);
+    // Regeneratable — no corrupt backup noise required.
+    assert.equal(cap.lines.length, 0);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("saveAgentProfiles uses atomic pretty JSON", async () => {
+  const dataDir = await tempDir("tent-profiles-atomic-");
+  await saveAgentProfiles(dataDir, [
+    { id: "p1", adapterId: "fake", displayNameKey: "profile.fake.default" },
+  ]);
+  const raw = await fs.readFile(profilesPath(dataDir), "utf8");
+  assert.equal(raw.endsWith("\n"), true);
+  const parsed = JSON.parse(raw) as { profiles: Array<{ id: string }> };
+  assert.equal(parsed.profiles[0].id, "p1");
+});

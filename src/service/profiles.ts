@@ -10,6 +10,12 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../adapters/grok-acp/index.js";
+import {
+  backupCorruptMachineFile,
+  isNotFoundError,
+  warnCorruptMachineState,
+  writeJsonAtomic,
+} from "../machine-state.js";
 import type { AgentProfileProjection } from "./types.js";
 
 export function profilesPath(dataDir: string): string {
@@ -20,11 +26,30 @@ export async function loadAgentProfiles(dataDir: string): Promise<AgentProfileCo
   const file = profilesPath(dataDir);
   try {
     const raw = await fs.readFile(file, "utf8");
-    const parsed = JSON.parse(raw) as { profiles?: AgentProfileConfig[] };
-    const list = Array.isArray(parsed.profiles) ? parsed.profiles : [];
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw);
+    } catch {
+      const backupPath = await backupCorruptMachineFile(file);
+      warnCorruptMachineState(file, backupPath, "reset");
+      return [];
+    }
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      const backupPath = await backupCorruptMachineFile(file);
+      warnCorruptMachineState(file, backupPath, "reset");
+      return [];
+    }
+    const profiles = (parsed as { profiles?: unknown }).profiles;
+    if (profiles !== undefined && !Array.isArray(profiles)) {
+      const backupPath = await backupCorruptMachineFile(file);
+      warnCorruptMachineState(file, backupPath, "reset");
+      return [];
+    }
+    const list = Array.isArray(profiles) ? (profiles as AgentProfileConfig[]) : [];
     return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
-  } catch {
-    return [];
+  } catch (err) {
+    if (isNotFoundError(err)) return [];
+    throw err;
   }
 }
 
@@ -32,12 +57,7 @@ export async function saveAgentProfiles(
   dataDir: string,
   profiles: AgentProfileConfig[]
 ): Promise<void> {
-  await fs.mkdir(dataDir, { recursive: true });
-  await fs.writeFile(
-    profilesPath(dataDir),
-    JSON.stringify({ profiles }, null, 2) + "\n",
-    "utf8"
-  );
+  await writeJsonAtomic(profilesPath(dataDir), { profiles });
 }
 
 /**

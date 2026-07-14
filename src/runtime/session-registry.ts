@@ -3,6 +3,12 @@
 
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
+import {
+  backupCorruptMachineFile,
+  isNotFoundError,
+  warnCorruptMachineState,
+  writeJsonAtomic,
+} from "../machine-state.js";
 import type { SessionRecord, SessionState } from "./types.js";
 import { isSessionId } from "./types.js";
 
@@ -48,23 +54,13 @@ export class SessionRegistry {
     return this.enqueue(async () => {
       await this.ensureDir();
       const file = sessionFilePath(this.dataDir, record.id);
-      // Direct write is enough for single-process service; avoids Windows
-      // rename races when exit handler and stopSession update the same row.
-      await fs.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+      await writeJsonAtomic(file, record);
     });
   }
 
   async read(sessionId: string): Promise<SessionRecord | null> {
     assertSessionId(sessionId);
-    const file = sessionFilePath(this.dataDir, sessionId);
-    try {
-      const raw = await fs.readFile(file, "utf8");
-      const data = JSON.parse(raw) as SessionRecord;
-      if (data.id !== sessionId) return null;
-      return data;
-    } catch {
-      return null;
-    }
+    return this.readUnlocked(sessionId);
   }
 
   async update(
@@ -83,7 +79,7 @@ export class SessionRegistry {
       };
       await this.ensureDir();
       const file = sessionFilePath(this.dataDir, sessionId);
-      await fs.writeFile(file, JSON.stringify(next, null, 2) + "\n", "utf8");
+      await writeJsonAtomic(file, next);
       return next;
     });
   }
@@ -102,12 +98,15 @@ export class SessionRegistry {
     let names: string[];
     try {
       names = await fs.readdir(dir);
-    } catch {
-      return [];
+    } catch (err) {
+      if (isNotFoundError(err)) return [];
+      throw err;
     }
     const out: SessionRecord[] = [];
     for (const name of names) {
       if (!name.endsWith(".json")) continue;
+      // Skip corrupt backups and temp write files.
+      if (name.includes(".corrupt-") || name.endsWith(".tmp")) continue;
       const id = name.slice(0, -".json".length);
       if (!isSessionId(id)) continue;
       const rec = await this.read(id);
@@ -137,11 +136,39 @@ export class SessionRegistry {
     const file = sessionFilePath(this.dataDir, sessionId);
     try {
       const raw = await fs.readFile(file, "utf8");
-      const data = JSON.parse(raw) as SessionRecord;
-      if (data.id !== sessionId) return null;
-      return data;
+      let data: unknown;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      if (!data || typeof data !== "object" || Array.isArray(data)) {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      const rec = data as SessionRecord;
+      if (typeof rec.id !== "string" || typeof rec.state !== "string") {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      if (rec.id !== sessionId) {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      return rec;
+    } catch (err) {
+      if (isNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+
+  private async quarantineCorrupt(file: string): Promise<void> {
+    try {
+      const backupPath = await backupCorruptMachineFile(file);
+      warnCorruptMachineState(file, backupPath, "ignored");
     } catch {
-      return null;
+      // If backup itself fails, still treat row as missing rather than crash reads.
     }
   }
 }

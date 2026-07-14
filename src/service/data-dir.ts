@@ -3,6 +3,7 @@
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
+import { isNotFoundError, writeJsonAtomic } from "../machine-state.js";
 
 export interface ServiceEndpointRecord {
   pid: number;
@@ -31,9 +32,8 @@ export function serviceEndpointPath(dataDir: string): string {
 }
 
 export async function writeServiceEndpoint(dataDir: string, record: ServiceEndpointRecord): Promise<string> {
-  await fs.mkdir(dataDir, { recursive: true });
   const file = serviceEndpointPath(dataDir);
-  await fs.writeFile(file, JSON.stringify(record, null, 2) + "\n", "utf8");
+  await writeJsonAtomic(file, record);
   return file;
 }
 
@@ -41,13 +41,20 @@ export async function readServiceEndpoint(dataDir: string): Promise<ServiceEndpo
   const file = serviceEndpointPath(dataDir);
   try {
     const raw = await fs.readFile(file, "utf8");
-    const data = JSON.parse(raw) as ServiceEndpointRecord;
+    let data: ServiceEndpointRecord;
+    try {
+      data = JSON.parse(raw) as ServiceEndpointRecord;
+    } catch {
+      // Regeneratable endpoint — ignore malformed JSON without durable backup noise.
+      return null;
+    }
     if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
       return null;
     }
     return data;
-  } catch {
-    return null;
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
   }
 }
 
