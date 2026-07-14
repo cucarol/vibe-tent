@@ -199,6 +199,10 @@ export class AgentRuntime implements AgentRuntimePort {
       let pid: number | undefined;
       let resumeToken: string | undefined;
       let sawLive = false;
+      let terminalDuringManagedStart:
+        | { state: "failed"; error: string }
+        | { state: "stopped"; exitCode: number | null }
+        | undefined;
 
       if (typeof adapter.startManagedSession === "function") {
         // ACP / structured transports own stdio — not ProcessSupervisor.
@@ -207,8 +211,13 @@ export class AgentRuntime implements AgentRuntimePort {
           // Managed failure: mark terminal + drop handle so probe never claims live orphan.
           // Service maps task failed separately (idempotent). Process stop is adapter-owned.
           if (ev.type === "session.failed") {
+            terminalDuringManagedStart = { state: "failed", error: ev.error };
             void this.onManagedTerminal(req.sessionId, "failed", ev.error);
           } else if (ev.type === "session.exited") {
+            terminalDuringManagedStart = {
+              state: "stopped",
+              exitCode: ev.exitCode,
+            };
             void this.onManagedTerminal(req.sessionId, "stopped", undefined, ev.exitCode);
           } else if (ev.type === "session.waiting_user") {
             void this.registry
@@ -224,6 +233,25 @@ export class AgentRuntime implements AgentRuntimePort {
           }
           this.emit(ev);
         });
+        if (terminalDuringManagedStart) {
+          const terminal = terminalDuringManagedStart as
+            | { state: "failed"; error: string }
+            | { state: "stopped"; exitCode: number | null };
+          await this.onManagedTerminal(
+            req.sessionId,
+            terminal.state,
+            terminal.state === "failed" ? terminal.error : undefined,
+            terminal.state === "stopped" ? terminal.exitCode : undefined
+          );
+          throw Object.assign(
+            new Error(
+              terminal.state === "failed"
+                ? terminal.error
+                : `Managed session exited during startup (code=${terminal.exitCode})`
+            ),
+            { terminalAlreadyEmitted: true }
+          );
+        }
         this.managed.set(req.sessionId, managed);
         pid = managed.pid;
         // Provider session id is machine-local resume/debug metadata only — not workspace.
@@ -263,7 +291,9 @@ export class AgentRuntime implements AgentRuntimePort {
         lastError: message,
         pid: undefined,
       });
-      this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      if (!(err as { terminalAlreadyEmitted?: boolean })?.terminalAlreadyEmitted) {
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      }
       // Surface failure to caller; record remains for probe/list honesty.
       throw Object.assign(new Error(message), { session: handleFrom(failed) });
     }

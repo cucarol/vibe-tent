@@ -6800,12 +6800,18 @@ var AgentRuntime = class {
       let pid;
       let resumeToken;
       let sawLive = false;
+      let terminalDuringManagedStart;
       if (typeof adapter.startManagedSession === "function") {
         const managed = await adapter.startManagedSession(plan, (ev) => {
           if (ev.type === "session.live") sawLive = true;
           if (ev.type === "session.failed") {
+            terminalDuringManagedStart = { state: "failed", error: ev.error };
             void this.onManagedTerminal(req.sessionId, "failed", ev.error);
           } else if (ev.type === "session.exited") {
+            terminalDuringManagedStart = {
+              state: "stopped",
+              exitCode: ev.exitCode
+            };
             void this.onManagedTerminal(req.sessionId, "stopped", void 0, ev.exitCode);
           } else if (ev.type === "session.waiting_user") {
             void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
@@ -6817,6 +6823,21 @@ var AgentRuntime = class {
           }
           this.emit(ev);
         });
+        if (terminalDuringManagedStart) {
+          const terminal = terminalDuringManagedStart;
+          await this.onManagedTerminal(
+            req.sessionId,
+            terminal.state,
+            terminal.state === "failed" ? terminal.error : void 0,
+            terminal.state === "stopped" ? terminal.exitCode : void 0
+          );
+          throw Object.assign(
+            new Error(
+              terminal.state === "failed" ? terminal.error : `Managed session exited during startup (code=${terminal.exitCode})`
+            ),
+            { terminalAlreadyEmitted: true }
+          );
+        }
         this.managed.set(req.sessionId, managed);
         pid = managed.pid;
         if (managed.providerSessionId) {
@@ -6850,7 +6871,9 @@ var AgentRuntime = class {
         lastError: message,
         pid: void 0
       });
-      this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      if (!err?.terminalAlreadyEmitted) {
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      }
       throw Object.assign(new Error(message), { session: handleFrom(failed) });
     }
   }

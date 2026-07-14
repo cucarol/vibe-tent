@@ -8,6 +8,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { createFakeAdapter, FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   createAgentRuntime,
   makeSessionId,
@@ -150,6 +151,73 @@ test("launch failure records session.failed without spawning paid provider", asy
   assert.equal(probe.alive, false);
   assert.equal(probe.state, "failed");
   assert.match(probe.lastError ?? "", /missing binary/);
+
+  await runtime.shutdown();
+});
+
+test("managed terminal during startup cannot be overwritten back to live", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const adapter: ProviderAdapter = {
+    id: "managed-start-fail",
+    displayNameKey: "managed-start-fail",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed adapter should not resolve a process launch");
+    },
+    startManagedSession: async (plan, emit) => {
+      emit({
+        type: "session.failed",
+        sessionId: plan.sessionId,
+        error: "provider failed during startup",
+      });
+      return {
+        sessionId: plan.sessionId,
+        isAlive: () => false,
+        stop: async () => undefined,
+      };
+    },
+    mapExit: (_code, _signal) => ({
+      type: "session.failed",
+      sessionId: "unused",
+      error: "unused",
+    }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "managed-start-fail", adapterId: adapter.id }],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+
+  const sessionId = "ss-fastfail";
+  await assert.rejects(
+    () => runtime.startSession({ sessionId, profileId: "managed-start-fail", cwd }),
+    /provider failed during startup/
+  );
+
+  const probe = await runtime.probe(sessionId);
+  assert.equal(probe.alive, false);
+  assert.equal(probe.state, "failed");
+  assert.equal(
+    events.filter((event) => event.type === "session.failed").length,
+    1,
+    "startup failure must emit one terminal event"
+  );
+  assert.equal(
+    events.some((event) => event.type === "session.live"),
+    false,
+    "terminal startup must never project live"
+  );
 
   await runtime.shutdown();
 });
