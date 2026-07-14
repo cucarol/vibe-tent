@@ -64,6 +64,17 @@ test("isSameWorkspaceRoot:non-Windows preserves case-sensitive path comparison",
   assert.equal(isSameWorkspaceRoot("C:\\Repo", "c:\\repo", "win32"), true);
 });
 
+test("ensureRoleWorkspaceIfGit: non-Git workspace returns undefined without throwing", async () => {
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-nongit-"));
+  const workspace = path.join(parent, "docs-only");
+  await fs.mkdir(workspace);
+  await fs.writeFile(path.join(workspace, "README.md"), "# docs\n");
+
+  const { ensureRoleWorkspaceIfGit, isGitWorkspace } = await import("../src/core/workspace.js");
+  assert.equal(await isGitWorkspace(workspace), false);
+  assert.equal(await ensureRoleWorkspaceIfGit(workspace, "executor"), undefined);
+});
+
 test("workspace Git:中文 role 复用单一 worktree/branch,验收 commit 合入 main", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-workspace-"));
   const workspace = path.join(parent, "repo");

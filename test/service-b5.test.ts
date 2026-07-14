@@ -13,16 +13,26 @@ import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import { readServiceEndpoint } from "../src/service/data-dir.js";
-import { CLIENT_METHODS, RPC_A2A_ASK, RPC_A2A_DENIED, RPC_UNAUTHORIZED } from "../src/service/types.js";
+import {
+  CLIENT_METHODS,
+  RPC_A2A_ASK,
+  RPC_A2A_DENIED,
+  RPC_LIFECYCLE,
+  RPC_UNAUTHORIZED,
+} from "../src/service/types.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
 import {
+  invokeManagedAutoDeliverForTests,
   mapRuntimeEventToService,
   resetManagedAutoDeliverDedupForTests,
 } from "../src/service/handlers.js";
+import { ensureRoleWorkspace } from "../src/core/workspace.js";
+import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
+import { configureTestGitIdentity, git } from "./helpers.js";
 import { fileURLToPath } from "node:url";
 
 const MOCK_ACP = path.join(
@@ -244,9 +254,9 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     assert.equal(got.task.state, "waiting");
     await client.taskResume(workspaceId, taskPath);
 
+    // No commits: pure Tent path (Git integration covered by dedicated P0 tests).
     const delivered = (await client.taskDeliver(workspaceId, taskPath, {
       summary: "Implemented service wiring",
-      commits: ["deadbeef"],
     })) as { state: string; autoIntegrated: boolean; delivery: { status: string } };
     assert.equal(delivered.autoIntegrated, false);
     assert.equal(delivered.state, "delivered");
@@ -294,11 +304,11 @@ test("B5: deliveryPolicy=bypass auto-integrates without review", async () => {
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
+    // No commits: policy auto-accept without Git. Commit integrate is covered by P0 tests.
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
       summary: "auto done",
-      commits: ["cafebabe"],
     });
     assert.ok(!delivered.error, JSON.stringify(delivered.error));
     assert.equal((delivered.result as { autoIntegrated: boolean }).autoIntegrated, true);
@@ -334,7 +344,6 @@ test("B5: agent-decide integrate vs request-review", async () => {
       workspaceId,
       taskPath,
       summary: "agent integrates",
-      commits: ["abc"],
       decision: "integrate",
     });
     assert.ok(!integrated.error, JSON.stringify(integrated.error));
@@ -1148,3 +1157,731 @@ test("B5: service restart reconciles dead sessions without workspace PID data", 
     await svc2.stop();
   }
 });
+
+// ---- P0-1 / P0-2: WorkspaceLane + real Git integrate ----
+
+async function initGitOnWorkspace(workspace: string): Promise<void> {
+  await git(workspace, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(workspace);
+  // Keep .tent out of Git (product: Git ops only on real workspace content).
+  await fs.writeFile(path.join(workspace, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(workspace, "README.md"), "# repo\n");
+  await git(workspace, "add", ".gitignore", "README.md");
+  await git(workspace, "commit", "-q", "-m", "init");
+}
+
+async function roleCommit(
+  workspace: string,
+  role: string,
+  filename: string,
+  contents: string,
+  message: string
+): Promise<string> {
+  const contract = await ensureRoleWorkspace(workspace, role);
+  await fs.writeFile(path.join(contract.worktree, filename), contents);
+  await git(contract.worktree, "add", filename);
+  await git(contract.worktree, "commit", "-q", "-m", message);
+  return (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+}
+
+test("P0-1: task.dispatch ensures role WorkspaceLane; startSession cwd is role worktree", async () => {
+  const ws = await makeWorkspace("p0-lane");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "work in role lane",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    const lane = (dispatched.result as {
+      workspaceLane?: { workspace?: string; worktree?: string; branch?: string; targetBranch?: string };
+    }).workspaceLane;
+    assert.ok(lane, "dispatch must attach WorkspaceLane on Git workspace");
+    assert.equal(path.resolve(lane!.workspace!), path.resolve(ws));
+    assert.equal(lane!.branch, "tent-role/executor");
+    assert.equal(lane!.targetBranch, "main");
+    assert.ok(lane!.worktree, "role worktree path required");
+    assert.equal(path.basename(lane!.worktree!), "executor");
+    assert.ok(
+      !(lane!.worktree || "").includes(`${path.sep}.tent${path.sep}`) &&
+        !(lane!.worktree || "").includes("/.tent/"),
+      "Git worktree must not live under .tent"
+    );
+
+    // Same role reuses the same long-lived worktree/branch across boxes.
+    const box2 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "work-item-2",
+      type: "prompt",
+    });
+    const boxId2 = (box2.result as { id: string }).id;
+    const d2 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId2,
+      role: "executor",
+      prompt: "second box same role",
+    });
+    assert.ok(!d2.error, JSON.stringify(d2.error));
+    const lane2 = (d2.result as { workspaceLane?: { worktree?: string; branch?: string } }).workspaceLane;
+    assert.equal(path.resolve(lane2!.worktree!), path.resolve(lane!.worktree!));
+    assert.equal(lane2!.branch, lane!.branch);
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const session = (started.result as { session: { cwd?: string } }).session;
+    assert.equal(path.resolve(session.cwd!), path.resolve(lane!.worktree!));
+    const task = (started.result as { task: { workspaceLane?: { worktree?: string } } }).task;
+    assert.equal(path.resolve(task.workspaceLane!.worktree!), path.resolve(lane!.worktree!));
+  });
+});
+
+test("P0-1: non-Git workspace dispatch has no lane; startSession cwd falls back to workspace root", async () => {
+  const ws = await makeWorkspace("p0-nongit");
+  // intentionally no git init
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "docs only",
+    });
+    assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    assert.equal(
+      (dispatched.result as { workspaceLane?: unknown }).workspaceLane,
+      undefined,
+      "pure docs / non-Git must not invent a WorkspaceLane"
+    );
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const session = (started.result as { session: { cwd?: string } }).session;
+    assert.equal(path.resolve(session.cwd!), path.resolve(ws));
+  });
+});
+
+test("P0-2: manual accept integrates real commits into main; already-integrated is idempotent", async () => {
+  const ws = await makeWorkspace("p0-accept");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "feature.txt", "ship\n", "feature work");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "integrate me",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "ready for review",
+      commits: [sourceRef],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { state: string }).state, "delivered");
+
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    assert.equal(
+      normalizeLf(await fs.readFile(path.join(ws, "feature.txt"), "utf8")),
+      "ship\n"
+    );
+
+    // Idempotent re-integrate of the same ref via a second box/task.
+    const box2 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "idempotent-item",
+      type: "prompt",
+    });
+    const boxId2 = (box2.result as { id: string }).id;
+    const d2 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId2,
+      role: "executor",
+      prompt: "already on main",
+    });
+    const taskPath2 = (d2.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
+    await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath: taskPath2,
+      summary: "same commit again",
+      commits: [sourceRef],
+    });
+    const again = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath: taskPath2,
+      actor: "user",
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    assert.equal((again.result as { state: string }).state, "accepted");
+  });
+});
+
+test("P0-2: bypass with commits integrates into main and accepts", async () => {
+  const ws = await makeWorkspace("p0-bypass");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "auto.txt", "auto\n", "auto delivery");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "bypass with git",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "auto integrate",
+      commits: [sourceRef],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { autoIntegrated: boolean }).autoIntegrated, true);
+    assert.equal((delivered.result as { state: string }).state, "accepted");
+    assert.equal(normalizeLf(await fs.readFile(path.join(ws, "auto.txt"), "utf8")), "auto\n");
+
+    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
+    assert.equal(concept.status, "done");
+    assert.equal(concept.assignee, undefined);
+  });
+});
+
+test("P0-2: agent-decide integrate with commits merges into main", async () => {
+  const ws = await makeWorkspace("p0-agent-decide");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "agent.txt", "agent\n", "agent integrate");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "agent decide integrate",
+      deliveryPolicy: "agent-decide",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "integrate now",
+      commits: [sourceRef],
+      decision: "integrate",
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { state: string }).state, "accepted");
+    assert.equal(normalizeLf(await fs.readFile(path.join(ws, "agent.txt"), "utf8")), "agent\n");
+  });
+});
+
+test("P0-2: accept integration conflict keeps delivered + occupation; no done", async () => {
+  const ws = await makeWorkspace("p0-conflict-accept");
+  await initGitOnWorkspace(ws);
+
+  // Role lane edit
+  const contract = await ensureRoleWorkspace(ws, "executor");
+  await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
+  await git(contract.worktree, "add", "conflict.txt");
+  await git(contract.worktree, "commit", "-q", "-m", "role conflict");
+  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+
+  // Divergent main edit → cherry-pick will conflict
+  await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
+  await git(ws, "add", "conflict.txt");
+  await git(ws, "commit", "-q", "-m", "main conflict");
+  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "will conflict",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "conflict delivery",
+      commits: [sourceRef],
+    });
+
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(accepted.error, "accept must fail on integrate conflict");
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+
+    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.equal(concept.assignee, "executor");
+
+    assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
+    assert.equal((await git(ws, "status", "--porcelain")).trim(), "");
+  });
+});
+
+test("P0-2: bypass integrate failure keeps running + occupation; no accepted/done", async () => {
+  const ws = await makeWorkspace("p0-conflict-bypass");
+  await initGitOnWorkspace(ws);
+
+  const contract = await ensureRoleWorkspace(ws, "executor");
+  await fs.writeFile(path.join(contract.worktree, "conflict.txt"), "role\n");
+  await git(contract.worktree, "add", "conflict.txt");
+  await git(contract.worktree, "commit", "-q", "-m", "role conflict");
+  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+
+  await fs.writeFile(path.join(ws, "conflict.txt"), "main\n");
+  await git(ws, "add", "conflict.txt");
+  await git(ws, "commit", "-q", "-m", "main conflict");
+  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "bypass conflict",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "auto will fail",
+      commits: [sourceRef],
+    });
+    assert.ok(delivered.error, "bypass deliver must fail when integrate conflicts");
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "running");
+
+    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.equal(concept.assignee, "executor");
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
+    assert.equal(deliveries.length, 0, "failed auto-integrate must not leave a delivery");
+
+    assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
+  });
+});
+
+test("P0 fix: managed auto-deliver integrate failure keeps running; session diagnostics only", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-integrate-fail");
+  await initGitOnWorkspace(ws);
+
+  // Divergent role/main so cherry-pick conflicts.
+  const contract = await ensureRoleWorkspace(ws, "executor");
+  await fs.writeFile(path.join(contract.worktree, "macp-conflict.txt"), "role\n");
+  await git(contract.worktree, "add", "macp-conflict.txt");
+  await git(contract.worktree, "commit", "-q", "-m", "role macp conflict");
+  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+  await fs.writeFile(path.join(ws, "macp-conflict.txt"), "main\n");
+  await git(ws, "add", "macp-conflict.txt");
+  await git(ws, "commit", "-q", "-m", "main macp conflict");
+  const beforeHead = (await git(ws, "rev-parse", "HEAD")).trim();
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "managed integrate will fail",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    const diag: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
+    });
+
+    // Explicit commits only (production never auto-collects worktree commits).
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "MANAGED_INTEGRATE_FAIL_REPORT",
+      commits: [sourceRef],
+    });
+
+    unsub();
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal(
+      (got.result as { task: { state: string } }).task.state,
+      "running",
+      "integrate failure must not terminal-fail the task"
+    );
+
+    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
+    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
+    assert.equal(concept.status, "doing");
+    assert.equal(concept.assignee, "executor");
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    assert.equal(
+      (list.result as { deliveries: unknown[] }).deliveries.length,
+      0,
+      "failed auto-integrate must not leave a delivery"
+    );
+
+    const failEv = diag.find((p) => p.runtimeEvent === "session.prompt_complete.failed");
+    assert.ok(failEv, "must emit session diagnostics for integrate failure");
+    assert.equal(failEv!.taskFailed, false);
+    assert.match(String(failEv!.error ?? ""), /conflict|integrat|roll/i);
+
+    const rec = await svc.runtime.registry.read(sessionId);
+    assert.ok(rec?.lastError, "session registry lastError surfaces the failure");
+    assert.match(rec!.lastError!, /managed auto-deliver failed/);
+
+    assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
+  });
+});
+
+test("P0 fix: same role only one active managed session; same-task start is idempotent", async () => {
+  const ws = await makeWorkspace("p0-one-session");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+
+    // External registry row with same role must NOT block managed start.
+    const now = new Date().toISOString();
+    await svc.runtime.registry.write({
+      id: "ss-external01",
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "external",
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const d1 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "first task",
+    });
+    const taskPath1 = (d1.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
+    const s1 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath1,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s1.error, JSON.stringify(s1.error));
+    const sessionId1 = (s1.result as { session: { sessionId: string } }).session.sessionId;
+
+    // Idempotent re-start on the same task returns the bound session.
+    const again = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath1,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    assert.equal(
+      (again.result as { session: { sessionId: string } }).session.sessionId,
+      sessionId1
+    );
+
+    // Second task same role must fail-loud with existing session id.
+    const box2 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "work-item-2",
+      type: "prompt",
+    });
+    const boxId2 = (box2.result as { id: string }).id;
+    const d2 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId2,
+      role: "executor",
+      prompt: "second task same role",
+    });
+    const taskPath2 = (d2.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
+    const s2 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath2,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(s2.error, "second managed session for same role must fail");
+    assert.equal(s2.error!.code, RPC_LIFECYCLE);
+    assert.match(s2.error!.message, /already has an active managed session/);
+    const data = s2.error!.data as { existingSessionId?: string } | undefined;
+    assert.equal(data?.existingSessionId, sessionId1);
+
+    // Different role is still allowed.
+    const box3 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "work-item-3",
+      type: "prompt",
+    });
+    const boxId3 = (box3.result as { id: string }).id;
+    const d3 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId3,
+      role: "orchestrator",
+      prompt: "other role ok",
+    });
+    const taskPath3 = (d3.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath3 });
+    const s3 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath3,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s3.error, JSON.stringify(s3.error));
+    assert.notEqual(
+      (s3.result as { session: { sessionId: string } }).session.sessionId,
+      sessionId1
+    );
+
+    // Role identity is workspace-local: the same name in another workspace has its own slot.
+    const ws2 = await makeWorkspace("p0-one-session-other-workspace");
+    const other = await mountWorkItem(svc, ws2);
+    const d4 = await rpc(svc, "task.dispatch", {
+      workspaceId: other.workspaceId,
+      boxId: other.boxId,
+      role: "executor",
+      prompt: "same role name, different workspace",
+    });
+    const taskPath4 = (d4.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId: other.workspaceId, taskPath: taskPath4 });
+    const s4 = await rpc(svc, "task.startSession", {
+      workspaceId: other.workspaceId,
+      taskPath: taskPath4,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s4.error, JSON.stringify(s4.error));
+    assert.notEqual(
+      (s4.result as { session: { sessionId: string } }).session.sessionId,
+      sessionId1
+    );
+  });
+});
+
+test("P0 fix: concurrent dispatch same role serializes worktree ensure (no race)", async () => {
+  const ws = await makeWorkspace("p0-concurrent-lane");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    const boxes = await Promise.all(
+      [1, 2, 3].map(async (i) => {
+        const created = await rpc(svc, "docs.createNote", {
+          workspaceId,
+          name: `concurrent-item-${i}`,
+          type: "prompt",
+        });
+        return (created.result as { id: string }).id;
+      })
+    );
+
+    const results = await Promise.all(
+      boxes.map((boxId, i) =>
+        rpc(svc, "task.dispatch", {
+          workspaceId,
+          boxId,
+          role: "executor",
+          prompt: `concurrent ${i}`,
+        })
+      )
+    );
+    for (const r of results) {
+      assert.ok(!r.error, JSON.stringify(r.error));
+    }
+    const lanes = results.map(
+      (r) =>
+        (r.result as { workspaceLane: { worktree: string; branch: string } }).workspaceLane
+    );
+    assert.ok(lanes.every((l) => l && l.worktree));
+    const wt = path.resolve(lanes[0].worktree);
+    for (const l of lanes) {
+      assert.equal(path.resolve(l.worktree), wt);
+      assert.equal(l.branch, "tent-role/executor");
+    }
+  });
+});
+
+async function tentFsFor(ws: string): Promise<NodeFs> {
+  return new NodeFs(path.join(ws, ".tent"));
+}
+
+async function corruptTaskLane(
+  ws: string,
+  taskPath: string,
+  patch: { workspace?: string | null; targetBranch?: string | null; branch?: string | null }
+): Promise<void> {
+  const tentFs = await tentFsFor(ws);
+  const rel = taskPath.replace(/^\.tent[\\/]/, "");
+  const task = await loadTaskEnvelope(tentFs, rel);
+  await patchTaskEnvelope(tentFs, task.path, {
+    ...patch,
+    updatedAt: new Date().toISOString(),
+  });
+}
+
+test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetBranch", async () => {
+  const ws = await makeWorkspace("p0-contract-reval");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "reval.txt", "ok\n", "reval commit");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "stale envelope",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    // Corrupt envelope targetBranch after dispatch — must not be trusted blindly.
+    await corruptTaskLane(ws, taskPath, { targetBranch: "not-the-real-main" });
+
+    await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "ready",
+      commits: [sourceRef],
+    });
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(accepted.error, "stale targetBranch must fail re-validation");
+    assert.match(String(accepted.error!.message), /targetBranch mismatch/);
+
+    // Task stays delivered + occupation held (integrate never succeeded).
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+  });
+
+  // Wrong workspace root on envelope.
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "wrong workspace",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    await corruptTaskLane(ws, taskPath, {
+      workspace: path.join(os.tmpdir(), "other-workspace-not-mounted"),
+    });
+
+    await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "ready",
+      commits: [sourceRef],
+    });
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(accepted.error, "workspace mismatch must fail re-validation");
+    assert.match(String(accepted.error!.message), /workspace mismatch/);
+  });
+});
+
+test("P0 fix: bypass with zero commits is legal (pure docs / no auto-collect)", async () => {
+  const ws = await makeWorkspace("p0-bypass-zero");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "docs only delivery",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "no commits needed",
+      // intentionally no commits
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { state: string }).state, "accepted");
+    assert.equal((delivered.result as { autoIntegrated: boolean }).autoIntegrated, true);
+  });
+});
+
+function normalizeLf(value: string): string {
+  return value.replace(/\r\n/g, "\n");
+}

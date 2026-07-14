@@ -325,6 +325,11 @@ export interface TaskEnvelopePatch {
   activeDeliveryId?: string | null;
   deliveryPolicy?: DeliveryPolicy;
   updatedAt?: string;
+  /** Role WorkspaceLane fields (real workspace Git only). */
+  workspace?: string | null;
+  worktree?: string | null;
+  branch?: string | null;
+  targetBranch?: string | null;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -361,6 +366,12 @@ export async function patchTaskEnvelope(
 
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
+
+  for (const key of ["workspace", "worktree", "branch", "targetBranch"] as const) {
+    const value = patch[key];
+    if (value === null) delete data[key];
+    else if (typeof value === "string") data[key] = value;
+  }
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs, path);

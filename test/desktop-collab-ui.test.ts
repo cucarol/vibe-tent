@@ -417,9 +417,9 @@ test("service+client: registry → create coordination box → dispatch → deli
     assert.equal(dispatched.state, "queued");
 
     await client.taskClaim(workspaceId, dispatched.taskPath);
+    // No commits: pure Tent accept path (Git integrate covered by service P0 tests).
     const delivered = (await client.taskDeliver(workspaceId, dispatched.taskPath, {
       summary: "Implemented closed loop",
-      commits: ["c0ffee"],
     })) as { state: string; delivery: { status: string } };
     assert.equal(delivered.state, "delivered");
 

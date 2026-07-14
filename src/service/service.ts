@@ -30,8 +30,11 @@ export interface LocalTentServiceOptions {
   token?: string;
   /** Extra / override AgentProfiles (machine-local). */
   profiles?: AgentProfileConfig[];
-  /** Optional commit integrate hook for accept/bypass paths. */
-  integrateCommits?: (workspaceRoot: string, commits: string[]) => Promise<void>;
+  /**
+   * Optional commit integrate hook for accept/bypass paths (tests).
+   * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
+   */
+  integrateCommits?: (workspaceRoot: string, commits: string[], role: string) => Promise<void>;
 }
 
 export interface LocalTentService {

@@ -36,6 +36,8 @@ export interface WorkspaceLaneRef {
   workspace: string;
   worktree: string;
   branch: string;
+  /** Formal integration branch (main/master/…); optional on older rows. */
+  targetBranch?: string;
 }
 
 export interface RuntimeWorkspace {

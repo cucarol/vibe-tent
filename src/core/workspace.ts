@@ -82,6 +82,29 @@ export async function runWorkspaceCheck(workspace: string, command: string): Pro
   return runShell(root, script);
 }
 
+/** True when `workspace` is a Git repository root (not a nested path inside one). */
+export async function isGitWorkspace(workspace: string): Promise<boolean> {
+  try {
+    await assertGitWorkspace(nodePath.resolve(workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Ensure the long-lived role worktree/branch on a Git workspace.
+ * Pure document / non-Git workspaces return `undefined` (no lane) without throwing.
+ * Real Git errors after the root check (e.g. worktree path collision) still throw.
+ */
+export async function ensureRoleWorkspaceIfGit(
+  workspace: string,
+  role: string
+): Promise<RoleWorkspaceContract | undefined> {
+  if (!(await isGitWorkspace(workspace))) return undefined;
+  return ensureRoleWorkspace(workspace, role);
+}
+
 export async function ensureRoleWorkspace(
   workspace: string,
   role: string

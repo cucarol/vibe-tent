@@ -138,6 +138,60 @@ test("lifecycle: agent-decide integrate auto-integrates without review.by=submit
   assert.deepEqual(integrated, ["deadbee"]);
 });
 
+test("lifecycle: auto-integrate failure keeps running, no delivery, occupation held", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  const result = await dispatch(e as any, "bx-p1", "executor", {
+    userPrompt: "bypass fail",
+    deliveryPolicy: "bypass",
+  });
+  await taskClaim(e as any, result.taskPath);
+  await assert.rejects(
+    () =>
+      taskDeliver(e as any, result.taskPath, {
+        summary: "will fail integrate",
+        commits: ["abc"],
+        integrate: async () => {
+          throw new Error("Workspace integration conflicted and was rolled back");
+        },
+      }),
+    /Workspace integration conflicted/
+  );
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "running");
+  assert.equal((await loadDeliveries(e.fs)).length, 0);
+  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(box.fm.owner, "executor");
+  assert.equal(box.fm.status, "doing");
+});
+
+test("lifecycle: manual accept integrate failure keeps delivered + occupation", async () => {
+  const dir = await makeTent();
+  const { e, result } = await dispatchOnFreeBox(dir);
+  await taskClaim(e as any, result.taskPath);
+  await taskDeliver(e as any, result.taskPath, {
+    summary: "ready",
+    commits: ["abc1234"],
+  });
+  await assert.rejects(
+    () =>
+      taskAccept(e as any, result.taskPath, {
+        actor: "user",
+        integrate: async () => {
+          throw new Error("Workspace integration conflicted and was rolled back");
+        },
+      }),
+    /Workspace integration conflicted/
+  );
+  const task = await loadTaskEnvelope(e.fs, result.taskPath);
+  assert.equal(task.state, "delivered");
+  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
+  assert.equal(box.fm.owner, "executor");
+  assert.equal(box.fm.status, "doing");
+  const ready = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
+  assert.ok(ready, "delivery stays ready for retry after integrate failure");
+});
+
 test("lifecycle: agent-decide without decision fails; manual forbids integrate", async () => {
   const dir = await makeTent();
   const e = env(dir);

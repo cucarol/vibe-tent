@@ -13,7 +13,10 @@ import { forkNode } from "../core/forkOps.js";
 import {
   loadTaskEnvelope,
   loadTaskEnvelopes,
+  patchTaskEnvelope,
   sessionBootstrapPromptForTask,
+  type RoleWorkspaceContract,
+  type TaskEnvelope,
 } from "../core/task.js";
 import { taskContextCard } from "../core/context-card.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
@@ -38,9 +41,17 @@ import {
   type WaitReason,
   evaluateA2A,
 } from "../core/task-model.js";
+import {
+  ensureRoleWorkspace,
+  ensureRoleWorkspaceIfGit,
+  integrateWorkspaceCommits,
+  isSameWorkspaceRoot,
+} from "../core/workspace.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { makeSessionId } from "../runtime/types.js";
-import type { RuntimeEvent } from "../runtime/types.js";
+import type { RuntimeEvent, SessionRecord } from "../runtime/types.js";
+import { SessionRegistry } from "../runtime/session-registry.js";
+import * as nodePath from "node:path";
 import { buildBacklinkIndex } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
@@ -75,8 +86,16 @@ export interface HandlerContext {
   runtime: AgentRuntime;
   a2a: A2AApprovalStore;
   dataDir: string;
-  /** Optional integrate hook for auto/manual accept with commits (tests inject). */
-  integrateCommits?: (workspaceRoot: string, commits: string[]) => Promise<void>;
+  /**
+   * Optional integrate hook for tests.
+   * Production path uses real workspace Git via ensureRoleWorkspace + integrateWorkspaceCommits.
+   * Signature keeps role so role lane targetBranch/worktree can be resolved correctly.
+   */
+  integrateCommits?: (
+    workspaceRoot: string,
+    commits: string[],
+    role: string
+  ) => Promise<void>;
 }
 
 export type JsonRpcError = {
@@ -587,12 +606,17 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     );
   }
 
+  // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
+  // critical section so concurrent role worktree add cannot race. Git ops stay inside the
+  // bus action (never nested mutations.run).
   const result = await ctx.mutations.run(workspaceId, async () => {
+    const roleLane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
     ctx.host.markSelfWrite(workspaceId);
     const dispatched = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
       dispatchedBy,
       deliveryPolicy,
+      workspace: roleLane,
     });
     ctx.events.emit(
       "task.state",
@@ -606,8 +630,10 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       },
       "self"
     );
-    return dispatched;
+    return { dispatched, roleLane };
   });
+  const roleLane = result.roleLane;
+  const dispatched = result.dispatched;
 
   let session: unknown = undefined;
   if (startSession) {
@@ -616,25 +642,34 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // startSession builds managed bootstrap (Context Card + user prompt; auto-deliver on end).
     await taskClaimRpc(ctx, {
       workspaceId,
-      taskPath: result.taskPath,
+      taskPath: dispatched.taskPath,
     });
     session = await taskStartSessionRpc(ctx, {
       workspaceId,
-      taskPath: result.taskPath,
+      taskPath: dispatched.taskPath,
       profileId,
       callerKind,
       ...(a2aPolicyOverride !== undefined ? { a2aPolicyOverride } : {}),
     });
   }
 
+  const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
   return {
     workspaceId,
-    taskPath: result.taskPath,
-    manifestPath: result.manifestPath,
-    initPath: result.initPath,
-    relayPrompt: result.relayPrompt,
+    taskPath: dispatched.taskPath,
+    manifestPath: dispatched.manifestPath,
+    initPath: dispatched.initPath,
+    relayPrompt: dispatched.relayPrompt,
     state: startSession ? "running" : "queued",
     session,
+    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane
+      ? {
+          workspace: roleLane.workspace,
+          worktree: roleLane.worktree,
+          branch: roleLane.branch,
+          targetBranch: roleLane.targetBranch,
+        }
+      : undefined,
   };
 }
 
@@ -711,13 +746,8 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    // Always provide integrate for auto-integrate policies when commits present.
-    const integrate = async (cs: string[]) => {
-      if (ctx.integrateCommits) {
-        await ctx.integrateCommits(mount.workspaceRoot, cs);
-      }
-      // MVP Windows path: without an injected git hook, commits stay recorded on delivery only.
-    };
+    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
 
     const result = await taskDeliver(mount.env, taskPath, {
       summary,
@@ -764,15 +794,13 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
+    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
     const result = await taskAccept(mount.env, taskPath, {
       actor,
       commits,
       // Core requires integrate whenever delivery commits are non-empty.
-      integrate: async (cs) => {
-        if (ctx.integrateCommits) {
-          await ctx.integrateCommits(mount.workspaceRoot, cs);
-        }
-      },
+      // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
+      integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate),
     });
     emitTaskState(ctx, workspaceId, result.task, "task.accept");
     ctx.events.emit(
@@ -989,6 +1017,46 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
 
+  // P0-1: managed ACP cwd must be role worktree when Git lane exists.
+  // Backfill lane on pre-P0 envelopes; pure docs / non-Git stay at workspace root.
+  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
+
+  // Same role: only one managed ACP session in starting/live/waiting-user.
+  // Tasks may be many; external role sessions are not service-registry managed.
+  // Idempotent: same task already bound to its active session returns that handle.
+  const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
+  if (activeForRole) {
+    const boundToThisTask =
+      task.sessionId === activeForRole.id ||
+      (!!task.id && activeForRole.lastTaskId === task.id) ||
+      activeForRole.lastTaskId === taskPath;
+    if (boundToThisTask) {
+      const boundTask =
+        task.sessionId === activeForRole.id
+          ? task
+          : await ctx.mutations.run(workspaceId, async () => {
+              ctx.host.markSelfWrite(workspaceId);
+              return patchTaskEnvelope(mount.env.fs, taskPath, {
+                sessionId: activeForRole.id,
+                updatedAt: mount.env.clock.now(),
+              });
+            });
+      return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+        cwd: boundTask.worktree || mount.workspaceRoot,
+      });
+    }
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
+      {
+        role: task.role,
+        existingSessionId: activeForRole.id,
+        existingState: activeForRole.state,
+        existingTaskId: activeForRole.lastTaskId,
+      }
+    );
+  }
+
   const sessionId = makeSessionId();
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane =
@@ -997,6 +1065,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
           workspace: task.workspace || mount.workspaceRoot,
           worktree: task.worktree || mount.workspaceRoot,
           branch: task.branch || "HEAD",
+          targetBranch: task.targetBranch,
         }
       : undefined;
 
@@ -1025,10 +1094,9 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
-    // Map unrecoverable launch to task.failed projection
+    // Only true session launch/process failure maps task → failed.
     await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
-      const { patchTaskEnvelope } = await import("../core/task.js");
       const failed = await patchTaskEnvelope(mount.env.fs, taskPath, {
         state: "failed",
         wait: null,
@@ -1042,7 +1110,6 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
   // Bind sessionId reference only on task (never PID/token).
   const bound = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const { patchTaskEnvelope } = await import("../core/task.js");
     const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
       sessionId: handle.sessionId,
       updatedAt: mount.env.clock.now(),
@@ -1063,18 +1130,14 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     return next;
   });
 
-  return {
-    workspaceId,
-    taskPath,
-    task: projectTask(bound),
-    session: {
-      sessionId: handle.sessionId,
-      profileId: handle.profileId,
-      adapterId: handle.adapterId,
-      state: handle.state,
-      // Do not expose pid in client projection by default — probe is internal.
-    },
-  };
+  return projectStartSessionResult(workspaceId, taskPath, bound, {
+    id: handle.sessionId,
+    profileId: handle.profileId,
+    adapterId: handle.adapterId,
+    state: handle.state,
+    roleName: handle.roleName,
+    runtimeWorkspace: handle.runtimeWorkspace,
+  }, { cwd });
 }
 
 async function taskList(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -1276,7 +1339,6 @@ export function mapRuntimeEventToService(
         ) {
           await ctx.mutations.run(mount.workspaceId, async () => {
             ctx.host.markSelfWrite(mount.workspaceId);
-            const { patchTaskEnvelope } = await import("../core/task.js");
             const failed = await patchTaskEnvelope(mount.env.fs, task.path, {
               state: "failed",
               wait: null,
@@ -1313,6 +1375,11 @@ async function tryManagedAutoDeliver(
     taskPath: string;
     sessionId: string;
     assistantText: string;
+    /**
+     * Explicit commits only. Production managed ACP never auto-guesses/collects
+     * worktree commits; tests may pass commits to exercise integrate failure.
+     */
+    commits?: string[];
   }
 ): Promise<void> {
   const summary = input.assistantText.trim();
@@ -1354,11 +1421,7 @@ async function tryManagedAutoDeliver(
       }
 
       ctx.host.markSelfWrite(input.workspaceId);
-      const integrate = async (cs: string[]) => {
-        if (ctx.integrateCommits) {
-          await ctx.integrateCommits(mount.workspaceRoot, cs);
-        }
-      };
+      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
 
       // agent-decide without an explicit agent decision: request-review (never auto-accept).
       const policy = task.deliveryPolicy ?? "manual";
@@ -1369,6 +1432,8 @@ async function tryManagedAutoDeliver(
         summary,
         decision,
         integrate,
+        // Never invent commits here — only forward an explicit list when provided.
+        ...(input.commits && input.commits.length > 0 ? { commits: input.commits } : {}),
       });
 
       managedAutoDeliverDone.add(key);
@@ -1387,31 +1452,35 @@ async function tryManagedAutoDeliver(
       );
     });
   } catch (err) {
-    // Lifecycle refusal (terminal, ready delivery, invalid transition) = no forge.
-    // Surface as session diagnostics only when task is still running.
+    // Deliver / integrate failure must NOT terminal-fail the task.
+    // Keep running/occupation so the user can retry; expose via session diagnostics/event.
+    // Only session.failed (launch/process) maps task → failed.
     const message = err instanceof Error ? err.message : String(err);
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (task.state === "running" || task.state === "waiting") {
-        await ctx.mutations.run(input.workspaceId, async () => {
-          ctx.host.markSelfWrite(input.workspaceId);
-          const { patchTaskEnvelope } = await import("../core/task.js");
-          const failed = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-            state: "failed",
-            wait: null,
-            updatedAt: mount.env.clock.now(),
+        // Clear in-flight so a later prompt_complete / retry can attempt again.
+        // Do not add to managedAutoDeliverDone — failure is not success.
+        try {
+          await ctx.runtime.registry.update(input.sessionId, {
+            lastError: `managed auto-deliver failed: ${message}`,
           });
-          emitTaskState(ctx, input.workspaceId, failed, "session.prompt_complete.failed");
-        });
+        } catch {
+          // Session row may be gone; still emit diagnostics.
+        }
         ctx.events.emit(
           "session.state",
           input.workspaceId,
           {
             sessionId: input.sessionId,
+            taskPath: input.taskPath,
+            taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
             error: message,
+            // Explicit: task remains non-terminal for retry.
+            taskFailed: false,
           },
           "service"
         );
@@ -1428,6 +1497,23 @@ async function tryManagedAutoDeliver(
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
+}
+
+/**
+ * Test helper: invoke managed auto-deliver with optional explicit commits.
+ * Production session.prompt_complete never auto-collects worktree commits.
+ */
+export async function invokeManagedAutoDeliverForTests(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId: string;
+    assistantText: string;
+    commits?: string[];
+  }
+): Promise<void> {
+  return tryManagedAutoDeliver(ctx, input);
 }
 
 // ---- helpers ----
@@ -1605,12 +1691,168 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 }
 
 /**
+ * P0-2: integrate delivery commits into the real workspace Git main/target branch.
+ * Reuses core ensureRoleWorkspace + integrateWorkspaceCommits (idempotent).
+ * Failures propagate so accept/bypass cannot mark accepted/done or release occupation.
+ */
+function makeCommitIntegrator(
+  ctx: HandlerContext,
+  workspaceRoot: string,
+  task: TaskEnvelope
+): (commits: string[]) => Promise<void> {
+  return async (commits: string[]) => {
+    const refs = [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+    if (refs.length === 0) return;
+    if (ctx.integrateCommits) {
+      await ctx.integrateCommits(workspaceRoot, refs, task.role);
+      return;
+    }
+    await integrateWorkspaceCommitsForTask(workspaceRoot, task, refs);
+  };
+}
+
+async function integrateWorkspaceCommitsForTask(
+  workspaceRoot: string,
+  task: TaskEnvelope,
+  commits: string[]
+): Promise<void> {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  await integrateWorkspaceCommits(contract, commits);
+}
+
+/**
+ * Resolve the role lane contract for integration.
+ * Re-validate envelope workspace/targetBranch against mounted root + real
+ * ensureRoleWorkspace(role) contract — do not trust a stale envelope alone.
+ */
+async function resolveIntegrationContract(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<RoleWorkspaceContract> {
+  const mountedRoot = nodePath.resolve(workspaceRoot);
+  if (task.workspace) {
+    const claimed = nodePath.resolve(task.workspace);
+    if (!isSameWorkspaceRoot(claimed, mountedRoot)) {
+      throw new Error(
+        `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`
+      );
+    }
+  }
+
+  // Always resolve the authoritative role lane (creates/reuses worktree as needed).
+  const real = await ensureRoleWorkspace(mountedRoot, task.role);
+
+  if (task.branch && task.branch !== real.branch) {
+    throw new Error(
+      `Task envelope branch mismatch for role ${task.role}: envelope=${task.branch} expected=${real.branch}`
+    );
+  }
+  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
+    throw new Error(
+      `Task envelope targetBranch mismatch for role ${task.role}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+    );
+  }
+  if (task.worktree) {
+    const claimedWt = nodePath.resolve(task.worktree);
+    const realWt = nodePath.resolve(real.worktree);
+    if (!isSameWorkspaceRoot(claimedWt, realWt)) {
+      throw new Error(
+        `Task envelope worktree mismatch for role ${task.role}: envelope=${task.worktree} expected=${real.worktree}`
+      );
+    }
+  }
+
+  // Prefer real contract paths (normalized realpath) over envelope strings.
+  return real;
+}
+
+/**
+ * Ensure task envelope carries WorkspaceLane before managed startSession.
+ * Git workspace → create/reuse role worktree and patch missing fields under MutationBus
+ * (worktree create + envelope patch share one critical section; no nested run).
+ * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
+ */
+async function ensureTaskWorkspaceLane(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: TaskEnvelope
+): Promise<TaskEnvelope> {
+  if (task.worktree && task.branch && task.workspace && task.targetBranch) {
+    return task;
+  }
+  const mount = ctx.host.require(workspaceId);
+  return ctx.mutations.run(workspaceId, async () => {
+    const lane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, task.role);
+    if (!lane) return task;
+    ctx.host.markSelfWrite(workspaceId);
+    return patchTaskEnvelope(mount.env.fs, task.path, {
+      workspace: lane.workspace,
+      worktree: lane.worktree,
+      branch: lane.branch,
+      targetBranch: lane.targetBranch,
+      updatedAt: mount.env.clock.now(),
+    });
+  });
+}
+
+/**
+ * Active managed ACP session for a role (starting/live/waiting-user).
+ * External sessions (state=external) are intentionally excluded — they are not
+ * service-registry managed and do not consume this single-slot rule.
+ */
+async function findActiveManagedSessionForRole(
+  ctx: HandlerContext,
+  workspaceId: string,
+  roleName: string
+): Promise<SessionRecord | undefined> {
+  if (!roleName) return undefined;
+  const all = await ctx.runtime.registry.list();
+  return all.find(
+    (rec) =>
+      rec.workspace === workspaceId &&
+      rec.roleName === roleName &&
+      SessionRegistry.isNonTerminal(rec.state) &&
+      rec.state !== "external"
+  );
+}
+
+function projectStartSessionResult(
+  workspaceId: string,
+  taskPath: string,
+  task: TaskEnvelope,
+  session: Pick<
+    SessionRecord,
+    "id" | "profileId" | "adapterId" | "state" | "roleName" | "runtimeWorkspace"
+  >,
+  extra?: { cwd?: string }
+) {
+  const cwd =
+    extra?.cwd ??
+    session.runtimeWorkspace?.cwd ??
+    task.worktree ??
+    undefined;
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(task),
+    session: {
+      sessionId: session.id,
+      profileId: session.profileId,
+      adapterId: session.adapterId,
+      state: session.state,
+      cwd,
+      // Do not expose pid in client projection by default — probe is internal.
+    },
+  };
+}
+
+/**
  * Build managed ACP bootstrap: Context Card pointer + near-field user prompt.
  * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
  * Distinct from relayPromptForTask (external manual path still claim+deliver).
  */
 function buildSessionBootstrapPrompt(
-  task: import("../core/task.js").TaskEnvelope,
+  task: TaskEnvelope,
   roots: { workspaceRoot: string; systemRoot: string }
 ): string {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);

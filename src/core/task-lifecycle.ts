@@ -194,31 +194,29 @@ export async function taskDeliver(
     const routing = resolveDeliverRouting(policy, options.decision);
 
     const taskId = task.id || taskPath;
-    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-      taskId,
-      boxId,
-      role: task.role,
-      summary: options.summary,
-      commits: options.commits,
-      checks: options.checks,
-      artifactRefs: options.artifactRefs,
-      status: "ready",
-      integrationMode: routing.integrationMode,
-    });
-
+    // Auto-integrate must run before any accepted/done/occupation release write.
+    // Failure keeps task running and does not leave a ready delivery behind.
     if (routing.autoIntegrate) {
-      const commits = delivery.commits;
-      if (commits.length > 0) {
+      const pendingCommits = [...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean))];
+      if (pendingCommits.length > 0) {
         if (!options.integrate) {
           throw new Error("Auto-integrate path requires integrate() when commits are present.");
         }
-        await options.integrate(commits);
+        await options.integrate(pendingCommits);
       }
-      delivery.status = "accepted";
-      delivery.integrationMode = routing.integrationMode;
-      delivery.updatedAt = env.clock.now();
+
+      const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
+        taskId,
+        boxId,
+        role: task.role,
+        summary: options.summary,
+        commits: options.commits,
+        checks: options.checks,
+        artifactRefs: options.artifactRefs,
+        status: "accepted",
+        integrationMode: routing.integrationMode,
+      });
       // No review.by = submitter — integrate is service policy engine action.
-      await writeDelivery(env.fs, delivery);
 
       const tent = await loadTent(env.fs);
       const box = requireBoxById(tent, boxId);
@@ -232,6 +230,18 @@ export async function taskDeliver(
       });
       return { task: next, delivery, autoIntegrated: true };
     }
+
+    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
+      taskId,
+      boxId,
+      role: task.role,
+      summary: options.summary,
+      commits: options.commits,
+      checks: options.checks,
+      artifactRefs: options.artifactRefs,
+      status: "ready",
+      integrationMode: routing.integrationMode,
+    });
 
     assertTransition(task.state, "deliver", "delivered");
     const next = await patchTaskEnvelope(env.fs, taskPath, {
