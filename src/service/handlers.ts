@@ -78,8 +78,8 @@ import {
 import {
   projectAgentProfile,
   projectAgentProfiles,
-  type AgentProfileCatalog,
 } from "./profiles.js";
+import type { AgentProfileCatalog } from "./profile-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
 
 export type { JsonRpcError };

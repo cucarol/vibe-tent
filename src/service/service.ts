@@ -18,7 +18,8 @@ import {
   makeToolApprovalId,
   ToolApprovalStore,
 } from "./tool-approval-store.js";
-import { AgentProfileCatalog, ensureDefaultProfiles } from "./profiles.js";
+import { ensureDefaultProfiles } from "./profiles.js";
+import { AgentProfileCatalog } from "./profile-catalog.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
 import {
@@ -38,7 +39,7 @@ export interface LocalTentServiceOptions {
   getPid?: () => number;
   /** Override token (tests); otherwise generated and stored in endpoint. */
   token?: string;
-  /** Extra / override AgentProfiles (machine-local). */
+  /** Explicit in-memory AgentProfiles for tests/harness; skips catalog persistence. */
   profiles?: AgentProfileConfig[];
   /**
    * Optional commit integrate hook for accept/bypass paths (tests).

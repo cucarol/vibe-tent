@@ -71,7 +71,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.registry = new SessionRegistry(options.dataDir);
 
     for (const p of options.profiles ?? []) {
-      this.profiles.set(p.id, p);
+      this.profiles.set(p.id, cloneProfileConfig(p));
     }
     // Always ensure a default fake profile for harness tests (tests only; not product default spawn).
     if (!this.profiles.has("fake-default")) {
@@ -109,7 +109,7 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   registerProfile(profile: AgentProfileConfig): void {
-    this.profiles.set(profile.id, profile);
+    this.profiles.set(profile.id, cloneProfileConfig(profile));
   }
 
   /**

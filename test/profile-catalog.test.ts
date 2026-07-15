@@ -14,13 +14,13 @@ import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
 import {
-  AgentProfileCatalog,
   FAKE_DEFAULT_PROFILE_ID,
   GROK_ACP_DEFAULT_PROFILE_ID,
   loadAgentProfiles,
   profilesPath,
   projectAgentProfile,
 } from "../src/service/profiles.js";
+import { AgentProfileCatalog } from "../src/service/profile-catalog.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { DEFAULT_GROK_MODEL, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import { createAgentRuntime } from "../src/runtime/index.js";
@@ -168,6 +168,10 @@ test("CRUD + runtime (inject never writes agent-profiles.json)", async () => {
     const list = (await c.profileList()) as { profiles: Array<{ id: string }> };
     assert.ok(list.profiles.some((p) => p.id === "grok-acp-cpa-local"));
     assert.ok(list.profiles.every((p) => p.id !== FAKE_DEFAULT_PROFILE_ID));
+    const withTests = (await c.profileList({ includeTest: true })) as {
+      profiles: Array<{ id: string }>;
+    };
+    assert.ok(withTests.profiles.some((p) => p.id === FAKE_DEFAULT_PROFILE_ID));
 
     await c.profileDelete("grok-acp-cpa-local");
     assert.equal(svc.runtime.getProfile("grok-acp-cpa-local"), undefined);
@@ -266,6 +270,7 @@ test("null clears; baseUrl rejects credentials; nested/RPC/id-override/clone/val
     await expectParamError(svc, "profile.create", { id: "grok-acp-e", envKey: "bad!" }, /envKey/i);
     await expectParamError(svc, "profile.create", { id: "grok-acp-p", permissionPolicy: "yolo" }, /permissionPolicy/i);
     await expectParamError(svc, "profile.create", { id: "grok-acp-m", permissionTimeoutMs: 0 }, /permissionTimeoutMs/i);
+    await expectParamError(svc, "profile.create", { id: "grok-acp-max", promptTimeoutMs: Number.MAX_SAFE_INTEGER }, /promptTimeoutMs/i);
 
     await expectParamError(svc, "profile.create", { profile: { id: "grok-acp-n", displayName: "x" } }, /nested|top level/i);
     await expectParamError(svc, "profile.update", { id: GROK_ACP_DEFAULT_PROFILE_ID, profile: { displayName: "x" } }, /nested/i);
@@ -306,6 +311,8 @@ test("null clears; baseUrl rejects credentials; nested/RPC/id-override/clone/val
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-clone-"));
   const runtime = createAgentRuntime({ dataDir, profiles: [secret] });
   try {
+    secret.grokAcp!.model = "mutated through constructor input";
+    assert.equal(runtime.getProfile("grok-acp-proj")!.grokAcp?.model, "grok-4.5");
     const a = runtime.getProfile("grok-acp-proj")!;
     a.grokAcp!.model = "mutated";
     assert.equal(runtime.getProfile("grok-acp-proj")!.grokAcp?.model, "grok-4.5");
