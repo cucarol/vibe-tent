@@ -1,5 +1,5 @@
 // Shared ACP stdio session layer (provider-neutral).
-// Provider launch/auth/env/model stay in adapter packages (e.g. grok-acp).
+// Provider launch/auth/env/model stay in adapter packages (e.g. grok-acp, codex-acp).
 
 export {
   AcpClient,
@@ -19,3 +19,23 @@ export {
   type AcpProfileOptions,
   type AcpSessionUpdate,
 } from "./types.js";
+export {
+  AcpManagedSession,
+  bindAcpPermissionHooks,
+  mapAcpProcessExit,
+  mainstreamAcpCapabilities,
+  parseAcpResumeToken,
+  startManagedAcpSession,
+  stopAcpClientQuiet,
+  type AcpPermissionAskHooks,
+  type ManagedAcpClient,
+  type StartManagedAcpSessionInput,
+} from "./managed-session.js";
+export {
+  defaultNpxCommand,
+  normalizeAcpPermissionPolicy,
+  normalizeSharedAcpOpts,
+  readAcpExtras,
+  resolveNpxAcpLaunch,
+  resolvePlanOrProcessEnv,
+} from "./profile.js";

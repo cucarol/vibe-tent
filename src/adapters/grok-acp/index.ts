@@ -12,7 +12,14 @@ import type {
   ResolvedLaunch,
   ResumeToken,
 } from "../types.js";
-import type { RuntimeEvent, StopReason } from "../../runtime/types.js";
+import type { RuntimeEvent } from "../../runtime/types.js";
+import {
+  bindAcpPermissionHooks,
+  mapAcpProcessExit,
+  parseAcpResumeToken,
+  readAcpExtras,
+  startManagedAcpSession,
+} from "../acp/index.js";
 import { GrokAcpClient } from "./client.js";
 import {
   DEFAULT_GROK_BASE_URL_ENV_KEY,
@@ -84,18 +91,6 @@ function defaultGrokExecutable(): string {
   return path.join(home, ".grok", "bin", "grok");
 }
 
-/**
- * Read ACP profile bag from LaunchPlan.extras.
- * Canonical: extras.acp. Fallback extras.grokAcp is deprecated (pre-canonical runtime plans).
- */
-function readAcpExtras(extras: Record<string, unknown> | undefined): unknown {
-  if (!extras || typeof extras !== "object") return {};
-  if (extras.acp !== undefined) return extras.acp;
-  // @deprecated Pre-canonical runtime plans may still pass extras.grokAcp — prefer extras.acp.
-  if (extras.grokAcp !== undefined) return extras.grokAcp;
-  return {};
-}
-
 function normalizeGrokOpts(raw: unknown): Required<
   Pick<
     GrokAcpProfileOptions,
@@ -141,36 +136,6 @@ export function normalizeCpaBaseUrl(raw: string | undefined): string | undefined
   if (!raw || typeof raw !== "string") return undefined;
   const t = raw.trim().replace(/\/+$/, "");
   return t || undefined;
-}
-
-class GrokManagedSession implements ManagedSession {
-  constructor(
-    readonly sessionId: string,
-    private readonly client: GrokAcpClient,
-    private readonly bootstrapDone: Promise<void>,
-    private stopRequested = false
-  ) {}
-
-  get pid(): number | undefined {
-    return this.client.pid;
-  }
-
-  get providerSessionId(): string | undefined {
-    return this.client.providerSession;
-  }
-
-  isAlive(): boolean {
-    return !this.stopRequested && this.client.isAlive();
-  }
-
-  async waitBootstrap(): Promise<void> {
-    await this.bootstrapDone;
-  }
-
-  async stop(reason: StopReason): Promise<void> {
-    this.stopRequested = true;
-    await this.client.stop(reason);
-  }
 }
 
 export class GrokAcpProviderAdapter implements ProviderAdapter {
@@ -219,7 +184,8 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
    * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
    */
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
-    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
+    // @deprecated Pre-canonical runtime plans may still pass extras.grokAcp — prefer extras.acp.
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
@@ -313,26 +279,13 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
-    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     // Fail-loud on missing key / binary before spawn (Chinese errors from resolveLaunch).
     const launch = this.resolveLaunch(plan);
-    const bootstrap =
-      plan.bootstrapPrompt?.trim() ||
-      "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
 
-    const mapPermInfo = (info: {
-      toolTitle: string;
-      toolCallId?: string;
-      options: Array<{ optionId: string; kind?: string; name?: string }>;
-    }) => ({
-      sessionId: plan.sessionId,
-      toolTitle: info.toolTitle,
-      toolCallId: info.toolCallId,
-      options: (info.options ?? []).map((o) => ({
-        optionId: o.optionId,
-        kind: o.kind,
-        name: o.name,
-      })),
+    const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
 
     const client = new GrokAcpClient({
@@ -346,86 +299,19 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       permissionPolicy: opts.permissionPolicy,
       permissionTimeoutMs: opts.permissionTimeoutMs,
       emit,
-      onPermissionAsk:
-        opts.permissionPolicy === "ask"
-          ? async (info) => {
-              if (!this.onPermissionAsk) return "deny";
-              return this.onPermissionAsk(mapPermInfo(info));
-            }
-          : undefined,
-      onPermissionAskFailSafe:
-        opts.permissionPolicy === "ask" && this.onPermissionAskFailSafe
-          ? async (info) => {
-              await this.onPermissionAskFailSafe!(mapPermInfo(info));
-            }
-          : undefined,
+      onPermissionAsk: permHooks.onPermissionAsk,
+      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe,
     });
 
-    // Handshake must succeed before startSession returns live (fail-loud).
-    await client.connect();
-
-    // Managed bootstrap runs in background — Tent is not a chat router.
-    // On successful end_turn, emit session.prompt_complete so Local Service can
-    // auto-deliver the final assistant reply as the task report.
-    // All failure paths stop the managed process so no orphan live provider remains.
-    // Spontaneous child exit (even with no pending RPC) emits terminal events from
-    // the client; reportFailed dedupes against that path.
-    const promptDone = client
-      .sendPrompt(bootstrap)
-      .then(async (result) => {
-        const stopReason = (result.stopReason || "end_turn").toLowerCase();
-        const assistantText = (result.assistantText || "").trim();
-        // Only successful end_turn with non-empty message is a deliverable report.
-        // cancelled / max_tokens / refused / interrupted → no delivery (service maps failure).
-        if (stopReason !== "end_turn") {
-          client.reportFailed(
-            `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
-          );
-          await stopClientQuiet(client);
-          return;
-        }
-        if (!assistantText) {
-          client.reportFailed("ACP assistant response empty (no auto-delivery)");
-          await stopClientQuiet(client);
-          return;
-        }
-        emit({
-          type: "session.prompt_complete",
-          sessionId: plan.sessionId,
-          assistantText,
-          stopReason: result.stopReason || "end_turn",
-        });
-      })
-      .catch(async (err) => {
-        const message = err instanceof Error ? err.message : String(err);
-        // Stop/interrupt should not look like a provider crash when user cancelled.
-        if (/interrupted|session stopped/i.test(message)) {
-          client.reportFailed(`session interrupted: ${message}`);
-          await stopClientQuiet(client);
-          return;
-        }
-        client.reportFailed(message);
-        await stopClientQuiet(client);
-      });
-
-    return new GrokManagedSession(plan.sessionId, client, promptDone);
+    return startManagedAcpSession({ plan, emit, client });
   }
 
   parseResumeToken(raw: string): ResumeToken {
-    return { raw, providerSessionId: raw };
+    return parseAcpResumeToken(raw);
   }
 
   mapExit(code: number | null, signal?: string): RuntimeEvent {
-    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
-      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
-    }
-    if (code === 0 || (code === null && (signal === "SIGTERM" || signal === "SIGINT"))) {
-      return { type: "session.exited", sessionId: "", exitCode: code };
-    }
-    if (code !== 0 && code != null) {
-      return { type: "session.failed", sessionId: "", error: `exit:${code}` };
-    }
-    return { type: "session.exited", sessionId: "", exitCode: code };
+    return mapAcpProcessExit(code, signal);
   }
 }
 
@@ -433,14 +319,6 @@ export function createGrokAcpAdapter(
   options?: GrokAcpAdapterOptions
 ): GrokAcpProviderAdapter {
   return new GrokAcpProviderAdapter(options);
-}
-
-async function stopClientQuiet(client: GrokAcpClient): Promise<void> {
-  try {
-    await client.stop("interrupt");
-  } catch {
-    // best-effort — process may already be dead
-  }
 }
 
 /** Machine-local profile template — secrets only via env key *names* / optional machine-local baseUrl, never workspace. */
