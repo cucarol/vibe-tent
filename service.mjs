@@ -3201,6 +3201,38 @@ var RPC_LIFECYCLE = -32022;
 import * as fs6 from "node:fs/promises";
 import * as path6 from "node:path";
 
+// src/runtime/profile-config.ts
+function normalizeProfileToCanonicalAcp(raw) {
+  const legacy = raw.grokAcp;
+  const hasLegacy = legacy !== void 0 && legacy !== null && typeof legacy === "object";
+  const hasAcp = raw.acp !== void 0 && raw.acp !== null && typeof raw.acp === "object";
+  const { grokAcp: _drop, ...rest } = raw;
+  void _drop;
+  if (hasAcp) {
+    return {
+      profile: { ...rest, acp: { ...raw.acp } },
+      migrated: hasLegacy
+    };
+  }
+  if (hasLegacy) {
+    return {
+      profile: { ...rest, acp: { ...legacy } },
+      migrated: true
+    };
+  }
+  return { profile: { ...rest }, migrated: false };
+}
+function cloneAgentProfileConfig(p) {
+  const { profile: canonical } = normalizeProfileToCanonicalAcp(p);
+  return {
+    ...canonical,
+    acp: canonical.acp ? { ...canonical.acp } : void 0,
+    fake: canonical.fake ? { ...canonical.fake } : void 0,
+    env: canonical.env ? { ...canonical.env } : void 0,
+    args: canonical.args ? [...canonical.args] : void 0
+  };
+}
+
 // src/adapters/fake/index.ts
 import * as fs4 from "node:fs";
 import * as os from "node:os";
@@ -3332,21 +3364,17 @@ import * as fs5 from "node:fs";
 import * as os2 from "node:os";
 import * as path5 from "node:path";
 
-// src/adapters/grok-acp/client.ts
+// src/adapters/acp/client.ts
 import { spawn as spawn2 } from "node:child_process";
 import * as readline from "node:readline";
 
-// src/adapters/grok-acp/types.ts
-var GROK_ACP_ADAPTER_ID = "grok-acp";
-var DEFAULT_GROK_MODEL = "grok-4.5";
-var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
-var DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
+// src/adapters/acp/types.ts
 var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
-// src/adapters/grok-acp/client.ts
+// src/adapters/acp/client.ts
 var PERMISSION_FAILSAFE_SLACK_MS = 5e3;
-var GrokAcpClient = class {
+var AcpClient = class {
   constructor(options) {
     this.options = options;
     this.proc = null;
@@ -3363,6 +3391,7 @@ var GrokAcpClient = class {
     this.exitCode = null;
     this.exitSignal = null;
     this.exitWaiters = [];
+    this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
   }
   get pid() {
     return this.proc?.pid ?? void 0;
@@ -3405,24 +3434,23 @@ var GrokAcpClient = class {
           terminal: false
         }
       });
-      const authMethods = new Set((init.authMethods ?? []).map((m) => m.id));
-      const methodId = authMethods.has("xai.api_key") ? "xai.api_key" : authMethods.has("cached_token") ? "cached_token" : null;
-      if (!methodId) {
-        throw new Error(
-          "Grok ACP \u672A\u63D0\u4F9B\u53EF\u7528\u7684\u8BA4\u8BC1\u65B9\u5F0F\uFF08\u9700\u8981 xai.api_key \u6216 cached_token\uFF09\u3002\u8BF7\u786E\u8BA4 grok CLI \u4E0E CPA \u914D\u7F6E\u3002"
+      if (this.options.authenticate) {
+        const authParams = await this.options.authenticate(
+          init.authMethods ?? []
         );
+        const meta = authParams._meta && typeof authParams._meta === "object" && !Array.isArray(authParams._meta) ? { ...authParams._meta, headless: true } : { headless: true };
+        await this.request("authenticate", {
+          ...authParams,
+          _meta: meta
+        });
       }
-      await this.request("authenticate", {
-        methodId,
-        _meta: { headless: true }
-      });
       const session = await this.request(
         "session/new",
         { cwd: this.options.cwd, mcpServers: [] },
         6e4
       );
       if (!session.sessionId) {
-        throw new Error("Grok ACP session/new \u672A\u8FD4\u56DE sessionId");
+        throw new Error(`${this.label} session/new \u672A\u8FD4\u56DE sessionId`);
       }
       this.providerSessionId = session.sessionId;
       this.options.emit({
@@ -3444,11 +3472,11 @@ var GrokAcpClient = class {
    */
   async sendPrompt(bootstrapPrompt) {
     if (!this.providerSessionId) {
-      throw new Error("Grok ACP session \u5C1A\u672A\u5EFA\u7ACB\uFF0C\u65E0\u6CD5 prompt");
+      throw new Error(`${this.label} session \u5C1A\u672A\u5EFA\u7ACB\uFF0C\u65E0\u6CD5 prompt`);
     }
     const pid = this.proc?.pid;
     if (pid == null) {
-      throw new Error("Grok ACP \u8FDB\u7A0B\u4E0D\u53EF\u7528");
+      throw new Error(`${this.label} \u8FDB\u7A0B\u4E0D\u53EF\u7528`);
     }
     this.assistantText = "";
     try {
@@ -3540,7 +3568,7 @@ var GrokAcpClient = class {
     });
     if (child.pid == null) {
       throw new Error(
-        `\u65E0\u6CD5\u542F\u52A8 Grok ACP \u8FDB\u7A0B: ${this.options.command} ${this.options.args.join(" ")}`
+        `\u65E0\u6CD5\u542F\u52A8 ${this.label} \u8FDB\u7A0B: ${this.options.command} ${this.options.args.join(" ")}`
       );
     }
     this.proc = child;
@@ -3561,7 +3589,7 @@ var GrokAcpClient = class {
       this.closed = true;
       this.rejectAllPending(
         new Error(
-          signal ? `Grok ACP \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `Grok ACP \u8FDB\u7A0B\u9000\u51FA code=${code}`
+          signal ? `${this.label} \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `${this.label} \u8FDB\u7A0B\u9000\u51FA code=${code}`
         )
       );
       if (!this.stopRequested && !this.terminalEmitted) {
@@ -3570,7 +3598,7 @@ var GrokAcpClient = class {
           this.options.emit({
             type: "session.failed",
             sessionId: this.options.sessionId,
-            error: signal ? `Grok ACP spontaneous exit signal:${signal}` : `Grok ACP spontaneous exit code=${code}`
+            error: signal ? `${this.label} spontaneous exit signal:${signal}` : `${this.label} spontaneous exit code=${code}`
           });
         } else {
           this.options.emit({
@@ -3586,14 +3614,14 @@ var GrokAcpClient = class {
     child.on("error", (err) => {
       this.closed = true;
       this.rejectAllPending(
-        new Error(`Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
+        new Error(`${this.label} \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
       );
       if (!this.stopRequested && !this.terminalEmitted) {
         this.terminalEmitted = true;
         this.options.emit({
           type: "session.failed",
           sessionId: this.options.sessionId,
-          error: `Grok ACP \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`
+          error: `${this.label} \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`
         });
       }
     });
@@ -3624,7 +3652,7 @@ var GrokAcpClient = class {
         id: message.id,
         error: {
           code: -32601,
-          message: "Client-side requests are disabled for Tent grok-acp adapter."
+          message: `Client-side requests are disabled for Tent ${this.label} adapter.`
         }
       });
       return;
@@ -3697,7 +3725,7 @@ var GrokAcpClient = class {
       this.options.emit({
         type: "session.waiting_user",
         sessionId: this.options.sessionId,
-        summary: `Grok ACP \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
+        summary: `${this.label} \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
       });
       try {
         if (this.options.onPermissionAsk) {
@@ -3750,13 +3778,15 @@ var GrokAcpClient = class {
   }
   request(method, params, timeoutMs = 3e4) {
     if (this.closed || !this.proc?.stdin) {
-      return Promise.reject(new Error(`Grok ACP \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`));
+      return Promise.reject(
+        new Error(`${this.label} \u5DF2\u5173\u95ED\uFF0C\u65E0\u6CD5\u8C03\u7528 ${method}`)
+      );
     }
     const id = this.nextId++;
     return new Promise((resolve7, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(new Error(`Grok ACP ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
+        reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve7, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
@@ -3820,6 +3850,238 @@ function sleep(ms) {
   return new Promise((resolve7) => setTimeout(resolve7, ms));
 }
 
+// src/adapters/acp/managed-session.ts
+var DEFAULT_BOOTSTRAP = "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
+var AcpManagedSession = class {
+  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
+    this.sessionId = sessionId;
+    this.client = client;
+    this.bootstrapDone = bootstrapDone;
+    this.stopRequested = stopRequested;
+  }
+  get pid() {
+    return this.client.pid;
+  }
+  get providerSessionId() {
+    return this.client.providerSession;
+  }
+  isAlive() {
+    return !this.stopRequested && this.client.isAlive();
+  }
+  /** Tests / callers may await bootstrap completion (prompt path finished). */
+  async waitBootstrap() {
+    await this.bootstrapDone;
+  }
+  async stop(reason) {
+    this.stopRequested = true;
+    await this.client.stop(
+      reason === "user" || reason === "interrupt" || reason === "shutdown" ? reason : "interrupt"
+    );
+  }
+};
+async function stopAcpClientQuiet(client) {
+  try {
+    await client.stop("interrupt");
+  } catch {
+  }
+}
+function bindAcpPermissionHooks(sessionId, permissionPolicy, hooks) {
+  const mapInfo = (info) => ({
+    sessionId,
+    toolTitle: info.toolTitle,
+    toolCallId: info.toolCallId,
+    options: (info.options ?? []).map((o) => ({
+      optionId: o.optionId,
+      kind: o.kind,
+      name: o.name
+    }))
+  });
+  return {
+    onPermissionAsk: permissionPolicy === "ask" ? async (info) => {
+      if (!hooks.onPermissionAsk) return "deny";
+      return hooks.onPermissionAsk(mapInfo(info));
+    } : void 0,
+    onPermissionAskFailSafe: permissionPolicy === "ask" && hooks.onPermissionAskFailSafe ? async (info) => {
+      await hooks.onPermissionAskFailSafe(mapInfo(info));
+    } : void 0
+  };
+}
+async function startManagedAcpSession(input) {
+  const { plan, emit: emit2, client } = input;
+  const bootstrap = plan.bootstrapPrompt?.trim() || input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
+  await client.connect();
+  const promptDone = client.sendPrompt(bootstrap).then(async (result) => {
+    const stopReason = (result.stopReason || "end_turn").toLowerCase();
+    const assistantText = (result.assistantText || "").trim();
+    if (stopReason !== "end_turn") {
+      client.reportFailed(
+        `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
+      );
+      await stopAcpClientQuiet(client);
+      return;
+    }
+    if (!assistantText) {
+      client.reportFailed("ACP assistant response empty (no auto-delivery)");
+      await stopAcpClientQuiet(client);
+      return;
+    }
+    emit2({
+      type: "session.prompt_complete",
+      sessionId: plan.sessionId,
+      assistantText,
+      stopReason: result.stopReason || "end_turn"
+    });
+  }).catch(async (err) => {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/interrupted|session stopped/i.test(message)) {
+      client.reportFailed(`session interrupted: ${message}`);
+      await stopAcpClientQuiet(client);
+      return;
+    }
+    client.reportFailed(message);
+    await stopAcpClientQuiet(client);
+  });
+  return new AcpManagedSession(plan.sessionId, client, promptDone);
+}
+function parseAcpResumeToken(raw) {
+  return { raw, providerSessionId: raw };
+}
+function mapAcpProcessExit(code, signal) {
+  if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
+    return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
+  }
+  if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
+    return { type: "session.exited", sessionId: "", exitCode: code };
+  }
+  if (code !== 0 && code != null) {
+    return { type: "session.failed", sessionId: "", error: `exit:${code}` };
+  }
+  return { type: "session.exited", sessionId: "", exitCode: code };
+}
+function mainstreamAcpCapabilities() {
+  return {
+    canSpawn: true,
+    canResume: false,
+    canStopGraceful: true,
+    needsTty: false,
+    supportsWorktreeCwd: true,
+    authModel: "external-app",
+    observeLevel: "structured"
+  };
+}
+
+// src/adapters/acp/profile.ts
+function readAcpExtras(extras, legacyKeys = []) {
+  if (!extras || typeof extras !== "object") return {};
+  if (extras.acp !== void 0) return extras.acp;
+  for (const key of legacyKeys) {
+    if (extras[key] !== void 0) return extras[key];
+  }
+  return {};
+}
+function normalizeAcpPermissionPolicy(raw) {
+  return raw === "allow" || raw === "ask" || raw === "deny" ? raw : "deny";
+}
+function normalizeSharedAcpOpts(raw) {
+  const o = raw && typeof raw === "object" ? raw : {};
+  return {
+    executable: typeof o.executable === "string" && o.executable.trim() ? o.executable.trim() : void 0,
+    model: typeof o.model === "string" && o.model.trim() ? o.model.trim() : void 0,
+    envKey: typeof o.envKey === "string" && o.envKey.trim() ? o.envKey.trim() : void 0,
+    baseUrlEnvKey: typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim() ? o.baseUrlEnvKey.trim() : void 0,
+    baseUrl: typeof o.baseUrl === "string" && o.baseUrl.trim() ? o.baseUrl.trim() : void 0,
+    promptTimeoutMs: typeof o.promptTimeoutMs === "number" && o.promptTimeoutMs > 0 ? o.promptTimeoutMs : DEFAULT_PROMPT_TIMEOUT_MS,
+    permissionPolicy: normalizeAcpPermissionPolicy(o.permissionPolicy),
+    permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
+  };
+}
+function resolvePlanOrProcessEnv(envKey, planEnv, resolve7) {
+  if (resolve7) return resolve7(envKey, planEnv);
+  const fromPlan = planEnv[envKey];
+  if (typeof fromPlan === "string" && fromPlan.trim()) return fromPlan;
+  const fromProc = process.env[envKey];
+  if (typeof fromProc === "string" && fromProc.trim()) return fromProc;
+  return void 0;
+}
+function defaultNpxCommand() {
+  return process.platform === "win32" ? "npx.cmd" : "npx";
+}
+function resolveNpxAcpLaunch(input) {
+  const defaultArgs = ["--yes", input.defaultPackage];
+  const command = (typeof input.planCommand === "string" && input.planCommand.trim() ? input.planCommand.trim() : void 0) || input.executable || defaultNpxCommand();
+  const usingDefaultLauncher = !(typeof input.planCommand === "string" && input.planCommand.trim()) && !input.executable;
+  const args = input.planArgs && input.planArgs.length > 0 ? [...input.planArgs] : usingDefaultLauncher ? [...defaultArgs] : [];
+  return { command, args };
+}
+
+// src/adapters/grok-acp/client.ts
+var GrokAcpClient = class {
+  constructor(options) {
+    void options.model;
+    const acpOptions = {
+      command: options.command,
+      args: options.args,
+      cwd: options.cwd,
+      env: options.env,
+      sessionId: options.sessionId,
+      promptTimeoutMs: options.promptTimeoutMs,
+      permissionPolicy: options.permissionPolicy,
+      permissionTimeoutMs: options.permissionTimeoutMs,
+      label: "Grok ACP",
+      emit: options.emit,
+      onPermissionAsk: options.onPermissionAsk,
+      onPermissionAskFailSafe: options.onPermissionAskFailSafe,
+      authenticate: async (authMethods) => {
+        const ids = new Set(authMethods.map((m) => m.id));
+        const methodId = ids.has("xai.api_key") ? "xai.api_key" : ids.has("cached_token") ? "cached_token" : null;
+        if (!methodId) {
+          throw new Error(
+            "Grok ACP \u672A\u63D0\u4F9B\u53EF\u7528\u7684\u8BA4\u8BC1\u65B9\u5F0F\uFF08\u9700\u8981 xai.api_key \u6216 cached_token\uFF09\u3002\u8BF7\u786E\u8BA4 grok CLI \u4E0E CPA \u914D\u7F6E\u3002"
+          );
+        }
+        return { methodId };
+      }
+    };
+    this.inner = new AcpClient(acpOptions);
+  }
+  get pid() {
+    return this.inner.pid;
+  }
+  get providerSession() {
+    return this.inner.providerSession;
+  }
+  get lastAssistantText() {
+    return this.inner.lastAssistantText;
+  }
+  get lastStderrTail() {
+    return this.inner.lastStderrTail;
+  }
+  isAlive() {
+    return this.inner.isAlive();
+  }
+  connect() {
+    return this.inner.connect();
+  }
+  sendPrompt(bootstrapPrompt) {
+    return this.inner.sendPrompt(bootstrapPrompt);
+  }
+  stop(reason) {
+    return this.inner.stop(reason);
+  }
+  reportFailed(error) {
+    this.inner.reportFailed(error);
+  }
+  reportExited(exitCode) {
+    this.inner.reportExited(exitCode);
+  }
+};
+
+// src/adapters/grok-acp/types.ts
+var GROK_ACP_ADAPTER_ID = "grok-acp";
+var DEFAULT_GROK_MODEL = "grok-4.5";
+var DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
+var DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
+
 // src/adapters/grok-acp/index.ts
 function defaultGrokExecutable() {
   if (process.platform === "win32") {
@@ -3849,30 +4111,6 @@ function normalizeCpaBaseUrl(raw) {
   const t = raw.trim().replace(/\/+$/, "");
   return t || void 0;
 }
-var GrokManagedSession = class {
-  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
-    this.sessionId = sessionId;
-    this.client = client;
-    this.bootstrapDone = bootstrapDone;
-    this.stopRequested = stopRequested;
-  }
-  get pid() {
-    return this.client.pid;
-  }
-  get providerSessionId() {
-    return this.client.providerSession;
-  }
-  isAlive() {
-    return !this.stopRequested && this.client.isAlive();
-  }
-  async waitBootstrap() {
-    await this.bootstrapDone;
-  }
-  async stop(reason) {
-    this.stopRequested = true;
-    await this.client.stop(reason);
-  }
-};
 var GrokAcpProviderAdapter = class {
   constructor(options = {}) {
     this.id = GROK_ACP_ADAPTER_ID;
@@ -3900,7 +4138,7 @@ var GrokAcpProviderAdapter = class {
    * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
    */
   resolveLaunch(plan) {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
@@ -3915,13 +4153,13 @@ var GrokAcpProviderAdapter = class {
     if (!plan.command && opts.executable) {
       if (!fs5.existsSync(opts.executable)) {
         throw new Error(
-          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.grokAcp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
+          `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
       if (!fs5.existsSync(command)) {
         throw new Error(
-          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E grokAcp.executable\u3002`
+          `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E acp.executable\u3002`
         );
       }
     }
@@ -3969,18 +4207,11 @@ var GrokAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const launch = this.resolveLaunch(plan);
-    const bootstrap = plan.bootstrapPrompt?.trim() || "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
-    const mapPermInfo = (info) => ({
-      sessionId: plan.sessionId,
-      toolTitle: info.toolTitle,
-      toolCallId: info.toolCallId,
-      options: (info.options ?? []).map((o) => ({
-        optionId: o.optionId,
-        kind: o.kind,
-        name: o.name
-      }))
+    const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
     });
     const client = new GrokAcpClient({
       command: launch.command,
@@ -3993,80 +4224,393 @@ var GrokAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       permissionTimeoutMs: opts.permissionTimeoutMs,
       emit: emit2,
-      onPermissionAsk: opts.permissionPolicy === "ask" ? async (info) => {
-        if (!this.onPermissionAsk) return "deny";
-        return this.onPermissionAsk(mapPermInfo(info));
-      } : void 0,
-      onPermissionAskFailSafe: opts.permissionPolicy === "ask" && this.onPermissionAskFailSafe ? async (info) => {
-        await this.onPermissionAskFailSafe(mapPermInfo(info));
-      } : void 0
+      onPermissionAsk: permHooks.onPermissionAsk,
+      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
     });
-    await client.connect();
-    const promptDone = client.sendPrompt(bootstrap).then(async (result) => {
-      const stopReason = (result.stopReason || "end_turn").toLowerCase();
-      const assistantText = (result.assistantText || "").trim();
-      if (stopReason !== "end_turn") {
-        client.reportFailed(
-          `ACP session/prompt stopReason=${result.stopReason || "unknown"} (no auto-delivery)`
-        );
-        await stopClientQuiet(client);
-        return;
-      }
-      if (!assistantText) {
-        client.reportFailed("ACP assistant response empty (no auto-delivery)");
-        await stopClientQuiet(client);
-        return;
-      }
-      emit2({
-        type: "session.prompt_complete",
-        sessionId: plan.sessionId,
-        assistantText,
-        stopReason: result.stopReason || "end_turn"
-      });
-    }).catch(async (err) => {
-      const message = err instanceof Error ? err.message : String(err);
-      if (/interrupted|session stopped/i.test(message)) {
-        client.reportFailed(`session interrupted: ${message}`);
-        await stopClientQuiet(client);
-        return;
-      }
-      client.reportFailed(message);
-      await stopClientQuiet(client);
-    });
-    return new GrokManagedSession(plan.sessionId, client, promptDone);
+    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
-    return { raw, providerSessionId: raw };
+    return parseAcpResumeToken(raw);
   }
   mapExit(code, signal) {
-    if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
-      return { type: "session.failed", sessionId: "", error: `signal:${signal}` };
-    }
-    if (code === 0 || code === null && (signal === "SIGTERM" || signal === "SIGINT")) {
-      return { type: "session.exited", sessionId: "", exitCode: code };
-    }
-    if (code !== 0 && code != null) {
-      return { type: "session.failed", sessionId: "", error: `exit:${code}` };
-    }
-    return { type: "session.exited", sessionId: "", exitCode: code };
+    return mapAcpProcessExit(code, signal);
   }
 };
 function createGrokAcpAdapter(options) {
   return new GrokAcpProviderAdapter(options);
 }
-async function stopClientQuiet(client) {
-  try {
-    await client.stop("interrupt");
-  } catch {
+
+// src/adapters/codex-acp/types.ts
+var CODEX_ACP_ADAPTER_ID = "codex-acp";
+var CODEX_ACP_NPX_PACKAGE = "@agentclientprotocol/codex-acp";
+var CODEX_DEFAULT_AUTH_REQUEST_ENV = "DEFAULT_AUTH_REQUEST";
+
+// src/adapters/codex-acp/index.ts
+function buildCodexDefaultAuthRequest(apiKey) {
+  return JSON.stringify({
+    methodId: "api-key",
+    _meta: {
+      "api-key": {
+        apiKey
+      }
+    }
+  });
+}
+var CodexAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = CODEX_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.codexAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
+  capabilities() {
+    return mainstreamAcpCapabilities();
+  }
+  /**
+   * Launch plan validation / env injection only.
+   * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
+   * Does not call ACP authenticate; injects DEFAULT_AUTH_REQUEST when envKey is set.
+   */
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const { command, args } = resolveNpxAcpLaunch({
+      planCommand: plan.command,
+      planArgs: plan.args,
+      executable: opts.executable,
+      defaultPackage: CODEX_ACP_NPX_PACKAGE
+    });
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const secret = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!secret || !secret.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acodex-acp \u5DF2\u5728 AgentProfile.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace/box/task\u3002`
+        );
+      }
+      env[opts.envKey] = secret;
+      env[CODEX_DEFAULT_AUTH_REQUEST_ENV] = buildCodexDefaultAuthRequest(secret);
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+    });
+    const client = new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      label: "Codex ACP",
+      emit: emit2,
+      onPermissionAsk: permHooks.onPermissionAsk,
+      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
+    });
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createCodexAcpAdapter(options) {
+  return new CodexAcpProviderAdapter(options);
+}
+
+// src/adapters/claude-acp/types.ts
+var CLAUDE_ACP_ADAPTER_ID = "claude-acp";
+var CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+
+// src/adapters/claude-acp/index.ts
+var ClaudeAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = CLAUDE_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.claudeAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
+  }
+  capabilities() {
+    return mainstreamAcpCapabilities();
+  }
+  /**
+   * Launch plan validation / optional env injection only.
+   * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
+   * Does not call ACP authenticate; depends on local Claude login or injected env.
+   */
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const { command, args } = resolveNpxAcpLaunch({
+      planCommand: plan.command,
+      planArgs: plan.args,
+      executable: opts.executable,
+      defaultPackage: CLAUDE_ACP_NPX_PACKAGE
+    });
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const secret = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!secret || !secret.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aclaude-acp \u5DF2\u5728 AgentProfile.acp.envKey \u4E2D\u660E\u786E\u8981\u6C42\u8BE5\u5BC6\u94A5\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u8BF7\u8BBE\u7F6E ${opts.envKey} \u540E\u91CD\u8BD5\uFF1B\u5207\u52FF\u628A secret \u5199\u5165 workspace/box/task\u3002`
+        );
+      }
+      env[opts.envKey] = secret;
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+    });
+    const client = new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      label: "Claude ACP",
+      emit: emit2,
+      onPermissionAsk: permHooks.onPermissionAsk,
+      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
+    });
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createClaudeAcpAdapter(options) {
+  return new ClaudeAcpProviderAdapter(options);
+}
+
+// src/adapters/antigravity-acp/types.ts
+var ANTIGRAVITY_ACP_ADAPTER_ID = "antigravity-acp";
+var ANTIGRAVITY_ACP_BRIDGE = "agy-acp";
+
+// src/adapters/antigravity-acp/index.ts
+function defaultAntigravityAcpExecutable() {
+  return process.platform === "win32" ? "agy-acp.exe" : ANTIGRAVITY_ACP_BRIDGE;
+}
+var AntigravityAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = ANTIGRAVITY_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.antigravityAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
+  }
+  capabilities() {
+    return mainstreamAcpCapabilities();
+  }
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const value = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!value?.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aantigravity-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\u3002Tent \u901A\u8FC7\u7B2C\u4E09\u65B9 agy-acp bridge \u8FDE\u63A5\u5B98\u65B9 agy CLI\uFF1Bsecret \u53EA\u80FD\u653E\u5728 service \u8FDB\u7A0B\u73AF\u5883\u3002`
+        );
+      }
+      env[opts.envKey] = value;
+    }
+    return {
+      command: plan.command?.trim() || opts.executable || defaultAntigravityAcpExecutable(),
+      args: plan.args ? [...plan.args] : [],
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+    });
+    const client = new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      label: "Antigravity ACP (third-party agy-acp bridge)",
+      emit: emit2,
+      onPermissionAsk: hooks.onPermissionAsk,
+      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+    });
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createAntigravityAcpAdapter(options) {
+  return new AntigravityAcpProviderAdapter(options);
+}
+
+// src/adapters/opencode-acp/types.ts
+var OPENCODE_ACP_ADAPTER_ID = "opencode-acp";
+
+// src/adapters/opencode-acp/index.ts
+function defaultOpenCodeExecutable() {
+  return process.platform === "win32" ? "opencode.exe" : "opencode";
+}
+var OpenCodeAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = OPENCODE_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.openCodeAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
+  }
+  capabilities() {
+    return mainstreamAcpCapabilities();
+  }
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const value = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!value?.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Aopencode-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002`
+        );
+      }
+      env[opts.envKey] = value;
+    }
+    return {
+      command: plan.command?.trim() || opts.executable || defaultOpenCodeExecutable(),
+      args: plan.args ? [...plan.args] : ["acp"],
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+    });
+    const client = new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      label: "OpenCode ACP",
+      emit: emit2,
+      onPermissionAsk: hooks.onPermissionAsk,
+      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+    });
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createOpenCodeAcpAdapter(options) {
+  return new OpenCodeAcpProviderAdapter(options);
 }
 
 // src/service/profiles.ts
 var FAKE_DEFAULT_PROFILE_ID = "fake-default";
 var GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
-var PRODUCT_CRUD_ADAPTER_ID = GROK_ACP_ADAPTER_ID;
+var CODEX_ACP_DEFAULT_PROFILE_ID = "codex-acp-default";
+var CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
+var ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
+var OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
+var PRODUCT_ACP_ADAPTER_IDS = [
+  "grok-acp",
+  "codex-acp",
+  "claude-acp",
+  "antigravity-acp",
+  "opencode-acp"
+];
+var PRODUCT_ACP_ADAPTER_SET = new Set(PRODUCT_ACP_ADAPTER_IDS);
+function isProductAcpAdapterId(id) {
+  return PRODUCT_ACP_ADAPTER_SET.has(id);
+}
+var BUILTIN_DEFAULT_PROFILE_IDS = /* @__PURE__ */ new Set([
+  FAKE_DEFAULT_PROFILE_ID,
+  GROK_ACP_DEFAULT_PROFILE_ID,
+  CODEX_ACP_DEFAULT_PROFILE_ID,
+  CLAUDE_ACP_DEFAULT_PROFILE_ID,
+  ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+  OPENCODE_ACP_DEFAULT_PROFILE_ID
+]);
+function isBuiltinDefaultProfileId(id) {
+  return BUILTIN_DEFAULT_PROFILE_IDS.has(id);
+}
 var PROFILE_CREATE_FIELDS = [
   "id",
+  "adapterId",
   "displayName",
   "model",
   "executable",
@@ -4091,7 +4635,7 @@ var PROFILE_UPDATE_FIELDS = [
 function profilesPath(dataDir) {
   return path6.join(dataDir, "agent-profiles.json");
 }
-async function loadAgentProfiles(dataDir) {
+async function loadAgentProfilesWithMigration(dataDir) {
   const file = profilesPath(dataDir);
   try {
     const raw = await fs6.readFile(file, "utf8");
@@ -4101,28 +4645,40 @@ async function loadAgentProfiles(dataDir) {
     } catch {
       const backupPath = await backupCorruptMachineFile(file);
       warnCorruptMachineState(file, backupPath, "reset");
-      return [];
+      return { profiles: [], migrated: false };
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
       const backupPath = await backupCorruptMachineFile(file);
       warnCorruptMachineState(file, backupPath, "reset");
-      return [];
+      return { profiles: [], migrated: false };
     }
     const profiles = parsed.profiles;
     if (profiles !== void 0 && !Array.isArray(profiles)) {
       const backupPath = await backupCorruptMachineFile(file);
       warnCorruptMachineState(file, backupPath, "reset");
-      return [];
+      return { profiles: [], migrated: false };
     }
     const list = Array.isArray(profiles) ? profiles : [];
-    return list.filter((p) => p && typeof p.id === "string" && typeof p.adapterId === "string");
+    let migrated = false;
+    const out = [];
+    for (const p of list) {
+      if (!p || typeof p.id !== "string" || typeof p.adapterId !== "string") continue;
+      const n = normalizeProfileToCanonicalAcp(p);
+      if (n.migrated) migrated = true;
+      out.push(n.profile);
+    }
+    return { profiles: out, migrated };
   } catch (err) {
-    if (isNotFoundError(err)) return [];
+    if (isNotFoundError(err)) return { profiles: [], migrated: false };
     throw err;
   }
 }
 async function saveAgentProfiles(dataDir, profiles) {
-  await writeJsonAtomic(profilesPath(dataDir), { profiles });
+  const canonical = profiles.map((p) => {
+    const { profile } = normalizeProfileToCanonicalAcp(p);
+    return profile;
+  });
+  await writeJsonAtomic(profilesPath(dataDir), { profiles: canonical });
 }
 function defaultAgentProfiles() {
   return [
@@ -4136,7 +4692,7 @@ function defaultAgentProfiles() {
       id: GROK_ACP_DEFAULT_PROFILE_ID,
       adapterId: GROK_ACP_ADAPTER_ID,
       displayNameKey: "profile.grokAcp.default",
-      grokAcp: {
+      acp: {
         // executable omitted → %USERPROFILE%\.grok\bin\grok.exe (or ~/.grok/bin/grok)
         model: DEFAULT_GROK_MODEL,
         envKey: DEFAULT_GROK_ENV_KEY,
@@ -4145,33 +4701,54 @@ function defaultAgentProfiles() {
         // Default deny tool permissions — never unconditional yolo.
         permissionPolicy: "deny"
       }
+    },
+    {
+      id: CODEX_ACP_DEFAULT_PROFILE_ID,
+      adapterId: CODEX_ACP_ADAPTER_ID,
+      displayNameKey: "profile.codexAcp.default",
+      acp: { permissionPolicy: "deny" }
+    },
+    {
+      id: CLAUDE_ACP_DEFAULT_PROFILE_ID,
+      adapterId: CLAUDE_ACP_ADAPTER_ID,
+      displayNameKey: "profile.claudeAcp.default",
+      acp: { permissionPolicy: "deny" }
+    },
+    {
+      id: ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+      adapterId: ANTIGRAVITY_ACP_ADAPTER_ID,
+      displayNameKey: "profile.antigravityAcp.default",
+      acp: { permissionPolicy: "deny" }
+    },
+    {
+      id: OPENCODE_ACP_DEFAULT_PROFILE_ID,
+      adapterId: OPENCODE_ACP_ADAPTER_ID,
+      displayNameKey: "profile.openCodeAcp.default",
+      acp: { permissionPolicy: "deny" }
     }
   ];
 }
 async function ensureDefaultProfiles(dataDir) {
-  const existing = await loadAgentProfiles(dataDir);
+  const loaded = await loadAgentProfilesWithMigration(dataDir);
+  const existing = loaded.profiles;
   if (existing.length > 0) {
-    let changed = false;
+    let changed = loaded.migrated;
     let next = existing;
-    if (!existing.some((p) => p.id === FAKE_DEFAULT_PROFILE_ID)) {
-      const fake = defaultAgentProfiles().find((p) => p.id === FAKE_DEFAULT_PROFILE_ID);
-      next = [...next, fake];
-      changed = true;
-    }
-    if (!existing.some((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)) {
-      const grok = defaultAgentProfiles().find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID);
-      next = [...next, grok];
-      changed = true;
+    for (const builtIn of defaultAgentProfiles()) {
+      if (!next.some((p) => p.id === builtIn.id)) {
+        next = [...next, builtIn];
+        changed = true;
+      }
     }
     next = next.map((p) => {
       if (p.adapterId !== GROK_ACP_ADAPTER_ID) return p;
-      if (p.grokAcp?.baseUrlEnvKey) return p;
+      if (p.acp?.baseUrlEnvKey) return p;
       changed = true;
       return {
         ...p,
-        grokAcp: {
-          ...p.grokAcp ?? {},
-          baseUrlEnvKey: p.grokAcp?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY
+        acp: {
+          ...p.acp ?? {},
+          baseUrlEnvKey: p.acp?.baseUrlEnvKey ?? DEFAULT_GROK_BASE_URL_ENV_KEY
         }
       };
     });
@@ -4187,12 +4764,17 @@ function isTestOnlyProfile(profile) {
 }
 var DISPLAY_NAME_BY_KEY = {
   "profile.fake.default": "fake-default\uFF08\u6D4B\u8BD5\uFF09",
-  "profile.grokAcp.default": "Grok ACP"
+  "profile.grokAcp.default": "Grok ACP",
+  "profile.codexAcp.default": "Codex ACP",
+  "profile.claudeAcp.default": "Claude Agent ACP",
+  "profile.antigravityAcp.default": "Antigravity ACP\uFF08agy-acp bridge\uFF09",
+  "profile.openCodeAcp.default": "OpenCode ACP"
 };
 function projectAgentProfile(profile) {
   const testOnly = isTestOnlyProfile(profile);
   const displayName = (typeof profile.displayName === "string" && profile.displayName.trim() ? profile.displayName.trim() : void 0) || profile.displayNameKey && DISPLAY_NAME_BY_KEY[profile.displayNameKey] || profile.id;
-  const g = profile.grokAcp;
+  const canonical = cloneAgentProfileConfig(profile);
+  const g = canonical.acp;
   return {
     id: profile.id,
     adapterId: profile.adapterId,
@@ -6789,9 +7371,9 @@ var DANGEROUS_FIELD_HINTS = [
   "fake",
   "command",
   "args",
-  "adapterId",
   "displayNameKey",
-  "grokAcp"
+  "grokAcp",
+  "acp"
 ];
 function rejectUnknownAndDangerous(raw, allowed) {
   const allowedSet = new Set(allowed);
@@ -6950,28 +7532,28 @@ function clearablePositiveInt(raw, key) {
   }
   return v;
 }
-function parseGrokFieldsCreate(raw) {
+function parseAcpFieldsCreate(raw) {
   const displayName = optionalNonEmptyString(raw, "displayName");
-  const grokAcp = {};
+  const acp = {};
   const model = optionalNonEmptyString(raw, "model");
-  if (model !== void 0) grokAcp.model = model;
+  if (model !== void 0) acp.model = model;
   const executable = optionalNonEmptyString(raw, "executable");
-  if (executable !== void 0) grokAcp.executable = executable;
+  if (executable !== void 0) acp.executable = executable;
   const envKey = optionalEnvKey(raw, "envKey");
-  if (envKey !== void 0) grokAcp.envKey = envKey;
+  if (envKey !== void 0) acp.envKey = envKey;
   const baseUrlEnvKey = optionalEnvKey(raw, "baseUrlEnvKey");
-  if (baseUrlEnvKey !== void 0) grokAcp.baseUrlEnvKey = baseUrlEnvKey;
+  if (baseUrlEnvKey !== void 0) acp.baseUrlEnvKey = baseUrlEnvKey;
   const baseUrl = optionalBaseUrl(raw);
-  if (baseUrl !== void 0) grokAcp.baseUrl = baseUrl;
+  if (baseUrl !== void 0) acp.baseUrl = baseUrl;
   const permissionPolicy = optionalPermissionPolicy(raw);
-  if (permissionPolicy !== void 0) grokAcp.permissionPolicy = permissionPolicy;
+  if (permissionPolicy !== void 0) acp.permissionPolicy = permissionPolicy;
   const promptTimeoutMs = optionalPositiveInt(raw, "promptTimeoutMs");
-  if (promptTimeoutMs !== void 0) grokAcp.promptTimeoutMs = promptTimeoutMs;
+  if (promptTimeoutMs !== void 0) acp.promptTimeoutMs = promptTimeoutMs;
   const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
-  if (permissionTimeoutMs !== void 0) grokAcp.permissionTimeoutMs = permissionTimeoutMs;
-  return { displayName, grokAcp };
+  if (permissionTimeoutMs !== void 0) acp.permissionTimeoutMs = permissionTimeoutMs;
+  return { displayName, acp };
 }
-function parseGrokFieldsUpdate(raw) {
+function parseAcpFieldsUpdate(raw) {
   return {
     displayName: clearableNonEmptyString(raw, "displayName"),
     model: clearableNonEmptyString(raw, "model"),
@@ -6987,9 +7569,9 @@ function parseGrokFieldsUpdate(raw) {
 function applyClearablePatch(current, patch) {
   const next = {
     ...current,
-    grokAcp: current.grokAcp ? { ...current.grokAcp } : {}
+    acp: current.acp ? { ...current.acp } : {}
   };
-  const g = next.grokAcp;
+  const g = next.acp;
   if (patch.displayName === null) {
     delete next.displayName;
   } else if (patch.displayName !== void 0) {
@@ -7025,14 +7607,37 @@ function applyClearablePatch(current, patch) {
   );
   return next;
 }
-function cloneCatalogProfile(profile) {
-  return {
-    ...profile,
-    args: profile.args ? [...profile.args] : void 0,
-    env: profile.env ? { ...profile.env } : void 0,
-    fake: profile.fake ? { ...profile.fake } : void 0,
-    grokAcp: profile.grokAcp ? { ...profile.grokAcp } : void 0
-  };
+function applyCreateDefaults(adapterId, acp) {
+  if (!acp.permissionPolicy) acp.permissionPolicy = "deny";
+  if (adapterId === GROK_ACP_ADAPTER_ID) {
+    if (!acp.model) acp.model = DEFAULT_GROK_MODEL;
+    if (!acp.envKey) acp.envKey = DEFAULT_GROK_ENV_KEY;
+    if (!acp.baseUrlEnvKey) acp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
+  }
+}
+function parseCreateAdapterId(raw) {
+  if (!("adapterId" in raw) || raw.adapterId === void 0 || raw.adapterId === null) {
+    return GROK_ACP_ADAPTER_ID;
+  }
+  if (typeof raw.adapterId !== "string" || !raw.adapterId.trim()) {
+    throw new RpcError(-32602, "Invalid string param: adapterId");
+  }
+  const id = raw.adapterId.trim();
+  if (!isProductAcpAdapterId(id)) {
+    throw new RpcError(
+      -32602,
+      `Unsupported adapterId for product profile CRUD: ${id}. Allowed: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (not a universal provider router)`
+    );
+  }
+  return id;
+}
+function assertProductCrudAdapter(adapterId, op) {
+  if (!isProductAcpAdapterId(adapterId)) {
+    throw new RpcError(
+      -32602,
+      `Product profile ${op} only supports adapterIds: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (got ${adapterId})`
+    );
+  }
 }
 var AgentProfileCatalog = class {
   constructor(dataDir, runtime, initial, opts) {
@@ -7043,7 +7648,7 @@ var AgentProfileCatalog = class {
       ...initial,
       defaultAgentProfiles().find((p) => p.id === FAKE_DEFAULT_PROFILE_ID)
     ];
-    this.profiles = source.map(cloneCatalogProfile);
+    this.profiles = source.map((p) => cloneAgentProfileConfig(p));
     this.persistToDisk = opts?.persistToDisk !== false;
     this.saveProfiles = opts?.saveProfiles ?? saveAgentProfiles;
     this.runtime.replaceProfileCatalog(this.profiles);
@@ -7057,12 +7662,12 @@ var AgentProfileCatalog = class {
     return run;
   }
   list() {
-    return this.profiles.map(cloneCatalogProfile);
+    return this.profiles.map((p) => cloneAgentProfileConfig(p));
   }
   get(id) {
     const p = this.profiles.find((x) => x.id === id);
     if (!p) return void 0;
-    return cloneCatalogProfile(p);
+    return cloneAgentProfileConfig(p);
   }
   /**
    * Atomic commit: persist next first (when enabled); only then swap memory + runtime.
@@ -7085,16 +7690,14 @@ var AgentProfileCatalog = class {
       if (id === FAKE_DEFAULT_PROFILE_ID) {
         throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
       }
-      const { displayName, grokAcp } = parseGrokFieldsCreate(raw);
-      if (!grokAcp.model) grokAcp.model = DEFAULT_GROK_MODEL;
-      if (!grokAcp.envKey) grokAcp.envKey = DEFAULT_GROK_ENV_KEY;
-      if (!grokAcp.baseUrlEnvKey) grokAcp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
-      if (!grokAcp.permissionPolicy) grokAcp.permissionPolicy = "deny";
+      const adapterId = parseCreateAdapterId(raw);
+      const { displayName, acp } = parseAcpFieldsCreate(raw);
+      applyCreateDefaults(adapterId, acp);
       const profile = {
         id,
-        adapterId: PRODUCT_CRUD_ADAPTER_ID,
+        adapterId,
         ...displayName !== void 0 ? { displayName } : {},
-        grokAcp
+        acp
       };
       await this.commit([...this.profiles, profile]);
       return this.get(id);
@@ -7105,6 +7708,9 @@ var AgentProfileCatalog = class {
       const id = requireProfileId2(idRaw);
       if ("id" in raw) {
         throw new RpcError(-32602, "id cannot be updated; omit id from profile body");
+      }
+      if ("adapterId" in raw) {
+        throw new RpcError(-32602, "adapterId cannot be updated; omit adapterId from profile body");
       }
       rejectUnknownAndDangerous(raw, PROFILE_UPDATE_FIELDS);
       const idx = this.profiles.findIndex((p) => p.id === id);
@@ -7118,13 +7724,8 @@ var AgentProfileCatalog = class {
           "Test-only profile fake-default cannot be modified via product CRUD"
         );
       }
-      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
-        throw new RpcError(
-          -32602,
-          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
-        );
-      }
-      const nextProfile = applyClearablePatch(current, parseGrokFieldsUpdate(raw));
+      assertProductCrudAdapter(current.adapterId, "update");
+      const nextProfile = applyClearablePatch(current, parseAcpFieldsUpdate(raw));
       await this.commit(this.profiles.map((p, i) => i === idx ? nextProfile : p));
       return this.get(id);
     });
@@ -7143,15 +7744,13 @@ var AgentProfileCatalog = class {
           "Test-only profile fake-default cannot be deleted via product CRUD"
         );
       }
-      if (current.id === GROK_ACP_DEFAULT_PROFILE_ID) {
-        throw new RpcError(-32602, "Built-in profile grok-acp-default cannot be deleted");
-      }
-      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
+      if (isBuiltinDefaultProfileId(current.id)) {
         throw new RpcError(
           -32602,
-          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
+          `Built-in profile ${current.id} cannot be deleted`
         );
       }
+      assertProductCrudAdapter(current.adapterId, "delete");
       const sessions = await this.runtime.registry.list();
       const active = sessions.filter(
         (s) => s.profileId === id && SessionRegistry.isNonTerminal(s.state)
@@ -7380,13 +7979,7 @@ function handleFrom(record) {
   };
 }
 function cloneProfileConfig(p) {
-  return {
-    ...p,
-    grokAcp: p.grokAcp ? { ...p.grokAcp } : void 0,
-    fake: p.fake ? { ...p.fake } : void 0,
-    env: p.env ? { ...p.env } : void 0,
-    args: p.args ? [...p.args] : void 0
-  };
+  return cloneAgentProfileConfig(p);
 }
 var AgentRuntime = class {
   constructor(options) {
@@ -7408,7 +8001,14 @@ var AgentRuntime = class {
         fake: { waitForSignal: true, emitStdout: true }
       });
     }
-    const adapterList = options.adapters ?? [createFakeAdapter(), createGrokAcpAdapter()];
+    const adapterList = options.adapters ?? [
+      createFakeAdapter(),
+      createGrokAcpAdapter(),
+      createCodexAcpAdapter(),
+      createClaudeAcpAdapter(),
+      createAntigravityAcpAdapter(),
+      createOpenCodeAcpAdapter()
+    ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
     }
@@ -7417,6 +8017,18 @@ var AgentRuntime = class {
     }
     if (!this.adapters.has(GROK_ACP_ADAPTER_ID)) {
       this.adapters.set(GROK_ACP_ADAPTER_ID, createGrokAcpAdapter());
+    }
+    if (!this.adapters.has(CODEX_ACP_ADAPTER_ID)) {
+      this.adapters.set(CODEX_ACP_ADAPTER_ID, createCodexAcpAdapter());
+    }
+    if (!this.adapters.has(CLAUDE_ACP_ADAPTER_ID)) {
+      this.adapters.set(CLAUDE_ACP_ADAPTER_ID, createClaudeAcpAdapter());
+    }
+    if (!this.adapters.has(ANTIGRAVITY_ACP_ADAPTER_ID)) {
+      this.adapters.set(ANTIGRAVITY_ACP_ADAPTER_ID, createAntigravityAcpAdapter());
+    }
+    if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
+      this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());
     }
     this.supervisor = new ProcessSupervisor({
       gracefulMs: options.gracefulMs ?? 2e3,
@@ -7437,7 +8049,7 @@ var AgentRuntime = class {
    * Full replace of the in-memory profile catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
    * Always re-ensures fake-default for harness (same rule as constructor).
-   * Stores shallow clones of profile + grokAcp so callers cannot mutate the map.
+   * Stores shallow clones of profile + acp so callers cannot mutate the map.
    */
   replaceProfileCatalog(profiles) {
     this.profiles.clear();
@@ -7537,7 +8149,7 @@ var AgentRuntime = class {
         args: profile.args,
         extras: {
           fake: profile.fake,
-          grokAcp: profile.grokAcp
+          acp: profile.acp
         }
       };
       let pid;
@@ -7866,7 +8478,7 @@ async function startLocalTentService(options = {}) {
   const profiles = profilesInjected ? options.profiles : await ensureDefaultProfiles(dataDir);
   const runtimeHolder = { current: null };
   const openToolApprovalBySession = /* @__PURE__ */ new Map();
-  const grokAdapter = createGrokAcpAdapter({
+  const acpPermissionHooks = {
     onPermissionAsk: async (info) => {
       const runtime2 = runtimeHolder.current;
       if (!runtime2) return "deny";
@@ -7892,7 +8504,7 @@ async function startLocalTentService(options = {}) {
       } catch {
       }
       const profile = rec?.profileId ? runtime2.getProfile(rec.profileId) : void 0;
-      const timeoutMs = typeof profile?.grokAcp?.permissionTimeoutMs === "number" && profile.grokAcp.permissionTimeoutMs > 0 ? profile.grokAcp.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS;
+      const timeoutMs = typeof profile?.acp?.permissionTimeoutMs === "number" && profile.acp.permissionTimeoutMs > 0 ? profile.acp.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS;
       const createdAt = /* @__PURE__ */ new Date();
       const expiresAt = new Date(createdAt.getTime() + timeoutMs);
       const item = await toolApprovals.add({
@@ -7950,11 +8562,18 @@ async function startLocalTentService(options = {}) {
       } catch {
       }
     }
-  });
+  };
   const runtime = createAgentRuntime({
     dataDir,
     profiles,
-    adapters: [createFakeAdapter(), grokAdapter]
+    adapters: [
+      createFakeAdapter(),
+      createGrokAcpAdapter(acpPermissionHooks),
+      createCodexAcpAdapter(acpPermissionHooks),
+      createClaudeAcpAdapter(acpPermissionHooks),
+      createAntigravityAcpAdapter(acpPermissionHooks),
+      createOpenCodeAcpAdapter(acpPermissionHooks)
+    ]
   });
   runtimeHolder.current = runtime;
   const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
