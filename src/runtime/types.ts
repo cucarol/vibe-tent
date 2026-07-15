@@ -75,6 +75,11 @@ export interface ResumeSessionRequest {
   runtimeWorkspace?: RuntimeWorkspace;
   cwd?: string;
   env?: Record<string, string>;
+  /**
+   * Optional post-load bootstrap (managed ACP). History replay from session/load
+   * must never auto-deliver; only a subsequent session/prompt may.
+   */
+  bootstrapPrompt?: string;
 }
 
 export interface SessionHandle {

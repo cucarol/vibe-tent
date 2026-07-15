@@ -12,12 +12,13 @@ import type { RuntimeEvent } from "../../runtime/types.js";
 import {
   AcpClient,
   bindAcpPermissionHooks,
+  loadSessionAcpCapabilities,
   mapAcpProcessExit,
-  mainstreamAcpCapabilities,
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
   resolvePlanOrProcessEnv,
+  resumeManagedAcpSession,
   startManagedAcpSession,
   type AcpPermissionAskHooks,
 } from "../acp/index.js";
@@ -63,7 +64,8 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    return mainstreamAcpCapabilities();
+    // Verified: local `opencode acp` advertises agentCapabilities.loadSession.
+    return loadSessionAcpCapabilities("external-app");
   }
 
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
@@ -98,13 +100,48 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
+    const client = this.createClient(plan, emit);
+    return startManagedAcpSession({ plan, emit, client });
+  }
+
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (event: RuntimeEvent) => void
+  ): Promise<ManagedSession> {
+    const providerSessionId = (
+      token.providerSessionId ?? token.raw
+    ).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "opencode-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit);
+    return resumeManagedAcpSession({
+      plan,
+      emit,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt,
+    });
+  }
+
+  private createClient(
+    plan: LaunchPlan,
+    emit: (event: RuntimeEvent) => void
+  ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
       onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -118,7 +155,6 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
       onPermissionAsk: hooks.onPermissionAsk,
       onPermissionAskFailSafe: hooks.onPermissionAskFailSafe,
     });
-    return startManagedAcpSession({ plan, emit, client });
   }
 
   parseResumeToken(raw: string): ResumeToken {

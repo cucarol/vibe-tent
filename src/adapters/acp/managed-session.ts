@@ -1,11 +1,19 @@
 // Provider-neutral managed ACP session: connect + bootstrap prompt + delivery events.
 // Adapters supply a connected-ready client (AcpClient or thin wrapper); no argv/auth here.
 
-import type { ManagedSession, ResumeToken } from "../types.js";
+import type {
+  LaunchPlan,
+  ManagedSession,
+  ProviderCapabilities,
+  ResumeToken,
+} from "../types.js";
 import type { RuntimeEvent, StopReason } from "../../runtime/types.js";
-import type { LaunchPlan } from "../types.js";
 import type { AcpPermissionOption, AcpPermissionPolicy } from "./types.js";
-import type { AcpStartResult } from "./client.js";
+import type {
+  AcpConnectOptions,
+  AcpConnectResult,
+  AcpStartResult,
+} from "./client.js";
 
 const DEFAULT_BOOTSTRAP =
   "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
@@ -15,7 +23,7 @@ export type ManagedAcpClient = {
   readonly pid: number | undefined;
   readonly providerSession: string | undefined;
   isAlive(): boolean;
-  connect(): Promise<{ pid: number; providerSessionId: string }>;
+  connect(options?: AcpConnectOptions): Promise<AcpConnectResult>;
   sendPrompt(bootstrapPrompt: string): Promise<AcpStartResult>;
   stop(reason: "user" | "interrupt" | "shutdown"): Promise<void>;
   reportFailed(error: string): void;
@@ -141,24 +149,32 @@ export type StartManagedAcpSessionInput = {
   defaultBootstrapPrompt?: string;
 };
 
+export type ResumeManagedAcpSessionInput = {
+  plan: LaunchPlan;
+  emit: (ev: RuntimeEvent) => void;
+  client: ManagedAcpClient;
+  /** Provider ACP sessionId (machine-local resume token). */
+  providerSessionId: string;
+  /**
+   * When set, send a fresh session/prompt after load.
+   * History replay from load is never delivered; only this prompt may.
+   * When omitted/empty, session stays live with no bootstrap prompt.
+   */
+  bootstrapPrompt?: string;
+};
+
 /**
- * Handshake (connect) then run managed bootstrap prompt in the background.
+ * Run managed bootstrap prompt after a successful connect/load.
  * On successful end_turn + non-empty assistant text → session.prompt_complete.
  * Failure / interrupt / empty → reportFailed + stop; never leaves an orphan live process.
  */
-export async function startManagedAcpSession(
-  input: StartManagedAcpSessionInput
-): Promise<AcpManagedSession> {
-  const { plan, emit, client } = input;
-  const bootstrap =
-    plan.bootstrapPrompt?.trim() ||
-    input.defaultBootstrapPrompt?.trim() ||
-    DEFAULT_BOOTSTRAP;
-
-  // Handshake must succeed before startSession returns live (fail-loud).
-  await client.connect();
-
-  const promptDone = client
+function runManagedBootstrapPrompt(
+  plan: LaunchPlan,
+  emit: (ev: RuntimeEvent) => void,
+  client: ManagedAcpClient,
+  bootstrap: string
+): Promise<void> {
+  return client
     .sendPrompt(bootstrap)
     .then(async (result) => {
       const stopReason = (result.stopReason || "end_turn").toLowerCase();
@@ -193,12 +209,84 @@ export async function startManagedAcpSession(
       client.reportFailed(message);
       await stopAcpClientQuiet(client);
     });
+}
+
+/**
+ * Handshake (session/new) then run managed bootstrap prompt in the background.
+ * On successful end_turn + non-empty assistant text → session.prompt_complete.
+ * Failure / interrupt / empty → reportFailed + stop; never leaves an orphan live process.
+ */
+export async function startManagedAcpSession(
+  input: StartManagedAcpSessionInput
+): Promise<AcpManagedSession> {
+  const { plan, emit, client } = input;
+  const bootstrap =
+    plan.bootstrapPrompt?.trim() ||
+    input.defaultBootstrapPrompt?.trim() ||
+    DEFAULT_BOOTSTRAP;
+
+  // Handshake must succeed before startSession returns live (fail-loud), and a
+  // failed initialize/auth/session-new must not leave an orphan bridge process.
+  try {
+    await client.connect({ mode: "new" });
+  } catch (err) {
+    await stopAcpClientQuiet(client);
+    throw err;
+  }
+
+  const promptDone = runManagedBootstrapPrompt(plan, emit, client, bootstrap);
+  return new AcpManagedSession(plan.sessionId, client, promptDone);
+}
+
+/**
+ * Native ACP resume: new bridge process + initialize + session/load (never session/new).
+ * Fail-loud when loadSession is unsupported or load fails; always cleans up the process.
+ * History notifications from load are isolated by AcpClient and never auto-deliver.
+ */
+export async function resumeManagedAcpSession(
+  input: ResumeManagedAcpSessionInput
+): Promise<AcpManagedSession> {
+  const { plan, emit, client, providerSessionId } = input;
+  const loadId = providerSessionId.trim();
+  if (!loadId) {
+    throw new Error("resumeManagedAcpSession requires non-empty providerSessionId");
+  }
+
+  try {
+    await client.connect({ mode: "load", providerSessionId: loadId });
+  } catch (err) {
+    // Honest failure: never fall back to session/new. Kill orphan bridge process.
+    await stopAcpClientQuiet(client);
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(message);
+  }
+
+  const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
+  // Optional post-load prompt only — empty means stay live without auto-delivery.
+  const promptDone = bootstrap
+    ? runManagedBootstrapPrompt(plan, emit, client, bootstrap)
+    : Promise.resolve();
 
   return new AcpManagedSession(plan.sessionId, client, promptDone);
 }
 
 export function parseAcpResumeToken(raw: string): ResumeToken {
   return { raw, providerSessionId: raw };
+}
+
+/** Capabilities for verified loadSession bridges (Grok ACP, OpenCode ACP). */
+export function loadSessionAcpCapabilities(
+  authModel: ProviderCapabilities["authModel"] = "external-app"
+): ProviderCapabilities {
+  return {
+    canSpawn: true,
+    canResume: true,
+    canStopGraceful: true,
+    needsTty: false,
+    supportsWorktreeCwd: true,
+    authModel,
+    observeLevel: "structured",
+  };
 }
 
 export function mapAcpProcessExit(

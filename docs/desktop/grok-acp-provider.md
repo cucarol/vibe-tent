@@ -3,7 +3,9 @@
 The explicit live smoke test is `npm run test:grok-e2e`. It requires
 `CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured CPA service,
 and exercises dispatch → managed ACP report → manual accept. It is intentionally
-excluded from the default offline `npm test` suite.
+excluded from the default offline `npm test` suite. The same command also stops
+the first bridge process, restores its provider session through `session/load`,
+and verifies that a second prompt can recover a nonce known only to the first turn.
 
 Status: first **real** push-mode provider for Local Service  
 Scope: machine-local `grok-acp` AgentProfile + ACP stdio adapter  

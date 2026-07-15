@@ -192,6 +192,20 @@ interface ProviderAdapter {
   readonly displayNameKey: string; // i18n key only
   capabilities(): ProviderCapabilities;
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch;
+  /** Optional structured ACP transport (spawn + session/new + bootstrap). */
+  startManagedSession?(
+    plan: LaunchPlan,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession>;
+  /**
+   * Provider-native managed resume (ACP: new process + session/load).
+   * Must not silently fall back to session/new. Only when canResume=true.
+   */
+  resumeManagedSession?(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession>;
   parseResumeToken?(raw: string): ResumeToken;
   mapExit(code: number | null, signal?: string): RuntimeEvent;
   discoverSessions?(): Promise<DiscoveredSession[]>;
@@ -199,6 +213,10 @@ interface ProviderAdapter {
 
 interface ProviderCapabilities {
   canSpawn: boolean; // false → pull-host only
+  /**
+   * True only when provider-native resume is implemented and verified
+   * (e.g. ACP loadSession). Never set true by re-wrapping startSession.
+   */
   canResume: boolean;
   canStopGraceful: boolean;
   needsTty: boolean;
@@ -255,6 +273,7 @@ Rules:
 3. Concurrent live sessions must not cross-contaminate cwd/env; stop validates `sessionId` (+ workspace id when multi-mount).
 4. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
 5. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
+6. **ACP native resume (`session/load`):** when `canResume` and `resumeManagedSession` are implemented, `AgentRuntime.resumeSession` spawns a **new** bridge process, reuses the machine-local `resumeToken` as provider `sessionId`, and calls `session/load` with the **same** recorded cwd. It must **not** call `session/new`. Load history notifications are diagnostics only (no auto-delivery). `task.startSession` may reuse an existing Tent `sessionId` after restart only when `probe.resumeCapable` is true **and** task lane cwd still matches the session row.
 
 ---
 

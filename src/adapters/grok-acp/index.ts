@@ -15,9 +15,11 @@ import type {
 import type { RuntimeEvent } from "../../runtime/types.js";
 import {
   bindAcpPermissionHooks,
+  loadSessionAcpCapabilities,
   mapAcpProcessExit,
   parseAcpResumeToken,
   readAcpExtras,
+  resumeManagedAcpSession,
   startManagedAcpSession,
 } from "../acp/index.js";
 import { GrokAcpClient } from "./client.js";
@@ -168,15 +170,8 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    return {
-      canSpawn: true,
-      canResume: false,
-      canStopGraceful: true,
-      needsTty: false,
-      supportsWorktreeCwd: true,
-      authModel: "env",
-      observeLevel: "structured",
-    };
+    // Verified: local `grok agent stdio` advertises agentCapabilities.loadSession.
+    return loadSessionAcpCapabilities("env");
   }
 
   /**
@@ -279,6 +274,39 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
+    const client = this.createClient(plan, emit);
+    return startManagedAcpSession({ plan, emit, client });
+  }
+
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession> {
+    const providerSessionId = (
+      token.providerSessionId ?? token.raw
+    ).trim();
+    if (!providerSessionId) {
+      throw new Error("grok-acp resume requires non-empty provider session id");
+    }
+    const client = this.createClient(plan, emit);
+    return resumeManagedAcpSession({
+      plan,
+      emit,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt,
+    });
+  }
+
+  private createClient(
+    plan: LaunchPlan,
+    emit: (ev: RuntimeEvent) => void
+  ): GrokAcpClient {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     // Fail-loud on missing key / binary before spawn (Chinese errors from resolveLaunch).
     const launch = this.resolveLaunch(plan);
@@ -288,7 +316,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
 
-    const client = new GrokAcpClient({
+    return new GrokAcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -302,8 +330,6 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       onPermissionAsk: permHooks.onPermissionAsk,
       onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe,
     });
-
-    return startManagedAcpSession({ plan, emit, client });
   }
 
   parseResumeToken(raw: string): ResumeToken {

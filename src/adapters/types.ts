@@ -76,6 +76,16 @@ export interface ProviderAdapter {
     plan: LaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession>;
+  /**
+   * Provider-native managed resume (e.g. ACP `session/load` on a new bridge process).
+   * Distinct from `startManagedSession` — must not silently fall back to session/new.
+   * Only adapters with `capabilities().canResume === true` implement this.
+   */
+  resumeManagedSession?(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession>;
   parseResumeToken?(raw: string): ResumeToken;
   mapExit(code: number | null, signal?: string): RuntimeEvent;
   discoverSessions?(): Promise<DiscoveredSession[]>;

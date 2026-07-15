@@ -17,6 +17,8 @@ import {
   grokAcpProfileTemplate,
   normalizeCpaBaseUrl,
 } from "../src/adapters/grok-acp/index.js";
+import { GrokAcpClient } from "../src/adapters/grok-acp/client.js";
+import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
 import { createAgentRuntime, type RuntimeEvent } from "../src/runtime/index.js";
 import { taskContextCard } from "../src/core/context-card.js";
 
@@ -26,6 +28,35 @@ const MOCK_ACP = path.join(__dirname, "fixtures", "mock-acp-server.mjs");
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
+
+test("managed ACP start cleans bridge process when handshake fails", async () => {
+  const cwd = await tempDir("tent-grok-handshake-fail-");
+  const client = new GrokAcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: { MOCK_ACP_FAIL_AUTH: "1", MOCK_ACP_KEEP_ALIVE: "1" },
+    sessionId: "ss-handfail1",
+    model: DEFAULT_GROK_MODEL,
+    permissionPolicy: "deny",
+    emit: () => undefined,
+  });
+  await assert.rejects(
+    () =>
+      startManagedAcpSession({
+        plan: {
+          sessionId: "ss-handfail1",
+          profileId: "grok-handshake-fail",
+          cwd,
+          env: {},
+        },
+        emit: () => undefined,
+        client,
+      }),
+    /auth failed/i
+  );
+  assert.equal(client.isAlive(), false);
+});
 
 function waitFor(
   events: RuntimeEvent[],
@@ -826,4 +857,366 @@ test("resolveLaunch accepts deprecated extras.grokAcp fallback", () => {
   });
   assert.ok(launch.args.includes("--model"));
   assert.equal(launch.args[launch.args.indexOf("--model") + 1], "grok-4.5");
+});
+
+test("grok-acp capabilities: canResume true with resumeManagedSession", () => {
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  assert.equal(adapter.capabilities().canResume, true);
+  assert.equal(typeof adapter.resumeManagedSession, "function");
+});
+
+test("mock ACP load: method order initialize → authenticate → session/load → session/prompt", async () => {
+  const dataDir = await tempDir("tent-grok-load-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const events: RuntimeEvent[] = [];
+  const session = await adapter.resumeManagedSession!(
+    {
+      sessionId: "ss-acpload1",
+      profileId: "grok-load",
+      cwd,
+      env: {
+        MOCK_ACP_LOG: logPath,
+        MOCK_ACP_KEEP_ALIVE: "0",
+        MOCK_ACP_LOAD_SESSION: "1",
+        MOCK_ACP_HISTORY_TEXT: "SHOULD_NOT_BE_DELIVERED",
+        MOCK_ACP_LATE_HISTORY_MS: "50",
+        MOCK_ACP_PROMPT_TEXT: "LOAD_THEN_PROMPT_OK",
+        CPA_GROK_API_KEY: "test-key",
+      },
+      command: process.execPath,
+      args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+      bootstrapPrompt: "post-load bootstrap",
+      extras: {
+        acp: {
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+          promptTimeoutMs: 8_000,
+        },
+      },
+    },
+    { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+    (e) => events.push(e)
+  );
+
+  const managed = session as typeof session & { waitBootstrap(): Promise<void> };
+  await managed.waitBootstrap();
+
+  const complete = events.find((e) => e.type === "session.prompt_complete") as
+    | Extract<RuntimeEvent, { type: "session.prompt_complete" }>
+    | undefined;
+  assert.ok(complete);
+  assert.equal(complete.assistantText, "LOAD_THEN_PROMPT_OK");
+  assert.doesNotMatch(complete.assistantText, /SHOULD_NOT_BE_DELIVERED|HISTORY/);
+
+  // Poll log: keepAlive=0 may flush mid-write; wait for full method sequence.
+  const deadline = Date.now() + 2_000;
+  let log: {
+    methods: string[];
+    loads: Array<{ sessionId: string; cwd: string; hasMcpServers: boolean }>;
+  } | null = null;
+  while (Date.now() < deadline) {
+    try {
+      const parsed = JSON.parse(await fs.readFile(logPath, "utf8")) as {
+        methods: string[];
+        loads: Array<{ sessionId: string; cwd: string; hasMcpServers: boolean }>;
+      };
+      if (parsed.methods.includes("session/prompt")) {
+        log = parsed;
+        break;
+      }
+    } catch {
+      // not ready
+    }
+    await new Promise((r) => setTimeout(r, 20));
+  }
+  assert.ok(log, "expected mock log with session/prompt");
+  assert.deepEqual(log.methods.slice(0, 4), [
+    "initialize",
+    "authenticate",
+    "session/load",
+    "session/prompt",
+  ]);
+  assert.ok(!log.methods.includes("session/new"));
+  assert.equal(log.loads[0]?.sessionId, "mock-acp-session-1");
+  assert.equal(log.loads[0]?.cwd, cwd);
+  assert.equal(log.loads[0]?.hasMcpServers, true);
+
+  await session.stop("user");
+});
+
+test("mock ACP load: unsupported loadSession fails loud without session/new", async () => {
+  const cwd = await tempDir("tent-grok-noload-");
+  const logPath = path.join(cwd, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  await assert.rejects(
+    () =>
+      adapter.resumeManagedSession!(
+        {
+          sessionId: "ss-acpnoload",
+          profileId: "grok-noload",
+          cwd,
+          env: {
+            MOCK_ACP_LOG: logPath,
+            MOCK_ACP_KEEP_ALIVE: "0",
+            CPA_GROK_API_KEY: "test-key",
+          },
+          command: process.execPath,
+          args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+          extras: {
+            acp: {
+              model: DEFAULT_GROK_MODEL,
+              envKey: DEFAULT_GROK_ENV_KEY,
+              permissionPolicy: "deny",
+            },
+          },
+        },
+        { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+        () => undefined
+      ),
+    /loadSession|session\/load/i
+  );
+  // Log may or may not exist depending on how far connect got; if present, no session/new.
+  try {
+    const log = JSON.parse(await fs.readFile(logPath, "utf8")) as { methods: string[] };
+    assert.ok(!log.methods.includes("session/new"));
+  } catch {
+    // no log file is fine
+  }
+});
+
+test("mock ACP load: load failure cleans process and does not emit prompt_complete", async () => {
+  const dataDir = await tempDir("tent-grok-loadfail-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        id: "grok-loadfail",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        command: process.execPath,
+        args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+        env: {
+          MOCK_ACP_LOG: logPath,
+          MOCK_ACP_KEEP_ALIVE: "0",
+          MOCK_ACP_LOAD_SESSION: "1",
+          MOCK_ACP_FAIL_LOAD: "1",
+          CPA_GROK_API_KEY: "test-key",
+        },
+        acp: {
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+          promptTimeoutMs: 8_000,
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acplfail";
+  // Seed a stopped resume-capable session row (post-restart shape).
+  await runtime.registry.write({
+    id: sessionId,
+    profileId: "grok-loadfail",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    state: "stopped",
+    resumeToken: "mock-acp-session-1",
+    runtimeWorkspace: { cwd },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  await assert.rejects(
+    () =>
+      runtime.resumeSession({
+        sessionId,
+        cwd,
+        bootstrapPrompt: "should not run",
+      }),
+    /session\/load|mock session\/load failed/i
+  );
+
+  assert.ok(!events.some((e) => e.type === "session.prompt_complete"));
+  const probe = await runtime.probe(sessionId);
+  assert.equal(probe.alive, false);
+  assert.equal(probe.state, "failed");
+  await runtime.shutdown();
+});
+
+test("runtime resumeSession: reuses provider token + load (not session/new)", async () => {
+  const dataDir = await tempDir("tent-grok-resume-rt-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        id: "grok-resume-rt",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        command: process.execPath,
+        args: [MOCK_ACP, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+        env: {
+          MOCK_ACP_LOG: logPath,
+          MOCK_ACP_KEEP_ALIVE: "1",
+          MOCK_ACP_LOAD_SESSION: "1",
+          MOCK_ACP_HISTORY_TEXT: "REPLAY_NO_DELIVER",
+          MOCK_ACP_PROMPT_TEXT: "RESUME_PROMPT_OK",
+          CPA_GROK_API_KEY: "test-key",
+        },
+        acp: {
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+          promptTimeoutMs: 8_000,
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acprsum1";
+  await runtime.registry.write({
+    id: sessionId,
+    profileId: "grok-resume-rt",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    state: "stopped",
+    resumeToken: "mock-acp-session-1",
+    runtimeWorkspace: { cwd },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const handle = await runtime.resumeSession({
+    sessionId,
+    cwd,
+    bootstrapPrompt: "runtime resume bootstrap",
+  });
+  assert.equal(handle.sessionId, sessionId);
+  assert.equal(handle.state, "live");
+
+  const complete = (await waitFor(
+    events,
+    "session.prompt_complete",
+    sessionId,
+    8000
+  )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
+  assert.equal(complete.assistantText, "RESUME_PROMPT_OK");
+
+  const log = JSON.parse(await fs.readFile(logPath, "utf8")) as { methods: string[] };
+  assert.ok(log.methods.includes("session/load"));
+  assert.ok(!log.methods.includes("session/new"));
+
+  const rec = await runtime.registry.read(sessionId);
+  assert.equal(rec?.resumeToken, "mock-acp-session-1");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("runtime resumeSession rejects a cwd different from the recorded provider session", async () => {
+  const dataDir = await tempDir("tent-grok-resume-cwd-");
+  const recordedCwd = await tempDir("tent-grok-recorded-cwd-");
+  const otherCwd = await tempDir("tent-grok-other-cwd-");
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        id: "grok-resume-cwd",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        acp: {
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+        },
+      },
+    ],
+  });
+  const sessionId = "ss-acpcwd01";
+  await runtime.registry.write({
+    id: sessionId,
+    profileId: "grok-resume-cwd",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    state: "stopped",
+    resumeToken: "mock-acp-session-1",
+    runtimeWorkspace: { cwd: recordedCwd },
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  await assert.rejects(
+    () => runtime.resumeSession({ sessionId, cwd: otherCwd }),
+    /cwd mismatch/i
+  );
+  const record = await runtime.registry.read(sessionId);
+  assert.equal(record?.state, "stopped");
+  assert.equal(record?.runtimeWorkspace?.cwd, recordedCwd);
+  await runtime.shutdown();
+});
+
+test("runtime resume failure redacts provider session token from errors and projections", async () => {
+  const dataDir = await tempDir("tent-grok-resume-redact-");
+  const cwd = await tempDir("tent-grok-redact-cwd-");
+  const privateToken = "provider-session-private-123";
+  const adapter = createGrokAcpAdapter({ resolveApiKey: () => "test-key" });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        id: "grok-resume-redact",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        command: process.execPath,
+        args: [MOCK_ACP],
+        env: {
+          MOCK_ACP_LOAD_SESSION: "1",
+          MOCK_ACP_KEEP_ALIVE: "1",
+          CPA_GROK_API_KEY: "test-key",
+        },
+        acp: {
+          model: DEFAULT_GROK_MODEL,
+          envKey: DEFAULT_GROK_ENV_KEY,
+          permissionPolicy: "deny",
+        },
+      },
+    ],
+  });
+  const sessionId = "ss-acpredact";
+  const now = new Date().toISOString();
+  await runtime.registry.write({
+    id: sessionId,
+    profileId: "grok-resume-redact",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    state: "stopped",
+    resumeToken: privateToken,
+    runtimeWorkspace: { cwd },
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  await assert.rejects(
+    () => runtime.resumeSession({ sessionId, cwd }),
+    (error: unknown) => {
+      const message = error instanceof Error ? error.message : String(error);
+      assert.doesNotMatch(message, new RegExp(privateToken));
+      assert.match(message, /\[provider-session\]/);
+      return true;
+    }
+  );
+  const record = await runtime.registry.read(sessionId);
+  assert.ok(record?.lastError);
+  assert.doesNotMatch(record!.lastError!, new RegExp(privateToken));
+  assert.equal((await runtime.probe(sessionId)).alive, false);
+  await runtime.shutdown();
 });

@@ -19,6 +19,8 @@ import {
 
 /** Slack after store-authoritative permission timeout before client fail-safe denies. */
 export const PERMISSION_FAILSAFE_SLACK_MS = 5_000;
+const LOAD_REPLAY_QUIET_MS = 100;
+const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
 
 export type AcpClientOptions = {
   command: string;
@@ -71,6 +73,25 @@ export type AcpStartResult = {
   assistantText: string;
 };
 
+/** connect() mode: session/new (default) vs native session/load resume. */
+export type AcpConnectMode = "new" | "load";
+
+export type AcpConnectOptions = {
+  mode?: AcpConnectMode;
+  /**
+   * Provider ACP sessionId to load. Required when mode is "load".
+   * Must equal the machine-local resume token (providerSessionId).
+   */
+  providerSessionId?: string;
+};
+
+export type AcpConnectResult = {
+  pid: number;
+  providerSessionId: string;
+  /** True when initialize advertised agentCapabilities.loadSession. */
+  loadSessionSupported: boolean;
+};
+
 type Pending = {
   resolve: (value: unknown) => void;
   reject: (err: Error) => void;
@@ -94,6 +115,17 @@ export class AcpClient {
   private exitSignal: string | null = null;
   private exitWaiters: Array<() => void> = [];
   private readonly label: string;
+  /**
+   * Only chunks received while our own session/prompt request is pending belong
+   * to the next delivery. Load replay (including notifications arriving after
+   * the load response) and unsolicited provider updates stay diagnostic-only.
+   */
+  private collectingPromptResponse = false;
+  /** Defensive quarantine for bridges that resolve load before their final replay notification. */
+  private quarantiningLoadReplay = false;
+  private lastLoadReplayUpdateAt = 0;
+  /** Cached from initialize agentCapabilities.loadSession (default false). */
+  private loadSessionSupported = false;
 
   constructor(private readonly options: AcpClientOptions) {
     this.label =
@@ -130,10 +162,15 @@ export class AcpClient {
   }
 
   /**
-   * Spawn ACP process + initialize/authenticate/session/new.
+   * Spawn ACP process + initialize/authenticate, then session/new or session/load.
    * Emits session.live when the ACP session exists. Does not block on prompt.
+   *
+   * Load mode requires agentCapabilities.loadSession === true from this initialize
+   * handshake (fail-loud otherwise). History notifications are isolated and never
+   * accumulate into assistantText / prompt delivery.
    */
-  async connect(): Promise<{ pid: number; providerSessionId: string }> {
+  async connect(options?: AcpConnectOptions): Promise<AcpConnectResult> {
+    const mode: AcpConnectMode = options?.mode === "load" ? "load" : "new";
     this.spawnProcess();
     const pid = this.proc!.pid!;
     this.options.emit({
@@ -148,7 +185,13 @@ export class AcpClient {
           fs: { readTextFile: false, writeTextFile: false },
           terminal: false,
         },
-      })) as { authMethods?: Array<{ id: string }> };
+      })) as {
+        authMethods?: Array<{ id: string }>;
+        agentCapabilities?: { loadSession?: boolean };
+      };
+
+      this.loadSessionSupported =
+        init.agentCapabilities?.loadSession === true;
 
       if (this.options.authenticate) {
         const authParams = await this.options.authenticate(
@@ -167,15 +210,54 @@ export class AcpClient {
         });
       }
 
-      const session = (await this.request(
-        "session/new",
-        { cwd: this.options.cwd, mcpServers: [] },
-        60_000
-      )) as { sessionId?: string };
-      if (!session.sessionId) {
-        throw new Error(`${this.label} session/new 未返回 sessionId`);
+      let providerSessionId: string;
+      if (mode === "load") {
+        if (!this.loadSessionSupported) {
+          throw new Error(
+            `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+          );
+        }
+        const loadId =
+          typeof options?.providerSessionId === "string"
+            ? options.providerSessionId.trim()
+            : "";
+        if (!loadId) {
+          throw new Error(
+            `${this.label} session/load requires providerSessionId (resume token)`
+          );
+        }
+        this.assistantText = "";
+        this.quarantiningLoadReplay = true;
+        this.lastLoadReplayUpdateAt = Date.now();
+        try {
+          await this.request(
+            "session/load",
+            {
+              sessionId: loadId,
+              cwd: this.options.cwd,
+              mcpServers: [],
+            },
+            60_000
+          );
+          await this.waitForLoadReplayQuiescence();
+        } finally {
+          this.quarantiningLoadReplay = false;
+          this.assistantText = "";
+        }
+        this.providerSessionId = loadId;
+        providerSessionId = loadId;
+      } else {
+        const session = (await this.request(
+          "session/new",
+          { cwd: this.options.cwd, mcpServers: [] },
+          60_000
+        )) as { sessionId?: string };
+        if (!session.sessionId) {
+          throw new Error(`${this.label} session/new 未返回 sessionId`);
+        }
+        this.providerSessionId = session.sessionId;
+        providerSessionId = session.sessionId;
       }
-      this.providerSessionId = session.sessionId;
 
       this.options.emit({
         type: "session.live",
@@ -183,7 +265,11 @@ export class AcpClient {
         pid,
       });
 
-      return { pid, providerSessionId: session.sessionId };
+      return {
+        pid,
+        providerSessionId,
+        loadSessionSupported: this.loadSessionSupported,
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail
@@ -208,6 +294,7 @@ export class AcpClient {
     }
     // Fresh accumulation per prompt — never mix reconnect/retry chunks.
     this.assistantText = "";
+    this.collectingPromptResponse = true;
     try {
       const promptTimeout =
         this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
@@ -239,6 +326,8 @@ export class AcpClient {
         ? `${message} (stderr: ${this.stderrTail.slice(-500)})`
         : message;
       throw new Error(detail);
+    } finally {
+      this.collectingPromptResponse = false;
     }
   }
 
@@ -446,6 +535,13 @@ export class AcpClient {
 
   private handleSessionUpdate(update: AcpSessionUpdate | undefined): void {
     if (!update) return;
+    if (this.quarantiningLoadReplay) {
+      this.lastLoadReplayUpdateAt = Date.now();
+      return;
+    }
+    // Tent is not a transcript router. Updates outside a prompt initiated by
+    // this client are neither delivery text nor user-facing diagnostics.
+    if (!this.collectingPromptResponse) return;
     const kind = update.sessionUpdate ?? "";
     if (kind === "agent_message_chunk" && update.content?.text) {
       // Final report body only — thoughts are diagnostics, not delivery summary.
@@ -484,6 +580,20 @@ export class AcpClient {
         sessionId: this.options.sessionId,
         text: `[session/update] ${kind}\n`,
       });
+    }
+  }
+
+  private async waitForLoadReplayQuiescence(): Promise<void> {
+    const deadline = Date.now() + LOAD_REPLAY_MAX_WAIT_MS;
+    while (Date.now() < deadline) {
+      const observed = this.lastLoadReplayUpdateAt;
+      await sleep(LOAD_REPLAY_QUIET_MS);
+      if (
+        this.lastLoadReplayUpdateAt === observed &&
+        Date.now() - observed >= LOAD_REPLAY_QUIET_MS
+      ) {
+        return;
+      }
     }
   }
 

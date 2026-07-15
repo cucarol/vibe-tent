@@ -33,6 +33,29 @@ The Claude Agent ACP npm bridge currently requires Node.js 22 or newer even thou
 - Omitting `envKey` means the adapter relies on the provider's existing local login/configuration.
 - Configuring `envKey` makes it required; a missing value fails before spawn.
 - Tool permission policy defaults to `deny`. `ask` uses the same machine-local approval store for every ACP provider.
-- Provider resume is not advertised in this MVP. Role/session inheritance is handled separately from provider-native resume.
 
-All adapter tests use `test/fixtures/mock-acp-server.mjs`; the test suite never launches provider binaries, `npx`, or a paid network request.
+## Provider-native session resume (`session/load`)
+
+Tent only advertises `capabilities.canResume = true` for bridges whose ACP `initialize` has been verified to set `agentCapabilities.loadSession: true`. Resume is **not** a re-wrapped `session/new`.
+
+| Adapter | `canResume` | Resume path | Evidence |
+| --- | --- | --- | --- |
+| `grok-acp` | **true** | `resumeManagedSession` → new bridge process → `initialize` → optional `authenticate` → **`session/load`** | Local `grok agent stdio` initialize handshake |
+| `opencode-acp` | **true** | same | Local `opencode acp` initialize handshake |
+| `codex-acp` | **false** | none | Tent default package not claimed as verified load; do not invent resume |
+| `claude-acp` | **false** | none | Not verified on this host |
+| `antigravity-acp` | **false** | none | Not verified |
+| `copilot-acp` | **false** | none | Not verified |
+
+Rules:
+
+1. **Runtime gate:** each load call checks **this** process’s `initialize` result for `agentCapabilities.loadSession === true`. Missing capability fails loud; Tent never falls back to `session/new` while pretending to resume.
+2. **RPC shape:** `session/load` always sends required `{ sessionId, cwd, mcpServers }` (`mcpServers: []` today, same as `session/new`).
+3. **Token:** machine-local `SessionRecord.resumeToken` is the provider ACP `sessionId` from `session/new`. Tasks still store only Tent `ss-` ids.
+4. **History isolation:** load may stream full conversation history via `session/update`. Those notifications are quarantined until replay is quiet, are not projected as transcript diagnostics, and **must not** enter the next prompt’s `assistantText` or trigger `session.prompt_complete` / auto-`task.deliver`.
+5. **Process model:** resume always spawns a **new** bridge process (managed handles do not survive service restart). `AgentRuntime.resumeSession` reuses the same Tent `sessionId` + original provider token.
+6. **Service reuse:** after restart, a waiting task may resume only when its old machine-local session matches the requested profile, workspace, role, task binding, and lane cwd. A missing or mismatched row uses the established create-new path; a verified load failure remains fail-loud rather than silently losing context.
+7. **Concurrency and privacy:** concurrent resume calls for one Tent session share one in-flight operation. Provider session ids are redacted from projected errors and never enter task/box/UI payloads.
+8. **Honest non-support:** adapters with `canResume: false` keep failing `resumeSession` with “cannot resume”; dead processes without resume capability become `failed` on probe (unchanged).
+
+The default test suite uses `test/fixtures/mock-acp-server.mjs` and never launches provider binaries, `npx`, or a paid network request. `npm run test:grok-e2e` is the explicit opt-in live path; it covers both ordinary dispatch/delivery and stop → native load → prior-context recovery.

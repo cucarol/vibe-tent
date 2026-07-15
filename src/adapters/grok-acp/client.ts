@@ -5,6 +5,8 @@ import {
   AcpClient,
   PERMISSION_FAILSAFE_SLACK_MS,
   type AcpClientOptions,
+  type AcpConnectOptions,
+  type AcpConnectResult,
   type AcpStartResult,
 } from "../acp/client.js";
 import type { AcpPermissionOption } from "../acp/types.js";
@@ -109,8 +111,8 @@ export class GrokAcpClient {
     return this.inner.isAlive();
   }
 
-  connect(): Promise<{ pid: number; providerSessionId: string }> {
-    return this.inner.connect();
+  connect(options?: AcpConnectOptions): Promise<AcpConnectResult> {
+    return this.inner.connect(options);
   }
 
   sendPrompt(bootstrapPrompt: string): Promise<GrokAcpStartResult> {

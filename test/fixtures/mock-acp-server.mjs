@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * Offline mock Grok ACP stdio server for Tent tests.
- * Speaks initialize / authenticate / session/new / session/prompt + session/update.
+ * Speaks initialize / authenticate / session/new / session/load / session/prompt + session/update.
  * NEVER contacts api.x.ai or any network. Refuse if asked to.
  *
  * Env:
@@ -10,6 +10,11 @@
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
+ *   MOCK_ACP_LOAD_SESSION — "1" advertise agentCapabilities.loadSession (default 0)
+ *   MOCK_ACP_HISTORY_TEXT — history agent_message_chunk text on session/load (default "HISTORY_REPLAY")
+ *   MOCK_ACP_LATE_HISTORY_MS — emit one replay chunk after load result (bridge hardening test)
+ *   MOCK_ACP_FAIL_LOAD — "1" reject session/load
+ *   MOCK_ACP_KNOWN_SESSION_ID — only this sessionId succeeds on load (default mock-acp-session-1)
  */
 import * as fs from "node:fs";
 import * as readline from "node:readline";
@@ -34,6 +39,13 @@ const logPath = process.env.MOCK_ACP_LOG || "";
 /** After session/new, die with this code (spontaneous exit; no pending prompt required). */
 const dieAfterSessionMs = Number(process.env.MOCK_ACP_DIE_AFTER_SESSION_MS || "0");
 const dieExitCode = Number(process.env.MOCK_ACP_DIE_EXIT_CODE || "1");
+/** Advertise loadSession capability (default off — matches schema default false). */
+const loadSessionCapable = process.env.MOCK_ACP_LOAD_SESSION === "1";
+const historyText = process.env.MOCK_ACP_HISTORY_TEXT || "HISTORY_REPLAY";
+const lateHistoryMs = Number(process.env.MOCK_ACP_LATE_HISTORY_MS || "0");
+const failLoad = process.env.MOCK_ACP_FAIL_LOAD === "1";
+const knownSessionId =
+  process.env.MOCK_ACP_KNOWN_SESSION_ID || "mock-acp-session-1";
 
 const log = {
   argv: process.argv.slice(1),
@@ -45,7 +57,9 @@ const log = {
   methods: [],
   authenticateParams: null,
   prompts: [],
+  loads: [],
   permissionOutcomes: [],
+  loadSessionCapable,
   envKeysPresent: {
     CPA_GROK_API_KEY: Boolean(process.env.CPA_GROK_API_KEY),
     XAI_API_KEY: Boolean(process.env.XAI_API_KEY),
@@ -102,7 +116,8 @@ rl.on("line", (line) => {
       result: {
         protocolVersion: 1,
         authMethods: [{ id: "xai.api_key" }, { id: "cached_token" }],
-        agentCapabilities: {},
+        // Schema default loadSession=false; only advertise when MOCK_ACP_LOAD_SESSION=1.
+        agentCapabilities: loadSessionCapable ? { loadSession: true } : {},
       },
     });
     return;
@@ -123,7 +138,7 @@ rl.on("line", (line) => {
   }
 
   if (msg.method === "session/new") {
-    const sessionId = "mock-acp-session-1";
+    const sessionId = knownSessionId;
     write({
       jsonrpc: "2.0",
       id: msg.id,
@@ -136,6 +151,96 @@ rl.on("line", (line) => {
         process.exit(Number.isFinite(dieExitCode) ? dieExitCode : 1);
       }, dieAfterSessionMs);
     }
+    return;
+  }
+
+  if (msg.method === "session/load") {
+    const params = msg.params ?? {};
+    log.loads.push({
+      sessionId: params.sessionId ?? null,
+      cwd: params.cwd ?? null,
+      hasMcpServers: Array.isArray(params.mcpServers),
+      mcpServersLen: Array.isArray(params.mcpServers) ? params.mcpServers.length : null,
+    });
+
+    if (!loadSessionCapable) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32601,
+          message: "mock: method not found session/load (loadSession capability false)",
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    if (failLoad) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: { code: -32000, message: "mock session/load failed" },
+      });
+      flushLog();
+      return;
+    }
+
+    if (!params.sessionId || !params.cwd || !Array.isArray(params.mcpServers)) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32602,
+          message: "mock session/load requires sessionId, cwd, mcpServers",
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    if (params.sessionId !== knownSessionId) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32000,
+          message: `mock session/load unknown sessionId: ${params.sessionId}`,
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    // Protocol: stream full history via notifications before load result.
+    notifyUpdate({
+      sessionUpdate: "agent_thought_chunk",
+      content: { type: "text", text: "history-thinking..." },
+    });
+    notifyUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: historyText },
+    });
+    notifyUpdate({
+      sessionUpdate: "agent_message_chunk",
+      content: { type: "text", text: "_CHUNK2" },
+    });
+
+    write({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {},
+    });
+    if (Number.isFinite(lateHistoryMs) && lateHistoryMs > 0) {
+      setTimeout(() => {
+        notifyUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: `${historyText}_LATE` },
+        });
+        flushLog();
+      }, lateHistoryMs);
+    }
+    flushLog();
     return;
   }
 

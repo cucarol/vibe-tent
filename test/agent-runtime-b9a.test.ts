@@ -388,3 +388,73 @@ test("fake adapter remains the deterministic process harness", () => {
   assert.equal(caps.authModel, "none");
   assert.equal(caps.observeLevel, "process");
 });
+
+test("concurrent native resume calls share one in-flight managed bridge", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let resumeCalls = 0;
+  let stopCalls = 0;
+  const adapter: ProviderAdapter = {
+    id: "resume-test",
+    displayNameKey: "adapter.resumeTest",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: true,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    resumeManagedSession: async (plan, token, emit) => {
+      resumeCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 4242 });
+      return {
+        sessionId: plan.sessionId,
+        pid: 4242,
+        providerSessionId: token.providerSessionId ?? token.raw,
+        isAlive: () => true,
+        stop: async () => {
+          stopCalls += 1;
+        },
+      };
+    },
+    parseResumeToken: (raw) => ({ raw, providerSessionId: raw }),
+    mapExit: (code) => ({
+      type: "session.exited",
+      sessionId: "",
+      exitCode: code,
+    }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "resume-profile", adapterId: adapter.id }],
+  });
+  const sessionId = "ss-conresume";
+  const now = new Date().toISOString();
+  await runtime.registry.write({
+    id: sessionId,
+    profileId: "resume-profile",
+    adapterId: adapter.id,
+    state: "stopped",
+    resumeToken: "provider-session-1",
+    runtimeWorkspace: { cwd },
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const [first, second] = await Promise.all([
+    runtime.resumeSession({ sessionId, cwd }),
+    runtime.resumeSession({ sessionId, cwd }),
+  ]);
+  assert.equal(resumeCalls, 1);
+  assert.equal(first.sessionId, sessionId);
+  assert.equal(second.sessionId, sessionId);
+  await runtime.shutdown();
+  assert.equal(stopCalls, 1);
+});

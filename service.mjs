@@ -2,7 +2,7 @@
 
 
 // src/service/cli.ts
-import * as path13 from "node:path";
+import * as path14 from "node:path";
 
 // src/service/http-server.ts
 import * as http from "node:http";
@@ -224,14 +224,14 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs13, path14) {
-  const backupPath = `${path14}.corrupt-${timestamp()}`;
-  await fs13.writeFile(backupPath, await fs13.readFile(path14));
+async function backupCorruptRegistry(fs13, path15) {
+  const backupPath = `${path15}.corrupt-${timestamp()}`;
+  await fs13.writeFile(backupPath, await fs13.readFile(path15));
   return backupPath;
 }
-function warnRegistryRecovered(path14, backupPath, action, extra = "") {
+function warnRegistryRecovered(path15, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path14} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path15} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -270,9 +270,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path14 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path14) return false;
-  const top = path14.split("/")[0] ?? "";
+  const path15 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path15) return false;
+  const top = path15.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function isSystemNoteName(fileName) {
@@ -555,9 +555,9 @@ function zoneRank(name) {
   const i = ZONE_NAMES.indexOf(name);
   return i === -1 ? 99 : i;
 }
-async function loadBox(fs13, path14, parent, registry) {
-  if (isOperationalPath(path14)) return null;
-  const boxFile = boxNotePath(path14);
+async function loadBox(fs13, path15, parent, registry) {
+  if (isOperationalPath(path15)) return null;
+  const boxFile = boxNotePath(path15);
   if (!await fs13.exists(boxFile)) {
     return null;
   }
@@ -571,7 +571,7 @@ async function loadBox(fs13, path14, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path14);
+  const name = baseName(path15);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
@@ -582,7 +582,7 @@ async function loadBox(fs13, path14, parent, registry) {
     // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
-    path: path14,
+    path: path15,
     name,
     fm,
     body,
@@ -594,14 +594,14 @@ async function loadBox(fs13, path14, parent, registry) {
     writable: { value: false, source: "type" }
   };
   if (parseError) {
-    box.invalidRootId = path14;
+    box.invalidRootId = path15;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs13.listDir(path14);
+  const sub = await fs13.listDir(path15);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs13, join(path14, entry.name), box, registry, box.children);
+    await loadBoxInto(fs13, join(path15, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -631,18 +631,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs13, path14, parent, registry, target) {
-  if (isOperationalPath(path14)) return;
-  const box = await loadBox(fs13, path14, parent, registry);
+async function loadBoxInto(fs13, path15, parent, registry, target) {
+  if (isOperationalPath(path15)) return;
+  const box = await loadBox(fs13, path15, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs13.listDir(path14);
+  const sub = await fs13.listDir(path15);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs13, join(path14, entry.name), parent, registry, target);
+    await loadBoxInto(fs13, join(path15, entry.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -727,13 +727,13 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path14) {
-  const i = path14.lastIndexOf("/");
-  return i === -1 ? path14 : path14.slice(i + 1);
+function baseName(path15) {
+  const i = path15.lastIndexOf("/");
+  return i === -1 ? path15 : path15.slice(i + 1);
 }
-function dirName(path14) {
-  const i = path14.lastIndexOf("/");
-  return i === -1 ? "" : path14.slice(0, i);
+function dirName(path15) {
+  const i = path15.lastIndexOf("/");
+  return i === -1 ? "" : path15.slice(0, i);
 }
 
 // src/core/adapter.ts
@@ -1016,9 +1016,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs13, path14, value) {
+async function writeJson(fs13, path15, value) {
   if (!await fs13.exists(".tent")) await fs13.mkdir(".tent");
-  await fs13.writeFile(path14, JSON.stringify(value, null, 2) + "\n");
+  await fs13.writeFile(path15, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1150,25 +1150,25 @@ async function loadTaskEnvelopes(fs13) {
     if (!await fs13.exists(taskDir)) continue;
     for (const entry of await fs13.listDir(taskDir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path14 = join(taskDir, entry.name);
+      const path15 = join(taskDir, entry.name);
       try {
-        tasks.push(await loadTaskEnvelope(fs13, path14));
+        tasks.push(await loadTaskEnvelope(fs13, path15));
       } catch {
       }
     }
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function loadTaskEnvelope(fs13, path14) {
-  if (!await fs13.exists(path14)) throw new Error(`Task envelope not found: ${path14}.`);
-  const { data, body } = parseFrontmatter(await fs13.readFile(path14));
+async function loadTaskEnvelope(fs13, path15) {
+  if (!await fs13.exists(path15)) throw new Error(`Task envelope not found: ${path15}.`);
+  const { data, body } = parseFrontmatter(await fs13.readFile(path15));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-    throw new Error(`Invalid task envelope format: ${path14}.`);
+    throw new Error(`Invalid task envelope format: ${path15}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
   const task = {
-    path: path14,
+    path: path15,
     role: data.role,
     claims: data.claims,
     manifest: data.manifest,
@@ -1253,7 +1253,7 @@ ${userPrompt}
 `);
 }
 async function ensureRoleInit(fs13, role, tentName) {
-  const path14 = join("temp", role.name, "init.md");
+  const path15 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1270,8 +1270,8 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs13.writeFile(path14, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path14;
+  await fs13.writeFile(path15, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path15;
 }
 async function writeTaskEnvelope(fs13, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
@@ -1280,7 +1280,7 @@ async function writeTaskEnvelope(fs13, clock, input) {
   await ensureDir(fs13, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path14 = await uniqueMarkdownPath(fs13, dir, stem);
+  const path15 = await uniqueMarkdownPath(fs13, dir, stem);
   const now = clock.now();
   const data = {
     type: "task",
@@ -1317,20 +1317,20 @@ ${pointers}
 
 ${userPrompt}
 `;
-  await fs13.writeFile(path14, serializeFrontmatter(data, body));
-  return path14;
+  await fs13.writeFile(path15, serializeFrontmatter(data, body));
+  return path15;
 }
-async function ackTaskEnvelope(fs13, path14) {
-  await patchTaskEnvelope(fs13, path14, {
+async function ackTaskEnvelope(fs13, path15) {
+  await patchTaskEnvelope(fs13, path15, {
     status: "taken",
     state: "running"
   });
 }
-async function patchTaskEnvelope(fs13, path14, patch) {
-  if (!await fs13.exists(path14)) throw new Error(`Task envelope not found: ${path14}.`);
-  const raw = await fs13.readFile(path14);
+async function patchTaskEnvelope(fs13, path15, patch) {
+  if (!await fs13.exists(path15)) throw new Error(`Task envelope not found: ${path15}.`);
+  const raw = await fs13.readFile(path15);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path14}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path15}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -1356,8 +1356,8 @@ async function patchTaskEnvelope(fs13, path14, patch) {
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
   }
-  await fs13.writeFile(path14, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs13, path14);
+  await fs13.writeFile(path15, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs13, path15);
 }
 function primaryBoxId(task) {
   return task.claims.find((c) => c !== "root");
@@ -1386,12 +1386,12 @@ function taskStem(now, claimId) {
 async function uniqueMarkdownPath(fs13, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path14 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs13.exists(path14)) return path14;
+    const path15 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs13.exists(path15)) return path15;
   }
 }
-async function ensureDir(fs13, path14) {
-  if (!await fs13.exists(path14)) await fs13.mkdir(path14);
+async function ensureDir(fs13, path15) {
+  if (!await fs13.exists(path15)) await fs13.mkdir(path15);
 }
 
 // src/core/report.ts
@@ -1404,9 +1404,9 @@ async function loadReports(fs13) {
     if (!await fs13.exists(dir)) continue;
     for (const entry of await fs13.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path14 = join(dir, entry.name);
+      const path15 = join(dir, entry.name);
       try {
-        reports.push(await loadReport(fs13, path14));
+        reports.push(await loadReport(fs13, path15));
       } catch {
       }
     }
@@ -1414,14 +1414,14 @@ async function loadReports(fs13) {
   return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 }
 async function loadReport(fs13, inputPath) {
-  const path14 = normalizeReportPath(inputPath);
-  if (!await fs13.exists(path14)) throw new Error(`Report not found: ${path14}.`);
-  const { data, body } = parseFrontmatter(await fs13.readFile(path14));
+  const path15 = normalizeReportPath(inputPath);
+  if (!await fs13.exists(path15)) throw new Error(`Report not found: ${path15}.`);
+  const { data, body } = parseFrontmatter(await fs13.readFile(path15));
   if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`Invalid report format: ${path14}.`);
+    throw new Error(`Invalid report format: ${path15}.`);
   }
   return {
-    path: path14,
+    path: path15,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -1437,11 +1437,11 @@ async function removeReportsForBox(fs13, boxId) {
   }
 }
 function normalizeReportPath(input) {
-  const path14 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path14)) {
+  const path15 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path15)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
-  return path14;
+  return path15;
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
@@ -1483,10 +1483,10 @@ async function createDeliveryUnlocked(fs13, clock, input) {
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
   const dir = join("temp", input.role, "deliveries");
   await ensureDir2(fs13, dir);
-  const path14 = join(dir, `${id}.md`);
-  if (await fs13.exists(path14)) throw new Error(`Delivery already exists: ${path14}.`);
+  const path15 = join(dir, `${id}.md`);
+  if (await fs13.exists(path15)) throw new Error(`Delivery already exists: ${path15}.`);
   const record = {
-    path: path14,
+    path: path15,
     id,
     taskId: input.taskId,
     boxId: input.boxId,
@@ -1504,20 +1504,20 @@ async function createDeliveryUnlocked(fs13, clock, input) {
   return record;
 }
 async function loadDelivery(fs13, inputPath) {
-  const path14 = normalizeDeliveryPath(inputPath);
-  if (!await fs13.exists(path14)) throw new Error(`Delivery not found: ${path14}.`);
-  const { data, body } = parseFrontmatter(await fs13.readFile(path14));
+  const path15 = normalizeDeliveryPath(inputPath);
+  if (!await fs13.exists(path15)) throw new Error(`Delivery not found: ${path15}.`);
+  const { data, body } = parseFrontmatter(await fs13.readFile(path15));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path14}.`);
+    throw new Error(`Invalid delivery format: ${path15}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path14}.`);
+    throw new Error(`Invalid delivery format: ${path15}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
   return {
-    path: path14,
+    path: path15,
     id: data.id,
     taskId: data.taskId,
     boxId: data.boxId,
@@ -1578,11 +1578,11 @@ async function writeDelivery(fs13, record) {
   await fs13.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
-  const path14 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path14)) {
+  const path15 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path15)) {
     throw new Error("Delivery must point to temp/<role>/deliveries/<dl-id>.md.");
   }
-  return path14;
+  return path15;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -1630,8 +1630,8 @@ function parseArtifactRefs(value) {
   }
   return out;
 }
-async function ensureDir2(fs13, path14) {
-  if (!await fs13.exists(path14)) await fs13.mkdir(path14);
+async function ensureDir2(fs13, path15) {
+  if (!await fs13.exists(path15)) await fs13.mkdir(path15);
 }
 function uniqueCommits2(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -2137,14 +2137,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path14 = join(input.parentPath, name);
-  assertNotTempPath(path14);
-  await ensureDir3(env.fs, path14);
+  const path15 = join(input.parentPath, name);
+  assertNotTempPath(path15);
+  await ensureDir3(env.fs, path15);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path14), content);
+  await env.fs.writeFile(boxNotePath(path15), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -2153,7 +2153,7 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path14);
+    await env.fs.remove(path15);
     throw error;
   }
   return id;
@@ -2206,8 +2206,8 @@ async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
-async function ensureDir3(fs13, path14) {
-  if (path14 && !await fs13.exists(path14)) await fs13.mkdir(path14);
+async function ensureDir3(fs13, path15) {
+  if (path15 && !await fs13.exists(path15)) await fs13.mkdir(path15);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -2226,8 +2226,8 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function assertNotTempPath(path14) {
-  if (path14 === "temp" || path14.startsWith("temp/")) {
+function assertNotTempPath(path15) {
+  if (path15 === "temp" || path15.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -2613,9 +2613,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path14) {
+async function pathExists(path15) {
   try {
-    await nodeFs.access(path14);
+    await nodeFs.access(path15);
     return true;
   } catch {
     return false;
@@ -2630,14 +2630,14 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve9(out);
+      if (code === 0) resolve10(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
@@ -3011,8 +3011,8 @@ var MutationBus = class {
   async run(workspaceId, action) {
     const prev = this.tails.get(workspaceId) ?? Promise.resolve();
     let release;
-    const gate = new Promise((resolve9) => {
-      release = resolve9;
+    const gate = new Promise((resolve10) => {
+      release = resolve10;
     });
     const chain = prev.catch(() => void 0).then(() => gate);
     this.tails.set(workspaceId, chain);
@@ -3381,6 +3381,8 @@ var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
 // src/adapters/acp/client.ts
 var PERMISSION_FAILSAFE_SLACK_MS = 5e3;
+var LOAD_REPLAY_QUIET_MS = 100;
+var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
 var AcpClient = class {
   constructor(options) {
     this.options = options;
@@ -3398,6 +3400,17 @@ var AcpClient = class {
     this.exitCode = null;
     this.exitSignal = null;
     this.exitWaiters = [];
+    /**
+     * Only chunks received while our own session/prompt request is pending belong
+     * to the next delivery. Load replay (including notifications arriving after
+     * the load response) and unsolicited provider updates stay diagnostic-only.
+     */
+    this.collectingPromptResponse = false;
+    /** Defensive quarantine for bridges that resolve load before their final replay notification. */
+    this.quarantiningLoadReplay = false;
+    this.lastLoadReplayUpdateAt = 0;
+    /** Cached from initialize agentCapabilities.loadSession (default false). */
+    this.loadSessionSupported = false;
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
   }
   get pid() {
@@ -3423,10 +3436,15 @@ var AcpClient = class {
     }
   }
   /**
-   * Spawn ACP process + initialize/authenticate/session/new.
+   * Spawn ACP process + initialize/authenticate, then session/new or session/load.
    * Emits session.live when the ACP session exists. Does not block on prompt.
+   *
+   * Load mode requires agentCapabilities.loadSession === true from this initialize
+   * handshake (fail-loud otherwise). History notifications are isolated and never
+   * accumulate into assistantText / prompt delivery.
    */
-  async connect() {
+  async connect(options) {
+    const mode = options?.mode === "load" ? "load" : "new";
     this.spawnProcess();
     const pid = this.proc.pid;
     this.options.emit({
@@ -3441,6 +3459,7 @@ var AcpClient = class {
           terminal: false
         }
       });
+      this.loadSessionSupported = init.agentCapabilities?.loadSession === true;
       if (this.options.authenticate) {
         const authParams = await this.options.authenticate(
           init.authMethods ?? []
@@ -3451,21 +3470,61 @@ var AcpClient = class {
           _meta: meta
         });
       }
-      const session = await this.request(
-        "session/new",
-        { cwd: this.options.cwd, mcpServers: [] },
-        6e4
-      );
-      if (!session.sessionId) {
-        throw new Error(`${this.label} session/new \u672A\u8FD4\u56DE sessionId`);
+      let providerSessionId;
+      if (mode === "load") {
+        if (!this.loadSessionSupported) {
+          throw new Error(
+            `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+          );
+        }
+        const loadId = typeof options?.providerSessionId === "string" ? options.providerSessionId.trim() : "";
+        if (!loadId) {
+          throw new Error(
+            `${this.label} session/load requires providerSessionId (resume token)`
+          );
+        }
+        this.assistantText = "";
+        this.quarantiningLoadReplay = true;
+        this.lastLoadReplayUpdateAt = Date.now();
+        try {
+          await this.request(
+            "session/load",
+            {
+              sessionId: loadId,
+              cwd: this.options.cwd,
+              mcpServers: []
+            },
+            6e4
+          );
+          await this.waitForLoadReplayQuiescence();
+        } finally {
+          this.quarantiningLoadReplay = false;
+          this.assistantText = "";
+        }
+        this.providerSessionId = loadId;
+        providerSessionId = loadId;
+      } else {
+        const session = await this.request(
+          "session/new",
+          { cwd: this.options.cwd, mcpServers: [] },
+          6e4
+        );
+        if (!session.sessionId) {
+          throw new Error(`${this.label} session/new \u672A\u8FD4\u56DE sessionId`);
+        }
+        this.providerSessionId = session.sessionId;
+        providerSessionId = session.sessionId;
       }
-      this.providerSessionId = session.sessionId;
       this.options.emit({
         type: "session.live",
         sessionId: this.options.sessionId,
         pid
       });
-      return { pid, providerSessionId: session.sessionId };
+      return {
+        pid,
+        providerSessionId,
+        loadSessionSupported: this.loadSessionSupported
+      };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
@@ -3486,6 +3545,7 @@ var AcpClient = class {
       throw new Error(`${this.label} \u8FDB\u7A0B\u4E0D\u53EF\u7528`);
     }
     this.assistantText = "";
+    this.collectingPromptResponse = true;
     try {
       const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
       const result = await this.request(
@@ -3512,6 +3572,8 @@ var AcpClient = class {
       const message = err instanceof Error ? err.message : String(err);
       const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
       throw new Error(detail);
+    } finally {
+      this.collectingPromptResponse = false;
     }
   }
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
@@ -3680,6 +3742,11 @@ var AcpClient = class {
   }
   handleSessionUpdate(update) {
     if (!update) return;
+    if (this.quarantiningLoadReplay) {
+      this.lastLoadReplayUpdateAt = Date.now();
+      return;
+    }
+    if (!this.collectingPromptResponse) return;
     const kind = update.sessionUpdate ?? "";
     if (kind === "agent_message_chunk" && update.content?.text) {
       this.assistantText += update.content.text;
@@ -3716,6 +3783,16 @@ var AcpClient = class {
         text: `[session/update] ${kind}
 `
       });
+    }
+  }
+  async waitForLoadReplayQuiescence() {
+    const deadline = Date.now() + LOAD_REPLAY_MAX_WAIT_MS;
+    while (Date.now() < deadline) {
+      const observed = this.lastLoadReplayUpdateAt;
+      await sleep(LOAD_REPLAY_QUIET_MS);
+      if (this.lastLoadReplayUpdateAt === observed && Date.now() - observed >= LOAD_REPLAY_QUIET_MS) {
+        return;
+      }
     }
   }
   async handlePermissionRequest(id, params) {
@@ -3790,12 +3867,12 @@ var AcpClient = class {
       );
     }
     const id = this.nextId++;
-    return new Promise((resolve9, reject) => {
+    return new Promise((resolve10, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve9, reject, timer });
+      this.pending.set(id, { resolve: resolve10, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params });
     });
   }
@@ -3813,8 +3890,8 @@ var AcpClient = class {
   }
   waitExit() {
     if (!this.proc || this.closed) return Promise.resolve();
-    return new Promise((resolve9) => {
-      this.exitWaiters.push(resolve9);
+    return new Promise((resolve10) => {
+      this.exitWaiters.push(resolve10);
     });
   }
   async forceKill() {
@@ -3822,14 +3899,14 @@ var AcpClient = class {
     const pid = proc?.pid;
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve9) => {
+      await new Promise((resolve10) => {
         const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve9());
-        killer.on("error", () => resolve9());
-        setTimeout(resolve9, 1500);
+        killer.on("exit", () => resolve10());
+        killer.on("error", () => resolve10());
+        setTimeout(resolve10, 1500);
       });
     } else {
       try {
@@ -3854,7 +3931,7 @@ function selectAllowOnce(options) {
   return { outcome: "cancelled" };
 }
 function sleep(ms) {
-  return new Promise((resolve9) => setTimeout(resolve9, ms));
+  return new Promise((resolve10) => setTimeout(resolve10, ms));
 }
 
 // src/adapters/acp/managed-session.ts
@@ -3913,11 +3990,8 @@ function bindAcpPermissionHooks(sessionId, permissionPolicy, hooks) {
     } : void 0
   };
 }
-async function startManagedAcpSession(input) {
-  const { plan, emit: emit2, client } = input;
-  const bootstrap = plan.bootstrapPrompt?.trim() || input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
-  await client.connect();
-  const promptDone = client.sendPrompt(bootstrap).then(async (result) => {
+function runManagedBootstrapPrompt(plan, emit2, client, bootstrap) {
+  return client.sendPrompt(bootstrap).then(async (result) => {
     const stopReason = (result.stopReason || "end_turn").toLowerCase();
     const assistantText = (result.assistantText || "").trim();
     if (stopReason !== "end_turn") {
@@ -3948,10 +4022,49 @@ async function startManagedAcpSession(input) {
     client.reportFailed(message);
     await stopAcpClientQuiet(client);
   });
+}
+async function startManagedAcpSession(input) {
+  const { plan, emit: emit2, client } = input;
+  const bootstrap = plan.bootstrapPrompt?.trim() || input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
+  try {
+    await client.connect({ mode: "new" });
+  } catch (err) {
+    await stopAcpClientQuiet(client);
+    throw err;
+  }
+  const promptDone = runManagedBootstrapPrompt(plan, emit2, client, bootstrap);
+  return new AcpManagedSession(plan.sessionId, client, promptDone);
+}
+async function resumeManagedAcpSession(input) {
+  const { plan, emit: emit2, client, providerSessionId } = input;
+  const loadId = providerSessionId.trim();
+  if (!loadId) {
+    throw new Error("resumeManagedAcpSession requires non-empty providerSessionId");
+  }
+  try {
+    await client.connect({ mode: "load", providerSessionId: loadId });
+  } catch (err) {
+    await stopAcpClientQuiet(client);
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(message);
+  }
+  const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
+  const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
   return new AcpManagedSession(plan.sessionId, client, promptDone);
 }
 function parseAcpResumeToken(raw) {
   return { raw, providerSessionId: raw };
+}
+function loadSessionAcpCapabilities(authModel = "external-app") {
+  return {
+    canSpawn: true,
+    canResume: true,
+    canStopGraceful: true,
+    needsTty: false,
+    supportsWorktreeCwd: true,
+    authModel,
+    observeLevel: "structured"
+  };
 }
 function mapAcpProcessExit(code, signal) {
   if (signal && signal !== "SIGTERM" && signal !== "SIGINT") {
@@ -4003,8 +4116,8 @@ function normalizeSharedAcpOpts(raw) {
     permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
   };
 }
-function resolvePlanOrProcessEnv(envKey, planEnv, resolve9) {
-  if (resolve9) return resolve9(envKey, planEnv);
+function resolvePlanOrProcessEnv(envKey, planEnv, resolve10) {
+  if (resolve10) return resolve10(envKey, planEnv);
   const fromPlan = planEnv[envKey];
   if (typeof fromPlan === "string" && fromPlan.trim()) return fromPlan;
   const fromProc = process.env[envKey];
@@ -4067,8 +4180,8 @@ var GrokAcpClient = class {
   isAlive() {
     return this.inner.isAlive();
   }
-  connect() {
-    return this.inner.connect();
+  connect(options) {
+    return this.inner.connect(options);
   }
   sendPrompt(bootstrapPrompt) {
     return this.inner.sendPrompt(bootstrapPrompt);
@@ -4131,15 +4244,7 @@ var GrokAcpProviderAdapter = class {
     this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
-    return {
-      canSpawn: true,
-      canResume: false,
-      canStopGraceful: true,
-      needsTty: false,
-      supportsWorktreeCwd: true,
-      authModel: "env",
-      observeLevel: "structured"
-    };
+    return loadSessionAcpCapabilities("env");
   }
   /**
    * Launch plan validation only. Real ACP needs bidirectional stdio —
@@ -4215,13 +4320,35 @@ var GrokAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error("grok-acp resume requires non-empty provider session id");
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const launch = this.resolveLaunch(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
       onPermissionAskFailSafe: this.onPermissionAskFailSafe
     });
-    const client = new GrokAcpClient({
+    return new GrokAcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -4235,7 +4362,6 @@ var GrokAcpProviderAdapter = class {
       onPermissionAsk: permHooks.onPermissionAsk,
       onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
     });
-    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
     return parseAcpResumeToken(raw);
@@ -4526,7 +4652,7 @@ var OpenCodeAcpProviderAdapter = class {
     this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
-    return mainstreamAcpCapabilities();
+    return loadSessionAcpCapabilities("external-app");
   }
   resolveLaunch(plan) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -4554,13 +4680,37 @@ var OpenCodeAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "opencode-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
       onPermissionAskFailSafe: this.onPermissionAskFailSafe
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -4574,7 +4724,6 @@ var OpenCodeAcpProviderAdapter = class {
       onPermissionAsk: hooks.onPermissionAsk,
       onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
     });
-    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
     return parseAcpResumeToken(raw);
@@ -6204,7 +6353,6 @@ async function taskStartSessionRpc(ctx, p) {
       }
     );
   }
-  const sessionId = makeSessionId();
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane = task.workspace || task.worktree || task.branch ? {
     workspace: task.workspace || mount.workspaceRoot,
@@ -6216,19 +6364,49 @@ async function taskStartSessionRpc(ctx, p) {
     workspaceRoot: mount.workspaceRoot,
     systemRoot: mount.systemRoot
   });
+  const priorSessionId = task.sessionId?.trim() || "";
+  let resumePrior = false;
+  if (priorSessionId) {
+    try {
+      const probe = await ctx.runtime.probe(priorSessionId);
+      if (probe.resumeCapable && !probe.alive) {
+        const prior = await ctx.runtime.registry.read(priorSessionId);
+        const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
+        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath2.resolve(recordedCwd), nodePath2.resolve(cwd));
+        const profileMatches = !prior?.profileId || prior.profileId === profileId;
+        const workspaceMatches = prior?.workspace === workspaceId;
+        const roleMatches = prior?.roleName === task.role;
+        const taskMatches = prior?.lastTaskId === taskPath || !!task.id && prior?.lastTaskId === task.id;
+        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && taskMatches;
+      }
+    } catch (err) {
+      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
+        throw err;
+      }
+    }
+  }
   let handle;
   try {
-    handle = await ctx.runtime.startSession({
-      sessionId,
-      profileId,
-      roleName: task.role,
-      workspaceLane,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap,
-      lastTaskId: task.id || taskPath,
-      workspace: workspaceId
-    });
+    if (resumePrior) {
+      handle = await ctx.runtime.resumeSession({
+        sessionId: priorSessionId,
+        runtimeWorkspace: { cwd },
+        cwd,
+        bootstrapPrompt: sessionBootstrap
+      });
+    } else {
+      handle = await ctx.runtime.startSession({
+        sessionId: makeSessionId(),
+        profileId,
+        roleName: task.role,
+        workspaceLane,
+        runtimeWorkspace: { cwd },
+        cwd,
+        bootstrapPrompt: sessionBootstrap,
+        lastTaskId: task.id || taskPath,
+        workspace: workspaceId
+      });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     await failTaskFromRuntime(ctx, {
@@ -6255,7 +6433,7 @@ async function taskStartSessionRpc(ctx, p) {
         state: handle.state,
         profileId: handle.profileId,
         taskPath,
-        reason: "task.startSession"
+        reason: resumePrior ? "task.startSession.resume" : "task.startSession"
       },
       "self"
     );
@@ -6464,7 +6642,7 @@ function projectionRetryDelayMs() {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
 function sleepMs(ms) {
-  return new Promise((resolve9) => setTimeout(resolve9, ms));
+  return new Promise((resolve10) => setTimeout(resolve10, ms));
 }
 function classifyProjectionError(err) {
   if (err instanceof TaskLifecycleError) {
@@ -6809,16 +6987,16 @@ function parseCallerKind(raw) {
 }
 function resolveConcept3(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path14 = optionalString(p, "path");
+  const path15 = optionalString(p, "path");
   if (id) {
     const byId = tent.byId.get(id);
     if (byId) return byId;
     throw new RpcError(-32004, `Concept not found: ${id}`);
   }
-  if (path14) {
-    const byPath = tent.byPath.get(path14);
+  if (path15) {
+    const byPath = tent.byPath.get(path15);
     if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path14}`);
+    throw new RpcError(-32004, `Concept not found: ${path15}`);
   }
   throw new RpcError(-32602, "docs.* requires id or path");
 }
@@ -7214,20 +7392,20 @@ async function createServiceHttpServer(options) {
     host,
     port,
     url: `http://${host}:${port}`,
-    close: () => new Promise((resolve9, reject) => {
-      server.close((err) => err ? reject(err) : resolve9());
+    close: () => new Promise((resolve10, reject) => {
+      server.close((err) => err ? reject(err) : resolve10());
     })
   };
 }
 function listen(server, port, host) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const onError = (error) => {
       server.off("listening", onListening);
       reject(error);
     };
     const onListening = () => {
       server.off("error", onError);
-      resolve9();
+      resolve10();
     };
     server.once("error", onError);
     server.once("listening", onListening);
@@ -7235,8 +7413,8 @@ function listen(server, port, host) {
   });
 }
 function closeServer(server) {
-  return new Promise((resolve9, reject) => {
-    server.close((err) => err ? reject(err) : resolve9());
+  return new Promise((resolve10, reject) => {
+    server.close((err) => err ? reject(err) : resolve10());
   });
 }
 async function handleRequest(req, res, options) {
@@ -7349,10 +7527,10 @@ function writeJson2(res, status, body) {
   res.end(payload);
 }
 function readBody(req) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const chunks = [];
     req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve9(Buffer.concat(chunks).toString("utf8")));
+    req.on("end", () => resolve10(Buffer.concat(chunks).toString("utf8")));
     req.on("error", reject);
   });
 }
@@ -7417,33 +7595,33 @@ var NodeFs = class {
     const entries = await fs8.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path14) {
-    return fs8.readFile(this.abs(path14), "utf8");
+  async readFile(path15) {
+    return fs8.readFile(this.abs(path15), "utf8");
   }
-  async writeFile(path14, content) {
-    await fs8.mkdir(nodePath3.dirname(this.abs(path14)), { recursive: true });
-    await fs8.writeFile(this.abs(path14), content, "utf8");
+  async writeFile(path15, content) {
+    await fs8.mkdir(nodePath3.dirname(this.abs(path15)), { recursive: true });
+    await fs8.writeFile(this.abs(path15), content, "utf8");
   }
-  async exists(path14) {
+  async exists(path15) {
     try {
-      await fs8.access(this.abs(path14));
+      await fs8.access(this.abs(path15));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path14) {
-    await fs8.mkdir(this.abs(path14), { recursive: true });
+  async mkdir(path15) {
+    await fs8.mkdir(this.abs(path15), { recursive: true });
   }
   async move(from, to) {
     await fs8.mkdir(nodePath3.dirname(this.abs(to)), { recursive: true });
     await fs8.rename(this.abs(from), this.abs(to));
   }
-  async remove(path14) {
-    await fs8.rm(this.abs(path14), { recursive: true, force: true });
+  async remove(path15) {
+    await fs8.rm(this.abs(path15), { recursive: true, force: true });
   }
-  async withLock(path14, action) {
-    const lockPath = this.abs(path14);
+  async withLock(path15, action) {
+    const lockPath = this.abs(path15);
     await fs8.mkdir(nodePath3.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -7470,9 +7648,9 @@ var NodeFs = class {
 function isAlreadyExists(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-async function isStaleLock(path14) {
+async function isStaleLock(path15) {
   try {
-    const stat2 = await fs8.stat(path14);
+    const stat2 = await fs8.stat(path15);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -7821,7 +7999,7 @@ var ToolApprovalStore = class {
    * timeoutMs bounds the wait; expireOne mutates the same record so late approve fails.
    */
   waitForDecision(id, timeoutMs) {
-    return new Promise((resolve9) => {
+    return new Promise((resolve10) => {
       let settled = false;
       const finish = (status) => {
         if (settled) return;
@@ -7835,7 +8013,7 @@ var ToolApprovalStore = class {
           );
           if ((this.waiters.get(id) ?? []).length === 0) this.waiters.delete(id);
         }
-        resolve9(status);
+        resolve10(status);
       };
       void this.get(id).then((item) => {
         if (settled) return;
@@ -8007,7 +8185,7 @@ function createWindowsDpapiProtector() {
   };
 }
 function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const child = spawn3(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -8034,7 +8212,7 @@ function runPowerShellStdin(command, stdinData, op) {
         reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
         return;
       }
-      resolve9(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+      resolve10(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
     });
     child.stdin?.on("error", (err) => {
       reject(
@@ -8773,6 +8951,9 @@ var AgentProfileCatalog = class {
   }
 };
 
+// src/runtime/agent-runtime.ts
+import * as path12 from "node:path";
+
 // src/runtime/process-supervisor.ts
 import { spawn as spawn4 } from "node:child_process";
 var ProcessSupervisor = class {
@@ -8907,13 +9088,13 @@ var ProcessSupervisor = class {
       this.children.delete(sessionId);
       return;
     }
-    await new Promise((resolve9) => {
+    await new Promise((resolve10) => {
       const done = () => {
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = void 0;
         }
-        resolve9();
+        resolve10();
       };
       if (live.exited) {
         done();
@@ -8942,14 +9123,14 @@ var ProcessSupervisor = class {
     const pid = live.child.pid;
     if (pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve9) => {
+      await new Promise((resolve10) => {
         const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve9());
-        killer.on("error", () => resolve9());
-        setTimeout(resolve9, 1500);
+        killer.on("exit", () => resolve10());
+        killer.on("error", () => resolve10());
+        setTimeout(resolve10, 1500);
       });
     } else {
       try {
@@ -8958,11 +9139,11 @@ var ProcessSupervisor = class {
       }
     }
     if (!live.exited) {
-      await new Promise((resolve9) => {
-        const t = setTimeout(resolve9, 500);
+      await new Promise((resolve10) => {
+        const t = setTimeout(resolve10, 500);
         live.child.once("exit", () => {
           clearTimeout(t);
-          resolve9();
+          resolve10();
         });
       });
     }
@@ -8991,6 +9172,7 @@ var AgentRuntime = class {
     this.profiles = /* @__PURE__ */ new Map();
     this.adapters = /* @__PURE__ */ new Map();
     this.managed = /* @__PURE__ */ new Map();
+    this.resumeInFlight = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
     this.closed = false;
@@ -9251,26 +9433,170 @@ var AgentRuntime = class {
     if (!profile) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
     const adapter = this.adapters.get(record.adapterId);
     if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
-    const token = req.resumeToken ?? record.resumeToken;
-    if (!token) {
+    const tokenRaw = req.resumeToken ?? record.resumeToken;
+    if (!tokenRaw) {
       throw new Error(`Session ${req.sessionId} has no resume token`);
     }
     if (!adapter.capabilities().canResume && !profile.fake?.canResume) {
       throw new Error(`Adapter ${adapter.id} cannot resume`);
     }
-    const cwd = req.runtimeWorkspace?.cwd ?? req.cwd ?? record.runtimeWorkspace?.cwd;
+    const recordedCwd = record.runtimeWorkspace?.cwd;
+    const requestedCwd = req.runtimeWorkspace?.cwd ?? req.cwd;
+    if (recordedCwd && requestedCwd && !sameRuntimeCwd(recordedCwd, requestedCwd)) {
+      throw new Error(
+        `resumeSession cwd mismatch: recorded=${recordedCwd} requested=${requestedCwd}`
+      );
+    }
+    const cwd = recordedCwd ?? requestedCwd;
     if (!cwd) throw new Error("resumeSession requires a cwd");
-    return this.startSession({
-      sessionId: req.sessionId,
-      profileId: record.profileId,
-      roleName: record.roleName,
-      workspaceLane: record.workspaceLane,
-      runtimeWorkspace: { cwd },
-      workspace: record.workspace,
-      lastTaskId: record.lastTaskId,
-      env: req.env,
-      bootstrapPrompt: void 0
-    });
+    if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
+      return this.startSession({
+        sessionId: req.sessionId,
+        profileId: record.profileId,
+        roleName: record.roleName,
+        workspaceLane: record.workspaceLane,
+        runtimeWorkspace: { cwd },
+        workspace: record.workspace,
+        lastTaskId: record.lastTaskId,
+        env: req.env,
+        bootstrapPrompt: void 0
+      });
+    }
+    if (typeof adapter.resumeManagedSession !== "function") {
+      throw new Error(
+        `Adapter ${adapter.id} advertises canResume but does not implement resumeManagedSession`
+      );
+    }
+    const resumeManagedSession = adapter.resumeManagedSession.bind(adapter);
+    const existingResume = this.resumeInFlight.get(req.sessionId);
+    if (existingResume) return existingResume;
+    const operation = (async () => {
+      let resumedManaged;
+      if (SessionRegistry.isNonTerminal(record.state)) {
+        const managed = this.managed.get(req.sessionId);
+        if (managed?.isAlive()) {
+          throw new Error(`Session already active: ${req.sessionId}`);
+        }
+        this.managed.delete(req.sessionId);
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      await this.registry.update(req.sessionId, {
+        state: "starting",
+        pid: void 0,
+        lastError: void 0,
+        exitCode: void 0,
+        stopReason: void 0,
+        runtimeWorkspace: { cwd },
+        updatedAt: now
+      });
+      this.emit({ type: "session.starting", sessionId: req.sessionId });
+      try {
+        const resolvedEnv = await this.resolveCredentialEnv(profile);
+        const plan = {
+          sessionId: req.sessionId,
+          profileId: profile.id,
+          roleName: record.roleName,
+          cwd,
+          env: { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv },
+          bootstrapPrompt: req.bootstrapPrompt,
+          command: profile.command,
+          args: profile.args,
+          extras: {
+            fake: profile.fake,
+            acp: profile.acp
+          }
+        };
+        const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
+        let sawLive = false;
+        let terminalDuringManagedStart;
+        const managed = await resumeManagedSession(
+          plan,
+          resumeToken,
+          (ev) => {
+            if (ev.type === "session.live") sawLive = true;
+            if (ev.type === "session.failed") {
+              terminalDuringManagedStart = { state: "failed", error: ev.error };
+              void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+            } else if (ev.type === "session.exited") {
+              terminalDuringManagedStart = {
+                state: "stopped",
+                exitCode: ev.exitCode
+              };
+              void this.onManagedTerminal(
+                req.sessionId,
+                "stopped",
+                void 0,
+                ev.exitCode
+              );
+            } else if (ev.type === "session.waiting_user") {
+              void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
+            } else if (ev.type === "session.live") {
+              void this.registry.update(req.sessionId, {
+                state: "live",
+                ...ev.pid != null ? { pid: ev.pid } : {}
+              }).catch(() => void 0);
+            }
+            this.emit(ev);
+          }
+        );
+        resumedManaged = managed;
+        if (terminalDuringManagedStart) {
+          const terminal = terminalDuringManagedStart;
+          await this.onManagedTerminal(
+            req.sessionId,
+            terminal.state,
+            terminal.state === "failed" ? terminal.error : void 0,
+            terminal.state === "stopped" ? terminal.exitCode : void 0
+          );
+          throw Object.assign(
+            new Error(
+              terminal.state === "failed" ? terminal.error : `Managed session exited during resume (code=${terminal.exitCode})`
+            ),
+            { terminalAlreadyEmitted: true }
+          );
+        }
+        this.managed.set(req.sessionId, managed);
+        const pid = managed.pid;
+        const nextToken = managed.providerSessionId?.trim() || tokenRaw;
+        const live = await this.registry.update(req.sessionId, {
+          state: "live",
+          pid,
+          resumeToken: nextToken,
+          lastError: void 0,
+          exitCode: void 0,
+          stopReason: void 0,
+          runtimeWorkspace: { cwd }
+        });
+        if (!sawLive) {
+          this.emit({ type: "session.live", sessionId: req.sessionId, pid });
+        }
+        return handleFrom(live);
+      } catch (err) {
+        this.managed.delete(req.sessionId);
+        if (resumedManaged) {
+          await resumedManaged.stop("interrupt").catch(() => void 0);
+        }
+        const rawMessage = err instanceof Error ? err.message : String(err);
+        const message = redactRuntimeValue(rawMessage, tokenRaw);
+        const failed = await this.registry.update(req.sessionId, {
+          state: "failed",
+          lastError: message,
+          pid: void 0
+        });
+        if (!err?.terminalAlreadyEmitted) {
+          this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+        }
+        throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      }
+    })();
+    this.resumeInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.resumeInFlight.get(req.sessionId) === operation) {
+        this.resumeInFlight.delete(req.sessionId);
+      }
+    }
   }
   async stopSession(sessionId, reason) {
     this.assertOpen();
@@ -9494,13 +9820,21 @@ var AgentRuntime = class {
     if (this.closed) throw new Error("AgentRuntime is shut down");
   }
 };
+function sameRuntimeCwd(left, right) {
+  const a = path12.resolve(left);
+  const b = path12.resolve(right);
+  return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
+}
+function redactRuntimeValue(message, value) {
+  return value ? message.split(value).join("[provider-session]") : message;
+}
 function createAgentRuntime(options) {
   return new AgentRuntime(options);
 }
 
 // src/service/service.ts
 import * as os5 from "node:os";
-import * as path12 from "node:path";
+import * as path13 from "node:path";
 import { fileURLToPath } from "node:url";
 var SERVICE_VERSION = "0.1.0-b5";
 async function startLocalTentService(options = {}) {
@@ -9723,11 +10057,11 @@ async function startLocalTentService(options = {}) {
   };
 }
 function defaultPackageRoot() {
-  const here = path12.dirname(fileURLToPath(import.meta.url));
-  if (path12.basename(here) === "service" && path12.basename(path12.dirname(here)) === "src") {
-    return path12.resolve(here, "../..");
+  const here = path13.dirname(fileURLToPath(import.meta.url));
+  if (path13.basename(here) === "service" && path13.basename(path13.dirname(here)) === "src") {
+    return path13.resolve(here, "../..");
   }
-  return path12.resolve(here);
+  return path13.resolve(here);
 }
 
 // src/service/cli.ts
@@ -9777,10 +10111,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path13.resolve(dataDir) : void 0
+    dataDir: dataDir ? path14.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path13.resolve(mountPath));
+    const info = await service.hostApi.mount(path14.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }

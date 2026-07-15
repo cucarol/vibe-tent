@@ -1450,7 +1450,6 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     );
   }
 
-  const sessionId = makeSessionId();
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane =
     task.workspace || task.worktree || task.branch
@@ -1472,19 +1471,65 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       systemRoot: mount.systemRoot,
     });
 
+  // After service restart: waiting task may still hold the old Tent sessionId.
+  // When probe says resumeCapable (provider token + canResume), reuse that session
+  // via native load — never cross worktree/cwd. Otherwise keep create-new semantics.
+  const priorSessionId = task.sessionId?.trim() || "";
+  let resumePrior = false;
+  if (priorSessionId) {
+    try {
+      const probe = await ctx.runtime.probe(priorSessionId);
+      if (probe.resumeCapable && !probe.alive) {
+        const prior = await ctx.runtime.registry.read(priorSessionId);
+        const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
+        const cwdMatches =
+          !!recordedCwd &&
+          isSameWorkspaceRoot(nodePath.resolve(recordedCwd), nodePath.resolve(cwd));
+        const profileMatches = !prior?.profileId || prior.profileId === profileId;
+        const workspaceMatches = prior?.workspace === workspaceId;
+        const roleMatches = prior?.roleName === task.role;
+        const taskMatches =
+          prior?.lastTaskId === taskPath ||
+          (!!task.id && prior?.lastTaskId === task.id);
+        resumePrior =
+          cwdMatches &&
+          profileMatches &&
+          workspaceMatches &&
+          roleMatches &&
+          taskMatches;
+      }
+    } catch (err) {
+      // A stale task.sessionId whose machine-local registry row was cleaned is
+      // not a resume candidate. Preserve the established create-new behavior;
+      // only unexpected probe failures are surfaced.
+      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
+        throw err;
+      }
+    }
+  }
+
   let handle;
   try {
-    handle = await ctx.runtime.startSession({
-      sessionId,
-      profileId,
-      roleName: task.role,
-      workspaceLane,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap,
-      lastTaskId: task.id || taskPath,
-      workspace: workspaceId,
-    });
+    if (resumePrior) {
+      handle = await ctx.runtime.resumeSession({
+        sessionId: priorSessionId,
+        runtimeWorkspace: { cwd },
+        cwd,
+        bootstrapPrompt: sessionBootstrap,
+      });
+    } else {
+      handle = await ctx.runtime.startSession({
+        sessionId: makeSessionId(),
+        profileId,
+        roleName: task.role,
+        workspaceLane,
+        runtimeWorkspace: { cwd },
+        cwd,
+        bootstrapPrompt: sessionBootstrap,
+        lastTaskId: task.id || taskPath,
+        workspace: workspaceId,
+      });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // Launch/process failure → taskFail (releases occupation) + no live session.
@@ -1514,7 +1559,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         state: handle.state,
         profileId: handle.profileId,
         taskPath,
-        reason: "task.startSession",
+        reason: resumePrior ? "task.startSession.resume" : "task.startSession",
       },
       "self"
     );

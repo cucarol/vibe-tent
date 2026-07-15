@@ -2529,6 +2529,319 @@ test("task.startSession resumes any waiting (external/a2a) before launch", async
   });
 });
 
+test("task.startSession reuses old sessionId via native load when resumeCapable after restart", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("resume-reuse-ss");
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-resume-log-")),
+    "mock-acp-log-resume.json"
+  );
+  const profile = mockAcpProfile("mock-acp-resume", {
+    logPath,
+    promptText: "RESUME_REUSE_OK",
+    keepAlive: true,
+  });
+  profile.env = {
+    ...profile.env,
+    MOCK_ACP_LOAD_SESSION: "1",
+    MOCK_ACP_HISTORY_TEXT: "HISTORY_MUST_NOT_AUTO_DELIVER",
+  };
+
+  // Simulate post-restart disk: waiting task still holds old ss- id; session row has
+  // provider resume token; process is dead (no managed Map).
+  const priorSessionId = "ss-reuse01";
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "resume reuse after restart",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      // Claim fills worktree lane; use that as recorded session cwd.
+      const claimed = await rpc(svc, "task.get", { workspaceId, taskPath });
+      const task = (
+        claimed.result as {
+          task: { worktree?: string; workspace?: string; branch?: string };
+        }
+      ).task;
+      const cwd = task.worktree || ws;
+      assert.ok(cwd);
+
+      await svc.runtime.registry.write({
+        id: priorSessionId,
+        profileId: "mock-acp-resume",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        roleName: "executor",
+        state: "stopped",
+        resumeToken: "mock-acp-session-1",
+        runtimeWorkspace: { cwd },
+        workspace: workspaceId,
+        workspaceLane: task.worktree
+          ? {
+              workspace: task.workspace || ws,
+              worktree: task.worktree,
+              branch: task.branch || "HEAD",
+            }
+          : undefined,
+        lastTaskId: taskPath,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      });
+
+      // Bind task.sessionId + park waiting (external) as mount reconcile would.
+      const mount = svc.ctx.host.require(workspaceId);
+      await svc.ctx.mutations.run(workspaceId, async () => {
+        svc.ctx.host.markSelfWrite(workspaceId);
+        await patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: priorSessionId,
+          updatedAt: mount.env.clock.now(),
+        });
+      });
+      await rpc(svc, "task.wait", {
+        workspaceId,
+        taskPath,
+        reason: "external",
+        summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+      });
+
+      const probe = await svc.runtime.probe(priorSessionId);
+      assert.equal(probe.alive, false);
+      assert.equal(probe.resumeCapable, true, JSON.stringify(probe));
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-acp-resume",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const result = started.result as {
+        session: { sessionId: string };
+        task: { sessionId?: string; state: string };
+      };
+      assert.equal(
+        result.session.sessionId,
+        priorSessionId,
+        "must reuse old Tent sessionId, not allocate a new ss-"
+      );
+      assert.equal(result.task.sessionId, priorSessionId);
+      // Resume returns live quickly; bootstrap may already have auto-delivered.
+      assert.ok(
+        result.task.state === "running" || result.task.state === "delivered",
+        `unexpected task state ${result.task.state}`
+      );
+
+      const log = await pollUntil(async () => {
+        try {
+          const raw = await fs.readFile(logPath, "utf8");
+          const parsed = JSON.parse(raw) as {
+            methods: string[];
+            loads?: Array<{ sessionId: string; cwd: string }>;
+          };
+          return parsed.methods.includes("session/load") ? parsed : null;
+        } catch {
+          return null;
+        }
+      }, 10_000, "session/load in mock log");
+      assert.ok(log.methods.includes("session/load"));
+      assert.ok(!log.methods.includes("session/new"));
+      assert.equal(log.loads?.[0]?.sessionId, "mock-acp-session-1");
+      assert.equal(path.resolve(log.loads?.[0]?.cwd || ""), path.resolve(cwd));
+
+      // History replay must not become delivery summary; only post-load prompt text.
+      const delivery = await pollUntil(async () => {
+        const list = await rpc(svc, "delivery.list", { workspaceId });
+        const deliveries = (
+          list.result as { deliveries: Array<{ summary: string }> }
+        ).deliveries;
+        return deliveries[0] ?? null;
+      }, 10_000, "auto-delivery after resume bootstrap");
+      assert.equal(delivery.summary, "RESUME_REUSE_OK");
+      assert.doesNotMatch(delivery.summary, /HISTORY/);
+    },
+    { profiles: [profile] }
+  );
+});
+
+test("task.startSession allocates new session when prior token not resumeCapable", async () => {
+  // Codex-shaped profile: canResume=false even if a resumeToken were present.
+  // Use fake-default for simplicity — no resumeManagedSession path.
+  const ws = await makeWorkspace("resume-no-capable");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "no resume reuse",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const firstId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await rpc(svc, "task.wait", {
+      workspaceId,
+      taskPath,
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+    // Force dead non-resume probe shape on the bound session.
+    await svc.runtime.registry.update(firstId, {
+      state: "stopped",
+      pid: undefined,
+      resumeToken: undefined,
+    });
+
+    const started2 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started2.error, JSON.stringify(started2.error));
+    const secondId = (started2.result as { session: { sessionId: string } }).session
+      .sessionId;
+    assert.notEqual(secondId, firstId);
+  });
+});
+
+test("task.startSession ignores a stale sessionId whose machine registry row is gone", async () => {
+  const ws = await makeWorkspace("resume-missing-registry");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "stale session binding",
+    });
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const missingSessionId = "ss-missing01";
+    const mount = svc.ctx.host.require(workspaceId);
+    await svc.ctx.mutations.run(workspaceId, async () => {
+      svc.ctx.host.markSelfWrite(workspaceId);
+      await patchTaskEnvelope(mount.env.fs, taskPath, {
+        sessionId: missingSessionId,
+        updatedAt: mount.env.clock.now(),
+      });
+    });
+    await rpc(svc, "task.wait", {
+      workspaceId,
+      taskPath,
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+    assert.notEqual(sessionId, missingSessionId);
+  });
+});
+
+test("task.startSession does not resume a provider session bound to another workspace", async () => {
+  const ws = await makeWorkspace("resume-workspace-boundary");
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-resume-boundary-")),
+    "mock-acp-log.json"
+  );
+  const profile = mockAcpProfile("mock-acp-boundary", {
+    logPath,
+    promptText: "NEW_SESSION_OK",
+    keepAlive: true,
+  });
+  profile.env = { ...profile.env, MOCK_ACP_LOAD_SESSION: "1" };
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const dispatched = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "workspace-bound resume",
+      });
+      const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const loaded = await rpc(svc, "task.get", { workspaceId, taskPath });
+      const task = (loaded.result as { task: { id?: string; worktree?: string } }).task;
+      const cwd = task.worktree || ws;
+      const priorSessionId = "ss-otherws01";
+      const now = new Date().toISOString();
+      await svc.runtime.registry.write({
+        id: priorSessionId,
+        profileId: "mock-acp-boundary",
+        adapterId: GROK_ACP_ADAPTER_ID,
+        roleName: "executor",
+        state: "stopped",
+        resumeToken: "mock-acp-session-1",
+        runtimeWorkspace: { cwd },
+        workspace: "different-workspace-id",
+        lastTaskId: task.id || taskPath,
+        createdAt: now,
+        updatedAt: now,
+      });
+      const mount = svc.ctx.host.require(workspaceId);
+      await svc.ctx.mutations.run(workspaceId, async () => {
+        svc.ctx.host.markSelfWrite(workspaceId);
+        await patchTaskEnvelope(mount.env.fs, taskPath, {
+          sessionId: priorSessionId,
+          updatedAt: mount.env.clock.now(),
+        });
+      });
+      await rpc(svc, "task.wait", {
+        workspaceId,
+        taskPath,
+        reason: "external",
+        summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+      });
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-acp-boundary",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const newSessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+      assert.notEqual(newSessionId, priorSessionId);
+      const log = await pollUntil(async () => {
+        try {
+          return JSON.parse(await fs.readFile(logPath, "utf8")) as {
+            methods: string[];
+          };
+        } catch {
+          return null;
+        }
+      }, 8_000, "new ACP session log");
+      assert.ok(log.methods.includes("session/new"));
+      assert.ok(!log.methods.includes("session/load"));
+    },
+    { profiles: [profile] }
+  );
+});
+
 test("P0 fix: concurrent dispatch same role serializes worktree ensure (no race)", async () => {
   const ws = await makeWorkspace("p0-concurrent-lane");
   await initGitOnWorkspace(ws);

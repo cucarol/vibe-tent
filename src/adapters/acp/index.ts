@@ -5,6 +5,9 @@ export {
   AcpClient,
   PERMISSION_FAILSAFE_SLACK_MS,
   type AcpClientOptions,
+  type AcpConnectMode,
+  type AcpConnectOptions,
+  type AcpConnectResult,
   type AcpStartResult,
 } from "./client.js";
 export {
@@ -22,13 +25,16 @@ export {
 export {
   AcpManagedSession,
   bindAcpPermissionHooks,
+  loadSessionAcpCapabilities,
   mapAcpProcessExit,
   mainstreamAcpCapabilities,
   parseAcpResumeToken,
+  resumeManagedAcpSession,
   startManagedAcpSession,
   stopAcpClientQuiet,
   type AcpPermissionAskHooks,
   type ManagedAcpClient,
+  type ResumeManagedAcpSessionInput,
   type StartManagedAcpSessionInput,
 } from "./managed-session.js";
 export {

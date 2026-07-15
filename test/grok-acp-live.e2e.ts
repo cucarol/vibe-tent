@@ -10,6 +10,7 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { DEFAULT_GROK_BASE_URL_ENV_KEY, DEFAULT_GROK_ENV_KEY, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
+import { createAgentRuntime, type RuntimeEvent } from "../src/runtime/index.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 
@@ -27,6 +28,43 @@ async function pollUntil<T>(
     await new Promise((resolve) => setTimeout(resolve, 250));
   }
   throw new Error("Timed out waiting for real Grok ACP delivery");
+}
+
+function waitForRuntimeEvent(
+  events: RuntimeEvent[],
+  type: RuntimeEvent["type"],
+  sessionId: string,
+  timeoutMs = 180_000
+): Promise<RuntimeEvent> {
+  return pollUntil(
+    async () =>
+      events.find((event) => event.type === type && event.sessionId === sessionId) ??
+      null,
+    timeoutMs
+  );
+}
+
+function liveProfile() {
+  return {
+    id: "grok-live-e2e",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    acp: {
+      model: process.env.CPA_GROK_MODEL || "grok-4.5",
+      envKey: DEFAULT_GROK_ENV_KEY,
+      baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
+      permissionPolicy: "deny" as const,
+      promptTimeoutMs: 180_000,
+    },
+  };
+}
+
+async function rmTreeWithRetry(target: string): Promise<void> {
+  await fs.rm(target, {
+    recursive: true,
+    force: true,
+    maxRetries: 20,
+    retryDelay: 100,
+  });
 }
 
 test("real Grok ACP: dispatch → managed report → manual accept", async () => {
@@ -49,19 +87,7 @@ test("real Grok ACP: dispatch → managed report → manual accept", async () =>
   const svc = await startLocalTentService({
     dataDir,
     writeEndpoint: false,
-    profiles: [
-      {
-        id: "grok-live-e2e",
-        adapterId: GROK_ACP_ADAPTER_ID,
-        acp: {
-          model: process.env.CPA_GROK_MODEL || "grok-4.5",
-          envKey: DEFAULT_GROK_ENV_KEY,
-          baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
-          permissionPolicy: "deny",
-          promptTimeoutMs: 180_000,
-        },
-      },
-    ],
+    profiles: [liveProfile()],
   });
   const rpc = (method: string, params?: Record<string, unknown>) =>
     rpcCall(svc.url, method, params, { token: svc.token });
@@ -114,7 +140,66 @@ test("real Grok ACP: dispatch → managed report → manual accept", async () =>
     assert.ok(!accepted.error, JSON.stringify(accepted.error));
   } finally {
     await svc.stop();
-    await fs.rm(workspace, { recursive: true, force: true });
-    await fs.rm(dataDir, { recursive: true, force: true });
+    await rmTreeWithRetry(workspace);
+    await rmTreeWithRetry(dataDir);
+  }
+});
+
+test("real Grok ACP: stop bridge → native session/load → recover prior context", async () => {
+  assert.ok(apiKey, `${DEFAULT_GROK_ENV_KEY} is required`);
+  assert.ok(baseUrl, `${DEFAULT_GROK_BASE_URL_ENV_KEY} is required`);
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-grok-resume-data-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-grok-resume-cwd-"));
+  const sessionId = "ss-groklive1";
+  const nonce = `TENT_RSM_${Date.now().toString(36).toUpperCase()}`;
+  let firstRuntime = createAgentRuntime({ dataDir, profiles: [liveProfile()] });
+  const firstEvents: RuntimeEvent[] = [];
+  firstRuntime.subscribeAll((event) => firstEvents.push(event));
+
+  try {
+    await firstRuntime.startSession({
+      sessionId,
+      profileId: "grok-live-e2e",
+      cwd,
+      bootstrapPrompt:
+        `Remember the secret nonce ${nonce} for our next turn. ` +
+        "Reply only with FIRST_READY. Do not call tools.",
+    });
+    const firstComplete = (await waitForRuntimeEvent(
+      firstEvents,
+      "session.prompt_complete",
+      sessionId
+    )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
+    assert.match(firstComplete.assistantText, /FIRST_READY/i);
+    const beforeStop = await firstRuntime.registry.read(sessionId);
+    assert.ok(beforeStop?.resumeToken, "real Grok session must persist provider session id");
+    await firstRuntime.stopSession(sessionId, "user");
+    await firstRuntime.shutdown();
+
+    const secondRuntime = createAgentRuntime({ dataDir, profiles: [liveProfile()] });
+    firstRuntime = secondRuntime;
+    const secondEvents: RuntimeEvent[] = [];
+    secondRuntime.subscribeAll((event) => secondEvents.push(event));
+    const resumed = await secondRuntime.resumeSession({
+      sessionId,
+      cwd,
+      bootstrapPrompt:
+        "Reply only with SECOND_OK followed by the secret nonce from our previous turn. " +
+        "Do not call tools and do not invent a nonce.",
+    });
+    assert.equal(resumed.sessionId, sessionId);
+    const secondComplete = (await waitForRuntimeEvent(
+      secondEvents,
+      "session.prompt_complete",
+      sessionId
+    )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
+    assert.match(secondComplete.assistantText, /SECOND_OK/i);
+    assert.match(secondComplete.assistantText, new RegExp(nonce));
+    await secondRuntime.stopSession(sessionId, "user");
+  } finally {
+    await firstRuntime.shutdown().catch(() => undefined);
+    await rmTreeWithRetry(cwd);
+    await rmTreeWithRetry(dataDir);
   }
 });

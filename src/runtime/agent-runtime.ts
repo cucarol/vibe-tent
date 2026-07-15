@@ -1,6 +1,7 @@
 // AgentRuntimePort implementation — service-internal only (B0 §4).
 // Maps ProcessSupervisor + SessionRegistry + ProviderAdapter; no task/box writes.
 
+import * as path from "node:path";
 import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
@@ -84,6 +85,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly profiles = new Map<string, AgentProfileConfig>();
   private readonly adapters = new Map<string, ProviderAdapter>();
   private readonly managed = new Map<string, ManagedSession>();
+  private readonly resumeInFlight = new Map<string, Promise<SessionHandle>>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
@@ -398,32 +400,207 @@ export class AgentRuntime implements AgentRuntimePort {
     const adapter = this.adapters.get(record.adapterId);
     if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
 
-    const token = req.resumeToken ?? record.resumeToken;
-    if (!token) {
+    const tokenRaw = req.resumeToken ?? record.resumeToken;
+    if (!tokenRaw) {
       throw new Error(`Session ${req.sessionId} has no resume token`);
     }
     if (!adapter.capabilities().canResume && !profile.fake?.canResume) {
       throw new Error(`Adapter ${adapter.id} cannot resume`);
     }
 
-    // Fake resume: re-spawn with same cwd; real providers will use parseResumeToken.
-    const cwd =
-      req.runtimeWorkspace?.cwd ??
-      req.cwd ??
-      record.runtimeWorkspace?.cwd;
+    // Must reuse recorded cwd / lane — never cross worktrees on load.
+    const recordedCwd = record.runtimeWorkspace?.cwd;
+    const requestedCwd = req.runtimeWorkspace?.cwd ?? req.cwd;
+    if (recordedCwd && requestedCwd && !sameRuntimeCwd(recordedCwd, requestedCwd)) {
+      throw new Error(
+        `resumeSession cwd mismatch: recorded=${recordedCwd} requested=${requestedCwd}`
+      );
+    }
+    const cwd = recordedCwd ?? requestedCwd;
     if (!cwd) throw new Error("resumeSession requires a cwd");
 
-    return this.startSession({
-      sessionId: req.sessionId,
-      profileId: record.profileId,
-      roleName: record.roleName,
-      workspaceLane: record.workspaceLane,
+    // Fake-only path: re-spawn via startSession (no provider-native load).
+    // Real ACP adapters with canResume must implement resumeManagedSession.
+    if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
+      return this.startSession({
+        sessionId: req.sessionId,
+        profileId: record.profileId,
+        roleName: record.roleName,
+        workspaceLane: record.workspaceLane,
+        runtimeWorkspace: { cwd },
+        workspace: record.workspace,
+        lastTaskId: record.lastTaskId,
+        env: req.env,
+        bootstrapPrompt: undefined,
+      });
+    }
+
+    if (typeof adapter.resumeManagedSession !== "function") {
+      throw new Error(
+        `Adapter ${adapter.id} advertises canResume but does not implement resumeManagedSession`
+      );
+    }
+    const resumeManagedSession = adapter.resumeManagedSession.bind(adapter);
+
+    const existingResume = this.resumeInFlight.get(req.sessionId);
+    if (existingResume) return existingResume;
+
+    const operation = (async (): Promise<SessionHandle> => {
+      let resumedManaged: ManagedSession | undefined;
+
+    // Existing non-terminal row is expected after service restart (stopped + token).
+    // Re-open the same Tent session id with a new bridge process + native load.
+    if (SessionRegistry.isNonTerminal(record.state)) {
+      const managed = this.managed.get(req.sessionId);
+      if (managed?.isAlive()) {
+        throw new Error(`Session already active: ${req.sessionId}`);
+      }
+      // Drop stale in-memory handle if present (dead after restart).
+      this.managed.delete(req.sessionId);
+    }
+
+    const now = new Date().toISOString();
+    await this.registry.update(req.sessionId, {
+      state: "starting",
+      pid: undefined,
+      lastError: undefined,
+      exitCode: undefined,
+      stopReason: undefined,
       runtimeWorkspace: { cwd },
-      workspace: record.workspace,
-      lastTaskId: record.lastTaskId,
-      env: req.env,
-      bootstrapPrompt: undefined,
+      updatedAt: now,
     });
+    this.emit({ type: "session.starting", sessionId: req.sessionId });
+
+    try {
+      const resolvedEnv = await this.resolveCredentialEnv(profile);
+      const plan = {
+        sessionId: req.sessionId,
+        profileId: profile.id,
+        roleName: record.roleName,
+        cwd,
+        env: { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv },
+        bootstrapPrompt: req.bootstrapPrompt,
+        command: profile.command,
+        args: profile.args,
+        extras: {
+          fake: profile.fake,
+          acp: profile.acp,
+        },
+      };
+
+      const resumeToken = adapter.parseResumeToken
+        ? adapter.parseResumeToken(tokenRaw)
+        : { raw: tokenRaw, providerSessionId: tokenRaw };
+
+      let sawLive = false;
+      let terminalDuringManagedStart:
+        | { state: "failed"; error: string }
+        | { state: "stopped"; exitCode: number | null }
+        | undefined;
+
+      const managed = await resumeManagedSession(
+        plan,
+        resumeToken,
+        (ev) => {
+          if (ev.type === "session.live") sawLive = true;
+          if (ev.type === "session.failed") {
+            terminalDuringManagedStart = { state: "failed", error: ev.error };
+            void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+          } else if (ev.type === "session.exited") {
+            terminalDuringManagedStart = {
+              state: "stopped",
+              exitCode: ev.exitCode,
+            };
+            void this.onManagedTerminal(
+              req.sessionId,
+              "stopped",
+              undefined,
+              ev.exitCode
+            );
+          } else if (ev.type === "session.waiting_user") {
+            void this.registry
+              .update(req.sessionId, { state: "waiting-user" })
+              .catch(() => undefined);
+          } else if (ev.type === "session.live") {
+            void this.registry
+              .update(req.sessionId, {
+                state: "live",
+                ...(ev.pid != null ? { pid: ev.pid } : {}),
+              })
+              .catch(() => undefined);
+          }
+          this.emit(ev);
+        }
+      );
+      resumedManaged = managed;
+
+      if (terminalDuringManagedStart) {
+        const terminal = terminalDuringManagedStart as
+          | { state: "failed"; error: string }
+          | { state: "stopped"; exitCode: number | null };
+        await this.onManagedTerminal(
+          req.sessionId,
+          terminal.state,
+          terminal.state === "failed" ? terminal.error : undefined,
+          terminal.state === "stopped" ? terminal.exitCode : undefined
+        );
+        throw Object.assign(
+          new Error(
+            terminal.state === "failed"
+              ? terminal.error
+              : `Managed session exited during resume (code=${terminal.exitCode})`
+          ),
+          { terminalAlreadyEmitted: true }
+        );
+      }
+
+      this.managed.set(req.sessionId, managed);
+      const pid = managed.pid;
+      // Keep original provider token; load reuses the same provider session id.
+      const nextToken =
+        managed.providerSessionId?.trim() || tokenRaw;
+
+      const live = await this.registry.update(req.sessionId, {
+        state: "live",
+        pid,
+        resumeToken: nextToken,
+        lastError: undefined,
+        exitCode: undefined,
+        stopReason: undefined,
+        runtimeWorkspace: { cwd },
+      });
+
+      if (!sawLive) {
+        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
+      }
+      return handleFrom(live);
+    } catch (err) {
+      this.managed.delete(req.sessionId);
+      if (resumedManaged) {
+        await resumedManaged.stop("interrupt").catch(() => undefined);
+      }
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = redactRuntimeValue(rawMessage, tokenRaw);
+      const failed = await this.registry.update(req.sessionId, {
+        state: "failed",
+        lastError: message,
+        pid: undefined,
+      });
+      if (!(err as { terminalAlreadyEmitted?: boolean })?.terminalAlreadyEmitted) {
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+      }
+      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+    }
+    })();
+
+    this.resumeInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.resumeInFlight.get(req.sessionId) === operation) {
+        this.resumeInFlight.delete(req.sessionId);
+      }
+    }
   }
 
   async stopSession(sessionId: string, reason: StopReason): Promise<void> {
@@ -694,6 +871,18 @@ export class AgentRuntime implements AgentRuntimePort {
   private assertOpen(): void {
     if (this.closed) throw new Error("AgentRuntime is shut down");
   }
+}
+
+function sameRuntimeCwd(left: string, right: string): boolean {
+  const a = path.resolve(left);
+  const b = path.resolve(right);
+  return process.platform === "win32"
+    ? a.toLowerCase() === b.toLowerCase()
+    : a === b;
+}
+
+function redactRuntimeValue(message: string, value: string): string {
+  return value ? message.split(value).join("[provider-session]") : message;
 }
 
 export function createAgentRuntime(options: AgentRuntimeOptions): AgentRuntime {
