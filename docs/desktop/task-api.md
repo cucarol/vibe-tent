@@ -210,17 +210,19 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `task.interrupt` | user; authorized orchestrator | No integrate; `interrupted`; clear occupation; keep git lane |
 | `task.cancel` | user; `queued` only | Drop unclaimed task |
 | `docs.fork` | user; authorized orchestration | Fork box/concept subtree for parallel work (see §2.4); not a task transition |
-| `proposal.submit` / `proposal.resolve` | existing semantics | **Separate** from delivery review |
+| `proposal.submit` | submitting role (CLI `TENT_ROLE`) | Create/replace proposal file under `temp/<role>/proposals/<boxId>.md` as `pending`. Core rejects empty body, missing/duplicate box, unsafe role, and a second concurrent pending. Does **not** auto-apply body to the box. |
+| `proposal.resolve` | **user only** (`actor` default `user`; non-user → RPC deny) | Accept or reject a **pending** proposal; reload and return terminal projection. Separate from delivery review. |
 
 ### 3.2 Queries and events
 
 - `task.get` / `task.list({ boxId, role, state })`
 - `delivery.get` / `delivery.list`
+- `proposal.list({ workspaceId, boxId?, status? })` — `status` = `pending` (default) \| `accepted` \| `rejected` \| `all`; returns `{ proposals }` projections (`path`, `boxId`, `role`, `status`, `createdAt?`, `body`)
 - `session.get` / `session.list` (projections; no secrets/tokens in client payloads)
 - `a2a.listPending` / `a2a.resolve` — **spawn** gate only (role `a2aPolicy`); not tool permissions
 - `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, plus document events `concept.changed` / `concept.removed` from the docs group
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 

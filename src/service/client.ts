@@ -273,6 +273,32 @@ export class ServiceClient {
     return this.call("task.get", { workspaceId, taskPath });
   }
 
+  // ---- convenience: proposal (triage; separate from delivery review) ----
+  proposalList(
+    workspaceId: string,
+    opts?: { boxId?: string; status?: "pending" | "accepted" | "rejected" | "all" }
+  ) {
+    return this.call("proposal.list", { workspaceId, ...opts });
+  }
+  proposalSubmit(
+    workspaceId: string,
+    args: { boxId: string; role: string; body: string }
+  ) {
+    return this.call("proposal.submit", { workspaceId, ...args });
+  }
+  /**
+   * User-only resolve (accept|reject). actor defaults to "user";
+   * non-user actors are rejected by the service.
+   */
+  proposalResolve(
+    workspaceId: string,
+    path: string,
+    decision: "accept" | "reject",
+    actor = "user"
+  ) {
+    return this.call("proposal.resolve", { workspaceId, path, decision, actor });
+  }
+
   sessionList(workspaceId?: string) {
     return this.call("session.list", workspaceId ? { workspaceId } : {});
   }

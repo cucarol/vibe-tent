@@ -97,13 +97,15 @@ function externalPath(tent: string, ...parts: string[]): string {
   return path.join(tent, ...parts);
 }
 
-/** Every legacy mutation command sealed on in-workspace `.tent` (must stay exhaustive). */
+/**
+ * Every legacy mutation command sealed on in-workspace `.tent` (must stay exhaustive).
+ * `propose` is service-routed on in-workspace and is not in this sealed set.
+ */
 const LEGACY_MUTATION_COMMANDS = [
   "dispatch",
   "task-ack",
   "task-cancel",
   "report",
-  "propose",
   "complete",
   "stamp",
   "grant-readable",
@@ -165,13 +167,12 @@ test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still 
   const find = await runCli(tent, "find", "no-such-tag-zzz");
   assert.match(find.stdout, /\(no matches\)/);
 
-  // Exhaustive: every mutation command is blocked (no silent write, no env escape).
+  // Exhaustive: every direct-core mutation command is blocked (no silent write, no env escape).
   const blockedSamples: Record<(typeof LEGACY_MUTATION_COMMANDS)[number], string[]> = {
     dispatch: ["cx-missing", "reviewer", "prompt"],
     "task-ack": ["temp/reviewer/tasks/x.md"],
     "task-cancel": ["temp/reviewer/tasks/x.md"],
     report: ["cx-missing", "-"],
-    propose: ["cx-missing", "-"],
     complete: ["cx-missing"],
     stamp: ["cx-missing"],
     "grant-readable": ["cx-missing"],

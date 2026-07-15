@@ -60,18 +60,19 @@ import {
 import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
 import { importExternalTentRoot } from "../core/migration.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
+import { runProposalSubmit } from "./proposal-rpc.js";
 
 /**
  * Legacy CLI commands that still direct-write core.
  * On in-workspace system root (`<workspace>/.tent`) these fail-loud — use tent task * / Desktop Service.
  * External / flat collab roots keep them for the migration window (no env escape hatch).
+ * `propose` is service-routed on in-workspace (not in this set).
  */
 const LEGACY_MUTATION_COMMANDS = new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
   "report",
-  "propose",
   "complete",
   "stamp",
   "grant-readable",
@@ -230,6 +231,7 @@ async function main() {
     ...LEGACY_MUTATION_COMMANDS,
     ...LEGACY_READONLY_COMMANDS,
     "role-init",
+    "propose",
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
@@ -242,6 +244,34 @@ async function main() {
   if (!cmd) return fail("Unknown command: (empty)");
   const systemRoot = env.tentRoot;
   if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
+
+  // in-workspace propose → Local Service RPC only (no dual-write / direct core path).
+  if (cmd === "propose" && isInWorkspaceSystemRoot(systemRoot)) {
+    const { positionals } = parseFlags(args);
+    const [boxId, bodySource] = positionals;
+    if (!boxId || !bodySource) {
+      return fail("Usage: tent propose <boxId> <bodyFile|->");
+    }
+    if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
+    const role = process.env.TENT_ROLE;
+    if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
+    const body =
+      bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
+    const workspace = workspaceRootFromSystemRoot(systemRoot);
+    const result = await runProposalSubmit(
+      { boxId, role, body },
+      {
+        cwd: workspace ?? process.cwd(),
+        workspace: workspace ?? undefined,
+        packageRoot: packageRoot(),
+      }
+    );
+    if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
+    if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : result.stderr + "\n");
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
   try {
     assertLegacyDirectWriteAllowed(cmd, systemRoot);
   } catch (error) {
@@ -676,9 +706,10 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ (or legacy external tent root) unless noted.
 
-Service-backed task lifecycle (required for Desktop / in-workspace collaboration mutates):
+Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
+  propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
 Init / machine config (always allowed):
@@ -705,7 +736,6 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
   report <boxId> <file|->            Submit a delivery report for triage.
-  propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
@@ -716,6 +746,7 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   okf-sync                           Regenerate OKF indexes and projected links.
+  propose <boxId> <file|->           External roots only: direct-core proposal submit.
 
 Options:
   -h, --help                         Show this help.
@@ -865,7 +896,12 @@ function ownerFor(box: import("../core/types.js").Box): string | undefined {
   return undefined;
 }
 
-main().catch((e) => {
-  console.error(e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+// Only auto-run when this file is the process entry (not when imported by tests).
+const entry = process.argv[1] ? path.resolve(process.argv[1]) : "";
+const thisFile = path.resolve(fileURLToPath(import.meta.url));
+if (entry && (entry === thisFile || entry === thisFile.replace(/\.ts$/i, ".js"))) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
+}

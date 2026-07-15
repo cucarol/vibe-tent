@@ -105,6 +105,19 @@ export type DeliveryProjection = {
   updatedAt?: string;
 };
 
+/**
+ * Proposal projection for triage — separate from task delivery review.
+ * Maps core Proposal; status is pending | accepted | rejected.
+ */
+export type ProposalProjection = {
+  path: string;
+  boxId: string;
+  role: string;
+  status: "pending" | "accepted" | "rejected";
+  createdAt?: string;
+  body: string;
+};
+
 export type SessionProjection = {
   sessionId: string;
   profileId: string;
@@ -233,6 +246,10 @@ export const CLIENT_METHODS = [
   "task.get",
   "delivery.list",
   "delivery.get",
+  /** Proposal triage — separate from task delivery review (task-api §3). */
+  "proposal.list",
+  "proposal.submit",
+  "proposal.resolve",
   "session.list",
   "session.get",
   "a2a.listPending",

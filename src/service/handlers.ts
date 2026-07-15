@@ -21,6 +21,14 @@ import {
 import { taskContextCard } from "../core/context-card.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
 import { loadDeliveries } from "../core/delivery.js";
+import {
+  acceptProposal,
+  loadProposal,
+  loadProposals,
+  rejectProposal,
+  submitProposal,
+  type Proposal,
+} from "../core/proposal.js";
 import { loadTypeRegistry } from "../core/typeRegistry.js";
 import { loadRolesRegistry, roleA2APolicy } from "../core/skillRoleRegistry.js";
 import {
@@ -73,6 +81,7 @@ import {
   type ArtifactRef,
   type ConceptProjection,
   type DeliveryProjection,
+  type ProposalProjection,
   type RoleRegistryEntryProjection,
   type SessionProjection,
   type TaskProjection,
@@ -239,6 +248,12 @@ export async function dispatchMethod(
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
+      case "proposal.list":
+        return proposalList(ctx, p);
+      case "proposal.submit":
+        return proposalSubmit(ctx, p);
+      case "proposal.resolve":
+        return proposalResolve(ctx, p);
       case "session.list":
         return sessionList(ctx, p);
       case "session.get":
@@ -1616,6 +1631,117 @@ async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
   const found = deliveries.find((d) => d.id === id);
   if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
   return { workspaceId, delivery: projectDelivery(found) };
+}
+
+// ---- proposal triage (separate from task delivery review) ----
+
+async function proposalList(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const boxId = optionalString(p, "boxId");
+  const statusRaw = optionalString(p, "status") ?? "pending";
+  if (
+    statusRaw !== "pending" &&
+    statusRaw !== "accepted" &&
+    statusRaw !== "rejected" &&
+    statusRaw !== "all"
+  ) {
+    throw new RpcError(-32602, `Invalid proposal status filter: ${statusRaw}`);
+  }
+
+  let proposals = await loadProposals(mount.env.fs);
+  if (boxId) proposals = proposals.filter((item) => item.boxId === boxId);
+  if (statusRaw !== "all") {
+    proposals = proposals.filter((item) => item.status === statusRaw);
+  }
+  return { proposals: proposals.map(projectProposal) };
+}
+
+async function proposalSubmit(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const boxId = requireString(p, "boxId");
+  const role = requireString(p, "role");
+  const body = requireString(p, "body");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, boxId, body);
+    emitProposalUpdated(ctx, workspaceId, proposal, "proposal.submit");
+    return { proposal: projectProposal(proposal) };
+  });
+}
+
+/**
+ * User-only resolve for pending proposals (accept | reject).
+ * Agent self-resolve is not accepted: actor must be "user" (or empty → user).
+ * Emits proposal.updated only after a successful core transition.
+ */
+async function proposalResolve(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const proposalPath = requireString(p, "path");
+  const decision = requireString(p, "decision");
+  if (decision !== "accept" && decision !== "reject") {
+    throw new RpcError(-32602, `Invalid proposal decision: ${decision}`);
+  }
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  // Hard user authority — roles/agents cannot resolve their own proposals.
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "proposal resolve is user-only; agent self-resolve is forbidden",
+      { actor: actorRaw }
+    );
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    if (decision === "accept") {
+      await acceptProposal(mount.env.fs, proposalPath);
+    } else {
+      await rejectProposal(mount.env.fs, proposalPath);
+    }
+    const proposal = await loadProposal(mount.env.fs, proposalPath);
+    emitProposalUpdated(
+      ctx,
+      workspaceId,
+      proposal,
+      decision === "accept" ? "proposal.accept" : "proposal.reject"
+    );
+    return { proposal: projectProposal(proposal) };
+  });
+}
+
+function projectProposal(proposal: Proposal): ProposalProjection {
+  return {
+    path: proposal.path,
+    boxId: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt,
+    body: proposal.body,
+  };
+}
+
+function emitProposalUpdated(
+  ctx: HandlerContext,
+  workspaceId: string,
+  proposal: Proposal,
+  reason: string
+): void {
+  ctx.events.emit(
+    "proposal.updated",
+    workspaceId,
+    {
+      path: proposal.path,
+      boxId: proposal.boxId,
+      role: proposal.role,
+      status: proposal.status,
+      reason,
+    },
+    "self"
+  );
 }
 
 async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {

@@ -2432,6 +2432,118 @@ function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
 }
 
+// src/core/proposal.ts
+async function submitProposal(fs13, clock, role, boxId, body) {
+  return withTentMutation(fs13, async () => submitProposalUnlocked(fs13, clock, role, boxId, body));
+}
+async function submitProposalUnlocked(fs13, clock, roleInput, boxId, body) {
+  const text = body.trim();
+  if (!text) throw new Error("Proposal body cannot be empty.");
+  const role = normalizeRole(roleInput);
+  const tent = await loadTent(fs13);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  const path15 = proposalPath(role, box.id);
+  if (await fs13.exists(path15)) {
+    const current = await loadProposal(fs13, path15);
+    if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
+  }
+  const proposal = {
+    path: path15,
+    boxId: box.id,
+    role,
+    status: "pending",
+    createdAt: clock.now(),
+    body: text
+  };
+  await ensureDir4(fs13, join("temp", role, "proposals"));
+  await writeProposal(fs13, proposal);
+  return proposal;
+}
+async function loadProposals(fs13) {
+  const proposals = [];
+  if (!await fs13.exists("temp")) return proposals;
+  for (const roleDir of await fs13.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join("temp", roleDir.name, "proposals");
+    if (!await fs13.exists(dir)) continue;
+    for (const entry of await fs13.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path15 = join(dir, entry.name);
+      try {
+        proposals.push(await loadProposal(fs13, path15));
+      } catch {
+      }
+    }
+  }
+  return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+}
+async function loadProposal(fs13, inputPath) {
+  const path15 = normalizeProposalPath(inputPath);
+  if (!await fs13.exists(path15)) throw new Error(`Proposal not found: ${path15}.`);
+  const { data, body } = parseFrontmatter(await fs13.readFile(path15));
+  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
+    throw new Error(`Invalid proposal format: ${path15}.`);
+  }
+  return {
+    path: path15,
+    boxId: data.box,
+    role: data.role,
+    status: data.status,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    body: body.trim()
+  };
+}
+async function acceptProposal(fs13, inputPath) {
+  await withTentMutation(fs13, async () => {
+    const proposal = await loadProposal(fs13, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
+    proposal.status = "accepted";
+    await writeProposal(fs13, proposal);
+  });
+}
+async function rejectProposal(fs13, inputPath) {
+  await withTentMutation(fs13, async () => {
+    const proposal = await loadProposal(fs13, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
+    proposal.status = "rejected";
+    await writeProposal(fs13, proposal);
+  });
+}
+function proposalPath(role, boxId) {
+  return join("temp", role, "proposals", `${boxId}.md`);
+}
+function normalizeProposalPath(input) {
+  const path15 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path15)) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  }
+  return path15;
+}
+async function writeProposal(fs13, proposal) {
+  const data = {
+    type: "proposal",
+    box: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt
+  };
+  await fs13.writeFile(
+    proposal.path,
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+  );
+}
+async function ensureDir4(fs13, path15) {
+  if (!await fs13.exists(path15)) await fs13.mkdir(path15);
+}
+function normalizeRole(role) {
+  const normalized = role.trim();
+  if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
+  if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
+  return normalized;
+}
+
 // src/core/workspace.ts
 import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
@@ -3244,6 +3356,10 @@ var CLIENT_METHODS = [
   "task.get",
   "delivery.list",
   "delivery.get",
+  /** Proposal triage — separate from task delivery review (task-api §3). */
+  "proposal.list",
+  "proposal.submit",
+  "proposal.resolve",
   "session.list",
   "session.get",
   "a2a.listPending",
@@ -5405,6 +5521,12 @@ async function dispatchMethod(ctx, method, params) {
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
+      case "proposal.list":
+        return proposalList(ctx, p);
+      case "proposal.submit":
+        return proposalSubmit(ctx, p);
+      case "proposal.resolve":
+        return proposalResolve(ctx, p);
       case "session.list":
         return sessionList(ctx, p);
       case "session.get":
@@ -6541,6 +6663,91 @@ async function deliveryGet(ctx, p) {
   const found = deliveries.find((d) => d.id === id);
   if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
   return { workspaceId, delivery: projectDelivery(found) };
+}
+async function proposalList(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const boxId = optionalString(p, "boxId");
+  const statusRaw = optionalString(p, "status") ?? "pending";
+  if (statusRaw !== "pending" && statusRaw !== "accepted" && statusRaw !== "rejected" && statusRaw !== "all") {
+    throw new RpcError(-32602, `Invalid proposal status filter: ${statusRaw}`);
+  }
+  let proposals = await loadProposals(mount.env.fs);
+  if (boxId) proposals = proposals.filter((item) => item.boxId === boxId);
+  if (statusRaw !== "all") {
+    proposals = proposals.filter((item) => item.status === statusRaw);
+  }
+  return { proposals: proposals.map(projectProposal) };
+}
+async function proposalSubmit(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const boxId = requireString(p, "boxId");
+  const role = requireString(p, "role");
+  const body = requireString(p, "body");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const proposal = await submitProposal(mount.env.fs, mount.env.clock, role, boxId, body);
+    emitProposalUpdated(ctx, workspaceId, proposal, "proposal.submit");
+    return { proposal: projectProposal(proposal) };
+  });
+}
+async function proposalResolve(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const proposalPath2 = requireString(p, "path");
+  const decision = requireString(p, "decision");
+  if (decision !== "accept" && decision !== "reject") {
+    throw new RpcError(-32602, `Invalid proposal decision: ${decision}`);
+  }
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "proposal resolve is user-only; agent self-resolve is forbidden",
+      { actor: actorRaw }
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    if (decision === "accept") {
+      await acceptProposal(mount.env.fs, proposalPath2);
+    } else {
+      await rejectProposal(mount.env.fs, proposalPath2);
+    }
+    const proposal = await loadProposal(mount.env.fs, proposalPath2);
+    emitProposalUpdated(
+      ctx,
+      workspaceId,
+      proposal,
+      decision === "accept" ? "proposal.accept" : "proposal.reject"
+    );
+    return { proposal: projectProposal(proposal) };
+  });
+}
+function projectProposal(proposal) {
+  return {
+    path: proposal.path,
+    boxId: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt,
+    body: proposal.body
+  };
+}
+function emitProposalUpdated(ctx, workspaceId, proposal, reason) {
+  ctx.events.emit(
+    "proposal.updated",
+    workspaceId,
+    {
+      path: proposal.path,
+      boxId: proposal.boxId,
+      role: proposal.role,
+      status: proposal.status,
+      reason
+    },
+    "self"
+  );
 }
 async function sessionList(ctx, p) {
   const workspaceId = optionalString(p, "workspaceId");

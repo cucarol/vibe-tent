@@ -154,11 +154,11 @@ async function listBundledSkillNames(packageRoot2) {
     throw err;
   }
   const skillNames = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (!SAFE_SKILL_NAME.test(entry.name)) continue;
-    if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) {
-      skillNames.push(entry.name);
+  for (const entry2 of entries) {
+    if (!entry2.isDirectory()) continue;
+    if (!SAFE_SKILL_NAME.test(entry2.name)) continue;
+    if (await existsPath(path.join(sourceDir, entry2.name, "SKILL.md"))) {
+      skillNames.push(entry2.name);
     }
   }
   skillNames.sort();
@@ -729,15 +729,15 @@ function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
       continue;
     }
     const coordination = resolveCoordinationFlag(name, raw, current);
-    const entry = {
+    const entry2 = {
       tier: "base",
       readable,
       writable,
       ...metadata,
       ...coordination !== void 0 ? { coordination } : {}
     };
-    delete entry.workspacePointer;
-    registry[name] = entry;
+    delete entry2.workspacePointer;
+    registry[name] = entry2;
   }
 }
 function resolveCoordinationFlag(name, raw, current) {
@@ -769,11 +769,11 @@ async function loadTent(fs8) {
   const roots = [];
   const typeRegistry = await loadTypeRegistry(fs8);
   const top = await fs8.listDir("");
-  for (const entry of top) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs8, entry.name, null, typeRegistry, roots);
+  for (const entry2 of top) {
+    if (!entry2.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
+    if (isSystemNoteName(entry2.name)) continue;
+    await loadBoxInto(fs8, entry2.name, null, typeRegistry, roots);
   }
   const order = await loadOrder(fs8);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
@@ -857,10 +857,10 @@ async function loadBox(fs8, path8, parent, registry) {
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
   const sub = await fs8.listDir(path8);
-  for (const entry of sub) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs8, join2(path8, entry.name), box, registry, box.children);
+  for (const entry2 of sub) {
+    if (!entry2.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
+    await loadBoxInto(fs8, join2(path8, entry2.name), box, registry, box.children);
   }
   return box;
 }
@@ -898,10 +898,10 @@ async function loadBoxInto(fs8, path8, parent, registry, target) {
     return;
   }
   const sub = await fs8.listDir(path8);
-  for (const entry of sub) {
-    if (!entry.isDir) continue;
-    if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs8, join2(path8, entry.name), parent, registry, target);
+  for (const entry2 of sub) {
+    if (!entry2.isDir) continue;
+    if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
+    await loadBoxInto(fs8, join2(path8, entry2.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -1465,9 +1465,9 @@ async function loadTaskEnvelopes(fs8) {
     if (!roleEntry.isDir) continue;
     const taskDir = join2("temp", roleEntry.name, "tasks");
     if (!await fs8.exists(taskDir)) continue;
-    for (const entry of await fs8.listDir(taskDir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path8 = join2(taskDir, entry.name);
+    for (const entry2 of await fs8.listDir(taskDir)) {
+      if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
+      const path8 = join2(taskDir, entry2.name);
       try {
         tasks.push(await loadTaskEnvelope(fs8, path8));
       } catch {
@@ -1734,9 +1734,9 @@ async function loadReports(fs8) {
     if (!roleDir.isDir) continue;
     const dir = join2("temp", roleDir.name, "reports");
     if (!await fs8.exists(dir)) continue;
-    for (const entry of await fs8.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path8 = join2(dir, entry.name);
+    for (const entry2 of await fs8.listDir(dir)) {
+      if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
+      const path8 = join2(dir, entry2.name);
       try {
         reports.push(await loadReport(fs8, path8));
       } catch {
@@ -1846,9 +1846,9 @@ ${box.body ?? `# ${boxName}
 }
 async function ensureWorkspaceGitignore(workspaceFs) {
   const path8 = ".gitignore";
-  const entry = `${TENT_SYSTEM_DIR}/`;
+  const entry2 = `${TENT_SYSTEM_DIR}/`;
   if (!await workspaceFs.exists(path8)) {
-    await workspaceFs.writeFile(path8, `${entry}
+    await workspaceFs.writeFile(path8, `${entry2}
 `);
     return;
   }
@@ -1856,12 +1856,12 @@ async function ensureWorkspaceGitignore(workspaceFs) {
   const lines = text.split(/\r?\n/);
   const has = lines.some((line) => {
     const t = line.trim();
-    return t === entry || t === TENT_SYSTEM_DIR || t === `/${entry}` || t === `/${TENT_SYSTEM_DIR}`;
+    return t === entry2 || t === TENT_SYSTEM_DIR || t === `/${entry2}` || t === `/${TENT_SYSTEM_DIR}`;
   });
   if (has) return;
-  const next = text.endsWith("\n") || text === "" ? `${text}${entry}
+  const next = text.endsWith("\n") || text === "" ? `${text}${entry2}
 ` : `${text}
-${entry}
+${entry2}
 `;
   await workspaceFs.writeFile(path8, next);
 }
@@ -2027,10 +2027,10 @@ async function uniqueSiblingPath(fs8, parentPath, base) {
 }
 async function copyTree(fs8, from, to) {
   await fs8.mkdir(to);
-  for (const entry of await fs8.listDir(from)) {
-    const src = join2(from, entry.name);
-    const dst = join2(to, entry.name);
-    if (entry.isDir) await copyTree(fs8, src, dst);
+  for (const entry2 of await fs8.listDir(from)) {
+    const src = join2(from, entry2.name);
+    const dst = join2(to, entry2.name);
+    if (entry2.isDir) await copyTree(fs8, src, dst);
     else await fs8.writeFile(dst, await fs8.readFile(src));
   }
 }
@@ -2565,9 +2565,9 @@ async function loadProposals(fs8) {
     if (!roleDir.isDir) continue;
     const dir = join2("temp", roleDir.name, "proposals");
     if (!await fs8.exists(dir)) continue;
-    for (const entry of await fs8.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path8 = join2(dir, entry.name);
+    for (const entry2 of await fs8.listDir(dir)) {
+      if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
+      const path8 = join2(dir, entry2.name);
       try {
         proposals.push(await loadProposal(fs8, path8));
       } catch {
@@ -3141,8 +3141,8 @@ async function migrateLegacySchema(fs8, options = {}) {
     await rewriteOperationalTree(fs8, idMap, report, dryRun);
   }
   const seen = /* @__PURE__ */ new Set();
-  report.idMap = report.idMap.filter((entry) => {
-    const key = `${entry.from}->${entry.to}`;
+  report.idMap = report.idMap.filter((entry2) => {
+    const key = `${entry2.from}->${entry2.to}`;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
@@ -3208,17 +3208,17 @@ async function rewriteOperationalTree(fs8, idMap, report, dryRun) {
   if (idMap.size === 0) return;
   const walk = async (dir) => {
     if (!await fs8.exists(dir)) return;
-    for (const entry of await fs8.listDir(dir)) {
-      const path8 = join2(dir, entry.name);
-      if (entry.isDir) {
+    for (const entry2 of await fs8.listDir(dir)) {
+      const path8 = join2(dir, entry2.name);
+      if (entry2.isDir) {
         await walk(path8);
         continue;
       }
-      const lower = entry.name.toLowerCase();
+      const lower = entry2.name.toLowerCase();
       if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
       const text = await fs8.readFile(path8);
       const rewritten = rewriteOperationalText(text, idMap);
-      let targetName = entry.name;
+      let targetName = entry2.name;
       for (const [from, to] of idMap) {
         if (targetName.includes(from)) {
           targetName = replaceExactIdTokens(targetName, from, to);
@@ -3429,17 +3429,17 @@ async function collectSymlinkSkips(root, skipped, warnings, relBase = "") {
   } catch {
     return;
   }
-  for (const entry of entries) {
-    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
-    if (entry.name === "MIGRATED.md") continue;
-    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+  for (const entry2 of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry2.name)) continue;
+    if (entry2.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry2.name}` : entry2.name;
     const relPosix = rel.replace(/\\/g, "/");
-    const abs = nodePath3.join(root, entry.name);
-    if (entry.isSymbolicLink()) {
+    const abs = nodePath3.join(root, entry2.name);
+    if (entry2.isSymbolicLink()) {
       noteSkippedSymlink(relPosix, skipped, warnings);
       continue;
     }
-    if (entry.isDirectory()) {
+    if (entry2.isDirectory()) {
       await collectSymlinkSkips(abs, skipped, warnings, relPosix);
     }
   }
@@ -3447,20 +3447,20 @@ async function collectSymlinkSkips(root, skipped, warnings, relBase = "") {
 async function copyHostTree(from, to, skipped, warnings, relBase = "") {
   await nodeFs2.mkdir(to, { recursive: true });
   const entries = await nodeFs2.readdir(from, { withFileTypes: true });
-  for (const entry of entries) {
-    if (IMPORT_SKIP_DIR_NAMES.has(entry.name)) continue;
-    if (entry.name === "MIGRATED.md") continue;
-    const rel = relBase ? `${relBase}/${entry.name}` : entry.name;
+  for (const entry2 of entries) {
+    if (IMPORT_SKIP_DIR_NAMES.has(entry2.name)) continue;
+    if (entry2.name === "MIGRATED.md") continue;
+    const rel = relBase ? `${relBase}/${entry2.name}` : entry2.name;
     const relPosix = rel.replace(/\\/g, "/");
-    const src = nodePath3.join(from, entry.name);
-    const dst = nodePath3.join(to, entry.name);
-    if (entry.isSymbolicLink()) {
+    const src = nodePath3.join(from, entry2.name);
+    const dst = nodePath3.join(to, entry2.name);
+    if (entry2.isSymbolicLink()) {
       noteSkippedSymlink(relPosix, skipped, warnings);
       continue;
     }
-    if (entry.isDirectory()) {
+    if (entry2.isDirectory()) {
       await copyHostTree(src, dst, skipped, warnings, relPosix);
-    } else if (entry.isFile()) {
+    } else if (entry2.isFile()) {
       await nodeFs2.mkdir(nodePath3.dirname(dst), { recursive: true });
       const st = await nodeFs2.lstat(src);
       if (st.isSymbolicLink()) {
@@ -3734,6 +3734,20 @@ var ServiceClient = class {
   taskGet(workspaceId, taskPath) {
     return this.call("task.get", { workspaceId, taskPath });
   }
+  // ---- convenience: proposal (triage; separate from delivery review) ----
+  proposalList(workspaceId, opts) {
+    return this.call("proposal.list", { workspaceId, ...opts });
+  }
+  proposalSubmit(workspaceId, args) {
+    return this.call("proposal.submit", { workspaceId, ...args });
+  }
+  /**
+   * User-only resolve (accept|reject). actor defaults to "user";
+   * non-user actors are rejected by the service.
+   */
+  proposalResolve(workspaceId, path8, decision, actor = "user") {
+    return this.call("proposal.resolve", { workspaceId, path: path8, decision, actor });
+  }
   sessionList(workspaceId) {
     return this.call("session.list", workspaceId ? { workspaceId } : {});
   }
@@ -3824,8 +3838,8 @@ async function attachOrBootstrapService(options = {}) {
       `No healthy Local Tent Service endpoint in ${dataDir}. Start tent-service, or omit --attach-only to let CLI bootstrap one.`
     );
   }
-  const entry = options.serviceEntry ?? await resolveDefaultServiceEntry(options.packageRoot);
-  const entryAbs = path5.resolve(entry);
+  const entry2 = options.serviceEntry ?? await resolveDefaultServiceEntry(options.packageRoot);
+  const entryAbs = path5.resolve(entry2);
   const child = spawnFn(process.execPath, [entryAbs, "start", "--data-dir", dataDir], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
@@ -4264,13 +4278,52 @@ Derived role-init remains available because it regenerates bootstrap context onl
 `;
 }
 
+// src/cli/proposal-rpc.ts
+async function runProposalSubmit(args, globals = {}) {
+  try {
+    const attachOpts = {
+      dataDir: globals.dataDir,
+      attachOnly: globals.attachOnly === true,
+      serviceEntry: globals.serviceEntry,
+      packageRoot: globals.packageRoot,
+      env: globals.env
+    };
+    const client = globals.client ?? (await attachOrBootstrapService(attachOpts)).client;
+    const ctx = await ensureMountedWorkspace(client, {
+      cwd: globals.cwd,
+      workspace: globals.workspace
+    });
+    const result = await client.proposalSubmit(ctx.workspaceId, {
+      boxId: args.boxId,
+      role: args.role,
+      body: args.body
+    });
+    const proposalPath2 = result.proposal?.path;
+    if (!proposalPath2) {
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: "proposal.submit returned no proposal path\n"
+      };
+    }
+    return {
+      exitCode: 0,
+      stdout: `\u2713 Proposal submitted for triage: ${proposalPath2}
+`,
+      stderr: ""
+    };
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    return { exitCode: 1, stdout: "", stderr: message + "\n" };
+  }
+}
+
 // src/cli/tent.ts
 var LEGACY_MUTATION_COMMANDS = /* @__PURE__ */ new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
   "report",
-  "propose",
   "complete",
   "stamp",
   "grant-readable",
@@ -4401,7 +4454,8 @@ async function main() {
   const tentCommands = /* @__PURE__ */ new Set([
     ...LEGACY_MUTATION_COMMANDS,
     ...LEGACY_READONLY_COMMANDS,
-    "role-init"
+    "role-init",
+    "propose"
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
@@ -4413,6 +4467,30 @@ Commands: new migrate import task role-init roles dispatch task-ack task-cancel 
   if (!cmd) return fail("Unknown command: (empty)");
   const systemRoot = env.tentRoot;
   if (!systemRoot) return fail(NOT_INSIDE_TENT_MESSAGE);
+  if (cmd === "propose" && isInWorkspaceSystemRoot(systemRoot)) {
+    const { positionals } = parseFlags(args);
+    const [boxId, bodySource] = positionals;
+    if (!boxId || !bodySource) {
+      return fail("Usage: tent propose <boxId> <bodyFile|->");
+    }
+    if (positionals.length > 2) return fail("Usage: tent propose <boxId> <bodyFile|->");
+    const role = process.env.TENT_ROLE;
+    if (!role) return fail("tent propose requires TENT_ROLE to identify the submitting role");
+    const body = bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
+    const workspace = workspaceRootFromSystemRoot(systemRoot);
+    const result = await runProposalSubmit(
+      { boxId, role, body },
+      {
+        cwd: workspace ?? process.cwd(),
+        workspace: workspace ?? void 0,
+        packageRoot: packageRoot()
+      }
+    );
+    if (result.stdout) process.stdout.write(result.stdout.endsWith("\n") ? result.stdout : result.stdout + "\n");
+    if (result.stderr) process.stderr.write(result.stderr.endsWith("\n") ? result.stderr : result.stderr + "\n");
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
   try {
     assertLegacyDirectWriteAllowed(cmd, systemRoot);
   } catch (error) {
@@ -4830,9 +4908,10 @@ Usage:
 
 Run commands from a workspace with <workspace>/.tent/ (or legacy external tent root) unless noted.
 
-Service-backed task lifecycle (required for Desktop / in-workspace collaboration mutates):
+Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task list|get|claim|deliver|\u2026  Attach Local Service \u2192 mount \u2192 task.* RPC
   tent task --help                    Full task subcommand help
+  propose <boxId> <file|->            Submit a proposal (in-workspace \u2192 proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
 Init / machine config (always allowed):
@@ -4859,7 +4938,6 @@ Legacy direct-core mutations (external / non-.tent system root only \u2014 migra
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
   report <boxId> <file|->            Submit a delivery report for triage.
-  propose <boxId> <file|->           Submit a proposal prompt for triage.
   complete <boxId> [options]         Confirm completion and release owner.
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
@@ -4870,6 +4948,7 @@ Legacy direct-core mutations (external / non-.tent system root only \u2014 migra
   fork <boxId>                       Copy a box subtree with new ids.
   clean-temp [role]                  Remove temp state for one role or all roles.
   okf-sync                           Regenerate OKF indexes and projected links.
+  propose <boxId> <file|->           External roots only: direct-core proposal submit.
 
 Options:
   -h, --help                         Show this help.
@@ -4990,10 +5069,14 @@ function ownerFor(box) {
   }
   return void 0;
 }
-main().catch((e) => {
-  console.error(e instanceof Error ? e.message : e);
-  process.exit(1);
-});
+var entry = process.argv[1] ? path7.resolve(process.argv[1]) : "";
+var thisFile = path7.resolve(fileURLToPath2(import.meta.url));
+if (entry && (entry === thisFile || entry === thisFile.replace(/\.ts$/i, ".js"))) {
+  main().catch((e) => {
+    console.error(e instanceof Error ? e.message : e);
+    process.exit(1);
+  });
+}
 export {
   inWorkspaceLegacyMutationMessage,
   isInWorkspaceSystemRoot,
