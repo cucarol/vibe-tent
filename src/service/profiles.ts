@@ -17,6 +17,10 @@ import {
   DEFAULT_GROK_MODEL,
   GROK_ACP_ADAPTER_ID,
 } from "../adapters/grok-acp/index.js";
+import { CODEX_ACP_ADAPTER_ID } from "../adapters/codex-acp/index.js";
+import { CLAUDE_ACP_ADAPTER_ID } from "../adapters/claude-acp/index.js";
+import { ANTIGRAVITY_ACP_ADAPTER_ID } from "../adapters/antigravity-acp/index.js";
+import { OPENCODE_ACP_ADAPTER_ID } from "../adapters/opencode-acp/index.js";
 import {
   backupCorruptMachineFile,
   isNotFoundError,
@@ -32,6 +36,10 @@ export {
 
 export const FAKE_DEFAULT_PROFILE_ID = "fake-default";
 export const GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
+export const CODEX_ACP_DEFAULT_PROFILE_ID = "codex-acp-default";
+export const CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
+export const ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
+export const OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
 
 /**
  * Explicit product-CRUD ACP adapter whitelist (not a universal provider router).
@@ -62,11 +70,10 @@ export function isProductAcpAdapterId(id: string): id is ProductAcpAdapterId {
 const BUILTIN_DEFAULT_PROFILE_IDS = new Set<string>([
   FAKE_DEFAULT_PROFILE_ID,
   GROK_ACP_DEFAULT_PROFILE_ID,
-  // Reserved future seed ids (not seeded this batch) — product delete must still refuse.
-  "codex-acp-default",
-  "claude-acp-default",
-  "antigravity-acp-default",
-  "opencode-acp-default",
+  CODEX_ACP_DEFAULT_PROFILE_ID,
+  CLAUDE_ACP_DEFAULT_PROFILE_ID,
+  ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+  OPENCODE_ACP_DEFAULT_PROFILE_ID,
 ]);
 
 export function isBuiltinDefaultProfileId(id: string): boolean {
@@ -169,7 +176,7 @@ export async function saveAgentProfiles(
 /**
  * Default catalog for Local Service.
  * - fake-default: test / harness only (no network)
- * - grok-acp-default: first real provider; secrets only via process env (envKey name here)
+ * - explicit product ACP defaults; secrets still only come from process env
  *
  * Still only fake + grok seeds — no codex/claude/antigravity/opencode defaults.
  * Never write API key values into this file — only env key *names* and paths.
@@ -197,6 +204,30 @@ export function defaultAgentProfiles(): AgentProfileConfig[] {
         permissionPolicy: "deny",
       },
     },
+    {
+      id: CODEX_ACP_DEFAULT_PROFILE_ID,
+      adapterId: CODEX_ACP_ADAPTER_ID,
+      displayNameKey: "profile.codexAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
+    {
+      id: CLAUDE_ACP_DEFAULT_PROFILE_ID,
+      adapterId: CLAUDE_ACP_ADAPTER_ID,
+      displayNameKey: "profile.claudeAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
+    {
+      id: ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+      adapterId: ANTIGRAVITY_ACP_ADAPTER_ID,
+      displayNameKey: "profile.antigravityAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
+    {
+      id: OPENCODE_ACP_DEFAULT_PROFILE_ID,
+      adapterId: OPENCODE_ACP_ADAPTER_ID,
+      displayNameKey: "profile.openCodeAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
   ];
 }
 
@@ -206,16 +237,12 @@ export async function ensureDefaultProfiles(dataDir: string): Promise<AgentProfi
   if (existing.length > 0) {
     let changed = loaded.migrated;
     let next = existing;
-    // Keep both built-ins present so disk, catalog, and runtime expose the same set.
-    if (!next.some((p) => p.id === FAKE_DEFAULT_PROFILE_ID)) {
-      const fake = defaultAgentProfiles().find((p) => p.id === FAKE_DEFAULT_PROFILE_ID)!;
-      next = [...next, fake];
-      changed = true;
-    }
-    if (!next.some((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)) {
-      const grok = defaultAgentProfiles().find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)!;
-      next = [...next, grok];
-      changed = true;
+    // Keep all built-ins present so disk, catalog, and runtime expose the same set.
+    for (const builtIn of defaultAgentProfiles()) {
+      if (!next.some((p) => p.id === builtIn.id)) {
+        next = [...next, builtIn];
+        changed = true;
+      }
     }
     // Ensure grok-acp profiles know the base URL env key name (no secret values).
     // Do not invent model/envKey for non-grok adapters; only fill missing baseUrlEnvKey on grok.
@@ -247,6 +274,10 @@ export function isTestOnlyProfile(profile: AgentProfileConfig): boolean {
 const DISPLAY_NAME_BY_KEY: Record<string, string> = {
   "profile.fake.default": "fake-default（测试）",
   "profile.grokAcp.default": "Grok ACP",
+  "profile.codexAcp.default": "Codex ACP",
+  "profile.claudeAcp.default": "Claude Agent ACP",
+  "profile.antigravityAcp.default": "Antigravity ACP（agy-acp bridge）",
+  "profile.openCodeAcp.default": "OpenCode ACP",
 };
 
 /**

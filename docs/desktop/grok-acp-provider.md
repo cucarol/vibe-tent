@@ -98,7 +98,7 @@ Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
 
 ## Machine-local profile catalog CRUD (service)
 
-Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. Adapters are registered separately; this batch does **not** seed or implement non-grok ProviderAdapters (storing a whitelist id is allowed before the adapter package exists).
+Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. All five listed adapters are registered and receive the same Local Service tool-approval bridge.
 
 | RPC | Notes |
 | --- | --- |

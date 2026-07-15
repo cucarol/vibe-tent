@@ -4,6 +4,22 @@
 import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
+import {
+  CODEX_ACP_ADAPTER_ID,
+  createCodexAcpAdapter,
+} from "../adapters/codex-acp/index.js";
+import {
+  CLAUDE_ACP_ADAPTER_ID,
+  createClaudeAcpAdapter,
+} from "../adapters/claude-acp/index.js";
+import {
+  ANTIGRAVITY_ACP_ADAPTER_ID,
+  createAntigravityAcpAdapter,
+} from "../adapters/antigravity-acp/index.js";
+import {
+  OPENCODE_ACP_ADAPTER_ID,
+  createOpenCodeAcpAdapter,
+} from "../adapters/opencode-acp/index.js";
 import { cloneAgentProfileConfig } from "./profile-config.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
@@ -25,7 +41,7 @@ export interface AgentRuntimeOptions {
   dataDir: string;
   /** Profile catalog (machine-local). */
   profiles?: AgentProfileConfig[];
-  /** Adapter registry; defaults include fake-cli + grok-acp. */
+  /** Adapter registry; defaults include fake-cli and the explicit product ACP adapters. */
   adapters?: ProviderAdapter[];
   /** Graceful stop timeout for supervised children. */
   gracefulMs?: number;
@@ -78,8 +94,14 @@ export class AgentRuntime implements AgentRuntimePort {
       });
     }
 
-    const adapterList =
-      options.adapters ?? [createFakeAdapter(), createGrokAcpAdapter()];
+    const adapterList = options.adapters ?? [
+      createFakeAdapter(),
+      createGrokAcpAdapter(),
+      createCodexAcpAdapter(),
+      createClaudeAcpAdapter(),
+      createAntigravityAcpAdapter(),
+      createOpenCodeAcpAdapter(),
+    ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
     }
@@ -88,6 +110,18 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     if (!this.adapters.has(GROK_ACP_ADAPTER_ID)) {
       this.adapters.set(GROK_ACP_ADAPTER_ID, createGrokAcpAdapter());
+    }
+    if (!this.adapters.has(CODEX_ACP_ADAPTER_ID)) {
+      this.adapters.set(CODEX_ACP_ADAPTER_ID, createCodexAcpAdapter());
+    }
+    if (!this.adapters.has(CLAUDE_ACP_ADAPTER_ID)) {
+      this.adapters.set(CLAUDE_ACP_ADAPTER_ID, createClaudeAcpAdapter());
+    }
+    if (!this.adapters.has(ANTIGRAVITY_ACP_ADAPTER_ID)) {
+      this.adapters.set(ANTIGRAVITY_ACP_ADAPTER_ID, createAntigravityAcpAdapter());
+    }
+    if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
+      this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());
     }
 
     this.supervisor = new ProcessSupervisor({

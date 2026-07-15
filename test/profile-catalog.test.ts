@@ -16,6 +16,10 @@ import { createServiceClient } from "../src/service/client.js";
 import {
   FAKE_DEFAULT_PROFILE_ID,
   GROK_ACP_DEFAULT_PROFILE_ID,
+  CODEX_ACP_DEFAULT_PROFILE_ID,
+  CLAUDE_ACP_DEFAULT_PROFILE_ID,
+  ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+  OPENCODE_ACP_DEFAULT_PROFILE_ID,
   ensureDefaultProfiles,
   loadAgentProfiles,
   profilesPath,
@@ -517,6 +521,14 @@ test("whitelist adapterId create + defaults; unknown/immutable/secret reject; le
   );
 
   const loaded = await ensureDefaultProfiles(dataDir);
+  for (const id of [
+    CODEX_ACP_DEFAULT_PROFILE_ID,
+    CLAUDE_ACP_DEFAULT_PROFILE_ID,
+    ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
+    OPENCODE_ACP_DEFAULT_PROFILE_ID,
+  ]) {
+    assert.ok(loaded.some((profile) => profile.id === id), `missing default profile ${id}`);
+  }
   const grok = loaded.find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)!;
   const custom = loaded.find((p) => p.id === "custom-legacy")!;
   assert.equal(grok.displayName, "User Named Grok");

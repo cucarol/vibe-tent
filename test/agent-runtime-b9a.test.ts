@@ -380,7 +380,7 @@ test("subscribe is session-scoped; no chat-router event types", async () => {
   await runtime.shutdown();
 });
 
-test("fake adapter is the only registered default adapter", () => {
+test("fake adapter remains the deterministic process harness", () => {
   const adapter = createFakeAdapter();
   assert.equal(adapter.id, "fake-cli");
   const caps = adapter.capabilities();
