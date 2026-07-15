@@ -82,6 +82,12 @@ import {
 } from "./profiles.js";
 import type { AgentProfileCatalog } from "./profile-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
+import {
+  installSkills,
+  listSkills,
+  parseSkillTargetId,
+  type SkillTargetId,
+} from "../machine/skills.js";
 
 export type { JsonRpcError };
 export { RpcError };
@@ -106,6 +112,16 @@ export interface HandlerContext {
   dataDir: string;
   /** Machine-local AgentProfile catalog (serial CRUD + runtime sync). */
   profileCatalog: AgentProfileCatalog;
+  /**
+   * Package root for bundled skills (tests may inject).
+   * Production: resolved once at service start.
+   */
+  packageRoot: string;
+  /**
+   * Home directory for machine-local user paths (skills, etc.).
+   * Tests inject a temp home; production uses os.homedir().
+   */
+  home: string;
   /**
    * Optional integrate hook for tests.
    * Production path uses real workspace Git via ensureRoleWorkspace + integrateWorkspaceCommits.
@@ -187,6 +203,10 @@ export async function dispatchMethod(
         return credentialSet(ctx, p);
       case "credential.delete":
         return credentialDelete(ctx, p);
+      case "skill.list":
+        return skillList(ctx);
+      case "skill.install":
+        return skillInstall(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -790,6 +810,95 @@ async function credentialDelete(ctx: HandlerContext, p: Record<string, unknown>)
       throw new RpcError(-32004, message);
     }
     if (/Invalid credential id|Missing or invalid credential/i.test(message)) {
+      throw new RpcError(-32602, message);
+    }
+    throw new RpcError(-32000, message);
+  }
+}
+
+/**
+ * Machine-local bundled skill surface — no workspaceId.
+ * Only lists/installs package bundled skills into shared-agents + claude dirs.
+ * Rejects arbitrary source/destination; skill names and targets are strictly validated.
+ */
+async function skillList(ctx: HandlerContext) {
+  try {
+    return await listSkills({ packageRoot: ctx.packageRoot, home: ctx.home });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "skill.list failed";
+    throw new RpcError(-32000, message);
+  }
+}
+
+async function skillInstall(ctx: HandlerContext, p: Record<string, unknown>) {
+  // Refuse path-like params so RPC cannot install from/to arbitrary locations.
+  for (const banned of ["source", "destination", "dest", "dir", "targetDir", "targetDirs", "path"]) {
+    if (banned in p) {
+      throw new RpcError(
+        -32602,
+        `skill.install does not accept ${banned}; only skills[], targets[], force`
+      );
+    }
+  }
+  if ("workspaceId" in p && p.workspaceId !== undefined && p.workspaceId !== null) {
+    throw new RpcError(-32602, "skill.install is machine-local and does not accept workspaceId");
+  }
+
+  let skills: string[] | undefined;
+  if ("skills" in p && p.skills !== undefined && p.skills !== null) {
+    if (!Array.isArray(p.skills) || !p.skills.every((s) => typeof s === "string")) {
+      throw new RpcError(-32602, "Invalid skills: must be an array of strings when set");
+    }
+    skills = p.skills as string[];
+  }
+
+  let targets: SkillTargetId[] | undefined;
+  if ("targets" in p && p.targets !== undefined && p.targets !== null) {
+    if (!Array.isArray(p.targets) || !p.targets.every((t) => typeof t === "string")) {
+      throw new RpcError(-32602, "Invalid targets: must be an array of strings when set");
+    }
+    try {
+      targets = (p.targets as string[]).map((t) => parseSkillTargetId(t));
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Invalid targets";
+      throw new RpcError(-32602, message);
+    }
+  }
+
+  let force = false;
+  if ("force" in p && p.force !== undefined && p.force !== null) {
+    if (typeof p.force !== "boolean") {
+      throw new RpcError(-32602, "Invalid force: must be a boolean when set");
+    }
+    force = p.force;
+  }
+
+  try {
+    const results = await installSkills({
+      packageRoot: ctx.packageRoot,
+      home: ctx.home,
+      skills,
+      targets,
+      force,
+    });
+    ctx.events.emit(
+      "skill.changed",
+      "",
+      {
+        action: "install",
+        installed: results.filter((r) => r.status === "installed").length,
+        skipped: results.filter((r) => r.status === "skipped").length,
+      },
+      "self"
+    );
+    return { results };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "skill.install failed";
+    if (
+      /Invalid skill name|Unknown skill target|Unknown bundled skill|escapes the destination/i.test(
+        message
+      )
+    ) {
       throw new RpcError(-32602, message);
     }
     throw new RpcError(-32000, message);

@@ -36,6 +36,9 @@ import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import type { AcpPermissionAskHooks } from "../adapters/acp/index.js";
 import { createFakeAdapter } from "../adapters/fake/index.js";
 import { loadTaskEnvelopes } from "../core/task.js";
+import * as os from "node:os";
+import * as path from "node:path";
+import { fileURLToPath } from "node:url";
 
 export interface LocalTentServiceOptions {
   host?: string;
@@ -54,6 +57,15 @@ export interface LocalTentServiceOptions {
    * When omitted, CredentialStore uses createPlatformCredentialProtector (fail-loud off Windows).
    */
   credentialProtector?: CredentialProtector;
+  /**
+   * Package root for bundled skills (tests inject). Default: resolve from this module.
+   */
+  packageRoot?: string;
+  /**
+   * Home for machine-local user paths such as skill install dirs (tests inject).
+   * Default: os.homedir() — never hard-coded user paths.
+   */
+  home?: string;
   /**
    * Optional commit integrate hook for accept/bypass paths (tests).
    * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
@@ -272,6 +284,9 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   // Reconcile orphan sessions after crash / restart.
   await runtime.reconcileOnBoot();
 
+  const packageRoot = options.packageRoot ?? defaultPackageRoot();
+  const home = options.home ?? os.homedir();
+
   const ctx: HandlerContext = {
     host: workspaceHost,
     mutations,
@@ -285,6 +300,8 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     credentials,
     dataDir,
     profileCatalog,
+    packageRoot,
+    home,
     integrateCommits: options.integrateCommits,
   };
 
@@ -353,4 +370,14 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     endpoint,
     stop,
   };
+}
+
+/** Resolve repo/package root from this module location (src/service or dist). */
+function defaultPackageRoot(): string {
+  const here = path.dirname(fileURLToPath(import.meta.url));
+  // src/service → repo root; bundled service.mjs may sit at package root.
+  if (path.basename(here) === "service" && path.basename(path.dirname(here)) === "src") {
+    return path.resolve(here, "../..");
+  }
+  return path.resolve(here);
 }

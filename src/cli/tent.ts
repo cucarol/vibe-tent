@@ -7,15 +7,19 @@
 //   tent new <帐路径>                  建一顶新帐(空骨架);genesis 调用
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
-//   tent skill-install [--target claude] [--force]  // 机器配置；default: ~/.claude/skills + ~/.agents/skills
+//   tent skill-install [--target all|claude|shared-agents] [--force]
 //   tent tree | status | roles | find | tags       // 只读
 //   tent dispatch / task-ack / report / …          // external root migration window only
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
-import * as os from "node:os";
 import { fileURLToPath } from "node:url";
 import { NodeFs, SystemClock } from "../fs/node-fs.js";
+import {
+  installSkills,
+  resolveCliSkillInstallDirs,
+  type SkillInstallItemResult,
+} from "../machine/skills.js";
 import { loadTent } from "../core/tree.js";
 import {
   OpsEnv,
@@ -157,12 +161,17 @@ async function main() {
   }
   if (cmd === "skill-install") {
     const { positionals, flags } = parseFlags(args);
-    if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
-    const target = flags.target || "claude";
+    if (positionals.length > 0) return fail("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
+    const target = flags.target || "all";
     const force = flags.force === "true";
-    // --dir overrides for tests/single-path installs; default syncs Claude + shared agents skills.
-    const targetDirs = flags.dir ? [flags.dir] : defaultSkillInstallDirs(target);
-    const results = await installSkills(targetDirs, { force, target });
+    // --dir overrides destinations for tests/single-path installs, but target is still validated.
+    const defaultDirs = resolveCliSkillInstallDirs(target);
+    const targetDirs = flags.dir ? [flags.dir] : defaultDirs;
+    const results = await installSkills({
+      packageRoot: packageRoot(),
+      targetDirs,
+      force,
+    });
     console.log(formatSkillInstallResults(target, results));
     return;
   }
@@ -618,75 +627,7 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Record<stri
   return { positionals, flags };
 }
 
-/** Claude Code skills dir + Grok/Codex shared agents skills dir (homedir, never hardcode user). */
-function defaultSkillInstallDirs(target: string): string[] {
-  if (target !== "claude") {
-    throw new Error("skill-install currently supports only --target claude; Codex uses a different skill format.");
-  }
-  const home = os.homedir();
-  return [
-    path.join(home, ".claude", "skills"),
-    path.join(home, ".agents", "skills"),
-  ];
-}
-
-interface SkillInstallItemResult {
-  targetDir: string;
-  skill: string;
-  status: "installed" | "skipped";
-  reason?: string;
-}
-
-/**
- * Copy bundled skills into each target dir.
- * Without --force: each (target, skill) is judged independently — existing skills are skipped,
- * so one populated dir never blocks install into another.
- * With --force: overwrite existing skill dirs.
- */
-async function installSkills(
-  targetDirs: string[],
-  options: { force: boolean; target: string }
-): Promise<SkillInstallItemResult[]> {
-  if (options.target !== "claude") defaultSkillInstallDirs(options.target);
-  if (targetDirs.length === 0) throw new Error("skill-install requires at least one target directory");
-
-  const sourceDir = path.join(packageRoot(), "skills");
-  const entries = await fs.readdir(sourceDir, { withFileTypes: true });
-  const skillNames: string[] = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
-  }
-  skillNames.sort();
-  if (skillNames.length === 0) throw new Error(`No installable skills found in ${sourceDir}`);
-
-  const results: SkillInstallItemResult[] = [];
-  for (const targetDir of targetDirs) {
-    await fs.mkdir(targetDir, { recursive: true });
-    for (const name of skillNames) {
-      const source = path.join(sourceDir, name);
-      const target = path.join(targetDir, name);
-      assertChildPath(targetDir, target);
-      const exists = await existsPath(target);
-      if (exists && !options.force) {
-        results.push({
-          targetDir,
-          skill: name,
-          status: "skipped",
-          reason: "already exists (use --force to overwrite)",
-        });
-        continue;
-      }
-      if (exists && options.force) {
-        await fs.rm(target, { recursive: true, force: true });
-      }
-      await fs.cp(source, target, { recursive: true, errorOnExist: true });
-      results.push({ targetDir, skill: name, status: "installed" });
-    }
-  }
-  return results;
-}
-
+/** CLI stdout for skill-install — keep message shape compatible with package tests. */
 function formatSkillInstallResults(target: string, results: SkillInstallItemResult[]): string {
   const byDir = new Map<string, SkillInstallItemResult[]>();
   for (const item of results) {
@@ -694,7 +635,7 @@ function formatSkillInstallResults(target: string, results: SkillInstallItemResu
     list.push(item);
     byDir.set(item.targetDir, list);
   }
-  const lines: string[] = [`✓ skill-install (${target} format)`];
+  const lines: string[] = [`✓ skill-install (${target})`];
   for (const [dir, items] of byDir) {
     lines.push(`  ${dir}`);
     for (const item of items) {
@@ -711,13 +652,6 @@ function packageRoot(): string {
     return path.resolve(here, "../..");
   }
   return here;
-}
-
-function assertChildPath(parent: string, child: string): void {
-  const rel = path.relative(path.resolve(parent), path.resolve(child));
-  if (rel.startsWith("..") || path.isAbsolute(rel)) {
-    throw new Error(`Install target escapes the destination directory: ${child}`);
-  }
 }
 
 async function existsPath(target: string): Promise<boolean> {
@@ -754,7 +688,8 @@ Init / machine config (always allowed):
                                      Copy legacy external tent root into <ws>/.tent (alias: import).
                                      Refuses if <ws>/.tent exists. Never deletes source.
                                      Options: --dry-run --force --json
-  skill-install [--force]            Install bundled skills to ~/.claude/skills and ~/.agents/skills.
+  skill-install [--target all|claude|shared-agents] [--force]
+                                     Install bundled skills to selected machine roots.
   role-init <role>                   Regenerate the derived stable role init document.
 
 Read-only (allowed on in-workspace .tent):

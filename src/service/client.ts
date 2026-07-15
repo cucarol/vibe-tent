@@ -165,6 +165,23 @@ export class ServiceClient {
     return this.call("credential.delete", { id });
   }
 
+  // ---- convenience: machine-local skills (bundled only; no workspaceId) ----
+  skillList() {
+    return this.call("skill.list", {});
+  }
+  /**
+   * Install bundled skills into shared-agents and/or claude skill dirs.
+   * Omitting skills installs all bundled; omitting targets installs both.
+   * Does not accept arbitrary source/destination paths.
+   */
+  skillInstall(opts?: {
+    skills?: string[];
+    targets?: Array<"shared-agents" | "claude">;
+    force?: boolean;
+  }) {
+    return this.call("skill.install", opts ?? {});
+  }
+
   // ---- convenience: task ----
   taskDispatch(
     workspaceId: string,

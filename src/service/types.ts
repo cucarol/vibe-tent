@@ -186,6 +186,7 @@ export type AgentProfileProjection = {
  * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
  * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
  * Credential vault: credential.list/set/delete (no get plaintext).
+ * Machine-local skills: skill.list/install (bundled only; no workspaceId).
  */
 export const CLIENT_METHODS = [
   "service.health",
@@ -214,6 +215,9 @@ export const CLIENT_METHODS = [
   "credential.list",
   "credential.set",
   "credential.delete",
+  /** Machine-local bundled skill list/install (user surface; no workspaceId). */
+  "skill.list",
+  "skill.install",
   "task.dispatch",
   "task.claim",
   "task.wait",

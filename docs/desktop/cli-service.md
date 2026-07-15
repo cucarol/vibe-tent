@@ -53,6 +53,14 @@ Legacy commands that **direct-write** core are **blocked on in-workspace** syste
 | --- | --- | --- | --- |
 | Read-only | `tree`, `status`, `roles`, `find`, `tags` | allowed | allowed |
 | Init / derived / machine | `new`, `migrate`/`import`, `role-init`, `skill-install` | allowed | allowed |
+
+Machine-local bundled skills are also available through authenticated Local
+Service RPC: `skill.list` and `skill.install`. Installation sources are fixed to
+the package's bundled `skills/` directory, and destinations are restricted to
+`~/.agents/skills` (`shared-agents`) and `~/.claude/skills` (`claude`). The CLI
+uses the same backend via `tent skill-install --target all|shared-agents|claude`.
+There is intentionally no remote marketplace, arbitrary path, uninstall, or
+third-party hook editor in this surface.
 | Mutation | `dispatch`, `task-ack`, `task-cancel`, `report`, `propose`, `complete`, `stamp`, `grant-readable`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` | **fail-loud** | allowed (migration window) |
 
 Prefer `tent task *` whenever Desktop or another client shares the same Local Service.

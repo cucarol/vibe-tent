@@ -1,9 +1,8 @@
 #!/usr/bin/env node
 
 // src/cli/tent.ts
-import * as path6 from "node:path";
-import * as fs6 from "node:fs/promises";
-import * as os2 from "node:os";
+import * as path7 from "node:path";
+import * as fs7 from "node:fs/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/fs/node-fs.ts
@@ -26,33 +25,33 @@ var NodeFs = class {
     const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path7) {
-    return fs.readFile(this.abs(path7), "utf8");
+  async readFile(path8) {
+    return fs.readFile(this.abs(path8), "utf8");
   }
-  async writeFile(path7, content) {
-    await fs.mkdir(nodePath.dirname(this.abs(path7)), { recursive: true });
-    await fs.writeFile(this.abs(path7), content, "utf8");
+  async writeFile(path8, content) {
+    await fs.mkdir(nodePath.dirname(this.abs(path8)), { recursive: true });
+    await fs.writeFile(this.abs(path8), content, "utf8");
   }
-  async exists(path7) {
+  async exists(path8) {
     try {
-      await fs.access(this.abs(path7));
+      await fs.access(this.abs(path8));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path7) {
-    await fs.mkdir(this.abs(path7), { recursive: true });
+  async mkdir(path8) {
+    await fs.mkdir(this.abs(path8), { recursive: true });
   }
   async move(from, to) {
     await fs.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
     await fs.rename(this.abs(from), this.abs(to));
   }
-  async remove(path7) {
-    await fs.rm(this.abs(path7), { recursive: true, force: true });
+  async remove(path8) {
+    await fs.rm(this.abs(path8), { recursive: true, force: true });
   }
-  async withLock(path7, action) {
-    const lockPath = this.abs(path7);
+  async withLock(path8, action) {
+    const lockPath = this.abs(path8);
     await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
@@ -84,12 +83,179 @@ var SystemClock = class {
 function isAlreadyExists(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-async function isStaleLock(path7) {
+async function isStaleLock(path8) {
   try {
-    const stat2 = await fs.stat(path7);
+    const stat2 = await fs.stat(path8);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
+  }
+}
+
+// src/machine/skills.ts
+import * as fs2 from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+var SKILL_TARGET_IDS = ["shared-agents", "claude"];
+var SAFE_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
+function isSkillTargetId(value) {
+  return SKILL_TARGET_IDS.includes(value);
+}
+function skillTargetDir(target, home) {
+  const root = home ?? os.homedir();
+  switch (target) {
+    case "claude":
+      return path.join(root, ".claude", "skills");
+    case "shared-agents":
+      return path.join(root, ".agents", "skills");
+    default: {
+      const _exhaustive = target;
+      throw new Error(`Unknown skill target: ${String(_exhaustive)}`);
+    }
+  }
+}
+function defaultSkillInstallDirs(home) {
+  return SKILL_TARGET_IDS.map((id) => skillTargetDir(id, home));
+}
+function resolveCliSkillInstallDirs(cliTarget, home) {
+  const target = cliTarget.trim();
+  if (target === "all") return defaultSkillInstallDirs(home);
+  return [skillTargetDir(parseSkillTargetId(target), home)];
+}
+function assertSafeSkillName(name) {
+  const trimmed = name.trim();
+  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path.basename(trimmed) !== trimmed) {
+    throw new Error(`Invalid skill name: ${name}`);
+  }
+  return trimmed;
+}
+function parseSkillTargetId(value) {
+  const trimmed = value.trim();
+  if (!isSkillTargetId(trimmed)) {
+    throw new Error(
+      `Unknown skill target: ${value} (allowed: ${SKILL_TARGET_IDS.join(", ")})`
+    );
+  }
+  return trimmed;
+}
+function bundledSkillsDir(packageRoot2) {
+  return path.join(packageRoot2, "skills");
+}
+async function listBundledSkillNames(packageRoot2) {
+  const sourceDir = bundledSkillsDir(packageRoot2);
+  let entries;
+  try {
+    entries = await fs2.readdir(sourceDir, { withFileTypes: true });
+  } catch (err) {
+    const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
+    if (code === "ENOENT") {
+      throw new Error(`No installable skills found in ${sourceDir}`);
+    }
+    throw err;
+  }
+  const skillNames = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory()) continue;
+    if (!SAFE_SKILL_NAME.test(entry.name)) continue;
+    if (await existsPath(path.join(sourceDir, entry.name, "SKILL.md"))) {
+      skillNames.push(entry.name);
+    }
+  }
+  skillNames.sort();
+  return skillNames;
+}
+async function installSkills(options) {
+  const home = options.home ?? os.homedir();
+  const force = options.force === true;
+  const sourceDir = bundledSkillsDir(options.packageRoot);
+  const allNames = await listBundledSkillNames(options.packageRoot);
+  if (allNames.length === 0) {
+    throw new Error(`No installable skills found in ${sourceDir}`);
+  }
+  const selectedNames = resolveSkillSelection(options.skills, allNames);
+  const destinations = resolveInstallDestinations(options, home);
+  if (destinations.length === 0) {
+    throw new Error("skill-install requires at least one target directory");
+  }
+  const results = [];
+  for (const dest of destinations) {
+    await fs2.mkdir(dest.dir, { recursive: true });
+    for (const name of selectedNames) {
+      const source = path.join(sourceDir, name);
+      const target = path.join(dest.dir, name);
+      assertChildPath(sourceDir, source);
+      assertChildPath(dest.dir, target);
+      const exists2 = await existsPath(target);
+      if (exists2 && !force) {
+        results.push({
+          targetDir: dest.dir,
+          ...dest.target ? { target: dest.target } : {},
+          skill: name,
+          status: "skipped",
+          reason: "already exists (use --force to overwrite)"
+        });
+        continue;
+      }
+      if (exists2 && force) {
+        await fs2.rm(target, { recursive: true, force: true });
+      }
+      await fs2.cp(source, target, { recursive: true, errorOnExist: true });
+      results.push({
+        targetDir: dest.dir,
+        ...dest.target ? { target: dest.target } : {},
+        skill: name,
+        status: "installed"
+      });
+    }
+  }
+  return results;
+}
+function resolveSkillSelection(requested, allNames) {
+  if (!requested || requested.length === 0) return [...allNames];
+  const known = new Set(allNames);
+  const selected = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const raw of requested) {
+    const name = assertSafeSkillName(raw);
+    if (!known.has(name)) {
+      throw new Error(`Unknown bundled skill: ${name}`);
+    }
+    if (seen.has(name)) continue;
+    seen.add(name);
+    selected.push(name);
+  }
+  selected.sort();
+  return selected;
+}
+function resolveInstallDestinations(options, home) {
+  if (options.targetDirs !== void 0) {
+    if (options.targetDirs.length === 0) {
+      throw new Error("skill-install requires at least one target directory");
+    }
+    return options.targetDirs.map((dir) => ({ dir: path.resolve(dir) }));
+  }
+  const targetIds = options.targets && options.targets.length > 0 ? options.targets.map((t) => parseSkillTargetId(t)) : [...SKILL_TARGET_IDS];
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const id of targetIds) {
+    if (seen.has(id)) continue;
+    seen.add(id);
+    out.push({ dir: skillTargetDir(id, home), target: id });
+  }
+  return out;
+}
+function assertChildPath(parent, child) {
+  const rel = path.relative(path.resolve(parent), path.resolve(child));
+  if (rel.startsWith("..") || path.isAbsolute(rel)) {
+    throw new Error(`Install target escapes the destination directory: ${child}`);
+  }
+}
+async function existsPath(target) {
+  try {
+    await fs2.access(target);
+    return true;
+  } catch {
+    return false;
   }
 }
 
@@ -310,14 +476,14 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs7, path7) {
-  const backupPath = `${path7}.corrupt-${timestamp()}`;
-  await fs7.writeFile(backupPath, await fs7.readFile(path7));
+async function backupCorruptRegistry(fs8, path8) {
+  const backupPath = `${path8}.corrupt-${timestamp()}`;
+  await fs8.writeFile(backupPath, await fs8.readFile(path8));
   return backupPath;
 }
-function warnRegistryRecovered(path7, backupPath, action, extra = "") {
+function warnRegistryRecovered(path8, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path7} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path8} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -363,9 +529,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path7 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path7) return false;
-  const top = path7.split("/")[0] ?? "";
+  const path8 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path8) return false;
+  const top = path8.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function isSystemNoteName(fileName) {
@@ -374,19 +540,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs7) {
-  if (!await fs7.exists(ORDER_PATH)) return {};
+async function loadOrder(fs8) {
+  if (!await fs8.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs7.readFile(ORDER_PATH));
+    return JSON.parse(await fs8.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs7, ORDER_PATH);
-    await saveOrder(fs7, {});
+    const backupPath = await backupCorruptRegistry(fs8, ORDER_PATH);
+    await saveOrder(fs8, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs7, map) {
-  await fs7.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs8, map) {
+  await fs8.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -499,10 +665,10 @@ function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
   return definition.coordination;
 }
-async function loadTypeRegistry(fs7) {
-  if (!await fs7.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs8) {
+  if (!await fs8.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs7.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs8.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -595,21 +761,21 @@ function isRecord(value) {
 // src/core/tree.ts
 var ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
 function boxNotePath(boxPath) {
-  return join(boxPath, baseName(boxPath) + ".md");
+  return join2(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs7) {
+async function loadTent(fs8) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs7);
-  const top = await fs7.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs8);
+  const top = await fs8.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs7, entry.name, null, typeRegistry, roots);
+    await loadBoxInto(fs8, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs7);
+  const order = await loadOrder(fs8);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -648,13 +814,13 @@ function zoneRank(name) {
   const i = ZONE_NAMES.indexOf(name);
   return i === -1 ? 99 : i;
 }
-async function loadBox(fs7, path7, parent, registry) {
-  if (isOperationalPath(path7)) return null;
-  const boxFile = boxNotePath(path7);
-  if (!await fs7.exists(boxFile)) {
+async function loadBox(fs8, path8, parent, registry) {
+  if (isOperationalPath(path8)) return null;
+  const boxFile = boxNotePath(path8);
+  if (!await fs8.exists(boxFile)) {
     return null;
   }
-  const raw = await fs7.readFile(boxFile);
+  const raw = await fs8.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -664,7 +830,7 @@ async function loadBox(fs7, path7, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path7);
+  const name = baseName(path8);
   const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
@@ -675,7 +841,7 @@ async function loadBox(fs7, path7, parent, registry) {
     // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
-    path: path7,
+    path: path8,
     name,
     fm,
     body,
@@ -687,14 +853,14 @@ async function loadBox(fs7, path7, parent, registry) {
     writable: { value: false, source: "type" }
   };
   if (parseError) {
-    box.invalidRootId = path7;
+    box.invalidRootId = path8;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs7.listDir(path7);
+  const sub = await fs8.listDir(path8);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs7, join(path7, entry.name), box, registry, box.children);
+    await loadBoxInto(fs8, join2(path8, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -724,18 +890,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs7, path7, parent, registry, target) {
-  if (isOperationalPath(path7)) return;
-  const box = await loadBox(fs7, path7, parent, registry);
+async function loadBoxInto(fs8, path8, parent, registry, target) {
+  if (isOperationalPath(path8)) return;
+  const box = await loadBox(fs8, path8, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs7.listDir(path7);
+  const sub = await fs8.listDir(path8);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs7, join(path7, entry.name), parent, registry, target);
+    await loadBoxInto(fs8, join2(path8, entry.name), parent, registry, target);
   }
 }
 function zoneOf(name) {
@@ -817,21 +983,21 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
   byPath.set(box.path, box);
   for (const c of box.children) indexSubtree(c, byId, byPath, duplicateIds);
 }
-function join(...parts) {
+function join2(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path7) {
-  const i = path7.lastIndexOf("/");
-  return i === -1 ? path7 : path7.slice(i + 1);
+function baseName(path8) {
+  const i = path8.lastIndexOf("/");
+  return i === -1 ? path8 : path8.slice(i + 1);
 }
-function dirName(path7) {
-  const i = path7.lastIndexOf("/");
-  return i === -1 ? "" : path7.slice(0, i);
+function dirName(path8) {
+  const i = path8.lastIndexOf("/");
+  return i === -1 ? "" : path8.slice(0, i);
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs7, action) {
-  return fs7.withLock ? fs7.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs8, action) {
+  return fs8.withLock ? fs8.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/manifest.ts
@@ -859,7 +1025,7 @@ function buildManifest(tent, input) {
   for (const box of claimScope) {
     writable.push({ id: box.id, path: `${box.path}/`, note: "Structural permission: may create/move/delete child boxes under this box." });
   }
-  writable.push({ path: join("temp", role) + "/" });
+  writable.push({ path: join2("temp", role) + "/" });
   return {
     tent: input.tentName,
     role,
@@ -1034,65 +1200,65 @@ function collect(box, out) {
 
 // src/core/tags.ts
 var DEFAULT_TAG_REGISTRY = { tags: [] };
-async function loadTagRegistry(fs7) {
-  if (!await fs7.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+async function loadTagRegistry(fs8) {
+  if (!await fs8.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
-    return normalizeRegistry2(JSON.parse(await fs7.readFile(TAGS_REGISTRY_PATH)));
+    return normalizeRegistry2(JSON.parse(await fs8.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs7, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs7);
-    await saveTagRegistryUnlocked(fs7, recovered);
+    const backupPath = await backupCorruptRegistry(fs8, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs8);
+    await saveTagRegistryUnlocked(fs8, recovered);
     warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
     return recovered;
   }
 }
-async function saveTagRegistryUnlocked(fs7, registry) {
-  await fs7.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+async function saveTagRegistryUnlocked(fs8, registry) {
+  await fs8.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
-async function addRegistryTag(fs7, name) {
-  await withTentMutation(fs7, async () => addRegistryTagUnlocked(fs7, name));
+async function addRegistryTag(fs8, name) {
+  await withTentMutation(fs8, async () => addRegistryTagUnlocked(fs8, name));
 }
-async function addRegistryTagUnlocked(fs7, name) {
+async function addRegistryTagUnlocked(fs8, name) {
   const tag = normalizeTagName(name);
-  const registry = await loadTagRegistry(fs7);
+  const registry = await loadTagRegistry(fs8);
   if (!registry.tags.includes(tag)) {
     registry.tags.push(tag);
-    await saveTagRegistryUnlocked(fs7, registry);
+    await saveTagRegistryUnlocked(fs8, registry);
   }
 }
-async function addTag(fs7, boxId, name) {
-  await withTentMutation(fs7, async () => {
+async function addTag(fs8, boxId, name) {
+  await withTentMutation(fs8, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs7);
+    const tent = await loadTent(fs8);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    await addRegistryTagUnlocked(fs7, tag);
+    await addRegistryTagUnlocked(fs8, tag);
     const tags = uniqueSorted([...box.tags, tag]);
-    await writeBoxTags(fs7, box, tags);
+    await writeBoxTags(fs8, box, tags);
   });
 }
-async function removeTag(fs7, boxId, name) {
-  await withTentMutation(fs7, async () => {
+async function removeTag(fs8, boxId, name) {
+  await withTentMutation(fs8, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs7);
+    const tent = await loadTent(fs8);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
-    await writeBoxTags(fs7, box, box.tags.filter((item) => item !== tag));
+    await writeBoxTags(fs8, box, box.tags.filter((item) => item !== tag));
   });
 }
-async function removeRegistryTag(fs7, name) {
-  await withTentMutation(fs7, async () => {
+async function removeRegistryTag(fs8, name) {
+  await withTentMutation(fs8, async () => {
     const tag = normalizeTagName(name);
-    const registry = await loadTagRegistry(fs7);
-    await saveTagRegistryUnlocked(fs7, { tags: registry.tags.filter((item) => item !== tag) });
-    const tent = await loadTent(fs7);
+    const registry = await loadTagRegistry(fs8);
+    await saveTagRegistryUnlocked(fs8, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs8);
     for (const box of tent.byId.values()) {
       if (box.tags.includes(tag)) {
-        await writeBoxTags(fs7, box, box.tags.filter((item) => item !== tag));
+        await writeBoxTags(fs8, box, box.tags.filter((item) => item !== tag));
       }
     }
   });
@@ -1107,13 +1273,13 @@ function normalizeTagName(name) {
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
-async function writeBoxTags(fs7, box, tags) {
-  const path7 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs7.readFile(path7));
+async function writeBoxTags(fs8, box, tags) {
+  const path8 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(path8));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs7.writeFile(path7, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs8.writeFile(path8, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -1127,8 +1293,8 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
-async function recoverTagRegistryFromBoxes(fs7) {
-  const tent = await loadTent(fs7);
+async function recoverTagRegistryFromBoxes(fs8) {
+  const tent = await loadTent(fs8);
   const tags = [];
   for (const box of tent.byPath.values()) {
     tags.push(...box.tags);
@@ -1152,15 +1318,15 @@ function isRecord2(value) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs7) {
-  if (!await fs7.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+async function loadRolesRegistry(fs8) {
+  if (!await fs8.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
   try {
-    const parsed = JSON.parse(await fs7.readFile(ROLES_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs8.readFile(ROLES_REGISTRY_PATH));
     return normalizeRolesRegistry(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs7, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs8, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs7, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs8, ROLES_REGISTRY_PATH, reset);
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -1218,9 +1384,9 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs7, path7, value) {
-  if (!await fs7.exists(".tent")) await fs7.mkdir(".tent");
-  await fs7.writeFile(path7, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs8, path8, value) {
+  if (!await fs8.exists(".tent")) await fs8.mkdir(".tent");
+  await fs8.writeFile(path8, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1292,34 +1458,34 @@ function allowedTransitions(from) {
 }
 
 // src/core/task.ts
-async function loadTaskEnvelopes(fs7) {
+async function loadTaskEnvelopes(fs8) {
   const tasks = [];
-  if (!await fs7.exists("temp")) return tasks;
-  for (const roleEntry of await fs7.listDir("temp")) {
+  if (!await fs8.exists("temp")) return tasks;
+  for (const roleEntry of await fs8.listDir("temp")) {
     if (!roleEntry.isDir) continue;
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!await fs7.exists(taskDir)) continue;
-    for (const entry of await fs7.listDir(taskDir)) {
+    const taskDir = join2("temp", roleEntry.name, "tasks");
+    if (!await fs8.exists(taskDir)) continue;
+    for (const entry of await fs8.listDir(taskDir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path7 = join(taskDir, entry.name);
+      const path8 = join2(taskDir, entry.name);
       try {
-        tasks.push(await loadTaskEnvelope(fs7, path7));
+        tasks.push(await loadTaskEnvelope(fs8, path8));
       } catch {
       }
     }
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function loadTaskEnvelope(fs7, path7) {
-  if (!await fs7.exists(path7)) throw new Error(`Task envelope not found: ${path7}.`);
-  const { data, body } = parseFrontmatter(await fs7.readFile(path7));
+async function loadTaskEnvelope(fs8, path8) {
+  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-    throw new Error(`Invalid task envelope format: ${path7}.`);
+    throw new Error(`Invalid task envelope format: ${path8}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
   const task = {
-    path: path7,
+    path: path8,
     role: data.role,
     claims: data.claims,
     manifest: data.manifest,
@@ -1359,9 +1525,9 @@ function resolveTaskPromptRoots(roots) {
   return { workspaceRoot, systemRoot };
 }
 function formatTaskPathHints(task, roots) {
-  const initCli = join("temp", task.role, "init.md");
-  const initFile = join(".tent", "temp", task.role, "init.md");
-  const taskFile = join(".tent", task.path);
+  const initCli = join2("temp", task.role, "init.md");
+  const initFile = join2(".tent", "temp", task.role, "init.md");
+  const taskFile = join2(".tent", task.path);
   return `workspaceRoot: ${roots.workspaceRoot}
 systemRoot: ${roots.systemRoot}
 CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.
@@ -1377,8 +1543,8 @@ ${formatTaskPathHints(task, resolved)}
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
 4. If this is a new session for this role, complete role init first (read the init file above).`;
 }
-async function ensureRoleInit(fs7, role, tentName) {
-  const path7 = join("temp", role.name, "init.md");
+async function ensureRoleInit(fs8, role, tentName) {
+  const path8 = join2("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1395,17 +1561,17 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs7.writeFile(path7, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path7;
+  await fs8.writeFile(path8, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path8;
 }
-async function writeTaskEnvelope(fs7, clock, input) {
+async function writeTaskEnvelope(fs8, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const dir = join("temp", input.role, "tasks");
-  await ensureDir(fs7, dir);
+  const dir = join2("temp", input.role, "tasks");
+  await ensureDir(fs8, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path7 = await uniqueMarkdownPath(fs7, dir, stem);
+  const path8 = await uniqueMarkdownPath(fs8, dir, stem);
   const now = clock.now();
   const data = {
     type: "task",
@@ -1442,27 +1608,27 @@ ${pointers}
 
 ${userPrompt}
 `;
-  await fs7.writeFile(path7, serializeFrontmatter(data, body));
-  return path7;
+  await fs8.writeFile(path8, serializeFrontmatter(data, body));
+  return path8;
 }
-async function ackTaskEnvelope(fs7, path7) {
-  await patchTaskEnvelope(fs7, path7, {
+async function ackTaskEnvelope(fs8, path8) {
+  await patchTaskEnvelope(fs8, path8, {
     status: "taken",
     state: "running"
   });
 }
-async function cancelTaskEnvelope(fs7, path7) {
-  const task = await loadTaskEnvelope(fs7, path7);
+async function cancelTaskEnvelope(fs8, path8) {
+  const task = await loadTaskEnvelope(fs8, path8);
   if (task.state !== "queued" && task.status !== "pending") {
     throw new Error("Only queued (pending) task envelopes can be cancelled.");
   }
-  await fs7.remove(path7);
+  await fs8.remove(path8);
 }
-async function patchTaskEnvelope(fs7, path7, patch) {
-  if (!await fs7.exists(path7)) throw new Error(`Task envelope not found: ${path7}.`);
-  const raw = await fs7.readFile(path7);
+async function patchTaskEnvelope(fs8, path8, patch) {
+  if (!await fs8.exists(path8)) throw new Error(`Task envelope not found: ${path8}.`);
+  const raw = await fs8.readFile(path8);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path7}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path8}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -1488,8 +1654,8 @@ async function patchTaskEnvelope(fs7, path7, patch) {
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
   }
-  await fs7.writeFile(path7, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs7, path7);
+  await fs8.writeFile(path8, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs8, path8);
 }
 function parseTaskState(value, legacy) {
   if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
@@ -1512,37 +1678,37 @@ function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp2}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs7, dir, stem) {
+async function uniqueMarkdownPath(fs8, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path7 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs7.exists(path7)) return path7;
+    const path8 = join2(dir, `${stem}${suffix}.md`);
+    if (!await fs8.exists(path8)) return path8;
   }
 }
-async function ensureDir(fs7, path7) {
-  if (!await fs7.exists(path7)) await fs7.mkdir(path7);
+async function ensureDir(fs8, path8) {
+  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 
 // src/core/report.ts
-async function submitReport(fs7, clock, boxId, body, commits) {
-  return withTentMutation(fs7, async () => submitReportUnlocked(fs7, clock, boxId, body, commits));
+async function submitReport(fs8, clock, boxId, body, commits) {
+  return withTentMutation(fs8, async () => submitReportUnlocked(fs8, clock, boxId, body, commits));
 }
-async function submitReportUnlocked(fs7, clock, boxId, body, commits) {
+async function submitReportUnlocked(fs8, clock, boxId, body, commits) {
   const text = body.trim();
   if (!text) throw new Error("Report body cannot be empty.");
-  const tent = await loadTent(fs7);
+  const tent = await loadTent(fs8);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   const role = box.fm.owner;
   if (!role) throw new Error("Only claimed boxes with a direct owner can submit reports.");
-  const path7 = reportPath(role, box.id);
-  if (await fs7.exists(path7)) {
-    const current = await loadReport(fs7, path7);
+  const path8 = reportPath(role, box.id);
+  if (await fs8.exists(path8)) {
+    const current = await loadReport(fs8, path8);
     if (current.status === "ready") throw new Error("A report is already pending triage; the user must confirm or reject it first.");
   }
   const report = {
-    path: path7,
+    path: path8,
     boxId: box.id,
     role,
     status: "ready",
@@ -1550,37 +1716,37 @@ async function submitReportUnlocked(fs7, clock, boxId, body, commits) {
     timestamp: clock.now(),
     body: text
   };
-  await ensureDir2(fs7, join("temp", role, "reports"));
-  await writeReport(fs7, report);
+  await ensureDir2(fs8, join2("temp", role, "reports"));
+  await writeReport(fs8, report);
   return report;
 }
-async function loadReports(fs7) {
+async function loadReports(fs8) {
   const reports = [];
-  if (!await fs7.exists("temp")) return reports;
-  for (const roleDir of await fs7.listDir("temp")) {
+  if (!await fs8.exists("temp")) return reports;
+  for (const roleDir of await fs8.listDir("temp")) {
     if (!roleDir.isDir) continue;
-    const dir = join("temp", roleDir.name, "reports");
-    if (!await fs7.exists(dir)) continue;
-    for (const entry of await fs7.listDir(dir)) {
+    const dir = join2("temp", roleDir.name, "reports");
+    if (!await fs8.exists(dir)) continue;
+    for (const entry of await fs8.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path7 = join(dir, entry.name);
+      const path8 = join2(dir, entry.name);
       try {
-        reports.push(await loadReport(fs7, path7));
+        reports.push(await loadReport(fs8, path8));
       } catch {
       }
     }
   }
   return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
 }
-async function loadReport(fs7, inputPath) {
-  const path7 = normalizeReportPath(inputPath);
-  if (!await fs7.exists(path7)) throw new Error(`Report not found: ${path7}.`);
-  const { data, body } = parseFrontmatter(await fs7.readFile(path7));
+async function loadReport(fs8, inputPath) {
+  const path8 = normalizeReportPath(inputPath);
+  if (!await fs8.exists(path8)) throw new Error(`Report not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
   if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`Invalid report format: ${path7}.`);
+    throw new Error(`Invalid report format: ${path8}.`);
   }
   return {
-    path: path7,
+    path: path8,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -1590,22 +1756,22 @@ async function loadReport(fs7, inputPath) {
     body: body.trim()
   };
 }
-async function removeReportsForBox(fs7, boxId) {
-  for (const report of await loadReports(fs7)) {
-    if (report.boxId === boxId && await fs7.exists(report.path)) await fs7.remove(report.path);
+async function removeReportsForBox(fs8, boxId) {
+  for (const report of await loadReports(fs8)) {
+    if (report.boxId === boxId && await fs8.exists(report.path)) await fs8.remove(report.path);
   }
 }
 function reportPath(role, boxId) {
-  return join("temp", role, "reports", `${boxId}.md`);
+  return join2("temp", role, "reports", `${boxId}.md`);
 }
 function normalizeReportPath(input) {
-  const path7 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path7)) {
+  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path8)) {
     throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
   }
-  return path7;
+  return path8;
 }
-async function writeReport(fs7, report) {
+async function writeReport(fs8, report) {
   const data = {
     type: "report",
     box: report.boxId,
@@ -1615,13 +1781,13 @@ async function writeReport(fs7, report) {
     ts: report.timestamp,
     review: report.review
   };
-  await fs7.writeFile(
+  await fs8.writeFile(
     report.path,
     serializeFrontmatter(data, report.body + "\n", ["type", "box", "role", "status", "commits", "ts", "review"])
   );
 }
-async function ensureDir2(fs7, path7) {
-  if (!await fs7.exists(path7)) await fs7.mkdir(path7);
+async function ensureDir2(fs8, path8) {
+  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
@@ -1643,10 +1809,10 @@ async function scaffoldInWorkspace(workspaceFs, options) {
     const id = box.id?.trim() || makeUniqueConceptId(usedIds);
     usedIds.add(id);
     const frontmatter = { id, type };
-    const path7 = nested(boxName);
-    await workspaceFs.mkdir(path7);
+    const path8 = nested(boxName);
+    await workspaceFs.mkdir(path8);
     await workspaceFs.writeFile(
-      `${path7}/${boxName}.md`,
+      `${path8}/${boxName}.md`,
       serializeFrontmatter(frontmatter, `
 ${box.body ?? `# ${boxName}
 `}
@@ -1672,14 +1838,14 @@ ${box.body ?? `# ${boxName}
   return { systemRootRelative: systemRelative };
 }
 async function ensureWorkspaceGitignore(workspaceFs) {
-  const path7 = ".gitignore";
+  const path8 = ".gitignore";
   const entry = `${TENT_SYSTEM_DIR}/`;
-  if (!await workspaceFs.exists(path7)) {
-    await workspaceFs.writeFile(path7, `${entry}
+  if (!await workspaceFs.exists(path8)) {
+    await workspaceFs.writeFile(path8, `${entry}
 `);
     return;
   }
-  const text = await workspaceFs.readFile(path7);
+  const text = await workspaceFs.readFile(path8);
   const lines = text.split(/\r?\n/);
   const has = lines.some((line) => {
     const t = line.trim();
@@ -1690,7 +1856,7 @@ async function ensureWorkspaceGitignore(workspaceFs) {
 ` : `${text}
 ${entry}
 `;
-  await workspaceFs.writeFile(path7, next);
+  await workspaceFs.writeFile(path8, next);
 }
 function validateBoxName(value) {
   const name = value.trim();
@@ -1753,23 +1919,23 @@ async function taskClaim(env, taskPath, options = {}) {
     }
   });
 }
-async function projectAssignee(fs7, box, owner, status, acceptedBy) {
+async function projectAssignee(fs8, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter(fs7, box, patch);
+  await patchFrontmatter(fs8, box, patch);
 }
-async function restoreProjection(fs7, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs7, box, {
+async function restoreProjection(fs8, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs8, box, {
     owner: owner ?? void 0,
     status: status ?? void 0,
     acceptedBy: acceptedBy ?? void 0
   });
 }
-async function patchFrontmatter(fs7, box, patch) {
+async function patchFrontmatter(fs8, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs7.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
@@ -1778,7 +1944,7 @@ async function patchFrontmatter(fs7, box, patch) {
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
-  await fs7.writeFile(boxFile, serializeFrontmatter(data, body, order));
+  await fs8.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -1788,8 +1954,8 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs7, action) {
-  return withTentMutation(fs7, action);
+async function withMutation(fs8, action) {
+  return withTentMutation(fs8, action);
 }
 
 // src/core/forkOps.ts
@@ -1816,7 +1982,7 @@ async function forkNodeUnlocked(env, boxId) {
   const forkRootId = idMap.get(source.id);
   for (const box of sourceBoxes) {
     const rel = relativePath(source.path, box.path);
-    const nextPath = rel ? join(forkPath, rel) : forkPath;
+    const nextPath = rel ? join2(forkPath, rel) : forkPath;
     const notePath = boxNotePath(nextPath);
     await ensureIdentityFileName(env.fs, nextPath, box.path);
     const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
@@ -1843,22 +2009,22 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs7, parentPath, base) {
+async function uniqueSiblingPath(fs8, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
-    const candidate = join(parentPath, name);
-    if (!await fs7.exists(candidate)) return candidate;
+    const candidate = join2(parentPath, name);
+    if (!await fs8.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs7, from, to) {
-  await fs7.mkdir(to);
-  for (const entry of await fs7.listDir(from)) {
-    const src = join(from, entry.name);
-    const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs7, src, dst);
-    else await fs7.writeFile(dst, await fs7.readFile(src));
+async function copyTree(fs8, from, to) {
+  await fs8.mkdir(to);
+  for (const entry of await fs8.listDir(from)) {
+    const src = join2(from, entry.name);
+    const dst = join2(to, entry.name);
+    if (entry.isDir) await copyTree(fs8, src, dst);
+    else await fs8.writeFile(dst, await fs8.readFile(src));
   }
 }
 function collectSubtree(box, out = []) {
@@ -1870,12 +2036,12 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs7, newBoxPath, oldBoxPath) {
+async function ensureIdentityFileName(fs8, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs7.exists(expected)) return;
+  if (await fs8.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
-  const copied = join(newBoxPath, oldName);
-  if (await fs7.exists(copied)) await fs7.move(copied, expected);
+  const copied = join2(newBoxPath, oldName);
+  if (await fs8.exists(copied)) await fs8.move(copied, expected);
 }
 
 // src/core/ops.ts
@@ -1890,7 +2056,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const tasks = await loadTaskEnvelopes(env.fs);
-  const roleTempPath = join("temp", roleName);
+  const roleTempPath = join2("temp", roleName);
   const roleTempExisted = await env.fs.exists(roleTempPath);
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
@@ -1917,7 +2083,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
-    const manifestPath = join("temp", roleName, "manifest.yml");
+    const manifestPath = join2("temp", roleName, "manifest.yml");
     await ensureDir3(env.fs, dirName(manifestPath));
     await env.fs.writeFile(manifestPath, yaml);
     const registry = await loadRolesRegistry(env.fs);
@@ -2004,7 +2170,7 @@ async function grantReadable(env, boxId) {
 async function cleanTemp(env, role) {
   const roleName = role === void 0 ? void 0 : assertRoleName(role);
   await withMutation2(env.fs, async () => {
-    const target = roleName ? join("temp", roleName) : "temp";
+    const target = roleName ? join2("temp", roleName) : "temp";
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
@@ -2046,14 +2212,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path7 = join(input.parentPath, name);
-  assertNotTempPath(path7);
-  await ensureDir3(env.fs, path7);
+  const path8 = join2(input.parentPath, name);
+  assertNotTempPath(path8);
+  await ensureDir3(env.fs, path8);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path7), content);
+  await env.fs.writeFile(boxNotePath(path8), content);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -2062,29 +2228,29 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path7);
+    await env.fs.remove(path8);
     throw error;
   }
   return id;
 }
-async function setOwner(fs7, box, owner, status, acceptedBy) {
+async function setOwner(fs8, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter2(fs7, box, patch);
+  await patchFrontmatter2(fs8, box, patch);
 }
-async function patchFrontmatter2(fs7, box, patch) {
+async function patchFrontmatter2(fs8, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs7.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs7.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  await fs8.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
-async function ensureDir3(fs7, path7) {
-  if (path7 && !await fs7.exists(path7)) await fs7.mkdir(path7);
+async function ensureDir3(fs8, path8) {
+  if (path8 && !await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function boxKeyOrder2(existing) {
   return [
@@ -2092,8 +2258,8 @@ function boxKeyOrder2(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function assertNotTempPath(path7) {
-  if (path7 === "temp" || path7.startsWith("temp/")) {
+function assertNotTempPath(path8) {
+  if (path8 === "temp" || path8.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -2166,8 +2332,8 @@ function requireBoxById2(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation2(fs7, action) {
-  return withTentMutation(fs7, action);
+async function withMutation2(fs8, action) {
+  return withTentMutation(fs8, action);
 }
 
 // src/core/output.ts
@@ -2209,15 +2375,15 @@ function cleanValue(value) {
 }
 
 // src/core/okf.ts
-async function syncOkfBundle(fs7) {
-  return withTentMutation(fs7, async () => syncOkfBundleUnlocked(fs7));
+async function syncOkfBundle(fs8) {
+  return withTentMutation(fs8, async () => syncOkfBundleUnlocked(fs8));
 }
-async function syncOkfBundleUnlocked(fs7) {
-  const tent = await loadTent(fs7);
+async function syncOkfBundleUnlocked(fs8) {
+  const tent = await loadTent(fs8);
   const concepts = [...tent.byPath.values()];
   const index = buildConceptIndex(concepts);
-  const generatedFiles = await writeIndexes(fs7, concepts);
-  const projection = await projectWikiLinks(fs7, concepts, index);
+  const generatedFiles = await writeIndexes(fs8, concepts);
+  const projection = await projectWikiLinks(fs8, concepts, index);
   return { generatedFiles, ...projection };
 }
 function buildConceptIndex(boxes) {
@@ -2262,23 +2428,23 @@ function projectMarkdownLinks(body, fromNotePath, index) {
   });
   return { body: next, unresolved, changed };
 }
-async function projectWikiLinks(fs7, boxes, index) {
+async function projectWikiLinks(fs8, boxes, index) {
   const projectedFiles = [];
   const unresolved = [];
   for (const box of boxes) {
     const notePath = boxNotePath(box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await fs7.readFile(notePath));
+    const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(notePath));
     const projected = projectMarkdownLinks(body, notePath, index);
     if (projected.unresolved.length > 0) {
       unresolved.push(...projected.unresolved.map((target) => ({ file: notePath, target })));
     }
     if (!projected.changed) continue;
-    await fs7.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
+    await fs8.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
     projectedFiles.push(notePath);
   }
   return { projectedFiles, unresolved };
 }
-async function writeIndexes(fs7, boxes) {
+async function writeIndexes(fs8, boxes) {
   const generated = /* @__PURE__ */ new Set();
   const byDir = /* @__PURE__ */ new Map();
   for (const box of boxes) {
@@ -2288,7 +2454,7 @@ async function writeIndexes(fs7, boxes) {
     byDir.set(dir, list);
   }
   const roots = boxes.filter((box) => !box.parent);
-  await fs7.writeFile(
+  await fs8.writeFile(
     "index.md",
     serializeFrontmatter(
       { type: "index", okf_version: "0.1" },
@@ -2298,8 +2464,8 @@ async function writeIndexes(fs7, boxes) {
   generated.add("index.md");
   for (const [dir, siblings] of byDir.entries()) {
     if (!dir) continue;
-    const indexPath = join(dir, "index.md");
-    await fs7.writeFile(
+    const indexPath = join2(dir, "index.md");
+    await fs8.writeFile(
       indexPath,
       serializeFrontmatter(
         { type: "index" },
@@ -2308,7 +2474,7 @@ async function writeIndexes(fs7, boxes) {
     );
     generated.add(indexPath);
   }
-  await fs7.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
+  await fs8.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
   generated.add("log.md");
   return [...generated].sort();
 }
@@ -2357,61 +2523,61 @@ function markdownLinkDestination(destination) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs7, clock, role, boxId, body) {
-  return withTentMutation(fs7, async () => submitProposalUnlocked(fs7, clock, role, boxId, body));
+async function submitProposal(fs8, clock, role, boxId, body) {
+  return withTentMutation(fs8, async () => submitProposalUnlocked(fs8, clock, role, boxId, body));
 }
-async function submitProposalUnlocked(fs7, clock, roleInput, boxId, body) {
+async function submitProposalUnlocked(fs8, clock, roleInput, boxId, body) {
   const text = body.trim();
   if (!text) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs7);
+  const tent = await loadTent(fs8);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path7 = proposalPath(role, box.id);
-  if (await fs7.exists(path7)) {
-    const current = await loadProposal(fs7, path7);
+  const path8 = proposalPath(role, box.id);
+  if (await fs8.exists(path8)) {
+    const current = await loadProposal(fs8, path8);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
-    path: path7,
+    path: path8,
     boxId: box.id,
     role,
     status: "pending",
     createdAt: clock.now(),
     body: text
   };
-  await ensureDir4(fs7, join("temp", role, "proposals"));
-  await writeProposal(fs7, proposal);
+  await ensureDir4(fs8, join2("temp", role, "proposals"));
+  await writeProposal(fs8, proposal);
   return proposal;
 }
-async function loadProposals(fs7) {
+async function loadProposals(fs8) {
   const proposals = [];
-  if (!await fs7.exists("temp")) return proposals;
-  for (const roleDir of await fs7.listDir("temp")) {
+  if (!await fs8.exists("temp")) return proposals;
+  for (const roleDir of await fs8.listDir("temp")) {
     if (!roleDir.isDir) continue;
-    const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs7.exists(dir)) continue;
-    for (const entry of await fs7.listDir(dir)) {
+    const dir = join2("temp", roleDir.name, "proposals");
+    if (!await fs8.exists(dir)) continue;
+    for (const entry of await fs8.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path7 = join(dir, entry.name);
+      const path8 = join2(dir, entry.name);
       try {
-        proposals.push(await loadProposal(fs7, path7));
+        proposals.push(await loadProposal(fs8, path8));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs7, inputPath) {
-  const path7 = normalizeProposalPath(inputPath);
-  if (!await fs7.exists(path7)) throw new Error(`Proposal not found: ${path7}.`);
-  const { data, body } = parseFrontmatter(await fs7.readFile(path7));
+async function loadProposal(fs8, inputPath) {
+  const path8 = normalizeProposalPath(inputPath);
+  if (!await fs8.exists(path8)) throw new Error(`Proposal not found: ${path8}.`);
+  const { data, body } = parseFrontmatter(await fs8.readFile(path8));
   if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path7}.`);
+    throw new Error(`Invalid proposal format: ${path8}.`);
   }
   return {
-    path: path7,
+    path: path8,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -2420,16 +2586,16 @@ async function loadProposal(fs7, inputPath) {
   };
 }
 function proposalPath(role, boxId) {
-  return join("temp", role, "proposals", `${boxId}.md`);
+  return join2("temp", role, "proposals", `${boxId}.md`);
 }
 function normalizeProposalPath(input) {
-  const path7 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path7)) {
+  const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path8)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
-  return path7;
+  return path8;
 }
-async function writeProposal(fs7, proposal) {
+async function writeProposal(fs8, proposal) {
   const data = {
     type: "proposal",
     box: proposal.boxId,
@@ -2437,13 +2603,13 @@ async function writeProposal(fs7, proposal) {
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs7.writeFile(
+  await fs8.writeFile(
     proposal.path,
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs7, path7) {
-  if (!await fs7.exists(path7)) await fs7.mkdir(path7);
+async function ensureDir4(fs8, path8) {
+  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
@@ -2453,8 +2619,8 @@ function normalizeRole(role) {
 }
 
 // src/core/status.ts
-import * as fs2 from "node:fs/promises";
-import * as path from "node:path";
+import * as fs3 from "node:fs/promises";
+import * as path2 from "node:path";
 
 // src/core/workspace.ts
 import * as nodePath2 from "node:path";
@@ -2645,9 +2811,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path7) {
+async function pathExists(path8) {
   try {
-    await nodeFs.access(path7);
+    await nodeFs.access(path8);
     return true;
   } catch {
     return false;
@@ -2662,21 +2828,21 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve9(out);
+      if (code === 0) resolve10(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
   });
 }
 function runShell(cwd, command) {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     const { shell, args } = workspaceCheckShell(command);
     const child = spawn(shell, args, { cwd, windowsHide: true });
     let stdout = "";
@@ -2685,7 +2851,7 @@ function runShell(cwd, command) {
     child.stderr.on("data", (data) => stderr += data);
     child.on("close", (code) => {
       if (code === 0) {
-        resolve9({ command, stdout, stderr });
+        resolve10({ command, stdout, stderr });
         return;
       }
       const detail = stderr.trim() || stdout.trim() || `exit ${code}`;
@@ -2737,7 +2903,7 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
   } else {
     lines.push("Pending tasks (task-ack):");
     for (const task of tasks) {
-      lines.push(`- ${task.role}/${path.posix.basename(task.path)} -> ${task.claims.join(", ")}`);
+      lines.push(`- ${task.role}/${path2.posix.basename(task.path)} -> ${task.claims.join(", ")}`);
     }
   }
   const claims = activeClaimBoxes(tent);
@@ -2753,23 +2919,23 @@ async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROL
   return lines.join("\n") + "\n";
 }
 async function findTentSystemRoot(cwd = process.cwd()) {
-  let dir = path.resolve(cwd);
+  let dir = path2.resolve(cwd);
   for (; ; ) {
     if (await isSystemRoot(dir)) return dir;
-    const nested = path.join(dir, ".tent");
+    const nested = path2.join(dir, ".tent");
     if (await isSystemRoot(nested)) return nested;
-    const parent = path.dirname(dir);
+    const parent = path2.dirname(dir);
     if (parent === dir) return void 0;
     dir = parent;
   }
 }
 async function isSystemRoot(root) {
-  if (!await exists(path.join(root, "RULES.md"))) return false;
-  return await exists(path.join(root, "types.json")) || await exists(path.join(root, "temp")) || await exists(path.join(root, ".tent"));
+  if (!await exists(path2.join(root, "RULES.md"))) return false;
+  return await exists(path2.join(root, "types.json")) || await exists(path2.join(root, "temp")) || await exists(path2.join(root, ".tent"));
 }
 async function exists(target) {
   try {
-    await fs2.access(target);
+    await fs3.access(target);
     return true;
   } catch {
     return false;
@@ -2889,7 +3055,7 @@ function promoteOutputKey(root, changes) {
   delete root.output;
   changes.push("removed legacy output type key");
 }
-async function migrateLegacySchema(fs7, options = {}) {
+async function migrateLegacySchema(fs8, options = {}) {
   const dryRun = options.dryRun === true;
   const rewriteOps = options.rewriteOperationalRefs !== false;
   const report = {
@@ -2900,16 +3066,16 @@ async function migrateLegacySchema(fs7, options = {}) {
     skipped: [],
     warnings: []
   };
-  await liftNestedRegistries(fs7, report, dryRun);
-  await migrateFlatTypeRegistry(fs7, report, dryRun);
-  await unifyMutationLock(fs7, report, dryRun);
-  const tent = await loadTent(fs7);
+  await liftNestedRegistries(fs8, report, dryRun);
+  await migrateFlatTypeRegistry(fs8, report, dryRun);
+  await unifyMutationLock(fs8, report, dryRun);
+  const tent = await loadTent(fs8);
   const legacyIds = [...tent.byId.keys()].filter(isLegacyBoxId);
   const existing = new Set(tent.byId.keys());
   const idMap = planIdRemap(legacyIds, existing, options.rand);
   for (const box of tent.byPath.values()) {
     const notePath = boxNotePath(box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await fs7.readFile(notePath));
+    const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(notePath));
     let dirty = false;
     const oldId = typeof data.id === "string" ? data.id : "";
     if (isLegacyBoxId(oldId)) {
@@ -2933,15 +3099,15 @@ async function migrateLegacySchema(fs7, options = {}) {
       }
     }
     if (dirty && !dryRun) {
-      await fs7.writeFile(
+      await fs8.writeFile(
         notePath,
         serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER)
       );
     }
   }
-  if (await fs7.exists(ORDER_PATH)) {
+  if (await fs8.exists(ORDER_PATH)) {
     try {
-      const order = JSON.parse(await fs7.readFile(ORDER_PATH));
+      const order = JSON.parse(await fs8.readFile(ORDER_PATH));
       let dirty = false;
       const next = {};
       for (const [key, list] of Object.entries(order)) {
@@ -2958,14 +3124,14 @@ async function migrateLegacySchema(fs7, options = {}) {
       }
       if (dirty) {
         report.registryChanges.push(dryRun ? "would rewrite order.json ids" : "rewrote order.json ids");
-        if (!dryRun) await fs7.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
+        if (!dryRun) await fs8.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
       }
     } catch (error) {
       report.warnings.push(`order.json: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (rewriteOps && await fs7.exists(TEMP_DIR)) {
-    await rewriteOperationalTree(fs7, idMap, report, dryRun);
+  if (rewriteOps && await fs8.exists(TEMP_DIR)) {
+    await rewriteOperationalTree(fs8, idMap, report, dryRun);
   }
   const seen = /* @__PURE__ */ new Set();
   report.idMap = report.idMap.filter((entry) => {
@@ -2976,42 +3142,42 @@ async function migrateLegacySchema(fs7, options = {}) {
   });
   return report;
 }
-async function liftNestedRegistries(fs7, report, dryRun) {
-  if (!await fs7.exists(TENT_SYSTEM_DIR)) return;
+async function liftNestedRegistries(fs8, report, dryRun) {
+  if (!await fs8.exists(TENT_SYSTEM_DIR)) return;
   for (const name of NESTED_REGISTRY_FILES) {
-    const nested = join(TENT_SYSTEM_DIR, name);
-    if (!await fs7.exists(nested)) continue;
-    const flatExists = await fs7.exists(name);
+    const nested = join2(TENT_SYSTEM_DIR, name);
+    if (!await fs8.exists(nested)) continue;
+    const flatExists = await fs8.exists(name);
     if (!flatExists) {
       report.registryChanges.push(
         dryRun ? `would lift nested ${nested} \u2192 ${name}` : `lifted nested ${nested} \u2192 ${name}`
       );
       if (!dryRun) {
-        const text = await fs7.readFile(nested);
-        await fs7.writeFile(name, text);
+        const text = await fs8.readFile(nested);
+        await fs8.writeFile(name, text);
       }
     } else {
       report.registryChanges.push(`nested ${nested} ignored; flat ${name} already present`);
     }
     report.registryChanges.push(dryRun ? `would remove nested ${nested}` : `removed nested ${nested}`);
-    if (!dryRun) await fs7.remove(nested);
+    if (!dryRun) await fs8.remove(nested);
   }
-  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
-  if (await fs7.exists(nestedLock)) {
+  const nestedLock = join2(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs8.exists(nestedLock)) {
     report.registryChanges.push(
       dryRun ? `would remove nested ${nestedLock}` : `removed nested ${nestedLock}`
     );
-    if (!dryRun) await fs7.remove(nestedLock);
+    if (!dryRun) await fs8.remove(nestedLock);
   }
 }
-async function migrateFlatTypeRegistry(fs7, report, dryRun) {
-  if (!await fs7.exists(TYPE_REGISTRY_PATH)) return;
+async function migrateFlatTypeRegistry(fs8, report, dryRun) {
+  if (!await fs8.exists(TYPE_REGISTRY_PATH)) return;
   try {
-    const raw = JSON.parse(await fs7.readFile(TYPE_REGISTRY_PATH));
+    const raw = JSON.parse(await fs8.readFile(TYPE_REGISTRY_PATH));
     const { registry, changes } = migrateTypeRegistryJson(raw);
     report.registryChanges.push(...changes);
     if (!dryRun && changes.length > 0) {
-      await fs7.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+      await fs8.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
     }
   } catch (error) {
     report.warnings.push(
@@ -3019,31 +3185,31 @@ async function migrateFlatTypeRegistry(fs7, report, dryRun) {
     );
   }
 }
-async function unifyMutationLock(fs7, report, dryRun) {
-  const nestedLock = join(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
-  if (await fs7.exists(nestedLock)) {
+async function unifyMutationLock(fs8, report, dryRun) {
+  const nestedLock = join2(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
+  if (await fs8.exists(nestedLock)) {
     report.registryChanges.push(
       dryRun ? `would remove nested lock ${nestedLock}` : `removed nested lock ${nestedLock}`
     );
-    if (!dryRun) await fs7.remove(nestedLock);
+    if (!dryRun) await fs8.remove(nestedLock);
   }
   if (!report.registryChanges.some((c) => c.includes(MUTATION_LOCK_PATH))) {
     report.registryChanges.push(`unique lock path: ${MUTATION_LOCK_PATH}`);
   }
 }
-async function rewriteOperationalTree(fs7, idMap, report, dryRun) {
+async function rewriteOperationalTree(fs8, idMap, report, dryRun) {
   if (idMap.size === 0) return;
   const walk = async (dir) => {
-    if (!await fs7.exists(dir)) return;
-    for (const entry of await fs7.listDir(dir)) {
-      const path7 = join(dir, entry.name);
+    if (!await fs8.exists(dir)) return;
+    for (const entry of await fs8.listDir(dir)) {
+      const path8 = join2(dir, entry.name);
       if (entry.isDir) {
-        await walk(path7);
+        await walk(path8);
         continue;
       }
       const lower = entry.name.toLowerCase();
       if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
-      const text = await fs7.readFile(path7);
+      const text = await fs8.readFile(path8);
       const rewritten = rewriteOperationalText(text, idMap);
       let targetName = entry.name;
       for (const [from, to] of idMap) {
@@ -3051,15 +3217,15 @@ async function rewriteOperationalTree(fs7, idMap, report, dryRun) {
           targetName = replaceExactIdTokens(targetName, from, to);
         }
       }
-      const targetPath = join(dir, targetName);
-      if (rewritten === text && targetPath === path7) continue;
-      report.registryChanges.push(`operational rewrite: ${path7}`);
+      const targetPath = join2(dir, targetName);
+      if (rewritten === text && targetPath === path8) continue;
+      report.registryChanges.push(`operational rewrite: ${path8}`);
       if (!dryRun) {
-        if (targetPath !== path7) {
-          await fs7.writeFile(targetPath, rewritten);
-          await fs7.remove(path7);
+        if (targetPath !== path8) {
+          await fs8.writeFile(targetPath, rewritten);
+          await fs8.remove(path8);
         } else {
-          await fs7.writeFile(path7, rewritten);
+          await fs8.writeFile(path8, rewritten);
         }
       }
     }
@@ -3336,43 +3502,43 @@ function isRecord4(value) {
 }
 
 // src/cli/service-attach.ts
-import * as fs5 from "node:fs/promises";
-import * as path4 from "node:path";
+import * as fs6 from "node:fs/promises";
+import * as path5 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/service/data-dir.ts
-import * as fs4 from "node:fs/promises";
-import * as os from "node:os";
-import * as path3 from "node:path";
+import * as fs5 from "node:fs/promises";
+import * as os2 from "node:os";
+import * as path4 from "node:path";
 
 // src/machine-state.ts
-import * as fs3 from "node:fs/promises";
-import * as path2 from "node:path";
+import * as fs4 from "node:fs/promises";
+import * as path3 from "node:path";
 function isNotFoundError(err) {
   return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
 }
 
 // src/service/data-dir.ts
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path3.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path4.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path3.join(os.homedir(), "AppData", "Roaming");
-    return path3.join(base, "Tent");
+    const base = env.APPDATA || path4.join(os2.homedir(), "AppData", "Roaming");
+    return path4.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path3.join(os.homedir(), "Library", "Application Support", "Tent");
+    return path4.join(os2.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path3.join(os.homedir(), ".local", "state");
-  return path3.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path4.join(os2.homedir(), ".local", "state");
+  return path4.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path3.join(dataDir, "service.json");
+  return path4.join(dataDir, "service.json");
 }
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs4.readFile(file, "utf8");
+    const raw = await fs5.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -3512,6 +3678,18 @@ var ServiceClient = class {
   credentialDelete(id) {
     return this.call("credential.delete", { id });
   }
+  // ---- convenience: machine-local skills (bundled only; no workspaceId) ----
+  skillList() {
+    return this.call("skill.list", {});
+  }
+  /**
+   * Install bundled skills into shared-agents and/or claude skill dirs.
+   * Omitting skills installs all bundled; omitting targets installs both.
+   * Does not accept arbitrary source/destination paths.
+   */
+  skillInstall(opts) {
+    return this.call("skill.install", opts ?? {});
+  }
   // ---- convenience: task ----
   taskDispatch(workspaceId, args) {
     return this.call("task.dispatch", { workspaceId, ...args });
@@ -3640,13 +3818,13 @@ async function attachOrBootstrapService(options = {}) {
     );
   }
   const entry = options.serviceEntry ?? await resolveDefaultServiceEntry(options.packageRoot);
-  const entryAbs = path4.resolve(entry);
+  const entryAbs = path5.resolve(entry);
   const child = spawnFn(process.execPath, [entryAbs, "start", "--data-dir", dataDir], {
     detached: true,
     stdio: ["ignore", "pipe", "pipe"],
     env: cliServiceChildEnv(options.env, dataDir),
     windowsHide: true,
-    cwd: path4.dirname(entryAbs)
+    cwd: path5.dirname(entryAbs)
   });
   let spawnLog = "";
   child.stdout?.on("data", (c) => {
@@ -3710,9 +3888,9 @@ async function resolveDefaultServiceEntry(packageRootHint) {
   if (packageRootHint) roots.push(packageRootHint);
   roots.push(process.cwd());
   try {
-    const here = path4.dirname(fileURLToPath(import.meta.url));
-    if (path4.basename(here) === "cli" && path4.basename(path4.dirname(here)) === "src") {
-      roots.push(path4.resolve(here, "../.."));
+    const here = path5.dirname(fileURLToPath(import.meta.url));
+    if (path5.basename(here) === "cli" && path5.basename(path5.dirname(here)) === "src") {
+      roots.push(path5.resolve(here, "../.."));
     } else {
       roots.push(here);
     }
@@ -3720,33 +3898,33 @@ async function resolveDefaultServiceEntry(packageRootHint) {
   }
   const relativeCandidates = [
     "service.mjs",
-    path4.join("dist", "service.mjs"),
-    path4.join("desktop", "service.mjs"),
-    path4.join("src", "service", "cli.ts")
+    path5.join("dist", "service.mjs"),
+    path5.join("desktop", "service.mjs"),
+    path5.join("src", "service", "cli.ts")
   ];
   for (const root of roots) {
     for (const rel of relativeCandidates) {
-      const candidate = path4.join(root, rel);
+      const candidate = path5.join(root, rel);
       try {
-        await fs5.access(candidate);
+        await fs6.access(candidate);
         return candidate;
       } catch {
       }
     }
   }
-  return path4.join(roots[0] ?? process.cwd(), "service.mjs");
+  return path5.join(roots[0] ?? process.cwd(), "service.mjs");
 }
 function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
 // src/cli/workspace-context.ts
-import * as path5 from "node:path";
+import * as path6 from "node:path";
 async function ensureMountedWorkspace(client, options = {}) {
   const { workspaceRoot, systemRoot } = await resolveWorkspacePaths(options);
   const listed = await client.listWorkspaces();
   const existing = (listed.workspaces ?? []).find(
-    (w) => path5.resolve(w.workspaceRoot) === path5.resolve(workspaceRoot)
+    (w) => path6.resolve(w.workspaceRoot) === path6.resolve(workspaceRoot)
   );
   if (existing) {
     return {
@@ -3763,7 +3941,7 @@ async function ensureMountedWorkspace(client, options = {}) {
   };
 }
 async function resolveWorkspacePaths(options) {
-  const start = path5.resolve(options.workspace || options.cwd || process.cwd());
+  const start = path6.resolve(options.workspace || options.cwd || process.cwd());
   const systemRoot = await findTentSystemRoot(start);
   if (!systemRoot) {
     throw new Error(
@@ -3776,7 +3954,7 @@ async function resolveWorkspacePaths(options) {
       `Tent system root is not an in-workspace .tent layout: ${systemRoot}. Service path requires <workspace>/.tent/ (architecture \xA73.1). Legacy pure-system-root fixtures still use direct CLI commands, not task RPC.`
     );
   }
-  return { workspaceRoot: path5.resolve(workspaceRoot), systemRoot: path5.resolve(systemRoot) };
+  return { workspaceRoot: path6.resolve(workspaceRoot), systemRoot: path6.resolve(systemRoot) };
 }
 
 // src/cli/task-rpc.ts
@@ -4043,11 +4221,11 @@ function parseTaskFlags(args) {
   return { positionals, flags };
 }
 function readStdinText() {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve9(data));
+    process.stdin.on("end", () => resolve10(data));
     process.stdin.on("error", reject);
   });
 }
@@ -4124,7 +4302,7 @@ async function makeEnv() {
   return {
     fs: new NodeFs(systemRoot),
     clock: new SystemClock(),
-    tentName: path6.basename(workspace ?? systemRoot),
+    tentName: path7.basename(workspace ?? systemRoot),
     tentRoot: systemRoot
   };
 }
@@ -4154,11 +4332,16 @@ async function main() {
   }
   if (cmd === "skill-install") {
     const { positionals, flags } = parseFlags(args);
-    if (positionals.length > 0) return fail("Usage: tent skill-install [--target claude] [--force]");
-    const target = flags.target || "claude";
+    if (positionals.length > 0) return fail("Usage: tent skill-install [--target all|claude|shared-agents] [--force]");
+    const target = flags.target || "all";
     const force = flags.force === "true";
-    const targetDirs = flags.dir ? [flags.dir] : defaultSkillInstallDirs(target);
-    const results = await installSkills(targetDirs, { force, target });
+    const defaultDirs = resolveCliSkillInstallDirs(target);
+    const targetDirs = flags.dir ? [flags.dir] : defaultDirs;
+    const results = await installSkills({
+      packageRoot: packageRoot(),
+      targetDirs,
+      force
+    });
     console.log(formatSkillInstallResults(target, results));
     return;
   }
@@ -4181,8 +4364,8 @@ async function main() {
     const asJson = flags.json === "true";
     try {
       const report = await importExternalTentRoot({
-        sourceRoot: path6.resolve(source),
-        workspaceRoot: path6.resolve(workspace),
+        sourceRoot: path7.resolve(source),
+        workspaceRoot: path7.resolve(workspace),
         dryRun,
         force
       });
@@ -4542,18 +4725,18 @@ unresolved wiki links: ${result.unresolved.length}`
   }
 }
 function readStdin() {
-  return new Promise((resolve9, reject) => {
+  return new Promise((resolve10, reject) => {
     let data = "";
     process.stdin.setEncoding("utf8");
     process.stdin.on("data", (chunk) => data += chunk);
-    process.stdin.on("end", () => resolve9(data));
+    process.stdin.on("end", () => resolve10(data));
     process.stdin.on("error", reject);
   });
 }
 async function readBodyFile(bodySource) {
-  const resolved = path6.resolve(bodySource);
-  if (!await existsPath(resolved)) throw new Error(`Body file not found: ${bodySource}.`);
-  return fs6.readFile(resolved, "utf8");
+  const resolved = path7.resolve(bodySource);
+  if (!await existsPath2(resolved)) throw new Error(`Body file not found: ${bodySource}.`);
+  return fs7.readFile(resolved, "utf8");
 }
 function printBox(box, depth) {
   const ind = "  ".repeat(depth);
@@ -4596,54 +4779,6 @@ function parseFlags(args) {
   }
   return { positionals, flags };
 }
-function defaultSkillInstallDirs(target) {
-  if (target !== "claude") {
-    throw new Error("skill-install currently supports only --target claude; Codex uses a different skill format.");
-  }
-  const home = os2.homedir();
-  return [
-    path6.join(home, ".claude", "skills"),
-    path6.join(home, ".agents", "skills")
-  ];
-}
-async function installSkills(targetDirs, options) {
-  if (options.target !== "claude") defaultSkillInstallDirs(options.target);
-  if (targetDirs.length === 0) throw new Error("skill-install requires at least one target directory");
-  const sourceDir = path6.join(packageRoot(), "skills");
-  const entries = await fs6.readdir(sourceDir, { withFileTypes: true });
-  const skillNames = [];
-  for (const entry of entries) {
-    if (!entry.isDirectory()) continue;
-    if (await existsPath(path6.join(sourceDir, entry.name, "SKILL.md"))) skillNames.push(entry.name);
-  }
-  skillNames.sort();
-  if (skillNames.length === 0) throw new Error(`No installable skills found in ${sourceDir}`);
-  const results = [];
-  for (const targetDir of targetDirs) {
-    await fs6.mkdir(targetDir, { recursive: true });
-    for (const name of skillNames) {
-      const source = path6.join(sourceDir, name);
-      const target = path6.join(targetDir, name);
-      assertChildPath(targetDir, target);
-      const exists2 = await existsPath(target);
-      if (exists2 && !options.force) {
-        results.push({
-          targetDir,
-          skill: name,
-          status: "skipped",
-          reason: "already exists (use --force to overwrite)"
-        });
-        continue;
-      }
-      if (exists2 && options.force) {
-        await fs6.rm(target, { recursive: true, force: true });
-      }
-      await fs6.cp(source, target, { recursive: true, errorOnExist: true });
-      results.push({ targetDir, skill: name, status: "installed" });
-    }
-  }
-  return results;
-}
 function formatSkillInstallResults(target, results) {
   const byDir = /* @__PURE__ */ new Map();
   for (const item of results) {
@@ -4651,7 +4786,7 @@ function formatSkillInstallResults(target, results) {
     list.push(item);
     byDir.set(item.targetDir, list);
   }
-  const lines = [`\u2713 skill-install (${target} format)`];
+  const lines = [`\u2713 skill-install (${target})`];
   for (const [dir, items] of byDir) {
     lines.push(`  ${dir}`);
     for (const item of items) {
@@ -4662,28 +4797,22 @@ function formatSkillInstallResults(target, results) {
   return lines.join("\n");
 }
 function packageRoot() {
-  const here = path6.dirname(fileURLToPath2(import.meta.url));
-  if (path6.basename(here) === "cli" && path6.basename(path6.dirname(here)) === "src") {
-    return path6.resolve(here, "../..");
+  const here = path7.dirname(fileURLToPath2(import.meta.url));
+  if (path7.basename(here) === "cli" && path7.basename(path7.dirname(here)) === "src") {
+    return path7.resolve(here, "../..");
   }
   return here;
 }
-function assertChildPath(parent, child) {
-  const rel = path6.relative(path6.resolve(parent), path6.resolve(child));
-  if (rel.startsWith("..") || path6.isAbsolute(rel)) {
-    throw new Error(`Install target escapes the destination directory: ${child}`);
-  }
-}
-async function existsPath(target) {
+async function existsPath2(target) {
   try {
-    await fs6.access(target);
+    await fs7.access(target);
     return true;
   } catch {
     return false;
   }
 }
 async function packageVersion() {
-  const pkg = JSON.parse(await fs6.readFile(path6.join(packageRoot(), "package.json"), "utf8"));
+  const pkg = JSON.parse(await fs7.readFile(path7.join(packageRoot(), "package.json"), "utf8"));
   return String(pkg.version ?? "0.0.0");
 }
 function helpText() {
@@ -4706,7 +4835,8 @@ Init / machine config (always allowed):
                                      Copy legacy external tent root into <ws>/.tent (alias: import).
                                      Refuses if <ws>/.tent exists. Never deletes source.
                                      Options: --dry-run --force --json
-  skill-install [--force]            Install bundled skills to ~/.claude/skills and ~/.agents/skills.
+  skill-install [--target all|claude|shared-agents] [--force]
+                                     Install bundled skills to selected machine roots.
   role-init <role>                   Regenerate the derived stable role init document.
 
 Read-only (allowed on in-workspace .tent):
@@ -4741,7 +4871,7 @@ Options:
 }
 async function readVaultPluginSettings(vault) {
   const fsmod = await import("node:fs/promises");
-  const dataPath = path6.join(path6.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
+  const dataPath = path7.join(path7.resolve(vault), ".obsidian", "plugins", "tent", "data.json");
   try {
     const data = JSON.parse(await fsmod.readFile(dataPath, "utf8"));
     const root = typeof data?.tentsRoot === "string" ? data.tentsRoot.trim() : "";
@@ -4764,13 +4894,13 @@ async function newTent(target, vault) {
       return fail(`In --vault mode, <name> cannot contain path separators: ${target}`);
     }
     pluginSettings = await readVaultPluginSettings(vault);
-    target = path6.join(path6.resolve(vault), pluginSettings.tentsRoot, target);
+    target = path7.join(path7.resolve(vault), pluginSettings.tentsRoot, target);
   }
-  const workspaceRoot = path6.resolve(target);
+  const workspaceRoot = path7.resolve(target);
   const fsa = new NodeFs(workspaceRoot);
   if (await fsa.exists(".tent")) return fail(`Target is already a Tent: ${workspaceRoot}`);
   await fsmod.mkdir(workspaceRoot, { recursive: true });
-  const name = path6.basename(workspaceRoot);
+  const name = path7.basename(workspaceRoot);
   const fallbackRules = `# ${name} - Project Rules
 
 > Local project rules for this Tent. Created by tent-genesis; edit freely.
@@ -4788,7 +4918,7 @@ async function newTent(target, vault) {
     rolesRegistry: pluginSettings?.rolesRegistry
   });
   console.log(
-    `\u2713 Created Tent: ${path6.join(workspaceRoot, ".tent")}
+    `\u2713 Created Tent: ${path7.join(workspaceRoot, ".tent")}
 In-workspace layout: collaboration facts live under <workspace>/.tent/.
 The concept tree starts empty; add notes/boxes as folder + same-named Markdown.`
   );

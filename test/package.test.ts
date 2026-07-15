@@ -632,7 +632,7 @@ test("skill-install:安装内置 skills,重复执行跳过,需 --force 覆盖", 
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
-    /currently supports only --target claude/,
+    /Unknown skill target/,
   );
 });
 
@@ -667,7 +667,7 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
     );
   }
   // Installer source must use os.homedir(), not a hard-coded developer absolute path.
-  const installerSource = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
+  const installerSource = await fs.readFile(path.join(repoRoot, "src", "machine", "skills.ts"), "utf8");
   assert.match(installerSource, /os\.homedir\(\)/);
   assert.doesNotMatch(installerSource, /C:\\\\Users\\\\|\/Users\/[A-Za-z0-9._-]+\/\.claude/);
 
