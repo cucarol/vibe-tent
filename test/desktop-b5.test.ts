@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { get as httpGet } from "node:http";
 import * as fs from "node:fs/promises";
 import * as http from "node:http";
 import * as os from "node:os";
@@ -216,8 +217,14 @@ test("tryAttach rejects endpoint without token even if health is open", async ()
     assert.equal(attached, null);
 
     // Health remains open for discovery
-    const h = await fetch(`${svc.url}/health`);
-    assert.equal(h.status, 200);
+    const status = await new Promise<number | undefined>((resolve, reject) => {
+      const req = httpGet(`${svc.url}/health`, (res) => {
+        res.resume();
+        resolve(res.statusCode);
+      });
+      req.on("error", reject);
+    });
+    assert.equal(status, 200);
   } finally {
     await svc.stop();
   }

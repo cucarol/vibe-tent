@@ -252,8 +252,10 @@ test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
   assert.equal(grok.model, "grok-4.5");
   assert.equal(grok.envKey, "CPA_GROK_API_KEY");
   assert.equal(grok.executable, "C:\\\\tools\\\\grok.exe");
-  // Product profiles sort before test-only.
-  assert.equal(projected[0].id, "grok-acp-default");
+  // All product profiles sort before test-only; product order itself is display-name based.
+  const firstTestOnly = projected.findIndex((profile) => profile.testOnly);
+  assert.ok(firstTestOnly > 0);
+  assert.ok(projected.slice(0, firstTestOnly).every((profile) => !profile.testOnly));
 
   const single = projectAgentProfile(raw[1]);
   assert.equal(single.id, "grok-acp-default");
