@@ -58,6 +58,11 @@ export interface TaskEnvelope {
   worktree?: string;
   branch?: string;
   targetBranch?: string;
+  /**
+   * Immutable full SHA of the role branch tip at first Git-lane bind for this task.
+   * Optional; absent on non-Git / pre-baseline envelopes until backfilled once.
+   */
+  roleBranchBase?: string;
   deliveryPolicy?: DeliveryPolicy;
   assigneeKind?: AssigneeKind;
   sessionId?: string;
@@ -120,6 +125,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
   if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
@@ -290,7 +298,6 @@ export async function writeTaskEnvelope(
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
   }
-
   const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
   const body =
     `# Task\n\n` +
@@ -330,6 +337,12 @@ export interface TaskEnvelopePatch {
   worktree?: string | null;
   branch?: string | null;
   targetBranch?: string | null;
+  /**
+   * Capture-once baseline for managed collection. Prefer omit once set;
+   * null clears (tests only). Never overwrite an existing non-empty value from
+   * normal bind/resume paths.
+   */
+  roleBranchBase?: string | null;
 }
 
 /** Low-level patch of task operational frontmatter (body stays immutable). */
@@ -371,6 +384,11 @@ export async function patchTaskEnvelope(
     const value = patch[key];
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
+  }
+
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
   }
 
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));

@@ -216,6 +216,103 @@ test("workspace integration:commit gaps keep the cherry-pick path", async () => 
   assert.equal(normalizeLf(await fs.readFile(path.join(workspace, "last.txt"), "utf8")), "last\n");
 });
 
+test("listRoleCommitsStrict / listPendingRoleCommits: fail-loud + skip already-integrated", async () => {
+  const workspace = await makeGitWorkspace("tent-pending-commits-");
+  const {
+    ensureRoleWorkspace,
+    integrateWorkspaceCommits,
+    listPendingRoleCommits,
+    listRoleCommits,
+    listRoleCommitsStrict,
+    listRoleCommitsSince,
+    readRoleBranchTip,
+  } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "reviewer");
+  // Task-scoped base is the role tip *before* this task's commits.
+  const base = await readRoleBranchTip(workspace, contract.branch);
+  const firstRef = await commitFile(contract.worktree, "p1.txt", "one\n", "pending one");
+  const secondRef = await commitFile(contract.worktree, "p2.txt", "two\n", "pending two");
+
+  const strict = await listRoleCommitsStrict(contract);
+  assert.deepEqual(
+    strict.map((c) => c.ref),
+    [secondRef, firstRef],
+    "strict log is newest-first like listRoleCommits"
+  );
+  assert.deepEqual(
+    (await listRoleCommits(contract)).map((c) => c.ref),
+    [secondRef, firstRef]
+  );
+  assert.deepEqual(
+    (await listRoleCommitsSince(contract, base)).map((c) => c.ref),
+    [secondRef, firstRef],
+    "since-base log matches target..branch when base is pre-task tip"
+  );
+
+  const pending = await listPendingRoleCommits(contract, base);
+  assert.deepEqual(
+    pending.map((c) => c.ref),
+    [firstRef, secondRef],
+    "pending is oldest-first for integrate order"
+  );
+
+  // Integrate first only (cherry-pick leaves role branch tip ahead).
+  await integrateWorkspaceCommits(contract, [firstRef]);
+  const after = await listPendingRoleCommits(contract, base);
+  assert.deepEqual(
+    after.map((c) => c.ref),
+    [secondRef],
+    "already-integrated (ancestor/cherry-pick) commits are not re-presented"
+  );
+
+  // Exclusive base..branch: commits at/below base are not candidates.
+  assert.deepEqual(
+    (await listPendingRoleCommits(contract, firstRef)).map((c) => c.ref),
+    [secondRef],
+    "listPendingRoleCommits is exclusive base..branch"
+  );
+  const mainRef = (await git(workspace, "rev-parse", "main")).trim();
+  assert.deepEqual(
+    (await listPendingRoleCommits(contract, mainRef)).map((c) => c.ref),
+    [secondRef],
+    "an advanced target that remains an ancestor is still a valid baseline"
+  );
+  const divergentMainRef = await commitFile(
+    workspace,
+    "main-only.txt",
+    "main only\n",
+    "diverge main from role lane"
+  );
+  await assert.rejects(
+    () => listPendingRoleCommits(contract, divergentMainRef),
+    /no longer descends/i,
+    "a rewritten or divergent role lane must fail loud instead of widening the range"
+  );
+
+  await assert.rejects(
+    () =>
+      listRoleCommitsStrict({
+        ...contract,
+        branch: "tent-role/definitely-missing",
+      }),
+    /./,
+    "strict variant must not swallow missing-branch Git errors as []"
+  );
+  assert.deepEqual(
+    await listRoleCommits({
+      ...contract,
+      branch: "tent-role/definitely-missing",
+    }),
+    [],
+    "read-only listRoleCommits still soft-fails to []"
+  );
+  await assert.rejects(
+    () => listPendingRoleCommits(contract, ""),
+    /base/i,
+    "managed pending list requires a non-empty base"
+  );
+});
+
 test("listRoleCommitsFor:只读列举 role 分支 commits,不创建 worktree", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-commit-list-"));
   const workspace = path.join(parent, "repo");

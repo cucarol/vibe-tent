@@ -46,6 +46,7 @@ workspaceLane:                   # omit when tent has no Git/workspace lane (pur
   worktree: …
   branch: …
   targetBranch: …                # peer → mainline; sub → dispatcher role branch
+  roleBranchBase: <full-sha>      # captured once when managed execution acquires the role slot
 deliveryPolicy: manual | bypass | agent-decide
 wait:
   reason: user-input | a2a-approval | review | external
@@ -66,6 +67,12 @@ prompt: |                        # immutable after dispatch
 Tasks **must not** embed RuntimeWorkspace, PIDs, resume tokens, or absolute path caches. Only `sessionId` may bind a task to a live session; the session row lives in the service data area (`agent-runtime.md`).
 
 Do **not** use the legacy product phrase “workspace pointer” for either structure.
+
+`roleBranchBase` scopes managed auto-delivery to commits created during this task's
+execution window (`roleBranchBase..branch`). Queued tasks do not capture it at
+dispatch: the service writes it only after the role has no other active managed
+session, then preserves it across restart, resume, and reject-resume. A rewritten
+or divergent role branch fails loud instead of widening the commit range.
 
 #### sessionId reference rule
 

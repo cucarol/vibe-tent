@@ -1499,6 +1499,9 @@ async function loadTaskEnvelope(fs8, path8) {
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
   if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
@@ -1653,6 +1656,10 @@ async function patchTaskEnvelope(fs8, path8, patch) {
     const value = patch[key];
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
+  }
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
   }
   await fs8.writeFile(path8, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs8, path8);

@@ -1182,6 +1182,9 @@ async function loadTaskEnvelope(fs13, path15) {
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
   if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
@@ -1355,6 +1358,10 @@ async function patchTaskEnvelope(fs13, path15, patch) {
     const value = patch[key];
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
+  }
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
   }
   await fs13.writeFile(path15, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs13, path15);
@@ -2429,6 +2436,25 @@ function taskContextCard(taskId, opts) {
 import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
+async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const full = await fullRef(root, sourceRef);
+  const ancestor = await findAncestorIntegration(root, full, targetBranch);
+  if (ancestor) return { integratedRef: full, reason: "ancestor" };
+  const prior = await findCherryPick(root, full, targetBranch);
+  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
+  return void 0;
+}
+async function readRoleBranchTip(workspace, branch) {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
 async function isGitWorkspace(workspace) {
   try {
     await assertGitWorkspace(nodePath.resolve(workspace));
@@ -2517,6 +2543,39 @@ async function integrateWorkspaceCommits(contract, refs) {
     await rollbackIntegration(root, originalRef, error);
   }
   return results;
+}
+async function listRoleCommitsSince(contract, base) {
+  const since = base.trim();
+  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
+  const branchRef = `refs/heads/${contract.branch}`;
+  const fullBase = await fullRef(contract.workspace, since);
+  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+    throw new Error(
+      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
+    );
+  }
+  const output = await git(contract.workspace, [
+    "log",
+    `${fullBase}..${branchRef}`,
+    "--format=%H%x09%h%x09%s"
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
+    return { ref, shortRef, subject: subjectParts.join("	") };
+  }).filter((item) => item.ref && item.shortRef);
+}
+async function listPendingRoleCommits(contract, base) {
+  const candidates = await listRoleCommitsSince(contract, base);
+  const pending = [];
+  for (const item of candidates) {
+    const integrated = await findIntegratedCommit(
+      contract.workspace,
+      item.ref,
+      contract.targetBranch
+    );
+    if (!integrated) pending.push(item);
+  }
+  return pending.reverse();
 }
 async function assertGitWorkspace(root) {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
@@ -6326,7 +6385,6 @@ async function taskStartSessionRpc(ctx, p) {
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
-  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
   const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
   if (activeForRole) {
     const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
@@ -6353,6 +6411,7 @@ async function taskStartSessionRpc(ctx, p) {
       }
     );
   }
+  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane = task.workspace || task.worktree || task.branch ? {
     workspace: task.workspace || mount.workspaceRoot,
@@ -6831,9 +6890,16 @@ async function tryManagedAutoDeliver(ctx, input) {
     return;
   }
   managedAutoDeliverInFlight.add(key);
+  let deliveredOk = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
+    if (input.commits === void 0) {
+      const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (pre && pre.state === "running") {
+        await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
+      }
+    }
     await ctx.mutations.run(input.workspaceId, async () => {
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
       if (task.state !== "running") {
@@ -6849,6 +6915,10 @@ async function tryManagedAutoDeliver(ctx, input) {
         managedAutoDeliverDone.add(key);
         return;
       }
+      let commits = input.commits;
+      if (commits === void 0) {
+        commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
+      }
       ctx.host.markSelfWrite(input.workspaceId);
       const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
       const policy = task.deliveryPolicy ?? "manual";
@@ -6857,10 +6927,10 @@ async function tryManagedAutoDeliver(ctx, input) {
         summary,
         decision,
         integrate,
-        // Never invent commits here — only forward an explicit list when provided.
-        ...input.commits && input.commits.length > 0 ? { commits: input.commits } : {}
+        ...commits.length > 0 ? { commits } : {}
       });
       managedAutoDeliverDone.add(key);
+      deliveredOk = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
         "delivery.updated",
@@ -6875,6 +6945,13 @@ async function tryManagedAutoDeliver(ctx, input) {
         "self"
       );
     });
+    if (deliveredOk) {
+      await stopManagedSessionAfterDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        taskPath: input.taskPath
+      });
+    }
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     try {
@@ -6907,6 +6984,56 @@ async function tryManagedAutoDeliver(ctx, input) {
     }
   } finally {
     managedAutoDeliverInFlight.delete(key);
+  }
+}
+async function collectManagedDeliveryCommits(workspaceRoot, task) {
+  const hasRecordedLane = Boolean(
+    task.workspace || task.worktree || task.branch || task.targetBranch
+  );
+  if (!hasRecordedLane) {
+    return [];
+  }
+  const base = task.roleBranchBase?.trim();
+  if (!base) {
+    throw new Error(
+      `Managed delivery collection requires roleBranchBase on task ${task.id || task.path}; baseline must be captured at first Git lane bind (never fall back to all role commits).`
+    );
+  }
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const pending = await listPendingRoleCommits(contract, base);
+  return pending.map((commit) => commit.ref);
+}
+async function stopManagedSessionAfterDelivery(ctx, input) {
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+    }
+    const probe = await ctx.runtime.probe(input.sessionId);
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+      await ctx.runtime.stopSession(input.sessionId, "user");
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `managed session stop after deliver failed: ${message}`
+      });
+    } catch {
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        runtimeEvent: "session.stop_after_deliver.failed",
+        error: message,
+        // Delivery already succeeded; task must not be failed for stop issues.
+        taskFailed: false
+      },
+      "service"
+    );
   }
 }
 function emitTaskState(ctx, workspaceId, task, reason) {
@@ -7090,21 +7217,42 @@ async function resolveIntegrationContract(workspaceRoot, task) {
   return real;
 }
 async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
-  if (task.worktree && task.branch && task.workspace && task.targetBranch) {
+  const laneComplete = Boolean(
+    task.worktree && task.branch && task.workspace && task.targetBranch
+  );
+  if (laneComplete && task.roleBranchBase?.trim()) {
     return task;
   }
   const mount = ctx.host.require(workspaceId);
   return ctx.mutations.run(workspaceId, async () => {
-    const lane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, task.role);
-    if (!lane) return task;
-    ctx.host.markSelfWrite(workspaceId);
-    return patchTaskEnvelope(mount.env.fs, task.path, {
-      workspace: lane.workspace,
-      worktree: lane.worktree,
-      branch: lane.branch,
-      targetBranch: lane.targetBranch,
+    const current = await loadTaskEnvelope(mount.env.fs, task.path);
+    const currentLaneComplete = Boolean(
+      current.worktree && current.branch && current.workspace && current.targetBranch
+    );
+    if (currentLaneComplete && current.roleBranchBase?.trim()) {
+      return current;
+    }
+    const lane = currentLaneComplete ? {
+      workspace: current.workspace,
+      worktree: current.worktree,
+      branch: current.branch,
+      targetBranch: current.targetBranch
+    } : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+    if (!lane) return current;
+    const patch = {
       updatedAt: mount.env.clock.now()
-    });
+    };
+    if (!currentLaneComplete) {
+      patch.workspace = lane.workspace;
+      patch.worktree = lane.worktree;
+      patch.branch = lane.branch;
+      patch.targetBranch = lane.targetBranch;
+    }
+    if (!current.roleBranchBase?.trim()) {
+      patch.roleBranchBase = await readRoleBranchTip(lane.workspace, lane.branch);
+    }
+    ctx.host.markSelfWrite(workspaceId);
+    return patchTaskEnvelope(mount.env.fs, current.path, patch);
   });
 }
 async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {

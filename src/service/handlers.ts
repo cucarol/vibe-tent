@@ -47,6 +47,8 @@ import {
   ensureRoleWorkspaceIfGit,
   integrateWorkspaceCommits,
   isSameWorkspaceRoot,
+  listPendingRoleCommits,
+  readRoleBranchTip,
 } from "../core/workspace.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { makeSessionId } from "../runtime/types.js";
@@ -1410,10 +1412,6 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
 
-  // P0-1: managed ACP cwd must be role worktree when Git lane exists.
-  // Backfill lane on pre-P0 envelopes; pure docs / non-Git stay at workspace root.
-  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
-
   // Same role: only one managed ACP session in starting/live/waiting-user.
   // Tasks may be many; external role sessions are not service-registry managed.
   // Idempotent: same task already bound to its active session returns that handle.
@@ -1449,6 +1447,11 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       }
     );
   }
+
+  // The task owns the role's managed execution window only after the active-role
+  // gate passes. Capture the branch baseline here, not at dispatch: queued tasks
+  // may be created while an earlier task is still adding commits to the same lane.
+  task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
 
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane =
@@ -2137,6 +2140,8 @@ async function failTaskFromRuntime(
  * - never auto-accept; manual → pending review; bypass/agent-decide use existing policy
  * - empty/error already filtered by adapter; still refuse empty here
  * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
+ * - production auto-collects pending commits from the task's authoritative role lane
+ * - only after successful taskDeliver, stop the managed session so the role is free
  */
 async function tryManagedAutoDeliver(
   ctx: HandlerContext,
@@ -2146,8 +2151,8 @@ async function tryManagedAutoDeliver(
     sessionId: string;
     assistantText: string;
     /**
-     * Explicit commits only. Production managed ACP never auto-guesses/collects
-     * worktree commits; tests may pass commits to exercise integrate failure.
+     * Optional explicit commits for tests (e.g. integrate-conflict fixtures).
+     * Production prompt_complete omits this and auto-collects from the role lane.
      */
     commits?: string[];
   }
@@ -2164,9 +2169,19 @@ async function tryManagedAutoDeliver(
   }
   managedAutoDeliverInFlight.add(key);
 
+  let deliveredOk = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
+
+    // Outside the mutation bus: capture-once baseline for legacy Git-lane tasks
+    // missing roleBranchBase. Nested mutations.run would deadlock.
+    if (input.commits === undefined) {
+      const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (pre && pre.state === "running") {
+        await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
+      }
+    }
 
     // Re-load authority state under mutation bus.
     await ctx.mutations.run(input.workspaceId, async () => {
@@ -2190,6 +2205,13 @@ async function tryManagedAutoDeliver(
         return;
       }
 
+      // Collect pending role-lane commits unless the caller supplied an explicit list
+      // (tests only). Production always auto-collects via the authoritative lane contract.
+      let commits = input.commits;
+      if (commits === undefined) {
+        commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
+      }
+
       ctx.host.markSelfWrite(input.workspaceId);
       const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
 
@@ -2202,11 +2224,11 @@ async function tryManagedAutoDeliver(
         summary,
         decision,
         integrate,
-        // Never invent commits here — only forward an explicit list when provided.
-        ...(input.commits && input.commits.length > 0 ? { commits: input.commits } : {}),
+        ...(commits.length > 0 ? { commits } : {}),
       });
 
       managedAutoDeliverDone.add(key);
+      deliveredOk = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
         "delivery.updated",
@@ -2221,8 +2243,18 @@ async function tryManagedAutoDeliver(
         "self"
       );
     });
+
+    // Free the role slot only after successful delivery. Stop failure must not
+    // roll back delivery; keep registry resume metadata and emit diagnostics.
+    if (deliveredOk) {
+      await stopManagedSessionAfterDelivery(ctx, {
+        workspaceId: input.workspaceId,
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+      });
+    }
   } catch (err) {
-    // Deliver / integrate failure must NOT terminal-fail the task.
+    // Deliver / integrate / collection failure must NOT terminal-fail the task.
     // Keep running/occupation so the user can retry; expose via session diagnostics/event.
     // Only session.failed (launch/process) maps task → failed.
     const message = err instanceof Error ? err.message : String(err);
@@ -2263,6 +2295,79 @@ async function tryManagedAutoDeliver(
   }
 }
 
+/**
+ * Collect full SHAs still pending on this task's role lane since roleBranchBase.
+ * - Non-Git / pure-docs (no recorded lane) → [] (legal zero-commit delivery).
+ * - Recorded Git lane requires a baseline; never falls back to all pending role commits.
+ * - Git / baseline / listing errors fail loud (caller keeps task/session retryable).
+ */
+async function collectManagedDeliveryCommits(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<string[]> {
+  const hasRecordedLane = Boolean(
+    task.workspace || task.worktree || task.branch || task.targetBranch
+  );
+  if (!hasRecordedLane) {
+    // Legitimate non-Git / pure-docs task: no lane, zero commits.
+    return [];
+  }
+  const base = task.roleBranchBase?.trim();
+  if (!base) {
+    throw new Error(
+      `Managed delivery collection requires roleBranchBase on task ${task.id || task.path}; ` +
+        `baseline must be captured at first Git lane bind (never fall back to all role commits).`
+    );
+  }
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const pending = await listPendingRoleCommits(contract, base);
+  return pending.map((commit) => commit.ref);
+}
+
+/**
+ * After successful managed delivery, stop the runtime session so the same role
+ * can accept a new task. Registry row stays (resume metadata). Stop errors are
+ * diagnostic-only — delivery already committed and must not roll back.
+ */
+async function stopManagedSessionAfterDelivery(
+  ctx: HandlerContext,
+  input: { workspaceId: string; sessionId: string; taskPath: string }
+): Promise<void> {
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    const probe = await ctx.runtime.probe(input.sessionId);
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+      await ctx.runtime.stopSession(input.sessionId, "user");
+    }
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `managed session stop after deliver failed: ${message}`,
+      });
+    } catch {
+      // registry row may already be gone
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        runtimeEvent: "session.stop_after_deliver.failed",
+        error: message,
+        // Delivery already succeeded; task must not be failed for stop issues.
+        taskFailed: false,
+      },
+      "service"
+    );
+  }
+}
+
 /** Test helper: clear in-process managed deliver dedup (does not touch disk). */
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
@@ -2270,8 +2375,8 @@ export function resetManagedAutoDeliverDedupForTests(): void {
 }
 
 /**
- * Test helper: invoke managed auto-deliver with optional explicit commits.
- * Production session.prompt_complete never auto-collects worktree commits.
+ * Test helper: invoke managed auto-deliver.
+ * Optional explicit commits override production auto-collection (conflict tests).
  */
 export async function invokeManagedAutoDeliverForTests(
   ctx: HandlerContext,
@@ -2540,6 +2645,8 @@ async function resolveIntegrationContract(
  * Ensure task envelope carries WorkspaceLane before managed startSession.
  * Git workspace → create/reuse role worktree and patch missing fields under MutationBus
  * (worktree create + envelope patch share one critical section; no nested run).
+ * Also backfills roleBranchBase once when missing on legacy/pre-baseline envelopes;
+ * never overwrites an existing baseline (restart / resume / reject-resume safe).
  * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
  */
 async function ensureTaskWorkspaceLane(
@@ -2547,21 +2654,49 @@ async function ensureTaskWorkspaceLane(
   workspaceId: string,
   task: TaskEnvelope
 ): Promise<TaskEnvelope> {
-  if (task.worktree && task.branch && task.workspace && task.targetBranch) {
+  const laneComplete = Boolean(
+    task.worktree && task.branch && task.workspace && task.targetBranch
+  );
+  if (laneComplete && task.roleBranchBase?.trim()) {
     return task;
   }
   const mount = ctx.host.require(workspaceId);
   return ctx.mutations.run(workspaceId, async () => {
-    const lane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, task.role);
-    if (!lane) return task;
-    ctx.host.markSelfWrite(workspaceId);
-    return patchTaskEnvelope(mount.env.fs, task.path, {
-      workspace: lane.workspace,
-      worktree: lane.worktree,
-      branch: lane.branch,
-      targetBranch: lane.targetBranch,
+    // Re-load under the bus so concurrent bind cannot double-write baseline.
+    const current = await loadTaskEnvelope(mount.env.fs, task.path);
+    const currentLaneComplete = Boolean(
+      current.worktree && current.branch && current.workspace && current.targetBranch
+    );
+    if (currentLaneComplete && current.roleBranchBase?.trim()) {
+      return current;
+    }
+
+    const lane =
+      currentLaneComplete
+        ? {
+            workspace: current.workspace!,
+            worktree: current.worktree!,
+            branch: current.branch!,
+            targetBranch: current.targetBranch!,
+          }
+        : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+    if (!lane) return current;
+
+    const patch: Parameters<typeof patchTaskEnvelope>[2] = {
       updatedAt: mount.env.clock.now(),
-    });
+    };
+    if (!currentLaneComplete) {
+      patch.workspace = lane.workspace;
+      patch.worktree = lane.worktree;
+      patch.branch = lane.branch;
+      patch.targetBranch = lane.targetBranch;
+    }
+    // Capture-once: only set when still missing. Never rewrite on restart/resume.
+    if (!current.roleBranchBase?.trim()) {
+      patch.roleBranchBase = await readRoleBranchTip(lane.workspace, lane.branch);
+    }
+    ctx.host.markSelfWrite(workspaceId);
+    return patchTaskEnvelope(mount.env.fs, current.path, patch);
   });
 }
 

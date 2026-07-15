@@ -73,6 +73,23 @@ export async function readWorkspaceHead(workspace: string): Promise<WorkspaceHea
   return { ref, shortRef, branch };
 }
 
+/**
+ * Read the authoritative full SHA tip of a long-lived role branch.
+ * Fail-loud when the branch is missing or Git cannot resolve it.
+ */
+export async function readRoleBranchTip(
+  workspace: string,
+  branch: string
+): Promise<string> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
+
 /** Run an explicit user-supplied gate in the integration workspace before mutation. */
 export async function runWorkspaceCheck(workspace: string, command: string): Promise<WorkspaceCheckResult> {
   const root = nodePath.resolve(workspace);
@@ -198,23 +215,91 @@ export async function integrateWorkspaceCommits(
 /** 列出 role lane 尚未进入正式分支的 commits；只读，异常按空候选处理。 */
 export async function listRoleCommits(contract: RoleWorkspaceContract): Promise<RoleCommit[]> {
   try {
-    const output = await git(contract.workspace, [
-      "log",
-      `${contract.targetBranch}..${contract.branch}`,
-      "--format=%H%x09%h%x09%s",
-    ]);
-    return output
-      .split(/\r?\n/)
-      .map((line) => line.trim())
-      .filter(Boolean)
-      .map((line) => {
-        const [ref = "", shortRef = "", ...subjectParts] = line.split("\t");
-        return { ref, shortRef, subject: subjectParts.join("\t") };
-      })
-      .filter((item) => item.ref && item.shortRef);
+    return await listRoleCommitsStrict(contract);
   } catch {
     return [];
   }
+}
+
+/**
+ * Fail-loud role-lane commit listing for production delivery collection.
+ * Same range as listRoleCommits (`targetBranch..branch`); does not swallow Git errors.
+ * Newest-first (git log order).
+ */
+export async function listRoleCommitsStrict(contract: RoleWorkspaceContract): Promise<RoleCommit[]> {
+  const output = await git(contract.workspace, [
+    "log",
+    `${contract.targetBranch}..${contract.branch}`,
+    "--format=%H%x09%h%x09%s",
+  ]);
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [ref = "", shortRef = "", ...subjectParts] = line.split("\t");
+      return { ref, shortRef, subject: subjectParts.join("\t") };
+    })
+    .filter((item) => item.ref && item.shortRef);
+}
+
+/**
+ * Fail-loud commits exclusive to `base..branch` (newest-first).
+ * Used by managed collection once a task-scoped roleBranchBase is known.
+ */
+export async function listRoleCommitsSince(
+  contract: RoleWorkspaceContract,
+  base: string
+): Promise<RoleCommit[]> {
+  const since = base.trim();
+  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
+  const branchRef = `refs/heads/${contract.branch}`;
+  const fullBase = await fullRef(contract.workspace, since);
+  if (!(await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef]))) {
+    throw new Error(
+      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
+    );
+  }
+  const output = await git(contract.workspace, [
+    "log",
+    `${fullBase}..${branchRef}`,
+    "--format=%H%x09%h%x09%s",
+  ]);
+  return output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .map((line) => {
+      const [ref = "", shortRef = "", ...subjectParts] = line.split("\t");
+      return { ref, shortRef, subject: subjectParts.join("\t") };
+    })
+    .filter((item) => item.ref && item.shortRef);
+}
+
+/**
+ * Pending delivery candidates from an authoritative role lane for managed collection.
+ * Requires task-scoped `base` (roleBranchBase full SHA); lists only `base..branch`,
+ * minus already-integrated (ancestor or -x cherry-pick) commits.
+ * Returns oldest-first so integrate can fast-forward complete intervals.
+ *
+ * UI listing stays on listRoleCommits / listRoleCommitsFor (targetBranch..branch).
+ */
+export async function listPendingRoleCommits(
+  contract: RoleWorkspaceContract,
+  base: string
+): Promise<RoleCommit[]> {
+  const candidates = await listRoleCommitsSince(contract, base);
+  const pending: RoleCommit[] = [];
+  for (const item of candidates) {
+    const integrated = await findIntegratedCommit(
+      contract.workspace,
+      item.ref,
+      contract.targetBranch
+    );
+    if (!integrated) pending.push(item);
+  }
+  // git log is newest-first; reverse for chronological integrate order.
+  return pending.reverse();
 }
 
 /** 只读列举 role lane 未合入正式分支的 commits；不建 worktree、不建分支。 */

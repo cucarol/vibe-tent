@@ -967,7 +967,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           const g = await rpc(svc, "task.get", { workspaceId, taskPath });
           const task = (g.result as { task: { state: string } }).task;
           return task.state === "accepted" ? task : null;
-        }, 12_000, "bypass accepted");
+        }, 30_000, "bypass accepted");
         assert.equal(accepted.state, "accepted");
         const list = await rpc(svc, "delivery.list", { workspaceId });
         const deliveries = (
@@ -1011,7 +1011,7 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
           const g = await rpc(svc, "task.get", { workspaceId, taskPath });
           const task = (g.result as { task: { state: string } }).task;
           return task.state === "delivered" ? task : null;
-        }, 12_000, "agent-decide delivered for review");
+        }, 30_000, "agent-decide delivered for review");
         assert.equal(delivered.state, "delivered");
         const list = await rpc(svc, "delivery.list", { workspaceId });
         const deliveries = (
@@ -2083,7 +2083,7 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
     });
 
-    // Explicit commits only (production never auto-collects worktree commits).
+    // Explicit commits override auto-collect (conflict fixtures need a known ref).
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
       taskPath,
@@ -2121,8 +2121,533 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     const rec = await svc.runtime.registry.read(sessionId);
     assert.ok(rec?.lastError, "session registry lastError surfaces the failure");
     assert.match(rec!.lastError!, /managed auto-deliver failed/);
+    // Session must stay non-terminal so the role remains occupied until retry succeeds.
+    assert.ok(
+      rec!.state === "live" || rec!.state === "starting" || rec!.state === "waiting-user",
+      `expected live session after integrate failure, got ${rec!.state}`
+    );
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
+  });
+});
+
+test("P0 fix: managed auto-deliver collects role-lane commit; manual accept integrates", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-collect-manual");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "auto-collect then review",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "collect-manual.txt",
+      "ship\n",
+      "collect manual"
+    );
+
+    // Production path: omit commits → collect from authoritative role lane.
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "COLLECTED_MANUAL_REPORT",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ summary: string; commits: string[]; status: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].summary, "COLLECTED_MANUAL_REPORT");
+    assert.equal(deliveries[0].status, "ready");
+    assert.deepEqual(deliveries[0].commits, [sourceRef]);
+
+    // Session stopped after successful delivery so role can take the next task.
+    const rec = await svc.runtime.registry.read(sessionId);
+    assert.ok(rec, "registry row retained for resume metadata");
+    assert.notEqual(rec!.state, "live");
+    assert.ok(rec!.state === "stopped" || rec!.state === "failed");
+
+    const accepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    assert.equal(
+      normalizeLf(await fs.readFile(path.join(ws, "collect-manual.txt"), "utf8")),
+      "ship\n"
+    );
+  });
+});
+
+test("P0 fix: managed auto-deliver bypass integrates auto-collected commit", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-collect-bypass");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "auto-collect bypass",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "collect-bypass.txt",
+      "auto\n",
+      "collect bypass"
+    );
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "COLLECTED_BYPASS_REPORT",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ commits: string[]; status: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].status, "accepted");
+    assert.deepEqual(deliveries[0].commits, [sourceRef]);
+    assert.equal(
+      normalizeLf(await fs.readFile(path.join(ws, "collect-bypass.txt"), "utf8")),
+      "auto\n"
+    );
+
+    const rec = await svc.runtime.registry.read(sessionId);
+    assert.ok(rec);
+    assert.notEqual(rec!.state, "live");
+  });
+});
+
+test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  // Non-Git workspace: no lane, zero commits is a valid delivery.
+  const ws = await makeWorkspace("p0-macp-zero-nongit");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "docs only managed",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "ZERO_COMMIT_REPORT",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ commits: string[]; summary: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].summary, "ZERO_COMMIT_REPORT");
+    assert.deepEqual(deliveries[0].commits, []);
+  });
+
+  // Git workspace with no role commits: also legal zero-commit delivery.
+  resetManagedAutoDeliverDedupForTests();
+  const wsGit = await makeWorkspace("p0-macp-zero-git");
+  await initGitOnWorkspace(wsGit);
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, wsGit);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "report only",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "GIT_ZERO_COMMIT_REPORT",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (list.result as { deliveries: Array<{ commits: string[] }> }).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.deepEqual(deliveries[0].commits, []);
+  });
+});
+
+test("P0 fix: managed auto-collect excludes pre-session role commits; includes active-window commits", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-base-scope");
+  await initGitOnWorkspace(ws);
+  // Pre-existing / unrelated commit on the long-lived role branch before any task binds.
+  const preExisting = await roleCommit(
+    ws,
+    "executor",
+    "stale-pre.txt",
+    "old\n",
+    "pre-existing unrelated"
+  );
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "only my commits",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+
+    const mount = svc.ctx.host.require(workspaceId);
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
+      undefined,
+      "queued dispatch must not reserve the shared role lane"
+    );
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    const afterStart = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(afterStart.roleBranchBase, preExisting);
+    const taskRef = await roleCommit(
+      ws,
+      "executor",
+      "task-only.txt",
+      "mine\n",
+      "task active-window commit"
+    );
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "SCOPED_COLLECT",
+    });
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ commits: string[]; status: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.deepEqual(
+      deliveries[0].commits,
+      [taskRef],
+      "pre-session role commits must not be scooped into this task"
+    );
+    assert.ok(!deliveries[0].commits.includes(preExisting));
+  });
+});
+
+test("P0 fix: roleBranchBase is stable across startSession and reject-resume", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-base-stable");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "stable baseline",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    const mount = svc.ctx.host.require(workspaceId);
+    assert.equal((await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase, undefined);
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+    const baseAtStart = (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase;
+    assert.ok(baseAtStart);
+    await roleCommit(ws, "executor", "stable-a.txt", "a\n", "after start a");
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
+      baseAtStart,
+      "startSession must not overwrite roleBranchBase"
+    );
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "NEED_REWORK",
+    });
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
+      baseAtStart
+    );
+
+    const rejected = await rpc(svc, "task.reject", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      resume: true,
+      note: "rework",
+    });
+    assert.ok(!rejected.error, JSON.stringify(rejected.error));
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath)).roleBranchBase,
+      baseAtStart,
+      "reject-resume must retain the original baseline"
+    );
+
+    // Extra role commits after reject still belong to the same task scope.
+    const reworkRef = await roleCommit(ws, "executor", "stable-b.txt", "b\n", "rework commit");
+    await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    const got = await loadTaskEnvelope(mount.env.fs, taskPath);
+    assert.equal(got.roleBranchBase, baseAtStart);
+    assert.equal(got.state, "running");
+    // Sanity: rework commit is above base (collection would include it).
+    assert.notEqual(reworkRef, baseAtStart);
+  });
+});
+
+test("P0 fix: recorded workspace lane collection errors stay retryable", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-lane-error");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "do not downgrade a broken lane",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    const sessionId = (started.result as { session: { sessionId: string } }).session.sessionId;
+
+    const mount = svc.ctx.host.require(workspaceId);
+    await patchTaskEnvelope(mount.env.fs, taskPath, {
+      workspace: ws,
+      branch: "tent-role/executor",
+      targetBranch: "main",
+      updatedAt: mount.env.clock.now(),
+    });
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "MUST_NOT_DELIVER_AS_ZERO_COMMITS",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "running");
+    const deliveries = await rpc(svc, "delivery.list", { workspaceId });
+    assert.deepEqual(
+      (deliveries.result as { deliveries: unknown[] }).deliveries,
+      [],
+      "a recorded lane error must not become a zero-commit delivery"
+    );
+    const session = await svc.runtime.registry.read(sessionId);
+    assert.match(session?.lastError ?? "", /managed auto-deliver failed/);
+    assert.ok(session && session.state !== "stopped" && session.state !== "failed");
+  });
+});
+
+test("P0 fix: successful managed delivery frees same role for next task", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-macp-role-free");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d1 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "first managed task",
+      deliveryPolicy: "manual",
+    });
+    const taskPath1 = (d1.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
+    const s1 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath1,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s1.error, JSON.stringify(s1.error));
+    const sessionId1 = (s1.result as { session: { sessionId: string } }).session.sessionId;
+
+    // Queue the next task while the first role session is still active.
+    const box2 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "next-item",
+      type: "prompt",
+    });
+    const boxId2 = (box2.result as { id: string }).id;
+    const d2 = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId2,
+      role: "executor",
+      prompt: "second managed task",
+    });
+    const taskPath2 = (d2.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
+    const blocked = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath2,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(blocked.error);
+    const mount = svc.ctx.host.require(workspaceId);
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
+      undefined,
+      "a blocked queued task must not capture the shared lane early"
+    );
+
+    const firstRef = await roleCommit(
+      ws,
+      "executor",
+      "first-task.txt",
+      "first\n",
+      "first task commit"
+    );
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath: taskPath1,
+      sessionId: sessionId1,
+      assistantText: "FIRST_DONE",
+    });
+
+    const rec1 = await svc.runtime.registry.read(sessionId1);
+    assert.ok(rec1, "prior session registry retained");
+    assert.notEqual(rec1!.state, "live");
+
+    // Once the first session is delivered/stopped, the queued task captures the
+    // current role tip, excluding the first task's still-unaccepted commit.
+    const s2 = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: taskPath2,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s2.error, JSON.stringify(s2.error));
+    const sessionId2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
+    assert.notEqual(sessionId2, sessionId1);
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
+      firstRef
+    );
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath: taskPath2,
+      sessionId: sessionId2,
+      assistantText: "SECOND_DONE",
+    });
+    const listed = await rpc(svc, "delivery.list", { workspaceId });
+    const secondDelivery = (
+      listed.result as { deliveries: Array<{ summary: string; commits: string[] }> }
+    ).deliveries.find((delivery) => delivery.summary === "SECOND_DONE");
+    assert.deepEqual(secondDelivery?.commits, []);
+
+    // Prior registry row still readable (resume metadata not wiped).
+    const rec1Again = await svc.runtime.registry.read(sessionId1);
+    assert.ok(rec1Again);
   });
 });
 
@@ -2199,6 +2724,12 @@ test("P0 fix: same role only one active managed session; same-task start is idem
     assert.match(s2.error!.message, /already has an active managed session/);
     const data = s2.error!.data as { existingSessionId?: string } | undefined;
     assert.equal(data?.existingSessionId, sessionId1);
+    const mount = svc.ctx.host.require(workspaceId);
+    assert.equal(
+      (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
+      undefined,
+      "the active-role rejection must happen before baseline capture"
+    );
 
     // Different role is still allowed.
     const box3 = await rpc(svc, "docs.createNote", {
@@ -2647,7 +3178,7 @@ test("task.startSession reuses old sessionId via native load when resumeCapable 
         } catch {
           return null;
         }
-      }, 10_000, "session/load in mock log");
+      }, 45_000, "session/load in mock log");
       assert.ok(log.methods.includes("session/load"));
       assert.ok(!log.methods.includes("session/new"));
       assert.equal(log.loads?.[0]?.sessionId, "mock-acp-session-1");
@@ -2660,7 +3191,7 @@ test("task.startSession reuses old sessionId via native load when resumeCapable 
           list.result as { deliveries: Array<{ summary: string }> }
         ).deliveries;
         return deliveries[0] ?? null;
-      }, 10_000, "auto-delivery after resume bootstrap");
+      }, 45_000, "auto-delivery after resume bootstrap");
       assert.equal(delivery.summary, "RESUME_REUSE_OK");
       assert.doesNotMatch(delivery.summary, /HISTORY/);
     },

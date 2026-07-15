@@ -1379,6 +1379,9 @@ async function loadTaskEnvelope(fs, path) {
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
   if (typeof data.targetBranch === "string") task.targetBranch = data.targetBranch;
+  if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
+    task.roleBranchBase = data.roleBranchBase.trim();
+  }
   if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
@@ -1533,6 +1536,10 @@ async function patchTaskEnvelope(fs, path, patch) {
     const value = patch[key];
     if (value === null) delete data[key];
     else if (typeof value === "string") data[key] = value;
+  }
+  if (patch.roleBranchBase === null) delete data.roleBranchBase;
+  else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
+    data.roleBranchBase = patch.roleBranchBase.trim();
   }
   await fs.writeFile(path, serializeFrontmatter(data, body, keyOrder));
   return loadTaskEnvelope(fs, path);
@@ -3001,18 +3008,21 @@ async function integrateWorkspaceCommits(contract, refs) {
 }
 async function listRoleCommits(contract) {
   try {
-    const output = await git(contract.workspace, [
-      "log",
-      `${contract.targetBranch}..${contract.branch}`,
-      "--format=%H%x09%h%x09%s"
-    ]);
-    return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-      const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
-      return { ref, shortRef, subject: subjectParts.join("	") };
-    }).filter((item) => item.ref && item.shortRef);
+    return await listRoleCommitsStrict(contract);
   } catch {
     return [];
   }
+}
+async function listRoleCommitsStrict(contract) {
+  const output = await git(contract.workspace, [
+    "log",
+    `${contract.targetBranch}..${contract.branch}`,
+    "--format=%H%x09%h%x09%s"
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
+    return { ref, shortRef, subject: subjectParts.join("	") };
+  }).filter((item) => item.ref && item.shortRef);
 }
 async function listRoleCommitsFor(workspace, role) {
   try {
