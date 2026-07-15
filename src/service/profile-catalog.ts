@@ -2,25 +2,28 @@
 // Validation, patch helpers, and AgentProfileCatalog live here.
 // Load / save / defaults / projection stay in profiles.ts (no circular import).
 
+import type { AcpPermissionPolicy, AcpProfileOptions } from "../adapters/acp/types.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
+import { cloneAgentProfileConfig } from "../runtime/profile-config.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
 import {
   DEFAULT_GROK_BASE_URL_ENV_KEY,
   DEFAULT_GROK_ENV_KEY,
   DEFAULT_GROK_MODEL,
-  type GrokAcpPermissionPolicy,
-  type GrokAcpProfileOptions,
+  GROK_ACP_ADAPTER_ID,
 } from "../adapters/grok-acp/index.js";
 import {
   defaultAgentProfiles,
   FAKE_DEFAULT_PROFILE_ID,
-  GROK_ACP_DEFAULT_PROFILE_ID,
+  isBuiltinDefaultProfileId,
+  isProductAcpAdapterId,
   isTestOnlyProfile,
-  PRODUCT_CRUD_ADAPTER_ID,
+  PRODUCT_ACP_ADAPTER_IDS,
   PROFILE_CREATE_FIELDS,
   PROFILE_UPDATE_FIELDS,
   saveAgentProfiles,
+  type ProductAcpAdapterId,
 } from "./profiles.js";
 import { RpcError } from "./rpc-error.js";
 
@@ -31,7 +34,7 @@ import { RpcError } from "./rpc-error.js";
 const PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
 const MAX_TIMEOUT_MS = 24 * 60 * 60_000;
-const PERMISSION_POLICIES = new Set<GrokAcpPermissionPolicy>(["allow", "ask", "deny"]);
+const PERMISSION_POLICIES = new Set<AcpPermissionPolicy>(["allow", "ask", "deny"]);
 
 /** Field names that must never be accepted via product CRUD (explicit reject). */
 const DANGEROUS_FIELD_HINTS = [
@@ -47,9 +50,9 @@ const DANGEROUS_FIELD_HINTS = [
   "fake",
   "command",
   "args",
-  "adapterId",
   "displayNameKey",
   "grokAcp",
+  "acp",
 ] as const;
 
 function rejectUnknownAndDangerous(
@@ -190,7 +193,7 @@ function clearableBaseUrl(raw: Record<string, unknown>): string | null | undefin
 
 function optionalPermissionPolicy(
   raw: Record<string, unknown>
-): GrokAcpPermissionPolicy | undefined {
+): AcpPermissionPolicy | undefined {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === undefined || raw.permissionPolicy === null) {
     return undefined;
   }
@@ -198,25 +201,25 @@ function optionalPermissionPolicy(
     throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
   }
   const v = raw.permissionPolicy as string;
-  if (!PERMISSION_POLICIES.has(v as GrokAcpPermissionPolicy)) {
+  if (!PERMISSION_POLICIES.has(v as AcpPermissionPolicy)) {
     throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
   }
-  return v as GrokAcpPermissionPolicy;
+  return v as AcpPermissionPolicy;
 }
 
 function clearablePermissionPolicy(
   raw: Record<string, unknown>
-): GrokAcpPermissionPolicy | null | undefined {
+): AcpPermissionPolicy | null | undefined {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === undefined) return undefined;
   if (raw.permissionPolicy === null) return null;
   if (typeof raw.permissionPolicy !== "string") {
     throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
   }
   const v = raw.permissionPolicy as string;
-  if (!PERMISSION_POLICIES.has(v as GrokAcpPermissionPolicy)) {
+  if (!PERMISSION_POLICIES.has(v as AcpPermissionPolicy)) {
     throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
   }
-  return v as GrokAcpPermissionPolicy;
+  return v as AcpPermissionPolicy;
 }
 
 function optionalPositiveInt(raw: Record<string, unknown>, key: string): number | undefined {
@@ -247,29 +250,33 @@ function clearablePositiveInt(
   return v;
 }
 
-function parseGrokFieldsCreate(raw: Record<string, unknown>): {
+/**
+ * Parse create-time ACP fields into the shared bag.
+ * Field names stay top-level on the RPC (not nested `acp` / `grokAcp`).
+ */
+function parseAcpFieldsCreate(raw: Record<string, unknown>): {
   displayName?: string;
-  grokAcp: GrokAcpProfileOptions;
+  acp: AcpProfileOptions;
 } {
   const displayName = optionalNonEmptyString(raw, "displayName");
-  const grokAcp: GrokAcpProfileOptions = {};
+  const acp: AcpProfileOptions = {};
   const model = optionalNonEmptyString(raw, "model");
-  if (model !== undefined) grokAcp.model = model;
+  if (model !== undefined) acp.model = model;
   const executable = optionalNonEmptyString(raw, "executable");
-  if (executable !== undefined) grokAcp.executable = executable;
+  if (executable !== undefined) acp.executable = executable;
   const envKey = optionalEnvKey(raw, "envKey");
-  if (envKey !== undefined) grokAcp.envKey = envKey;
+  if (envKey !== undefined) acp.envKey = envKey;
   const baseUrlEnvKey = optionalEnvKey(raw, "baseUrlEnvKey");
-  if (baseUrlEnvKey !== undefined) grokAcp.baseUrlEnvKey = baseUrlEnvKey;
+  if (baseUrlEnvKey !== undefined) acp.baseUrlEnvKey = baseUrlEnvKey;
   const baseUrl = optionalBaseUrl(raw);
-  if (baseUrl !== undefined) grokAcp.baseUrl = baseUrl;
+  if (baseUrl !== undefined) acp.baseUrl = baseUrl;
   const permissionPolicy = optionalPermissionPolicy(raw);
-  if (permissionPolicy !== undefined) grokAcp.permissionPolicy = permissionPolicy;
+  if (permissionPolicy !== undefined) acp.permissionPolicy = permissionPolicy;
   const promptTimeoutMs = optionalPositiveInt(raw, "promptTimeoutMs");
-  if (promptTimeoutMs !== undefined) grokAcp.promptTimeoutMs = promptTimeoutMs;
+  if (promptTimeoutMs !== undefined) acp.promptTimeoutMs = promptTimeoutMs;
   const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
-  if (permissionTimeoutMs !== undefined) grokAcp.permissionTimeoutMs = permissionTimeoutMs;
-  return { displayName, grokAcp };
+  if (permissionTimeoutMs !== undefined) acp.permissionTimeoutMs = permissionTimeoutMs;
+  return { displayName, acp };
 }
 
 /** Patch values: undefined = keep, null = clear field, else set. */
@@ -280,12 +287,12 @@ type ClearablePatch = {
   envKey?: string | null;
   baseUrlEnvKey?: string | null;
   baseUrl?: string | null;
-  permissionPolicy?: GrokAcpPermissionPolicy | null;
+  permissionPolicy?: AcpPermissionPolicy | null;
   promptTimeoutMs?: number | null;
   permissionTimeoutMs?: number | null;
 };
 
-function parseGrokFieldsUpdate(raw: Record<string, unknown>): ClearablePatch {
+function parseAcpFieldsUpdate(raw: Record<string, unknown>): ClearablePatch {
   return {
     displayName: clearableNonEmptyString(raw, "displayName"),
     model: clearableNonEmptyString(raw, "model"),
@@ -305,9 +312,9 @@ function applyClearablePatch(
 ): AgentProfileConfig {
   const next: AgentProfileConfig = {
     ...current,
-    grokAcp: current.grokAcp ? { ...current.grokAcp } : {},
+    acp: current.acp ? { ...current.acp } : {},
   };
-  const g = next.grokAcp!;
+  const g = next.acp!;
 
   if (patch.displayName === null) {
     delete next.displayName;
@@ -315,9 +322,9 @@ function applyClearablePatch(
     next.displayName = patch.displayName;
   }
 
-  const assign = <K extends keyof GrokAcpProfileOptions>(
+  const assign = <K extends keyof AcpProfileOptions>(
     key: K,
-    value: GrokAcpProfileOptions[K] | null | undefined
+    value: AcpProfileOptions[K] | null | undefined
   ) => {
     if (value === undefined) return;
     if (value === null) {
@@ -327,28 +334,72 @@ function applyClearablePatch(
     g[key] = value;
   };
 
-  assign("model", patch.model as GrokAcpProfileOptions["model"] | null | undefined);
-  assign("executable", patch.executable as GrokAcpProfileOptions["executable"] | null | undefined);
-  assign("envKey", patch.envKey as GrokAcpProfileOptions["envKey"] | null | undefined);
+  assign("model", patch.model as AcpProfileOptions["model"] | null | undefined);
+  assign("executable", patch.executable as AcpProfileOptions["executable"] | null | undefined);
+  assign("envKey", patch.envKey as AcpProfileOptions["envKey"] | null | undefined);
   assign(
     "baseUrlEnvKey",
-    patch.baseUrlEnvKey as GrokAcpProfileOptions["baseUrlEnvKey"] | null | undefined
+    patch.baseUrlEnvKey as AcpProfileOptions["baseUrlEnvKey"] | null | undefined
   );
-  assign("baseUrl", patch.baseUrl as GrokAcpProfileOptions["baseUrl"] | null | undefined);
+  assign("baseUrl", patch.baseUrl as AcpProfileOptions["baseUrl"] | null | undefined);
   assign(
     "permissionPolicy",
-    patch.permissionPolicy as GrokAcpProfileOptions["permissionPolicy"] | null | undefined
+    patch.permissionPolicy as AcpProfileOptions["permissionPolicy"] | null | undefined
   );
   assign(
     "promptTimeoutMs",
-    patch.promptTimeoutMs as GrokAcpProfileOptions["promptTimeoutMs"] | null | undefined
+    patch.promptTimeoutMs as AcpProfileOptions["promptTimeoutMs"] | null | undefined
   );
   assign(
     "permissionTimeoutMs",
-    patch.permissionTimeoutMs as GrokAcpProfileOptions["permissionTimeoutMs"] | null | undefined
+    patch.permissionTimeoutMs as AcpProfileOptions["permissionTimeoutMs"] | null | undefined
   );
 
   return next;
+}
+
+/**
+ * Create-time defaults by adapterId.
+ * - grok-acp: fill DEFAULT_GROK_MODEL / ENV / BASE_URL_ENV + permissionPolicy=deny
+ * - other whitelist adapters: only permissionPolicy=deny — never invent model/envKey
+ */
+function applyCreateDefaults(
+  adapterId: ProductAcpAdapterId,
+  acp: AcpProfileOptions
+): void {
+  if (!acp.permissionPolicy) acp.permissionPolicy = "deny";
+  if (adapterId === GROK_ACP_ADAPTER_ID) {
+    if (!acp.model) acp.model = DEFAULT_GROK_MODEL;
+    if (!acp.envKey) acp.envKey = DEFAULT_GROK_ENV_KEY;
+    if (!acp.baseUrlEnvKey) acp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
+  }
+}
+
+function parseCreateAdapterId(raw: Record<string, unknown>): ProductAcpAdapterId {
+  if (!("adapterId" in raw) || raw.adapterId === undefined || raw.adapterId === null) {
+    // Default keeps existing UI/RPC that omits adapterId (still grok-acp).
+    return GROK_ACP_ADAPTER_ID;
+  }
+  if (typeof raw.adapterId !== "string" || !raw.adapterId.trim()) {
+    throw new RpcError(-32602, "Invalid string param: adapterId");
+  }
+  const id = raw.adapterId.trim();
+  if (!isProductAcpAdapterId(id)) {
+    throw new RpcError(
+      -32602,
+      `Unsupported adapterId for product profile CRUD: ${id}. Allowed: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (not a universal provider router)`
+    );
+  }
+  return id;
+}
+
+function assertProductCrudAdapter(adapterId: string, op: "update" | "delete"): void {
+  if (!isProductAcpAdapterId(adapterId)) {
+    throw new RpcError(
+      -32602,
+      `Product profile ${op} only supports adapterIds: ${PRODUCT_ACP_ADAPTER_IDS.join(", ")} (got ${adapterId})`
+    );
+  }
 }
 
 export type AgentProfileCatalogOptions = {
@@ -363,16 +414,6 @@ export type AgentProfileCatalogOptions = {
    */
   saveProfiles?: (dataDir: string, profiles: AgentProfileConfig[]) => Promise<void>;
 };
-
-function cloneCatalogProfile(profile: AgentProfileConfig): AgentProfileConfig {
-  return {
-    ...profile,
-    args: profile.args ? [...profile.args] : undefined,
-    env: profile.env ? { ...profile.env } : undefined,
-    fake: profile.fake ? { ...profile.fake } : undefined,
-    grokAcp: profile.grokAcp ? { ...profile.grokAcp } : undefined,
-  };
-}
 
 /**
  * In-process machine-local profile catalog.
@@ -401,7 +442,8 @@ export class AgentProfileCatalog {
           ...initial,
           defaultAgentProfiles().find((p) => p.id === FAKE_DEFAULT_PROFILE_ID)!,
         ];
-    this.profiles = source.map(cloneCatalogProfile);
+    // Normalize legacy grokAcp bags from inject/disk into canonical acp.
+    this.profiles = source.map((p) => cloneAgentProfileConfig(p));
     this.persistToDisk = opts?.persistToDisk !== false;
     this.saveProfiles = opts?.saveProfiles ?? saveAgentProfiles;
     this.runtime.replaceProfileCatalog(this.profiles);
@@ -417,13 +459,13 @@ export class AgentProfileCatalog {
   }
 
   list(): AgentProfileConfig[] {
-    return this.profiles.map(cloneCatalogProfile);
+    return this.profiles.map((p) => cloneAgentProfileConfig(p));
   }
 
   get(id: string): AgentProfileConfig | undefined {
     const p = this.profiles.find((x) => x.id === id);
     if (!p) return undefined;
-    return cloneCatalogProfile(p);
+    return cloneAgentProfileConfig(p);
   }
 
   /**
@@ -448,18 +490,15 @@ export class AgentProfileCatalog {
       if (id === FAKE_DEFAULT_PROFILE_ID) {
         throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
       }
-      const { displayName, grokAcp } = parseGrokFieldsCreate(raw);
-      // Product defaults for create when omitted.
-      if (!grokAcp.model) grokAcp.model = DEFAULT_GROK_MODEL;
-      if (!grokAcp.envKey) grokAcp.envKey = DEFAULT_GROK_ENV_KEY;
-      if (!grokAcp.baseUrlEnvKey) grokAcp.baseUrlEnvKey = DEFAULT_GROK_BASE_URL_ENV_KEY;
-      if (!grokAcp.permissionPolicy) grokAcp.permissionPolicy = "deny";
+      const adapterId = parseCreateAdapterId(raw);
+      const { displayName, acp } = parseAcpFieldsCreate(raw);
+      applyCreateDefaults(adapterId, acp);
 
       const profile: AgentProfileConfig = {
         id,
-        adapterId: PRODUCT_CRUD_ADAPTER_ID,
+        adapterId,
         ...(displayName !== undefined ? { displayName } : {}),
-        grokAcp,
+        acp,
       };
       await this.commit([...this.profiles, profile]);
       return this.get(id)!;
@@ -472,6 +511,10 @@ export class AgentProfileCatalog {
       // id must not appear as a mutable body field (handler strips top-level id already).
       if ("id" in raw) {
         throw new RpcError(-32602, "id cannot be updated; omit id from profile body");
+      }
+      // adapterId is create-only / immutable — reject even though not in UPDATE whitelist.
+      if ("adapterId" in raw) {
+        throw new RpcError(-32602, "adapterId cannot be updated; omit adapterId from profile body");
       }
       rejectUnknownAndDangerous(raw, PROFILE_UPDATE_FIELDS);
 
@@ -486,14 +529,9 @@ export class AgentProfileCatalog {
           "Test-only profile fake-default cannot be modified via product CRUD"
         );
       }
-      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
-        throw new RpcError(
-          -32602,
-          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
-        );
-      }
+      assertProductCrudAdapter(current.adapterId, "update");
 
-      const nextProfile = applyClearablePatch(current, parseGrokFieldsUpdate(raw));
+      const nextProfile = applyClearablePatch(current, parseAcpFieldsUpdate(raw));
       await this.commit(this.profiles.map((p, i) => (i === idx ? nextProfile : p)));
       return this.get(id)!;
     });
@@ -513,15 +551,13 @@ export class AgentProfileCatalog {
           "Test-only profile fake-default cannot be deleted via product CRUD"
         );
       }
-      if (current.id === GROK_ACP_DEFAULT_PROFILE_ID) {
-        throw new RpcError(-32602, "Built-in profile grok-acp-default cannot be deleted");
-      }
-      if (current.adapterId !== PRODUCT_CRUD_ADAPTER_ID) {
+      if (isBuiltinDefaultProfileId(current.id)) {
         throw new RpcError(
           -32602,
-          `Product profile CRUD only supports adapterId=${PRODUCT_CRUD_ADAPTER_ID}`
+          `Built-in profile ${current.id} cannot be deleted`
         );
       }
+      assertProductCrudAdapter(current.adapterId, "delete");
 
       const sessions = await this.runtime.registry.list();
       const active = sessions.filter(

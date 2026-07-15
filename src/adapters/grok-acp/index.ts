@@ -84,6 +84,18 @@ function defaultGrokExecutable(): string {
   return path.join(home, ".grok", "bin", "grok");
 }
 
+/**
+ * Read ACP profile bag from LaunchPlan.extras.
+ * Canonical: extras.acp. Fallback extras.grokAcp is deprecated (pre-canonical runtime plans).
+ */
+function readAcpExtras(extras: Record<string, unknown> | undefined): unknown {
+  if (!extras || typeof extras !== "object") return {};
+  if (extras.acp !== undefined) return extras.acp;
+  // @deprecated Pre-canonical runtime plans may still pass extras.grokAcp — prefer extras.acp.
+  if (extras.grokAcp !== undefined) return extras.grokAcp;
+  return {};
+}
+
 function normalizeGrokOpts(raw: unknown): Required<
   Pick<
     GrokAcpProfileOptions,
@@ -207,7 +219,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
    * AgentRuntime uses startManagedSession instead of ProcessSupervisor.
    */
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
     const command = plan.command || opts.executable || defaultGrokExecutable();
     const model = opts.model;
     const envKey = opts.envKey;
@@ -228,13 +240,13 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     if (!plan.command && opts.executable) {
       if (!fs.existsSync(opts.executable)) {
         throw new Error(
-          `Grok 可执行文件不存在: ${opts.executable}。请在 machine-local AgentProfile.grokAcp.executable 中配置正确路径。`
+          `Grok 可执行文件不存在: ${opts.executable}。请在 machine-local AgentProfile.acp.executable 中配置正确路径。`
         );
       }
     } else if (!plan.command) {
       if (!fs.existsSync(command)) {
         throw new Error(
-          `未找到 Grok 可执行文件: ${command}。请安装 grok CLI 或在 AgentProfile 中设置 grokAcp.executable。`
+          `未找到 Grok 可执行文件: ${command}。请安装 grok CLI 或在 AgentProfile 中设置 acp.executable。`
         );
       }
     }
@@ -301,7 +313,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
-    const opts = normalizeGrokOpts(plan.extras?.grokAcp ?? plan.extras);
+    const opts = normalizeGrokOpts(readAcpExtras(plan.extras));
     // Fail-loud on missing key / binary before spawn (Chinese errors from resolveLaunch).
     const launch = this.resolveLaunch(plan);
     const bootstrap =
@@ -445,13 +457,13 @@ export function grokAcpProfileTemplate(overrides?: {
   id: string;
   adapterId: string;
   displayNameKey: string;
-  grokAcp: GrokAcpProfileOptions;
+  acp: GrokAcpProfileOptions;
 } {
   return {
     id: overrides?.id ?? "grok-acp-default",
     adapterId: GROK_ACP_ADAPTER_ID,
     displayNameKey: "profile.grokAcp.default",
-    grokAcp: {
+    acp: {
       executable: overrides?.executable,
       model: overrides?.model ?? DEFAULT_GROK_MODEL,
       envKey: overrides?.envKey ?? DEFAULT_GROK_ENV_KEY,

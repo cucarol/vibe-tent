@@ -137,9 +137,9 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
         ? runtime.getProfile(rec.profileId)
         : undefined;
       const timeoutMs =
-        typeof profile?.grokAcp?.permissionTimeoutMs === "number" &&
-        profile.grokAcp.permissionTimeoutMs > 0
-          ? profile.grokAcp.permissionTimeoutMs
+        typeof profile?.acp?.permissionTimeoutMs === "number" &&
+        profile.acp.permissionTimeoutMs > 0
+          ? profile.acp.permissionTimeoutMs
           : DEFAULT_PERMISSION_TIMEOUT_MS;
 
       const createdAt = new Date();

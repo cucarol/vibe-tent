@@ -228,8 +228,8 @@ test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
   // Inject a secret-looking env bag — must never appear in projection.
   raw[0].env = { CPA_GROK_API_KEY: "sk-secret-value", PATH: "/tmp" };
   raw[1].env = { TOKEN: "should-not-leak" };
-  raw[1].grokAcp = {
-    ...raw[1].grokAcp,
+  raw[1].acp = {
+    ...raw[1].acp,
     executable: "C:\\\\tools\\\\grok.exe",
     envKey: "CPA_GROK_API_KEY",
   };
@@ -259,7 +259,7 @@ test("projectAgentProfiles strips secrets and marks fake as testOnly", () => {
   assert.equal(single.id, "grok-acp-default");
   assert.ok(!("env" in single));
   assert.ok(!("fake" in single));
-  assert.ok(!("grokAcp" in single));
+  assert.ok(!("grokAcp" in single) && !("acp" in single));
 });
 
 test("listProfileOptions + pickDefaultProfileId hide fake as product default", () => {
@@ -513,7 +513,7 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
         id: "grok-acp-default",
         adapterId: GROK_ACP_ADAPTER_ID,
         displayNameKey: "profile.grokAcp.default",
-        grokAcp: {
+        acp: {
           model: "grok-4.5",
           envKey: "CPA_GROK_API_KEY",
           permissionPolicy: "deny",

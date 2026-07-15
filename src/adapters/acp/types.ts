@@ -50,3 +50,42 @@ export type AcpAuthenticateParams = {
   methodId: string;
   [key: string]: unknown;
 };
+
+/**
+ * Shared machine-local ACP profile bag (canonical `AgentProfileConfig.acp`).
+ * Provider-neutral field names; each *-acp adapter interprets values for its CLI.
+ * Secret values stay in OS/process env — only env key *names* and non-secret paths live here.
+ * Provider adapters may extend (e.g. GrokAcpProfileOptions) for provider-only knobs.
+ */
+export interface AcpProfileOptions {
+  /** Absolute path to the provider CLI / ACP bridge executable on this machine. */
+  executable?: string;
+  /** Explicit model id passed to the provider CLI when supported. */
+  model?: string;
+  /**
+   * Process env key for API token (read from service process env only).
+   * Value is never written to workspace/box/task or agent-profiles.json.
+   */
+  envKey?: string;
+  /**
+   * Process env key whose **value** is an OpenAI-compatible / provider base URL.
+   * Only the env key *name* is stored on the machine-local profile.
+   */
+  baseUrlEnvKey?: string;
+  /**
+   * Optional literal base URL on the **machine-local** profile only.
+   * Prefer baseUrlEnvKey + process env. Never copy this field into workspace / git.
+   */
+  baseUrl?: string;
+  /** Max wait for session/prompt result (ms). Default: DEFAULT_PROMPT_TIMEOUT_MS. */
+  promptTimeoutMs?: number;
+  /**
+   * How to answer ACP tool permission requests:
+   * - deny (default): cancel — never auto-approve
+   * - allow: allow_once only (never allow_always / yolo)
+   * - ask: emit session.waiting_user and wait for runtime permission decision or timeout→deny
+   */
+  permissionPolicy?: AcpPermissionPolicy;
+  /** When permissionPolicy is ask, max wait before deny (ms). Default: DEFAULT_PERMISSION_TIMEOUT_MS. */
+  permissionTimeoutMs?: number;
+}

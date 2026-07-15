@@ -16,5 +16,6 @@ export {
   type AcpJsonRpcResponse,
   type AcpPermissionOption,
   type AcpPermissionPolicy,
+  type AcpProfileOptions,
   type AcpSessionUpdate,
 } from "./types.js";

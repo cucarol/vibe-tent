@@ -16,6 +16,7 @@ import { createServiceClient } from "../src/service/client.js";
 import {
   FAKE_DEFAULT_PROFILE_ID,
   GROK_ACP_DEFAULT_PROFILE_ID,
+  ensureDefaultProfiles,
   loadAgentProfiles,
   profilesPath,
   projectAgentProfile,
@@ -23,7 +24,7 @@ import {
 import { AgentProfileCatalog } from "../src/service/profile-catalog.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { DEFAULT_GROK_MODEL, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
-import { createAgentRuntime } from "../src/runtime/index.js";
+import { createAgentRuntime, legacyGrokAcpDiskProfile } from "../src/runtime/index.js";
 import type { AgentProfileConfig } from "../src/runtime/types.js";
 
 const MOCK = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
@@ -40,7 +41,7 @@ const seed = (): AgentProfileConfig[] => [
     id: GROK_ACP_DEFAULT_PROFILE_ID,
     adapterId: GROK_ACP_ADAPTER_ID,
     displayNameKey: "profile.grokAcp.default",
-    grokAcp: {
+    acp: {
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
       baseUrlEnvKey: "CPA_GROK_BASE_URL",
@@ -67,7 +68,7 @@ function mockAcp(
       ...(o.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
-    grokAcp: {
+    acp: {
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
       permissionPolicy: o.permissionPolicy ?? "ask",
@@ -163,7 +164,7 @@ test("CRUD + runtime (inject never writes agent-profiles.json)", async () => {
       permissionTimeoutMs: 9_000,
     })) as { profile: { displayName: string } };
     assert.equal(updated.profile.displayName, "CPA Local 2");
-    assert.equal(svc.runtime.getProfile("grok-acp-cpa-local")?.grokAcp?.permissionTimeoutMs, 9_000);
+    assert.equal(svc.runtime.getProfile("grok-acp-cpa-local")?.acp?.permissionTimeoutMs, 9_000);
 
     const list = (await c.profileList()) as { profiles: Array<{ id: string }> };
     assert.ok(list.profiles.some((p) => p.id === "grok-acp-cpa-local"));
@@ -248,7 +249,7 @@ test("null clears; baseUrl rejects credentials; nested/RPC/id-override/clone/val
     assert.equal(cleared.profile.baseUrl, undefined);
     const raw = svc.runtime.getProfile("grok-acp-clearable");
     assert.equal(raw?.displayName, undefined);
-    assert.equal(raw?.grokAcp?.model, undefined);
+    assert.equal(raw?.acp?.model, undefined);
 
     await c.profileUpdate(GROK_ACP_DEFAULT_PROFILE_ID, { displayName: "Custom", permissionTimeoutMs: 1_000 });
     const def = (await c.profileUpdate(GROK_ACP_DEFAULT_PROFILE_ID, {
@@ -302,22 +303,22 @@ test("null clears; baseUrl rejects credentials; nested/RPC/id-override/clone/val
     adapterId: GROK_ACP_ADAPTER_ID,
     displayName: "Proj",
     env: { CPA_GROK_API_KEY: "sk-secret-value" },
-    grokAcp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY", permissionTimeoutMs: 1000 },
+    acp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY", permissionTimeoutMs: 1000 },
   };
   const proj = projectAgentProfile(secret);
   assert.ok(!JSON.stringify(proj).includes("sk-secret-value"));
-  assert.ok(!("env" in proj) && !("grokAcp" in proj));
+  assert.ok(!("env" in proj) && !("grokAcp" in proj) && !("acp" in proj));
 
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-clone-"));
   const runtime = createAgentRuntime({ dataDir, profiles: [secret] });
   try {
-    secret.grokAcp!.model = "mutated through constructor input";
-    assert.equal(runtime.getProfile("grok-acp-proj")!.grokAcp?.model, "grok-4.5");
+    secret.acp!.model = "mutated through constructor input";
+    assert.equal(runtime.getProfile("grok-acp-proj")!.acp?.model, "grok-4.5");
     const a = runtime.getProfile("grok-acp-proj")!;
-    a.grokAcp!.model = "mutated";
-    assert.equal(runtime.getProfile("grok-acp-proj")!.grokAcp?.model, "grok-4.5");
-    runtime.listProfiles().find((p) => p.id === "grok-acp-proj")!.grokAcp!.permissionTimeoutMs = 1;
-    assert.equal(runtime.getProfile("grok-acp-proj")?.grokAcp?.permissionTimeoutMs, 1000);
+    a.acp!.model = "mutated";
+    assert.equal(runtime.getProfile("grok-acp-proj")!.acp?.model, "grok-4.5");
+    runtime.listProfiles().find((p) => p.id === "grok-acp-proj")!.acp!.permissionTimeoutMs = 1;
+    assert.equal(runtime.getProfile("grok-acp-proj")?.acp?.permissionTimeoutMs, 1000);
   } finally {
     await runtime.shutdown();
   }
@@ -376,7 +377,7 @@ test("delete gates + permission timeout uses runtime after catalog update", asyn
     assert.ok((await rpc(svc, "profile.update", { id: FAKE_DEFAULT_PROFILE_ID, displayName: "nope" })).error);
 
     assert.ok(!(await rpc(svc, "profile.update", { id: "grok-acp-timeout-live", permissionTimeoutMs: 400 })).error);
-    assert.equal(svc.runtime.getProfile("grok-acp-timeout-live")?.grokAcp?.permissionTimeoutMs, 400);
+    assert.equal(svc.runtime.getProfile("grok-acp-timeout-live")?.acp?.permissionTimeoutMs, 400);
     await start("timeout-item", "grok-acp-timeout-live");
     const pending = await pollUntil(async () => {
       const list = await rpc(svc, "toolApproval.listPending", { workspaceId });
@@ -397,4 +398,149 @@ test("delete gates + permission timeout uses runtime after catalog update", asyn
   } finally {
     await svc.stop();
   }
+});
+
+test("whitelist adapterId create + defaults; unknown/immutable/secret reject; legacy disk migration", async () => {
+  await withService(async (svc) => {
+    const c = client(svc);
+    // Explicit whitelist only — never gemini-acp; not a universal router.
+    const adapters = [
+      "grok-acp",
+      "codex-acp",
+      "claude-acp",
+      "antigravity-acp",
+      "opencode-acp",
+    ] as const;
+
+    for (const adapterId of adapters) {
+      const id = `pcat-${adapterId.replace(/-acp$/, "")}-row`;
+      const created = (await c.profileCreate({
+        id,
+        adapterId,
+        displayName: adapterId,
+      })) as { profile: { id: string; adapterId: string; model?: string; envKey?: string; permissionPolicy?: string } };
+      assert.equal(created.profile.id, id);
+      assert.equal(created.profile.adapterId, adapterId);
+      assert.equal(created.profile.permissionPolicy, "deny");
+      if (adapterId === GROK_ACP_ADAPTER_ID) {
+        assert.equal(created.profile.model, DEFAULT_GROK_MODEL);
+        assert.equal(created.profile.envKey, "CPA_GROK_API_KEY");
+      } else {
+        // Non-grok whitelist adapters: deny only — do not invent model/envKey.
+        assert.equal(created.profile.model, undefined);
+        assert.equal(created.profile.envKey, undefined);
+      }
+      const raw = svc.runtime.getProfile(id);
+      assert.ok(raw?.acp);
+      assert.equal((raw as { grokAcp?: unknown }).grokAcp, undefined);
+    }
+
+    // Omit adapterId → backward-compatible default grok-acp with grok defaults.
+    const def = (await c.profileCreate({ id: "pcat-default-adapter" })) as {
+      profile: { adapterId: string; model?: string; envKey?: string; baseUrlEnvKey?: string };
+    };
+    assert.equal(def.profile.adapterId, GROK_ACP_ADAPTER_ID);
+    assert.equal(def.profile.model, DEFAULT_GROK_MODEL);
+    assert.equal(def.profile.envKey, "CPA_GROK_API_KEY");
+    assert.equal(def.profile.baseUrlEnvKey, "CPA_GROK_BASE_URL");
+
+    await expectParamError(svc, "profile.create", { id: "pcat-unknown-ad", adapterId: "not-a-provider" }, /adapterId|unsupported/i);
+    await expectParamError(svc, "profile.create", { id: "pcat-fake-ad", adapterId: FAKE_ADAPTER_ID }, /adapterId|unsupported/i);
+    // gemini-acp is intentionally not on the product whitelist.
+    await expectParamError(svc, "profile.create", { id: "pcat-gemini-ad", adapterId: "gemini-acp" }, /adapterId|unsupported/i);
+
+    // adapterId immutable on update
+    await expectParamError(
+      svc,
+      "profile.update",
+      { id: "pcat-default-adapter", adapterId: "codex-acp" },
+      /adapterId|cannot be updated/i
+    );
+
+    // secret / nested bag / command still rejected
+    for (const bad of [
+      { id: "pcat-sec-1", apiKey: "sk" },
+      { id: "pcat-sec-2", secret: "x" },
+      { id: "pcat-sec-3", token: "t" },
+      { id: "pcat-sec-4", env: { K: "v" } },
+      { id: "pcat-sec-5", command: "x" },
+      { id: "pcat-sec-6", args: ["a"] },
+      { id: "pcat-sec-7", acp: { model: "x" } },
+      { id: "pcat-sec-8", grokAcp: { model: "x" } },
+    ]) {
+      await expectParamError(svc, "profile.create", bad);
+    }
+
+    assert.ok((await rpc(svc, "profile.delete", { id: GROK_ACP_DEFAULT_PROFILE_ID })).error);
+  });
+
+  // Legacy disk migration: grokAcp → acp, atomic save, no dual-write, preserve user fields.
+  // Pre-canonical rows are built only via legacyGrokAcpDiskProfile (no scattered grokAcp bags).
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-pcat-mig-"));
+  const file = profilesPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      profiles: [
+        {
+          id: FAKE_DEFAULT_PROFILE_ID,
+          adapterId: FAKE_ADAPTER_ID,
+          displayNameKey: "profile.fake.default",
+          fake: { waitForSignal: true },
+        },
+        legacyGrokAcpDiskProfile({
+          id: GROK_ACP_DEFAULT_PROFILE_ID,
+          adapterId: GROK_ACP_ADAPTER_ID,
+          displayNameKey: "profile.grokAcp.default",
+          displayName: "User Named Grok",
+          grokAcp: {
+            model: "user-model",
+            envKey: "USER_GROK_KEY",
+            permissionPolicy: "ask",
+            permissionTimeoutMs: 42_000,
+          },
+        }),
+        legacyGrokAcpDiskProfile({
+          id: "custom-legacy",
+          adapterId: GROK_ACP_ADAPTER_ID,
+          displayName: "Legacy Custom",
+          grokAcp: {
+            model: "legacy-m",
+            envKey: "LEGACY_KEY",
+            executable: "C:\\\\tools\\\\grok.exe",
+          },
+        }),
+      ],
+    }) + "\n",
+    "utf8"
+  );
+
+  const loaded = await ensureDefaultProfiles(dataDir);
+  const grok = loaded.find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)!;
+  const custom = loaded.find((p) => p.id === "custom-legacy")!;
+  assert.equal(grok.displayName, "User Named Grok");
+  assert.equal(grok.acp?.model, "user-model");
+  assert.equal(grok.acp?.envKey, "USER_GROK_KEY");
+  assert.equal(grok.acp?.permissionPolicy, "ask");
+  assert.equal(grok.acp?.permissionTimeoutMs, 42_000);
+  // Missing baseUrlEnvKey filled for grok only; other user fields preserved.
+  assert.equal(grok.acp?.baseUrlEnvKey, "CPA_GROK_BASE_URL");
+  assert.equal((grok as { grokAcp?: unknown }).grokAcp, undefined);
+  assert.equal(custom.acp?.model, "legacy-m");
+  assert.equal(custom.acp?.executable, "C:\\\\tools\\\\grok.exe");
+  assert.equal((custom as { grokAcp?: unknown }).grokAcp, undefined);
+
+  const disk = JSON.parse(await fs.readFile(file, "utf8")) as {
+    profiles: Array<Record<string, unknown>>;
+  };
+  for (const row of disk.profiles) {
+    assert.ok(!("grokAcp" in row), `disk still has grokAcp on ${row.id}`);
+    if (row.adapterId === GROK_ACP_ADAPTER_ID) {
+      assert.ok(row.acp && typeof row.acp === "object");
+    }
+  }
+  const diskGrok = disk.profiles.find((p) => p.id === GROK_ACP_DEFAULT_PROFILE_ID)!;
+  assert.equal(diskGrok.displayName, "User Named Grok");
+  assert.equal((diskGrok.acp as { model?: string }).model, "user-model");
 });

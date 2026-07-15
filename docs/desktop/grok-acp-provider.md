@@ -2,7 +2,7 @@
 
 Status: first **real** push-mode provider for Local Service  
 Scope: machine-local `grok-acp` AgentProfile + ACP stdio adapter  
-Non-scope: chat UI, multi-provider router, Codex/Claude adapters, storing secrets in workspace
+Non-scope: chat UI, universal provider router, implementing non-grok ACP bridges, storing secrets in workspace
 
 ## What Tent does (and does not)
 
@@ -23,13 +23,15 @@ Tent is **not** a chat router. The adapter starts/observes/stops an external age
 
 | Env | Purpose | Default profile field |
 | --- | --- | --- |
-| `CPA_GROK_API_KEY` | API bearer for CPA | `grokAcp.envKey` |
-| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8317/v1`) | `grokAcp.baseUrlEnvKey` |
+| `CPA_GROK_API_KEY` | API bearer for CPA | `acp.envKey` |
+| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8317/v1`) | `acp.baseUrlEnvKey` |
 
 Optional fallbacks (still **not** workspace):
 
 - `~/.grok/config.toml` `[model."grok-4.5"]` `base_url` / `env_key` — Grok CLI native config when env base URL is unset.
-- Machine-local `agent-profiles.json` may set `grokAcp.baseUrl` (literal URL on **this machine only**) when the service cannot inherit a user shell env. Prefer env.
+- Machine-local `agent-profiles.json` may set `acp.baseUrl` (literal URL on **this machine only**) when the service cannot inherit a user shell env. Prefer env.
+
+Pre-canonical on-disk field `grokAcp` is still **read** on load and migrated to canonical `acp` (atomic rewrite; no dual-write).
 
 Tent **does not** store the API key, OAuth token, or CPA base URL in:
 
@@ -58,7 +60,7 @@ On first service start, Tent ensures a `grok-acp-default` entry (alongside `fake
       "id": "grok-acp-default",
       "adapterId": "grok-acp",
       "displayNameKey": "profile.grokAcp.default",
-      "grokAcp": {
+      "acp": {
         "model": "grok-4.5",
         "envKey": "CPA_GROK_API_KEY",
         "baseUrlEnvKey": "CPA_GROK_BASE_URL",
@@ -69,7 +71,7 @@ On first service start, Tent ensures a `grok-acp-default` entry (alongside `fake
 }
 ```
 
-Optional `grokAcp` fields:
+Optional shared `acp` fields (canonical bag for all product `*-acp` profiles):
 
 | Field | Default | Notes |
 | --- | --- | --- |
@@ -96,25 +98,29 @@ Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
 
 ## Machine-local profile catalog CRUD (service)
 
-Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD is **grok-acp only** — no generic provider router, no revision/etag, no profile change events in this version.
+Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. Adapters are registered separately; this batch does **not** seed or implement non-grok ProviderAdapters (storing a whitelist id is allowed before the adapter package exists).
 
 | RPC | Notes |
 | --- | --- |
 | `profile.list` | Editor-safe projection from the **injected catalog only** (no runtime/disk fallback); default hides `testOnly` (`includeTest: true` for harness) |
 | `profile.get` | Same single-source projection for one id |
-| `profile.create` | Top-level fields only (`{ id, displayName, … }`); forced `adapterId=grok-acp`; **no** nested `profile` object |
-| `profile.update` | Top-level `{ id, …patch }` only; **id immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
-| `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK |
+| `profile.create` | Top-level fields only (`{ id, adapterId?, displayName, … }`); default `adapterId=grok-acp` when omitted; **no** nested `profile` / `acp` / `grokAcp` object |
+| `profile.update` | Top-level `{ id, …patch }` only; **id and adapterId immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
+| `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK; built-in `*-default` ids are never deletable |
 
-**Whitelist body fields:** `id` (create only), `displayName`, `model`, `executable`, `envKey`, `baseUrlEnvKey`, `baseUrl`, `permissionPolicy`, `promptTimeoutMs`, `permissionTimeoutMs`.
+**Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
 
-Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / …) are **rejected with RpcError** — never silently stripped and written. `baseUrl` must be absolute `http(s)` **without** username/password, query, or hash.
+**Create defaults:** only `grok-acp` auto-fills `DEFAULT_GROK_MODEL` / `CPA_GROK_API_KEY` / `CPA_GROK_BASE_URL` env key names; other whitelist adapters default `permissionPolicy=deny` only (no invented model/envKey).
+
+**Whitelist body fields:** `id` (create only), `adapterId` (create only), `displayName`, `model`, `executable`, `envKey`, `baseUrlEnvKey`, `baseUrl`, `permissionPolicy`, `promptTimeoutMs`, `permissionTimeoutMs`.
+
+Unknown fields and dangerous keys (`apiKey` / `token` / `secret` / `env` / `command` / `args` / nested `acp` / `grokAcp` / …) are **rejected with RpcError** — never silently stripped and written. `baseUrl` must be absolute `http(s)` **without** username/password, query, or hash.
 
 | Id | Create | Update | Delete |
 | --- | --- | --- | --- |
 | `fake-default` | no | no | no (tests only) |
-| `grok-acp-default` | n/a (boot seed) | yes | **no** |
-| other `grok-acp` | yes | yes | yes (if no active session) |
+| `*-acp-default` built-ins | n/a (only grok seeded today) | yes if present | **no** (even if not seeded) |
+| other whitelist ACP profiles | yes | yes | yes (if no active session) |
 
 **Mutation transaction:** build `next` from the previous snapshot → **atomic disk save(`next`)** (when persistence is enabled) → only then replace in-memory catalog + full runtime catalog. Write failure leaves disk, catalog, and runtime on the old values.
 

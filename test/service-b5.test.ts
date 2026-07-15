@@ -85,7 +85,7 @@ function mockAcpProfile(
         : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
     },
-    grokAcp: {
+    acp: {
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
       permissionPolicy: opts.permissionPolicy ?? "deny",

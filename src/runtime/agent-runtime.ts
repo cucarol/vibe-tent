@@ -4,6 +4,7 @@
 import type { ManagedSession, ProviderAdapter } from "../adapters/types.js";
 import { FAKE_ADAPTER_ID, createFakeAdapter } from "../adapters/fake/index.js";
 import { GROK_ACP_ADAPTER_ID, createGrokAcpAdapter } from "../adapters/grok-acp/index.js";
+import { cloneAgentProfileConfig } from "./profile-config.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
 import type {
@@ -46,15 +47,9 @@ function handleFrom(record: SessionRecord): SessionHandle {
   };
 }
 
-/** Shallow clone profile + one level of grokAcp (callers must not mutate the Map). */
+/** Shallow clone profile + one level of acp / fake (callers must not mutate the Map). */
 function cloneProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
-  return {
-    ...p,
-    grokAcp: p.grokAcp ? { ...p.grokAcp } : undefined,
-    fake: p.fake ? { ...p.fake } : undefined,
-    env: p.env ? { ...p.env } : undefined,
-    args: p.args ? [...p.args] : undefined,
-  };
+  return cloneAgentProfileConfig(p);
 }
 
 export class AgentRuntime implements AgentRuntimePort {
@@ -116,7 +111,7 @@ export class AgentRuntime implements AgentRuntimePort {
    * Full replace of the in-memory profile catalog (machine-local CRUD sync).
    * Does not touch live sessions — only new startSession sees the new map.
    * Always re-ensures fake-default for harness (same rule as constructor).
-   * Stores shallow clones of profile + grokAcp so callers cannot mutate the map.
+   * Stores shallow clones of profile + acp so callers cannot mutate the map.
    */
   replaceProfileCatalog(profiles: AgentProfileConfig[]): void {
     this.profiles.clear();
@@ -232,7 +227,7 @@ export class AgentRuntime implements AgentRuntimePort {
         args: profile.args,
         extras: {
           fake: profile.fake,
-          grokAcp: profile.grokAcp,
+          acp: profile.acp,
         },
       };
 

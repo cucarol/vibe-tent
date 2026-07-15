@@ -143,10 +143,13 @@ export interface AgentProfileConfig {
    */
   fake?: FakeProfileOptions;
   /**
-   * Grok ACP machine-local options (executable path, model, envKey name, timeouts).
-   * Secret values stay in OS/process env; only the env key *name* is stored here.
+   * Canonical shared ACP machine-local options (executable path, model, envKey name, timeouts).
+   * Used by whitelist ACP adapterIds (grok-acp, codex-acp, …). Secret values stay in
+   * OS/process env; only the env key *name* is stored here.
+   *
+   * On load, legacy disk field `grokAcp` is migrated into `acp` (canonical save writes only `acp`).
    */
-  grokAcp?: import("../adapters/grok-acp/types.js").GrokAcpProfileOptions;
+  acp?: import("../adapters/acp/types.js").AcpProfileOptions;
 }
 
 export interface FakeProfileOptions {

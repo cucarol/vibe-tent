@@ -87,7 +87,7 @@ function mockProfile(
         ? { [opts.envKey ?? DEFAULT_GROK_ENV_KEY]: opts.apiKey }
         : {}),
     },
-    grokAcp: {
+    acp: {
       model: DEFAULT_GROK_MODEL,
       envKey: opts.envKey ?? DEFAULT_GROK_ENV_KEY,
       permissionPolicy: opts.permissionPolicy ?? "deny",
@@ -108,7 +108,7 @@ test("resolveLaunch fails loud without API key (Chinese, no fake/xAI fallback)",
         profileId: "grok-acp-default",
         cwd: process.cwd(),
         env: {},
-        extras: { grokAcp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY" } },
+        extras: { acp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY" } },
         // Skip filesystem executable check by providing command override path that exists
         command: process.execPath,
         args: ["agent", "--model", "grok-4.5", "stdio"],
@@ -135,7 +135,7 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
     env: {},
     command: process.execPath,
     extras: {
-      grokAcp: {
+      acp: {
         model: "grok-4.5",
         envKey: "CPA_GROK_API_KEY",
         executable: process.execPath,
@@ -166,7 +166,7 @@ test("resolveLaunch injects CPA base URL via env + --xai-api-base-url", () => {
     },
     command: process.execPath,
     extras: {
-      grokAcp: {
+      acp: {
         model: "grok-4.5",
         envKey: DEFAULT_GROK_ENV_KEY,
         baseUrlEnvKey: DEFAULT_GROK_BASE_URL_ENV_KEY,
@@ -201,7 +201,7 @@ test("resolveLaunch accepts machine-local profile baseUrl when env unset", () =>
     env: {},
     command: process.execPath,
     extras: {
-      grokAcp: {
+      acp: {
         model: "grok-4.5",
         envKey: "CPA_GROK_API_KEY",
         baseUrl: "http://10.0.0.2:8317/v1",
@@ -215,8 +215,8 @@ test("resolveLaunch accepts machine-local profile baseUrl when env unset", () =>
 
 test("grokAcpProfileTemplate includes baseUrlEnvKey name only", () => {
   const t = grokAcpProfileTemplate({ model: "grok-4.5" });
-  assert.equal(t.grokAcp.baseUrlEnvKey, DEFAULT_GROK_BASE_URL_ENV_KEY);
-  assert.equal(t.grokAcp.baseUrl, undefined);
+  assert.equal(t.acp.baseUrlEnvKey, DEFAULT_GROK_BASE_URL_ENV_KEY);
+  assert.equal(t.acp.baseUrl, undefined);
   const json = JSON.stringify(t);
   assert.ok(json.includes("CPA_GROK_BASE_URL"));
   assert.doesNotMatch(json, /127\.0\.0\.1|8317/);
@@ -665,7 +665,7 @@ test("startSession with missing key fails without spawning mock as fake fallback
         adapterId: GROK_ACP_ADAPTER_ID,
         command: process.execPath,
         args: [MOCK_ACP, "agent", "--model", "grok-4.5", "stdio"],
-        grokAcp: { envKey: "CPA_GROK_API_KEY", model: "grok-4.5" },
+        acp: { envKey: "CPA_GROK_API_KEY", model: "grok-4.5" },
       },
     ],
   });
@@ -690,7 +690,7 @@ test("startSession with missing key fails without spawning mock as fake fallback
 test("grokAcpProfileTemplate never embeds secret values", () => {
   const t = grokAcpProfileTemplate({ model: "grok-4.5" });
   assert.equal(t.adapterId, GROK_ACP_ADAPTER_ID);
-  assert.equal(t.grokAcp.envKey, DEFAULT_GROK_ENV_KEY);
+  assert.equal(t.acp.envKey, DEFAULT_GROK_ENV_KEY);
   const json = JSON.stringify(t);
   assert.doesNotMatch(json, /sk-|xai-|api_key_value/i);
   assert.ok(json.includes("CPA_GROK_API_KEY")); // name only
@@ -809,4 +809,21 @@ test("mock ACP: prompt error does not emit prompt_complete", async () => {
   await waitFor(events, "session.failed", sessionId, 8000);
   assert.ok(!events.some((e) => e.type === "session.prompt_complete"));
   await runtime.shutdown();
+});
+
+test("resolveLaunch accepts deprecated extras.grokAcp fallback", () => {
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+  });
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-legacy01",
+    profileId: "p",
+    cwd: process.cwd(),
+    env: {},
+    command: process.execPath,
+    // @deprecated pre-canonical plan shape — production runtime passes extras.acp only.
+    extras: { grokAcp: { model: "grok-4.5", envKey: "CPA_GROK_API_KEY" } },
+  });
+  assert.ok(launch.args.includes("--model"));
+  assert.equal(launch.args[launch.args.indexOf("--model") + 1], "grok-4.5");
 });
