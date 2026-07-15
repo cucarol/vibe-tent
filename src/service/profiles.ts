@@ -45,7 +45,8 @@ export const OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
  * Explicit product-CRUD ACP adapter whitelist (not a universal provider router).
  * Only these adapterId strings may be created/updated/deleted via profile.* RPC.
  * Adapters are registered separately — this batch does not implement/seed non-grok providers.
- * Never include gemini-acp. antigravity-acp is id-only (third-party agy-acp bridge not implemented here).
+ * Never include gemini-acp. antigravity-acp launches the separately installed
+ * third-party agy-acp bridge; Tent never treats the official agy CLI as native ACP.
  */
 export const PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
