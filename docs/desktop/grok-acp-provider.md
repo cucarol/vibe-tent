@@ -98,7 +98,7 @@ Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
 
 ## Machine-local profile catalog CRUD (service)
 
-Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. All five listed adapters are registered and receive the same Local Service tool-approval bridge.
+Local Service owns a **single-process serial** catalog for `agent-profiles.json` (same path + atomic write as boot). Product CRUD accepts an **explicit ACP adapterId whitelist** only — **not** a universal provider router, no revision/etag, no profile change events in this version. All six listed adapters are registered and receive the same Local Service tool-approval bridge.
 
 | RPC | Notes |
 | --- | --- |
@@ -108,7 +108,7 @@ Local Service owns a **single-process serial** catalog for `agent-profiles.json`
 | `profile.update` | Top-level `{ id, …patch }` only; **id and adapterId immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
 | `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK; built-in `*-default` ids are never deletable |
 
-**Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
+**Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp` \| `copilot-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
 
 **Create defaults:** only `grok-acp` auto-fills `DEFAULT_GROK_MODEL` / `CPA_GROK_API_KEY` / `CPA_GROK_BASE_URL` env key names; other whitelist adapters default `permissionPolicy=deny` only (no invented model/envKey).
 

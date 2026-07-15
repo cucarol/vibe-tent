@@ -20,6 +20,7 @@ import {
   CLAUDE_ACP_DEFAULT_PROFILE_ID,
   ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
   OPENCODE_ACP_DEFAULT_PROFILE_ID,
+  COPILOT_ACP_DEFAULT_PROFILE_ID,
   ensureDefaultProfiles,
   loadAgentProfiles,
   profilesPath,
@@ -414,6 +415,7 @@ test("whitelist adapterId create + defaults; unknown/immutable/secret reject; le
       "claude-acp",
       "antigravity-acp",
       "opencode-acp",
+      "copilot-acp",
     ] as const;
 
     for (const adapterId of adapters) {
@@ -526,6 +528,7 @@ test("whitelist adapterId create + defaults; unknown/immutable/secret reject; le
     CLAUDE_ACP_DEFAULT_PROFILE_ID,
     ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
     OPENCODE_ACP_DEFAULT_PROFILE_ID,
+    COPILOT_ACP_DEFAULT_PROFILE_ID,
   ]) {
     assert.ok(loaded.some((profile) => profile.id === id), `missing default profile ${id}`);
   }

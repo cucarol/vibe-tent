@@ -20,6 +20,10 @@ import {
   OPENCODE_ACP_ADAPTER_ID,
   createOpenCodeAcpAdapter,
 } from "../adapters/opencode-acp/index.js";
+import {
+  COPILOT_ACP_ADAPTER_ID,
+  createCopilotAcpAdapter,
+} from "../adapters/copilot-acp/index.js";
 import { cloneAgentProfileConfig } from "./profile-config.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
@@ -101,6 +105,7 @@ export class AgentRuntime implements AgentRuntimePort {
       createClaudeAcpAdapter(),
       createAntigravityAcpAdapter(),
       createOpenCodeAcpAdapter(),
+      createCopilotAcpAdapter(),
     ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
@@ -122,6 +127,9 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
       this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());
+    }
+    if (!this.adapters.has(COPILOT_ACP_ADAPTER_ID)) {
+      this.adapters.set(COPILOT_ACP_ADAPTER_ID, createCopilotAcpAdapter());
     }
 
     this.supervisor = new ProcessSupervisor({

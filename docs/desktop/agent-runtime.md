@@ -429,7 +429,7 @@ If the spike proves Codex cannot be a reliable push host, the product **falls ba
 | X2 | Dogfood file-inbox success ≠ RuntimePort support |
 | X3 | No fake push adapter for schedule pressure |
 
-**Desktop MVP note:** the explicit ACP adapters are `grok-acp`, `codex-acp`, `claude-acp`, `antigravity-acp`, and `opencode-acp`. Setup, machine-local profile, env key rules, and permission policy are documented in `docs/desktop/acp-providers.md`; Grok/CPA specifics remain in `docs/desktop/grok-acp-provider.md`. `fake-cli` remains test/harness only.
+**Desktop MVP note:** the explicit ACP adapters are `grok-acp`, `codex-acp`, `claude-acp`, `antigravity-acp`, `opencode-acp`, and `copilot-acp`. Setup, machine-local profile, env key rules, and permission policy are documented in `docs/desktop/acp-providers.md`; Grok/CPA specifics remain in `docs/desktop/grok-acp-provider.md`. `fake-cli` remains test/harness only.
 
 ---
 

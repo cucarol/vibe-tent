@@ -25,6 +25,10 @@ import {
   createOpenCodeAcpAdapter,
   defaultOpenCodeExecutable,
 } from "../src/adapters/opencode-acp/index.js";
+import {
+  COPILOT_ACP_NPX_PACKAGE,
+  createCopilotAcpAdapter,
+} from "../src/adapters/copilot-acp/index.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import type { RuntimeEvent } from "../src/runtime/types.js";
 
@@ -192,11 +196,69 @@ test("OpenCode ACP honors explicit command/args without appending `acp`", () => 
   assert.deepEqual(launch.args, [MOCK_ACP]);
 });
 
+test("Copilot ACP uses the official npx package in explicit stdio mode", () => {
+  const adapter = createCopilotAcpAdapter();
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-copilot01",
+    profileId: "copilot-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    extras: { acp: { model: "claude-sonnet-4.5" } },
+  });
+  assert.equal(launch.command, process.platform === "win32" ? "npx.cmd" : "npx");
+  assert.deepEqual(launch.args, [
+    "--yes",
+    COPILOT_ACP_NPX_PACKAGE,
+    "--acp",
+    "--stdio",
+    "--model",
+    "claude-sonnet-4.5",
+  ]);
+});
+
+test("Copilot ACP executable override still receives ACP stdio arguments", () => {
+  const adapter = createCopilotAcpAdapter();
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-copilot02",
+    profileId: "copilot-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    extras: { acp: { executable: "C:\\tools\\copilot.exe" } },
+  });
+  assert.equal(launch.command, "C:\\tools\\copilot.exe");
+  assert.deepEqual(launch.args, ["--acp", "--stdio"]);
+});
+
+test("Copilot ACP may reuse local login or require an explicit env key", () => {
+  const local = createCopilotAcpAdapter().resolveLaunch({
+    sessionId: "ss-copilot03",
+    profileId: "copilot-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    extras: { acp: {} },
+  });
+  assert.equal(local.env.GH_TOKEN, undefined);
+
+  const required = createCopilotAcpAdapter({ resolveEnvValue: () => undefined });
+  assert.throws(
+    () =>
+      required.resolveLaunch({
+        sessionId: "ss-copilot04",
+        profileId: "copilot-acp-default",
+        cwd: process.cwd(),
+        env: {},
+        extras: { acp: { envKey: "GH_TOKEN" } },
+      }),
+    /省略 envKey 可复用本机 Copilot 登录/
+  );
+});
+
 for (const [name, adapter] of [
   ["Codex", createCodexAcpAdapter()],
   ["Claude", createClaudeAcpAdapter()],
   ["Antigravity", createAntigravityAcpAdapter()],
   ["OpenCode", createOpenCodeAcpAdapter()],
+  ["Copilot", createCopilotAcpAdapter()],
 ] as const satisfies ReadonlyArray<readonly [string, ProviderAdapter]>) {
   test(`${name} ACP managed session completes through the offline mock without authenticate`, async () => {
     const cwd = await tempDir(`tent-${name.toLowerCase()}-acp-`);

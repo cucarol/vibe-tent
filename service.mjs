@@ -4579,6 +4579,86 @@ function createOpenCodeAcpAdapter(options) {
   return new OpenCodeAcpProviderAdapter(options);
 }
 
+// src/adapters/copilot-acp/types.ts
+var COPILOT_ACP_ADAPTER_ID = "copilot-acp";
+var COPILOT_ACP_NPX_PACKAGE = "@github/copilot";
+
+// src/adapters/copilot-acp/index.ts
+var CopilotAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = COPILOT_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.copilotAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
+  }
+  capabilities() {
+    return mainstreamAcpCapabilities();
+  }
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const hasCommandOverride = !!plan.command?.trim();
+    const command = plan.command?.trim() || opts.executable || defaultNpxCommand();
+    const defaultArgs = opts.executable ? ["--acp", "--stdio"] : ["--yes", COPILOT_ACP_NPX_PACKAGE, "--acp", "--stdio"];
+    if (opts.model) defaultArgs.push("--model", opts.model);
+    const args = plan.args ? [...plan.args] : hasCommandOverride ? [] : defaultArgs;
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const value = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!value?.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Acopilot-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A Copilot \u767B\u5F55\u3002`
+        );
+      }
+      env[opts.envKey] = value;
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk,
+      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+    });
+    const client = new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      permissionTimeoutMs: opts.permissionTimeoutMs,
+      label: "GitHub Copilot ACP",
+      emit: emit2,
+      onPermissionAsk: hooks.onPermissionAsk,
+      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+    });
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createCopilotAcpAdapter(options) {
+  return new CopilotAcpProviderAdapter(options);
+}
+
 // src/service/profiles.ts
 var FAKE_DEFAULT_PROFILE_ID = "fake-default";
 var GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
@@ -4586,12 +4666,14 @@ var CODEX_ACP_DEFAULT_PROFILE_ID = "codex-acp-default";
 var CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
 var ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
 var OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
+var COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
 var PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
   "codex-acp",
   "claude-acp",
   "antigravity-acp",
-  "opencode-acp"
+  "opencode-acp",
+  "copilot-acp"
 ];
 var PRODUCT_ACP_ADAPTER_SET = new Set(PRODUCT_ACP_ADAPTER_IDS);
 function isProductAcpAdapterId(id) {
@@ -4603,7 +4685,8 @@ var BUILTIN_DEFAULT_PROFILE_IDS = /* @__PURE__ */ new Set([
   CODEX_ACP_DEFAULT_PROFILE_ID,
   CLAUDE_ACP_DEFAULT_PROFILE_ID,
   ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
-  OPENCODE_ACP_DEFAULT_PROFILE_ID
+  OPENCODE_ACP_DEFAULT_PROFILE_ID,
+  COPILOT_ACP_DEFAULT_PROFILE_ID
 ]);
 function isBuiltinDefaultProfileId(id) {
   return BUILTIN_DEFAULT_PROFILE_IDS.has(id);
@@ -4725,6 +4808,12 @@ function defaultAgentProfiles() {
       adapterId: OPENCODE_ACP_ADAPTER_ID,
       displayNameKey: "profile.openCodeAcp.default",
       acp: { permissionPolicy: "deny" }
+    },
+    {
+      id: COPILOT_ACP_DEFAULT_PROFILE_ID,
+      adapterId: COPILOT_ACP_ADAPTER_ID,
+      displayNameKey: "profile.copilotAcp.default",
+      acp: { permissionPolicy: "deny" }
     }
   ];
 }
@@ -4768,7 +4857,8 @@ var DISPLAY_NAME_BY_KEY = {
   "profile.codexAcp.default": "Codex ACP",
   "profile.claudeAcp.default": "Claude Agent ACP",
   "profile.antigravityAcp.default": "Antigravity ACP\uFF08agy-acp bridge\uFF09",
-  "profile.openCodeAcp.default": "OpenCode ACP"
+  "profile.openCodeAcp.default": "OpenCode ACP",
+  "profile.copilotAcp.default": "GitHub Copilot ACP"
 };
 function projectAgentProfile(profile) {
   const testOnly = isTestOnlyProfile(profile);
@@ -8007,7 +8097,8 @@ var AgentRuntime = class {
       createCodexAcpAdapter(),
       createClaudeAcpAdapter(),
       createAntigravityAcpAdapter(),
-      createOpenCodeAcpAdapter()
+      createOpenCodeAcpAdapter(),
+      createCopilotAcpAdapter()
     ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
@@ -8029,6 +8120,9 @@ var AgentRuntime = class {
     }
     if (!this.adapters.has(OPENCODE_ACP_ADAPTER_ID)) {
       this.adapters.set(OPENCODE_ACP_ADAPTER_ID, createOpenCodeAcpAdapter());
+    }
+    if (!this.adapters.has(COPILOT_ACP_ADAPTER_ID)) {
+      this.adapters.set(COPILOT_ACP_ADAPTER_ID, createCopilotAcpAdapter());
     }
     this.supervisor = new ProcessSupervisor({
       gracefulMs: options.gracefulMs ?? 2e3,
@@ -8572,7 +8666,8 @@ async function startLocalTentService(options = {}) {
       createCodexAcpAdapter(acpPermissionHooks),
       createClaudeAcpAdapter(acpPermissionHooks),
       createAntigravityAcpAdapter(acpPermissionHooks),
-      createOpenCodeAcpAdapter(acpPermissionHooks)
+      createOpenCodeAcpAdapter(acpPermissionHooks),
+      createCopilotAcpAdapter(acpPermissionHooks)
     ]
   });
   runtimeHolder.current = runtime;

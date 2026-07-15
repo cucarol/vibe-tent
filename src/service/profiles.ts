@@ -21,6 +21,7 @@ import { CODEX_ACP_ADAPTER_ID } from "../adapters/codex-acp/index.js";
 import { CLAUDE_ACP_ADAPTER_ID } from "../adapters/claude-acp/index.js";
 import { ANTIGRAVITY_ACP_ADAPTER_ID } from "../adapters/antigravity-acp/index.js";
 import { OPENCODE_ACP_ADAPTER_ID } from "../adapters/opencode-acp/index.js";
+import { COPILOT_ACP_ADAPTER_ID } from "../adapters/copilot-acp/index.js";
 import {
   backupCorruptMachineFile,
   isNotFoundError,
@@ -40,6 +41,7 @@ export const CODEX_ACP_DEFAULT_PROFILE_ID = "codex-acp-default";
 export const CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
 export const ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
 export const OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
+export const COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
 
 /**
  * Explicit product-CRUD ACP adapter whitelist (not a universal provider router).
@@ -54,6 +56,7 @@ export const PRODUCT_ACP_ADAPTER_IDS = [
   "claude-acp",
   "antigravity-acp",
   "opencode-acp",
+  "copilot-acp",
 ] as const;
 
 export type ProductAcpAdapterId = (typeof PRODUCT_ACP_ADAPTER_IDS)[number];
@@ -75,6 +78,7 @@ const BUILTIN_DEFAULT_PROFILE_IDS = new Set<string>([
   CLAUDE_ACP_DEFAULT_PROFILE_ID,
   ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
   OPENCODE_ACP_DEFAULT_PROFILE_ID,
+  COPILOT_ACP_DEFAULT_PROFILE_ID,
 ]);
 
 export function isBuiltinDefaultProfileId(id: string): boolean {
@@ -229,6 +233,12 @@ export function defaultAgentProfiles(): AgentProfileConfig[] {
       displayNameKey: "profile.openCodeAcp.default",
       acp: { permissionPolicy: "deny" },
     },
+    {
+      id: COPILOT_ACP_DEFAULT_PROFILE_ID,
+      adapterId: COPILOT_ACP_ADAPTER_ID,
+      displayNameKey: "profile.copilotAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
   ];
 }
 
@@ -279,6 +289,7 @@ const DISPLAY_NAME_BY_KEY: Record<string, string> = {
   "profile.claudeAcp.default": "Claude Agent ACP",
   "profile.antigravityAcp.default": "Antigravity ACP（agy-acp bridge）",
   "profile.openCodeAcp.default": "OpenCode ACP",
+  "profile.copilotAcp.default": "GitHub Copilot ACP",
 };
 
 /**

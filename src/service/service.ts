@@ -30,6 +30,7 @@ import { createCodexAcpAdapter } from "../adapters/codex-acp/index.js";
 import { createClaudeAcpAdapter } from "../adapters/claude-acp/index.js";
 import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.js";
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
+import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import type { AcpPermissionAskHooks } from "../adapters/acp/index.js";
 import { createFakeAdapter } from "../adapters/fake/index.js";
 import { loadTaskEnvelopes } from "../core/task.js";
@@ -222,6 +223,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
       createClaudeAcpAdapter(acpPermissionHooks),
       createAntigravityAcpAdapter(acpPermissionHooks),
       createOpenCodeAcpAdapter(acpPermissionHooks),
+      createCopilotAcpAdapter(acpPermissionHooks),
     ],
   });
   runtimeHolder.current = runtime;

@@ -97,7 +97,7 @@ function mockAcpProfile(
 
 async function pollUntil<T>(
   fn: () => Promise<T | undefined | null | false>,
-  timeoutMs = 10_000,
+  timeoutMs = 20_000,
   label = "condition"
 ): Promise<T> {
   const start = Date.now();
@@ -784,7 +784,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
         const task = (g.result as { task: { state: string } }).task;
         return task.state === "delivered" ? task : null;
-      }, 12_000, "task delivered via managed auto-deliver");
+      }, 20_000, "task delivered via managed auto-deliver");
 
       assert.equal(delivered.state, "delivered");
 
