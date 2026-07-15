@@ -32,6 +32,21 @@ export interface CreateHttpServerOptions {
   token: string;
 }
 
+// WHATWG Fetch blocked ports relevant to HTTP clients (Chromium/undici).
+// Windows may allocate one of these even for listen(0), notably 6000.
+const FETCH_BLOCKED_PORTS = new Set([
+  1, 7, 9, 11, 13, 15, 17, 19, 20, 21, 22, 23, 25, 37, 42, 43, 53, 69, 77,
+  79, 87, 95, 101, 102, 103, 104, 109, 110, 111, 113, 115, 117, 119, 123,
+  135, 137, 139, 143, 161, 179, 389, 427, 465, 512, 513, 514, 515, 526, 530,
+  531, 532, 540, 548, 554, 556, 563, 587, 601, 636, 989, 990, 993, 995, 1719,
+  1720, 1723, 2049, 3659, 4045, 5060, 5061, 6000, 6566, 6665, 6666, 6667,
+  6668, 6669, 6697, 10080,
+]);
+
+export function isFetchBlockedPort(port: number): boolean {
+  return FETCH_BLOCKED_PORTS.has(port);
+}
+
 export async function createServiceHttpServer(options: CreateHttpServerOptions): Promise<ServiceHttpServer> {
   const host = options.host ?? "127.0.0.1";
   const preferredPort = options.port ?? 0;
@@ -47,18 +62,25 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
     }
   });
 
-  await new Promise<void>((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(preferredPort, host, () => resolve());
-  });
-
-  const addr = server.address();
-  if (!addr || typeof addr === "string") {
-    server.close();
-    throw new Error("Failed to bind Local Tent Service HTTP server");
+  let port = 0;
+  for (let attempt = 0; attempt < 20; attempt++) {
+    await listen(server, preferredPort, host);
+    const addr = server.address();
+    if (!addr || typeof addr === "string") {
+      await closeServer(server);
+      throw new Error("Failed to bind Local Tent Service HTTP server");
+    }
+    port = addr.port;
+    if (!isFetchBlockedPort(port)) break;
+    await closeServer(server);
+    if (preferredPort !== 0) {
+      throw new Error(`Local Tent Service port ${port} is blocked by Fetch clients`);
+    }
+    port = 0;
   }
-
-  const port = addr.port;
+  if (!port) {
+    throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
+  }
   return {
     server,
     host,
@@ -69,6 +91,28 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
         server.close((err) => (err ? reject(err) : resolve()));
       }),
   };
+}
+
+function listen(server: http.Server, port: number, host: string): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const onError = (error: Error) => {
+      server.off("listening", onListening);
+      reject(error);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve();
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(port, host);
+  });
+}
+
+function closeServer(server: http.Server): Promise<void> {
+  return new Promise((resolve, reject) => {
+    server.close((err) => (err ? reject(err) : resolve()));
+  });
 }
 
 async function handleRequest(

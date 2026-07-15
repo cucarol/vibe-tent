@@ -159,6 +159,13 @@ export type AgentProfileProjection = {
   executable?: string;
   /** Process env *name* for API token — never the value. */
   envKey?: string;
+  /**
+   * Machine-local CredentialStore id referenced by this profile (not a secret).
+   * Presence of the vault entry may be reported via credentialExists.
+   */
+  credentialRef?: string;
+  /** true when credentialRef resolves to an existing vault entry (no secret). */
+  credentialExists?: boolean;
   /** Process env *name* for base URL — never the value. */
   baseUrlEnvKey?: string;
   /** Optional machine-local literal base URL (not a workspace secret). */
@@ -178,6 +185,7 @@ export type AgentProfileProjection = {
  * B5 adds full task lifecycle + session projections + a2a resolve.
  * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
  * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
+ * Credential vault: credential.list/set/delete (no get plaintext).
  */
 export const CLIENT_METHODS = [
   "service.health",
@@ -202,6 +210,10 @@ export const CLIENT_METHODS = [
   "profile.create",
   "profile.update",
   "profile.delete",
+  /** Machine-local credential vault (user-only; never returns secret plaintext). */
+  "credential.list",
+  "credential.set",
+  "credential.delete",
   "task.dispatch",
   "task.claim",
   "task.wait",

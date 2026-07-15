@@ -93,6 +93,7 @@ export const PROFILE_CREATE_FIELDS = [
   "model",
   "executable",
   "envKey",
+  "credentialRef",
   "baseUrlEnvKey",
   "baseUrl",
   "permissionPolicy",
@@ -106,6 +107,7 @@ export const PROFILE_UPDATE_FIELDS = [
   "model",
   "executable",
   "envKey",
+  "credentialRef",
   "baseUrlEnvKey",
   "baseUrl",
   "permissionPolicy",
@@ -296,8 +298,12 @@ const DISPLAY_NAME_BY_KEY: Record<string, string> = {
  * Project a machine-local profile for clients / editors.
  * Non-secret fields only. Never includes env maps, API keys, tokens, or secret values.
  * Reads canonical `acp` bag (legacy grokAcp should already be migrated on load).
+ * credentialRef is a vault id only; credentialExists is optional presence (no secret).
  */
-export function projectAgentProfile(profile: AgentProfileConfig): AgentProfileProjection {
+export function projectAgentProfile(
+  profile: AgentProfileConfig,
+  opts?: { credentialExists?: boolean }
+): AgentProfileProjection {
   const testOnly = isTestOnlyProfile(profile);
   const displayName =
     (typeof profile.displayName === "string" && profile.displayName.trim()
@@ -308,6 +314,10 @@ export function projectAgentProfile(profile: AgentProfileConfig): AgentProfilePr
   // Defensive: if a raw row still has only legacy bag, normalize without scattering reads.
   const canonical = cloneAgentProfileConfig(profile);
   const g = canonical.acp;
+  const credentialRef =
+    typeof g?.credentialRef === "string" && g.credentialRef.trim()
+      ? g.credentialRef.trim()
+      : undefined;
   return {
     id: profile.id,
     adapterId: profile.adapterId,
@@ -316,6 +326,10 @@ export function projectAgentProfile(profile: AgentProfileConfig): AgentProfilePr
     model: g?.model,
     executable: g?.executable,
     envKey: g?.envKey,
+    credentialRef,
+    ...(credentialRef !== undefined && opts?.credentialExists !== undefined
+      ? { credentialExists: opts.credentialExists }
+      : {}),
     baseUrlEnvKey: g?.baseUrlEnvKey,
     baseUrl: g?.baseUrl,
     testOnly,
@@ -326,9 +340,22 @@ export function projectAgentProfile(profile: AgentProfileConfig): AgentProfilePr
 }
 
 /** Safe list for profile.list RPC — never secrets. */
-export function projectAgentProfiles(profiles: AgentProfileConfig[]): AgentProfileProjection[] {
+export function projectAgentProfiles(
+  profiles: AgentProfileConfig[],
+  opts?: { credentialExistsById?: ReadonlyMap<string, boolean> | Record<string, boolean> }
+): AgentProfileProjection[] {
+  const existsMap = opts?.credentialExistsById;
+  const lookup = (ref: string | undefined): boolean | undefined => {
+    if (!ref || !existsMap) return undefined;
+    if (existsMap instanceof Map) return existsMap.get(ref);
+    return (existsMap as Record<string, boolean>)[ref];
+  };
   return profiles
-    .map(projectAgentProfile)
+    .map((p) => {
+      const ref = p.acp?.credentialRef;
+      const exists = typeof ref === "string" ? lookup(ref.trim()) : undefined;
+      return projectAgentProfile(p, exists === undefined ? undefined : { credentialExists: exists });
+    })
     .sort((a, b) => {
       // Product profiles first; then id.
       if (a.testOnly !== b.testOnly) return a.testOnly ? 1 : -1;

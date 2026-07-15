@@ -6,7 +6,7 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { contentEtag } from "../src/service/etag.js";
-import { rpcCall } from "../src/service/http-server.js";
+import { isFetchBlockedPort, rpcCall } from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { MutationBus } from "../src/service/mutation-bus.js";
 import { defaultServiceDataDir, readServiceEndpoint } from "../src/service/data-dir.js";
@@ -48,6 +48,15 @@ function rpc(
 ) {
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
+
+test("Local Service never advertises Fetch-blocked ports", async () => {
+  assert.equal(isFetchBlockedPort(6000), true);
+  assert.equal(isFetchBlockedPort(6667), true);
+  assert.equal(isFetchBlockedPort(4174), false);
+  await withService(async (svc) => {
+    assert.equal(isFetchBlockedPort(svc.port), false);
+  });
+});
 
 test("service.health + endpoint file written for attach discovery", async () => {
   await withService(async (svc, dataDir) => {

@@ -143,14 +143,25 @@ export interface AgentProfileConfig {
    */
   fake?: FakeProfileOptions;
   /**
-   * Canonical shared ACP machine-local options (executable path, model, envKey name, timeouts).
-   * Used by whitelist ACP adapterIds (grok-acp, codex-acp, …). Secret values stay in
-   * OS/process env; only the env key *name* is stored here.
+   * Canonical shared ACP machine-local options (executable path, model, envKey name,
+   * credentialRef id, timeouts). Used by whitelist ACP adapterIds (grok-acp, codex-acp, …).
+   * Secret values stay in CredentialStore / process env; only env key *names* and
+   * credential *refs* are stored here (never plaintext).
    *
    * On load, legacy disk field `grokAcp` is migrated into `acp` (canonical save writes only `acp`).
    */
   acp?: import("../adapters/acp/types.js").AcpProfileOptions;
 }
+
+/**
+ * Optional service hook: resolve machine-local secrets into process env for one start.
+ * Called by AgentRuntime before LaunchPlan construction. Must not persist secrets.
+ * Returns a partial env map merged last into LaunchPlan.env, so the vault value cannot
+ * be shadowed by non-secret profile/request configuration.
+ */
+export type ResolveProfileEnv = (
+  profile: AgentProfileConfig
+) => Promise<Record<string, string>> | Record<string, string>;
 
 export interface FakeProfileOptions {
   /** Sleep before clean exit when not waiting for stop (default 30_000). */

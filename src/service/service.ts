@@ -20,6 +20,8 @@ import {
 } from "./tool-approval-store.js";
 import { ensureDefaultProfiles } from "./profiles.js";
 import { AgentProfileCatalog } from "./profile-catalog.js";
+import type { CredentialProtector } from "./credential-protector.js";
+import { CredentialStore } from "./credential-store.js";
 import { createAgentRuntime, type AgentRuntime } from "../runtime/agent-runtime.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
 import {
@@ -48,6 +50,11 @@ export interface LocalTentServiceOptions {
   /** Explicit in-memory AgentProfiles for tests/harness; skips catalog persistence. */
   profiles?: AgentProfileConfig[];
   /**
+   * Inject CredentialStore protector (offline tests). Production uses Windows DPAPI.
+   * When omitted, CredentialStore uses createPlatformCredentialProtector (fail-loud off Windows).
+   */
+  credentialProtector?: CredentialProtector;
+  /**
    * Optional commit integrate hook for accept/bypass paths (tests).
    * Production uses real workspace Git via handlers → integrateWorkspaceCommits.
    */
@@ -64,6 +71,7 @@ export interface LocalTentService {
   events: EventBus;
   hostApi: WorkspaceHost;
   runtime: AgentRuntime;
+  credentials: CredentialStore;
   ctx: HandlerContext;
   endpoint: ServiceEndpointRecord | null;
   stop: () => Promise<void>;
@@ -85,6 +93,11 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
+
+  const credentials = new CredentialStore(dataDir, {
+    protector: options.credentialProtector,
+  });
+  await credentials.ensureLoaded();
 
   // options.profiles: in-memory inject for tests (skip ensureDefaultProfiles disk seed).
   // Injected catalogs never persist CRUD to dataDir/agent-profiles.json.
@@ -225,6 +238,28 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
       createOpenCodeAcpAdapter(acpPermissionHooks),
       createCopilotAcpAdapter(acpPermissionHooks),
     ],
+    resolveProfileEnv: async (profile) => {
+      const ref =
+        typeof profile.acp?.credentialRef === "string"
+          ? profile.acp.credentialRef.trim()
+          : "";
+      if (!ref) return {};
+      const envKey =
+        typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
+      if (!envKey) {
+        throw new Error(
+          `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
+        );
+      }
+      // resolve() fail-loud when missing; map message without secret material.
+      const secret = await credentials.resolve(ref);
+      if (!secret) {
+        throw new Error(
+          `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
+        );
+      }
+      return { [envKey]: secret };
+    },
   });
   runtimeHolder.current = runtime;
 
@@ -247,6 +282,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     runtime,
     a2a,
     toolApprovals,
+    credentials,
     dataDir,
     profileCatalog,
     integrateCommits: options.integrateCommits,
@@ -312,6 +348,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     events,
     hostApi: workspaceHost,
     runtime,
+    credentials,
     ctx,
     endpoint,
     stop,

@@ -61,6 +61,7 @@ import type { WorkspaceHost } from "./workspace-host.js";
 import type { A2AApprovalStore } from "./a2a-store.js";
 import { makeApprovalId } from "./a2a-store.js";
 import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
+import type { CredentialStore } from "./credential-store.js";
 import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
@@ -97,6 +98,11 @@ export interface HandlerContext {
   a2a: A2AApprovalStore;
   /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
   toolApprovals: ToolApprovalStore;
+  /**
+   * Machine-local encrypted credential vault (Windows DPAPI).
+   * Client RPC: list/set/delete only — never get/resolve plaintext.
+   */
+  credentials: CredentialStore;
   dataDir: string;
   /** Machine-local AgentProfile catalog (serial CRUD + runtime sync). */
   profileCatalog: AgentProfileCatalog;
@@ -175,6 +181,12 @@ export async function dispatchMethod(
         return profileUpdate(ctx, p);
       case "profile.delete":
         return profileDelete(ctx, p);
+      case "credential.list":
+        return credentialList(ctx);
+      case "credential.set":
+        return credentialSet(ctx, p);
+      case "credential.delete":
+        return credentialDelete(ctx, p);
       case "task.dispatch":
         return taskDispatch(ctx, p);
       case "task.claim":
@@ -601,8 +613,10 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
  */
 async function profileList(ctx: HandlerContext, p: Record<string, unknown>) {
   const includeTest = p.includeTest === true;
+  const catalog = ctx.profileCatalog.list();
+  const existsMap = await credentialExistsLookup(ctx, catalog);
   // Single source of truth: injected catalog only (no runtime/disk fallback).
-  let profiles = projectAgentProfiles(ctx.profileCatalog.list());
+  let profiles = projectAgentProfiles(catalog, { credentialExistsById: existsMap });
   if (!includeTest) {
     profiles = profiles.filter((pr) => !pr.testOnly);
   }
@@ -615,7 +629,12 @@ async function profileGet(ctx: HandlerContext, p: Record<string, unknown>) {
   if (!profile) {
     throw new RpcError(-32004, `Profile not found: ${id}`);
   }
-  return { profile: projectAgentProfile(profile) };
+  return {
+    profile: projectAgentProfile(
+      profile,
+      await profileCredentialExistsOpts(ctx, profile)
+    ),
+  };
 }
 
 async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -627,7 +646,12 @@ async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
     );
   }
   const created = await ctx.profileCatalog.create(p);
-  return { profile: projectAgentProfile(created) };
+  return {
+    profile: projectAgentProfile(
+      created,
+      await profileCredentialExistsOpts(ctx, created)
+    ),
+  };
 }
 
 async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -641,12 +665,135 @@ async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
   const id = requireString(p, "id");
   const { id: _id, ...patch } = p;
   const updated = await ctx.profileCatalog.update(id, patch);
-  return { profile: projectAgentProfile(updated) };
+  return {
+    profile: projectAgentProfile(
+      updated,
+      await profileCredentialExistsOpts(ctx, updated)
+    ),
+  };
 }
 
 async function profileDelete(ctx: HandlerContext, p: Record<string, unknown>) {
   const id = requireString(p, "id");
   return ctx.profileCatalog.delete(id);
+}
+
+async function credentialExistsLookup(
+  ctx: HandlerContext,
+  profiles: Array<{ acp?: { credentialRef?: string } }>
+): Promise<Map<string, boolean>> {
+  const map = new Map<string, boolean>();
+  for (const p of profiles) {
+    const ref =
+      typeof p.acp?.credentialRef === "string" ? p.acp.credentialRef.trim() : "";
+    if (ref && !map.has(ref)) {
+      map.set(ref, await ctx.credentials.has(ref));
+    }
+  }
+  return map;
+}
+
+async function profileCredentialExistsOpts(
+  ctx: HandlerContext,
+  profile: { acp?: { credentialRef?: string } }
+): Promise<{ credentialExists: boolean } | undefined> {
+  const ref =
+    typeof profile.acp?.credentialRef === "string" && profile.acp.credentialRef.trim()
+      ? profile.acp.credentialRef.trim()
+      : undefined;
+  if (!ref) return undefined;
+  return { credentialExists: await ctx.credentials.has(ref) };
+}
+
+/**
+ * Machine-local credential vault RPCs — user-only loopback surface.
+ * set accepts secret in params but response/events/errors never echo it.
+ * No credential.get / resolve on the client surface.
+ */
+async function credentialList(ctx: HandlerContext) {
+  const credentials = await ctx.credentials.list();
+  return { credentials };
+}
+
+async function credentialSet(ctx: HandlerContext, p: Record<string, unknown>) {
+  if ("credential" in p) {
+    throw new RpcError(
+      -32602,
+      "credential.set does not accept nested credential; pass { id, secret, metadata? } or { id, secret, label? }"
+    );
+  }
+  const id = requireString(p, "id");
+  // Accept secret only as a string param; never log or re-emit it.
+  if (!("secret" in p) || typeof p.secret !== "string" || p.secret.length === 0) {
+    throw new RpcError(-32602, "Missing or invalid string param: secret");
+  }
+  const secret = p.secret;
+  // metadata bag or top-level label (both non-secret).
+  let metadata: { label?: string } | undefined;
+  if ("metadata" in p && p.metadata !== undefined && p.metadata !== null) {
+    if (typeof p.metadata !== "object" || Array.isArray(p.metadata)) {
+      throw new RpcError(-32602, "Invalid metadata: must be a plain object when set");
+    }
+    metadata = p.metadata as { label?: string };
+  } else if ("label" in p && p.label !== undefined && p.label !== null) {
+    if (typeof p.label !== "string") {
+      throw new RpcError(-32602, "Invalid string param: label");
+    }
+    metadata = { label: p.label };
+  }
+  try {
+    const credential = await ctx.credentials.set(id, secret, metadata);
+    // Safe event: id/metadata only — never secret.
+    ctx.events.emit(
+      "credential.changed",
+      "",
+      {
+        action: "set",
+        id: credential.id,
+        updatedAt: credential.updatedAt,
+        ...(credential.metadata ? { metadata: credential.metadata } : {}),
+      },
+      "self"
+    );
+    return { credential };
+  } catch (err) {
+    // Sanitize: never include secret in error message/data.
+    const message = err instanceof Error ? err.message : "credential.set failed";
+    if (secret && message.includes(secret)) {
+      throw new RpcError(-32602, "credential.set failed");
+    }
+    if (
+      /Invalid credential id|Missing or invalid credential|credential secret|metadata|must match/i.test(
+        message
+      )
+    ) {
+      throw new RpcError(-32602, message);
+    }
+    throw new RpcError(-32000, message);
+  }
+}
+
+async function credentialDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  const id = requireString(p, "id");
+  try {
+    const result = await ctx.credentials.delete(id);
+    ctx.events.emit(
+      "credential.changed",
+      "",
+      { action: "delete", id: result.deleted },
+      "self"
+    );
+    return result;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "credential.delete failed";
+    if (/not found/i.test(message)) {
+      throw new RpcError(-32004, message);
+    }
+    if (/Invalid credential id|Missing or invalid credential/i.test(message)) {
+      throw new RpcError(-32602, message);
+    }
+    throw new RpcError(-32000, message);
+  }
 }
 
 async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {

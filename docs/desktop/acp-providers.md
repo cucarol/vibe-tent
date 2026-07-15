@@ -11,6 +11,17 @@ Tent exposes a small, explicit set of coding-agent ACP adapters. It is not a uni
 | `opencode-acp` | Native `opencode acp` | OpenCode's local provider configuration, plus optional explicit process `envKey` |
 | `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` |
 
+## Machine-local credentials (Windows MVP)
+
+The Local Service exposes `credential.list`, `credential.set`, and
+`credential.delete`. Secret values are protected with Windows CurrentUser DPAPI
+and stored only as ciphertext under the service data directory. There is no RPC
+that returns plaintext. An ACP profile may store a non-secret `credentialRef`
+alongside its `envKey`; the runtime resolves that reference only while building
+the child process environment. Secrets never enter the workspace, profile JSON,
+session records, events, or logs. Missing references fail the session launch
+loudly. Non-Windows hosts do not use a weak fallback.
+
 `gemini-acp` is intentionally absent. Antigravity uses the official `agy` CLI, but `agy` currently has no native ACP entrypoint; Tent therefore launches the third-party `agy-acp` executable and never starts `agy` directly. The bridge remains responsible for its own local conversation state. In particular, verify the bridge supports the host platform before selecting the default profile.
 
 The Claude Agent ACP npm bridge currently requires Node.js 22 or newer even though Tent itself supports Node.js 20. A machine running Node 20 can use the rest of Tent, but must upgrade Node or configure another executable before launching `claude-acp`.

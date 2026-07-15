@@ -34,6 +34,7 @@ export function normalizeSharedAcpOpts(raw: unknown): {
   executable?: string;
   model?: string;
   envKey?: string;
+  credentialRef?: string;
   baseUrlEnvKey?: string;
   baseUrl?: string;
   promptTimeoutMs: number;
@@ -51,6 +52,10 @@ export function normalizeSharedAcpOpts(raw: unknown): {
     envKey:
       typeof o.envKey === "string" && o.envKey.trim()
         ? o.envKey.trim()
+        : undefined,
+    credentialRef:
+      typeof o.credentialRef === "string" && o.credentialRef.trim()
+        ? o.credentialRef.trim()
         : undefined,
     baseUrlEnvKey:
       typeof o.baseUrlEnvKey === "string" && o.baseUrlEnvKey.trim()

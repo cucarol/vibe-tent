@@ -146,6 +146,25 @@ export class ServiceClient {
     return this.call("profile.delete", { id });
   }
 
+  // ---- convenience: machine-local credentials (never returns secret) ----
+  credentialList() {
+    return this.call("credential.list", {});
+  }
+  /**
+   * Store encrypted secret under id. Response is id/metadata only.
+   * Callers must not log `secret`; RPC response never echoes it.
+   */
+  credentialSet(id: string, secret: string, metadata?: { label?: string }) {
+    return this.call("credential.set", {
+      id,
+      secret,
+      ...(metadata !== undefined ? { metadata } : {}),
+    });
+  }
+  credentialDelete(id: string) {
+    return this.call("credential.delete", { id });
+  }
+
   // ---- convenience: task ----
   taskDispatch(
     workspaceId: string,

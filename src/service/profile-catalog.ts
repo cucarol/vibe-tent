@@ -25,6 +25,7 @@ import {
   saveAgentProfiles,
   type ProductAcpAdapterId,
 } from "./profiles.js";
+import { CREDENTIAL_ID_RE, assertCredentialId } from "./credential-store.js";
 import { RpcError } from "./rpc-error.js";
 
 // ---------------------------------------------------------------------------
@@ -153,6 +154,39 @@ function clearableEnvKey(
   return v;
 }
 
+/** credentialRef is a vault id (not a secret); same id rules as CredentialStore. */
+function optionalCredentialRef(raw: Record<string, unknown>): string | undefined {
+  const v = optionalNonEmptyString(raw, "credentialRef");
+  if (v === undefined) return undefined;
+  try {
+    return assertCredentialId(v);
+  } catch (err) {
+    throw new RpcError(
+      -32602,
+      err instanceof Error
+        ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef")
+        : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
+    );
+  }
+}
+
+function clearableCredentialRef(
+  raw: Record<string, unknown>
+): string | null | undefined {
+  const v = clearableNonEmptyString(raw, "credentialRef");
+  if (v === undefined || v === null) return v;
+  try {
+    return assertCredentialId(v);
+  } catch (err) {
+    throw new RpcError(
+      -32602,
+      err instanceof Error
+        ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef")
+        : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
+    );
+  }
+}
+
 function validateBaseUrl(v: string): string {
   let parsed: URL;
   try {
@@ -266,6 +300,8 @@ function parseAcpFieldsCreate(raw: Record<string, unknown>): {
   if (executable !== undefined) acp.executable = executable;
   const envKey = optionalEnvKey(raw, "envKey");
   if (envKey !== undefined) acp.envKey = envKey;
+  const credentialRef = optionalCredentialRef(raw);
+  if (credentialRef !== undefined) acp.credentialRef = credentialRef;
   const baseUrlEnvKey = optionalEnvKey(raw, "baseUrlEnvKey");
   if (baseUrlEnvKey !== undefined) acp.baseUrlEnvKey = baseUrlEnvKey;
   const baseUrl = optionalBaseUrl(raw);
@@ -285,6 +321,7 @@ type ClearablePatch = {
   model?: string | null;
   executable?: string | null;
   envKey?: string | null;
+  credentialRef?: string | null;
   baseUrlEnvKey?: string | null;
   baseUrl?: string | null;
   permissionPolicy?: AcpPermissionPolicy | null;
@@ -298,6 +335,7 @@ function parseAcpFieldsUpdate(raw: Record<string, unknown>): ClearablePatch {
     model: clearableNonEmptyString(raw, "model"),
     executable: clearableNonEmptyString(raw, "executable"),
     envKey: clearableEnvKey(raw, "envKey"),
+    credentialRef: clearableCredentialRef(raw),
     baseUrlEnvKey: clearableEnvKey(raw, "baseUrlEnvKey"),
     baseUrl: clearableBaseUrl(raw),
     permissionPolicy: clearablePermissionPolicy(raw),
@@ -337,6 +375,10 @@ function applyClearablePatch(
   assign("model", patch.model as AcpProfileOptions["model"] | null | undefined);
   assign("executable", patch.executable as AcpProfileOptions["executable"] | null | undefined);
   assign("envKey", patch.envKey as AcpProfileOptions["envKey"] | null | undefined);
+  assign(
+    "credentialRef",
+    patch.credentialRef as AcpProfileOptions["credentialRef"] | null | undefined
+  );
   assign(
     "baseUrlEnvKey",
     patch.baseUrlEnvKey as AcpProfileOptions["baseUrlEnvKey"] | null | undefined

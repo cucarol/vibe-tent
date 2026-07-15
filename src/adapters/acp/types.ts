@@ -65,8 +65,15 @@ export interface AcpProfileOptions {
   /**
    * Process env key for API token (read from service process env only).
    * Value is never written to workspace/box/task or agent-profiles.json.
+   * When credentialRef is set, AgentRuntime resolves the vault secret into this env key
+   * at startSession (process-scoped LaunchPlan.env only — never SessionRecord / disk).
    */
   envKey?: string;
+  /**
+   * Machine-local CredentialStore id (reference only — never the secret value).
+   * Service resolves via OS-backed vault before launch; profile JSON stores only this id.
+   */
+  credentialRef?: string;
   /**
    * Process env key whose **value** is an OpenAI-compatible / provider base URL.
    * Only the env key *name* is stored on the machine-local profile.

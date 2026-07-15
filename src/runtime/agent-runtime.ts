@@ -30,6 +30,7 @@ import { SessionRegistry } from "./session-registry.js";
 import type {
   AgentProfileConfig,
   AgentRuntimePort,
+  ResolveProfileEnv,
   ResumeSessionRequest,
   RuntimeEvent,
   SessionHandle,
@@ -51,6 +52,11 @@ export interface AgentRuntimeOptions {
   gracefulMs?: number;
   /** When true (default), capture short stdout tails as diagnostic events. */
   captureStdout?: boolean;
+  /**
+   * Optional async hook to resolve profile credentialRef → env values before LaunchPlan.
+   * Service wires CredentialStore.resolve here. Secrets never enter SessionRecord.
+   */
+  resolveProfileEnv?: ResolveProfileEnv;
 }
 
 function handleFrom(record: SessionRecord): SessionHandle {
@@ -80,10 +86,12 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly managed = new Map<string, ManagedSession>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
+  private readonly resolveProfileEnv?: ResolveProfileEnv;
   private closed = false;
 
   constructor(options: AgentRuntimeOptions) {
     this.registry = new SessionRegistry(options.dataDir);
+    this.resolveProfileEnv = options.resolveProfileEnv;
 
     for (const p of options.profiles ?? []) {
       this.profiles.set(p.id, cloneProfileConfig(p));
@@ -258,12 +266,16 @@ export class AgentRuntime implements AgentRuntimePort {
     this.emit({ type: "session.starting", sessionId: req.sessionId });
 
     try {
+      // Resolve after the diagnostic row exists, so a missing/stale vault reference
+      // becomes an ordinary failed session without ever persisting the plaintext.
+      const resolvedEnv = await this.resolveCredentialEnv(profile);
+      // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
         cwd,
-        env: { ...(profile.env ?? {}), ...(req.env ?? {}) },
+        env: { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv },
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
@@ -640,6 +652,43 @@ export class AgentRuntime implements AgentRuntimePort {
         // ignore
       }
     }
+  }
+
+  /**
+   * When profile.acp.credentialRef is set, call resolveProfileEnv and require
+   * a non-empty value for profile.acp.envKey. Fail-loud otherwise.
+   * Never persists secrets onto SessionRecord.
+   */
+  private async resolveCredentialEnv(
+    profile: AgentProfileConfig
+  ): Promise<Record<string, string>> {
+    const ref =
+      typeof profile.acp?.credentialRef === "string"
+        ? profile.acp.credentialRef.trim()
+        : "";
+    if (!ref) return {};
+
+    const envKey =
+      typeof profile.acp?.envKey === "string" ? profile.acp.envKey.trim() : "";
+    if (!envKey) {
+      throw new Error(
+        `Profile ${profile.id} has credentialRef but no acp.envKey (cannot inject secret into process env)`
+      );
+    }
+    if (!this.resolveProfileEnv) {
+      throw new Error(
+        `Profile ${profile.id} references credential ${ref} but AgentRuntime has no resolveProfileEnv hook`
+      );
+    }
+    const resolved = { ...(await this.resolveProfileEnv(profile)) };
+    const secret = resolved[envKey];
+    if (typeof secret !== "string" || !secret) {
+      throw new Error(
+        `Credential not found or empty for profile ${profile.id} (credentialRef=${ref})`
+      );
+    }
+    // Only expose the configured envKey mapping (drop accidental extra keys from hooks).
+    return { [envKey]: secret };
   }
 
   private assertOpen(): void {
