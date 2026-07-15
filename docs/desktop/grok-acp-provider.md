@@ -1,5 +1,10 @@
 # Grok ACP Provider（Desktop MVP）
 
+The explicit live smoke test is `npm run test:grok-e2e`. It requires
+`CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured CPA service,
+and exercises dispatch → managed ACP report → manual accept. It is intentionally
+excluded from the default offline `npm test` suite.
+
 Status: first **real** push-mode provider for Local Service  
 Scope: machine-local `grok-acp` AgentProfile + ACP stdio adapter  
 Non-scope: chat UI, universal provider router, implementing non-grok ACP bridges, storing secrets in workspace
