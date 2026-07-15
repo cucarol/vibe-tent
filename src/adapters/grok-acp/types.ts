@@ -1,7 +1,22 @@
 // Grok ACP provider types — machine-local config only; never workspace secrets.
 
+import type { AcpPermissionPolicy } from "../acp/types.js";
+
+export type {
+  AcpJsonRpcNotification,
+  AcpJsonRpcRequest,
+  AcpJsonRpcResponse,
+  AcpPermissionOption,
+  AcpSessionUpdate,
+} from "../acp/types.js";
+
+export {
+  DEFAULT_PERMISSION_TIMEOUT_MS,
+  DEFAULT_PROMPT_TIMEOUT_MS,
+} from "../acp/types.js";
+
 /** Permission handling for ACP `session/request_permission` (no unconditional yolo). */
-export type GrokAcpPermissionPolicy = "allow" | "ask" | "deny";
+export type GrokAcpPermissionPolicy = AcpPermissionPolicy;
 
 /**
  * Profile extras for adapterId "grok-acp".
@@ -51,41 +66,3 @@ export const DEFAULT_GROK_MODEL = "grok-4.5";
 export const DEFAULT_GROK_ENV_KEY = "CPA_GROK_API_KEY";
 /** Default process env name for CPA OpenAI-compatible base URL (value never in workspace). */
 export const DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
-export const DEFAULT_PROMPT_TIMEOUT_MS = 30 * 60_000;
-export const DEFAULT_PERMISSION_TIMEOUT_MS = 120_000;
-
-export type AcpJsonRpcRequest = {
-  jsonrpc: "2.0";
-  id: number | string;
-  method: string;
-  params?: unknown;
-};
-
-export type AcpJsonRpcResponse = {
-  jsonrpc: "2.0";
-  id: number | string;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-};
-
-export type AcpJsonRpcNotification = {
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-  id?: number | string;
-};
-
-export type AcpPermissionOption = {
-  optionId: string;
-  kind?: string;
-  name?: string;
-};
-
-export type AcpSessionUpdate = {
-  sessionUpdate?: string;
-  content?: { type?: string; text?: string };
-  toolCallId?: string;
-  title?: string;
-  status?: string;
-  [key: string]: unknown;
-};

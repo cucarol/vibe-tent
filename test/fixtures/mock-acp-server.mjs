@@ -43,6 +43,7 @@ const log = {
   })(),
   hasStdio: process.argv.includes("stdio"),
   methods: [],
+  authenticateParams: null,
   prompts: [],
   permissionOutcomes: [],
   envKeysPresent: {
@@ -108,6 +109,7 @@ rl.on("line", (line) => {
   }
 
   if (msg.method === "authenticate") {
+    log.authenticateParams = msg.params ?? null;
     if (failAuth) {
       write({
         jsonrpc: "2.0",

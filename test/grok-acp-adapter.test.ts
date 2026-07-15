@@ -294,6 +294,7 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
     modelFlag: string;
     hasStdio: boolean;
     methods: string[];
+    authenticateParams: { methodId?: string; _meta?: { headless?: boolean } } | null;
     prompts: string[];
     contactedApiXai: boolean;
   };
@@ -301,6 +302,8 @@ test("mock ACP: handshake, prompt, events, stop (no network)", async () => {
   assert.equal(log.hasStdio, true);
   assert.ok(log.methods.includes("initialize"));
   assert.ok(log.methods.includes("authenticate"));
+  assert.equal(log.authenticateParams?.methodId, "xai.api_key");
+  assert.equal(log.authenticateParams?._meta?.headless, true);
   assert.ok(log.methods.includes("session/new"));
   assert.ok(log.methods.includes("session/prompt"));
   assert.equal(log.contactedApiXai, false);
