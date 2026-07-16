@@ -18484,9 +18484,6 @@ var ProcessSupervisor = class {
       // Detached false so service shutdown can reap children as a group.
       detached: false
     });
-    if (child.pid == null) {
-      throw new Error(`Failed to spawn process for session ${sessionId}`);
-    }
     const live = {
       sessionId,
       child,
@@ -18497,6 +18494,8 @@ var ProcessSupervisor = class {
       stdoutBuf: ""
     };
     this.children.set(sessionId, live);
+    let spawned = false;
+    let exitNotified = false;
     const appendRing = (chunk) => {
       if (this.stdoutRingBytes <= 0) return;
       live.stdoutBuf = (live.stdoutBuf + chunk.toString("utf8")).slice(-this.stdoutRingBytes);
@@ -18509,6 +18508,15 @@ var ProcessSupervisor = class {
       appendRing(chunk);
       this.onStdout?.(sessionId, chunk.toString("utf8"));
     });
+    const notifyExit = () => {
+      if (!spawned || exitNotified) return;
+      exitNotified = true;
+      this.onExit?.({
+        sessionId,
+        exitCode: live.exitCode,
+        signal: live.signal ?? void 0
+      });
+    };
     child.on("exit", (code, signal) => {
       live.exited = true;
       live.exitCode = code;
@@ -18517,27 +18525,46 @@ var ProcessSupervisor = class {
         clearTimeout(live.killTimer);
         live.killTimer = void 0;
       }
-      this.onExit?.({
-        sessionId,
-        exitCode: code,
-        signal: signal ?? void 0
-      });
+      notifyExit();
     });
     child.on("error", () => {
       if (!live.exited) {
         live.exited = true;
         live.exitCode = null;
         live.signal = "error";
-        this.onExit?.({ sessionId, exitCode: null, signal: "error" });
       }
+      notifyExit();
     });
+    try {
+      await new Promise((resolve10, reject) => {
+        const onSpawn = () => {
+          child.off("error", onStartError);
+          spawned = true;
+          resolve10();
+        };
+        const onStartError = (error) => {
+          child.off("spawn", onSpawn);
+          reject(error);
+        };
+        child.once("spawn", onSpawn);
+        child.once("error", onStartError);
+      });
+    } catch (error) {
+      this.children.delete(sessionId);
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to spawn process for session ${sessionId}: ${message}`);
+    }
+    if (child.pid == null) {
+      this.children.delete(sessionId);
+      throw new Error(`Failed to spawn process for session ${sessionId}: missing pid`);
+    }
     return {
       sessionId,
       pid: child.pid,
       startedAt: live.startedAt,
-      exitCode: null,
-      signal: null,
-      exited: false
+      exitCode: live.exitCode,
+      signal: live.signal,
+      exited: live.exited
     };
   }
   /**

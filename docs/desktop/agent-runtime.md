@@ -287,6 +287,9 @@ Rules:
 ### Responsible for
 
 - Creating child processes (Windows: `windowsHide`; ConPTY when `needsTty`)
+- Treating launch as successful only after Node's `spawn` event; executable
+  lookup/permission errors reject the start operation without an unhandled
+  `ChildProcess` error or a residual supervisor entry
 - Recording pid, start time, exit code/signal
 - Graceful stop via adapter-provided signal/command → timeout → force kill (Job Object / taskkill on Windows)
 - Optional stdout/stderr ring buffer for diagnostics (default: not product UI chat)

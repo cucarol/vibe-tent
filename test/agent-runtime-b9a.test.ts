@@ -12,6 +12,7 @@ import type { ProviderAdapter } from "../src/adapters/types.js";
 import {
   createAgentRuntime,
   makeSessionId,
+  ProcessSupervisor,
   SessionRegistry,
   type RuntimeEvent,
 } from "../src/runtime/index.js";
@@ -151,6 +152,74 @@ test("launch failure records session.failed without spawning paid provider", asy
   assert.equal(probe.alive, false);
   assert.equal(probe.state, "failed");
   assert.match(probe.lastError ?? "", /missing binary/);
+
+  await runtime.shutdown();
+});
+
+test("ProcessSupervisor rejects missing executables without an unhandled child error", async () => {
+  const cwd = await tempCwd();
+  const supervisor = new ProcessSupervisor();
+  await assert.rejects(
+    () =>
+      supervisor.start("ss-missingbin", {
+        command: "tent-command-that-does-not-exist-7f9c",
+        args: [],
+        cwd,
+        env: {},
+      }),
+    /Failed to spawn process.*ENOENT/i
+  );
+
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.deepEqual(supervisor.listLive(), []);
+  assert.equal(supervisor.get("ss-missingbin"), null);
+});
+
+test("runtime records missing provider executable as an ordinary failed session", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const adapter: ProviderAdapter = {
+    id: "missing-process-adapter",
+    displayNameKey: "missing-process-adapter",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: false,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "process",
+    }),
+    resolveLaunch: (plan) => ({
+      command: "tent-command-that-does-not-exist-7f9c",
+      args: [],
+      cwd: plan.cwd,
+      env: {},
+    }),
+    mapExit: (_code, _signal) => ({
+      type: "session.failed",
+      sessionId: "unused",
+      error: "unused",
+    }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "missing-process", adapterId: adapter.id }],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+
+  const sessionId = "ss-missingproc";
+  await assert.rejects(
+    () => runtime.startSession({ sessionId, profileId: "missing-process", cwd }),
+    /Failed to spawn process.*ENOENT/i
+  );
+
+  const record = await runtime.registry.read(sessionId);
+  assert.equal(record?.state, "failed");
+  assert.equal(runtime.supervisor.isAlive(sessionId), false);
+  assert.equal(events.filter((event) => event.type === "session.failed").length, 1);
 
   await runtime.shutdown();
 });
