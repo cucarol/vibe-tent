@@ -133,6 +133,128 @@ test("CredentialStore: invalid id and corrupt file quarantine", async () => {
   );
 });
 
+test("CredentialStore: good+bad row quarantines whole file; backup keeps bad ciphertext", async () => {
+  const dataDir = await tempDir("tent-cred-row-quarantine-");
+  const file = credentialsPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+
+  const badCiphertext = "test-enc:BAD-ROW-CIPHERTEXT-MUST-SURVIVE-BACKUP";
+  const goodCiphertext = "test-enc:good-row-ciphertext";
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      credentials: [
+        {
+          id: "good-key",
+          ciphertext: goodCiphertext,
+          createdAt: "2024-01-01T00:00:00.000Z",
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          metadata: { label: "good" },
+        },
+        {
+          id: "BAD_ID",
+          ciphertext: badCiphertext,
+          createdAt: "2024-01-02T00:00:00.000Z",
+          updatedAt: "2024-01-02T00:00:00.000Z",
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  assert.deepEqual(await store.list(), []);
+  await assert.rejects(() => fs.access(file));
+
+  const names = await fs.readdir(dataDir);
+  const backups = names.filter((n) => n.startsWith("credentials.json.corrupt-"));
+  assert.equal(backups.length, 1);
+
+  const backupRaw = await fs.readFile(path.join(dataDir, backups[0]!), "utf8");
+  assert.ok(
+    backupRaw.includes(badCiphertext),
+    "quarantine backup must retain original bad-row ciphertext"
+  );
+  assert.ok(backupRaw.includes(goodCiphertext));
+  const quarantined = JSON.parse(backupRaw) as { credentials: unknown[] };
+  assert.equal(quarantined.credentials.length, 2);
+});
+
+test("CredentialStore: legacy top-level label reloads into metadata", async () => {
+  const dataDir = await tempDir("tent-cred-legacy-label-");
+  const file = credentialsPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+  const ciphertext = "test-enc:legacy-label-cipher";
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      credentials: [
+        {
+          id: "legacy-key",
+          ciphertext,
+          createdAt: "2024-03-01T12:00:00.000Z",
+          updatedAt: "2024-03-02T12:00:00.000Z",
+          label: "  Legacy Label  ",
+          unknownField: "must-not-enter-memory",
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  const listed = await store.list();
+  assert.equal(listed.length, 1);
+  assert.equal(listed[0]!.id, "legacy-key");
+  assert.equal(listed[0]!.label, "Legacy Label");
+  assert.equal(listed[0]!.metadata?.label, "Legacy Label");
+  assert.equal(listed[0]!.createdAt, "2024-03-01T12:00:00.000Z");
+  assert.equal(listed[0]!.updatedAt, "2024-03-02T12:00:00.000Z");
+  assert.equal("unknownField" in listed[0]!, false);
+  assert.equal("ciphertext" in listed[0]!, false);
+
+  // Fresh instance reloads the same valid file without quarantine.
+  const reloaded = await new CredentialStore(dataDir, {
+    protector: mockProtector(),
+  }).list();
+  assert.equal(reloaded.length, 1);
+  assert.equal(reloaded[0]!.label, "Legacy Label");
+  await fs.access(file);
+  const names = await fs.readdir(dataDir);
+  assert.equal(
+    names.filter((n) => n.includes("corrupt")).length,
+    0,
+    "valid legacy label file must not be quarantined"
+  );
+});
+
+test("CredentialStore: invalid metadata row quarantines whole file", async () => {
+  const dataDir = await tempDir("tent-cred-bad-meta-");
+  const file = credentialsPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      credentials: [
+        {
+          id: "ok-key",
+          ciphertext: "test-enc:ok",
+          createdAt: "2024-01-01T00:00:00.000Z",
+          updatedAt: "2024-01-01T00:00:00.000Z",
+          metadata: { label: "ok", extra: "not-allowed" },
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const store = new CredentialStore(dataDir, { protector: mockProtector() });
+  assert.deepEqual(await store.list(), []);
+  await assert.rejects(() => fs.access(file));
+  const names = await fs.readdir(dataDir);
+  assert.ok(names.some((n) => n.startsWith("credentials.json.corrupt-")));
+});
+
 test("RPC credential.*: set/list/delete never echo secret; no get method", async () => {
   const dataDir = await tempDir("tent-cred-rpc-");
   const svc = await startLocalTentService({

@@ -128,6 +128,67 @@ function normalizeMetadata(raw: unknown): CredentialMetadata | undefined {
   return Object.keys(out).length > 0 ? out : undefined;
 }
 
+function isValidDate(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
+/**
+ * Strict disk-row parser. Returns null for any malformed row so the loader can
+ * quarantine the whole credentials.json — never silently skip bad rows.
+ * Only known fields are copied into memory; unknown top-level keys are dropped.
+ */
+function parseCredentialRecord(value: unknown): CredentialRecord | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const item = value as Record<string, unknown>;
+
+  if (typeof item.id !== "string") return null;
+  let id: string;
+  try {
+    id = assertCredentialId(item.id);
+  } catch {
+    return null;
+  }
+
+  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
+    return null;
+  }
+  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
+    return null;
+  }
+  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
+    return null;
+  }
+  if (!isValidDate(item.createdAt) || !isValidDate(item.updatedAt)) {
+    return null;
+  }
+
+  // Support legacy top-level label or metadata.label on disk.
+  let metaSrc: unknown = item.metadata;
+  if ((metaSrc === undefined || metaSrc === null) && typeof item.label === "string") {
+    metaSrc = { label: item.label };
+  }
+
+  let metadata: CredentialMetadata | undefined;
+  if (metaSrc !== undefined && metaSrc !== null) {
+    try {
+      metadata = normalizeMetadata(metaSrc);
+    } catch {
+      return null;
+    }
+  }
+
+  const rec: CredentialRecord = {
+    id,
+    ciphertext: item.ciphertext,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+  };
+  if (metadata) rec.metadata = metadata;
+  return rec;
+}
+
 /**
  * Machine-local credential vault under dataDir/credentials.json.
  * Ciphertext only on disk; list never returns secrets; resolve is service-internal.
@@ -191,38 +252,18 @@ export class CredentialStore {
         this.loaded = true;
         return;
       }
-      this.records.clear();
-      for (const item of (list as Array<Record<string, unknown>> | undefined) ?? []) {
-        if (
-          item &&
-          typeof item.id === "string" &&
-          typeof item.ciphertext === "string" &&
-          item.ciphertext.length > 0 &&
-          typeof item.createdAt === "string" &&
-          typeof item.updatedAt === "string"
-        ) {
-          const rec: CredentialRecord = {
-            id: item.id,
-            ciphertext: item.ciphertext,
-            createdAt: item.createdAt,
-            updatedAt: item.updatedAt,
-          };
-          // Support legacy top-level label or metadata.label on disk.
-          let metaSrc: unknown = item.metadata;
-          if (!metaSrc && typeof item.label === "string") {
-            metaSrc = { label: item.label };
-          }
-          if (metaSrc) {
-            try {
-              const meta = normalizeMetadata(metaSrc);
-              if (meta) rec.metadata = meta;
-            } catch {
-              // Skip bad metadata on load; keep ciphertext row.
-            }
-          }
-          this.records.set(item.id, rec);
+      const loaded = new Map<string, CredentialRecord>();
+      for (const item of (list as unknown[] | undefined) ?? []) {
+        const restored = parseCredentialRecord(item);
+        if (!restored) {
+          // One bad row poisons the whole machine-state file — never skip.
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
         }
+        loaded.set(restored.id, restored);
       }
+      this.records = loaded;
       this.loaded = true;
     } catch (err) {
       if (isNotFoundError(err)) {

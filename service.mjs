@@ -18035,6 +18035,54 @@ function normalizeMetadata(raw) {
   }
   return Object.keys(out).length > 0 ? out : void 0;
 }
+function isValidDate3(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseCredentialRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const item = value;
+  if (typeof item.id !== "string") return null;
+  let id;
+  try {
+    id = assertCredentialId(item.id);
+  } catch {
+    return null;
+  }
+  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
+    return null;
+  }
+  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
+    return null;
+  }
+  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
+    return null;
+  }
+  if (!isValidDate3(item.createdAt) || !isValidDate3(item.updatedAt)) {
+    return null;
+  }
+  let metaSrc = item.metadata;
+  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
+    metaSrc = { label: item.label };
+  }
+  let metadata;
+  if (metaSrc !== void 0 && metaSrc !== null) {
+    try {
+      metadata = normalizeMetadata(metaSrc);
+    } catch {
+      return null;
+    }
+  }
+  const rec = {
+    id,
+    ciphertext: item.ciphertext,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+  if (metadata) rec.metadata = metadata;
+  return rec;
+}
 var CredentialStore = class {
   constructor(dataDir, options) {
     this.records = /* @__PURE__ */ new Map();
@@ -18086,29 +18134,17 @@ var CredentialStore = class {
         this.loaded = true;
         return;
       }
-      this.records.clear();
+      const loaded = /* @__PURE__ */ new Map();
       for (const item of list2 ?? []) {
-        if (item && typeof item.id === "string" && typeof item.ciphertext === "string" && item.ciphertext.length > 0 && typeof item.createdAt === "string" && typeof item.updatedAt === "string") {
-          const rec = {
-            id: item.id,
-            ciphertext: item.ciphertext,
-            createdAt: item.createdAt,
-            updatedAt: item.updatedAt
-          };
-          let metaSrc = item.metadata;
-          if (!metaSrc && typeof item.label === "string") {
-            metaSrc = { label: item.label };
-          }
-          if (metaSrc) {
-            try {
-              const meta = normalizeMetadata(metaSrc);
-              if (meta) rec.metadata = meta;
-            } catch {
-            }
-          }
-          this.records.set(item.id, rec);
+        const restored = parseCredentialRecord(item);
+        if (!restored) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
         }
+        loaded.set(restored.id, restored);
       }
+      this.records = loaded;
       this.loaded = true;
     } catch (err) {
       if (isNotFoundError(err)) {
