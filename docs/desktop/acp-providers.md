@@ -2,14 +2,20 @@
 
 Tent exposes a small, explicit set of coding-agent ACP adapters. It is not a universal CLI router: each provider owns its launch contract, while the shared ACP layer only handles stdio JSON-RPC, permission requests, lifecycle events, and the final report.
 
-| Adapter | Launch contract | Authentication |
-| --- | --- | --- |
-| `grok-acp` | Local Grok executable in ACP stdio mode | CPA/Grok key and base URL from service process env |
-| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Existing Codex/ChatGPT login, or explicit `envKey` injected through `DEFAULT_AUTH_REQUEST` |
-| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp` | Existing Claude login, or an explicitly configured process `envKey` |
-| `antigravity-acp` | Separately installed third-party `agy-acp` bridge | Bridge/`agy` local authentication, plus optional explicit process `envKey` |
-| `opencode-acp` | Native `opencode acp` | OpenCode's local provider configuration, plus optional explicit process `envKey` |
-| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` |
+| Adapter | Launch contract | Authentication | Repository verification |
+| --- | --- | --- | --- |
+| `grok-acp` | Local Grok executable in ACP stdio mode | CPA/Grok key and base URL from service process env | Mock suite + opt-in live E2E |
+| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Existing Codex/ChatGPT login, or explicit `envKey` injected through `DEFAULT_AUTH_REQUEST` | Mock launch/protocol suite |
+| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp` | Existing Claude login, or an explicitly configured process `envKey` | Mock launch/protocol suite |
+| `antigravity-acp` | Separately installed third-party `agy-acp` bridge | Bridge/`agy` local authentication, plus optional explicit process `envKey` | Mock launch/protocol suite |
+| `opencode-acp` | Native `opencode acp` | OpenCode's local provider configuration, plus optional explicit process `envKey` | Mock suite; local resume handshake evidence below |
+| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` | Mock launch/protocol suite |
+
+An adapter appearing in this table means its explicit launch contract is implemented;
+it does **not** mean every provider binary, account flow, or host platform is live-certified
+by the repository. The default suite is offline and mock-backed. Grok is currently the only
+provider with a checked-in opt-in live E2E command; other providers require machine-local
+verification before being advertised as live-tested.
 
 ## Machine-local credentials (Windows MVP)
 
