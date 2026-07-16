@@ -99,6 +99,7 @@ import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { makeSessionId } from "../runtime/types.js";
 import type { RuntimeEvent, SessionRecord } from "../runtime/types.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
+import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { buildBacklinkIndex } from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
@@ -375,9 +376,85 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
     workspaceId: optionalString(p, "workspaceId"),
     tentName: optionalString(p, "tentName"),
   });
+  // One-shot machine-local SessionRecord.workspace upgrade after makeWorkspaceId
+  // changed (sha256 digest). Must run before task/session reconcile so list,
+  // resume, event routing, and active-role lookup see the current mount id.
+  await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
   // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+
+/**
+ * Rebind machine-local SessionRecord.workspace to the current mount id when
+ * makeWorkspaceId algorithm changes leave stale keys on disk.
+ *
+ * Single boundary: workspace.mount only (before reconcileTaskSessionsOnMount).
+ * Does not rewrite Tent documents; does not keep dual-id comparison elsewhere.
+ *
+ * Evidence (any one is enough):
+ * - task envelope sessionId in this workspace (authoritative binding)
+ * - workspaceLane.workspace matches this mount's canonical root
+ * - no lane, but runtimeWorkspace.cwd matches this mount's canonical root
+ *
+ * Never steals a row whose workspace still names another currently mounted id.
+ */
+export async function migrateSessionWorkspaceIdsOnMount(
+  ctx: HandlerContext,
+  workspaceId: string
+): Promise<{ migrated: string[] }> {
+  const mount = ctx.host.require(workspaceId);
+  const canonicalPaths = new Map<string, Promise<string>>();
+  const canonicalize = (value: string): Promise<string> => {
+    const resolved = nodePath.resolve(value);
+    let pending = canonicalPaths.get(resolved);
+    if (!pending) {
+      pending = nodeFs.realpath(resolved).catch(() => resolved);
+      canonicalPaths.set(resolved, pending);
+    }
+    return pending;
+  };
+  const root = await canonicalize(mount.workspaceRoot);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const boundSessionIds = new Set<string>();
+  for (const task of tasks) {
+    const sid = task.sessionId?.trim();
+    if (sid) boundSessionIds.add(sid);
+  }
+
+  const otherMountedIds = new Set(
+    ctx.host
+      .list()
+      .map((info) => info.workspaceId)
+      .filter((id) => id !== workspaceId)
+  );
+
+  const all = await ctx.runtime.registry.list();
+  const migrated: string[] = [];
+
+  for (const rec of all) {
+    if (rec.workspace === workspaceId) continue;
+    // Still owned by another live mount — do not rebind away from it.
+    if (rec.workspace && otherMountedIds.has(rec.workspace)) continue;
+
+    const boundByTask = boundSessionIds.has(rec.id);
+    const laneRoot = rec.workspaceLane?.workspace?.trim();
+    const laneMatches =
+      !!laneRoot &&
+      isSameWorkspaceRoot(await canonicalize(laneRoot), root);
+    const cwd = rec.runtimeWorkspace?.cwd?.trim();
+    const cwdMatches =
+      !rec.workspaceLane &&
+      !!cwd &&
+      isSameWorkspaceRoot(await canonicalize(cwd), root);
+
+    if (!boundByTask && !laneMatches && !cwdMatches) continue;
+
+    await ctx.runtime.registry.update(rec.id, { workspace: workspaceId });
+    migrated.push(rec.id);
+  }
+
+  return { migrated };
 }
 
 /**

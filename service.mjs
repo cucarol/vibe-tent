@@ -4083,6 +4083,7 @@ var SessionRegistry = class {
 };
 
 // src/service/handlers.ts
+import * as nodeFs2 from "node:fs/promises";
 import * as nodePath3 from "node:path";
 
 // node_modules/mdast-util-to-string/lib/index.js
@@ -14696,8 +14697,47 @@ async function workspaceMount(ctx, p) {
     workspaceId: optionalString(p, "workspaceId"),
     tentName: optionalString(p, "tentName")
   });
+  await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
   return info;
+}
+async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
+  const mount = ctx.host.require(workspaceId);
+  const canonicalPaths = /* @__PURE__ */ new Map();
+  const canonicalize = (value) => {
+    const resolved = nodePath3.resolve(value);
+    let pending = canonicalPaths.get(resolved);
+    if (!pending) {
+      pending = nodeFs2.realpath(resolved).catch(() => resolved);
+      canonicalPaths.set(resolved, pending);
+    }
+    return pending;
+  };
+  const root = await canonicalize(mount.workspaceRoot);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const boundSessionIds = /* @__PURE__ */ new Set();
+  for (const task of tasks) {
+    const sid = task.sessionId?.trim();
+    if (sid) boundSessionIds.add(sid);
+  }
+  const otherMountedIds = new Set(
+    ctx.host.list().map((info) => info.workspaceId).filter((id) => id !== workspaceId)
+  );
+  const all2 = await ctx.runtime.registry.list();
+  const migrated = [];
+  for (const rec of all2) {
+    if (rec.workspace === workspaceId) continue;
+    if (rec.workspace && otherMountedIds.has(rec.workspace)) continue;
+    const boundByTask = boundSessionIds.has(rec.id);
+    const laneRoot = rec.workspaceLane?.workspace?.trim();
+    const laneMatches = !!laneRoot && isSameWorkspaceRoot(await canonicalize(laneRoot), root);
+    const cwd = rec.runtimeWorkspace?.cwd?.trim();
+    const cwdMatches = !rec.workspaceLane && !!cwd && isSameWorkspaceRoot(await canonicalize(cwd), root);
+    if (!boundByTask && !laneMatches && !cwdMatches) continue;
+    await ctx.runtime.registry.update(rec.id, { workspace: workspaceId });
+    migrated.push(rec.id);
+  }
+  return { migrated };
 }
 var SESSION_UNAVAILABLE_WAIT_SUMMARY = "\u7ED1\u5B9A\u7684 session \u5DF2\u4E0D\u53EF\u7528\uFF08\u670D\u52A1\u91CD\u542F\u6216 session \u5DF2\u7ED3\u675F\uFF09\u3002\u53EF\u91CD\u65B0\u542F\u52A8 session\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
 async function reconcileTaskSessionsOnMount(ctx, workspaceId) {

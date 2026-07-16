@@ -28,6 +28,7 @@ import {
 import {
   invokeManagedAutoDeliverForTests,
   mapRuntimeEventToService,
+  migrateSessionWorkspaceIdsOnMount,
   reconcileTaskSessionsOnMount,
   resetManagedAutoDeliverDedupForTests,
   resetRuntimeProjectionForTests,
@@ -3391,6 +3392,167 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     );
 
     unsub();
+  });
+});
+
+test("mount migrates SessionRecord.workspace from pre-sha256 id; does not steal other mounts", async () => {
+  // After makeWorkspaceId switched to sha256 digests, machine-local rows may still
+  // store the old base64url-prefix id. Migration is mount-boundary only.
+  const wsA = await makeWorkspace("wsid-migrate-a");
+  const wsB = await makeWorkspace("wsid-migrate-b");
+  await withService(async (svc) => {
+    const mA = await rpc(svc, "workspace.mount", { workspaceRoot: wsA });
+    const mB = await rpc(svc, "workspace.mount", { workspaceRoot: wsB });
+    assert.ok(!mA.error && !mB.error, JSON.stringify(mA.error || mB.error));
+    const idA = (mA.result as { workspaceId: string }).workspaceId;
+    const idB = (mB.result as { workspaceId: string }).workspaceId;
+    const rootA = (mA.result as { workspaceRoot: string }).workspaceRoot;
+    const rootB = (mB.result as { workspaceRoot: string }).workspaceRoot;
+
+    // Seed a real task on A so sessionId binding is authoritative evidence.
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId: idA,
+      name: "migrate-bound",
+      type: "prompt",
+    });
+    const boxId = (created.result as { id: string }).id;
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId: idA,
+      boxId,
+      role: "executor",
+      prompt: "migrate session workspace id",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId: idA, taskPath });
+
+    const now = new Date().toISOString();
+    // Legacy-style id for this workspace (pre-84e5e4a base64url slice algorithm).
+    const oldIdForA = (() => {
+      const base = path.basename(rootA).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+      const hash = Buffer.from(path.resolve(rootA)).toString("base64url").slice(0, 10);
+      return `ws-${base}-${hash}`;
+    })();
+    assert.notEqual(oldIdForA, idA, "fixture must use a stale pre-migration workspace id");
+
+    const boundSid = "ss-migr0001";
+    const laneSid = "ss-migr0002";
+    const cwdSid = "ss-migr0003";
+    const otherSid = "ss-migr000b";
+    const foreignSid = "ss-migr00xx";
+
+    await svc.runtime.registry.write({
+      id: boundSid,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "stopped",
+      workspace: oldIdForA,
+      lastTaskId: taskPath,
+      createdAt: now,
+      updatedAt: now,
+    });
+    const mountA = svc.hostApi.require(idA);
+    await patchTaskEnvelope(mountA.env.fs, taskPath, {
+      sessionId: boundSid,
+      updatedAt: mountA.env.clock.now(),
+    });
+
+    // Lane evidence only (no task binding): workspaceLane.workspace = root A.
+    await svc.runtime.registry.write({
+      id: laneSid,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "orchestrator",
+      state: "stopped",
+      workspace: oldIdForA,
+      workspaceLane: {
+        workspace: rootA,
+        worktree: path.join(rootA, ".lane-worktree"),
+        branch: "tent-role/orchestrator",
+      },
+      runtimeWorkspace: { cwd: path.join(rootA, ".lane-worktree") },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Non-lane cwd evidence: runtimeWorkspace.cwd is the canonical root.
+    await svc.runtime.registry.write({
+      id: cwdSid,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "stopped",
+      workspace: oldIdForA,
+      runtimeWorkspace: { cwd: rootA },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Belongs to currently mounted B — must not be stolen when remounting A.
+    await svc.runtime.registry.write({
+      id: otherSid,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "live",
+      workspace: idB,
+      runtimeWorkspace: { cwd: rootB },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Unrelated workspace id + path — no evidence for A.
+    await svc.runtime.registry.write({
+      id: foreignSid,
+      profileId: "fake-default",
+      adapterId: FAKE_ADAPTER_ID,
+      roleName: "executor",
+      state: "stopped",
+      workspace: "ws-other-place-zzzzzzzz",
+      runtimeWorkspace: { cwd: path.join(os.tmpdir(), "tent-unrelated-cwd") },
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    // Remount A: migrate runs before reconcileTaskSessionsOnMount.
+    await rpc(svc, "workspace.unmount", { workspaceId: idA });
+    const remA = await rpc(svc, "workspace.mount", { workspaceRoot: wsA });
+    assert.ok(!remA.error, JSON.stringify(remA.error));
+    const idA2 = (remA.result as { workspaceId: string }).workspaceId;
+    assert.equal(idA2, idA);
+
+    const bound = await svc.runtime.registry.read(boundSid);
+    const lane = await svc.runtime.registry.read(laneSid);
+    const cwdOnly = await svc.runtime.registry.read(cwdSid);
+    const other = await svc.runtime.registry.read(otherSid);
+    const foreign = await svc.runtime.registry.read(foreignSid);
+
+    assert.equal(bound?.workspace, idA2, "task-bound session rebinds to current mount id");
+    assert.equal(lane?.workspace, idA2, "lane.workspace evidence rebinds");
+    assert.equal(cwdOnly?.workspace, idA2, "non-lane cwd evidence rebinds");
+    assert.equal(other?.workspace, idB, "must not steal session owned by other mounted workspace");
+    assert.equal(foreign?.workspace, "ws-other-place-zzzzzzzz", "unrelated row untouched");
+
+    // session.list(workspaceId) sees rebound rows under the new id.
+    const listed = await rpc(svc, "session.list", { workspaceId: idA2 });
+    assert.ok(!listed.error, JSON.stringify(listed.error));
+    const sessions = (listed.result as { sessions: { sessionId: string; workspace?: string }[] })
+      .sessions;
+    const listedIds = new Set(sessions.map((s) => s.sessionId));
+    assert.ok(listedIds.has(boundSid));
+    assert.ok(listedIds.has(laneSid));
+    assert.ok(listedIds.has(cwdSid));
+    assert.ok(!listedIds.has(otherSid));
+    assert.ok(!listedIds.has(foreignSid));
+    for (const s of sessions.filter((x) =>
+      [boundSid, laneSid, cwdSid].includes(x.sessionId)
+    )) {
+      assert.equal(s.workspace, idA2);
+    }
+
+    // Idempotent direct call: already current id → no second rewrite needed.
+    const again = await migrateSessionWorkspaceIdsOnMount(svc.ctx, idA2);
+    assert.deepEqual(again.migrated, []);
   });
 });
 
