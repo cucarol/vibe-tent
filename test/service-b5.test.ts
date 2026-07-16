@@ -1478,6 +1478,91 @@ test("B5 tool approval: ask → pending → approve once → running → deliver
   );
 });
 
+test("B5 tool approval: concurrent asks keep task waiting until the final decision", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "two concurrent tool requests",
+    });
+    const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.waiting_user",
+      sessionId,
+      summary: "two tools need approval",
+    });
+    const now = Date.now();
+    const base = {
+      workspaceId,
+      sessionId,
+      taskId: taskPath,
+      taskPath,
+      role: "executor",
+      options: [{ optionId: "allow_once", kind: "allow_once" }],
+      status: "pending" as const,
+      createdAt: new Date(now).toISOString(),
+      expiresAt: new Date(now + 60_000).toISOString(),
+    };
+    await svc.ctx.toolApprovals.add({
+      ...base,
+      id: "ta-concurrent-1",
+      toolTitle: "read_file",
+    });
+    await svc.ctx.toolApprovals.add({
+      ...base,
+      id: "ta-concurrent-2",
+      toolTitle: "write_file",
+    });
+
+    const first = await rpc(svc, "toolApproval.approveOnce", {
+      approvalId: "ta-concurrent-1",
+      actor: "user",
+    });
+    assert.ok(!first.error, JSON.stringify(first.error));
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.live",
+      sessionId,
+      pid: 8301,
+    });
+
+    const stillWaiting = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal(
+      (stillWaiting.result as { task: { state: string } }).task.state,
+      "waiting"
+    );
+    assert.equal((await svc.runtime.registry.read(sessionId))?.state, "waiting-user");
+
+    const second = await rpc(svc, "toolApproval.approveOnce", {
+      approvalId: "ta-concurrent-2",
+      actor: "user",
+    });
+    assert.ok(!second.error, JSON.stringify(second.error));
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.live",
+      sessionId,
+      pid: 8301,
+    });
+
+    const resumed = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((resumed.result as { task: { state: string } }).task.state, "running");
+    assert.equal((await svc.runtime.registry.read(sessionId))?.state, "live");
+  });
+});
+
 test("B5 tool approval: user deny cancels tool (ACP cancelled)", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();

@@ -2691,10 +2691,15 @@ async function toolApprovalResolve(
     "self"
   );
 
+  const hasPendingForSession = await ctx.toolApprovals.hasPendingForSession(
+    item.sessionId
+  );
+
   // Resume task projection if it was parked on tool approval wait.
   // Adapter re-emits session.live after decision; service also resumes here for
-  // approve path so UI does not wait solely on racey runtime events.
-  if (decision === "approved" && item.taskPath) {
+  // approve path so UI does not wait solely on racey runtime events. Concurrent
+  // tool requests keep the task waiting until the final pending request resolves.
+  if (decision === "approved" && !hasPendingForSession && item.taskPath) {
     try {
       const mount = ctx.host.get(item.workspaceId);
       if (mount) {
@@ -3016,6 +3021,11 @@ async function projectRuntimeEventOnce(
     return;
   }
 
+  const hasPendingToolApproval =
+    ev.type === "session.live"
+      ? await ctx.toolApprovals.hasPendingForSession(ev.sessionId)
+      : false;
+
   // Reflect waiting-user on session row for probe honesty (no chat).
   if (ev.type === "session.waiting_user") {
     if (rec && SessionRegistry.isNonTerminal(rec.state)) {
@@ -3025,7 +3035,12 @@ async function projectRuntimeEventOnce(
     }
   } else if (ev.type === "session.live") {
     const current = await ctx.runtime.registry.read(ev.sessionId);
-    if (current && current.state === "waiting-user") {
+    if (current && SessionRegistry.isNonTerminal(current.state) && hasPendingToolApproval) {
+      // One of several concurrent tool asks resolved; the session is still blocked.
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "waiting-user",
+      });
+    } else if (current && current.state === "waiting-user") {
       await ctx.runtime.registry.update(ev.sessionId, {
         state: "live",
         ...(ev.pid != null ? { pid: ev.pid } : {}),
@@ -3063,6 +3078,7 @@ async function projectRuntimeEventOnce(
         });
       } else if (
         ev.type === "session.live" &&
+        !hasPendingToolApproval &&
         task.state === "waiting" &&
         task.wait?.reason === "user-input"
       ) {

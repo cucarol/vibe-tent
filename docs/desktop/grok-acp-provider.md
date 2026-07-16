@@ -252,8 +252,9 @@ Rules:
 
 1. Tool approvals are **user-only** (`actor` must be `user`). Agents cannot self-approve.
 2. Pending tool approval projects task → `waiting` (`reason: user-input`) and session → `waiting-user`. Approve once → ACP `allow_once` + resume `running` / `live`. Deny or timeout → ACP `cancelled` + pending cleared (timeout status is **`expired`**).
-3. Neither store is workspace collaboration data: **never** written into `.tent/` or git.
-4. Default remains safe: no user decision never becomes auto-`allow`; missing bridge still denies.
+3. Concurrent tool requests form a session-level wait barrier: resolving one request does **not** resume the task/session while another request for the same session remains pending.
+4. Neither store is workspace collaboration data: **never** written into `.tent/` or git.
+5. Default remains safe: no user decision never becomes auto-`allow`; missing bridge still denies.
 
 ### Tool approval RPC sketch
 

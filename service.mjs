@@ -15592,7 +15592,10 @@ async function toolApprovalResolve(ctx, p, decision) {
     },
     "self"
   );
-  if (decision === "approved" && item.taskPath) {
+  const hasPendingForSession = await ctx.toolApprovals.hasPendingForSession(
+    item.sessionId
+  );
+  if (decision === "approved" && !hasPendingForSession && item.taskPath) {
     try {
       const mount = ctx.host.get(item.workspaceId);
       if (mount) {
@@ -15789,6 +15792,7 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
   if (ev.type === "session.stdout_tail") {
     return;
   }
+  const hasPendingToolApproval = ev.type === "session.live" ? await ctx.toolApprovals.hasPendingForSession(ev.sessionId) : false;
   if (ev.type === "session.waiting_user") {
     if (rec && SessionRegistry.isNonTerminal(rec.state)) {
       await ctx.runtime.registry.update(ev.sessionId, {
@@ -15797,7 +15801,11 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
     }
   } else if (ev.type === "session.live") {
     const current = await ctx.runtime.registry.read(ev.sessionId);
-    if (current && current.state === "waiting-user") {
+    if (current && SessionRegistry.isNonTerminal(current.state) && hasPendingToolApproval) {
+      await ctx.runtime.registry.update(ev.sessionId, {
+        state: "waiting-user"
+      });
+    } else if (current && current.state === "waiting-user") {
       await ctx.runtime.registry.update(ev.sessionId, {
         state: "live",
         ...ev.pid != null ? { pid: ev.pid } : {}
@@ -15826,7 +15834,7 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
           });
           emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
         });
-      } else if (ev.type === "session.live" && task.state === "waiting" && task.wait?.reason === "user-input") {
+      } else if (ev.type === "session.live" && !hasPendingToolApproval && task.state === "waiting" && task.wait?.reason === "user-input") {
         await ctx.mutations.run(mount.workspaceId, async () => {
           ctx.host.markSelfWrite(mount.workspaceId);
           const resumed = await taskResume(mount.env, task.path);
@@ -17403,6 +17411,20 @@ var ToolApprovalStore = class {
     await this.expireStale(id);
     const item = this.items.get(id);
     return item ? cloneApproval2(item) : void 0;
+  }
+  /**
+   * Session-level wait barrier for concurrent ACP permission requests.
+   * Serialized with add/resolve/expire so callers never resume a session from
+   * a stale snapshot while another request for that session is still pending.
+   */
+  async hasPendingForSession(sessionId) {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      await this.expireStaleUnlocked();
+      return [...this.items.values()].some(
+        (item) => item.sessionId === sessionId && item.status === "pending"
+      );
+    });
   }
   async add(item) {
     await this.ensureLoaded();

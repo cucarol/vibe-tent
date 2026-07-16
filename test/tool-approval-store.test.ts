@@ -72,6 +72,25 @@ test("tool approval store: concurrent resolve/expire cannot resurrect pending", 
   assert.ok(fulfilled.length >= 1);
 });
 
+test("tool approval store: session remains pending until every request resolves", async () => {
+  const dataDir = await tempDir("tent-tool-appr-session-barrier-");
+  const store = new ToolApprovalStore(dataDir);
+  const firstId = makeToolApprovalId(() => 0.31);
+  const secondId = makeToolApprovalId(() => 0.63);
+  await store.add(pending({ id: firstId, toolTitle: "read_file" }));
+  await store.add(pending({ id: secondId, toolTitle: "write_file" }));
+
+  assert.equal(await store.hasPendingForSession("ss-1"), true);
+  await store.resolve(firstId, "approved", "user");
+  assert.equal(
+    await store.hasPendingForSession("ss-1"),
+    true,
+    "one resolved request must not release another pending request"
+  );
+  await store.resolve(secondId, "denied", "user");
+  assert.equal(await store.hasPendingForSession("ss-1"), false);
+});
+
 test("tool approval store: atomic temp rename leaves valid JSON after concurrent writes", async () => {
   const dataDir = await tempDir("tent-tool-appr-atomic-");
   const store = new ToolApprovalStore(dataDir);

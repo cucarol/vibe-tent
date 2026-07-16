@@ -138,6 +138,21 @@ export class ToolApprovalStore {
     return item ? cloneApproval(item) : undefined;
   }
 
+  /**
+   * Session-level wait barrier for concurrent ACP permission requests.
+   * Serialized with add/resolve/expire so callers never resume a session from
+   * a stale snapshot while another request for that session is still pending.
+   */
+  async hasPendingForSession(sessionId: string): Promise<boolean> {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      await this.expireStaleUnlocked();
+      return [...this.items.values()].some(
+        (item) => item.sessionId === sessionId && item.status === "pending"
+      );
+    });
+  }
+
   async add(item: ToolPendingApproval): Promise<ToolPendingApproval> {
     await this.ensureLoaded();
     return this.enqueue(async () => {
