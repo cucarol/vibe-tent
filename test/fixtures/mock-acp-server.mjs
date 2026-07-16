@@ -7,6 +7,7 @@
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
+ *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
@@ -30,6 +31,10 @@ for (const arg of process.argv) {
 
 const promptText = process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
 const requestPermission = process.env.MOCK_ACP_REQUEST_PERMISSION === "1";
+const permissionCount = Math.max(
+  1,
+  Number(process.env.MOCK_ACP_PERMISSION_COUNT || "1") || 1
+);
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
 /** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
@@ -288,21 +293,27 @@ rl.on("line", (line) => {
     });
 
     if (requestPermission) {
-      const permId = nextServerId++;
-      write({
-        jsonrpc: "2.0",
-        id: permId,
-        method: "session/request_permission",
-        params: {
-          toolCall: { toolCallId: "tc-1", title: "read_file" },
-          options: [
-            { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
-            { optionId: "allow_always", kind: "allow_always", name: "Always" },
-            { optionId: "reject", kind: "reject_once", name: "Reject" },
-          ],
-        },
-      });
-      pendingPermission.set(permId, msg.id);
+      for (let i = 0; i < permissionCount; i += 1) {
+        const permId = nextServerId++;
+        const suffix = permissionCount > 1 ? `_${i + 1}` : "";
+        write({
+          jsonrpc: "2.0",
+          id: permId,
+          method: "session/request_permission",
+          params: {
+            toolCall: {
+              toolCallId: `tc-1${suffix}`,
+              title: `read_file${suffix}`,
+            },
+            options: [
+              { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+              { optionId: "allow_always", kind: "allow_always", name: "Always" },
+              { optionId: "reject", kind: "reject_once", name: "Reject" },
+            ],
+          },
+        });
+        pendingPermission.set(permId, msg.id);
+      }
       flushLog();
       return;
     }
@@ -335,6 +346,10 @@ rl.on("line", (line) => {
       toolCallId: "tc-1",
       status: outcome?.outcome === "selected" ? "completed" : "cancelled",
     });
+    if ([...pendingPermission.values()].includes(promptId)) {
+      flushLog();
+      return;
+    }
     write({
       jsonrpc: "2.0",
       id: promptId,

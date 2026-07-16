@@ -126,6 +126,8 @@ export class AcpClient {
   private lastLoadReplayUpdateAt = 0;
   /** Cached from initialize agentCapabilities.loadSession (default false). */
   private loadSessionSupported = false;
+  /** Concurrent ask-policy requests keep the session waiting until all resolve. */
+  private permissionAsksInFlight = 0;
 
   constructor(private readonly options: AcpClientOptions) {
     this.label =
@@ -612,82 +614,93 @@ export class AcpClient {
         ? params.toolCall.toolCallId
         : undefined;
     const policy = this.options.permissionPolicy;
+    const tracksAsk = policy === "ask";
+    if (tracksAsk) this.permissionAsksInFlight += 1;
 
-    let decision: "allow" | "deny" = "deny";
-    if (policy === "allow") {
-      decision = "allow";
-    } else if (policy === "deny") {
-      decision = "deny";
-    } else {
-      // ask — never auto-yolo; Local Service store is the sole expiry authority.
-      this.options.emit({
-        type: "session.waiting_user",
-        sessionId: this.options.sessionId,
-        summary: `${this.label} 请求工具权限: ${toolTitle}（policy=ask）`,
-      });
-      try {
-        if (this.options.onPermissionAsk) {
-          const timeoutMs =
-            this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-          // Do not invent a second timeout outcome here: store waitForDecision /
-          // expireOne is authoritative. Fail-safe only if the bridge hangs past
-          // store timeout + slack — and must expire the same store item.
-          const askInfo = { toolTitle, toolCallId, options };
-          let settled = false;
-          const askPromise = this.options
-            .onPermissionAsk(askInfo)
-            .then((d) => {
-              settled = true;
-              return d;
-            });
-          const failSafePromise = sleep(
-            timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
-          ).then(async (): Promise<"deny"> => {
-            if (settled) return "deny";
-            if (this.options.onPermissionAskFailSafe) {
-              try {
-                await this.options.onPermissionAskFailSafe(askInfo);
-              } catch {
-                // best-effort store cancel
+    try {
+      let decision: "allow" | "deny" = "deny";
+      if (policy === "allow") {
+        decision = "allow";
+      } else if (policy === "deny") {
+        decision = "deny";
+      } else {
+        // ask — never auto-yolo; Local Service store is the sole expiry authority.
+        this.options.emit({
+          type: "session.waiting_user",
+          sessionId: this.options.sessionId,
+          summary: `${this.label} 请求工具权限: ${toolTitle}（policy=ask）`,
+        });
+        try {
+          if (this.options.onPermissionAsk) {
+            const timeoutMs =
+              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
+            // Do not invent a second timeout outcome here: store waitForDecision /
+            // expireOne is authoritative. Fail-safe only if the bridge hangs past
+            // store timeout + slack — and must expire the same store item.
+            const askInfo = { toolTitle, toolCallId, options };
+            let settled = false;
+            const askPromise = this.options
+              .onPermissionAsk(askInfo)
+              .then((d) => {
+                settled = true;
+                return d;
+              });
+            const failSafePromise = sleep(
+              timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
+            ).then(async (): Promise<"deny"> => {
+              if (settled) return "deny";
+              if (this.options.onPermissionAskFailSafe) {
+                try {
+                  await this.options.onPermissionAskFailSafe(askInfo);
+                } catch {
+                  // best-effort store cancel
+                }
               }
-            }
-            return "deny";
-          });
-          decision = await Promise.race([askPromise, failSafePromise]);
-        } else {
-          // No service bridge → deny (safe default; never promote ask→allow).
+              return "deny";
+            });
+            decision = await Promise.race([askPromise, failSafePromise]);
+          } else {
+            // No service bridge → deny (safe default; never promote ask→allow).
+            decision = "deny";
+          }
+        } catch {
           decision = "deny";
         }
-      } catch {
-        decision = "deny";
       }
 
-      // After user decision / timeout, session is no longer blocked on user.
-      if (!this.stopRequested && !this.closed) {
-        this.options.emit({
-          type: "session.live",
-          sessionId: this.options.sessionId,
-          pid: this.proc?.pid,
-        });
+      const outcome =
+        decision === "allow"
+          ? selectAllowOnce(options)
+          : { outcome: "cancelled" as const };
+
+      this.write({
+        jsonrpc: "2.0",
+        id,
+        result: { outcome },
+      });
+
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[permission] ${toolTitle} → ${decision === "allow" ? "allow_once" : "deny/cancelled"}\n`,
+      });
+    } finally {
+      if (tracksAsk) {
+        this.permissionAsksInFlight = Math.max(0, this.permissionAsksInFlight - 1);
+        // A single resolved request cannot release another concurrent ask.
+        if (
+          this.permissionAsksInFlight === 0 &&
+          !this.stopRequested &&
+          !this.closed
+        ) {
+          this.options.emit({
+            type: "session.live",
+            sessionId: this.options.sessionId,
+            pid: this.proc?.pid,
+          });
+        }
       }
     }
-
-    const outcome =
-      decision === "allow"
-        ? selectAllowOnce(options)
-        : { outcome: "cancelled" as const };
-
-    this.write({
-      jsonrpc: "2.0",
-      id,
-      result: { outcome },
-    });
-
-    this.options.emit({
-      type: "session.stdout_tail",
-      sessionId: this.options.sessionId,
-      text: `[permission] ${toolTitle} → ${decision === "allow" ? "allow_once" : "deny/cancelled"}\n`,
-    });
   }
 
   private request(

@@ -11721,6 +11721,8 @@ var AcpClient = class {
     this.lastLoadReplayUpdateAt = 0;
     /** Cached from initialize agentCapabilities.loadSession (default false). */
     this.loadSessionSupported = false;
+    /** Concurrent ask-policy requests keep the session waiting until all resolve. */
+    this.permissionAsksInFlight = 0;
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
   }
   get pid() {
@@ -12110,65 +12112,73 @@ var AcpClient = class {
     const toolTitle = params.toolCall?.title || params.toolCall?.toolCallId || "tool";
     const toolCallId = typeof params.toolCall?.toolCallId === "string" ? params.toolCall.toolCallId : void 0;
     const policy = this.options.permissionPolicy;
-    let decision = "deny";
-    if (policy === "allow") {
-      decision = "allow";
-    } else if (policy === "deny") {
-      decision = "deny";
-    } else {
-      this.options.emit({
-        type: "session.waiting_user",
-        sessionId: this.options.sessionId,
-        summary: `${this.label} \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
-      });
-      try {
-        if (this.options.onPermissionAsk) {
-          const timeoutMs = this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-          const askInfo = { toolTitle, toolCallId, options };
-          let settled = false;
-          const askPromise = this.options.onPermissionAsk(askInfo).then((d) => {
-            settled = true;
-            return d;
-          });
-          const failSafePromise = sleep(
-            timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
-          ).then(async () => {
-            if (settled) return "deny";
-            if (this.options.onPermissionAskFailSafe) {
-              try {
-                await this.options.onPermissionAskFailSafe(askInfo);
-              } catch {
+    const tracksAsk = policy === "ask";
+    if (tracksAsk) this.permissionAsksInFlight += 1;
+    try {
+      let decision = "deny";
+      if (policy === "allow") {
+        decision = "allow";
+      } else if (policy === "deny") {
+        decision = "deny";
+      } else {
+        this.options.emit({
+          type: "session.waiting_user",
+          sessionId: this.options.sessionId,
+          summary: `${this.label} \u8BF7\u6C42\u5DE5\u5177\u6743\u9650: ${toolTitle}\uFF08policy=ask\uFF09`
+        });
+        try {
+          if (this.options.onPermissionAsk) {
+            const timeoutMs = this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
+            const askInfo = { toolTitle, toolCallId, options };
+            let settled = false;
+            const askPromise = this.options.onPermissionAsk(askInfo).then((d) => {
+              settled = true;
+              return d;
+            });
+            const failSafePromise = sleep(
+              timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
+            ).then(async () => {
+              if (settled) return "deny";
+              if (this.options.onPermissionAskFailSafe) {
+                try {
+                  await this.options.onPermissionAskFailSafe(askInfo);
+                } catch {
+                }
               }
-            }
-            return "deny";
-          });
-          decision = await Promise.race([askPromise, failSafePromise]);
-        } else {
+              return "deny";
+            });
+            decision = await Promise.race([askPromise, failSafePromise]);
+          } else {
+            decision = "deny";
+          }
+        } catch {
           decision = "deny";
         }
-      } catch {
-        decision = "deny";
       }
-      if (!this.stopRequested && !this.closed) {
-        this.options.emit({
-          type: "session.live",
-          sessionId: this.options.sessionId,
-          pid: this.proc?.pid
-        });
+      const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
+      this.write({
+        jsonrpc: "2.0",
+        id,
+        result: { outcome }
+      });
+      this.options.emit({
+        type: "session.stdout_tail",
+        sessionId: this.options.sessionId,
+        text: `[permission] ${toolTitle} \u2192 ${decision === "allow" ? "allow_once" : "deny/cancelled"}
+`
+      });
+    } finally {
+      if (tracksAsk) {
+        this.permissionAsksInFlight = Math.max(0, this.permissionAsksInFlight - 1);
+        if (this.permissionAsksInFlight === 0 && !this.stopRequested && !this.closed) {
+          this.options.emit({
+            type: "session.live",
+            sessionId: this.options.sessionId,
+            pid: this.proc?.pid
+          });
+        }
       }
     }
-    const outcome = decision === "allow" ? selectAllowOnce(options) : { outcome: "cancelled" };
-    this.write({
-      jsonrpc: "2.0",
-      id,
-      result: { outcome }
-    });
-    this.options.emit({
-      type: "session.stdout_tail",
-      sessionId: this.options.sessionId,
-      text: `[permission] ${toolTitle} \u2192 ${decision === "allow" ? "allow_once" : "deny/cancelled"}
-`
-    });
   }
   request(method, params, timeoutMs = 3e4) {
     if (this.closed || !this.proc?.stdin) {

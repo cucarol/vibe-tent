@@ -88,6 +88,7 @@ function mockProfile(
     logPath: string;
     permissionPolicy?: "allow" | "ask" | "deny";
     requestPermission?: boolean;
+    permissionCount?: number;
     apiKey?: string;
     envKey?: string;
     dieAfterSessionMs?: number;
@@ -105,6 +106,9 @@ function mockProfile(
       MOCK_ACP_LOG: opts.logPath,
       MOCK_ACP_KEEP_ALIVE: opts.keepAlive === false ? "0" : "1",
       ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
+      ...(opts.permissionCount
+        ? { MOCK_ACP_PERMISSION_COUNT: String(opts.permissionCount) }
+        : {}),
       ...(opts.promptMode ? { MOCK_ACP_PROMPT_MODE: opts.promptMode } : {}),
       ...(opts.dieAfterSessionMs != null
         ? {
@@ -572,6 +576,107 @@ test("permission policy ask → onPermissionAsk allow selects allow_once", async
   assert.equal(outcome!.outcome, "selected");
   assert.equal(outcome!.optionId, "allow_once");
   assert.ok(events.some((e) => e.type === "session.live" && e.sessionId === sessionId));
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("concurrent permission asks emit live only after the final decision", async () => {
+  const dataDir = await tempDir("tent-grok-ask-concurrent-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const decisions = new Map<
+    string,
+    (decision: "allow" | "deny") => void
+  >();
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+    onPermissionAsk: (info) =>
+      new Promise((resolve) => {
+        decisions.set(info.toolTitle, resolve);
+      }),
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-ask-concurrent", {
+        logPath,
+        apiKey: "test-key",
+        permissionPolicy: "ask",
+        requestPermission: true,
+        permissionCount: 2,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const sessionId = "ss-acpaskco";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-ask-concurrent",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+
+  const decisionDeadline = Date.now() + 5_000;
+  while (decisions.size < 2 && Date.now() < decisionDeadline) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(decisions.size, 2);
+  const initialLiveCount = events.filter(
+    (event) => event.type === "session.live" && event.sessionId === sessionId
+  ).length;
+  assert.equal(
+    events.filter(
+      (event) => event.type === "session.waiting_user" && event.sessionId === sessionId
+    ).length,
+    2
+  );
+
+  decisions.get("read_file_1")?.("allow");
+  const firstOutcomeDeadline = Date.now() + 5_000;
+  let firstOutcomeCount = 0;
+  while (Date.now() < firstOutcomeDeadline) {
+    try {
+      const log = JSON.parse(await fs.readFile(logPath, "utf8")) as {
+        permissionOutcomes: unknown[];
+      };
+      firstOutcomeCount = log.permissionOutcomes.length;
+      if (firstOutcomeCount === 1) break;
+    } catch {
+      // wait for mock log
+    }
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(firstOutcomeCount, 1);
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.equal(
+    events.filter(
+      (event) => event.type === "session.live" && event.sessionId === sessionId
+    ).length,
+    initialLiveCount,
+    "first concurrent decision must not emit session.live"
+  );
+
+  decisions.get("read_file_2")?.("deny");
+  const finalLiveDeadline = Date.now() + 5_000;
+  while (
+    events.filter(
+      (event) => event.type === "session.live" && event.sessionId === sessionId
+    ).length <= initialLiveCount &&
+    Date.now() < finalLiveDeadline
+  ) {
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  assert.equal(
+    events.filter(
+      (event) => event.type === "session.live" && event.sessionId === sessionId
+    ).length,
+    initialLiveCount + 1,
+    "final concurrent decision must emit exactly one session.live"
+  );
 
   await runtime.stopSession(sessionId, "user");
   await runtime.shutdown();
