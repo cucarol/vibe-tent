@@ -225,10 +225,19 @@ type ArtifactRef = {
 
 | Layer | Form | Role |
 | --- | --- | --- |
-| Authoring | `[[Name]]` / `[[path\|label]]` | User input; editor completion |
+| Authoring | `[[Name]]` / `[[path\|label]]` / `[[path#heading]]` / `[[path^block]]` | User input; editor completion |
+| Standard MD | `[label](dest)` and reference links, including `<angle dest>`, balanced/escaped parens, optional titles, query/fragment | Interop / OKF |
 | Resolution keys | path, title/name, `cx-`, legacy `bx-` **during migration only** | Unique hit required to resolve |
-| Backlinks | Inverted from outbound links in index | Side/bottom panel |
-| artifact links | Structured **`ArtifactRef`** or dedicated scheme | External open |
+| Backlinks | Inverted from outbound **concept** links in index | Side/bottom panel |
+| artifact links | Structured **`ArtifactRef`** or dedicated scheme (`https:`, `mailto:`, `tent-artifact:`) | External open |
+
+**Graph extraction (`src/markdown/links.ts`):**
+
+- Uses block/inline scanning (not whole-document regex). Fenced/indented code, inline code, raw HTML/`script`/`style`, and escaped syntax do not contribute edges.
+- Wiki links are taken only from prose text; heading/block suffixes resolve the concept target while `raw` retains the authoring form.
+- Relative destinations normalize against the source concept note path; query/fragment are stripped for concept resolution.
+- **Not** concept backlinks: external schemes, pure anchors (`#…`), attachment paths (`attachments/…` and relative climbs into that tree), ordinary images (`![]()`), and wiki embeds (`![[]]`). Images/embeds only become graph edges if a future contract explicitly resolves them to a concept (current contract: never).
+- Duplicates (same kind + raw + label) are collapsed on outbound extract; reverse index records one hit per distinct outbound edge that resolves.
 
 **Resolve vs project split:**
 

@@ -12,9 +12,13 @@ export {
 export { contentEtag } from "./etag.js";
 export {
   extractOutLinks,
+  extractOutLinksDetailed,
   buildBacklinkIndex,
   resolveOutLink,
   indexFromBoxes,
+  normalizeTarget,
+  type ExtractedOutLink,
+  type OutLinkMeta,
 } from "./links.js";
 export { renderMarkdownToHtml, escapeHtml, listWikiTargets } from "./render.js";
 export {
