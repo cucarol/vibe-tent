@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import type { FSWatcher } from "node:fs";
 import * as http from "node:http";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
@@ -7,6 +8,7 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { contentEtag } from "../src/service/etag.js";
+import { EventBus } from "../src/service/events.js";
 import {
   isFetchBlockedPort,
   MAX_RPC_BODY_BYTES,
@@ -23,6 +25,33 @@ import {
 } from "../src/service/data-dir.js";
 import { serviceLeasePath } from "../src/service/service-lease.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
+import { WorkspaceHost } from "../src/service/workspace-host.js";
+
+/** Permission / capability failures when creating dir links — not ordinary I/O bugs. */
+function isUnavailableLinkError(error: unknown): boolean {
+  const err = error as NodeJS.ErrnoException;
+  const code = err?.code;
+  if (code === "EPERM" || code === "EACCES" || code === "ENOTSUP" || code === "EOPNOTSUPP") {
+    return true;
+  }
+  const msg = String(err?.message ?? error);
+  return /privilege|not privileged|operation not permitted|a required privilege is not held/i.test(
+    msg
+  );
+}
+
+function createStubWatchFn(onCreate?: () => void): typeof import("node:fs").watch {
+  return ((_target, _opts?, _listener?) => {
+    onCreate?.();
+    const watcher = {
+      close() {},
+      on() {
+        return watcher;
+      },
+    };
+    return watcher as unknown as FSWatcher;
+  }) as typeof import("node:fs").watch;
+}
 
 async function makeWorkspace(name = "demo"): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-ws-"));
@@ -205,6 +234,115 @@ test("WorkspaceHost mount multi-workspace + setForeground emits workspace.switch
     const health = await rpc(svc, "service.health", {});
     assert.equal((health.result as { foregroundWorkspaceId: string }).foregroundWorkspaceId, id2);
   });
+});
+
+test("WorkspaceHost: junction/symlink alias remount reuses workspaceId, list, and watcher", async (t) => {
+  const realWs = await makeWorkspace("alias-target");
+  const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-alias-"));
+  const aliasPath = path.join(parent, "alias-ws");
+
+  try {
+    // Windows: directory junction (no admin). Other platforms: directory symlink.
+    if (process.platform === "win32") {
+      await fs.symlink(realWs, aliasPath, "junction");
+    } else {
+      await fs.symlink(realWs, aliasPath, "dir");
+    }
+  } catch (error) {
+    if (isUnavailableLinkError(error)) {
+      t.skip(
+        `directory link unavailable on this host: ${error instanceof Error ? error.message : String(error)}`
+      );
+      return;
+    }
+    throw error;
+  }
+
+  let watchCreates = 0;
+  const host = new WorkspaceHost({
+    events: new EventBus(),
+    watchFn: createStubWatchFn(() => {
+      watchCreates += 1;
+    }),
+  });
+
+  try {
+    const first = await host.mount(realWs);
+    const second = await host.mount(aliasPath);
+    assert.equal(second.workspaceId, first.workspaceId);
+    assert.equal(host.list().length, 1);
+    assert.equal(watchCreates, 1);
+
+    const realRoot = await fs.realpath(path.resolve(realWs));
+    assert.equal(first.workspaceRoot, realRoot);
+    assert.equal(second.workspaceRoot, realRoot);
+    assert.equal(first.systemRoot, path.join(realRoot, ".tent"));
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("WorkspaceHost: same basename + long shared path prefix still gets distinct workspaceIds", async () => {
+  // Two real workspaces: identical leaf name, long common prefix, different mid segment.
+  // Old base64url-prefix ids collided; sha256 digest of full identity must not.
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-id-prefix-"));
+  const shared = path.join(root, "very", "long", "shared", "prefix", "segment");
+  const leaf = "same-leaf-name";
+  const pathA = path.join(shared, "branch-alpha-side", leaf);
+  const pathB = path.join(shared, "branch-beta-other", leaf);
+
+  async function scaffoldAt(dir: string, name: string): Promise<void> {
+    await fs.mkdir(dir, { recursive: true });
+    const fsa = new NodeFs(dir);
+    await scaffoldInWorkspace(fsa, {
+      name,
+      rules: "# RULES\n\nB2 id collision tent\n",
+      boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    });
+    await fsa.writeFile(
+      ".tent/roles.json",
+      JSON.stringify({ roles: [{ name: "executor", prompt: "do work" }] }, null, 2) + "\n"
+    );
+  }
+
+  await scaffoldAt(pathA, leaf);
+  await scaffoldAt(pathB, leaf);
+
+  let watchCreates = 0;
+  const host = new WorkspaceHost({
+    events: new EventBus(),
+    watchFn: createStubWatchFn(() => {
+      watchCreates += 1;
+    }),
+  });
+
+  try {
+    const first = await host.mount(pathA);
+    const second = await host.mount(pathB);
+    assert.notEqual(first.workspaceId, second.workspaceId);
+    assert.match(first.workspaceId, new RegExp(`^ws-${leaf}-[A-Za-z0-9_-]{12,}$`));
+    assert.match(second.workspaceId, new RegExp(`^ws-${leaf}-[A-Za-z0-9_-]{12,}$`));
+    assert.equal(host.list().length, 2);
+    assert.equal(watchCreates, 2);
+  } finally {
+    await host.dispose();
+  }
+});
+
+test("WorkspaceHost: missing path and missing Tent errors stay clear", async () => {
+  const host = new WorkspaceHost({
+    events: new EventBus(),
+    watchFn: createStubWatchFn(),
+  });
+  try {
+    const missing = path.join(os.tmpdir(), `tent-b2-missing-${Date.now()}-${Math.random()}`);
+    await assert.rejects(() => host.mount(missing), /Workspace path does not exist/);
+
+    const empty = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-empty-"));
+    await assert.rejects(() => host.mount(empty), /No in-workspace Tent/);
+  } finally {
+    await host.dispose();
+  }
 });
 
 test("docs.createNote / list / get / write with etag; promote + fork", async () => {

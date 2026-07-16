@@ -18011,6 +18011,7 @@ var EventBus = class {
 };
 
 // src/service/workspace-host.ts
+import { createHash as createHash3 } from "node:crypto";
 import { watch } from "node:fs";
 import * as fs11 from "node:fs/promises";
 import * as path10 from "node:path";
@@ -18115,6 +18116,7 @@ async function isStaleLock(path16) {
 }
 
 // src/service/workspace-host.ts
+var WORKSPACE_ID_DIGEST_LEN = 12;
 var WorkspaceHost = class {
   constructor(options) {
     this.mounts = /* @__PURE__ */ new Map();
@@ -18140,7 +18142,17 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path10.resolve(workspaceRoot);
+    const resolved = path10.resolve(workspaceRoot);
+    let root;
+    try {
+      root = await fs11.realpath(resolved);
+    } catch (error) {
+      const err = error;
+      if (err?.code === "ENOENT") {
+        throw new Error(`Workspace path does not exist: ${resolved}`);
+      }
+      throw error;
+    }
     const systemRoot = systemRootFromWorkspace(root);
     const rulesPath = path10.join(systemRoot, "RULES.md");
     try {
@@ -18151,7 +18163,7 @@ var WorkspaceHost = class {
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path10.resolve(existing.workspaceRoot) === root) {
+      if (isSameWorkspaceRoot(existing.workspaceRoot, root)) {
         return this.toInfo(existing);
       }
     }
@@ -18295,8 +18307,9 @@ var WorkspaceHost = class {
 };
 function makeWorkspaceId(workspaceRoot) {
   const base = path10.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path10.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
-  return `ws-${base}-${hash}`;
+  const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
+  const digest = createHash3("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
+  return `ws-${base}-${digest}`;
 }
 
 // src/service/tool-approval-store.ts

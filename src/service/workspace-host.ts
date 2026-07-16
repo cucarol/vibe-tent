@@ -1,5 +1,6 @@
 // WorkspaceHost: mount N in-workspace tents; foreground is UI selection only.
 
+import { createHash } from "node:crypto";
 import { watch, type FSWatcher } from "node:fs";
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
@@ -7,8 +8,12 @@ import { NodeFs } from "../fs/node-fs.js";
 import type { Clock } from "../core/adapter.js";
 import type { OpsEnv } from "../core/ops-context.js";
 import { TENT_SYSTEM_DIR, systemRootFromWorkspace } from "../core/paths.js";
+import { isSameWorkspaceRoot } from "../core/workspace.js";
 import { EventBus } from "./events.js";
 import type { MountedWorkspaceInfo } from "./types.js";
+
+/** Digested into workspaceId; long enough to avoid path-prefix collisions. */
+const WORKSPACE_ID_DIGEST_LEN = 12;
 
 export interface MountedWorkspace {
   workspaceId: string;
@@ -65,7 +70,20 @@ export class WorkspaceHost {
   }
 
   async mount(workspaceRoot: string, opts?: { workspaceId?: string; tentName?: string }): Promise<MountedWorkspaceInfo> {
-    const root = path.resolve(workspaceRoot);
+    // Canonicalize to the real directory so junction/symlink aliases share one mount.
+    // Display/storage still use this real path only; identity comparison is separate (see below).
+    const resolved = path.resolve(workspaceRoot);
+    let root: string;
+    try {
+      root = await fs.realpath(resolved);
+    } catch (error) {
+      const err = error as NodeJS.ErrnoException;
+      if (err?.code === "ENOENT") {
+        throw new Error(`Workspace path does not exist: ${resolved}`);
+      }
+      throw error;
+    }
+
     const systemRoot = systemRootFromWorkspace(root);
     const rulesPath = path.join(systemRoot, "RULES.md");
     try {
@@ -76,8 +94,10 @@ export class WorkspaceHost {
       );
     }
 
+    // Identity key: Windows case-insensitive, other platforms case-sensitive.
+    // Does not rewrite stored/display paths — only dedupes live mounts in memory.
     for (const existing of this.mounts.values()) {
-      if (path.resolve(existing.workspaceRoot) === root) {
+      if (isSameWorkspaceRoot(existing.workspaceRoot, root)) {
         return this.toInfo(existing);
       }
     }
@@ -239,7 +259,14 @@ export class WorkspaceHost {
 }
 
 function makeWorkspaceId(workspaceRoot: string): string {
+  // Caller passes realpath'd root (not the request alias string).
+  // Hash the full identity so long shared path prefixes cannot collide.
   const base = path.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
-  return `ws-${base}-${hash}`;
+  // Windows is case-insensitive: normalize identity before digesting.
+  const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
+  const digest = createHash("sha256")
+    .update(identity)
+    .digest("base64url")
+    .slice(0, WORKSPACE_ID_DIGEST_LEN);
+  return `ws-${base}-${digest}`;
 }
