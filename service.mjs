@@ -1025,6 +1025,21 @@ function isRecord2(value) {
 }
 
 // src/core/task-model.ts
+var ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+  "queued",
+  "running",
+  "waiting",
+  "delivered"
+]);
+var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
+  "accepted",
+  "rejected",
+  "interrupted",
+  "failed"
+]);
+function isActiveTaskState(state) {
+  return ACTIVE_TASK_STATES.has(state);
+}
 function stateToLegacyStatus(state) {
   return state === "queued" ? "pending" : "taken";
 }
@@ -2544,6 +2559,371 @@ function normalizeRole(role) {
   return normalized;
 }
 
+// src/core/retention.ts
+var DEFAULT_KEEP_TERMINAL_DAYS = 30;
+var MAX_KEEP_TERMINAL_DAYS = 3650;
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+var TERMINAL_DELIVERY_STATUSES = /* @__PURE__ */ new Set([
+  "accepted",
+  "rejected"
+]);
+var RetentionError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "RetentionError";
+  }
+};
+function normalizeKeepTerminalTasksDays(raw) {
+  if (raw === void 0 || raw === null) return DEFAULT_KEEP_TERMINAL_DAYS;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      "keepTerminalTasksDays must be a non-negative integer"
+    );
+  }
+  if (raw < 0) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      "keepTerminalTasksDays must be a non-negative integer"
+    );
+  }
+  if (raw > MAX_KEEP_TERMINAL_DAYS) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      `keepTerminalTasksDays must be \u2264 ${MAX_KEEP_TERMINAL_DAYS}`
+    );
+  }
+  return raw;
+}
+function isTerminalTaskState(state) {
+  return TERMINAL_TASK_STATES.has(state);
+}
+function isPurgeableDeliveryStatus(status) {
+  return TERMINAL_DELIVERY_STATUSES.has(status);
+}
+async function previewOperationalRetention(fs13, options = {}) {
+  const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
+  const nowMs = resolveNowMs(options.now);
+  const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
+  const cutoff = new Date(cutoffMs).toISOString();
+  const skipped = [];
+  const warnings = [];
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs13);
+  skipped.push(...taskSkipped);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs13);
+  skipped.push(...deliverySkipped);
+  for (const s of skipped) {
+    warnings.push(`skipped ${s.path}: ${s.reason}`);
+  }
+  const tasksById = /* @__PURE__ */ new Map();
+  const taskIdCounts = /* @__PURE__ */ new Map();
+  for (const t of tasks) {
+    if (t.id) {
+      tasksById.set(t.id, t);
+      taskIdCounts.set(t.id, (taskIdCounts.get(t.id) ?? 0) + 1);
+    }
+  }
+  const deliveriesByTaskId = /* @__PURE__ */ new Map();
+  for (const d of deliveries) {
+    const list = deliveriesByTaskId.get(d.taskId) ?? [];
+    list.push(d);
+    deliveriesByTaskId.set(d.taskId, list);
+  }
+  const candidates = [];
+  const claimedDeliveryPaths = /* @__PURE__ */ new Set();
+  for (const task of tasks) {
+    if (!isTerminalTaskState(task.state)) continue;
+    if (isActiveTaskState(task.state)) continue;
+    if (task.id && (taskIdCounts.get(task.id) ?? 0) > 1) {
+      const message = `duplicate task id ${task.id}; refusing ambiguous retention group`;
+      skipped.push({ path: task.path, reason: message });
+      warnings.push(`skipped ${task.path}: ${message}`);
+      continue;
+    }
+    const related = task.id ? deliveriesByTaskId.get(task.id) ?? [] : [];
+    const activityValues = [taskActivityMs(task), ...related.map(deliveryActivityMs)];
+    if (activityValues.some((value) => value === void 0)) {
+      if (keepTerminalTasksDays > 0) {
+        skipped.push({
+          path: task.path,
+          reason: "task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
+        });
+        warnings.push(
+          `skipped ${task.path}: task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
+        );
+        continue;
+      }
+    }
+    const activityMs = Math.max(...activityValues.map((value) => value ?? 0));
+    if (activityMs > cutoffMs) continue;
+    const protectedDeliveries = related.filter((d) => !isPurgeableDeliveryStatus(d.status));
+    if (protectedDeliveries.length > 0) {
+      warnings.push(
+        `task-group ${task.path} has ${protectedDeliveries.length} non-terminal delivery(ies); refusing group purge`
+      );
+      continue;
+    }
+    const ageDays = ageDaysFrom(activityMs, nowMs);
+    const deliveryPaths = related.map((d) => d.path);
+    for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
+    candidates.push({
+      kind: "task-group",
+      taskId: task.id,
+      taskPath: task.path,
+      taskState: task.state,
+      deliveryPaths,
+      ageDays,
+      reason: `terminal task state=${task.state} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
+    });
+  }
+  for (const d of deliveries) {
+    if (claimedDeliveryPaths.has(d.path)) continue;
+    if (!isPurgeableDeliveryStatus(d.status)) continue;
+    const parent = tasksById.get(d.taskId);
+    if (parent) {
+      continue;
+    }
+    const activity = deliveryActivityMs(d);
+    if (activity === void 0) {
+      if (keepTerminalTasksDays > 0) {
+        skipped.push({
+          path: d.path,
+          reason: "missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
+        });
+        warnings.push(
+          `skipped ${d.path}: missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
+        );
+        continue;
+      }
+    }
+    const activityMs = activity ?? 0;
+    if (activityMs > cutoffMs) continue;
+    const ageDays = ageDaysFrom(activityMs, nowMs);
+    candidates.push({
+      kind: "orphan-delivery",
+      taskId: d.taskId,
+      deliveryPaths: [d.path],
+      ageDays,
+      reason: `orphan non-ready delivery status=${d.status} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
+    });
+  }
+  candidates.sort((a, b) => {
+    const ap = a.taskPath || a.deliveryPaths[0] || "";
+    const bp = b.taskPath || b.deliveryPaths[0] || "";
+    return ap.localeCompare(bp);
+  });
+  let candidateDeliveryCount = 0;
+  let candidateTaskCount = 0;
+  for (const c of candidates) {
+    if (c.kind === "task-group") candidateTaskCount += 1;
+    candidateDeliveryCount += c.deliveryPaths.length;
+  }
+  return {
+    keepTerminalTasksDays,
+    cutoff,
+    candidates,
+    skipped,
+    warnings,
+    candidateTaskCount,
+    candidateDeliveryCount
+  };
+}
+async function purgeOperationalRetention(fs13, options = {}) {
+  return withTentMutation(fs13, async () => {
+    const preview = await previewOperationalRetention(fs13, options);
+    const purgedTaskPaths = [];
+    const purgedDeliveryPaths = [];
+    for (const c of preview.candidates) {
+      if (c.kind === "task-group" && c.taskPath) {
+        try {
+          const live = await loadTaskEnvelope(fs13, c.taskPath);
+          if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
+            preview.warnings.push(
+              `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
+            );
+            continue;
+          }
+        } catch (err) {
+          preview.warnings.push(
+            `refused purge of ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+        let deliveryValidationFailed = false;
+        for (const dp of c.deliveryPaths) {
+          try {
+            const liveD = await loadDelivery(fs13, dp);
+            if (!isPurgeableDeliveryStatus(liveD.status)) {
+              preview.warnings.push(
+                `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
+              );
+              deliveryValidationFailed = true;
+              break;
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `refused purge of task group ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+            );
+            deliveryValidationFailed = true;
+            break;
+          }
+        }
+        if (deliveryValidationFailed) continue;
+        try {
+          if (await fs13.exists(c.taskPath)) {
+            await fs13.remove(c.taskPath);
+            purgedTaskPaths.push(c.taskPath);
+          }
+        } catch (err) {
+          preview.warnings.push(
+            `failed to purge task ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+        for (const dp of c.deliveryPaths) {
+          try {
+            if (await fs13.exists(dp)) {
+              await fs13.remove(dp);
+              purgedDeliveryPaths.push(dp);
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `failed to purge orphaned delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+        continue;
+      }
+      if (c.kind === "orphan-delivery") {
+        for (const dp of c.deliveryPaths) {
+          try {
+            const liveD = await loadDelivery(fs13, dp);
+            if (!isPurgeableDeliveryStatus(liveD.status)) {
+              preview.warnings.push(
+                `refused purge of delivery ${dp}: status=${liveD.status}`
+              );
+              continue;
+            }
+            if (await fs13.exists(dp)) {
+              await fs13.remove(dp);
+              purgedDeliveryPaths.push(dp);
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `failed to purge delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      }
+    }
+    const deletedCount = purgedTaskPaths.length + purgedDeliveryPaths.length;
+    return {
+      ...preview,
+      purged: {
+        taskPaths: purgedTaskPaths,
+        deliveryPaths: purgedDeliveryPaths
+      },
+      deletedCount
+    };
+  });
+}
+async function scanTasks(fs13) {
+  const tasks = [];
+  const skipped = [];
+  if (!await fs13.exists("temp")) return { tasks, skipped };
+  for (const roleEntry of await fs13.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    if (!isSafeRoleSegment(roleEntry.name)) {
+      skipped.push({
+        path: join("temp", roleEntry.name),
+        reason: "unsafe role directory name"
+      });
+      continue;
+    }
+    const taskDir = join("temp", roleEntry.name, "tasks");
+    if (!await fs13.exists(taskDir)) continue;
+    for (const entry of await fs13.listDir(taskDir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path15 = join(taskDir, entry.name);
+      try {
+        tasks.push(await loadTaskEnvelope(fs13, path15));
+      } catch (err) {
+        skipped.push({
+          path: path15,
+          reason: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+  }
+  return { tasks, skipped };
+}
+async function scanDeliveries(fs13) {
+  const deliveries = [];
+  const skipped = [];
+  if (!await fs13.exists("temp")) return { deliveries, skipped };
+  for (const roleEntry of await fs13.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    if (!isSafeRoleSegment(roleEntry.name)) {
+      skipped.push({
+        path: join("temp", roleEntry.name),
+        reason: "unsafe role directory name"
+      });
+      continue;
+    }
+    const dir = join("temp", roleEntry.name, "deliveries");
+    if (!await fs13.exists(dir)) continue;
+    for (const entry of await fs13.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path15 = join(dir, entry.name);
+      try {
+        deliveries.push(await loadDelivery(fs13, path15));
+      } catch (err) {
+        skipped.push({
+          path: path15,
+          reason: err instanceof Error ? err.message : String(err)
+        });
+      }
+    }
+  }
+  return { deliveries, skipped };
+}
+function isSafeRoleSegment(name) {
+  if (!name || name === "." || name === "..") return false;
+  if (/[\\/]/.test(name)) return false;
+  if (name.includes("\0")) return false;
+  return true;
+}
+function taskActivityMs(task) {
+  return parseIsoMs(task.updatedAt) ?? parseIsoMs(task.createdAt);
+}
+function deliveryActivityMs(d) {
+  return parseIsoMs(d.updatedAt) ?? parseIsoMs(d.createdAt);
+}
+function parseIsoMs(value) {
+  if (!value) return void 0;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return void 0;
+  return ms;
+}
+function resolveNowMs(now) {
+  if (now === void 0) return Date.now();
+  if (now instanceof Date) {
+    const ms2 = now.getTime();
+    if (!Number.isFinite(ms2)) throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now Date");
+    return ms2;
+  }
+  const ms = Date.parse(now);
+  if (!Number.isFinite(ms)) {
+    throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now ISO timestamp");
+  }
+  return ms;
+}
+function ageDaysFrom(activityMs, nowMs) {
+  const delta = Math.max(0, nowMs - activityMs);
+  return Math.floor(delta / MS_PER_DAY);
+}
+
 // src/core/workspace.ts
 import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
@@ -3368,7 +3748,13 @@ var CLIENT_METHODS = [
   "toolApproval.listPending",
   "toolApproval.get",
   "toolApproval.approveOnce",
-  "toolApproval.deny"
+  "toolApproval.deny",
+  /**
+   * Operational retention (task-api §6) — user-only.
+   * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.
+   */
+  "operationalRetention.preview",
+  "operationalRetention.purge"
 ];
 function isClientMethod(method) {
   return CLIENT_METHODS.includes(method);
@@ -5543,11 +5929,19 @@ async function dispatchMethod(ctx, method, params) {
         return toolApprovalResolve(ctx, p, "approved");
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
+      case "operationalRetention.preview":
+        return operationalRetentionPreviewRpc(ctx, p);
+      case "operationalRetention.purge":
+        return operationalRetentionPurgeRpc(ctx, p);
       default:
         throw new RpcError(-32601, `Method not found: ${method}`);
     }
   } catch (error) {
     if (error instanceof RpcError) throw error;
+    if (error instanceof RetentionError || error instanceof Error && error.name === "RetentionError") {
+      const code = error instanceof RetentionError ? error.code : error.code ?? "INVALID_KEEP_DAYS";
+      throw new RpcError(-32602, error.message, { code });
+    }
     if (error instanceof TaskLifecycleError) {
       throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
     }
@@ -6895,6 +7289,75 @@ function projectToolApproval(item) {
     resolvedAt: item.resolvedAt,
     resolvedBy: item.resolvedBy
   };
+}
+async function operationalRetentionPreviewRpc(ctx, p) {
+  requireUserActor(p, "operationalRetention.preview");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const keepTerminalTasksDays = parseKeepTerminalTasksDays(p);
+  const preview = await previewOperationalRetention(mount.env.fs, {
+    keepTerminalTasksDays,
+    now: mount.env.clock.now()
+  });
+  return { workspaceId, ...preview };
+}
+async function operationalRetentionPurgeRpc(ctx, p) {
+  requireUserActor(p, "operationalRetention.purge");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const keepTerminalTasksDays = parseKeepTerminalTasksDays(p);
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await purgeOperationalRetention(mount.env.fs, {
+      keepTerminalTasksDays,
+      now: mount.env.clock.now()
+    });
+    if (result.deletedCount > 0) {
+      emitRetentionPurged(ctx, workspaceId, result);
+    }
+    return { workspaceId, ...result };
+  });
+}
+function requireUserActor(p, surface) {
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      `${surface} is user-only; agent self-retention is forbidden`,
+      { actor: actorRaw }
+    );
+  }
+  return actorRaw;
+}
+function parseKeepTerminalTasksDays(p) {
+  const v = p.keepTerminalTasksDays;
+  try {
+    return normalizeKeepTerminalTasksDays(v);
+  } catch (error) {
+    if (error instanceof RetentionError || error instanceof Error && error.name === "RetentionError") {
+      throw new RpcError(-32602, error.message, {
+        code: error instanceof RetentionError ? error.code : "INVALID_KEEP_DAYS"
+      });
+    }
+    throw error;
+  }
+}
+function emitRetentionPurged(ctx, workspaceId, result) {
+  ctx.events.emit(
+    "retention.purged",
+    workspaceId,
+    {
+      keepTerminalTasksDays: result.keepTerminalTasksDays,
+      cutoff: result.cutoff,
+      deletedCount: result.deletedCount,
+      taskPaths: result.purged.taskPaths,
+      deliveryPaths: result.purged.deliveryPaths,
+      candidateTaskCount: result.candidateTaskCount,
+      candidateDeliveryCount: result.candidateDeliveryCount,
+      warnings: result.warnings
+    },
+    "self"
+  );
 }
 var managedAutoDeliverInFlight = /* @__PURE__ */ new Set();
 var managedAutoDeliverDone = /* @__PURE__ */ new Set();

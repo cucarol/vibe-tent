@@ -221,8 +221,9 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `session.get` / `session.list` (projections; no secrets/tokens in client payloads)
 - `a2a.listPending` / `a2a.resolve` — **spawn** gate only (role `a2aPolicy`); not tool permissions
 - `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
+- `operationalRetention.preview` / `operationalRetention.purge` — user-only terminal operational heat cleanup (see §6); preview read-only; purge via MutationBus; event `retention.purged` only when files deleted
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, plus document events `concept.changed` / `concept.removed` from the docs group
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 
@@ -390,7 +391,7 @@ Hard rules:
 | --- | --- | --- |
 | Collaboration facts | box body conclusions, artifactRefs, accepted commit pointers | durable until user deletes |
 | Active operational | active task, ready delivery, waiting records | until terminal |
-| Terminal operational | accepted / interrupted / failed tasks, old deliveries | **short heat retention** then purge (suggested **30 days**, configurable) |
+| Terminal operational | accepted / rejected / interrupted / failed tasks, accepted / rejected deliveries | **short heat retention** then purge (default **30 days**, RPC-overridable) |
 | Local runtime only | PID, session registry rows, resume tokens, absolute worktree paths, AgentProfile paths | clear with process / stay machine-local; never ship in repo |
 | Rebuildable | relay prompt copies, redundant manifest dumps | drop after terminal; rebuild from task fields if needed |
 
@@ -400,21 +401,88 @@ Hard rules:
 - Conclusions that matter long-term must be written into box/concept body, or **promoted** by the user (e.g. left-click elevate handoff/delivery summary → OKF concept).
 - Do not assume temp/operational files survive forever.
 
-### 6.3 Cleanup triggers
+### 6.3 MVP API (implemented)
 
-1. After `accept` / `interrupt` / `cancel`, schedule a retention pass.
-2. Service start + periodic scan (e.g. daily).
-3. Explicit purge API (successor of blunt `clean-temp`); must refuse to delete non-terminal active work.
+Explicit user-only RPCs (successor of blunt `clean-temp` for operational heat). No UI and **no machine timer** in this MVP.
 
-Suggested knobs:
+| API | Auth | Effect |
+| --- | --- | --- |
+| `operationalRetention.preview` | **user only** (`actor` default `user`; non-user → deny) | Scan `temp/<role>/{tasks,deliveries}/` via FsAdapter; return candidates / skipped / warnings. **Read-only**. |
+| `operationalRetention.purge` | **user only** | Same selection as preview; delete via **MutationBus**. Emit **exactly one** `retention.purged` event **only when** files were actually deleted. |
+
+**Params (both):**
+
+| Param | Type | Notes |
+| --- | --- | --- |
+| `workspaceId` | string | Required when no foreground workspace |
+| `keepTerminalTasksDays` | non-negative integer | Default **30**. Max **3650**. **`0`** = immediately eligible (explicit cleanup / tests). Not a free-form path. |
+| `actor` | string | Default `user`; any other value is rejected |
+
+**Safety rules (hard):**
+
+1. **Never delete** tasks in `queued` / `running` / `waiting` / `delivered`, or deliveries in `ready`.
+2. **Terminal tasks** eligible for purge: `accepted` / `rejected` / `interrupted` / `failed` whose `updatedAt || createdAt` is on or before the cutoff.
+3. **Task-group cleanup:** purge a terminal task **together with** its terminal deliveries so no dangling delivery references remain. If any related delivery is still `draft` or `ready`, refuse the whole group. Group age uses the most recent task/delivery activity timestamp.
+4. **Orphan terminal deliveries** (unknown / missing `taskId` parent, status `accepted` / `rejected`) may be purged independently when past retention.
+5. **Bad files** stay on disk; they appear in `skipped` / `warnings` and are never silently swallowed.
+6. Paths are discovered only under operational `temp/`; clients **must not** pass arbitrary filesystem paths. All IO goes through **FsAdapter** (path-escape safe).
+
+**Age / cutoff:**
+
+- Activity timestamp = `updatedAt` if present, else `createdAt`.
+- When `keepTerminalTasksDays > 0` and both timestamps are missing / unparseable, the record is **not** eligible (reported in `skipped`).
+- When `keepTerminalTasksDays === 0`, missing timestamps are treated as immediately eligible.
+
+**Return shape (preview & purge):**
+
+```ts
+{
+  workspaceId,
+  keepTerminalTasksDays,
+  cutoff,                 // ISO cutoff used for age comparison
+  candidates: [{
+    kind: "task-group" | "orphan-delivery",
+    taskId?, taskPath?, taskState?,
+    deliveryPaths: string[],
+    ageDays: number,
+    reason: string,
+  }],
+  skipped: [{ path, reason }],
+  warnings: string[],
+  candidateTaskCount,
+  candidateDeliveryCount,
+  // purge only:
+  purged?: { taskPaths: string[]; deliveryPaths: string[] },
+  deletedCount?: number,
+}
+```
+
+**Event** `retention.purged` (only after a purge that deleted ≥1 file):
+
+```ts
+{
+  keepTerminalTasksDays, cutoff, deletedCount,
+  taskPaths, deliveryPaths,
+  candidateTaskCount, candidateDeliveryCount,
+  warnings,
+}
+```
+
+Suggested future knobs (not all implemented in MVP):
 
 ```yaml
 operationalRetention:
   keepTerminalTasksDays: 30
-  keepRejectedDeliveries: 5
+  keepRejectedDeliveries: 5      # future finer delivery policy
   purgeQueuedCancelImmediately: true
   alwaysPersistAcceptedSummaryToBox: false
 ```
+
+### 6.4 Cleanup triggers (product roadmap)
+
+1. Explicit purge API — **MVP done** (`operationalRetention.preview` / `purge`).
+2. After `accept` / `interrupt` / `cancel`, optional scheduled retention pass — **not in MVP**.
+3. Service start + periodic scan (e.g. daily) — **not in MVP** (no machine timer).
 
 ---
 

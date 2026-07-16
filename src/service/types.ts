@@ -259,6 +259,12 @@ export const CLIENT_METHODS = [
   "toolApproval.get",
   "toolApproval.approveOnce",
   "toolApproval.deny",
+  /**
+   * Operational retention (task-api §6) — user-only.
+   * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.
+   */
+  "operationalRetention.preview",
+  "operationalRetention.purge",
 ] as const;
 
 export type ClientMethod = (typeof CLIENT_METHODS)[number];

@@ -1133,6 +1133,8 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
     "toolApproval.get",
     "toolApproval.approveOnce",
     "toolApproval.deny",
+    "operationalRetention.preview",
+    "operationalRetention.purge",
   ]) {
     assert.ok((CLIENT_METHODS as readonly string[]).includes(m), m);
   }

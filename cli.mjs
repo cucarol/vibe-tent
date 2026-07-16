@@ -3776,6 +3776,27 @@ var ServiceClient = class {
     return this.call("toolApproval.deny", { approvalId, actor });
   }
   /**
+   * User-only operational retention preview (task-api §6).
+   * Read-only: returns candidates/skipped/warnings; never mutates.
+   * `keepTerminalTasksDays` defaults to 30; `0` = immediately eligible.
+   */
+  operationalRetentionPreview(workspaceId, opts) {
+    return this.call("operationalRetention.preview", {
+      workspaceId,
+      ...opts
+    });
+  }
+  /**
+   * User-only operational retention purge (task-api §6).
+   * Mutates via MutationBus; emits exactly one retention.purged when files are deleted.
+   */
+  operationalRetentionPurge(workspaceId, opts) {
+    return this.call("operationalRetention.purge", {
+      workspaceId,
+      ...opts
+    });
+  }
+  /**
    * Subscribe to SSE events. Returns an abort handle.
    * Requires a global EventSource-compatible environment; for Node tests prefer
    * fetch streaming or EventBus in-process.

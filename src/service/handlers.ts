@@ -43,6 +43,13 @@ import {
   taskWait,
 } from "../core/task-lifecycle.js";
 import {
+  normalizeKeepTerminalTasksDays,
+  previewOperationalRetention,
+  purgeOperationalRetention,
+  RetentionError,
+  type RetentionPurgeResult,
+} from "../core/retention.js";
+import {
   TaskLifecycleError,
   type A2APolicy,
   type DeliverDecision,
@@ -270,11 +277,25 @@ export async function dispatchMethod(
         return toolApprovalResolve(ctx, p, "approved");
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
+      case "operationalRetention.preview":
+        return operationalRetentionPreviewRpc(ctx, p);
+      case "operationalRetention.purge":
+        return operationalRetentionPurgeRpc(ctx, p);
       default:
         throw new RpcError(-32601, `Method not found: ${method}`);
     }
   } catch (error) {
     if (error instanceof RpcError) throw error;
+    if (
+      error instanceof RetentionError ||
+      (error instanceof Error && error.name === "RetentionError")
+    ) {
+      const code =
+        error instanceof RetentionError
+          ? error.code
+          : ((error as { code?: string }).code ?? "INVALID_KEEP_DAYS");
+      throw new RpcError(-32602, error.message, { code });
+    }
     if (error instanceof TaskLifecycleError) {
       throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
     }
@@ -1926,6 +1947,102 @@ function projectToolApproval(item: ToolPendingApproval) {
     resolvedAt: item.resolvedAt,
     resolvedBy: item.resolvedBy,
   };
+}
+
+// ---- operational retention (task-api §6; user-only) ----
+
+/**
+ * User-only dry-run of terminal operational cleanup.
+ * Never mutates; does not accept free-form paths (scan is under temp/ via FsAdapter).
+ */
+async function operationalRetentionPreviewRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+) {
+  requireUserActor(p, "operationalRetention.preview");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const keepTerminalTasksDays = parseKeepTerminalTasksDays(p);
+  const preview = await previewOperationalRetention(mount.env.fs, {
+    keepTerminalTasksDays,
+    now: mount.env.clock.now(),
+  });
+  return { workspaceId, ...preview };
+}
+
+/**
+ * User-only purge of terminal tasks / non-ready deliveries past retention.
+ * Serialized on MutationBus. Emits exactly one retention.purged when files are deleted.
+ */
+async function operationalRetentionPurgeRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+) {
+  requireUserActor(p, "operationalRetention.purge");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const keepTerminalTasksDays = parseKeepTerminalTasksDays(p);
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const result = await purgeOperationalRetention(mount.env.fs, {
+      keepTerminalTasksDays,
+      now: mount.env.clock.now(),
+    });
+    if (result.deletedCount > 0) {
+      emitRetentionPurged(ctx, workspaceId, result);
+    }
+    return { workspaceId, ...result };
+  });
+}
+
+function requireUserActor(p: Record<string, unknown>, surface: string): string {
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      `${surface} is user-only; agent self-retention is forbidden`,
+      { actor: actorRaw }
+    );
+  }
+  return actorRaw;
+}
+
+/** Validate keepTerminalTasksDays at the RPC boundary (default applied in core if omitted). */
+function parseKeepTerminalTasksDays(p: Record<string, unknown>): number {
+  const v = p.keepTerminalTasksDays;
+  try {
+    return normalizeKeepTerminalTasksDays(v);
+  } catch (error) {
+    if (error instanceof RetentionError || (error instanceof Error && error.name === "RetentionError")) {
+      throw new RpcError(-32602, error.message, {
+        code: error instanceof RetentionError ? error.code : "INVALID_KEEP_DAYS",
+      });
+    }
+    throw error;
+  }
+}
+
+function emitRetentionPurged(
+  ctx: HandlerContext,
+  workspaceId: string,
+  result: RetentionPurgeResult
+): void {
+  ctx.events.emit(
+    "retention.purged",
+    workspaceId,
+    {
+      keepTerminalTasksDays: result.keepTerminalTasksDays,
+      cutoff: result.cutoff,
+      deletedCount: result.deletedCount,
+      taskPaths: result.purged.taskPaths,
+      deliveryPaths: result.purged.deliveryPaths,
+      candidateTaskCount: result.candidateTaskCount,
+      candidateDeliveryCount: result.candidateDeliveryCount,
+      warnings: result.warnings,
+    },
+    "self"
+  );
 }
 
 // ---- runtime event bridge (called from service bootstrap) ----
