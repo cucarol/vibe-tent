@@ -275,6 +275,10 @@ Rules:
 5. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
 6. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
 7. **ACP native resume (`session/load`):** when `canResume` and `resumeManagedSession` are implemented, `AgentRuntime.resumeSession` spawns a **new** bridge process, reuses the machine-local `resumeToken` as provider `sessionId`, and calls `session/load` with the **same** recorded cwd. It must **not** call `session/new`. Load history notifications are diagnostics only (no auto-delivery). `task.startSession` may reuse an existing Tent `sessionId` after restart only when `probe.resumeCapable` is true **and** task lane cwd still matches the session row.
+8. A newly spawned process/managed bridge is not externally `live` until the
+   corresponding SessionRegistry transition commits. If that commit fails, the
+   runtime must stop the new provider instance, await any child-exit projection,
+   and persist `failed`; it must not leak a process or publish a false `live`.
 
 ---
 

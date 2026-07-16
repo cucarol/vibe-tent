@@ -222,6 +222,117 @@ test("managed terminal during startup cannot be overwritten back to live", async
   await runtime.shutdown();
 });
 
+test("managed start stops provider when persisting live state fails", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let alive = true;
+  let stopCalls = 0;
+  const adapter: ProviderAdapter = {
+    id: "managed-persist-fail",
+    displayNameKey: "managed-persist-fail",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed adapter should not resolve a process launch");
+    },
+    startManagedSession: async (plan) => {
+      return {
+        sessionId: plan.sessionId,
+        pid: 4242,
+        isAlive: () => alive,
+        stop: async () => {
+          stopCalls += 1;
+          alive = false;
+        },
+      };
+    },
+    mapExit: (_code, _signal) => ({
+      type: "session.failed",
+      sessionId: "unused",
+      error: "unused",
+    }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "managed-persist-fail", adapterId: adapter.id }],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+
+  const originalUpdate = runtime.registry.update.bind(runtime.registry);
+  let injected = false;
+  runtime.registry.update = async (sessionId, patch) => {
+    if (!injected && patch.state === "live") {
+      injected = true;
+      throw new Error("injected live-state persistence failure");
+    }
+    return originalUpdate(sessionId, patch);
+  };
+
+  const sessionId = "ss-persistfail";
+  await assert.rejects(
+    () => runtime.startSession({ sessionId, profileId: "managed-persist-fail", cwd }),
+    /injected live-state persistence failure/
+  );
+
+  assert.equal(stopCalls, 1, "started managed provider must be stopped on rollback");
+  assert.equal(alive, false);
+  const record = await runtime.registry.read(sessionId);
+  assert.equal(record?.state, "failed");
+  assert.equal(record?.pid, undefined);
+  assert.equal(
+    events.some((event) => event.type === "session.live"),
+    false,
+    "live must not be published before its registry commit"
+  );
+
+  await runtime.shutdown();
+});
+
+test("process start is reaped when persisting live state fails", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 500 });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+
+  const originalUpdate = runtime.registry.update.bind(runtime.registry);
+  let injected = false;
+  runtime.registry.update = async (sessionId, patch) => {
+    if (!injected && patch.state === "live") {
+      injected = true;
+      throw new Error("injected process live-state persistence failure");
+    }
+    return originalUpdate(sessionId, patch);
+  };
+
+  const sessionId = "ss-procpersist";
+  await assert.rejects(
+    () => runtime.startSession({ sessionId, profileId: "fake-default", cwd }),
+    /injected process live-state persistence failure/
+  );
+
+  assert.equal(runtime.supervisor.isAlive(sessionId), false);
+  const record = await runtime.registry.read(sessionId);
+  assert.equal(record?.state, "failed");
+  assert.equal(record?.pid, undefined);
+  assert.equal(
+    events.some((event) => event.type === "session.live"),
+    false,
+    "live must not be published before its registry commit"
+  );
+
+  await runtime.shutdown();
+});
+
 test("natural non-zero exit maps to session.failed", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();

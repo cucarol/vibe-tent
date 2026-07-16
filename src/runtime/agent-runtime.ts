@@ -87,6 +87,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly adapters = new Map<string, ProviderAdapter>();
   private readonly managed = new Map<string, ManagedSession>();
   private readonly resumeInFlight = new Map<string, Promise<SessionHandle>>();
+  private readonly childExitInFlight = new Map<string, Promise<void>>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
@@ -147,7 +148,15 @@ export class AgentRuntime implements AgentRuntimePort {
       gracefulMs: options.gracefulMs ?? 2000,
       stdoutRingBytes: options.captureStdout === false ? 0 : 4096,
       onExit: (info) => {
-        void this.onChildExit(info.sessionId, info.exitCode, info.signal);
+        const projection = this.onChildExit(info.sessionId, info.exitCode, info.signal);
+        this.childExitInFlight.set(info.sessionId, projection);
+        void projection
+          .finally(() => {
+            if (this.childExitInFlight.get(info.sessionId) === projection) {
+              this.childExitInFlight.delete(info.sessionId);
+            }
+          })
+          .catch(() => undefined);
       },
       onStdout: (sessionId, text) => {
         if (options.captureStdout === false) return;
@@ -276,6 +285,7 @@ export class AgentRuntime implements AgentRuntimePort {
     await this.registry.write(record);
     this.emit({ type: "session.starting", sessionId: req.sessionId });
 
+    let startedManaged: ManagedSession | undefined;
     try {
       // Resolve after the diagnostic row exists, so a missing/stale vault reference
       // becomes an ordinary failed session without ever persisting the plaintext.
@@ -298,7 +308,8 @@ export class AgentRuntime implements AgentRuntimePort {
 
       let pid: number | undefined;
       let resumeToken: string | undefined;
-      let sawLive = false;
+      let startupCommitted = false;
+      let startupLivePid: number | undefined;
       let terminalDuringManagedStart:
         | { state: "failed"; error: string }
         | { state: "stopped"; exitCode: number | null }
@@ -307,7 +318,6 @@ export class AgentRuntime implements AgentRuntimePort {
       if (typeof adapter.startManagedSession === "function") {
         // ACP / structured transports own stdio — not ProcessSupervisor.
         const managed = await adapter.startManagedSession(plan, (ev) => {
-          if (ev.type === "session.live") sawLive = true;
           // Managed failure: mark terminal + drop handle so probe never claims live orphan.
           // Service maps task failed separately (idempotent). Process stop is adapter-owned.
           if (ev.type === "session.failed") {
@@ -324,6 +334,10 @@ export class AgentRuntime implements AgentRuntimePort {
               .update(req.sessionId, { state: "waiting-user" })
               .catch(() => undefined);
           } else if (ev.type === "session.live") {
+            if (!startupCommitted) {
+              startupLivePid = ev.pid;
+              return;
+            }
             void this.registry
               .update(req.sessionId, {
                 state: "live",
@@ -333,6 +347,7 @@ export class AgentRuntime implements AgentRuntimePort {
           }
           this.emit(ev);
         });
+        startedManaged = managed;
         if (terminalDuringManagedStart) {
           const terminal = terminalDuringManagedStart as
             | { state: "failed"; error: string }
@@ -366,8 +381,6 @@ export class AgentRuntime implements AgentRuntimePort {
           profile.fake?.canResume || adapter.capabilities().canResume
             ? `fake-resume:${req.sessionId}`
             : undefined;
-        this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
-        sawLive = true;
       }
 
       const live = await this.registry.update(req.sessionId, {
@@ -378,13 +391,21 @@ export class AgentRuntime implements AgentRuntimePort {
         exitCode: undefined,
         stopReason: undefined,
       });
-
-      if (!sawLive) {
-        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
-      }
+      startupCommitted = true;
+      this.emit({
+        type: "session.live",
+        sessionId: req.sessionId,
+        pid: startupLivePid ?? pid,
+      });
       return handleFrom(live);
     } catch (err) {
       this.managed.delete(req.sessionId);
+      if (startedManaged) {
+        await startedManaged.stop("interrupt").catch(() => undefined);
+      } else if (this.supervisor.isAlive(req.sessionId)) {
+        await this.supervisor.stop(req.sessionId).catch(() => undefined);
+        await this.waitForChildExit(req.sessionId, true);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
@@ -501,7 +522,8 @@ export class AgentRuntime implements AgentRuntimePort {
         ? adapter.parseResumeToken(tokenRaw)
         : { raw: tokenRaw, providerSessionId: tokenRaw };
 
-      let sawLive = false;
+      let startupCommitted = false;
+      let startupLivePid: number | undefined;
       let terminalDuringManagedStart:
         | { state: "failed"; error: string }
         | { state: "stopped"; exitCode: number | null }
@@ -511,7 +533,6 @@ export class AgentRuntime implements AgentRuntimePort {
         plan,
         resumeToken,
         (ev) => {
-          if (ev.type === "session.live") sawLive = true;
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             void this.onManagedTerminal(req.sessionId, "failed", ev.error);
@@ -531,6 +552,10 @@ export class AgentRuntime implements AgentRuntimePort {
               .update(req.sessionId, { state: "waiting-user" })
               .catch(() => undefined);
           } else if (ev.type === "session.live") {
+            if (!startupCommitted) {
+              startupLivePid = ev.pid;
+              return;
+            }
             void this.registry
               .update(req.sessionId, {
                 state: "live",
@@ -578,10 +603,12 @@ export class AgentRuntime implements AgentRuntimePort {
         stopReason: undefined,
         runtimeWorkspace: { cwd },
       });
-
-      if (!sawLive) {
-        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
-      }
+      startupCommitted = true;
+      this.emit({
+        type: "session.live",
+        sessionId: req.sessionId,
+        pid: startupLivePid ?? pid,
+      });
       return handleFrom(live);
     } catch (err) {
       this.managed.delete(req.sessionId);
@@ -657,6 +684,7 @@ export class AgentRuntime implements AgentRuntimePort {
     } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
+    await this.waitForChildExit(sessionId);
 
     // onChildExit may race; re-read after process reaped and mark terminal.
     const current = await this.registry.read(sessionId);
@@ -849,6 +877,16 @@ export class AgentRuntime implements AgentRuntimePort {
       });
     }
     this.emit(event);
+  }
+
+  private async waitForChildExit(sessionId: string, suppressError = false): Promise<void> {
+    const projection = this.childExitInFlight.get(sessionId);
+    if (!projection) return;
+    if (suppressError) {
+      await projection.catch(() => undefined);
+      return;
+    }
+    await projection;
   }
 
   private emit(ev: RuntimeEvent): void {

@@ -18646,6 +18646,7 @@ var AgentRuntime = class {
     this.adapters = /* @__PURE__ */ new Map();
     this.managed = /* @__PURE__ */ new Map();
     this.resumeInFlight = /* @__PURE__ */ new Map();
+    this.childExitInFlight = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
     this.closed = false;
@@ -18699,7 +18700,13 @@ var AgentRuntime = class {
       gracefulMs: options.gracefulMs ?? 2e3,
       stdoutRingBytes: options.captureStdout === false ? 0 : 4096,
       onExit: (info) => {
-        void this.onChildExit(info.sessionId, info.exitCode, info.signal);
+        const projection = this.onChildExit(info.sessionId, info.exitCode, info.signal);
+        this.childExitInFlight.set(info.sessionId, projection);
+        void projection.finally(() => {
+          if (this.childExitInFlight.get(info.sessionId) === projection) {
+            this.childExitInFlight.delete(info.sessionId);
+          }
+        }).catch(() => void 0);
       },
       onStdout: (sessionId, text3) => {
         if (options.captureStdout === false) return;
@@ -18807,6 +18814,7 @@ var AgentRuntime = class {
     };
     await this.registry.write(record);
     this.emit({ type: "session.starting", sessionId: req.sessionId });
+    let startedManaged;
     try {
       const resolvedEnv = await this.resolveCredentialEnv(profile);
       const plan = {
@@ -18825,11 +18833,11 @@ var AgentRuntime = class {
       };
       let pid;
       let resumeToken;
-      let sawLive = false;
+      let startupCommitted = false;
+      let startupLivePid;
       let terminalDuringManagedStart;
       if (typeof adapter.startManagedSession === "function") {
         const managed = await adapter.startManagedSession(plan, (ev) => {
-          if (ev.type === "session.live") sawLive = true;
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
             void this.onManagedTerminal(req.sessionId, "failed", ev.error);
@@ -18842,6 +18850,10 @@ var AgentRuntime = class {
           } else if (ev.type === "session.waiting_user") {
             void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
           } else if (ev.type === "session.live") {
+            if (!startupCommitted) {
+              startupLivePid = ev.pid;
+              return;
+            }
             void this.registry.update(req.sessionId, {
               state: "live",
               ...ev.pid != null ? { pid: ev.pid } : {}
@@ -18849,6 +18861,7 @@ var AgentRuntime = class {
           }
           this.emit(ev);
         });
+        startedManaged = managed;
         if (terminalDuringManagedStart) {
           const terminal = terminalDuringManagedStart;
           await this.onManagedTerminal(
@@ -18874,8 +18887,6 @@ var AgentRuntime = class {
         const proc = await this.supervisor.start(req.sessionId, launch);
         pid = proc.pid;
         resumeToken = profile.fake?.canResume || adapter.capabilities().canResume ? `fake-resume:${req.sessionId}` : void 0;
-        this.emit({ type: "session.live", sessionId: req.sessionId, pid: proc.pid });
-        sawLive = true;
       }
       const live = await this.registry.update(req.sessionId, {
         state: "live",
@@ -18885,12 +18896,21 @@ var AgentRuntime = class {
         exitCode: void 0,
         stopReason: void 0
       });
-      if (!sawLive) {
-        this.emit({ type: "session.live", sessionId: req.sessionId, pid });
-      }
+      startupCommitted = true;
+      this.emit({
+        type: "session.live",
+        sessionId: req.sessionId,
+        pid: startupLivePid ?? pid
+      });
       return handleFrom(live);
     } catch (err) {
       this.managed.delete(req.sessionId);
+      if (startedManaged) {
+        await startedManaged.stop("interrupt").catch(() => void 0);
+      } else if (this.supervisor.isAlive(req.sessionId)) {
+        await this.supervisor.stop(req.sessionId).catch(() => void 0);
+        await this.waitForChildExit(req.sessionId, true);
+      }
       const message = err instanceof Error ? err.message : String(err);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
@@ -18985,13 +19005,13 @@ var AgentRuntime = class {
           }
         };
         const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
-        let sawLive = false;
+        let startupCommitted = false;
+        let startupLivePid;
         let terminalDuringManagedStart;
         const managed = await resumeManagedSession(
           plan,
           resumeToken,
           (ev) => {
-            if (ev.type === "session.live") sawLive = true;
             if (ev.type === "session.failed") {
               terminalDuringManagedStart = { state: "failed", error: ev.error };
               void this.onManagedTerminal(req.sessionId, "failed", ev.error);
@@ -19009,6 +19029,10 @@ var AgentRuntime = class {
             } else if (ev.type === "session.waiting_user") {
               void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
             } else if (ev.type === "session.live") {
+              if (!startupCommitted) {
+                startupLivePid = ev.pid;
+                return;
+              }
               void this.registry.update(req.sessionId, {
                 state: "live",
                 ...ev.pid != null ? { pid: ev.pid } : {}
@@ -19045,9 +19069,12 @@ var AgentRuntime = class {
           stopReason: void 0,
           runtimeWorkspace: { cwd }
         });
-        if (!sawLive) {
-          this.emit({ type: "session.live", sessionId: req.sessionId, pid });
-        }
+        startupCommitted = true;
+        this.emit({
+          type: "session.live",
+          sessionId: req.sessionId,
+          pid: startupLivePid ?? pid
+        });
         return handleFrom(live);
       } catch (err) {
         this.managed.delete(req.sessionId);
@@ -19118,6 +19145,7 @@ var AgentRuntime = class {
     } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
+    await this.waitForChildExit(sessionId);
     const current = await this.registry.read(sessionId);
     if (!current) return;
     if (SessionRegistry.isNonTerminal(current.state)) {
@@ -19277,6 +19305,15 @@ var AgentRuntime = class {
       });
     }
     this.emit(event);
+  }
+  async waitForChildExit(sessionId, suppressError = false) {
+    const projection = this.childExitInFlight.get(sessionId);
+    if (!projection) return;
+    if (suppressError) {
+      await projection.catch(() => void 0);
+      return;
+    }
+    await projection;
   }
   emit(ev) {
     for (const sink of this.globalSinks) {
