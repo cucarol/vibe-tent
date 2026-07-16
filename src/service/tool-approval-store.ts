@@ -468,7 +468,7 @@ export class ToolApprovalStore {
   }
 
   /**
-   * Force-expire one pending item (timeout authority / fail-safe).
+   * Force-expire one pending item (store timeout authority).
    * Idempotent: returns current terminal status if already resolved.
    */
   async expireOne(id: string): Promise<ToolApprovalStatus> {

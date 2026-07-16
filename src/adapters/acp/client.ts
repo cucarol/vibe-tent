@@ -13,12 +13,9 @@ import type {
   AcpSessionUpdate,
 } from "./types.js";
 import {
-  DEFAULT_PERMISSION_TIMEOUT_MS,
   DEFAULT_PROMPT_TIMEOUT_MS,
 } from "./types.js";
 
-/** Slack after store-authoritative permission timeout before client fail-safe denies. */
-export const PERMISSION_FAILSAFE_SLACK_MS = 5_000;
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
 
@@ -30,7 +27,6 @@ export type AcpClientOptions = {
   sessionId: string;
   promptTimeoutMs?: number;
   permissionPolicy: AcpPermissionPolicy;
-  permissionTimeoutMs?: number;
   /**
    * Human-readable label for errors / waiting summaries (e.g. "Grok ACP").
    * Default: "ACP". Never used for argv/auth selection.
@@ -48,22 +44,14 @@ export type AcpClientOptions = {
   /**
    * When permissionPolicy is "ask", resolve allow/deny via Local Service
    * tool-approval store (never agent self-approve). Return "allow" | "deny".
-   * Store expiry is authoritative; missing callback → deny (cancelled).
+   * Store expiry is the sole authority; missing callback → deny (cancelled).
+   * Client does not apply its own permission timeout.
    */
   onPermissionAsk?: (info: {
     toolTitle: string;
     toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
-  /**
-   * Bounded fail-safe when onPermissionAsk does not settle past store timeout + slack.
-   * Must cancel/expire the same store item so nothing remains user-approvable.
-   */
-  onPermissionAskFailSafe?: (info: {
-    toolTitle: string;
-    toolCallId?: string;
-    options: AcpPermissionOption[];
-  }) => Promise<void>;
 };
 
 export type AcpStartResult = {
@@ -128,7 +116,7 @@ export class AcpClient {
   private loadSessionSupported = false;
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
-  /** Stop/exit cancellation for ask callbacks and their fail-safe timers. */
+  /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
   private readonly permissionWaitCancels = new Set<() => void>();
 
   constructor(private readonly options: AcpClientOptions) {
@@ -640,13 +628,10 @@ export class AcpClient {
         });
         try {
           if (this.options.onPermissionAsk) {
-            const timeoutMs =
-              this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
-            // Do not invent a second timeout outcome here: store waitForDecision /
-            // expireOne is authoritative. Fail-safe only if the bridge hangs past
-            // store timeout + slack — and must expire the same store item.
+            // Sole expiry authority is ToolApprovalStore (via onPermissionAsk).
+            // Client only cancels waiters on stop/exit — no second timeout.
             const askInfo = { toolTitle, toolCallId, options };
-            decision = await this.waitForPermissionDecision(askInfo, timeoutMs);
+            decision = await this.waitForPermissionDecision(askInfo);
           } else {
             // No service bridge → deny (safe default; never promote ask→allow).
             decision = "deny";
@@ -691,35 +676,21 @@ export class AcpClient {
     }
   }
 
-  private waitForPermissionDecision(
-    askInfo: {
-      toolTitle: string;
-      toolCallId?: string;
-      options: AcpPermissionOption[];
-    },
-    timeoutMs: number
-  ): Promise<"allow" | "deny"> {
+  private waitForPermissionDecision(askInfo: {
+    toolTitle: string;
+    toolCallId?: string;
+    options: AcpPermissionOption[];
+  }): Promise<"allow" | "deny"> {
     return new Promise((resolve) => {
       let settled = false;
-      let timer: ReturnType<typeof setTimeout> | undefined;
       const finish = (decision: "allow" | "deny") => {
         if (settled) return;
         settled = true;
-        if (timer) clearTimeout(timer);
         this.permissionWaitCancels.delete(cancel);
         resolve(decision);
       };
       const cancel = () => finish("deny");
       this.permissionWaitCancels.add(cancel);
-
-      timer = setTimeout(() => {
-        // Deny the live request immediately. Store expiry remains best-effort
-        // cleanup and must not keep the ACP request or Node timer alive.
-        finish("deny");
-        if (this.options.onPermissionAskFailSafe) {
-          void this.options.onPermissionAskFailSafe(askInfo).catch(() => undefined);
-        }
-      }, Math.max(1, timeoutMs + PERMISSION_FAILSAFE_SLACK_MS));
 
       void Promise.resolve()
         .then(() => this.options.onPermissionAsk!(askInfo))

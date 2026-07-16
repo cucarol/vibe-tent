@@ -64,7 +64,7 @@ export interface GrokAcpAdapterOptions {
    * Optional permission ask resolver (Local Service tool-approval bridge / tests).
    * When omitted and policy=ask, permissions deny (safe default; never auto-allow).
    * Distinct from A2A spawn approval — this is ACP session/request_permission only.
-   * Store expiry is authoritative; late approve after expire must fail.
+   * Store expiry is the sole authority; late approve after expire must fail.
    */
   onPermissionAsk?: (info: {
     sessionId: string;
@@ -72,16 +72,6 @@ export interface GrokAcpAdapterOptions {
     toolCallId?: string;
     options: Array<{ optionId: string; kind?: string; name?: string }>;
   }) => Promise<"allow" | "deny">;
-  /**
-   * Bounded fail-safe if onPermissionAsk hangs past store timeout + slack.
-   * Must expire/cancel the same pending store item (not leave an approvable pending).
-   */
-  onPermissionAskFailSafe?: (info: {
-    sessionId: string;
-    toolTitle: string;
-    toolCallId?: string;
-    options: Array<{ optionId: string; kind?: string; name?: string }>;
-  }) => Promise<void>;
 }
 
 function defaultGrokExecutable(): string {
@@ -153,7 +143,6 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     profileBaseUrl?: string
   ) => string | undefined;
   private readonly onPermissionAsk?: GrokAcpAdapterOptions["onPermissionAsk"];
-  private readonly onPermissionAskFailSafe?: GrokAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: GrokAcpAdapterOptions = {}) {
     this.resolveApiKey =
@@ -166,7 +155,6 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
           planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
         ));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -313,7 +301,6 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
 
     return new GrokAcpClient({
@@ -325,10 +312,8 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       model: opts.model,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,
-      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe,
     });
   }
 

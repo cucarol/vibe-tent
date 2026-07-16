@@ -3,7 +3,6 @@
 
 import {
   AcpClient,
-  PERMISSION_FAILSAFE_SLACK_MS,
   type AcpClientOptions,
   type AcpConnectOptions,
   type AcpConnectResult,
@@ -12,8 +11,6 @@ import {
 import type { AcpPermissionOption } from "../acp/types.js";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import type { GrokAcpPermissionPolicy } from "./types.js";
-
-export { PERMISSION_FAILSAFE_SLACK_MS };
 
 export type GrokAcpClientOptions = {
   command: string;
@@ -25,28 +22,18 @@ export type GrokAcpClientOptions = {
   model: string;
   promptTimeoutMs?: number;
   permissionPolicy: GrokAcpPermissionPolicy;
-  permissionTimeoutMs?: number;
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
    * When permissionPolicy is "ask", resolve allow/deny via Local Service
    * tool-approval store (never agent self-approve). Return "allow" | "deny".
-   * Store expiry is authoritative; missing callback → deny (cancelled).
+   * Store expiry is the sole authority; missing callback → deny (cancelled).
    */
   onPermissionAsk?: (info: {
     toolTitle: string;
     toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
-  /**
-   * Bounded fail-safe when onPermissionAsk does not settle past store timeout + slack.
-   * Must cancel/expire the same store item so nothing remains user-approvable.
-   */
-  onPermissionAskFailSafe?: (info: {
-    toolTitle: string;
-    toolCallId?: string;
-    options: AcpPermissionOption[];
-  }) => Promise<void>;
 };
 
 export type GrokAcpStartResult = AcpStartResult;
@@ -68,11 +55,9 @@ export class GrokAcpClient {
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
-      permissionTimeoutMs: options.permissionTimeoutMs,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,
-      onPermissionAskFailSafe: options.onPermissionAskFailSafe,
       authenticate: async (authMethods) => {
         const ids = new Set(authMethods.map((m) => m.id));
         const methodId = ids.has("xai.api_key")

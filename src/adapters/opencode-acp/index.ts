@@ -53,14 +53,12 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     planEnv: Record<string, string>
   ) => string | undefined;
   private readonly onPermissionAsk?: OpenCodeAcpAdapterOptions["onPermissionAsk"];
-  private readonly onPermissionAskFailSafe?: OpenCodeAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: OpenCodeAcpAdapterOptions = {}) {
     this.resolveEnvValue =
       options.resolveEnvValue ??
       ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -139,7 +137,6 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
     return new AcpClient({
       command: launch.command,
@@ -149,11 +146,9 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "OpenCode ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe,
     });
   }
 

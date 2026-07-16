@@ -11827,7 +11827,6 @@ var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
 // src/adapters/acp/client.ts
-var PERMISSION_FAILSAFE_SLACK_MS = 5e3;
 var LOAD_REPLAY_QUIET_MS = 100;
 var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
 var AcpClient = class {
@@ -11860,7 +11859,7 @@ var AcpClient = class {
     this.loadSessionSupported = false;
     /** Concurrent ask-policy requests keep the session waiting until all resolve. */
     this.permissionAsksInFlight = 0;
-    /** Stop/exit cancellation for ask callbacks and their fail-safe timers. */
+    /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
     this.permissionWaitCancels = /* @__PURE__ */ new Set();
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
   }
@@ -12272,9 +12271,8 @@ var AcpClient = class {
         });
         try {
           if (this.options.onPermissionAsk) {
-            const timeoutMs = this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
             const askInfo = { toolTitle, toolCallId, options };
-            decision = await this.waitForPermissionDecision(askInfo, timeoutMs);
+            decision = await this.waitForPermissionDecision(askInfo);
           } else {
             decision = "deny";
           }
@@ -12307,25 +12305,17 @@ var AcpClient = class {
       }
     }
   }
-  waitForPermissionDecision(askInfo, timeoutMs) {
+  waitForPermissionDecision(askInfo) {
     return new Promise((resolve10) => {
       let settled = false;
-      let timer;
       const finish = (decision) => {
         if (settled) return;
         settled = true;
-        if (timer) clearTimeout(timer);
         this.permissionWaitCancels.delete(cancel);
         resolve10(decision);
       };
       const cancel = () => finish("deny");
       this.permissionWaitCancels.add(cancel);
-      timer = setTimeout(() => {
-        finish("deny");
-        if (this.options.onPermissionAskFailSafe) {
-          void this.options.onPermissionAskFailSafe(askInfo).catch(() => void 0);
-        }
-      }, Math.max(1, timeoutMs + PERMISSION_FAILSAFE_SLACK_MS));
       void Promise.resolve().then(() => this.options.onPermissionAsk(askInfo)).then(
         (decision) => finish(decision),
         () => finish("deny")
@@ -12506,9 +12496,6 @@ function bindAcpPermissionHooks(sessionId, permissionPolicy, hooks) {
     onPermissionAsk: permissionPolicy === "ask" ? async (info) => {
       if (!hooks.onPermissionAsk) return "deny";
       return hooks.onPermissionAsk(mapInfo(info));
-    } : void 0,
-    onPermissionAskFailSafe: permissionPolicy === "ask" && hooks.onPermissionAskFailSafe ? async (info) => {
-      await hooks.onPermissionAskFailSafe(mapInfo(info));
     } : void 0
   };
 }
@@ -12669,11 +12656,9 @@ var GrokAcpClient = class {
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
-      permissionTimeoutMs: options.permissionTimeoutMs,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,
-      onPermissionAskFailSafe: options.onPermissionAskFailSafe,
       authenticate: async (authMethods) => {
         const ids = new Set(authMethods.map((m) => m.id));
         const methodId = ids.has("xai.api_key") ? "xai.api_key" : ids.has("cached_token") ? "cached_token" : null;
@@ -12763,7 +12748,6 @@ var GrokAcpProviderAdapter = class {
       planEnv[baseUrlEnvKey] ?? process.env[baseUrlEnvKey] ?? profileBaseUrl
     ));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return loadSessionAcpCapabilities("env");
@@ -12867,8 +12851,7 @@ var GrokAcpProviderAdapter = class {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const launch = this.resolveLaunch(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     return new GrokAcpClient({
       command: launch.command,
@@ -12879,10 +12862,8 @@ var GrokAcpProviderAdapter = class {
       model: opts.model,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       emit: emit2,
-      onPermissionAsk: permHooks.onPermissionAsk,
-      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
+      onPermissionAsk: permHooks.onPermissionAsk
     });
   }
   parseResumeToken(raw) {
@@ -12918,7 +12899,6 @@ var CodexAcpProviderAdapter = class {
     this.displayNameKey = "adapter.codexAcp.displayName";
     this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return mainstreamAcpCapabilities();
@@ -12964,8 +12944,7 @@ var CodexAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     const client = new AcpClient({
       command: launch.command,
@@ -12975,11 +12954,9 @@ var CodexAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "Codex ACP",
       emit: emit2,
-      onPermissionAsk: permHooks.onPermissionAsk,
-      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
+      onPermissionAsk: permHooks.onPermissionAsk
     });
     return startManagedAcpSession({ plan, emit: emit2, client });
   }
@@ -13005,7 +12982,6 @@ var ClaudeAcpProviderAdapter = class {
     this.displayNameKey = "adapter.claudeAcp.displayName";
     this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return mainstreamAcpCapabilities();
@@ -13050,8 +13026,7 @@ var ClaudeAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     const client = new AcpClient({
       command: launch.command,
@@ -13061,11 +13036,9 @@ var ClaudeAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "Claude ACP",
       emit: emit2,
-      onPermissionAsk: permHooks.onPermissionAsk,
-      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe
+      onPermissionAsk: permHooks.onPermissionAsk
     });
     return startManagedAcpSession({ plan, emit: emit2, client });
   }
@@ -13094,7 +13067,6 @@ var AntigravityAcpProviderAdapter = class {
     this.displayNameKey = "adapter.antigravityAcp.displayName";
     this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return mainstreamAcpCapabilities();
@@ -13128,8 +13100,7 @@ var AntigravityAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     const client = new AcpClient({
       command: launch.command,
@@ -13139,11 +13110,9 @@ var AntigravityAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit: emit2,
-      onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+      onPermissionAsk: hooks.onPermissionAsk
     });
     return startManagedAcpSession({ plan, emit: emit2, client });
   }
@@ -13171,7 +13140,6 @@ var OpenCodeAcpProviderAdapter = class {
     this.displayNameKey = "adapter.openCodeAcp.displayName";
     this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return loadSessionAcpCapabilities("external-app");
@@ -13229,8 +13197,7 @@ var OpenCodeAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     return new AcpClient({
       command: launch.command,
@@ -13240,11 +13207,9 @@ var OpenCodeAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "OpenCode ACP",
       emit: emit2,
-      onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+      onPermissionAsk: hooks.onPermissionAsk
     });
   }
   parseResumeToken(raw) {
@@ -13269,7 +13234,6 @@ var CopilotAcpProviderAdapter = class {
     this.displayNameKey = "adapter.copilotAcp.displayName";
     this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
   capabilities() {
     return mainstreamAcpCapabilities();
@@ -13308,8 +13272,7 @@ var CopilotAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
-      onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe
+      onPermissionAsk: this.onPermissionAsk
     });
     const client = new AcpClient({
       command: launch.command,
@@ -13319,11 +13282,9 @@ var CopilotAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "GitHub Copilot ACP",
       emit: emit2,
-      onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe
+      onPermissionAsk: hooks.onPermissionAsk
     });
     return startManagedAcpSession({ plan, emit: emit2, client });
   }
@@ -18694,7 +18655,7 @@ var ToolApprovalStore = class {
     });
   }
   /**
-   * Force-expire one pending item (timeout authority / fail-safe).
+   * Force-expire one pending item (store timeout authority).
    * Idempotent: returns current terminal status if already resolved.
    */
   async expireOne(id) {
@@ -20331,7 +20292,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const profilesInjected = options.profiles !== void 0;
   const profiles = profilesInjected ? options.profiles : await ensureDefaultProfiles(dataDir);
   const runtimeHolder = { current: null };
-  const openToolApprovalBySession = /* @__PURE__ */ new Map();
   const acpPermissionHooks = {
     onPermissionAsk: async (info) => {
       const runtime2 = runtimeHolder.current;
@@ -20379,7 +20339,6 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString()
       });
-      openToolApprovalBySession.set(info.sessionId, item.id);
       events.emit(
         "toolApproval.pending",
         workspaceId,
@@ -20393,28 +20352,8 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         },
         "service"
       );
-      try {
-        const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
-        return decision === "approved" ? "allow" : "deny";
-      } finally {
-        if (openToolApprovalBySession.get(info.sessionId) === item.id) {
-          openToolApprovalBySession.delete(info.sessionId);
-        }
-      }
-    },
-    onPermissionAskFailSafe: async (info) => {
-      const openId = openToolApprovalBySession.get(info.sessionId);
-      if (openId) {
-        try {
-          await toolApprovals.expireOne(openId);
-        } catch {
-        }
-        openToolApprovalBySession.delete(info.sessionId);
-      }
-      try {
-        await toolApprovals.cancelSession(info.sessionId, "expired");
-      } catch {
-      }
+      const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
+      return decision === "approved" ? "allow" : "deny";
     }
   };
   const runtime = createAgentRuntime({

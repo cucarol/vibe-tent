@@ -51,14 +51,12 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     planEnv: Record<string, string>
   ) => string | undefined;
   private readonly onPermissionAsk?: CopilotAcpAdapterOptions["onPermissionAsk"];
-  private readonly onPermissionAskFailSafe?: CopilotAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: CopilotAcpAdapterOptions = {}) {
     this.resolveEnvValue =
       options.resolveEnvValue ??
       ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -114,7 +112,6 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
     const client = new AcpClient({
       command: launch.command,
@@ -124,11 +121,9 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "GitHub Copilot ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe,
     });
     return startManagedAcpSession({ plan, emit, client });
   }

@@ -158,13 +158,9 @@ async function startOwnedLocalTentService(
   /**
    * Bridge ACP permissionPolicy=ask → machine-local tool approval store.
    * Distinct from A2A spawn approval. Never agent self-approve.
-   * Store expiry is the sole authority; late approve after expire fails.
-   * Client fail-safe only runs if this bridge hangs past timeout + slack,
-   * and then expires the same pending item (cancelSession).
+   * ToolApprovalStore waitForDecision / expiresAt is the sole timeout authority;
+   * late approve after expire fails. ACP client has no second permission timer.
    */
-  /** Last pending tool-approval id per session for fail-safe cancel. */
-  const openToolApprovalBySession = new Map<string, string>();
-
   const acpPermissionHooks: AcpPermissionAskHooks = {
     onPermissionAsk: async (info) => {
       const runtime = runtimeHolder.current;
@@ -227,7 +223,6 @@ async function startOwnedLocalTentService(
         createdAt: createdAt.toISOString(),
         expiresAt: expiresAt.toISOString(),
       });
-      openToolApprovalBySession.set(info.sessionId, item.id);
 
       events.emit(
         "toolApproval.pending",
@@ -243,32 +238,9 @@ async function startOwnedLocalTentService(
         "service"
       );
 
-      try {
-        // Authoritative wait: store mutates status to expired on timeout.
-        const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
-        return decision === "approved" ? "allow" : "deny";
-      } finally {
-        if (openToolApprovalBySession.get(info.sessionId) === item.id) {
-          openToolApprovalBySession.delete(info.sessionId);
-        }
-      }
-    },
-    onPermissionAskFailSafe: async (info) => {
-      // Bridge hung past store timeout + slack — expire same session pendings.
-      const openId = openToolApprovalBySession.get(info.sessionId);
-      if (openId) {
-        try {
-          await toolApprovals.expireOne(openId);
-        } catch {
-          // ignore
-        }
-        openToolApprovalBySession.delete(info.sessionId);
-      }
-      try {
-        await toolApprovals.cancelSession(info.sessionId, "expired");
-      } catch {
-        // ignore
-      }
+      // Authoritative wait: store mutates status to expired on timeout.
+      const decision = await toolApprovals.waitForDecision(item.id, timeoutMs);
+      return decision === "approved" ? "allow" : "deny";
     },
   };
 

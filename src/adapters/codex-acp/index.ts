@@ -77,14 +77,12 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     planEnv: Record<string, string>
   ) => string | undefined;
   private readonly onPermissionAsk?: CodexAcpAdapterOptions["onPermissionAsk"];
-  private readonly onPermissionAskFailSafe?: CodexAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: CodexAcpAdapterOptions = {}) {
     this.resolveEnvValue =
       options.resolveEnvValue ??
       ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -143,7 +141,6 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
 
     // No authenticate hook — Codex bridge uses env DEFAULT_AUTH_REQUEST / local login.
@@ -155,11 +152,9 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "Codex ACP",
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,
-      onPermissionAskFailSafe: permHooks.onPermissionAskFailSafe,
     });
 
     return startManagedAcpSession({ plan, emit, client });

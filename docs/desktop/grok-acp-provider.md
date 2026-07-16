@@ -228,13 +228,13 @@ There is **no** “yolo / bypass all tools” mode in Tent’s adapter. Coding t
 
 ### Tool approval timeout authority
 
-There is **one** authoritative expiry: the Local Service `ToolApprovalStore` record (`expiresAt` / `waitForDecision` / `expireOne`).
+There is **one** authoritative expiry: the Local Service `ToolApprovalStore` record (`expiresAt` / `waitForDecision` / `expireOne`). Profile `permissionTimeoutMs` is read **live** when the service opens a pending row — not snapshotted by the ACP client at session start.
 
 | Layer | Role |
 | --- | --- |
 | `ToolApprovalStore` | Sole mutation authority for pending → approved / denied / expired. Mutations + `tool-approvals.json` persistence are **serialized**; persist uses **temp-file + rename**. Concurrent resolve/cancel/expire cannot resurrect a pending row. |
-| `onPermissionAsk` bridge | Adds pending, waits on store, maps `approved` → allow else deny. |
-| `GrokAcpClient` fail-safe | Only if the service bridge hangs past `permissionTimeoutMs + slack` (default +5s). Must **expire/cancel the same store item** — never leave an approvable pending while ACP already cancelled. |
+| `onPermissionAsk` bridge | Adds pending with live-profile `permissionTimeoutMs`, waits on store, maps `approved` → allow else deny. |
+| ACP client (`AcpClient`) | Awaits the bridge callback only. **No** second permission timer / fail-safe deny. Stop / process exit still cancels hung waiters immediately so they do not leak. |
 | Late `toolApproval.approveOnce` | **Fails** after expire/deny/cancel (`already expired` / `already …`). |
 
 `pending` is durable only for crash-safe state accounting, not as a resumable tool
@@ -248,7 +248,7 @@ their waiters before ACP children stop. If that final persistence write fails, t
 live waiters are still denied and their timers cleared; restart recovery then expires
 the unchanged disk rows.
 
-Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired).
+Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired). Mid-session profile timeout changes must not cause an early client deny ahead of the store.
 
 ### A2A spawn approval vs tool permission approval
 

@@ -3,7 +3,6 @@
 
 export {
   AcpClient,
-  PERMISSION_FAILSAFE_SLACK_MS,
   type AcpClientOptions,
   type AcpConnectMode,
   type AcpConnectOptions,

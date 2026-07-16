@@ -36,12 +36,6 @@ export type AcpPermissionAskHooks = {
     toolCallId?: string;
     options: Array<{ optionId: string; kind?: string; name?: string }>;
   }) => Promise<"allow" | "deny">;
-  onPermissionAskFailSafe?: (info: {
-    sessionId: string;
-    toolTitle: string;
-    toolCallId?: string;
-    options: Array<{ optionId: string; kind?: string; name?: string }>;
-  }) => Promise<void>;
 };
 
 export class AcpManagedSession implements ManagedSession {
@@ -103,11 +97,6 @@ export function bindAcpPermissionHooks(
     toolCallId?: string;
     options: AcpPermissionOption[];
   }) => Promise<"allow" | "deny">;
-  onPermissionAskFailSafe?: (info: {
-    toolTitle: string;
-    toolCallId?: string;
-    options: AcpPermissionOption[];
-  }) => Promise<void>;
 } {
   const mapInfo = (info: {
     toolTitle: string;
@@ -130,12 +119,6 @@ export function bindAcpPermissionHooks(
         ? async (info) => {
             if (!hooks.onPermissionAsk) return "deny";
             return hooks.onPermissionAsk(mapInfo(info));
-          }
-        : undefined,
-    onPermissionAskFailSafe:
-      permissionPolicy === "ask" && hooks.onPermissionAskFailSafe
-        ? async (info) => {
-            await hooks.onPermissionAskFailSafe!(mapInfo(info));
           }
         : undefined,
   };

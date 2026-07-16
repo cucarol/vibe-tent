@@ -55,14 +55,12 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
     planEnv: Record<string, string>
   ) => string | undefined;
   private readonly onPermissionAsk?: AntigravityAcpAdapterOptions["onPermissionAsk"];
-  private readonly onPermissionAskFailSafe?: AntigravityAcpAdapterOptions["onPermissionAskFailSafe"];
 
   constructor(options: AntigravityAcpAdapterOptions = {}) {
     this.resolveEnvValue =
       options.resolveEnvValue ??
       ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
     this.onPermissionAsk = options.onPermissionAsk;
-    this.onPermissionAskFailSafe = options.onPermissionAskFailSafe;
   }
 
   capabilities(): ProviderCapabilities {
@@ -105,7 +103,6 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
     const launch = this.resolveLaunch(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
-      onPermissionAskFailSafe: this.onPermissionAskFailSafe,
     });
     const client = new AcpClient({
       command: launch.command,
@@ -115,11 +112,9 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
-      permissionTimeoutMs: opts.permissionTimeoutMs,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,
-      onPermissionAskFailSafe: hooks.onPermissionAskFailSafe,
     });
     return startManagedAcpSession({ plan, emit, client });
   }

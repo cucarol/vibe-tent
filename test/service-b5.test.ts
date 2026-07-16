@@ -1707,7 +1707,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-timeout-"));
   const logPath = path.join(dataDir, "mock-acp-log.json");
-  // Short store-authoritative timeout; client fail-safe is timeout + 5s slack.
+  // Short store-authoritative timeout (sole expiry; client has no permission timer).
   const permissionTimeoutMs = 400;
   await withService(
     async (svc) => {

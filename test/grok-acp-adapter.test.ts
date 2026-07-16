@@ -818,7 +818,76 @@ test("concurrent permission asks emit live only after the final decision", async
   await runtime.shutdown();
 });
 
-test("stopping a hung permission ask clears its long-lived timers", async () => {
+test("permission ask is not denied by a short startup permissionTimeoutMs snapshot", async () => {
+  const dataDir = await tempDir("tent-grok-ask-live-timeout-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  let askedAt = 0;
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+    // Resolve after the removed client fail-safe window (snapshot + 5s slack).
+    // The old implementation denied before this callback settled, so this delay
+    // makes the regression test fail against the old dual-timeout behavior.
+    onPermissionAsk: async () => {
+      askedAt = Date.now();
+      await new Promise((r) => setTimeout(r, 5_500));
+      return "allow";
+    },
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-ask-live-timeout", {
+        logPath,
+        apiKey: "test-key",
+        permissionPolicy: "ask",
+        requestPermission: true,
+        // Would have been client snapshot + 5s fail-safe; must not matter on client.
+        permissionTimeoutMs: 100,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const sessionId = "ss-acpasklt";
+
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-ask-live-timeout",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.waiting_user", sessionId, 3_000);
+
+  const start = Date.now();
+  let outcome: { outcome?: string; optionId?: string } | undefined;
+  while (Date.now() - start < 8_000) {
+    try {
+      const raw = await fs.readFile(logPath, "utf8");
+      const log = JSON.parse(raw) as {
+        permissionOutcomes: Array<{ outcome?: string; optionId?: string }>;
+      };
+      if (log.permissionOutcomes?.length) {
+        outcome = log.permissionOutcomes[0];
+        break;
+      }
+    } catch {
+      // wait
+    }
+    await new Promise((r) => setTimeout(r, 40));
+  }
+  assert.ok(askedAt > 0, "onPermissionAsk must run");
+  assert.ok(outcome, "permission outcome must be written");
+  assert.equal(outcome!.outcome, "selected");
+  assert.equal(outcome!.optionId, "allow_once");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("stopping a hung permission ask cancels waiters without timer leak", async () => {
   const dataDir = await tempDir("tent-grok-ask-stop-");
   const cwd = await tempDir("tent-grok-cwd-");
   const logPath = path.join(dataDir, "mock-acp-log.json");
@@ -856,18 +925,26 @@ test("stopping a hung permission ask clears its long-lived timers", async () => 
   });
   await waitFor(events, "session.waiting_user", sessionId, 3_000);
   const waitingTimeouts = timeoutCount();
+  // Prompt/request deadlines may exist; permission ask itself has no fail-safe timer.
   assert.ok(
-    waitingTimeouts >= baselineTimeouts + 2,
-    "the ACP request and permission waiter should both have active deadlines"
+    waitingTimeouts >= baselineTimeouts,
+    "session may hold request timers while waiting on permission"
   );
 
   const startedAt = Date.now();
   await runtime.stopSession(sessionId, "user");
-  assert.ok(Date.now() - startedAt < 3_000, "stop must not await permission timeout");
+  assert.ok(Date.now() - startedAt < 3_000, "stop must not await permission callback");
   await new Promise((resolve) => setTimeout(resolve, 25));
   assert.ok(
-    timeoutCount() < waitingTimeouts,
-    "stop must clear the request and permission deadlines"
+    timeoutCount() <= waitingTimeouts,
+    "stop must not leave extra permission timers"
+  );
+  // After stop, active Timeout count should not keep climbing from a leaked fail-safe.
+  const afterStop = timeoutCount();
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(
+    timeoutCount() <= afterStop + 1,
+    "no leaked permission fail-safe timer after stop"
   );
 
   await runtime.shutdown();
