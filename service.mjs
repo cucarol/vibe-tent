@@ -11291,8 +11291,63 @@ var MutationBus = class {
 // src/service/a2a-store.ts
 import * as fs3 from "node:fs/promises";
 import * as path3 from "node:path";
+var A2A_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
+var A2A_CALLER_KINDS = /* @__PURE__ */ new Set(["user", "role"]);
+var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
+  "pending",
+  "approved",
+  "denied"
+]);
 function cloneApproval(item) {
   return { ...item };
+}
+function isRecord4(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isRequiredString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isOptionalString(value) {
+  return value === void 0 || typeof value === "string";
+}
+function isValidDate(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseA2AApproval(value) {
+  if (!isRecord4(value)) return null;
+  const {
+    id,
+    workspaceId,
+    taskPath,
+    taskId,
+    role,
+    profileId,
+    policy,
+    callerKind,
+    bootstrapPrompt,
+    status,
+    createdAt,
+    resolvedAt,
+    resolvedBy
+  } = value;
+  if (!isRequiredString(id) || !isRequiredString(workspaceId) || !isRequiredString(taskPath) || !isRequiredString(role) || !isRequiredString(profileId) || !isRequiredString(createdAt) || !isValidDate(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString(taskId) || !isOptionalString(bootstrapPrompt) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate(resolvedAt)) {
+    return null;
+  }
+  return {
+    id,
+    workspaceId,
+    taskPath,
+    ...taskId !== void 0 ? { taskId } : {},
+    role,
+    profileId,
+    policy,
+    callerKind,
+    ...bootstrapPrompt !== void 0 ? { bootstrapPrompt } : {},
+    status,
+    createdAt,
+    ...resolvedAt !== void 0 ? { resolvedAt } : {},
+    ...resolvedBy !== void 0 ? { resolvedBy } : {}
+  };
 }
 var A2AApprovalStore = class {
   constructor(dataDir, options) {
@@ -11336,9 +11391,17 @@ var A2AApprovalStore = class {
           this.loaded = true;
           return;
         }
+        const loaded = /* @__PURE__ */ new Map();
         for (const item of items ?? []) {
-          if (item?.id) this.items.set(item.id, cloneApproval(item));
+          const restored = parseA2AApproval(item);
+          if (!restored) {
+            await this.quarantineCorrupt("reset");
+            this.loaded = true;
+            return;
+          }
+          loaded.set(restored.id, restored);
         }
+        this.items = loaded;
         this.loaded = true;
       } catch (err) {
         if (isNotFoundError(err)) {
@@ -17394,20 +17457,20 @@ var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "expired"
 ]);
-function isRecord4(value) {
+function isRecord5(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString(value) {
+function isRequiredString2(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isOptionalString(value) {
+function isOptionalString2(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate(value) {
+function isValidDate2(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord5(value)) return null;
   const {
     id,
     workspaceId,
@@ -17424,12 +17487,12 @@ function parseApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString(id) || !isRequiredString(workspaceId) || !isRequiredString(sessionId) || !isRequiredString(toolTitle) || !isRequiredString(createdAt) || !isRequiredString(expiresAt) || !isValidDate(createdAt) || !isValidDate(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString(taskId) || !isOptionalString(taskPath) || !isOptionalString(role) || !isOptionalString(toolCallId) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate(resolvedAt)) {
+  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(sessionId) || !isRequiredString2(toolTitle) || !isRequiredString2(createdAt) || !isRequiredString2(expiresAt) || !isValidDate2(createdAt) || !isValidDate2(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString2(taskId) || !isOptionalString2(taskPath) || !isOptionalString2(role) || !isOptionalString2(toolCallId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
     return null;
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord4(option) || !isRequiredString(option.optionId) || !isOptionalString(option.kind) || !isOptionalString(option.name)) {
+    if (!isRecord5(option) || !isRequiredString2(option.optionId) || !isOptionalString2(option.kind) || !isOptionalString2(option.name)) {
       return null;
     }
     parsedOptions.push({

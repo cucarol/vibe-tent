@@ -94,6 +94,100 @@ test("writeJsonAtomic: sequential replace leaves parseable pretty JSON", async (
   );
 });
 
+test("A2AApprovalStore: malformed row quarantines the whole machine-state file", async () => {
+  const dataDir = await tempDir("tent-a2a-corrupt-row-");
+  const file = path.join(dataDir, "a2a-approvals.json");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      items: [
+        a2aPending({ id: "ap-valid0001" }),
+        {
+          ...a2aPending({ id: "ap-bad00001" }),
+          policy: "maybe",
+          extraUnknown: "drop-me",
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const cap = captureConsoleError();
+  try {
+    const store = new A2AApprovalStore(dataDir);
+    assert.deepEqual(await store.listPending(), []);
+    await assert.rejects(() => fs.access(file));
+
+    const names = await fs.readdir(dataDir);
+    const backups = names.filter((n) => n.startsWith("a2a-approvals.json.corrupt-"));
+    assert.equal(backups.length, 1);
+    const quarantined = JSON.parse(
+      await fs.readFile(path.join(dataDir, backups[0]), "utf8")
+    ) as { items: unknown[] };
+    assert.equal(quarantined.items.length, 2);
+    assert.ok(cap.lines.some((l) => /a2a-approvals\.json was corrupt/.test(l)));
+  } finally {
+    cap.restore();
+  }
+});
+
+test("A2AApprovalStore: valid pending survives reload without status change", async () => {
+  const dataDir = await tempDir("tent-a2a-pending-reload-");
+  const store = new A2AApprovalStore(dataDir);
+  const id = makeApprovalId(() => 0.42);
+  const created = await store.add(
+    a2aPending({
+      id,
+      taskId: "task-1",
+      bootstrapPrompt: "continue",
+      // Unknown keys must not be persisted via parse on reload either.
+    })
+  );
+  assert.equal(created.status, "pending");
+
+  // Inject a disk row with an unknown field; load path must strip unknowns
+  // and keep the legal pending status (unlike tool approvals, no expire-on-restart).
+  const file = path.join(dataDir, "a2a-approvals.json");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      items: [
+        {
+          ...created,
+          extraUnknown: "should-be-dropped",
+          nested: { x: 1 },
+        },
+      ],
+    }),
+    "utf8"
+  );
+
+  const reloaded = new A2AApprovalStore(dataDir);
+  const item = await reloaded.get(id);
+  assert.ok(item);
+  assert.equal(item!.status, "pending");
+  assert.equal(item!.workspaceId, "ws-1");
+  assert.equal(item!.taskPath, "tasks/t1.md");
+  assert.equal(item!.role, "worker");
+  assert.equal(item!.profileId, "fake-default");
+  assert.equal(item!.policy, "ask");
+  assert.equal(item!.callerKind, "user");
+  assert.equal(item!.taskId, "task-1");
+  assert.equal(item!.bootstrapPrompt, "continue");
+  assert.equal(item!.createdAt, created.createdAt);
+  assert.equal(
+    Object.prototype.hasOwnProperty.call(item!, "extraUnknown"),
+    false,
+    "unknown fields must be discarded on parse"
+  );
+  assert.equal(Object.prototype.hasOwnProperty.call(item!, "nested"), false);
+
+  const pending = await reloaded.listPending("ws-1");
+  assert.equal(pending.length, 1);
+  assert.equal(pending[0].id, id);
+  assert.equal(pending[0].status, "pending");
+});
+
 test("A2AApprovalStore: concurrent resolve cannot resurrect pending", async () => {
   const dataDir = await tempDir("tent-a2a-race-");
   const store = new A2AApprovalStore(dataDir);

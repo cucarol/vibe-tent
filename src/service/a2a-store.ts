@@ -33,8 +33,89 @@ export type A2AApprovalStoreOptions = {
   writeState?: (filePath: string, value: unknown) => Promise<void>;
 };
 
+const A2A_POLICIES = new Set<A2APolicy>(["allow", "ask", "deny"]);
+const A2A_CALLER_KINDS = new Set<"user" | "role">(["user", "role"]);
+const A2A_APPROVAL_STATUSES = new Set<A2AApprovalStatus>([
+  "pending",
+  "approved",
+  "denied",
+]);
+
 function cloneApproval(item: A2APendingApproval): A2APendingApproval {
   return { ...item };
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRequiredString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isValidDate(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
+/** Parse untrusted machine state before any clone/projection touches it. */
+function parseA2AApproval(value: unknown): A2APendingApproval | null {
+  if (!isRecord(value)) return null;
+  const {
+    id,
+    workspaceId,
+    taskPath,
+    taskId,
+    role,
+    profileId,
+    policy,
+    callerKind,
+    bootstrapPrompt,
+    status,
+    createdAt,
+    resolvedAt,
+    resolvedBy,
+  } = value;
+  if (
+    !isRequiredString(id) ||
+    !isRequiredString(workspaceId) ||
+    !isRequiredString(taskPath) ||
+    !isRequiredString(role) ||
+    !isRequiredString(profileId) ||
+    !isRequiredString(createdAt) ||
+    !isValidDate(createdAt) ||
+    typeof policy !== "string" ||
+    !A2A_POLICIES.has(policy as A2APolicy) ||
+    typeof callerKind !== "string" ||
+    !A2A_CALLER_KINDS.has(callerKind as "user" | "role") ||
+    typeof status !== "string" ||
+    !A2A_APPROVAL_STATUSES.has(status as A2AApprovalStatus) ||
+    !isOptionalString(taskId) ||
+    !isOptionalString(bootstrapPrompt) ||
+    !isOptionalString(resolvedAt) ||
+    !isOptionalString(resolvedBy) ||
+    (resolvedAt !== undefined && !isValidDate(resolvedAt))
+  ) {
+    return null;
+  }
+  return {
+    id,
+    workspaceId,
+    taskPath,
+    ...(taskId !== undefined ? { taskId } : {}),
+    role,
+    profileId,
+    policy: policy as A2APolicy,
+    callerKind: callerKind as "user" | "role",
+    ...(bootstrapPrompt !== undefined ? { bootstrapPrompt } : {}),
+    status: status as A2AApprovalStatus,
+    createdAt,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    ...(resolvedBy !== undefined ? { resolvedBy } : {}),
+  };
 }
 
 /**
@@ -89,9 +170,20 @@ export class A2AApprovalStore {
           this.loaded = true;
           return;
         }
-        for (const item of (items as A2APendingApproval[] | undefined) ?? []) {
-          if (item?.id) this.items.set(item.id, cloneApproval(item));
+        const loaded = new Map<string, A2APendingApproval>();
+        for (const item of items ?? []) {
+          const restored = parseA2AApproval(item);
+          if (!restored) {
+            // One bad row poisons the whole machine-state file — never skip.
+            await this.quarantineCorrupt("reset");
+            this.loaded = true;
+            return;
+          }
+          // Unlike tool approvals, A2A pending rows are durable across restarts:
+          // the ask path is service-owned and can be resolved after reload.
+          loaded.set(restored.id, restored);
         }
+        this.items = loaded;
         this.loaded = true;
       } catch (err) {
         if (isNotFoundError(err)) {
