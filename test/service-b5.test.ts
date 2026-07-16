@@ -4001,3 +4001,68 @@ test("runtime projection: different sessions are not process-wide serialized", a
     }
   });
 });
+
+test("service stop waits for terminal runtime projections before disposing", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-stop-drain-"));
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: false,
+  });
+  const sessionId = "ss-stopdrain1";
+  let releaseProjection!: () => void;
+  const projectionGate = new Promise<void>((resolve) => {
+    releaseProjection = resolve;
+  });
+  let enteredProjection!: () => void;
+  const projectionEntered = new Promise<void>((resolve) => {
+    enteredProjection = resolve;
+  });
+
+  try {
+    await svc.runtime.startSession({
+      sessionId,
+      profileId: "fake-default",
+      roleName: "executor",
+      runtimeWorkspace: { cwd: dataDir },
+    });
+
+    setRuntimeProjectionTestHooksForTests({
+      beforeProject: async (event, attempt) => {
+        if (event.sessionId === sessionId && event.type === "session.exited" && attempt === 1) {
+          enteredProjection();
+          await projectionGate;
+        }
+      },
+      retryDelayMs: 5,
+    });
+
+    let firstStopResolved = false;
+    let secondStopResolved = false;
+    const stopping = svc.stop().then(() => {
+      firstStopResolved = true;
+    });
+    const concurrentStop = svc.stop().then(() => {
+      secondStopResolved = true;
+    });
+
+    await projectionEntered;
+    await new Promise((resolve) => setTimeout(resolve, 30));
+    assert.equal(
+      firstStopResolved || secondStopResolved,
+      false,
+      "concurrent service.stop calls must share pending shutdown completion"
+    );
+
+    releaseProjection();
+    await Promise.all([stopping, concurrentStop]);
+    assert.equal(firstStopResolved, true);
+    assert.equal(secondStopResolved, true);
+
+    const record = await svc.runtime.registry.read(sessionId);
+    assert.ok(record?.state === "stopped" || record?.state === "failed");
+  } finally {
+    releaseProjection?.();
+    resetRuntimeProjectionForTests();
+    await svc.stop();
+  }
+});

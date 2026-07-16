@@ -306,11 +306,26 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   };
 
   // Bridge runtime events → EventEnvelope (no chat tokens).
-  // mapRuntimeEventToService returns a Promise; callers may ignore it.
   // Projection is serialized per sessionId with one bounded retry on failure.
-  runtime.subscribeAll((ev) => {
-    void mapRuntimeEventToService(ctx, ev);
+  // Keep service-owned references so shutdown cannot return while terminal
+  // runtime events are still mutating task/session projections in the background.
+  const runtimeProjections = new Set<Promise<void>>();
+  const unsubscribeRuntimeEvents = runtime.subscribeAll((ev) => {
+    const projection = mapRuntimeEventToService(ctx, ev);
+    runtimeProjections.add(projection);
+    void projection.then(
+      () => runtimeProjections.delete(projection),
+      () => runtimeProjections.delete(projection)
+    );
   });
+
+  const drainRuntimeProjections = async (): Promise<void> => {
+    // A projection may enqueue another runtime event (for example an idempotent
+    // stop during failure cleanup), so drain snapshots until the set stays empty.
+    while (runtimeProjections.size > 0) {
+      await Promise.allSettled([...runtimeProjections]);
+    }
+  };
 
   const httpServer: ServiceHttpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",
@@ -339,21 +354,25 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     pid: getPid(),
   });
 
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    events.emit("service.health", "", { action: "stopping" });
-    try {
-      await runtime.shutdown();
-    } catch {
-      // best-effort
-    }
-    await workspaceHost.dispose();
-    await httpServer.close();
-    if (options.writeEndpoint !== false) {
-      await removeServiceEndpoint(dataDir);
-    }
+  let stopPromise: Promise<void> | null = null;
+  const stop = (): Promise<void> => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      events.emit("service.health", "", { action: "stopping" });
+      try {
+        await runtime.shutdown();
+      } catch {
+        // best-effort
+      }
+      await drainRuntimeProjections();
+      unsubscribeRuntimeEvents();
+      await workspaceHost.dispose();
+      await httpServer.close();
+      if (options.writeEndpoint !== false) {
+        await removeServiceEndpoint(dataDir);
+      }
+    })();
+    return stopPromise;
   };
 
   return {

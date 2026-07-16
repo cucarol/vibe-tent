@@ -270,10 +270,11 @@ Rules:
 
 1. **Workspace copy does not carry** session files (including RuntimeWorkspace absolute paths).
 2. On service start, `probe` all non-terminal sessions: dead PID and not resume-capable → `failed`/`stopped`; resume-capable → keep metadata until explicit resume.
-3. Concurrent live sessions must not cross-contaminate cwd/env; stop validates `sessionId` (+ workspace id when multi-mount).
-4. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
-5. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
-6. **ACP native resume (`session/load`):** when `canResume` and `resumeManagedSession` are implemented, `AgentRuntime.resumeSession` spawns a **new** bridge process, reuses the machine-local `resumeToken` as provider `sessionId`, and calls `session/load` with the **same** recorded cwd. It must **not** call `session/new`. Load history notifications are diagnostics only (no auto-delivery). `task.startSession` may reuse an existing Tent `sessionId` after restart only when `probe.resumeCapable` is true **and** task lane cwd still matches the session row.
+3. On service stop, stop managed children first, then drain every runtime→service projection before disposing mounted workspaces or returning. A terminal event must never continue mutating task/session state after `service.stop()` resolves.
+4. Concurrent live sessions must not cross-contaminate cwd/env; stop validates `sessionId` (+ workspace id when multi-mount).
+5. `external` sessions (pull-host) have no supervised PID; state advances primarily via Task API claim/deliver, not process exit.
+6. Tasks that referenced a purged session keep only a dangling `sessionId` string until rebound—never a partial session row in operational task YAML.
+7. **ACP native resume (`session/load`):** when `canResume` and `resumeManagedSession` are implemented, `AgentRuntime.resumeSession` spawns a **new** bridge process, reuses the machine-local `resumeToken` as provider `sessionId`, and calls `session/load` with the **same** recorded cwd. It must **not** call `session/new`. Load history notifications are diagnostics only (no auto-delivery). `task.startSession` may reuse an existing Tent `sessionId` after restart only when `probe.resumeCapable` is true **and** task lane cwd still matches the session row.
 
 ---
 

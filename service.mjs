@@ -19276,9 +19276,20 @@ async function startLocalTentService(options = {}) {
     home,
     integrateCommits: options.integrateCommits
   };
-  runtime.subscribeAll((ev) => {
-    void mapRuntimeEventToService(ctx, ev);
+  const runtimeProjections = /* @__PURE__ */ new Set();
+  const unsubscribeRuntimeEvents = runtime.subscribeAll((ev) => {
+    const projection = mapRuntimeEventToService(ctx, ev);
+    runtimeProjections.add(projection);
+    void projection.then(
+      () => runtimeProjections.delete(projection),
+      () => runtimeProjections.delete(projection)
+    );
   });
+  const drainRuntimeProjections = async () => {
+    while (runtimeProjections.size > 0) {
+      await Promise.allSettled([...runtimeProjections]);
+    }
+  };
   const httpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",
     port: options.port ?? 0,
@@ -19303,20 +19314,24 @@ async function startLocalTentService(options = {}) {
     url: httpServer.url,
     pid: getPid()
   });
-  let stopped = false;
-  const stop = async () => {
-    if (stopped) return;
-    stopped = true;
-    events.emit("service.health", "", { action: "stopping" });
-    try {
-      await runtime.shutdown();
-    } catch {
-    }
-    await workspaceHost.dispose();
-    await httpServer.close();
-    if (options.writeEndpoint !== false) {
-      await removeServiceEndpoint(dataDir);
-    }
+  let stopPromise = null;
+  const stop = () => {
+    if (stopPromise) return stopPromise;
+    stopPromise = (async () => {
+      events.emit("service.health", "", { action: "stopping" });
+      try {
+        await runtime.shutdown();
+      } catch {
+      }
+      await drainRuntimeProjections();
+      unsubscribeRuntimeEvents();
+      await workspaceHost.dispose();
+      await httpServer.close();
+      if (options.writeEndpoint !== false) {
+        await removeServiceEndpoint(dataDir);
+      }
+    })();
+    return stopPromise;
   };
   return {
     url: httpServer.url,
