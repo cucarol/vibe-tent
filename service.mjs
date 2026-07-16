@@ -12017,6 +12017,11 @@ var AcpClient = class {
     }
     this.proc = child;
     this.lines = readline.createInterface({ input: child.stdout });
+    child.stdin?.on("error", (err) => {
+      this.rejectAllPending(
+        new Error(`${this.label} stdin \u5199\u5165\u5931\u8D25: ${err.message}`)
+      );
+    });
     child.stderr?.on("data", (chunk) => {
       const text3 = chunk.toString("utf8");
       this.stderrTail = (this.stderrTail + text3).slice(-4e3);
@@ -12269,13 +12274,38 @@ var AcpClient = class {
         reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
       this.pending.set(id, { resolve: resolve10, reject, timer });
-      this.write({ jsonrpc: "2.0", id, method, params });
+      this.write({ jsonrpc: "2.0", id, method, params }, (err) => {
+        this.failPendingWrite(id, method, err);
+      });
     });
   }
-  write(payload) {
+  /**
+   * Drop a still-pending request after stdin write cannot deliver it.
+   * Safe if the id was already settled (response / timeout / rejectAllPending).
+   */
+  failPendingWrite(id, method, err) {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    pending.reject(
+      new Error(`${this.label} ${method} \u53D1\u9001\u5931\u8D25: ${err.message}`)
+    );
+  }
+  write(payload, onError) {
     const stdin = this.proc?.stdin;
-    if (!stdin || stdin.destroyed) return;
-    stdin.write(JSON.stringify(payload) + "\n");
+    if (!stdin || stdin.destroyed || !stdin.writable || stdin.writableEnded) {
+      onError?.(new Error(`${this.label} stdin \u4E0D\u53EF\u5199`));
+      return;
+    }
+    try {
+      stdin.write(JSON.stringify(payload) + "\n", (err) => {
+        if (!err) return;
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      });
+    } catch (err) {
+      onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
   }
   rejectAllPending(err) {
     for (const [id, p] of this.pending) {

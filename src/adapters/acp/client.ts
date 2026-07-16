@@ -409,6 +409,12 @@ export class AcpClient {
     this.proc = child;
     this.lines = readline.createInterface({ input: child.stdout! });
 
+    child.stdin?.on("error", (err) => {
+      this.rejectAllPending(
+        new Error(`${this.label} stdin 写入失败: ${err.message}`)
+      );
+    });
+
     child.stderr?.on("data", (chunk: Buffer) => {
       const text = chunk.toString("utf8");
       this.stderrTail = (this.stderrTail + text).slice(-4000);
@@ -745,14 +751,45 @@ export class AcpClient {
         reject(new Error(`${this.label} ${method} 超时（${timeoutMs}ms）`));
       }, timeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      this.write({ jsonrpc: "2.0", id, method, params });
+      this.write({ jsonrpc: "2.0", id, method, params }, (err) => {
+        this.failPendingWrite(id, method, err);
+      });
     });
   }
 
-  private write(payload: unknown): void {
+  /**
+   * Drop a still-pending request after stdin write cannot deliver it.
+   * Safe if the id was already settled (response / timeout / rejectAllPending).
+   */
+  private failPendingWrite(id: number, method: string, err: Error): void {
+    const pending = this.pending.get(id);
+    if (!pending) return;
+    this.pending.delete(id);
+    clearTimeout(pending.timer);
+    pending.reject(
+      new Error(`${this.label} ${method} 发送失败: ${err.message}`)
+    );
+  }
+
+  private write(payload: unknown, onError?: (err: Error) => void): void {
     const stdin = this.proc?.stdin;
-    if (!stdin || stdin.destroyed) return;
-    stdin.write(JSON.stringify(payload) + "\n");
+    if (
+      !stdin ||
+      stdin.destroyed ||
+      !stdin.writable ||
+      stdin.writableEnded
+    ) {
+      onError?.(new Error(`${this.label} stdin 不可写`));
+      return;
+    }
+    try {
+      stdin.write(JSON.stringify(payload) + "\n", (err) => {
+        if (!err) return;
+        onError?.(err instanceof Error ? err : new Error(String(err)));
+      });
+    } catch (err) {
+      onError?.(err instanceof Error ? err : new Error(String(err)));
+    }
   }
 
   private rejectAllPending(err: Error): void {

@@ -18,6 +18,7 @@ import {
   normalizeCpaBaseUrl,
 } from "../src/adapters/grok-acp/index.js";
 import { GrokAcpClient } from "../src/adapters/grok-acp/client.js";
+import { AcpClient } from "../src/adapters/acp/client.js";
 import { startManagedAcpSession } from "../src/adapters/acp/managed-session.js";
 import { createAgentRuntime, type RuntimeEvent } from "../src/runtime/index.js";
 import { taskContextCard } from "../src/core/context-card.js";
@@ -28,6 +29,12 @@ const MOCK_ACP = path.join(__dirname, "fixtures", "mock-acp-server.mjs");
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
 }
+
+/** Access private AcpClient fields for write-failure regression only. */
+type AcpClientInternals = {
+  pending: Map<number, { timer: ReturnType<typeof setTimeout> }>;
+  proc: { stdin: NodeJS.WritableStream | null } | null;
+};
 
 test("managed ACP start cleans bridge process when handshake fails", async () => {
   const cwd = await tempDir("tent-grok-handshake-fail-");
@@ -56,6 +63,134 @@ test("managed ACP start cleans bridge process when handshake fails", async () =>
     /auth failed/i
   );
   assert.equal(client.isAlive(), false);
+});
+
+test("AcpClient: destroyed stdin rejects pending request without hang", async () => {
+  const cwd = await tempDir("tent-acp-stdin-destroyed-");
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: {
+      MOCK_ACP_KEEP_ALIVE: "1",
+      // Skip authenticate so connect only needs initialize + session/new.
+    },
+    sessionId: "ss-stdin-destroyed",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: () => undefined,
+  });
+  try {
+    await client.connect();
+    const internals = client as unknown as AcpClientInternals;
+    const stdin = internals.proc?.stdin as
+      | (NodeJS.WritableStream & { destroy: () => void })
+      | null
+      | undefined;
+    assert.ok(stdin, "spawned process must expose stdin");
+    stdin.destroy();
+
+    const started = Date.now();
+    await assert.rejects(
+      () => client.sendPrompt("should fail send"),
+      /发送失败|stdin 不可写/
+    );
+    assert.ok(
+      Date.now() - started < 2_000,
+      "must not wait for prompt timeout after write failure"
+    );
+    assert.equal(internals.pending.size, 0, "failed write must clear pending");
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("AcpClient: write callback error rejects pending and clears timer", async () => {
+  const cwd = await tempDir("tent-acp-stdin-write-cb-");
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: { MOCK_ACP_KEEP_ALIVE: "1" },
+    sessionId: "ss-stdin-write-cb",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: () => undefined,
+  });
+  try {
+    await client.connect();
+    const internals = client as unknown as AcpClientInternals;
+    const stdin = internals.proc?.stdin as
+      | (NodeJS.WritableStream & {
+          write: (
+            chunk: string,
+            encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+            cb?: (err?: Error | null) => void
+          ) => boolean;
+        })
+      | null
+      | undefined;
+    assert.ok(stdin, "spawned process must expose stdin");
+
+    const originalWrite = stdin.write.bind(stdin);
+    stdin.write = ((
+      chunk: string,
+      encodingOrCb?: BufferEncoding | ((err?: Error | null) => void),
+      cb?: (err?: Error | null) => void
+    ) => {
+      const callback =
+        typeof encodingOrCb === "function" ? encodingOrCb : cb;
+      // Simulate async EPIPE / stream error after write is scheduled.
+      queueMicrotask(() => {
+        callback?.(Object.assign(new Error("write EPIPE"), { code: "EPIPE" }));
+      });
+      return true;
+    }) as typeof stdin.write;
+
+    const started = Date.now();
+    await assert.rejects(
+      () => client.sendPrompt("callback write fails"),
+      /发送失败: write EPIPE/
+    );
+    assert.ok(
+      Date.now() - started < 2_000,
+      "write callback error must reject without prompt timeout"
+    );
+    assert.equal(internals.pending.size, 0, "callback error must clear pending");
+
+    // Restore so stop/cleanup paths do not use the stub.
+    stdin.write = originalWrite;
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("AcpClient: stdin stream error rejects all pending requests", async () => {
+  const cwd = await tempDir("tent-acp-stdin-error-");
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: { MOCK_ACP_KEEP_ALIVE: "1" },
+    sessionId: "ss-stdin-error",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: () => undefined,
+  });
+  try {
+    await client.connect();
+    const internals = client as unknown as AcpClientInternals;
+    const stdin = internals.proc?.stdin;
+    assert.ok(stdin, "spawned process must expose stdin");
+
+    const pending = client.sendPrompt("stream fails");
+    stdin.emit("error", new Error("broken pipe"));
+
+    await assert.rejects(() => pending, /stdin 写入失败: broken pipe/);
+    assert.equal(internals.pending.size, 0, "stream error must clear pending");
+  } finally {
+    await client.stop("shutdown");
+  }
 });
 
 function waitFor(
