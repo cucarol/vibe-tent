@@ -60,6 +60,10 @@ export class SessionRegistry {
 
   async read(sessionId: string): Promise<SessionRecord | null> {
     assertSessionId(sessionId);
+    // A read racing an atomic replace can observe a transient missing file on
+    // Windows. Wait for already-enqueued writes so runtime events never lose
+    // their task binding because of that replacement window.
+    await this.writeChain;
     return this.readUnlocked(sessionId);
   }
 

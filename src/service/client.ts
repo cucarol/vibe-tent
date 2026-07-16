@@ -1,6 +1,6 @@
 // Typed ServiceClient for Desktop / CLI attach (task.* + docs.* only).
 
-import type { EventEnvelope } from "./types.js";
+import type { BoxProjection, EventEnvelope } from "./types.js";
 import { AUTH_TOKEN_HEADER } from "./auth.js";
 
 export interface ServiceClientOptions {
@@ -347,6 +347,18 @@ export class ServiceClient {
   }
   taskGet(workspaceId: string, taskPath: string) {
     return this.call("task.get", { workspaceId, taskPath });
+  }
+
+  /**
+   * Stable box collaboration projection (task-api §2.3).
+   * Resolve by id, boxId, or path (same conventions as docs.get).
+   * Active task is authoritative; without one, only persisted done is preserved.
+   */
+  boxProjection(
+    workspaceId: string,
+    idOrPath: { id?: string; path?: string; boxId?: string }
+  ) {
+    return this.call<BoxProjection>("box.projection", { workspaceId, ...idOrPath });
   }
 
   // ---- convenience: proposal (triage; separate from delivery review) ----

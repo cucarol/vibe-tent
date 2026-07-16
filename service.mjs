@@ -1174,6 +1174,11 @@ function allowedTransitions(from) {
       return [];
   }
 }
+function projectBoxFromTask(input) {
+  if (input.active) return { status: "doing", clearAssignee: false };
+  if (input.terminalState === "accepted") return { status: "done", clearAssignee: true };
+  return { status: "todo", clearAssignee: true };
+}
 function resolveDeliverRouting(policy, decision) {
   if (policy === "bypass") {
     return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
@@ -1986,6 +1991,23 @@ async function taskCancel(env, taskPath) {
     assertTransition(task.state, "cancel", "interrupted");
     await env.fs.remove(taskPath);
   });
+}
+async function findActiveTaskForBox(fs13, boxId) {
+  const tasks = await loadTaskEnvelopes(fs13);
+  return tasks.find((t) => t.claims.includes(boxId) && isActiveTaskState(t.state));
+}
+function boxProjectionOf(task) {
+  if (!task) return { status: "todo" };
+  const active = isActiveTaskState(task.state);
+  const proj = projectBoxFromTask({
+    active,
+    terminalState: active ? void 0 : task.state
+  });
+  return {
+    status: proj.status,
+    assignee: proj.clearAssignee ? void 0 : task.role,
+    activeTaskId: task.id || task.path
+  };
 }
 async function requireActiveReadyDelivery(fs13, task) {
   if (task.activeDeliveryId) {
@@ -3495,6 +3517,7 @@ var SessionRegistry = class {
   }
   async read(sessionId) {
     assertSessionId(sessionId);
+    await this.writeChain;
     return this.readUnlocked(sessionId);
   }
   async update(sessionId, patch) {
@@ -3927,6 +3950,12 @@ var CLIENT_METHODS = [
   "task.get",
   "delivery.list",
   "delivery.get",
+  /**
+   * Stable box collaboration projection (task-api §2.3).
+   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
+   * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
+   */
+  "box.projection",
   /** Proposal triage — separate from task delivery review (task-api §3). */
   "proposal.list",
   "proposal.submit",
@@ -6108,6 +6137,8 @@ async function dispatchMethod(ctx, method, params) {
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
+      case "box.projection":
+        return boxProjectionRpc(ctx, p);
       case "proposal.list":
         return proposalList(ctx, p);
       case "proposal.submit":
@@ -7623,6 +7654,37 @@ async function deliveryGet(ctx, p) {
   if (!found) throw new RpcError(-32004, `Delivery not found: ${id}`);
   return { workspaceId, delivery: projectDelivery(found) };
 }
+async function boxProjectionRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept3(tent, p);
+  if (concept.invalid) {
+    throw new RpcError(
+      -32004,
+      `Concept is invalid and has no collaboration projection: ${concept.path}`,
+      { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
+    );
+  }
+  const activeTask = await findActiveTaskForBox(mount.env.fs, concept.id);
+  if (activeTask) {
+    const fromTask = boxProjectionOf(activeTask);
+    const out = {
+      workspaceId,
+      boxId: concept.id,
+      status: fromTask.status
+    };
+    if (fromTask.assignee) out.assignee = fromTask.assignee;
+    if (fromTask.activeTaskId) out.activeTaskId = fromTask.activeTaskId;
+    return out;
+  }
+  const status = concept.fm.status === "done" ? "done" : "todo";
+  return {
+    workspaceId,
+    boxId: concept.id,
+    status
+  };
+}
 async function proposalList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -8007,6 +8069,11 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
     throw injected;
   }
   const rec = await ctx.runtime.registry.read(ev.sessionId);
+  if (ev.type === "session.prompt_complete" && !rec?.lastTaskId) {
+    throw new Error(
+      `Managed prompt completion has no task binding: ${ev.sessionId}`
+    );
+  }
   const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
   if (ev.type === "session.stdout_tail") {
     return;
@@ -8360,7 +8427,7 @@ function resolveConcept3(tent, p) {
     if (byPath) return byPath;
     throw new RpcError(-32004, `Concept not found: ${path15}`);
   }
-  throw new RpcError(-32602, "docs.* requires id or path");
+  throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
 }
 function projectConcept(box, includeBody, withChildren) {
   const title = typeof box.fm.title === "string" ? box.fm.title : void 0;

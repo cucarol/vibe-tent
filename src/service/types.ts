@@ -63,6 +63,18 @@ export type ConceptProjection = {
   children?: ConceptProjection[];
 };
 
+/**
+ * Stable box collaboration projection (task-api §2.3 / `box.projection`).
+ * Active task is authoritative; without one, only persisted `done` is preserved.
+ */
+export type BoxProjection = {
+  workspaceId: string;
+  boxId: string;
+  status: "todo" | "doing" | "done";
+  assignee?: string;
+  activeTaskId?: string;
+};
+
 export type TaskProjection = {
   path: string;
   id?: string;
@@ -266,6 +278,12 @@ export const CLIENT_METHODS = [
   "task.get",
   "delivery.list",
   "delivery.get",
+  /**
+   * Stable box collaboration projection (task-api §2.3).
+   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
+   * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
+   */
+  "box.projection",
   /** Proposal triage — separate from task delivery review (task-api §3). */
   "proposal.list",
   "proposal.submit",

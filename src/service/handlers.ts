@@ -42,6 +42,8 @@ import {
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
 import {
+  boxProjectionOf,
+  findActiveTaskForBox,
   taskAccept,
   taskCancel,
   taskClaim,
@@ -103,6 +105,7 @@ import {
   RPC_A2A_DENIED,
   RPC_LIFECYCLE,
   type ArtifactRef,
+  type BoxProjection,
   type ConceptProjection,
   type DeliveryProjection,
   type ProposalProjection,
@@ -282,6 +285,8 @@ export async function dispatchMethod(
         return deliveryList(ctx, p);
       case "delivery.get":
         return deliveryGet(ctx, p);
+      case "box.projection":
+        return boxProjectionRpc(ctx, p);
       case "proposal.list":
         return proposalList(ctx, p);
       case "proposal.submit":
@@ -2143,6 +2148,47 @@ async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
   return { workspaceId, delivery: projectDelivery(found) };
 }
 
+/**
+ * Stable box collaboration projection (task-api §2.3).
+ * Active task is authoritative (doing + assignee + activeTaskId).
+ * With no active task: preserve done only when the box's persisted status is done;
+ * stale doing/owner must not pretend occupation → todo with no assignee.
+ */
+async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>): Promise<BoxProjection> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  // Same id/path/boxId resolver conventions as docs.get (missing/duplicate → -32004).
+  const concept = resolveConcept(tent, p);
+  if (concept.invalid) {
+    throw new RpcError(
+      -32004,
+      `Concept is invalid and has no collaboration projection: ${concept.path}`,
+      { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
+    );
+  }
+  const activeTask = await findActiveTaskForBox(mount.env.fs, concept.id);
+  if (activeTask) {
+    const fromTask = boxProjectionOf(activeTask);
+    const out: BoxProjection = {
+      workspaceId,
+      boxId: concept.id,
+      status: fromTask.status,
+    };
+    if (fromTask.assignee) out.assignee = fromTask.assignee;
+    if (fromTask.activeTaskId) out.activeTaskId = fromTask.activeTaskId;
+    return out;
+  }
+
+  // No active task: only durable done survives; stale doing/owner → idle todo.
+  const status: BoxProjection["status"] = concept.fm.status === "done" ? "done" : "todo";
+  return {
+    workspaceId,
+    boxId: concept.id,
+    status,
+  };
+}
+
 // ---- proposal triage (separate from task delivery review) ----
 
 async function proposalList(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -2708,6 +2754,11 @@ async function projectRuntimeEventOnce(
   }
 
   const rec = await ctx.runtime.registry.read(ev.sessionId);
+  if (ev.type === "session.prompt_complete" && !rec?.lastTaskId) {
+    throw new Error(
+      `Managed prompt completion has no task binding: ${ev.sessionId}`
+    );
+  }
   const workspaceId = rec?.workspace ?? ctx.host.getForegroundId() ?? "";
   if (ev.type === "session.stdout_tail") {
     // Diagnostics only — never product chat; optional quiet emit.
@@ -3259,7 +3310,7 @@ function resolveConcept(tent: LoadedTent, p: Record<string, unknown>) {
     if (byPath) return byPath;
     throw new RpcError(-32004, `Concept not found: ${path}`);
   }
-  throw new RpcError(-32602, "docs.* requires id or path");
+  throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
 }
 
 function projectConcept(

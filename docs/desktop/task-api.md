@@ -224,7 +224,10 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
 - `operationalRetention.preview` / `operationalRetention.purge` — user-only terminal operational heat cleanup (see §6); preview read-only; purge via MutationBus; event `retention.purged` only when files deleted
 - `workspace.settings` / `workspace.settings.update` — workspace collaboration settings (see §5.3); read projection + user-only MutationBus update; event `workspace.settings.updated` only on successful actual change (no-op / failure emit none)
-- `box.projection` → `{ status, assignee, activeTaskId }`
+- `box.projection({ workspaceId, id | path | boxId })` → `{ workspaceId, boxId, status, assignee?, activeTaskId? }`
+  - Same concept selector conventions as `docs.get` (`id` / `boxId` / `path`); missing, duplicate-id, or structurally invalid concepts fail cleanly instead of projecting misleading state.
+  - Active task is authoritative: `status=doing`, `assignee` = task role, `activeTaskId` set.
+  - With no active task: preserve `done` only when the box's current persisted status is `done`; stale `doing` / owner must project `todo` with no assignee (never pretend occupation).
 - `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.

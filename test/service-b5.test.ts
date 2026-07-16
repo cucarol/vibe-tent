@@ -1117,6 +1117,10 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
+        const runtimeEvents: string[] = [];
+        const unsubscribe = svc.runtime.subscribeAll((event) => {
+          runtimeEvents.push(event.type);
+        });
         const { workspaceId, boxId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
           workspaceId,
@@ -1127,17 +1131,30 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         });
         const taskPath = (d.result as { taskPath: string }).taskPath;
         await rpc(svc, "task.claim", { workspaceId, taskPath });
-        await rpc(svc, "task.startSession", {
+        const started = await rpc(svc, "task.startSession", {
           workspaceId,
           taskPath,
           callerKind: "user",
           profileId: "mock-acp-bypass",
         });
-        const accepted = await pollUntil(async () => {
-          const g = await rpc(svc, "task.get", { workspaceId, taskPath });
-          const task = (g.result as { task: { state: string } }).task;
-          return task.state === "accepted" ? task : null;
-        }, 30_000, "bypass accepted");
+        const sessionId = (started.result as { session: { sessionId: string } }).session
+          .sessionId;
+        let accepted: { state: string };
+        try {
+          accepted = await pollUntil(async () => {
+            const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+            const task = (g.result as { task: { state: string } }).task;
+            return task.state === "accepted" ? task : null;
+          }, 30_000, "bypass accepted");
+        } catch (error) {
+          const probe = await svc.runtime.probe(sessionId);
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)}; ` +
+              `runtimeEvents=${runtimeEvents.join(",")}; probe=${JSON.stringify(probe)}`
+          );
+        } finally {
+          unsubscribe();
+        }
         assert.equal(accepted.state, "accepted");
         const list = await rpc(svc, "delivery.list", { workspaceId });
         const deliveries = (
@@ -1161,6 +1178,10 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
     const logPath = path.join(dataDir, "mock-acp-log.json");
     await withService(
       async (svc) => {
+        const runtimeEvents: string[] = [];
+        const unsubscribe = svc.runtime.subscribeAll((event) => {
+          runtimeEvents.push(event.type);
+        });
         const { workspaceId, boxId } = await mountWorkItem(svc, ws);
         const d = await rpc(svc, "task.dispatch", {
           workspaceId,
@@ -1171,17 +1192,30 @@ test("B5 managed ACP: bypass auto-integrates; agent-decide stays pending review 
         });
         const taskPath = (d.result as { taskPath: string }).taskPath;
         await rpc(svc, "task.claim", { workspaceId, taskPath });
-        await rpc(svc, "task.startSession", {
+        const started = await rpc(svc, "task.startSession", {
           workspaceId,
           taskPath,
           callerKind: "user",
           profileId: "mock-acp-ad",
         });
-        const delivered = await pollUntil(async () => {
-          const g = await rpc(svc, "task.get", { workspaceId, taskPath });
-          const task = (g.result as { task: { state: string } }).task;
-          return task.state === "delivered" ? task : null;
-        }, 30_000, "agent-decide delivered for review");
+        const sessionId = (started.result as { session: { sessionId: string } }).session
+          .sessionId;
+        let delivered: { state: string };
+        try {
+          delivered = await pollUntil(async () => {
+            const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+            const task = (g.result as { task: { state: string } }).task;
+            return task.state === "delivered" ? task : null;
+          }, 30_000, "agent-decide delivered for review");
+        } catch (error) {
+          const probe = await svc.runtime.probe(sessionId);
+          throw new Error(
+            `${error instanceof Error ? error.message : String(error)}; ` +
+              `runtimeEvents=${runtimeEvents.join(",")}; probe=${JSON.stringify(probe)}`
+          );
+        } finally {
+          unsubscribe();
+        }
         assert.equal(delivered.state, "delivered");
         const list = await rpc(svc, "delivery.list", { workspaceId });
         const deliveries = (

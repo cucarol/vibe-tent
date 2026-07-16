@@ -3799,6 +3799,14 @@ var ServiceClient = class {
   taskGet(workspaceId, taskPath) {
     return this.call("task.get", { workspaceId, taskPath });
   }
+  /**
+   * Stable box collaboration projection (task-api §2.3).
+   * Resolve by id, boxId, or path (same conventions as docs.get).
+   * Active task is authoritative; without one, only persisted done is preserved.
+   */
+  boxProjection(workspaceId, idOrPath) {
+    return this.call("box.projection", { workspaceId, ...idOrPath });
+  }
   // ---- convenience: proposal (triage; separate from delivery review) ----
   proposalList(workspaceId, opts) {
     return this.call("proposal.list", { workspaceId, ...opts });
