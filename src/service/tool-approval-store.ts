@@ -50,6 +50,104 @@ function cloneApproval(item: ToolPendingApproval): ToolPendingApproval {
   };
 }
 
+const TOOL_APPROVAL_STATUSES = new Set<ToolApprovalStatus>([
+  "pending",
+  "approved",
+  "denied",
+  "expired",
+]);
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isRequiredString(value: unknown): value is string {
+  return typeof value === "string" && value.trim().length > 0;
+}
+
+function isOptionalString(value: unknown): value is string | undefined {
+  return value === undefined || typeof value === "string";
+}
+
+function isValidDate(value: string): boolean {
+  return Number.isFinite(Date.parse(value));
+}
+
+/** Parse untrusted machine state before any clone/projection touches it. */
+function parseApproval(value: unknown): ToolPendingApproval | null {
+  if (!isRecord(value)) return null;
+  const {
+    id,
+    workspaceId,
+    sessionId,
+    taskId,
+    taskPath,
+    role,
+    toolTitle,
+    toolCallId,
+    options,
+    status,
+    createdAt,
+    expiresAt,
+    resolvedAt,
+    resolvedBy,
+  } = value;
+  if (
+    !isRequiredString(id) ||
+    !isRequiredString(workspaceId) ||
+    !isRequiredString(sessionId) ||
+    !isRequiredString(toolTitle) ||
+    !isRequiredString(createdAt) ||
+    !isRequiredString(expiresAt) ||
+    !isValidDate(createdAt) ||
+    !isValidDate(expiresAt) ||
+    typeof status !== "string" ||
+    !TOOL_APPROVAL_STATUSES.has(status as ToolApprovalStatus) ||
+    !Array.isArray(options) ||
+    !isOptionalString(taskId) ||
+    !isOptionalString(taskPath) ||
+    !isOptionalString(role) ||
+    !isOptionalString(toolCallId) ||
+    !isOptionalString(resolvedAt) ||
+    !isOptionalString(resolvedBy) ||
+    (resolvedAt !== undefined && !isValidDate(resolvedAt))
+  ) {
+    return null;
+  }
+  const parsedOptions: ToolPermissionOption[] = [];
+  for (const option of options) {
+    if (
+      !isRecord(option) ||
+      !isRequiredString(option.optionId) ||
+      !isOptionalString(option.kind) ||
+      !isOptionalString(option.name)
+    ) {
+      return null;
+    }
+    parsedOptions.push({
+      optionId: option.optionId,
+      ...(option.kind !== undefined ? { kind: option.kind } : {}),
+      ...(option.name !== undefined ? { name: option.name } : {}),
+    });
+  }
+  return {
+    id,
+    workspaceId,
+    sessionId,
+    ...(taskId !== undefined ? { taskId } : {}),
+    ...(taskPath !== undefined ? { taskPath } : {}),
+    ...(role !== undefined ? { role } : {}),
+    toolTitle,
+    ...(toolCallId !== undefined ? { toolCallId } : {}),
+    options: parsedOptions,
+    status: status as ToolApprovalStatus,
+    createdAt,
+    expiresAt,
+    ...(resolvedAt !== undefined ? { resolvedAt } : {}),
+    ...(resolvedBy !== undefined ? { resolvedBy } : {}),
+  };
+}
+
 type Waiter = {
   resolve: (status: "approved" | "denied" | "expired") => void;
 };
@@ -112,9 +210,13 @@ export class ToolApprovalStore {
         const loaded = new Map<string, ToolPendingApproval>();
         const recoveredAt = new Date().toISOString();
         let recoveredPending = false;
-        for (const item of (items as ToolPendingApproval[] | undefined) ?? []) {
-          if (!item?.id) continue;
-          const restored = cloneApproval(item);
+        for (const item of items ?? []) {
+          const restored = parseApproval(item);
+          if (!restored) {
+            await this.quarantineCorrupt();
+            this.loaded = true;
+            return;
+          }
           if (restored.status === "pending") {
             // A pending row represents one live ACP request and its in-memory
             // waiter. Neither survives a service restart, so approving a

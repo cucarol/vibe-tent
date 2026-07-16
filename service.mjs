@@ -17388,6 +17388,73 @@ function cloneApproval2(item) {
     options: item.options.map((option) => ({ ...option }))
   };
 }
+var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
+  "pending",
+  "approved",
+  "denied",
+  "expired"
+]);
+function isRecord4(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isRequiredString(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isOptionalString(value) {
+  return value === void 0 || typeof value === "string";
+}
+function isValidDate(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseApproval(value) {
+  if (!isRecord4(value)) return null;
+  const {
+    id,
+    workspaceId,
+    sessionId,
+    taskId,
+    taskPath,
+    role,
+    toolTitle,
+    toolCallId,
+    options,
+    status,
+    createdAt,
+    expiresAt,
+    resolvedAt,
+    resolvedBy
+  } = value;
+  if (!isRequiredString(id) || !isRequiredString(workspaceId) || !isRequiredString(sessionId) || !isRequiredString(toolTitle) || !isRequiredString(createdAt) || !isRequiredString(expiresAt) || !isValidDate(createdAt) || !isValidDate(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString(taskId) || !isOptionalString(taskPath) || !isOptionalString(role) || !isOptionalString(toolCallId) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate(resolvedAt)) {
+    return null;
+  }
+  const parsedOptions = [];
+  for (const option of options) {
+    if (!isRecord4(option) || !isRequiredString(option.optionId) || !isOptionalString(option.kind) || !isOptionalString(option.name)) {
+      return null;
+    }
+    parsedOptions.push({
+      optionId: option.optionId,
+      ...option.kind !== void 0 ? { kind: option.kind } : {},
+      ...option.name !== void 0 ? { name: option.name } : {}
+    });
+  }
+  return {
+    id,
+    workspaceId,
+    sessionId,
+    ...taskId !== void 0 ? { taskId } : {},
+    ...taskPath !== void 0 ? { taskPath } : {},
+    ...role !== void 0 ? { role } : {},
+    toolTitle,
+    ...toolCallId !== void 0 ? { toolCallId } : {},
+    options: parsedOptions,
+    status,
+    createdAt,
+    expiresAt,
+    ...resolvedAt !== void 0 ? { resolvedAt } : {},
+    ...resolvedBy !== void 0 ? { resolvedBy } : {}
+  };
+}
 var ToolApprovalStore = class {
   constructor(dataDir, options) {
     this.items = /* @__PURE__ */ new Map();
@@ -17437,8 +17504,12 @@ var ToolApprovalStore = class {
         const recoveredAt = (/* @__PURE__ */ new Date()).toISOString();
         let recoveredPending = false;
         for (const item of items ?? []) {
-          if (!item?.id) continue;
-          const restored = cloneApproval2(item);
+          const restored = parseApproval(item);
+          if (!restored) {
+            await this.quarantineCorrupt();
+            this.loaded = true;
+            return;
+          }
           if (restored.status === "pending") {
             restored.status = "expired";
             restored.resolvedAt = recoveredAt;

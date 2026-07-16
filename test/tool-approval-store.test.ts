@@ -118,6 +118,35 @@ test("tool approval store: service restart expires orphaned pending requests", a
   );
 });
 
+test("tool approval store: malformed row quarantines the whole machine-state file", async () => {
+  const dataDir = await tempDir("tent-tool-appr-corrupt-row-");
+  const file = path.join(dataDir, "tool-approvals.json");
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      items: [
+        pending({ id: "ta-valid" }),
+        { ...pending({ id: "ta-malformed" }), options: "allow_once" },
+      ],
+    }),
+    "utf8"
+  );
+
+  const store = new ToolApprovalStore(dataDir);
+  assert.deepEqual(await store.listPending(), []);
+  await assert.rejects(() => fs.access(file));
+
+  const names = await fs.readdir(dataDir);
+  const backups = names.filter((name) =>
+    name.startsWith("tool-approvals.json.corrupt-")
+  );
+  assert.equal(backups.length, 1);
+  const quarantined = JSON.parse(
+    await fs.readFile(path.join(dataDir, backups[0]), "utf8")
+  ) as { items: unknown[] };
+  assert.equal(quarantined.items.length, 2);
+});
+
 test("tool approval store: shutdown denies pending and clears long waiters", async () => {
   const dataDir = await tempDir("tent-tool-appr-shutdown-");
   const store = new ToolApprovalStore(dataDir);
