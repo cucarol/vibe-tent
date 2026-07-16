@@ -115,6 +115,12 @@ Local Service owns a **single-process serial** catalog for `agent-profiles.json`
 | `profile.update` | Top-level `{ id, …patch }` only; **id and adapterId immutable**; `null` clears optional fields; omitted/`undefined` keeps previous |
 | `profile.delete` | Refuse if any **non-terminal** session uses the profile; terminal refs OK; built-in `*-default` ids are never deletable |
 
+Successful profile mutations emit machine-local `profile.changed` events. Create/update
+events carry the same safe profile projection returned by the RPC; delete carries only
+the deleted id. Connected clients use the event as an invalidation signal and may
+re-query `profile.list`; no secret value or raw environment map is included. Existing
+sessions keep their launch-profile snapshot, while later starts use the updated catalog.
+
 **Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp` \| `copilot-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
 
 **Create defaults:** only `grok-acp` auto-fills `DEFAULT_GROK_MODEL` / `CPA_GROK_API_KEY` / `CPA_GROK_BASE_URL` env key names; other whitelist adapters default `permissionPolicy=deny` only (no invented model/envKey).

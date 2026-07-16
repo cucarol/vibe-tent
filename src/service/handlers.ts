@@ -1184,11 +1184,18 @@ async function profileCreate(ctx: HandlerContext, p: Record<string, unknown>) {
     );
   }
   const created = await ctx.profileCatalog.create(p);
+  const profile = projectAgentProfile(
+    created,
+    await profileCredentialExistsOpts(ctx, created)
+  );
+  ctx.events.emit(
+    "profile.changed",
+    "",
+    { action: "create", id: created.id, profile },
+    "self"
+  );
   return {
-    profile: projectAgentProfile(
-      created,
-      await profileCredentialExistsOpts(ctx, created)
-    ),
+    profile,
   };
 }
 
@@ -1203,17 +1210,31 @@ async function profileUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
   const id = requireString(p, "id");
   const { id: _id, ...patch } = p;
   const updated = await ctx.profileCatalog.update(id, patch);
+  const profile = projectAgentProfile(
+    updated,
+    await profileCredentialExistsOpts(ctx, updated)
+  );
+  ctx.events.emit(
+    "profile.changed",
+    "",
+    { action: "update", id: updated.id, profile },
+    "self"
+  );
   return {
-    profile: projectAgentProfile(
-      updated,
-      await profileCredentialExistsOpts(ctx, updated)
-    ),
+    profile,
   };
 }
 
 async function profileDelete(ctx: HandlerContext, p: Record<string, unknown>) {
   const id = requireString(p, "id");
-  return ctx.profileCatalog.delete(id);
+  const result = await ctx.profileCatalog.delete(id);
+  ctx.events.emit(
+    "profile.changed",
+    "",
+    { action: "delete", id: result.deleted },
+    "self"
+  );
+  return result;
 }
 
 async function credentialExistsLookup(

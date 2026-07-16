@@ -187,6 +187,69 @@ test("CRUD + runtime (inject never writes agent-profiles.json)", async () => {
   await assert.rejects(() => fs.stat(profilesPath(dataDir)), { code: "ENOENT" });
 });
 
+test("profile CRUD emits safe machine-local change events only after success", async () => {
+  await withService(async (svc) => {
+    const events: Array<{
+      workspaceId: string;
+      source: string;
+      payload: Record<string, unknown>;
+    }> = [];
+    const unsub = svc.events.subscribe((event) => {
+      if (event.type === "profile.changed") {
+        events.push({
+          workspaceId: event.workspaceId,
+          source: event.source,
+          payload: event.payload as Record<string, unknown>,
+        });
+      }
+    });
+
+    try {
+      const c = client(svc);
+      await c.profileCreate({
+        id: "grok-acp-evented",
+        displayName: "Evented",
+        credentialRef: "missing-vault-slot",
+      });
+      await c.profileUpdate("grok-acp-evented", { model: "grok-event-model" });
+
+      const failed = await rpc(svc, "profile.update", {
+        id: "grok-acp-evented",
+        apiKey: "must-not-appear",
+      });
+      assert.ok(failed.error);
+      assert.equal(events.length, 2, "failed mutations must not emit change events");
+
+      await c.profileDelete("grok-acp-evented");
+      assert.equal(events.length, 3);
+      assert.deepEqual(
+        events.map((event) => event.payload.action),
+        ["create", "update", "delete"]
+      );
+      assert.ok(events.every((event) => event.workspaceId === ""));
+      assert.ok(events.every((event) => event.source === "self"));
+
+      const created = events[0]!.payload;
+      assert.equal(created.id, "grok-acp-evented");
+      assert.equal((created.profile as Record<string, unknown>).credentialExists, false);
+      const updated = events[1]!.payload;
+      assert.equal((updated.profile as Record<string, unknown>).model, "grok-event-model");
+      assert.deepEqual(events[2]!.payload, {
+        action: "delete",
+        id: "grok-acp-evented",
+      });
+
+      const wire = JSON.stringify(events);
+      assert.ok(!wire.includes("must-not-appear"));
+      assert.ok(!wire.includes("apiKey"));
+      assert.ok(!wire.includes('"env"'));
+      assert.ok(!wire.includes('"acp"'));
+    } finally {
+      unsub();
+    }
+  });
+});
+
 test("boot persist writes disk; write failure keeps disk/catalog/runtime old", async () => {
   const dataDir = await withService(async (svc) => {
     await client(svc).profileCreate({ id: "grok-acp-persisted", displayName: "On Disk", permissionTimeoutMs: 3_000 });
