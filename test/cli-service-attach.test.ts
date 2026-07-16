@@ -152,6 +152,41 @@ test("attachOrBootstrapService: bootstrap starts service.mjs; CLI exit does not 
   }
 });
 
+test("attachOrBootstrapService: concurrent bootstraps converge on one service", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-race-"));
+  try {
+    const [first, second] = await Promise.all([
+      attachOrBootstrapService({
+        dataDir,
+        serviceEntry,
+        packageRoot: repoRoot,
+        readyTimeoutMs: 20_000,
+      }),
+      attachOrBootstrapService({
+        dataDir,
+        serviceEntry,
+        packageRoot: repoRoot,
+        readyTimeoutMs: 20_000,
+      }),
+    ]);
+
+    assert.equal(first.endpoint.instanceId, second.endpoint.instanceId);
+    assert.equal(first.endpoint.pid, second.endpoint.pid);
+    assert.equal(first.url, second.url);
+    assert.equal((await first.client.health() as { status: string }).status, "ok");
+    assert.equal((await second.client.health() as { status: string }).status, "ok");
+  } finally {
+    const endpoint = await readServiceEndpoint(dataDir);
+    if (endpoint?.pid) {
+      try {
+        process.kill(endpoint.pid);
+      } catch {
+        // already stopped
+      }
+    }
+  }
+});
+
 test("cliServiceChildEnv: sets TENT_SERVICE_DATA_DIR; does not write workspace token", async () => {
   const dataDir = path.join(os.tmpdir(), "tent-cli-env-data");
   const env = cliServiceChildEnv({ FOO: "bar" }, dataDir);

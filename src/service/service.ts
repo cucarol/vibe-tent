@@ -39,6 +39,10 @@ import { loadTaskEnvelopes } from "../core/task.js";
 import * as os from "node:os";
 import * as path from "node:path";
 import { fileURLToPath } from "node:url";
+import {
+  acquireServiceDataDirLease,
+  type ServiceDataDirLease,
+} from "./service-lease.js";
 
 export interface LocalTentServiceOptions {
   host?: string;
@@ -93,6 +97,35 @@ const SERVICE_VERSION = "0.1.0-b5";
 
 export async function startLocalTentService(options: LocalTentServiceOptions = {}): Promise<LocalTentService> {
   const dataDir = options.dataDir ?? defaultServiceDataDir();
+  const serviceLease = await acquireServiceDataDirLease(dataDir);
+  const startupCleanups: Array<{ phase: number; action: () => Promise<void> }> = [];
+  try {
+    return await startOwnedLocalTentService(
+      options,
+      dataDir,
+      serviceLease,
+      (phase, action) => startupCleanups.push({ phase, action })
+    );
+  } catch (error) {
+    startupCleanups.sort((a, b) => a.phase - b.phase);
+    for (const cleanup of startupCleanups) {
+      try {
+        await cleanup.action();
+      } catch {
+        // Preserve the startup error; every later cleanup still gets a chance.
+      }
+    }
+    await serviceLease.release();
+    throw error;
+  }
+}
+
+async function startOwnedLocalTentService(
+  options: LocalTentServiceOptions,
+  dataDir: string,
+  serviceLease: ServiceDataDirLease,
+  registerStartupCleanup: (phase: number, action: () => Promise<void>) => void
+): Promise<LocalTentService> {
   const version = options.version ?? SERVICE_VERSION;
   const startedAt = new Date().toISOString();
   const getPid = options.getPid ?? (() => process.pid);
@@ -101,6 +134,7 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   const events = new EventBus();
   const mutations = new MutationBus();
   const workspaceHost = new WorkspaceHost({ events });
+  registerStartupCleanup(30, () => workspaceHost.dispose());
   const a2a = new A2AApprovalStore(dataDir);
   await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
@@ -274,6 +308,13 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     },
   });
   runtimeHolder.current = runtime;
+  registerStartupCleanup(10, async () => {
+    try {
+      await runtime.shutdown();
+    } catch {
+      // best-effort startup rollback
+    }
+  });
 
   const profileCatalog = new AgentProfileCatalog(dataDir, runtime, profiles, {
     // Normal boot: persist CRUD to this service dataDir.
@@ -326,6 +367,10 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
       await Promise.allSettled([...runtimeProjections]);
     }
   };
+  registerStartupCleanup(20, async () => {
+    await drainRuntimeProjections();
+    unsubscribeRuntimeEvents();
+  });
 
   const httpServer: ServiceHttpServer = await createServiceHttpServer({
     host: options.host ?? "127.0.0.1",
@@ -334,10 +379,12 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
     events,
     token,
   });
+  registerStartupCleanup(40, () => httpServer.close());
 
   let endpoint: ServiceEndpointRecord | null = null;
   if (options.writeEndpoint !== false) {
     endpoint = {
+      instanceId: serviceLease.instanceId,
       pid: getPid(),
       host: httpServer.host,
       port: httpServer.port,
@@ -346,6 +393,9 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
       token,
     };
     await writeServiceEndpoint(dataDir, endpoint);
+    registerStartupCleanup(50, () =>
+      removeServiceEndpoint(dataDir, serviceLease.instanceId)
+    );
   }
 
   events.emit("service.health", "", {
@@ -358,18 +408,29 @@ export async function startLocalTentService(options: LocalTentServiceOptions = {
   const stop = (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
-      events.emit("service.health", "", { action: "stopping" });
       try {
-        await runtime.shutdown();
-      } catch {
-        // best-effort
-      }
-      await drainRuntimeProjections();
-      unsubscribeRuntimeEvents();
-      await workspaceHost.dispose();
-      await httpServer.close();
-      if (options.writeEndpoint !== false) {
-        await removeServiceEndpoint(dataDir);
+        events.emit("service.health", "", { action: "stopping" });
+        try {
+          await runtime.shutdown();
+        } catch {
+          // best-effort
+        }
+        try {
+          await drainRuntimeProjections();
+        } finally {
+          unsubscribeRuntimeEvents();
+          try {
+            await workspaceHost.dispose();
+          } finally {
+            // Never release the data-dir lease while its HTTP listener survives.
+            await httpServer.close();
+          }
+        }
+      } finally {
+        if (options.writeEndpoint !== false) {
+          await removeServiceEndpoint(dataDir, serviceLease.instanceId);
+        }
+        await serviceLease.release();
       }
     })();
     return stopPromise;

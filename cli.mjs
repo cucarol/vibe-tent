@@ -3737,7 +3737,7 @@ async function readServiceEndpoint(dataDir) {
     } catch {
       return null;
     }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
+    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string" || data.instanceId !== void 0 && typeof data.instanceId !== "string") {
       return null;
     }
     return data;
@@ -4125,12 +4125,6 @@ async function attachOrBootstrapService(options = {}) {
   child.unref();
   const deadline = Date.now() + readyTimeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(
-        `Local Tent Service exited early (code=${child.exitCode}). entry=${entryAbs}
-${spawnLog}`
-      );
-    }
     const attached = await tryAttachService(dataDir, fetchImpl);
     if (attached) {
       child.stdout?.destroy();
@@ -4138,6 +4132,12 @@ ${spawnLog}`
       return { ...attached, started: true, child, dataDir };
     }
     await sleep(pollMs);
+  }
+  if (child.exitCode !== null && child.exitCode !== 0) {
+    throw new Error(
+      `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
+${spawnLog}`
+    );
   }
   throw new Error(
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})

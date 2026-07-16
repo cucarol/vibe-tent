@@ -91,11 +91,6 @@ export async function attachOrBootstrapService(
 
   const deadline = Date.now() + readyTimeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(
-        `Local Tent Service exited early (code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
-      );
-    }
     const attached = await tryAttachService(dataDir, fetchImpl);
     if (attached) {
       child.stdout?.destroy();
@@ -105,6 +100,12 @@ export async function attachOrBootstrapService(
     await sleep(pollMs);
   }
 
+  if (child.exitCode !== null && child.exitCode !== 0) {
+    throw new Error(
+      `Local Tent Service exited before an endpoint became healthy ` +
+        `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
+    );
+  }
   throw new Error(
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
   );

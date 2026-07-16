@@ -20,6 +20,12 @@ tent-core (sole domain rules)
 - CLI **attaches** to a healthy machine-local endpoint (`%APPDATA%/Tent/service.json` on Windows, or `TENT_SERVICE_DATA_DIR`).
 - If no healthy service exists, CLI may **bootstrap** `service.mjs` / `tent-service start`, wait for ready, then RPC.
 - **Token** lives only in machine-local `service.json`. Never write token into the workspace or `.tent/`.
+- One process owns each service data directory through `service.lock`. A live
+  owner rejects a second Service; stale crash state is reclaimed. Concurrent CLI
+  bootstraps converge on the healthy winner instead of creating parallel writers.
+- `service.json` carries the owning instance id. Shutdown removes the endpoint
+  only when it still belongs to that instance, so an old process cannot erase a
+  replacement Service's discovery record.
 - **CLI exit does not stop the service** (detached child + no stop on process end). Closing Desktop windows likewise leaves the service running so claim/deliver still work.
 
 ## Commands (stable names)

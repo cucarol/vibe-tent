@@ -67,7 +67,7 @@ async function readServiceEndpoint(dataDir2) {
     } catch {
       return null;
     }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
+    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string" || data.instanceId !== void 0 && typeof data.instanceId !== "string") {
       return null;
     }
     return data;

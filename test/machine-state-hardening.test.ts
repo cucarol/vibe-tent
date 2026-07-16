@@ -22,11 +22,18 @@ import {
 } from "../src/service/profiles.js";
 import {
   readServiceEndpoint,
+  removeServiceEndpoint,
   writeServiceEndpoint,
   serviceEndpointPath,
 } from "../src/service/data-dir.js";
 import { writeJsonAtomic } from "../src/machine-state.js";
 import { ToolApprovalStore } from "../src/service/tool-approval-store.js";
+import {
+  acquireServiceDataDirLease,
+  ServiceDataDirBusyError,
+  serviceLeasePath,
+} from "../src/service/service-lease.js";
+import { startLocalTentService } from "../src/service/service.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -340,6 +347,119 @@ test("service endpoint write is atomic pretty JSON; malformed read is null", asy
   } finally {
     cap.restore();
   }
+});
+
+test("service endpoint removal is scoped to its owning instance", async () => {
+  const dataDir = await tempDir("tent-svc-ep-owner-");
+  await writeServiceEndpoint(dataDir, {
+    instanceId: "instance-current",
+    pid: 1234,
+    host: "127.0.0.1",
+    port: 7788,
+    startedAt: "2026-01-01T00:00:00.000Z",
+    version: "0.1.0",
+  });
+
+  await removeServiceEndpoint(dataDir, "instance-old");
+  assert.equal((await readServiceEndpoint(dataDir))?.instanceId, "instance-current");
+  await removeServiceEndpoint(dataDir, "instance-current");
+  assert.equal(await readServiceEndpoint(dataDir), null);
+});
+
+test("service data-dir lease rejects a live second owner and releases idempotently", async () => {
+  const dataDir = await tempDir("tent-svc-lease-live-");
+  const first = await acquireServiceDataDirLease(dataDir, {
+    pid: 101,
+    makeInstanceId: () => "instance-first",
+    isProcessAlive: (pid) => pid === 101,
+  });
+
+  await assert.rejects(
+    () =>
+      acquireServiceDataDirLease(dataDir, {
+        pid: 202,
+        makeInstanceId: () => "instance-second",
+        isProcessAlive: (pid) => pid === 101,
+      }),
+    (error: unknown) =>
+      error instanceof ServiceDataDirBusyError && error.owner.instanceId === "instance-first"
+  );
+
+  await first.release();
+  await first.release();
+  const second = await acquireServiceDataDirLease(dataDir, {
+    pid: 202,
+    makeInstanceId: () => "instance-second",
+    isProcessAlive: () => true,
+  });
+  await second.release();
+  await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
+});
+
+test("service data-dir lease reclaims stale state and release is ownership-safe", async () => {
+  const dataDir = await tempDir("tent-svc-lease-stale-");
+  const lockPath = serviceLeasePath(dataDir);
+  await fs.writeFile(
+    lockPath,
+    JSON.stringify({
+      instanceId: "stale-owner",
+      pid: 303,
+      startedAt: "2026-01-01T00:00:00.000Z",
+    }),
+    "utf8"
+  );
+
+  const lease = await acquireServiceDataDirLease(dataDir, {
+    pid: 404,
+    makeInstanceId: () => "current-owner",
+    isProcessAlive: () => false,
+  });
+  const replacement = {
+    instanceId: "replacement-owner",
+    pid: 505,
+    startedAt: "2026-01-02T00:00:00.000Z",
+  };
+  await fs.writeFile(lockPath, JSON.stringify(replacement), "utf8");
+  await lease.release();
+
+  assert.deepEqual(JSON.parse(await fs.readFile(lockPath, "utf8")), replacement);
+});
+
+test("startLocalTentService owns one dataDir until stop", async () => {
+  const dataDir = await tempDir("tent-svc-single-owner-");
+  const first = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    const endpointBefore = await readServiceEndpoint(dataDir);
+    await assert.rejects(
+      () => startLocalTentService({ dataDir, writeEndpoint: true }),
+      ServiceDataDirBusyError
+    );
+    assert.deepEqual(await readServiceEndpoint(dataDir), endpointBefore);
+  } finally {
+    await first.stop();
+  }
+
+  const next = await startLocalTentService({ dataDir, writeEndpoint: true });
+  await next.stop();
+});
+
+test("failed service startup releases its data-dir lease", async () => {
+  const blockerDir = await tempDir("tent-svc-port-owner-");
+  const failedDir = await tempDir("tent-svc-port-failed-");
+  const blocker = await startLocalTentService({ dataDir: blockerDir, port: 0 });
+  const occupiedPort = blocker.port;
+  try {
+    await assert.rejects(
+      () => startLocalTentService({ dataDir: failedDir, port: occupiedPort }),
+      /EADDRINUSE/
+    );
+    await assert.rejects(() => fs.access(serviceLeasePath(failedDir)), /ENOENT/);
+  } finally {
+    await blocker.stop();
+  }
+
+  const recovered = await startLocalTentService({ dataDir: failedDir, port: occupiedPort });
+  await recovered.stop();
 });
 
 test("saveAgentProfiles uses atomic pretty JSON", async () => {

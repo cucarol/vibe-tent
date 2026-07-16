@@ -6,6 +6,8 @@ import * as path from "node:path";
 import { isNotFoundError, writeJsonAtomic } from "../machine-state.js";
 
 export interface ServiceEndpointRecord {
+  /** Service-process ownership id; absent only in legacy endpoint files. */
+  instanceId?: string;
   pid: number;
   host: string;
   port: number;
@@ -48,7 +50,12 @@ export async function readServiceEndpoint(dataDir: string): Promise<ServiceEndpo
       // Regeneratable endpoint — ignore malformed JSON without durable backup noise.
       return null;
     }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string") {
+    if (
+      typeof data.pid !== "number" ||
+      typeof data.port !== "number" ||
+      typeof data.host !== "string" ||
+      (data.instanceId !== undefined && typeof data.instanceId !== "string")
+    ) {
       return null;
     }
     return data;
@@ -58,8 +65,15 @@ export async function readServiceEndpoint(dataDir: string): Promise<ServiceEndpo
   }
 }
 
-export async function removeServiceEndpoint(dataDir: string): Promise<void> {
+export async function removeServiceEndpoint(
+  dataDir: string,
+  expectedInstanceId?: string
+): Promise<void> {
   try {
+    if (expectedInstanceId) {
+      const endpoint = await readServiceEndpoint(dataDir);
+      if (endpoint?.instanceId !== expectedInstanceId) return;
+    }
     await fs.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
     // ignore
