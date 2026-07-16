@@ -3766,6 +3766,18 @@ import * as crypto from "node:crypto";
 var AUTH_TOKEN_HEADER = "x-tent-token";
 
 // src/service/client.ts
+function isPlainObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function parseRpcErrorBody(value) {
+  if (!isPlainObject(value)) return null;
+  if (!Number.isInteger(value.code) || typeof value.message !== "string") return null;
+  const error = { code: value.code, message: value.message };
+  if (Object.prototype.hasOwnProperty.call(value, "data")) {
+    error.data = value.data;
+  }
+  return error;
+}
 var ServiceClient = class {
   constructor(options) {
     this.idSeq = 1;
@@ -3808,7 +3820,56 @@ var ServiceClient = class {
     if (res.status === 401) {
       return { error: { code: -32001, message: "Unauthorized: invalid or missing service token" } };
     }
-    return await res.json();
+    let rawText;
+    try {
+      rawText = await res.text();
+    } catch {
+      throw new Error(`Service RPC: failed to read response (HTTP ${res.status})`);
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      if (res.ok) throw new Error("Service RPC: invalid JSON response");
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    if (!isPlainObject(parsed) || parsed.jsonrpc !== "2.0") {
+      if (res.ok) {
+        throw new Error(
+          !isPlainObject(parsed) ? "Service RPC: response must be a plain object" : "Service RPC: invalid jsonrpc version"
+        );
+      }
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    const hasResult = Object.prototype.hasOwnProperty.call(parsed, "result");
+    const hasError = Object.prototype.hasOwnProperty.call(parsed, "error");
+    if (hasResult === hasError) {
+      if (res.ok) {
+        throw new Error("Service RPC: response must include exactly one of result or error");
+      }
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    if (res.ok) {
+      if (parsed.id !== id) {
+        throw new Error(`Service RPC: response id mismatch (expected ${id})`);
+      }
+      if (hasResult) {
+        return { result: parsed.result };
+      }
+      const error2 = parseRpcErrorBody(parsed.error);
+      if (!error2) {
+        throw new Error("Service RPC: invalid error object");
+      }
+      return { error: error2 };
+    }
+    if (!hasError) {
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    const error = parseRpcErrorBody(parsed.error);
+    if (!error) {
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    return { error };
   }
   // ---- convenience: workspace ----
   mount(workspaceRoot, opts) {

@@ -11,9 +11,25 @@ export interface ServiceClientOptions {
   fetchImpl?: typeof fetch;
 }
 
+type RpcErrorBody = { code: number; message: string; data?: unknown };
+
 export type RpcResult<T = unknown> =
   | { ok: true; result: T }
-  | { ok: false; error: { code: number; message: string; data?: unknown } };
+  | { ok: false; error: RpcErrorBody };
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function parseRpcErrorBody(value: unknown): RpcErrorBody | null {
+  if (!isPlainObject(value)) return null;
+  if (!Number.isInteger(value.code) || typeof value.message !== "string") return null;
+  const error: RpcErrorBody = { code: value.code as number, message: value.message };
+  if (Object.prototype.hasOwnProperty.call(value, "data")) {
+    error.data = value.data;
+  }
+  return error;
+}
 
 export class ServiceClient {
   readonly baseUrl: string;
@@ -61,7 +77,7 @@ export class ServiceClient {
   async rpcRaw(
     method: string,
     params?: Record<string, unknown>
-  ): Promise<{ result?: unknown; error?: { code: number; message: string; data?: unknown } }> {
+  ): Promise<{ result?: unknown; error?: RpcErrorBody }> {
     const id = this.idSeq++;
     const res = await this.fetchImpl(`${this.baseUrl}/rpc`, {
       method: "POST",
@@ -74,10 +90,67 @@ export class ServiceClient {
     if (res.status === 401) {
       return { error: { code: -32001, message: "Unauthorized: invalid or missing service token" } };
     }
-    return (await res.json()) as {
-      result?: unknown;
-      error?: { code: number; message: string; data?: unknown };
-    };
+
+    let rawText: string;
+    try {
+      rawText = await res.text();
+    } catch {
+      throw new Error(`Service RPC: failed to read response (HTTP ${res.status})`);
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(rawText);
+    } catch {
+      if (res.ok) throw new Error("Service RPC: invalid JSON response");
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+
+    if (!isPlainObject(parsed) || parsed.jsonrpc !== "2.0") {
+      if (res.ok) {
+        throw new Error(
+          !isPlainObject(parsed)
+            ? "Service RPC: response must be a plain object"
+            : "Service RPC: invalid jsonrpc version"
+        );
+      }
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+
+    const hasResult = Object.prototype.hasOwnProperty.call(parsed, "result");
+    const hasError = Object.prototype.hasOwnProperty.call(parsed, "error");
+    if (hasResult === hasError) {
+      // both present or both absent
+      if (res.ok) {
+        throw new Error("Service RPC: response must include exactly one of result or error");
+      }
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+
+    if (res.ok) {
+      if (parsed.id !== id) {
+        throw new Error(`Service RPC: response id mismatch (expected ${id})`);
+      }
+      if (hasResult) {
+        return { result: parsed.result };
+      }
+      const error = parseRpcErrorBody(parsed.error);
+      if (!error) {
+        throw new Error("Service RPC: invalid error object");
+      }
+      return { error };
+    }
+
+    // Non-2xx: only surface a well-formed JSON-RPC error (e.g. 413 + id null).
+    // Never embed arbitrary response body text in the thrown message.
+    if (!hasError) {
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    const error = parseRpcErrorBody(parsed.error);
+    if (!error) {
+      throw new Error(`Service RPC HTTP ${res.status}`);
+    }
+    return { error };
   }
 
   // ---- convenience: workspace ----

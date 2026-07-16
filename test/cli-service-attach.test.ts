@@ -417,3 +417,183 @@ test("writeServiceEndpoint never targets workspace; token only in dataDir", asyn
   await assert.rejects(() => fs.access(path.join(ws, "service.json")));
   await assert.rejects(() => fs.access(path.join(ws, ".tent", "service.json")));
 });
+
+// ---- ServiceClient.rpcRaw response boundary (injected fetchImpl) ----
+
+function jsonResponse(status: number, body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
+}
+
+function textResponse(status: number, body: string): Response {
+  return new Response(body, {
+    status,
+    headers: { "content-type": "text/plain" },
+  });
+}
+
+function clientWithFetch(fetchImpl: typeof fetch) {
+  return createServiceClient({
+    baseUrl: "http://127.0.0.1:9",
+    token: "test-token",
+    fetchImpl,
+  });
+}
+
+/** Capture request id from outbound JSON-RPC body (idSeq starts at 1). */
+function requestIdFromInit(init?: RequestInit): number {
+  const body = typeof init?.body === "string" ? init.body : "";
+  const parsed = JSON.parse(body) as { id: number };
+  return parsed.id;
+}
+
+test("ServiceClient.rpcRaw: valid result and structured error", async () => {
+  let n = 0;
+  const client = clientWithFetch(async (_url, init) => {
+    n += 1;
+    const id = requestIdFromInit(init);
+    if (n === 1) {
+      return jsonResponse(200, { jsonrpc: "2.0", id, result: { ok: true, n: 1 } });
+    }
+    return jsonResponse(200, {
+      jsonrpc: "2.0",
+      id,
+      error: { code: -32602, message: "Invalid params", data: { field: "x" } },
+    });
+  });
+
+  const ok = await client.rpcRaw("workspace.list", {});
+  assert.equal(ok.error, undefined);
+  assert.deepEqual(ok.result, { ok: true, n: 1 });
+
+  const err = await client.rpcRaw("workspace.list", {});
+  assert.equal(err.result, undefined);
+  assert.deepEqual(err.error, {
+    code: -32602,
+    message: "Invalid params",
+    data: { field: "x" },
+  });
+});
+
+test("ServiceClient.rpcRaw: 401 stays structured unauthorized (no body parse)", async () => {
+  let readBody = false;
+  const client = clientWithFetch(async () => {
+    return {
+      status: 401,
+      ok: false,
+      async text() {
+        readBody = true;
+        return "should-not-be-read";
+      },
+      async json() {
+        readBody = true;
+        return { leak: true };
+      },
+    } as unknown as Response;
+  });
+
+  const out = await client.rpcRaw("workspace.list", {});
+  assert.deepEqual(out, {
+    error: { code: -32001, message: "Unauthorized: invalid or missing service token" },
+  });
+  assert.equal(readBody, false);
+});
+
+test("ServiceClient.rpcRaw: invalid JSON / missing result|error / string error / id mismatch reject", async () => {
+  const cases: Array<{
+    name: string;
+    status: number;
+    body: string | unknown;
+    match: RegExp;
+  }> = [
+    { name: "invalid JSON", status: 200, body: "not-json{", match: /invalid JSON/i },
+    {
+      name: "missing result and error",
+      status: 200,
+      body: { jsonrpc: "2.0", id: 1 },
+      match: /exactly one of result or error/i,
+    },
+    {
+      name: "string error",
+      status: 200,
+      body: { jsonrpc: "2.0", id: 1, error: "boom" },
+      match: /invalid error object/i,
+    },
+    {
+      name: "id mismatch",
+      status: 200,
+      body: { jsonrpc: "2.0", id: 999, result: {} },
+      match: /id mismatch/i,
+    },
+  ];
+
+  for (const c of cases) {
+    // Fresh client so idSeq stays predictable (always 1).
+    const client = clientWithFetch(async () =>
+      typeof c.body === "string"
+        ? textResponse(c.status, c.body)
+        : jsonResponse(c.status, c.body)
+    );
+    await assert.rejects(
+      () => client.rpcRaw("workspace.list", {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error, c.name);
+        assert.match(err.message, c.match, c.name);
+        // Must not silently resolve to undefined-shaped success.
+        return true;
+      },
+      c.name
+    );
+  }
+});
+
+test("ServiceClient.rpcRaw: non-2xx with valid JSON-RPC error returns error; otherwise HTTP status only", async () => {
+  // 413 with well-formed error (id may be null for parse/payload errors).
+  {
+    const client = clientWithFetch(async () =>
+      jsonResponse(413, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Payload too large", data: { limit: 1 } },
+      })
+    );
+    const out = await client.rpcRaw("workspace.list", {});
+    assert.deepEqual(out, {
+      error: { code: -32600, message: "Payload too large", data: { limit: 1 } },
+    });
+  }
+
+  // Non-2xx garbage HTML must not leak body into the error message.
+  {
+    const secret = "INTERNAL_STACK_TRACE_SECRET_xyz";
+    const client = clientWithFetch(async () => textResponse(502, `<html>${secret}</html>`));
+    await assert.rejects(
+      () => client.rpcRaw("workspace.list", {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /HTTP 502/);
+        assert.ok(!err.message.includes(secret));
+        assert.ok(!err.message.includes("<html>"));
+        return true;
+      }
+    );
+  }
+
+  // Non-2xx JSON that is not a valid JSON-RPC error envelope.
+  {
+    const client = clientWithFetch(async () =>
+      jsonResponse(500, { error: "plain string", detail: "do-not-leak" })
+    );
+    await assert.rejects(
+      () => client.rpcRaw("workspace.list", {}),
+      (err: unknown) => {
+        assert.ok(err instanceof Error);
+        assert.match(err.message, /HTTP 500/);
+        assert.ok(!err.message.includes("do-not-leak"));
+        return true;
+      }
+    );
+  }
+});
