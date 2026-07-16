@@ -93,6 +93,31 @@ export class ServiceClient {
   setForeground(workspaceId: string) {
     return this.call("workspace.setForeground", { workspaceId });
   }
+  /**
+   * Read workspace collaboration settings projection (defaultDeliveryPolicy, extensible).
+   * Missing file/field resolves to defaultDeliveryPolicy=manual.
+   */
+  workspaceSettings(workspaceId: string) {
+    return this.call("workspace.settings", { workspaceId });
+  }
+  /**
+   * User-only settings mutation (MutationBus).
+   * Emits exactly one workspace.settings.updated on successful actual change; no-op emits none.
+   * `actor` defaults to "user"; non-user is rejected by the service.
+   */
+  workspaceSettingsUpdate(
+    workspaceId: string,
+    patch: {
+      defaultDeliveryPolicy?: "manual" | "bypass" | "agent-decide";
+    },
+    actor = "user"
+  ) {
+    return this.call("workspace.settings.update", {
+      workspaceId,
+      ...patch,
+      actor,
+    });
+  }
 
   // ---- convenience: docs ----
   docsList(workspaceId: string, includeBody = false) {

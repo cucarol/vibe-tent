@@ -246,6 +246,7 @@ var TAGS_REGISTRY_PATH = "tags.json";
 var ORDER_PATH = "order.json";
 var MUTATION_LOCK_PATH = "mutation.lock";
 var RULES_PATH = "RULES.md";
+var WORKSPACE_SETTINGS_PATH = "settings.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
@@ -261,6 +262,7 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
   ORDER_PATH,
   MUTATION_LOCK_PATH,
   RULES_PATH,
+  WORKSPACE_SETTINGS_PATH,
   "index.md",
   "log.md"
 ]);
@@ -2986,6 +2988,118 @@ function ageDaysFrom(activityMs, nowMs) {
   return Math.floor(delta / MS_PER_DAY);
 }
 
+// src/core/workspace-settings.ts
+var DEFAULT_DELIVERY_POLICY = "manual";
+var DEFAULT_SETTINGS = {
+  defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY
+};
+function isDeliveryPolicyValue(value) {
+  return value === "manual" || value === "bypass" || value === "agent-decide";
+}
+function normalizeWorkspaceSettings(value) {
+  if (!isRecord3(value)) {
+    return { ...DEFAULT_SETTINGS };
+  }
+  const out = { ...value };
+  if (!isDeliveryPolicyValue(out.defaultDeliveryPolicy)) {
+    out.defaultDeliveryPolicy = DEFAULT_DELIVERY_POLICY;
+  }
+  return out;
+}
+function defaultWorkspaceSettings() {
+  return { ...DEFAULT_SETTINGS };
+}
+async function loadWorkspaceSettings(fs13) {
+  if (!await fs13.exists(WORKSPACE_SETTINGS_PATH)) {
+    return defaultWorkspaceSettings();
+  }
+  try {
+    const parsed = JSON.parse(await fs13.readFile(WORKSPACE_SETTINGS_PATH));
+    return normalizeWorkspaceSettings(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs13, WORKSPACE_SETTINGS_PATH);
+    const reset = defaultWorkspaceSettings();
+    await writeSettingsUnlocked(fs13, reset);
+    warnRegistryRecovered(
+      WORKSPACE_SETTINGS_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: workspace settings cannot be inferred; restore needed keys from the backup."
+    );
+    return reset;
+  }
+}
+async function updateWorkspaceSettings(fs13, patch) {
+  return withTentMutation(fs13, async () => {
+    if (!isRecord3(patch)) {
+      throw new WorkspaceSettingsError(
+        "INVALID_PATCH",
+        "workspace.settings.update patch must be an object"
+      );
+    }
+    const before = await loadWorkspaceSettings(fs13);
+    const nextRaw = { ...before };
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "defaultDeliveryPolicy") {
+        if (value === void 0) continue;
+        if (!isDeliveryPolicyValue(value)) {
+          throw new WorkspaceSettingsError(
+            "INVALID_DELIVERY_POLICY",
+            `Invalid defaultDeliveryPolicy: ${String(value)}`
+          );
+        }
+        nextRaw.defaultDeliveryPolicy = value;
+        continue;
+      }
+      if (value === void 0) continue;
+      nextRaw[key] = value;
+    }
+    const next = normalizeWorkspaceSettings(nextRaw);
+    const changed = !settingsEqual(before, next);
+    if (changed) {
+      await writeSettingsUnlocked(fs13, next);
+    }
+    return { settings: next, changed };
+  });
+}
+var WorkspaceSettingsError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "WorkspaceSettingsError";
+  }
+};
+async function writeSettingsUnlocked(fs13, settings) {
+  const known = ["defaultDeliveryPolicy"];
+  const ordered = {};
+  for (const key of known) {
+    if (key in settings) ordered[key] = settings[key];
+  }
+  const rest = Object.keys(settings).filter((k) => !known.includes(k)).sort((a, b) => a.localeCompare(b));
+  for (const key of rest) {
+    ordered[key] = settings[key];
+  }
+  await fs13.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+}
+function settingsEqual(a, b) {
+  return stableStringify(a) === stableStringify(b);
+}
+function stableStringify(value) {
+  return JSON.stringify(sortKeysDeep(value));
+}
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (!isRecord3(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
+    out[key] = sortKeysDeep(value[key]);
+  }
+  return out;
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
 // src/core/workspace.ts
 import * as nodePath from "node:path";
 import * as nodeFs from "node:fs/promises";
@@ -3760,6 +3874,13 @@ var CLIENT_METHODS = [
   "workspace.unmount",
   "workspace.list",
   "workspace.setForeground",
+  /**
+   * Workspace collaboration settings (system-root settings.json).
+   * settings is a read projection; settings.update is user-only MutationBus.
+   * Successful actual mutation emits exactly one workspace.settings.updated; no-op emits none.
+   */
+  "workspace.settings",
+  "workspace.settings.update",
   "docs.list",
   "docs.get",
   "docs.readForEdit",
@@ -5905,6 +6026,10 @@ async function dispatchMethod(ctx, method, params) {
         return { workspaces: ctx.host.list() };
       case "workspace.setForeground":
         return workspaceSetForeground(ctx, p);
+      case "workspace.settings":
+        return workspaceSettingsRpc(ctx, p);
+      case "workspace.settings.update":
+        return workspaceSettingsUpdateRpc(ctx, p);
       case "docs.list":
         return docsList(ctx, p);
       case "docs.get":
@@ -6018,6 +6143,10 @@ async function dispatchMethod(ctx, method, params) {
       const code = error instanceof RetentionError ? error.code : error.code ?? "INVALID_KEEP_DAYS";
       throw new RpcError(-32602, error.message, { code });
     }
+    if (error instanceof WorkspaceSettingsError || error instanceof Error && error.name === "WorkspaceSettingsError") {
+      const code = error instanceof WorkspaceSettingsError ? error.code : error.code ?? "INVALID_PATCH";
+      throw new RpcError(-32602, error.message, { code });
+    }
     if (error instanceof TaskLifecycleError) {
       throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
     }
@@ -6092,6 +6221,83 @@ async function workspaceUnmount(ctx, p) {
 function workspaceSetForeground(ctx, p) {
   const workspaceId = requireString(p, "workspaceId");
   return ctx.host.setForeground(workspaceId);
+}
+async function workspaceSettingsRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const settings = await loadWorkspaceSettings(mount.env.fs);
+  return {
+    workspaceId,
+    settings: projectWorkspaceSettings(settings)
+  };
+}
+async function workspaceSettingsUpdateRpc(ctx, p) {
+  requireUserActor(p, "workspace.settings.update");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const patch = parseWorkspaceSettingsPatch(p);
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    let result;
+    try {
+      result = await updateWorkspaceSettings(mount.env.fs, patch);
+    } catch (err) {
+      if (err instanceof WorkspaceSettingsError || err instanceof Error && err.name === "WorkspaceSettingsError") {
+        const code = err instanceof WorkspaceSettingsError ? err.code : err.code ?? "INVALID_PATCH";
+        throw new RpcError(-32602, err.message, { code });
+      }
+      throw err;
+    }
+    if (result.changed) {
+      emitWorkspaceSettingsUpdated(ctx, workspaceId, result.settings);
+    }
+    return {
+      workspaceId,
+      settings: projectWorkspaceSettings(result.settings),
+      changed: result.changed
+    };
+  });
+}
+function parseWorkspaceSettingsPatch(p) {
+  if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
+    throw new RpcError(
+      -32602,
+      "workspace.settings.update does not accept nested patch; pass fields at the top level"
+    );
+  }
+  const reserved = /* @__PURE__ */ new Set(["workspaceId", "actor", "patch"]);
+  const supported = /* @__PURE__ */ new Set(["defaultDeliveryPolicy"]);
+  const out = {};
+  for (const [key, value] of Object.entries(p)) {
+    if (reserved.has(key)) continue;
+    if (!supported.has(key)) {
+      throw new RpcError(-32602, `Unknown workspace setting: ${key}`);
+    }
+    if (value === void 0) continue;
+    out[key] = value;
+  }
+  if ("defaultDeliveryPolicy" in out) {
+    const v = out.defaultDeliveryPolicy;
+    if (v !== "manual" && v !== "bypass" && v !== "agent-decide") {
+      throw new RpcError(-32602, `Invalid defaultDeliveryPolicy: ${String(v)}`, {
+        code: "INVALID_DELIVERY_POLICY"
+      });
+    }
+  }
+  return out;
+}
+function projectWorkspaceSettings(settings) {
+  return { ...settings };
+}
+function emitWorkspaceSettingsUpdated(ctx, workspaceId, settings) {
+  ctx.events.emit(
+    "workspace.settings.updated",
+    workspaceId,
+    {
+      settings: projectWorkspaceSettings(settings)
+    },
+    "self"
+  );
 }
 async function docsList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -6861,7 +7067,7 @@ async function taskDispatch(ctx, p) {
   const role = requireString(p, "role");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
-  const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
@@ -6877,6 +7083,11 @@ async function taskDispatch(ctx, p) {
   const result = await ctx.mutations.run(workspaceId, async () => {
     const roleLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
     ctx.host.markSelfWrite(workspaceId);
+    let deliveryPolicy = explicitDeliveryPolicy;
+    if (deliveryPolicy === void 0) {
+      const settings = await loadWorkspaceSettings(mount.env.fs);
+      deliveryPolicy = settings.defaultDeliveryPolicy;
+    }
     const dispatched2 = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
       dispatchedBy,

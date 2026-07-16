@@ -86,6 +86,7 @@ Forbidden reverse edges:
 
 - Concept/box tree and frontmatter (`cx-` handles, type, tags, status, …)
 - Project-level type / tags / roles registries
+- Workspace collaboration settings (`.tent/settings.json`: e.g. `defaultDeliveryPolicy`; extensible)
 - Operational records required for recovery (task, handoff, delivery, …) subject to retention
 - `ArtifactRef` associations on concepts/deliveries (structured refs; see §5.2)
 - RULES / project conventions
@@ -146,6 +147,7 @@ Client query / subscribe
 - Session start/stop/resume (after A2A gate)
 - Git/worktree orchestration used for role lanes and integrate-after-accept
 - Multi-workspace mount/unmount and foreground selection events
+- Workspace collaboration settings mutations
 
 ### 4.4 What may stay local without inventing domain rules
 

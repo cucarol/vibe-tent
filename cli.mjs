@@ -498,6 +498,7 @@ var TAGS_REGISTRY_PATH = "tags.json";
 var ORDER_PATH = "order.json";
 var MUTATION_LOCK_PATH = "mutation.lock";
 var RULES_PATH = "RULES.md";
+var WORKSPACE_SETTINGS_PATH = "settings.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
@@ -513,6 +514,7 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
   ORDER_PATH,
   MUTATION_LOCK_PATH,
   RULES_PATH,
+  WORKSPACE_SETTINGS_PATH,
   "index.md",
   "log.md"
 ]);
@@ -3641,6 +3643,25 @@ var ServiceClient = class {
   }
   setForeground(workspaceId) {
     return this.call("workspace.setForeground", { workspaceId });
+  }
+  /**
+   * Read workspace collaboration settings projection (defaultDeliveryPolicy, extensible).
+   * Missing file/field resolves to defaultDeliveryPolicy=manual.
+   */
+  workspaceSettings(workspaceId) {
+    return this.call("workspace.settings", { workspaceId });
+  }
+  /**
+   * User-only settings mutation (MutationBus).
+   * Emits exactly one workspace.settings.updated on successful actual change; no-op emits none.
+   * `actor` defaults to "user"; non-user is rejected by the service.
+   */
+  workspaceSettingsUpdate(workspaceId, patch, actor = "user") {
+    return this.call("workspace.settings.update", {
+      workspaceId,
+      ...patch,
+      actor
+    });
   }
   // ---- convenience: docs ----
   docsList(workspaceId, includeBody = false) {

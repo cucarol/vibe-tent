@@ -213,6 +213,13 @@ export const CLIENT_METHODS = [
   "workspace.unmount",
   "workspace.list",
   "workspace.setForeground",
+  /**
+   * Workspace collaboration settings (system-root settings.json).
+   * settings is a read projection; settings.update is user-only MutationBus.
+   * Successful actual mutation emits exactly one workspace.settings.updated; no-op emits none.
+   */
+  "workspace.settings",
+  "workspace.settings.update",
   "docs.list",
   "docs.get",
   "docs.readForEdit",

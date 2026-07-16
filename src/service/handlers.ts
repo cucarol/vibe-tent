@@ -60,6 +60,12 @@ import {
   type RetentionPurgeResult,
 } from "../core/retention.js";
 import {
+  loadWorkspaceSettings,
+  updateWorkspaceSettings,
+  WorkspaceSettingsError,
+  type WorkspaceSettings,
+} from "../core/workspace-settings.js";
+import {
   TaskLifecycleError,
   isActiveTaskState,
   type A2APolicy,
@@ -194,6 +200,10 @@ export async function dispatchMethod(
         return { workspaces: ctx.host.list() };
       case "workspace.setForeground":
         return workspaceSetForeground(ctx, p);
+      case "workspace.settings":
+        return workspaceSettingsRpc(ctx, p);
+      case "workspace.settings.update":
+        return workspaceSettingsUpdateRpc(ctx, p);
       case "docs.list":
         return docsList(ctx, p);
       case "docs.get":
@@ -311,6 +321,16 @@ export async function dispatchMethod(
         error instanceof RetentionError
           ? error.code
           : ((error as { code?: string }).code ?? "INVALID_KEEP_DAYS");
+      throw new RpcError(-32602, error.message, { code });
+    }
+    if (
+      error instanceof WorkspaceSettingsError ||
+      (error instanceof Error && error.name === "WorkspaceSettingsError")
+    ) {
+      const code =
+        error instanceof WorkspaceSettingsError
+          ? error.code
+          : ((error as { code?: string }).code ?? "INVALID_PATCH");
       throw new RpcError(-32602, error.message, { code });
     }
     if (error instanceof TaskLifecycleError) {
@@ -433,6 +453,119 @@ async function workspaceUnmount(ctx: HandlerContext, p: Record<string, unknown>)
 function workspaceSetForeground(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireString(p, "workspaceId");
   return ctx.host.setForeground(workspaceId);
+}
+
+// ---- workspace.settings (collaboration defaults; system-root settings.json) ----
+
+/**
+ * Read projection of workspace collaboration settings.
+ * Missing file/field → defaultDeliveryPolicy=manual (normalized in core).
+ */
+async function workspaceSettingsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const settings = await loadWorkspaceSettings(mount.env.fs);
+  return {
+    workspaceId,
+    settings: projectWorkspaceSettings(settings),
+  };
+}
+
+/**
+ * User-only settings mutation through MutationBus.
+ * Emits exactly one workspace.settings.updated when the normalized projection
+ * actually changes. No-op updates and failures emit no event.
+ *
+ * Authority note: only self-declared `actor` is checked (default "user"). The
+ * loopback service token does not distinguish human vs role callers — see task-api.
+ */
+async function workspaceSettingsUpdateRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "workspace.settings.update");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const patch = parseWorkspaceSettingsPatch(p);
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    let result: { settings: WorkspaceSettings; changed: boolean };
+    try {
+      result = await updateWorkspaceSettings(mount.env.fs, patch);
+    } catch (err) {
+      if (
+        err instanceof WorkspaceSettingsError ||
+        (err instanceof Error && err.name === "WorkspaceSettingsError")
+      ) {
+        const code =
+          err instanceof WorkspaceSettingsError
+            ? err.code
+            : ((err as { code?: string }).code ?? "INVALID_PATCH");
+        throw new RpcError(-32602, err.message, { code });
+      }
+      throw err;
+    }
+    if (result.changed) {
+      emitWorkspaceSettingsUpdated(ctx, workspaceId, result.settings);
+    }
+    return {
+      workspaceId,
+      settings: projectWorkspaceSettings(result.settings),
+      changed: result.changed,
+    };
+  });
+}
+
+/**
+ * Top-level RPC fields become the patch (excluding workspaceId / actor).
+ * Nested `patch` object is rejected so clients pass fields at top level.
+ */
+function parseWorkspaceSettingsPatch(p: Record<string, unknown>): Record<string, unknown> {
+  if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
+    throw new RpcError(
+      -32602,
+      "workspace.settings.update does not accept nested patch; pass fields at the top level"
+    );
+  }
+  const reserved = new Set(["workspaceId", "actor", "patch"]);
+  const supported = new Set(["defaultDeliveryPolicy"]);
+  const out: Record<string, unknown> = {};
+  for (const [key, value] of Object.entries(p)) {
+    if (reserved.has(key)) continue;
+    if (!supported.has(key)) {
+      throw new RpcError(-32602, `Unknown workspace setting: ${key}`);
+    }
+    if (value === undefined) continue;
+    out[key] = value;
+  }
+  // Explicit defaultDeliveryPolicy validation at the RPC boundary (clear error).
+  if ("defaultDeliveryPolicy" in out) {
+    const v = out.defaultDeliveryPolicy;
+    if (v !== "manual" && v !== "bypass" && v !== "agent-decide") {
+      throw new RpcError(-32602, `Invalid defaultDeliveryPolicy: ${String(v)}`, {
+        code: "INVALID_DELIVERY_POLICY",
+      });
+    }
+  }
+  return out;
+}
+
+function projectWorkspaceSettings(settings: WorkspaceSettings): WorkspaceSettings {
+  // Return a plain object projection; keep extensibility keys.
+  return { ...settings };
+}
+
+function emitWorkspaceSettingsUpdated(
+  ctx: HandlerContext,
+  workspaceId: string,
+  settings: WorkspaceSettings
+): void {
+  ctx.events.emit(
+    "workspace.settings.updated",
+    workspaceId,
+    {
+      settings: projectWorkspaceSettings(settings),
+    },
+    "self"
+  );
 }
 
 async function docsList(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -1346,7 +1479,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const role = requireString(p, "role");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
-  const deliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
+  const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
@@ -1364,9 +1497,16 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
+  // When deliveryPolicy is omitted, snapshot current workspace default into the task
+  // envelope at dispatch time (settings changes never rewrite existing tasks).
   const result = await ctx.mutations.run(workspaceId, async () => {
     const roleLane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
     ctx.host.markSelfWrite(workspaceId);
+    let deliveryPolicy = explicitDeliveryPolicy;
+    if (deliveryPolicy === undefined) {
+      const settings = await loadWorkspaceSettings(mount.env.fs);
+      deliveryPolicy = settings.defaultDeliveryPolicy;
+    }
     const dispatched = await dispatch(mount.env, boxId, role, {
       userPrompt: prompt,
       dispatchedBy,

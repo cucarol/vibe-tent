@@ -223,8 +223,9 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `registry.roles` / `registry.role.create` / `registry.role.update` / `registry.role.delete` — role registry read + user-only mutations (see §4.3.1); success event `registry.roles.updated`
 - `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
 - `operationalRetention.preview` / `operationalRetention.purge` — user-only terminal operational heat cleanup (see §6); preview read-only; purge via MutationBus; event `retention.purged` only when files deleted
+- `workspace.settings` / `workspace.settings.update` — workspace collaboration settings (see §5.3); read projection + user-only MutationBus update; event `workspace.settings.updated` only on successful actual change (no-op / failure emit none)
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), plus document events `concept.changed` / `concept.removed` from the docs group
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 
@@ -387,13 +388,21 @@ Hard rules:
 3. If `deliveryPolicy=agent-decide` and `decision` missing/invalid → error `DECISION_REQUIRED`.
 4. **Never** allow the deliverer to call `task.accept` on its own delivery, including under `agent-decide`. Auto-integrate is a policy action, not self-review.
 5. All integrates (manual accept, bypass, agent-decided) keep git commits for rollback; accept/delivery records list commit SHAs.
-6. Ordinary agents must not grant themselves `bypass` on dispatch; service rejects unauthorized policy elevation. Prefer user or `allow`-class orchestrator for `bypass`.
+6. Ordinary agents must not grant themselves `bypass` / `agent-decide` on dispatch; service should reject unauthorized policy elevation. Prefer user or `allow`-class orchestrator for elevated policies.
+7. **Authority gap (current service token contract):** loopback RPC auth is a single machine-local bearer token shared by Desktop, CLI, and agents. Self-declared `actor` / `callerKind` / `dispatchedBy` are **not** cryptographically bound to the caller. Until a stronger identity is available, `task.dispatch` does **not** enforce elevation checks beyond accepting an explicit `deliveryPolicy` from any token-holder. Workspace default changes remain **user-only** via `workspace.settings.update` (`actor` default `user`; non-user rejected). Do not treat cosmetic `actor` checks as a full auth model.
 
 ### 5.3 Policy placement
 
-- Tent setting `defaultDeliveryPolicy` (MVP: `manual`).
-- Box may override default for its tasks.
-- `task.dispatch` may set per-task policy within caller authority.
+- Workspace setting `defaultDeliveryPolicy` lives in **`.tent/settings.json`** (system-root relative `settings.json`; registered system file).
+- Values: `manual` | `bypass` | `agent-decide`. Missing file or field → **`manual`**. Corrupt file → backup + reset + warning (same registry recovery convention).
+- Schema is **extensible**: core preserves unknown on-disk keys and clients must tolerate extra fields. The current update RPC accepts only explicitly defined fields (`defaultDeliveryPolicy`); future settings extend the schema deliberately.
+- RPCs:
+  | API | Auth | Effect |
+  | --- | --- | --- |
+  | `workspace.settings` | any client with service token | Read normalized projection `{ workspaceId, settings }` |
+  | `workspace.settings.update` | **user only** (`actor` default `user`) | Patch via **MutationBus**. Emits **exactly one** `workspace.settings.updated` **only when** the normalized projection actually changes. No-op success and failures emit **no** event. |
+- `task.dispatch` with **omitted** `deliveryPolicy` **snapshots** the current workspace `defaultDeliveryPolicy` into the task envelope at dispatch time. Explicit `deliveryPolicy` still overrides. Changing settings later **never** rewrites existing tasks.
+- Box-level default override is reserved for a later batch (not in this MVP).
 
 ---
 

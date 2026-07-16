@@ -11,6 +11,8 @@ export const TAGS_REGISTRY_PATH = "tags.json";
 export const ORDER_PATH = "order.json";
 export const MUTATION_LOCK_PATH = "mutation.lock";
 export const RULES_PATH = "RULES.md";
+/** Workspace collaboration settings (defaultDeliveryPolicy, extensible). */
+export const WORKSPACE_SETTINGS_PATH = "settings.json";
 export const TEMP_DIR = "temp";
 export const ATTACHMENTS_DIR = "attachments";
 
@@ -30,6 +32,7 @@ export const SYSTEM_REGISTRY_FILES = new Set([
   ORDER_PATH,
   MUTATION_LOCK_PATH,
   RULES_PATH,
+  WORKSPACE_SETTINGS_PATH,
   "index.md",
   "log.md",
 ]);

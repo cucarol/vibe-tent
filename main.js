@@ -52,7 +52,7 @@ function isOperationalPath(relativePath2) {
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
 }
-var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, TEMP_DIR, ATTACHMENTS_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
+var TENT_SYSTEM_DIR, TYPE_REGISTRY_PATH, ROLES_REGISTRY_PATH, TAGS_REGISTRY_PATH, ORDER_PATH, MUTATION_LOCK_PATH, RULES_PATH, WORKSPACE_SETTINGS_PATH, TEMP_DIR, ATTACHMENTS_DIR, OPERATIONAL_TOP_LEVEL, SYSTEM_REGISTRY_FILES;
 var init_paths = __esm({
   "src/core/paths.ts"() {
     "use strict";
@@ -63,6 +63,7 @@ var init_paths = __esm({
     ORDER_PATH = "order.json";
     MUTATION_LOCK_PATH = "mutation.lock";
     RULES_PATH = "RULES.md";
+    WORKSPACE_SETTINGS_PATH = "settings.json";
     TEMP_DIR = "temp";
     ATTACHMENTS_DIR = "attachments";
     OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
@@ -78,6 +79,7 @@ var init_paths = __esm({
       ORDER_PATH,
       MUTATION_LOCK_PATH,
       RULES_PATH,
+      WORKSPACE_SETTINGS_PATH,
       "index.md",
       "log.md"
     ]);
