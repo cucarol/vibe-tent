@@ -21,8 +21,10 @@ import {
   loadTaskEnvelopes,
   patchTaskEnvelope,
   primaryBoxId,
+  taskAssigneeKind,
   type TaskEnvelope,
 } from "./task.js";
+import { agentProfileDeliveriesDir } from "./paths.js";
 import {
   assertNotSelfAccept,
   assertTransition,
@@ -217,6 +219,7 @@ export async function taskDeliver(
         artifactRefs: options.artifactRefs,
         status: "accepted",
         integrationMode: routing.integrationMode,
+        deliveriesDir: deliveryDirForTask(task),
       });
       // No review.by = submitter — integrate is service policy engine action.
 
@@ -243,6 +246,7 @@ export async function taskDeliver(
       artifactRefs: options.artifactRefs,
       status: "ready",
       integrationMode: routing.integrationMode,
+      deliveriesDir: deliveryDirForTask(task),
     });
 
     assertTransition(task.state, "deliver", "delivered");
@@ -455,9 +459,18 @@ export function boxProjectionOf(task: TaskEnvelope | undefined): {
   });
   return {
     status: proj.status,
+    // assignee is the stable label (role name or profileId).
     assignee: proj.clearAssignee ? undefined : task.role,
     activeTaskId: task.id || task.path,
   };
+}
+
+/** Delivery storage dir for a task (role lane or agent-profiles namespace). */
+function deliveryDirForTask(task: TaskEnvelope): string | undefined {
+  if (taskAssigneeKind(task) === "agentProfile") {
+    return agentProfileDeliveriesDir(task.role);
+  }
+  return undefined;
 }
 
 // ---- internals ----

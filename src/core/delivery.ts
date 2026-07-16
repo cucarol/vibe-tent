@@ -1,8 +1,14 @@
 // Delivery operational entity (dl-) — task-api §1.3.
-// Stored under temp/<role>/deliveries/<dl-id>.md (not OKF concepts).
+// Stored under temp/<role>/deliveries/<dl-id>.md or
+// temp/agent-profiles/<safe-profile-id>/deliveries/<dl-id>.md (not OKF concepts).
 
 import { withTentMutation, type Clock, type FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import {
+  AGENT_PROFILES_TEMP_DIR,
+  agentProfileDeliveriesDir,
+  TEMP_DIR,
+} from "./paths.js";
 import { join } from "./tree.js";
 import {
   isDeliveryId,
@@ -34,6 +40,7 @@ export interface DeliveryRecord {
 export interface CreateDeliveryInput {
   taskId: string;
   boxId: string;
+  /** Submitter label (role name or profileId). */
   role: string;
   summary: string;
   commits?: string[];
@@ -42,6 +49,11 @@ export interface CreateDeliveryInput {
   status?: DeliveryStatus;
   integrationMode?: IntegrationMode;
   id?: string;
+  /**
+   * When set, write under this deliveries directory (relative system root).
+   * Profile tasks pass agent-profiles deliveries dir; roles default to temp/<role>/deliveries.
+   */
+  deliveriesDir?: string;
 }
 
 const KEY_ORDER = [
@@ -79,9 +91,10 @@ export async function createDeliveryUnlocked(
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
-  const dir = join("temp", input.role, "deliveries");
-  await ensureDir(fs, dir);
-  const path = join(dir, `${id}.md`);
+  const deliveriesDir =
+    input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
+  await ensureDir(fs, deliveriesDir);
+  const path = join(deliveriesDir, `${id}.md`);
   if (await fs.exists(path)) throw new Error(`Delivery already exists: ${path}.`);
 
   const record: DeliveryRecord = {
@@ -148,24 +161,46 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
 
 export async function loadDeliveries(fs: FsAdapter, filter?: { taskId?: string; boxId?: string }): Promise<DeliveryRecord[]> {
   const out: DeliveryRecord[] = [];
-  if (!(await fs.exists("temp"))) return out;
-  for (const roleDir of await fs.listDir("temp")) {
-    if (!roleDir.isDir) continue;
-    const dir = join("temp", roleDir.name, "deliveries");
-    if (!(await fs.exists(dir))) continue;
-    for (const entry of await fs.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      try {
-        const d = await loadDelivery(fs, join(dir, entry.name));
-        if (filter?.taskId && d.taskId !== filter.taskId) continue;
-        if (filter?.boxId && d.boxId !== filter.boxId) continue;
-        out.push(d);
-      } catch {
-        // Invalid operational files stay on disk but are skipped.
+  if (!(await fs.exists(TEMP_DIR))) return out;
+  for (const entry of await fs.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!(await fs.exists(profilesRoot))) continue;
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectDeliveryFiles(
+          fs,
+          join(profilesRoot, profileEntry.name, "deliveries"),
+          filter,
+          out
+        );
       }
+      continue;
     }
+    await collectDeliveryFiles(fs, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+
+async function collectDeliveryFiles(
+  fs: FsAdapter,
+  dir: string,
+  filter: { taskId?: string; boxId?: string } | undefined,
+  out: DeliveryRecord[]
+): Promise<void> {
+  if (!(await fs.exists(dir))) return;
+  for (const entry of await fs.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    try {
+      const d = await loadDelivery(fs, join(dir, entry.name));
+      if (filter?.taskId && d.taskId !== filter.taskId) continue;
+      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      out.push(d);
+    } catch {
+      // Invalid operational files stay on disk but are skipped.
+    }
+  }
 }
 
 export async function updateDelivery(
@@ -214,13 +249,25 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
 }
 
 export function deliveryPath(role: string, id: string): string {
-  return join("temp", role, "deliveries", `${id}.md`);
+  return join(TEMP_DIR, role, "deliveries", `${id}.md`);
+}
+
+/** Profile-task delivery path under the dedicated agent-profiles namespace. */
+export function agentProfileDeliveryPath(profileId: string, id: string): string {
+  return join(agentProfileDeliveriesDir(profileId), `${id}.md`);
 }
 
 function normalizeDeliveryPath(input: string): string {
   const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)) {
-    throw new Error("Delivery must point to temp/<role>/deliveries/<dl-id>.md.");
+  // Role: temp/<role>/deliveries/dl-….md
+  // Profile: temp/agent-profiles/<safe>/deliveries/dl-….md
+  if (
+    !/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) &&
+    !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)
+  ) {
+    throw new Error(
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+    );
   }
   return path;
 }

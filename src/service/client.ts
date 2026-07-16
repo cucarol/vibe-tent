@@ -274,13 +274,23 @@ export class ServiceClient {
     args: {
       boxId?: string;
       id?: string;
-      role: string;
+      /**
+       * Required for assigneeKind=role (default). Optional/ignored for agentProfile
+       * when equal to profileId; must not differ from profileId.
+       */
+      role?: string;
+      /** Defaults to role. agentProfile requires profileId and does not register a role. */
+      assigneeKind?: "role" | "agentProfile";
       prompt: string;
       dispatchedBy?: string;
       deliveryPolicy?: string;
       startSession?: boolean;
-      /** Required when startSession is true — no fake-default fallback. */
+      /**
+       * Required for assigneeKind=agentProfile and whenever startSession is true.
+       * For profile tasks this is also the stable assignee / delivery label.
+       */
       profileId?: string;
+      callerKind?: "user" | "role";
     }
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });

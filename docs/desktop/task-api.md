@@ -36,17 +36,20 @@ id: tk-…
 type: task
 boxId: cx-…                      # target box
 state: queued                    # see §2
-assigneeKind: role | agentProfile
-assignee: <role-name|profile-id>
-dispatchedBy: user | <role>
+assigneeKind: role | agentProfile   # missing → role (backward compatible; no historical migration)
+# Persisted compatibility field: envelope frontmatter still uses `role` as the
+# stable assignee label (role name OR profileId). API projections may also expose
+# `assignee` as that same label.
+role: <role-name|profile-id>
+dispatchedBy: user | <role>      # for agentProfile + role caller, must name a real dispatcher role
 sessionId: ss-…                  # optional until claim/start; **reference only**
-manifestRef: …                   # honor-contract snapshot at dispatch
+manifest: temp/…                 # honor-contract snapshot path at dispatch
 workspaceLane:                   # omit when tent has no Git/workspace lane (pure Tent task)
   workspace: …
   worktree: …
-  branch: …
+  branch: …                      # role: tent-role/<role>; profile: tent-task/<taskId>
   targetBranch: …                # peer → mainline; sub → dispatcher role branch
-  roleBranchBase: <full-sha>      # captured once when managed execution acquires the role slot
+  roleBranchBase: <full-sha>      # captured once when managed execution acquires the lane slot
 deliveryPolicy: manual | bypass | agent-decide
 wait:
   reason: user-input | a2a-approval | review | external
@@ -57,11 +60,26 @@ prompt: |                        # immutable after dispatch
   …
 ```
 
+#### assigneeKind: role vs agentProfile
+
+| | **role** (default) | **agentProfile** |
+| --- | --- | --- |
+| Assignee label | durable role name (`role` field) | machine-local `profileId` (stored in legacy `role` field) |
+| Registry | may ensure role init under `temp/<role>/init.md` | **never** registers a role; no role init |
+| Operational paths | `temp/<role>/tasks/…`, shared `temp/<role>/manifest.yml` | `temp/agent-profiles/<safe-profile-id>/tasks/…`, task-scoped `…/manifests/<taskId>.yml` |
+| Git lane | durable `tent-role/<role>` worktree (created at dispatch when Git) | task-scoped `tent-task/<taskId>` (created at managed acquisition; **not** `tent-role/<profile>`) |
+| Concurrency | one live managed session per durable role | multiple concurrent tasks/sessions even with the same profile config |
+| startSession | any authorized profileId | **must** equal envelope profileId / assignee label |
+| A2A (role caller) | authority = task role’s `a2aPolicy` / `allowedProfiles` | authority = **dispatcher** role named in `dispatchedBy` (must be a real registry role); profile is not a role |
+| Claim / delivery | submitter / box.assignee = role name | submitter / box.assignee = profileId |
+
+Missing `assigneeKind` on disk **reads as `role`**. Historical tasks are not migrated.
+
 #### WorkspaceLane (task) vs RuntimeWorkspace (runtime)
 
 | Term | Lives on | Meaning |
 | --- | --- | --- |
-| **WorkspaceLane** | Task operational record | Collaboration Git lane: workspace root, role worktree, branch, targetBranch |
+| **WorkspaceLane** | Task operational record | Collaboration Git lane: workspace root, worktree, branch, targetBranch |
 | **RuntimeWorkspace** | Machine-local session / AgentRuntime only | Process cwd and launch binding for a live `ss-` session |
 
 Tasks **must not** embed RuntimeWorkspace, PIDs, resume tokens, or absolute path caches. Only `sessionId` may bind a task to a live session; the session row lives in the service data area (`agent-runtime.md`).
@@ -70,9 +88,10 @@ Do **not** use the legacy product phrase “workspace pointer” for either stru
 
 `roleBranchBase` scopes managed auto-delivery to commits created during this task's
 execution window (`roleBranchBase..branch`). Queued tasks do not capture it at
-dispatch: the service writes it only after the role has no other active managed
-session, then preserves it across restart, resume, and reject-resume. A rewritten
-or divergent role branch fails loud instead of widening the commit range.
+dispatch: the service writes it only after managed execution acquires the lane slot
+(role: no other active managed session for that role; profile: per-task lane), then
+preserves it across restart, resume, and reject-resume. A rewritten or divergent
+branch fails loud instead of widening the commit range.
 
 #### sessionId reference rule
 
@@ -198,9 +217,9 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 
 | API | Default callers | Effect |
 | --- | --- | --- |
-| `task.dispatch` | user; authorized orchestrator role | Create `queued` task + manifest snapshot. Does **not** start a session unless `startSession: true` and A2A allows. |
-| `task.claim` | target role/session (or user on behalf) | `queued → running`; bind `sessionId` reference; project assignee |
-| `task.startSession` | authorized orchestration / user | Resolve **machine-local AgentProfile**, enforce **A2APolicy**, then service calls **internal** `AgentRuntimePort` |
+| `task.dispatch` | user; authorized orchestrator role | Create `queued` task + manifest snapshot. Params: `assigneeKind` (default `role`), `role` (required for role), `profileId` (required for agentProfile and must exist in the machine-local profile catalog), optional `startSession` + same `profileId`. Does **not** start a session unless `startSession: true` and A2A allows. |
+| `task.claim` | target assignee/session (or user on behalf) | `queued → running`; bind `sessionId` reference; project assignee (role name or profileId) |
+| `task.startSession` | authorized orchestration / user | Resolve **machine-local AgentProfile**, enforce **A2APolicy**, then service calls **internal** `AgentRuntimePort`. For agentProfile tasks, `profileId` must match the envelope assignee. |
 | `task.wait` | executing session / service | `running → waiting` with reason + summary |
 | `task.resume` | user confirmation / external event | `waiting → running` |
 | `task.deliver` | assignee **or Local Service** (managed ACP auto-deliver) | Create/update delivery; enter `delivered` (or auto-integrate path per policy). Managed path: service calls the same lifecycle with `summary` = final assistant reply — never auto-accept beyond existing deliveryPolicy. |
@@ -331,7 +350,7 @@ An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it
 | `registry.roles` | Read projection: name, description, color, prompt, effective `a2aPolicy`, `allowedProfiles` |
 | `registry.role.create` | User actor only; MutationBus; name immutable after create |
 | `registry.role.update` | User actor only; cannot rename; `null`/empty clears optional text, policy, CLI, or profile whitelist fields |
-| `registry.role.delete` | User actor only; `confirmation` must equal `name`; refuses active task or live/starting/waiting-user managed session |
+| `registry.role.delete` | User actor only; `confirmation` must equal `name`; refuses **durable role** active task or live/starting/waiting-user managed session (`assigneeKind=role`). One-shot agentProfile sessions (even if `roleName` equals the role name) do **not** block delete. |
 
 Successful create/update/delete emits **exactly one** `registry.roles.updated` (`action`, `name`). Failures emit nothing.
 
@@ -433,7 +452,7 @@ Explicit user-only RPCs (successor of blunt `clean-temp` for operational heat). 
 
 | API | Auth | Effect |
 | --- | --- | --- |
-| `operationalRetention.preview` | **user only** (`actor` default `user`; non-user → deny) | Scan `temp/<role>/{tasks,deliveries}/` via FsAdapter; return candidates / skipped / warnings. **Read-only**. |
+| `operationalRetention.preview` | **user only** (`actor` default `user`; non-user → deny) | Scan `temp/<role>/{tasks,deliveries}/` and nested `temp/agent-profiles/<id>/{tasks,deliveries}/` via FsAdapter; return candidates / skipped / warnings. **Read-only**. |
 | `operationalRetention.purge` | **user only** | Same selection as preview; delete via **MutationBus**. Emit **exactly one** `retention.purged` event **only when** files were actually deleted. |
 
 **Params (both):**

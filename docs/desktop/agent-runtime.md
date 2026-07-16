@@ -66,7 +66,7 @@ Do **not** call either a “workspace pointer.” Lane is prepared by service/co
 2. **AgentProfile ≠ role.** Temporary one-shot agents may use a profile without entering the durable role registry (Task API already allows `assigneeKind: agentProfile`). **AgentProfile** configs never enter workspace git.
 3. **ProviderAdapter ≠ Generic “supports all CLIs”.** A shared process skeleton is allowed; each shippable provider still needs its own adapter class (or explicit profile + verified capability set) and verification checklist.
 4. **Legacy `role.cli` is input, not runtime.** Existing `RoleCliConfig { command, resume? }` and SPEC “never spawn” hints are **migration sources for AgentProfile drafts**. They are not a second supervisor and must not be invoked by skills as spawn authority.
-5. **WorkspaceLane is orthogonal to session.** Role worktree/branch (`ensureRoleWorkspace`) is prepared by service/core **before** internal `startSession`. Replacing a session reuses the same lane conventions unless the task explicitly targets another lane; the new session gets a fresh RuntimeWorkspace binding.
+5. **WorkspaceLane is orthogonal to session.** Durable role worktree/branch (`ensureRoleWorkspace` → `tent-role/<role>`) is prepared by service/core before internal `startSession`. One-shot agentProfile tasks use a task-scoped lane (`ensureTaskWorkspace` → `tent-task/<taskId>`) acquired at managed execution, not a durable `tent-role/<profile>` lane. Session rows store `assigneeKind` so live-role checks never treat profile sessions as durable role sessions.
 6. **Task stores `sessionId` only.** Session rows, PIDs, resume tokens, and RuntimeWorkspace absolute paths stay machine-local.
 
 ---

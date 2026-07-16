@@ -154,6 +154,64 @@ export async function ensureRoleWorkspace(
   return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
 }
 
+/**
+ * One-shot AgentProfile task lane: branch/worktree scoped to task id.
+ * Distinct from durable tent-role/<role> lanes; concurrent same-profile tasks
+ * each get their own tent-task/<taskId> worktree.
+ * Non-Git workspaces return undefined without throwing.
+ */
+export async function ensureTaskWorkspaceIfGit(
+  workspace: string,
+  taskId: string
+): Promise<RoleWorkspaceContract | undefined> {
+  if (!(await isGitWorkspace(workspace))) return undefined;
+  return ensureTaskWorkspace(workspace, taskId);
+}
+
+export async function ensureTaskWorkspace(
+  workspace: string,
+  taskId: string
+): Promise<RoleWorkspaceContract> {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  const targetBranch = await resolveTargetBranch(root);
+  const taskSlug = safeComponent(id);
+  const branch = `tent-task/${taskSlug}`;
+  const worktree = nodePath.join(
+    nodePath.dirname(root),
+    `${nodePath.basename(root)}-worktrees`,
+    `task-${taskSlug}`
+  );
+
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return {
+      workspace: root,
+      worktree: await nodeFs.realpath(nodePath.resolve(existing)),
+      branch,
+      targetBranch,
+    };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+  };
+}
+
 /** 把 user 在验收交互中明确选中的 commits 逐个纳入正式分支；不 push。 */
 export async function integrateWorkspaceCommits(
   contract: RoleWorkspaceContract,

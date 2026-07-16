@@ -1,5 +1,10 @@
 import { Clock, FsAdapter } from "./adapter.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
+import {
+  AGENT_PROFILES_TEMP_DIR,
+  agentProfileTasksDir,
+  TEMP_DIR,
+} from "./paths.js";
 import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
@@ -22,6 +27,10 @@ export interface RoleWorkspaceContract {
 }
 
 export interface TaskEnvelopeInput {
+  /**
+   * Stable assignee label.
+   * Role tasks: durable role name. Profile tasks: profileId (legacy field name kept).
+   */
   role: string;
   claims: { id: string; path: string }[];
   manifestPath: string;
@@ -33,6 +42,11 @@ export interface TaskEnvelopeInput {
   deliveryPolicy?: DeliveryPolicy;
   assigneeKind?: AssigneeKind;
   sessionId?: string;
+  /**
+   * Override task directory (relative system root).
+   * Profile tasks use temp/agent-profiles/<safe-id>/tasks; roles use temp/<role>/tasks.
+   */
+  tasksDir?: string;
 }
 
 /** Legacy two-state for B2 / dogfood CLI. */
@@ -74,24 +88,51 @@ export interface TaskEnvelope {
   prompt?: string;
 }
 
+/**
+ * Discover task envelopes under role lanes and nested agent-profile lanes.
+ * - Role: temp/<role>/tasks/*.md
+ * - Profile: temp/agent-profiles/<safe-profile-id>/tasks/*.md
+ */
 export async function loadTaskEnvelopes(fs: FsAdapter): Promise<TaskEnvelope[]> {
   const tasks: TaskEnvelope[] = [];
-  if (!(await fs.exists("temp"))) return tasks;
-  for (const roleEntry of await fs.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!(await fs.exists(taskDir))) continue;
-    for (const entry of await fs.listDir(taskDir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path = join(taskDir, entry.name);
-      try {
-        tasks.push(await loadTaskEnvelope(fs, path));
-      } catch {
-        // Invalid temp documents stay inspectable on disk but do not enter UI state.
+  if (!(await fs.exists(TEMP_DIR))) return tasks;
+
+  for (const entry of await fs.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!(await fs.exists(profilesRoot))) continue;
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectTaskFiles(fs, join(profilesRoot, profileEntry.name, "tasks"), tasks);
       }
+      continue;
     }
+    await collectTaskFiles(fs, join(TEMP_DIR, entry.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+
+async function collectTaskFiles(
+  fs: FsAdapter,
+  taskDir: string,
+  tasks: TaskEnvelope[]
+): Promise<void> {
+  if (!(await fs.exists(taskDir))) return;
+  for (const entry of await fs.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs, path));
+    } catch {
+      // Invalid temp documents stay inspectable on disk but do not enter UI state.
+    }
+  }
+}
+
+/** Effective assignee kind; missing field reads as role (backward compatible). */
+export function taskAssigneeKind(task: Pick<TaskEnvelope, "assigneeKind">): AssigneeKind {
+  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
 
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
@@ -175,16 +216,26 @@ export function resolveTaskPromptRoots(
 }
 
 function formatTaskPathHints(task: TaskEnvelope, roots: TaskPromptRoots): string {
-  const initCli = join("temp", task.role, "init.md");
-  const initFile = join(".tent", "temp", task.role, "init.md");
+  const kind = taskAssigneeKind(task);
   const taskFile = join(".tent", task.path);
-  return (
-    `workspaceRoot: ${roots.workspaceRoot}\n` +
-    `systemRoot: ${roots.systemRoot}\n` +
-    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.\n` +
-    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} — never <workspaceRoot>/temp.\n` +
-    `Role init file: ${initFile} (CLI path remains ${initCli}).`
-  );
+  const lines = [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} — never <workspaceRoot>/temp.`,
+    `Task envelope: ${task.path}`,
+    `Manifest: ${task.manifest}`,
+  ];
+  if (kind === "role") {
+    const initCli = join("temp", task.role, "init.md");
+    const initFile = join(".tent", "temp", task.role, "init.md");
+    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
+  } else {
+    lines.push(
+      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
+    );
+  }
+  return lines.join("\n");
 }
 
 /**
@@ -196,13 +247,22 @@ export function relayPromptForTask(
   roots: string | TaskPromptRoots
 ): string {
   const resolved = resolveTaskPromptRoots(roots);
+  const kind = taskAssigneeKind(task);
+  const assigneeLine =
+    kind === "agentProfile"
+      ? `A Tent task has been dispatched to agentProfile ${task.role}.\n`
+      : `A Tent task has been dispatched to role ${task.role}.\n`;
+  const initStep =
+    kind === "agentProfile"
+      ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.`
+      : `4. If this is a new session for this role, complete role init first (read the init file above).`;
   return (
-    `A Tent task has been dispatched to role ${task.role}.\n` +
+    assigneeLine +
     `${formatTaskPathHints(task, resolved)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
     `2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.\n` +
     `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
-    `4. If this is a new session for this role, complete role init first (read the init file above).`
+    initStep
   );
 }
 
@@ -230,13 +290,21 @@ export function sessionBootstrapPromptForTask(
 ): string {
   const resolved = resolveTaskPromptRoots(roots);
   const userPrompt = extractTaskUserPrompt(task);
+  const kind = taskAssigneeKind(task);
+  const readyLine =
+    kind === "agentProfile"
+      ? `A Tent managed ACP session is ready for agentProfile ${task.role}.\n`
+      : `A Tent managed ACP session is ready for role ${task.role}.\n`;
   return (
-    `A Tent managed ACP session is ready for role ${task.role}.\n` +
+    readyLine +
     `${formatTaskPathHints(task, resolved)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
     `Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).\n` +
     `Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).\n` +
     `Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.\n` +
+    (kind === "agentProfile"
+      ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
+      : "") +
     (userPrompt
       ? `\n## User Prompt\n\n${userPrompt}\n`
       : `\n## User Prompt\n\n(no user prompt on envelope)\n`)
@@ -271,7 +339,12 @@ export async function writeTaskEnvelope(
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
 
-  const dir = join("temp", input.role, "tasks");
+  const assigneeKind: AssigneeKind = input.assigneeKind ?? "role";
+  const dir =
+    input.tasksDir?.trim() ||
+    (assigneeKind === "agentProfile"
+      ? agentProfileTasksDir(input.role)
+      : join(TEMP_DIR, input.role, "tasks"));
   await ensureDir(fs, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
@@ -283,7 +356,7 @@ export async function writeTaskEnvelope(
     status: "pending",
     state: "queued",
     role: input.role,
-    assigneeKind: input.assigneeKind ?? "role",
+    assigneeKind,
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,

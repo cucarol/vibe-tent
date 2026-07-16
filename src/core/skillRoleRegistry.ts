@@ -1,7 +1,7 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
 
-import { ROLES_REGISTRY_PATH } from "./paths.js";
+import { AGENT_PROFILES_TEMP_DIR, ROLES_REGISTRY_PATH } from "./paths.js";
 export { ROLES_REGISTRY_PATH };
 
 /** Machine-readable A2A spawn authority (task-api §4). Default deny when omitted. */
@@ -68,11 +68,19 @@ export async function createRole(fs: FsAdapter, definition: RoleDefinition): Pro
   await withTentMutation(fs, async () => {
     const role = normalizeRole(definition);
     if (!role.name) throw new Error("Role name cannot be empty.");
+    assertRoleNameAvailable(role.name);
     const registry = await loadRolesRegistry(fs);
     if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
     registry.roles.push(role);
     await writeJson(fs, ROLES_REGISTRY_PATH, registry);
   });
+}
+
+/** Names that would collide with Tent-owned operational directories. */
+export function assertRoleNameAvailable(name: string): void {
+  if (name.trim().toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  }
 }
 
 export async function updateRole(fs: FsAdapter, name: string, patch: Partial<RoleDefinition>): Promise<void> {

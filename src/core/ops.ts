@@ -11,7 +11,7 @@ import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
 import { isUsableBox } from "./tree.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
-import { loadRolesRegistry } from "./skillRoleRegistry.js";
+import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
 import {
   cancelTaskEnvelope,
   ensureRoleInit,
@@ -19,9 +19,17 @@ import {
   loadTaskEnvelopes,
   relayPromptForTask,
   RoleWorkspaceContract,
+  taskAssigneeKind,
   TaskEnvelope,
   writeTaskEnvelope,
 } from "./task.js";
+import { makeTaskId } from "./task-model.js";
+import type { AssigneeKind, DeliveryPolicy } from "./task-model.js";
+import {
+  agentProfileManifestPath,
+  agentProfileTasksDir,
+  agentProfileTempRoot,
+} from "./paths.js";
 import { loadReport, removeReportsForBox } from "./report.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
@@ -35,9 +43,13 @@ export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
 export interface DispatchResult {
   manifestPath: string;
   manifestYaml: string;
-  initPath: string;
+  /** Present for role tasks; omitted for one-shot agentProfile tasks. */
+  initPath?: string;
   taskPath: string;
   relayPrompt: string;
+  assigneeKind: AssigneeKind;
+  /** Stable assignee label (role name or profileId). */
+  assignee: string;
 }
 
 export interface DispatchOptions {
@@ -45,13 +57,19 @@ export interface DispatchOptions {
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
   /** Delivery policy for this task (default manual). */
-  deliveryPolicy?: import("./task-model.js").DeliveryPolicy;
+  deliveryPolicy?: DeliveryPolicy;
+  /**
+   * Defaults to role. agentProfile requires profileId and must not register a role.
+   */
+  assigneeKind?: AssigneeKind;
+  /** Required when assigneeKind=agentProfile; stable assignee / delivery label. */
+  profileId?: string;
 }
 
 export async function dispatch(
   env: OpsEnv,
   claimId: string,
-  role: string,
+  role: string | undefined,
   promptOrOptions: string | DispatchOptions
 ): Promise<DispatchResult> {
   return withMutation(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
@@ -60,20 +78,46 @@ export async function dispatch(
 async function dispatchUnlocked(
   env: OpsEnv,
   claimId: string,
-  role: string,
+  role: string | undefined,
   promptOrOptions: string | DispatchOptions
 ): Promise<DispatchResult> {
   const tent = await loadTent(env.fs);
-  const roleName = assertRoleName(role);
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options: DispatchOptions = typeof promptOrOptions === "string"
     ? { userPrompt: promptOrOptions }
     : promptOrOptions;
+  const assigneeKind: AssigneeKind =
+    options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+
+  let assigneeLabel: string;
+  if (assigneeKind === "agentProfile") {
+    const profileId = options.profileId?.trim() || "";
+    if (!profileId) {
+      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
+    }
+    if (role?.trim() && role.trim() !== profileId) {
+      throw new Error(
+        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
+      );
+    }
+    assigneeLabel = assertProfileId(profileId);
+  } else {
+    const roleName = role?.trim() || "";
+    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
+    assigneeLabel = assertRoleName(roleName);
+  }
+
+  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const tasks = await loadTaskEnvelopes(env.fs);
-  const roleTempPath = join("temp", roleName);
-  const roleTempExisted = await env.fs.exists(roleTempPath);
+  // Cleanup only removes what this dispatch creates. Role: temp/<role>/ when new.
+  // Profile: temp/agent-profiles/<safe>/ when new (never tent-role/*).
+  const createdRoot =
+    assigneeKind === "agentProfile"
+      ? agentProfileTempRoot(assigneeLabel)
+      : join("temp", assigneeLabel);
+  const createdRootExisted = await env.fs.exists(createdRoot);
+
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -96,53 +140,93 @@ async function dispatchUnlocked(
   }
 
   try {
+    // Role tasks reuse durable multi-claim aggregation; profile tasks are one-shot
+    // and only claim the target box (do not accumulate other profile tasks as claims).
     const roleClaims = claim.root
       ? []
-      : roleManifestClaims(tent, roleName, claim.box, tasks);
+      : assigneeKind === "role"
+        ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks)
+        : [claim.box];
     const input: DispatchInput = claim.root
-      ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace }
-      : { tentName: env.tentName, role: roleName, claimBoxes: roleClaims, ...options.workspace };
+      ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace }
+      : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
-    // manifest 是 role 当前全部 claims 的动态合同；task 文档不可变。
-    const manifestPath = join("temp", roleName, "manifest.yml");
-    await ensureDir(env.fs, dirName(manifestPath));
-    await env.fs.writeFile(manifestPath, yaml);
-    const registry = await loadRolesRegistry(env.fs);
-    const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
-    const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    const taskId = makeTaskId();
+    let manifestPath: string;
+    let initPath: string | undefined;
+
+    if (assigneeKind === "agentProfile") {
+      // Task-scoped immutable manifest; never shared manifest.yml / role init / registry.
+      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+      await ensureDir(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+    } else {
+      // manifest 是 role 当前全部 claims 的动态合同；task 文档不可变。
+      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      await ensureDir(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+      const registry = await loadRolesRegistry(env.fs);
+      const roleDefinition =
+        registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    }
+
     const taskClaims = claim.root
       ? [{ id: "root", path: "./" }]
       : [{ id: claim.box.id, path: claim.box.path }];
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: roleName,
+      role: assigneeLabel,
       claims: taskClaims,
       manifestPath,
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
       deliveryPolicy: options.deliveryPolicy,
+      assigneeKind,
+      id: taskId,
+      tasksDir:
+        assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
     });
 
     const relayPrompt = relayPromptForTask(
       {
         path: taskPath,
-        role: roleName,
+        role: assigneeLabel,
         claims: taskClaims.map((taskClaim) => taskClaim.id),
         manifest: manifestPath,
         status: "pending",
         state: "queued",
+        assigneeKind,
+        id: taskId,
       },
       env.tentRoot || env.tentName
     );
-    return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+    return {
+      manifestPath,
+      manifestYaml: yaml,
+      initPath,
+      taskPath,
+      relayPrompt,
+      assigneeKind,
+      assignee: assigneeLabel,
+    };
   } catch (error) {
-    if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
-      await env.fs.remove(roleTempPath);
+    if (!createdRootExisted && (await env.fs.exists(createdRoot))) {
+      await env.fs.remove(createdRoot);
     }
     throw error;
   }
+}
+
+function assertProfileId(profileId: string): string {
+  const id = profileId.trim();
+  if (!id) throw new Error("profileId cannot be empty.");
+  if (/[\/\\\r\n]/.test(id)) {
+    throw new Error("profileId cannot contain path separators or newlines.");
+  }
+  return id;
 }
 
 // ---- task ack / cancel ----
@@ -589,6 +673,7 @@ function assertRoleName(role: string): string {
   const name = role.trim();
   if (!name) throw new Error("Role name cannot be empty.");
   if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
+  assertRoleNameAvailable(name);
   return name;
 }
 
@@ -640,6 +725,8 @@ function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks:
     if (box.fm.owner === role) claims.set(box.id, box);
   }
   for (const task of tasks) {
+    // Only durable role tasks share multi-claim aggregation; profile tasks are one-shot.
+    if (taskAssigneeKind(task) !== "role") continue;
     if (task.status !== "pending" || task.role !== role) continue;
     for (const claimId of task.claims) {
       const box = tent.byId.get(claimId);

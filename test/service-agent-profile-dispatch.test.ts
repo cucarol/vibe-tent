@@ -1,0 +1,805 @@
+/**
+ * One-shot agentProfile task dispatch: paths, lanes, A2A, concurrency, discovery.
+ */
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { NodeFs } from "../src/fs/node-fs.js";
+import { startLocalTentService } from "../src/service/service.js";
+import { rpcCall } from "../src/service/http-server.js";
+import { makeSessionId } from "../src/runtime/types.js";
+import { loadTaskEnvelope } from "../src/core/task.js";
+import { loadDeliveries } from "../src/core/delivery.js";
+import { loadRolesRegistry } from "../src/core/skillRoleRegistry.js";
+import { previewOperationalRetention } from "../src/core/retention.js";
+import { ensureTaskWorkspace } from "../src/core/workspace.js";
+import { RPC_A2A_DENIED } from "../src/service/types.js";
+import { configureTestGitIdentity, git } from "./helpers.js";
+
+async function makeWorkspace(
+  name = "ap-dispatch",
+  rolePolicies?: Record<string, "allow" | "ask" | "deny">,
+  roleProfiles?: Record<string, string[]>
+): Promise<string> {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-ws-"));
+  const fsa = new NodeFs(workspace);
+  await scaffoldInWorkspace(fsa, {
+    name,
+    rules: "# RULES\n\nagentProfile dispatch\n",
+    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+  });
+  await fsa.writeFile(
+    ".tent/roles.json",
+    JSON.stringify(
+      {
+        roles: [
+          {
+            name: "executor",
+            prompt: "do work",
+            ...(rolePolicies?.executor ? { a2aPolicy: rolePolicies.executor } : {}),
+            ...(rolePolicies?.executor === "allow"
+              ? { allowedProfiles: roleProfiles?.executor ?? ["fake-default"] }
+              : roleProfiles?.executor
+                ? { allowedProfiles: roleProfiles.executor }
+                : {}),
+          },
+          {
+            name: "orchestrator",
+            prompt: "dispatch work",
+            ...(rolePolicies?.orchestrator
+              ? { a2aPolicy: rolePolicies.orchestrator }
+              : {}),
+            ...(rolePolicies?.orchestrator === "allow"
+              ? {
+                  allowedProfiles:
+                    roleProfiles?.orchestrator ?? ["fake-default"],
+                }
+              : roleProfiles?.orchestrator
+                ? { allowedProfiles: roleProfiles.orchestrator }
+                : {}),
+          },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
+  return workspace;
+}
+
+async function withService<T>(
+  fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
+): Promise<T> {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-data-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    return await fn(svc);
+  } finally {
+    await svc.stop();
+  }
+}
+
+function rpc(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  method: string,
+  params?: Record<string, unknown>
+) {
+  return rpcCall(svc.url, method, params, { token: svc.token });
+}
+
+async function mountWorkItem(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  ws: string,
+  name = "work-item"
+) {
+  const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+  assert.ok(!mounted.error, JSON.stringify(mounted.error));
+  const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+  const created = await rpc(svc, "docs.createNote", {
+    workspaceId,
+    name,
+    type: "prompt",
+  });
+  assert.ok(!created.error, JSON.stringify(created.error));
+  return {
+    workspaceId,
+    boxId: (created.result as { id: string }).id,
+  };
+}
+
+async function initGitOnWorkspace(workspace: string): Promise<void> {
+  await git(workspace, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(workspace);
+  await fs.writeFile(path.join(workspace, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(workspace, "README.md"), "# repo\n");
+  await git(workspace, "add", ".gitignore", "README.md");
+  await git(workspace, "commit", "-q", "-m", "init");
+}
+
+test("agentProfile dispatch: envelope path, task-scoped manifest, no init/registry/tent-role", async () => {
+  const ws = await makeWorkspace("ap-basic");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const beforeRoles = await loadRolesRegistry(new NodeFs(path.join(ws, ".tent")));
+    const roleCount = beforeRoles.roles.length;
+
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "one-shot profile work",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const result = d.result as {
+      taskPath: string;
+      manifestPath: string;
+      initPath?: string;
+      assigneeKind: string;
+      assignee: string;
+      relayPrompt: string;
+      workspaceLane?: unknown;
+    };
+    assert.equal(result.assigneeKind, "agentProfile");
+    assert.equal(result.assignee, "fake-default");
+    assert.equal(result.initPath, undefined);
+    assert.match(result.taskPath, /^temp\/agent-profiles\/fake-default\/tasks\//);
+    assert.match(
+      result.manifestPath,
+      /^temp\/agent-profiles\/fake-default\/manifests\/tk-.+\.yml$/
+    );
+    assert.equal(result.workspaceLane, undefined);
+    assert.match(result.relayPrompt, /agentProfile fake-default/);
+    assert.doesNotMatch(result.relayPrompt, /Role init file/);
+    assert.match(result.relayPrompt, /do not look for a role init/i);
+
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const task = await loadTaskEnvelope(envFs, result.taskPath);
+    assert.equal(task.assigneeKind, "agentProfile");
+    assert.equal(task.role, "fake-default");
+    assert.equal(task.manifest, result.manifestPath);
+    assert.ok(task.id?.startsWith("tk-"));
+
+    // No durable role init, no shared manifest.yml, no tent-role lane.
+    assert.equal(await envFs.exists("temp/fake-default/init.md"), false);
+    assert.equal(await envFs.exists("temp/fake-default/manifest.yml"), false);
+    assert.equal(await envFs.exists("temp/fake-default"), false);
+    assert.ok(await envFs.exists(result.manifestPath));
+    assert.ok(await envFs.exists(result.taskPath));
+
+    const afterRoles = await loadRolesRegistry(envFs);
+    assert.equal(afterRoles.roles.length, roleCount);
+    assert.ok(!afterRoles.roles.some((r) => r.name === "fake-default"));
+
+    // Git lane naming must not appear under worktrees for this non-Git workspace.
+    const sibling = path.join(path.dirname(ws), `${path.basename(ws)}-worktrees`);
+    assert.equal(await fs.access(sibling).then(() => true).catch(() => false), false);
+  });
+});
+
+test("role dispatch regression: still creates init + shared manifest + role path", async () => {
+  const ws = await makeWorkspace("ap-role-reg");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "role path stays",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const result = d.result as {
+      taskPath: string;
+      manifestPath: string;
+      initPath?: string;
+      assigneeKind?: string;
+      relayPrompt: string;
+    };
+    assert.equal(result.assigneeKind, "role");
+    assert.equal(result.initPath, "temp/executor/init.md");
+    assert.equal(result.manifestPath, "temp/executor/manifest.yml");
+    assert.match(result.taskPath, /^temp\/executor\/tasks\//);
+    assert.match(result.relayPrompt, /role executor/);
+    assert.match(result.relayPrompt, /Role init file/);
+
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const task = await loadTaskEnvelope(envFs, result.taskPath);
+    assert.equal(taskAssigneeKindOrRole(task.assigneeKind), "role");
+    assert.equal(task.role, "executor");
+    assert.ok(await envFs.exists("temp/executor/init.md"));
+    assert.ok(await envFs.exists("temp/executor/manifest.yml"));
+  });
+});
+
+test("agent-profiles is reserved from durable role registration and dispatch", async () => {
+  const ws = await makeWorkspace("ap-reserved-role");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const created = await rpc(svc, "registry.role.create", {
+      workspaceId,
+      name: "agent-profiles",
+      prompt: "must not shadow the profile namespace",
+    });
+    assert.ok(created.error);
+    assert.match(String(created.error!.message), /reserved/i);
+
+    const dispatched = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "agent-profiles",
+      prompt: "must not enter the reserved namespace",
+    });
+    assert.ok(dispatched.error);
+    assert.match(String(dispatched.error!.message), /reserved/i);
+  });
+});
+
+function taskAssigneeKindOrRole(kind: string | undefined): string {
+  return kind === "agentProfile" ? "agentProfile" : "role";
+}
+
+test("Git agentProfile task gets tent-task/<taskId> isolated lane; commits from that lane only", async () => {
+  const ws = await makeWorkspace("ap-git-lane");
+  await initGitOnWorkspace(ws);
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "git profile lane",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    // Dispatch does not create a lane for profile tasks.
+    assert.equal((d.result as { workspaceLane?: unknown }).workspaceLane, undefined);
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const task = (started.result as {
+      task: {
+        id?: string;
+        workspaceLane?: { branch?: string; worktree?: string };
+        roleBranchBase?: string;
+      };
+      session: { cwd?: string };
+    }).task;
+    const session = (started.result as { session: { cwd?: string } }).session;
+    assert.ok(task.id);
+    assert.equal(task.workspaceLane?.branch, `tent-task/${task.id}`);
+    assert.ok(task.workspaceLane?.worktree);
+    assert.ok(session.cwd);
+    assert.equal(path.resolve(session.cwd!), path.resolve(task.workspaceLane!.worktree!));
+    assert.doesNotMatch(task.workspaceLane!.branch!, /^tent-role\//);
+    assert.ok(!task.workspaceLane!.worktree!.endsWith(`${path.sep}fake-default`));
+
+    // Commit only on the task lane; managed collection baseline is roleBranchBase.
+    const envelope = await loadTaskEnvelope(
+      new NodeFs(path.join(ws, ".tent")),
+      taskPath
+    );
+    assert.ok(envelope.roleBranchBase);
+    const contract = await ensureTaskWorkspace(ws, task.id!);
+    assert.equal(contract.branch, `tent-task/${task.id}`);
+    await fs.writeFile(path.join(contract.worktree, "from-task.txt"), "task-only\n");
+    await git(contract.worktree, "add", "from-task.txt");
+    await git(contract.worktree, "commit", "-q", "-m", "task lane commit");
+    const taskSha = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+
+    // Role lane must not exist for the profile id.
+    const roleBranchExists = await git(ws, "show-ref", "--verify", "--quiet", "refs/heads/tent-role/fake-default")
+      .then(() => true)
+      .catch(() => false);
+    assert.equal(roleBranchExists, false);
+
+    const listed = await git(
+      ws,
+      "log",
+      `${envelope.roleBranchBase}..${contract.branch}`,
+      "--format=%H"
+    );
+    const shas = listed
+      .split(/\r?\n/)
+      .map((l) => l.trim())
+      .filter(Boolean);
+    assert.deepEqual(shas, [taskSha]);
+  });
+});
+
+test("startSession profile match/mismatch; two same-profile tasks concurrent", async () => {
+  const ws = await makeWorkspace("ap-concurrent");
+  await withService(async (svc) => {
+    const a = await mountWorkItem(svc, ws, "box-a");
+    const boxB = await rpc(svc, "docs.createNote", {
+      workspaceId: a.workspaceId,
+      name: "box-b",
+      type: "prompt",
+    });
+    const boxIdB = (boxB.result as { id: string }).id;
+
+    const d1 = await rpc(svc, "task.dispatch", {
+      workspaceId: a.workspaceId,
+      boxId: a.boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "first",
+    });
+    const d2 = await rpc(svc, "task.dispatch", {
+      workspaceId: a.workspaceId,
+      boxId: boxIdB,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "second",
+    });
+    assert.ok(!d1.error && !d2.error);
+    const t1 = (d1.result as { taskPath: string }).taskPath;
+    const t2 = (d2.result as { taskPath: string }).taskPath;
+
+    await rpc(svc, "task.claim", { workspaceId: a.workspaceId, taskPath: t1 });
+    await rpc(svc, "task.claim", { workspaceId: a.workspaceId, taskPath: t2 });
+
+    const mismatch = await rpc(svc, "task.startSession", {
+      workspaceId: a.workspaceId,
+      taskPath: t1,
+      profileId: "other-profile",
+      callerKind: "user",
+    });
+    assert.ok(mismatch.error);
+    assert.equal(mismatch.error!.code, -32602);
+    assert.match(String(mismatch.error!.message), /must match agentProfile/i);
+
+    const s1 = await rpc(svc, "task.startSession", {
+      workspaceId: a.workspaceId,
+      taskPath: t1,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    const s2 = await rpc(svc, "task.startSession", {
+      workspaceId: a.workspaceId,
+      taskPath: t2,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s1.error, JSON.stringify(s1.error));
+    assert.ok(!s2.error, JSON.stringify(s2.error));
+    const id1 = (s1.result as { session: { sessionId: string } }).session.sessionId;
+    const id2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
+    assert.notEqual(id1, id2);
+
+    // Idempotent re-start of same task returns same session.
+    const s1b = await rpc(svc, "task.startSession", {
+      workspaceId: a.workspaceId,
+      taskPath: t1,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!s1b.error);
+    assert.equal(
+      (s1b.result as { session: { sessionId: string } }).session.sessionId,
+      id1
+    );
+  });
+});
+
+test("A2A: dispatcher role policy governs agentProfile launch; user path works", async () => {
+  const ws = await makeWorkspace(
+    "ap-a2a",
+    { orchestrator: "allow", executor: "deny" },
+    { orchestrator: ["fake-default"] }
+  );
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+
+    // User path always works.
+    const userDispatch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "user starts profile",
+    });
+    const userPath = (userDispatch.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: userPath });
+    const userStart = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: userPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!userStart.error, JSON.stringify(userStart.error));
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: userPath });
+
+    // Role caller without allowed dispatcher → deny / invalid.
+    const box2 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "box-2",
+      type: "prompt",
+    });
+    const boxId2 = (box2.result as { id: string }).id;
+    const noDisp = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId2,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "no dispatcher",
+      dispatchedBy: "user",
+    });
+    const noDispPath = (noDisp.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: noDispPath });
+    const badCaller = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: noDispPath,
+      profileId: "fake-default",
+      callerKind: "role",
+    });
+    assert.ok(badCaller.error);
+    assert.equal(badCaller.error!.code, -32602);
+    assert.match(String(badCaller.error!.message), /dispatchedBy/i);
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: noDispPath });
+
+    // Orchestrator allow + whitelist permits matching profileId.
+    const box3 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "box-3",
+      type: "prompt",
+    });
+    const boxId3 = (box3.result as { id: string }).id;
+    const orch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId3,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "orch dispatch",
+      dispatchedBy: "orchestrator",
+    });
+    const orchPath = (orch.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: orchPath });
+    const ok = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: orchPath,
+      profileId: "fake-default",
+      callerKind: "role",
+    });
+    assert.ok(!ok.error, JSON.stringify(ok.error));
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: orchPath });
+
+    // Same dispatcher with empty whitelist denies (profile still matches envelope).
+    await rpc(svc, "registry.role.update", {
+      workspaceId,
+      name: "orchestrator",
+      a2aPolicy: "allow",
+      allowedProfiles: [],
+    });
+    const box3b = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "box-3b",
+      type: "prompt",
+    });
+    const boxId3b = (box3b.result as { id: string }).id;
+    const orchDenied = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId3b,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "orch deny whitelist",
+      dispatchedBy: "orchestrator",
+    });
+    const orchDeniedPath = (orchDenied.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: orchDeniedPath });
+    const deniedWhitelist = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: orchDeniedPath,
+      profileId: "fake-default",
+      callerKind: "role",
+    });
+    assert.ok(deniedWhitelist.error);
+    assert.equal(deniedWhitelist.error!.code, RPC_A2A_DENIED);
+    await rpc(svc, "task.interrupt", { workspaceId, taskPath: orchDeniedPath });
+
+    // executor deny policy as dispatcher
+    const box4 = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "box-4",
+      type: "prompt",
+    });
+    const boxId4 = (box4.result as { id: string }).id;
+    const execDisp = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: boxId4,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "executor dispatch",
+      dispatchedBy: "executor",
+    });
+    const execPath = (execDisp.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: execPath });
+    const denied = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: execPath,
+      profileId: "fake-default",
+      callerKind: "role",
+    });
+    assert.ok(denied.error);
+    assert.equal(denied.error!.code, RPC_A2A_DENIED);
+  });
+});
+
+test("role deletion not blocked by same-named profile session", async () => {
+  const ws = await makeWorkspace("ap-role-del");
+  await withService(async (svc) => {
+    const workspaceId = (
+      await rpc(svc, "workspace.mount", { workspaceRoot: ws })
+    ).result as { workspaceId: string };
+    const wid = workspaceId.workspaceId;
+
+    // Create a durable role with the same name as a profile id we will use.
+    await rpc(svc, "registry.role.create", {
+      workspaceId: wid,
+      name: "fake-default",
+      prompt: "coincidental name",
+    });
+
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId: wid,
+      name: "profile-work",
+      type: "prompt",
+    });
+    const boxId = (note.result as { id: string }).id;
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId: wid,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "profile session",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId: wid, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId: wid,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+
+    // Profile session must not block role delete.
+    const del = await rpc(svc, "registry.role.delete", {
+      workspaceId: wid,
+      name: "fake-default",
+      confirmation: "fake-default",
+    });
+    assert.ok(!del.error, JSON.stringify(del.error));
+  });
+});
+
+test("task discovery and retention see nested profile tasks", async () => {
+  const ws = await makeWorkspace("ap-discover");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "discover me",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+
+    const listed = await rpc(svc, "task.list", { workspaceId });
+    assert.ok(!listed.error);
+    const tasks = (listed.result as { tasks: { path: string; assigneeKind?: string }[] })
+      .tasks;
+    assert.ok(tasks.some((t) => t.path === taskPath));
+    const found = tasks.find((t) => t.path === taskPath)!;
+    assert.equal(found.assigneeKind, "agentProfile");
+
+    // Accept so retention can see terminal candidate under nested path.
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "done",
+    });
+    await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    });
+
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const preview = await previewOperationalRetention(envFs, {
+      keepTerminalTasksDays: 0,
+    });
+    assert.ok(
+      preview.candidates.some(
+        (c) => c.kind === "task-group" && c.taskPath === taskPath
+      ),
+      JSON.stringify(preview.candidates)
+    );
+  });
+});
+
+test("claim projects assignee=profileId; delivery submitter is profileId", async () => {
+  const ws = await makeWorkspace("ap-claim-deliv");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "claim and deliver",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+    assert.ok(!proj.error, JSON.stringify(proj.error));
+    const projection = proj.result as {
+      status: string;
+      assignee?: string;
+      activeTaskId?: string;
+    };
+    assert.equal(projection.status, "doing");
+    assert.equal(projection.assignee, "fake-default");
+
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "profile delivery",
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    const delivery = (delivered.result as { delivery: { role: string; path: string } })
+      .delivery;
+    assert.equal(delivery.role, "fake-default");
+    assert.match(
+      delivery.path,
+      /^temp\/agent-profiles\/fake-default\/deliveries\/dl-/
+    );
+
+    // Self-accept still forbidden when actor equals submitter profileId.
+    const selfAccept = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "fake-default",
+    });
+    assert.ok(selfAccept.error);
+    assert.match(String(selfAccept.error!.message), /self|submitter/i);
+
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const deliveries = await loadDeliveries(envFs);
+    assert.ok(deliveries.some((x) => x.role === "fake-default"));
+  });
+});
+
+test("invalid/missing assignee combinations fail loud", async () => {
+  const ws = await makeWorkspace("ap-invalid");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+
+    const missingRole = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      prompt: "no role",
+    });
+    assert.ok(missingRole.error);
+    assert.equal(missingRole.error!.code, -32602);
+
+    const missingProfile = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      prompt: "no profile",
+    });
+    assert.ok(missingProfile.error);
+    assert.equal(missingProfile.error!.code, -32602);
+    assert.match(String(missingProfile.error!.message), /profileId/i);
+
+    const unknownProfile = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "missing-profile",
+      prompt: "unknown profile",
+    });
+    assert.ok(unknownProfile.error);
+    assert.equal(unknownProfile.error!.code, -32004);
+    assert.match(String(unknownProfile.error!.message), /Profile not found/i);
+
+    const conflict = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      role: "executor",
+      prompt: "conflict",
+    });
+    assert.ok(conflict.error);
+    assert.equal(conflict.error!.code, -32602);
+    assert.match(String(conflict.error!.message), /different role/i);
+
+    const badKind = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "wizard",
+      role: "executor",
+      prompt: "bad kind",
+    });
+    assert.ok(badKind.error);
+    assert.equal(badKind.error!.code, -32602);
+
+    // startSession without profileId still fails.
+    const roleD = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "role ok",
+    });
+    const taskPath = (roleD.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const noProfile = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+    });
+    assert.ok(noProfile.error);
+    assert.equal(noProfile.error!.code, -32602);
+  });
+});
+
+test("missing assigneeKind on historical envelope reads as role", async () => {
+  const ws = await makeWorkspace("ap-legacy");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "legacy strip",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    const abs = path.join(ws, ".tent", taskPath);
+    let raw = await fs.readFile(abs, "utf8");
+    raw = raw.replace(/\nassigneeKind: role\r?\n/, "\n");
+    await fs.writeFile(abs, raw);
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.ok(!got.error);
+    const task = (got.result as { task: { assigneeKind?: string; role: string } }).task;
+    assert.equal(task.assigneeKind, "role");
+    assert.equal(task.role, "executor");
+  });
+});
+
+test("direct runtime profile session does not block role delete", async () => {
+  const ws = await makeWorkspace("ap-rt-del");
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+    await svc.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId: "fake-default",
+      roleName: "executor",
+      assigneeKind: "agentProfile",
+      workspace: workspaceId,
+      cwd: ws,
+      runtimeWorkspace: { cwd: ws },
+    });
+    const del = await rpc(svc, "registry.role.delete", {
+      workspaceId,
+      name: "executor",
+      confirmation: "executor",
+    });
+    assert.ok(!del.error, JSON.stringify(del.error));
+  });
+});

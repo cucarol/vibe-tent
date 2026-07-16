@@ -249,6 +249,7 @@ var RULES_PATH = "RULES.md";
 var WORKSPACE_SETTINGS_PATH = "settings.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
+var AGENT_PROFILES_TEMP_DIR = "agent-profiles";
 var OPERATIONAL_TOP_LEVEL = /* @__PURE__ */ new Set([
   TEMP_DIR,
   ATTACHMENTS_DIR,
@@ -276,6 +277,38 @@ function isOperationalPath(relativePath2) {
   if (!path15) return false;
   const top = path15.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
+}
+function safeOperationalSegment(value, emptyPrefix = "id") {
+  const source = value.trim();
+  if (!source) throw new Error("Operational segment cannot be empty.");
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `${emptyPrefix}-${clean}`;
+  if (!clean) {
+    let h = 0;
+    for (let i = 0; i < source.length; i++) h = h * 31 + source.charCodeAt(i) >>> 0;
+    return `${emptyPrefix}-${h.toString(36)}`;
+  }
+  if (clean !== normalized || normalized !== source || reserved) {
+    let h = 0;
+    for (let i = 0; i < source.length; i++) h = h * 31 + source.charCodeAt(i) >>> 0;
+    return `${clean}-${h.toString(36)}`;
+  }
+  return clean;
+}
+function agentProfileTempRoot(profileId) {
+  return `${TEMP_DIR}/${AGENT_PROFILES_TEMP_DIR}/${safeOperationalSegment(profileId, "profile")}`;
+}
+function agentProfileTasksDir(profileId) {
+  return `${agentProfileTempRoot(profileId)}/tasks`;
+}
+function agentProfileDeliveriesDir(profileId) {
+  return `${agentProfileTempRoot(profileId)}/deliveries`;
+}
+function agentProfileManifestPath(profileId, taskId) {
+  const safeTask = safeOperationalSegment(taskId, "task");
+  return `${agentProfileTempRoot(profileId)}/manifests/${safeTask}.yml`;
 }
 function isSystemNoteName(fileName) {
   return SYSTEM_REGISTRY_FILES.has(fileName) || fileName === "MIGRATED.md";
@@ -971,11 +1004,17 @@ async function createRole(fs13, definition) {
   await withTentMutation(fs13, async () => {
     const role = normalizeRole(definition);
     if (!role.name) throw new Error("Role name cannot be empty.");
+    assertRoleNameAvailable(role.name);
     const registry = await loadRolesRegistry(fs13);
     if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
     registry.roles.push(role);
     await writeJson(fs13, ROLES_REGISTRY_PATH, registry);
   });
+}
+function assertRoleNameAvailable(name) {
+  if (name.trim().toLowerCase() === AGENT_PROFILES_TEMP_DIR) {
+    throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
+  }
 }
 async function updateRole(fs13, name, patch) {
   await withTentMutation(fs13, async () => {
@@ -1227,21 +1266,35 @@ function evaluateA2A(input) {
 // src/core/task.ts
 async function loadTaskEnvelopes(fs13) {
   const tasks = [];
-  if (!await fs13.exists("temp")) return tasks;
-  for (const roleEntry of await fs13.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!await fs13.exists(taskDir)) continue;
-    for (const entry of await fs13.listDir(taskDir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path15 = join(taskDir, entry.name);
-      try {
-        tasks.push(await loadTaskEnvelope(fs13, path15));
-      } catch {
+  if (!await fs13.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs13.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs13.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs13.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectTaskFiles(fs13, join(profilesRoot, profileEntry.name, "tasks"), tasks);
       }
+      continue;
     }
+    await collectTaskFiles(fs13, join(TEMP_DIR, entry.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
+}
+async function collectTaskFiles(fs13, taskDir, tasks) {
+  if (!await fs13.exists(taskDir)) return;
+  for (const entry of await fs13.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path15 = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs13, path15));
+    } catch {
+    }
+  }
+}
+function taskAssigneeKind(task) {
+  return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
 async function loadTaskEnvelope(fs13, path15) {
   if (!await fs13.exists(path15)) throw new Error(`Task envelope not found: ${path15}.`);
@@ -1295,23 +1348,39 @@ function resolveTaskPromptRoots(roots) {
   return { workspaceRoot, systemRoot };
 }
 function formatTaskPathHints(task, roots) {
-  const initCli = join("temp", task.role, "init.md");
-  const initFile = join(".tent", "temp", task.role, "init.md");
+  const kind = taskAssigneeKind(task);
   const taskFile = join(".tent", task.path);
-  return `workspaceRoot: ${roots.workspaceRoot}
-systemRoot: ${roots.systemRoot}
-CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.
-File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} \u2014 never <workspaceRoot>/temp.
-Role init file: ${initFile} (CLI path remains ${initCli}).`;
+  const lines = [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} \u2014 never <workspaceRoot>/temp.`,
+    `Task envelope: ${task.path}`,
+    `Manifest: ${task.manifest}`
+  ];
+  if (kind === "role") {
+    const initCli = join("temp", task.role, "init.md");
+    const initFile = join(".tent", "temp", task.role, "init.md");
+    lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
+  } else {
+    lines.push(
+      `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
+    );
+  }
+  return lines.join("\n");
 }
 function relayPromptForTask(task, roots) {
   const resolved = resolveTaskPromptRoots(roots);
-  return `A Tent task has been dispatched to role ${task.role}.
-${formatTaskPathHints(task, resolved)}
+  const kind = taskAssigneeKind(task);
+  const assigneeLine = kind === "agentProfile" ? `A Tent task has been dispatched to agentProfile ${task.role}.
+` : `A Tent task has been dispatched to role ${task.role}.
+`;
+  const initStep = kind === "agentProfile" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
+  return assigneeLine + `${formatTaskPathHints(task, resolved)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
-4. If this is a new session for this role, complete role init first (read the init file above).`;
+` + initStep;
 }
 function extractTaskUserPrompt(task) {
   const body = task.prompt?.trim() || "";
@@ -1323,13 +1392,17 @@ function extractTaskUserPrompt(task) {
 function sessionBootstrapPromptForTask(task, roots) {
   const resolved = resolveTaskPromptRoots(roots);
   const userPrompt = extractTaskUserPrompt(task);
-  return `A Tent managed ACP session is ready for role ${task.role}.
-${formatTaskPathHints(task, resolved)}
+  const kind = taskAssigneeKind(task);
+  const readyLine = kind === "agentProfile" ? `A Tent managed ACP session is ready for agentProfile ${task.role}.
+` : `A Tent managed ACP session is ready for role ${task.role}.
+`;
+  return readyLine + `${formatTaskPathHints(task, resolved)}
 Service status: this task is already claimed (state=${task.state || "running"}).
 Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).
 Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).
 Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.
-` + (userPrompt ? `
+` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
+` : "") + (userPrompt ? `
 ## User Prompt
 
 ${userPrompt}
@@ -1363,7 +1436,8 @@ Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <wor
 async function writeTaskEnvelope(fs13, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  const dir = join("temp", input.role, "tasks");
+  const assigneeKind = input.assigneeKind ?? "role";
+  const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
   await ensureDir(fs13, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
@@ -1375,7 +1449,7 @@ async function writeTaskEnvelope(fs13, clock, input) {
     status: "pending",
     state: "queued",
     role: input.role,
-    assigneeKind: input.assigneeKind ?? "role",
+    assigneeKind,
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
@@ -1572,9 +1646,9 @@ async function createDeliveryUnlocked(fs13, clock, input) {
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
-  const dir = join("temp", input.role, "deliveries");
-  await ensureDir2(fs13, dir);
-  const path15 = join(dir, `${id}.md`);
+  const deliveriesDir = input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
+  await ensureDir2(fs13, deliveriesDir);
+  const path15 = join(deliveriesDir, `${id}.md`);
   if (await fs13.exists(path15)) throw new Error(`Delivery already exists: ${path15}.`);
   const record = {
     path: path15,
@@ -1630,23 +1704,39 @@ async function loadDelivery(fs13, inputPath) {
 }
 async function loadDeliveries(fs13, filter) {
   const out = [];
-  if (!await fs13.exists("temp")) return out;
-  for (const roleDir of await fs13.listDir("temp")) {
-    if (!roleDir.isDir) continue;
-    const dir = join("temp", roleDir.name, "deliveries");
-    if (!await fs13.exists(dir)) continue;
-    for (const entry of await fs13.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      try {
-        const d = await loadDelivery(fs13, join(dir, entry.name));
-        if (filter?.taskId && d.taskId !== filter.taskId) continue;
-        if (filter?.boxId && d.boxId !== filter.boxId) continue;
-        out.push(d);
-      } catch {
+  if (!await fs13.exists(TEMP_DIR)) return out;
+  for (const entry of await fs13.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs13.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs13.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectDeliveryFiles(
+          fs13,
+          join(profilesRoot, profileEntry.name, "deliveries"),
+          filter,
+          out
+        );
       }
+      continue;
     }
+    await collectDeliveryFiles(fs13, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+async function collectDeliveryFiles(fs13, dir, filter, out) {
+  if (!await fs13.exists(dir)) return;
+  for (const entry of await fs13.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    try {
+      const d = await loadDelivery(fs13, join(dir, entry.name));
+      if (filter?.taskId && d.taskId !== filter.taskId) continue;
+      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      out.push(d);
+    } catch {
+    }
+  }
 }
 async function writeDelivery(fs13, record) {
   const data = {
@@ -1670,8 +1760,10 @@ async function writeDelivery(fs13, record) {
 }
 function normalizeDeliveryPath(input) {
   const path15 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path15)) {
-    throw new Error("Delivery must point to temp/<role>/deliveries/<dl-id>.md.");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path15) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path15)) {
+    throw new Error(
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+    );
   }
   return path15;
 }
@@ -1839,7 +1931,8 @@ async function taskDeliver(env, taskPath, options) {
         checks: options.checks,
         artifactRefs: options.artifactRefs,
         status: "accepted",
-        integrationMode: routing.integrationMode
+        integrationMode: routing.integrationMode,
+        deliveriesDir: deliveryDirForTask(task)
       });
       const tent = await loadTent(env.fs);
       const box = requireBoxById(tent, boxId);
@@ -1861,7 +1954,8 @@ async function taskDeliver(env, taskPath, options) {
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "ready",
-      integrationMode: routing.integrationMode
+      integrationMode: routing.integrationMode,
+      deliveriesDir: deliveryDirForTask(task)
     });
     assertTransition(task.state, "deliver", "delivered");
     const next = await patchTaskEnvelope(env.fs, taskPath, {
@@ -2005,9 +2099,16 @@ function boxProjectionOf(task) {
   });
   return {
     status: proj.status,
+    // assignee is the stable label (role name or profileId).
     assignee: proj.clearAssignee ? void 0 : task.role,
     activeTaskId: task.id || task.path
   };
+}
+function deliveryDirForTask(task) {
+  if (taskAssigneeKind(task) === "agentProfile") {
+    return agentProfileDeliveriesDir(task.role);
+  }
+  return void 0;
 }
 async function requireActiveReadyDelivery(fs13, task) {
   if (task.activeDeliveryId) {
@@ -2155,14 +2256,31 @@ async function dispatch(env, claimId, role, promptOrOptions) {
 }
 async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tent = await loadTent(env.fs);
-  const roleName = assertRoleName(role);
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
   const userPrompt = options.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  let assigneeLabel;
+  if (assigneeKind === "agentProfile") {
+    const profileId = options.profileId?.trim() || "";
+    if (!profileId) {
+      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
+    }
+    if (role?.trim() && role.trim() !== profileId) {
+      throw new Error(
+        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
+      );
+    }
+    assigneeLabel = assertProfileId(profileId);
+  } else {
+    const roleName = role?.trim() || "";
+    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
+    assigneeLabel = assertRoleName(roleName);
+  }
+  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
   const tasks = await loadTaskEnvelopes(env.fs);
-  const roleTempPath = join("temp", roleName);
-  const roleTempExisted = await env.fs.exists(roleTempPath);
+  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
+  const createdRootExisted = await env.fs.exists(createdRoot);
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -2184,44 +2302,74 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
   try {
-    const roleClaims = claim.root ? [] : roleManifestClaims(tent, roleName, claim.box, tasks);
-    const input = claim.root ? { tentName: env.tentName, role: roleName, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: roleName, claimBoxes: roleClaims, ...options.workspace };
+    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
+    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
-    const manifestPath = join("temp", roleName, "manifest.yml");
-    await ensureDir3(env.fs, dirName(manifestPath));
-    await env.fs.writeFile(manifestPath, yaml);
-    const registry = await loadRolesRegistry(env.fs);
-    const roleDefinition = registry.roles.find((item) => item.name === roleName) ?? { name: roleName };
-    const initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    const taskId = makeTaskId();
+    let manifestPath;
+    let initPath;
+    if (assigneeKind === "agentProfile") {
+      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+    } else {
+      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+      const registry = await loadRolesRegistry(env.fs);
+      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    }
     const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: roleName,
+      role: assigneeLabel,
       claims: taskClaims,
       manifestPath,
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
-      deliveryPolicy: options.deliveryPolicy
+      deliveryPolicy: options.deliveryPolicy,
+      assigneeKind,
+      id: taskId,
+      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
     const relayPrompt = relayPromptForTask(
       {
         path: taskPath,
-        role: roleName,
+        role: assigneeLabel,
         claims: taskClaims.map((taskClaim2) => taskClaim2.id),
         manifest: manifestPath,
         status: "pending",
-        state: "queued"
+        state: "queued",
+        assigneeKind,
+        id: taskId
       },
       env.tentRoot || env.tentName
     );
-    return { manifestPath, manifestYaml: yaml, initPath, taskPath, relayPrompt };
+    return {
+      manifestPath,
+      manifestYaml: yaml,
+      initPath,
+      taskPath,
+      relayPrompt,
+      assigneeKind,
+      assignee: assigneeLabel
+    };
   } catch (error) {
-    if (!roleTempExisted && await env.fs.exists(roleTempPath)) {
-      await env.fs.remove(roleTempPath);
+    if (!createdRootExisted && await env.fs.exists(createdRoot)) {
+      await env.fs.remove(createdRoot);
     }
     throw error;
   }
+}
+function assertProfileId(profileId) {
+  const id = profileId.trim();
+  if (!id) throw new Error("profileId cannot be empty.");
+  if (/[\/\\\r\n]/.test(id)) {
+    throw new Error("profileId cannot contain path separators or newlines.");
+  }
+  return id;
 }
 function resolveDispatchClaim(tent, claimId, tentName) {
   const id = claimId.trim();
@@ -2343,6 +2491,7 @@ function assertRoleName(role) {
   const name = role.trim();
   if (!name) throw new Error("Role name cannot be empty.");
   if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
+  assertRoleNameAvailable(name);
   return name;
 }
 function ownerCovering(box) {
@@ -2383,6 +2532,7 @@ function roleManifestClaims(tent, role, current, tasks) {
     if (box.fm.owner === role) claims.set(box.id, box);
   }
   for (const task of tasks) {
+    if (taskAssigneeKind(task) !== "role") continue;
     if (task.status !== "pending" || task.role !== role) continue;
     for (const claimId of task.claims) {
       const box = tent.byId.get(claimId);
@@ -2927,22 +3077,39 @@ async function scanTasks(fs13) {
       });
       continue;
     }
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!await fs13.exists(taskDir)) continue;
-    for (const entry of await fs13.listDir(taskDir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path15 = join(taskDir, entry.name);
-      try {
-        tasks.push(await loadTaskEnvelope(fs13, path15));
-      } catch (err) {
-        skipped.push({
-          path: path15,
-          reason: err instanceof Error ? err.message : String(err)
-        });
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs13.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name"
+          });
+          continue;
+        }
+        await scanTaskDir(fs13, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
       }
+      continue;
     }
+    await scanTaskDir(fs13, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
+}
+async function scanTaskDir(fs13, taskDir, tasks, skipped) {
+  if (!await fs13.exists(taskDir)) return;
+  for (const entry of await fs13.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path15 = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs13, path15));
+    } catch (err) {
+      skipped.push({
+        path: path15,
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
 }
 async function scanDeliveries(fs13) {
   const deliveries = [];
@@ -2957,22 +3124,44 @@ async function scanDeliveries(fs13) {
       });
       continue;
     }
-    const dir = join("temp", roleEntry.name, "deliveries");
-    if (!await fs13.exists(dir)) continue;
-    for (const entry of await fs13.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path15 = join(dir, entry.name);
-      try {
-        deliveries.push(await loadDelivery(fs13, path15));
-      } catch (err) {
-        skipped.push({
-          path: path15,
-          reason: err instanceof Error ? err.message : String(err)
-        });
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs13.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name"
+          });
+          continue;
+        }
+        await scanDeliveryDir(
+          fs13,
+          join(profilesRoot, profileEntry.name, "deliveries"),
+          deliveries,
+          skipped
+        );
       }
+      continue;
     }
+    await scanDeliveryDir(fs13, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
+}
+async function scanDeliveryDir(fs13, dir, deliveries, skipped) {
+  if (!await fs13.exists(dir)) return;
+  for (const entry of await fs13.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path15 = join(dir, entry.name);
+    try {
+      deliveries.push(await loadDelivery(fs13, path15));
+    } catch (err) {
+      skipped.push({
+        path: path15,
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
 }
 function isSafeRoleSegment(name) {
   if (!name || name === "." || name === "..") return false;
@@ -3182,6 +3371,48 @@ async function ensureRoleWorkspace(workspace, role) {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
   return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+async function ensureTaskWorkspaceIfGit(workspace, taskId) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureTaskWorkspace(workspace, taskId);
+}
+async function ensureTaskWorkspace(workspace, taskId) {
+  const root = nodePath.resolve(workspace);
+  await assertGitWorkspace(root);
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  const targetBranch = await resolveTargetBranch(root);
+  const taskSlug = safeComponent(id);
+  const branch = `tent-task/${taskSlug}`;
+  const worktree = nodePath.join(
+    nodePath.dirname(root),
+    `${nodePath.basename(root)}-worktrees`,
+    `task-${taskSlug}`
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return {
+      workspace: root,
+      worktree: await nodeFs.realpath(nodePath.resolve(existing)),
+      branch,
+      targetBranch
+    };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch
+  };
 }
 async function integrateWorkspaceCommits(contract, refs) {
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
@@ -6643,7 +6874,7 @@ async function registryRoleDelete(ctx, p) {
     ctx.host.markSelfWrite(workspaceId);
     const tasks = await loadTaskEnvelopes(mount.env.fs);
     const activeTask = tasks.find(
-      (t) => t.role === name && isActiveTaskState(t.state)
+      (t) => t.role === name && taskAssigneeKind(t) === "role" && isActiveTaskState(t.state)
     );
     if (activeTask) {
       throw new RpcError(
@@ -7095,15 +7326,34 @@ async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const boxId = optionalString(p, "boxId") ?? optionalString(p, "id") ?? requireString(p, "claimId");
-  const role = requireString(p, "role");
+  const assigneeKindRaw = optionalString(p, "assigneeKind");
+  const assigneeKind = assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw ? "role" : (() => {
+    throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
+  })();
+  const role = optionalString(p, "role");
+  const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
+  }
+  if (assigneeKind === "role" && !role) {
+    throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
+  }
+  if (assigneeKind === "agentProfile" && !profileId) {
+    throw new RpcError(-32602, "task.dispatch with assigneeKind=agentProfile requires profileId");
+  }
+  if (assigneeKind === "agentProfile" && role && role !== profileId) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch with assigneeKind=agentProfile must not pass a different role; profileId is the assignee label"
+    );
+  }
+  if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId)) {
+    throw new RpcError(-32004, `Profile not found: ${profileId}`);
   }
   if (startSession && !profileId) {
     throw new RpcError(
@@ -7112,18 +7362,21 @@ async function taskDispatch(ctx, p) {
     );
   }
   const result = await ctx.mutations.run(workspaceId, async () => {
-    const roleLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
+    const assigneeLabel = assigneeKind === "agentProfile" ? profileId : role;
+    const roleLane2 = assigneeKind === "role" ? await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel) : void 0;
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
     if (deliveryPolicy === void 0) {
       const settings = await loadWorkspaceSettings(mount.env.fs);
       deliveryPolicy = settings.defaultDeliveryPolicy;
     }
-    const dispatched2 = await dispatch(mount.env, boxId, role, {
+    const dispatched2 = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : void 0, {
       userPrompt: prompt,
       dispatchedBy,
       deliveryPolicy,
-      workspace: roleLane2
+      workspace: roleLane2,
+      assigneeKind,
+      profileId: assigneeKind === "agentProfile" ? profileId : void 0
     });
     ctx.events.emit(
       "task.state",
@@ -7131,7 +7384,8 @@ async function taskDispatch(ctx, p) {
       {
         path: dispatched2.taskPath,
         state: "queued",
-        role,
+        role: dispatched2.assignee,
+        assigneeKind: dispatched2.assigneeKind,
         boxId,
         reason: "task.dispatch"
       },
@@ -7161,6 +7415,8 @@ async function taskDispatch(ctx, p) {
     manifestPath: dispatched.manifestPath,
     initPath: dispatched.initPath,
     relayPrompt: dispatched.relayPrompt,
+    assigneeKind: dispatched.assigneeKind,
+    assignee: dispatched.assignee,
     state: startSession ? "running" : "queued",
     session,
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane ? {
@@ -7416,12 +7672,14 @@ async function taskStartSessionRpc(ctx, p) {
     }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
+    const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
-      taskRole: taskForPolicy.role
+      taskRole: authorityRole,
+      requireRegisteredRole: callerKind === "role" && taskAssigneeKind(taskForPolicy) === "agentProfile"
     });
     const profileAllowed = callerKind === "user" ? true : await resolveRoleProfileAllowed(mount.env.fs, {
-      taskRole: taskForPolicy.role,
+      taskRole: authorityRole,
       profileId,
       policy: a2aPolicy
     });
@@ -7434,7 +7692,7 @@ async function taskStartSessionRpc(ctx, p) {
       throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
         policy: a2aPolicy,
         callerKind,
-        role: taskForPolicy.role,
+        role: authorityRole,
         profileId,
         profileAllowed
       });
@@ -7446,7 +7704,7 @@ async function taskStartSessionRpc(ctx, p) {
         workspaceId,
         taskPath,
         taskId: task2.id,
-        role: task2.role,
+        role: authorityRole || task2.role,
         profileId,
         policy: "ask",
         callerKind,
@@ -7460,9 +7718,9 @@ async function taskStartSessionRpc(ctx, p) {
         {
           approvalId: item.id,
           taskPath,
-          role: task2.role,
+          role: authorityRole || task2.role,
           profileId,
-          summary: `Role ${task2.role} requests startSession on profile ${profileId}`
+          summary: `Role ${authorityRole || task2.role} requests startSession on profile ${profileId}`
         },
         "service"
       );
@@ -7483,6 +7741,13 @@ async function taskStartSessionRpc(ctx, p) {
     }
   }
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new RpcError(
+      -32602,
+      `task.startSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
+      { taskAssignee: task.role, profileId }
+    );
+  }
   if (task.state === "queued" && callerKind === "user") {
     await taskClaimRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
@@ -7497,31 +7762,41 @@ async function taskStartSessionRpc(ctx, p) {
     await taskResumeRpc(ctx, { workspaceId, taskPath });
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
-  const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
-  if (activeForRole) {
-    const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
-    if (boundToThisTask) {
-      const boundTask = task.sessionId === activeForRole.id ? task : await ctx.mutations.run(workspaceId, async () => {
-        ctx.host.markSelfWrite(workspaceId);
-        return patchTaskEnvelope(mount.env.fs, taskPath, {
-          sessionId: activeForRole.id,
-          updatedAt: mount.env.clock.now()
+  const isProfileTask = taskAssigneeKind(task) === "agentProfile";
+  if (!isProfileTask) {
+    const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
+    if (activeForRole) {
+      const boundToThisTask = task.sessionId === activeForRole.id || !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === taskPath;
+      if (boundToThisTask) {
+        const boundTask = task.sessionId === activeForRole.id ? task : await ctx.mutations.run(workspaceId, async () => {
+          ctx.host.markSelfWrite(workspaceId);
+          return patchTaskEnvelope(mount.env.fs, taskPath, {
+            sessionId: activeForRole.id,
+            updatedAt: mount.env.clock.now()
+          });
         });
-      });
-      return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-        cwd: boundTask.worktree || mount.workspaceRoot
+        return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+          cwd: boundTask.worktree || mount.workspaceRoot
+        });
+      }
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
+        {
+          role: task.role,
+          existingSessionId: activeForRole.id,
+          existingState: activeForRole.state,
+          existingTaskId: activeForRole.lastTaskId
+        }
+      );
+    }
+  } else if (task.sessionId) {
+    const prior = await ctx.runtime.registry.read(task.sessionId);
+    if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
+      return projectStartSessionResult(workspaceId, taskPath, task, prior, {
+        cwd: task.worktree || mount.workspaceRoot
       });
     }
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
-      {
-        role: task.role,
-        existingSessionId: activeForRole.id,
-        existingState: activeForRole.state,
-        existingTaskId: activeForRole.lastTaskId
-      }
-    );
   }
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
@@ -7547,8 +7822,9 @@ async function taskStartSessionRpc(ctx, p) {
         const profileMatches = !prior?.profileId || prior.profileId === profileId;
         const workspaceMatches = prior?.workspace === workspaceId;
         const roleMatches = prior?.roleName === task.role;
+        const assigneeKindMatches = (prior?.assigneeKind ?? "role") === taskAssigneeKind(task);
         const taskMatches = prior?.lastTaskId === taskPath || !!task.id && prior?.lastTaskId === task.id;
-        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && taskMatches;
+        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && taskMatches;
       }
     } catch (err) {
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
@@ -7570,6 +7846,7 @@ async function taskStartSessionRpc(ctx, p) {
         sessionId: makeSessionId(),
         profileId,
         roleName: task.role,
+        assigneeKind: taskAssigneeKind(task),
         workspaceLane,
         runtimeWorkspace: { cwd },
         cwd,
@@ -7783,6 +8060,7 @@ async function sessionList(ctx, p) {
       adapterId: rec.adapterId,
       state: probe.state,
       roleName: rec.roleName,
+      assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       lastTaskId: rec.lastTaskId,
@@ -7804,6 +8082,7 @@ async function sessionGet(ctx, p) {
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
+    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
@@ -8402,6 +8681,13 @@ async function resolveStartSessionA2APolicy(fs13, input) {
   if (input.callerKind === "user") return "allow";
   const registry = await loadRolesRegistry(fs13);
   const role = registry.roles.find((r) => r.name === input.taskRole);
+  if (input.requireRegisteredRole && !role) {
+    throw new RpcError(
+      -32602,
+      `A2A authority role not found in registry: ${input.taskRole}`,
+      { role: input.taskRole }
+    );
+  }
   return roleA2APolicy(role);
 }
 async function resolveRoleProfileAllowed(fs13, input) {
@@ -8496,15 +8782,17 @@ async function resolveIntegrationContract(workspaceRoot, task) {
       );
     }
   }
-  const real = await ensureRoleWorkspace(mountedRoot, task.role);
+  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const real = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path) : await ensureRoleWorkspace(mountedRoot, task.role);
+  const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
-      `Task envelope branch mismatch for role ${task.role}: envelope=${task.branch} expected=${real.branch}`
+      `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
     );
   }
   if (task.targetBranch && task.targetBranch !== real.targetBranch) {
     throw new Error(
-      `Task envelope targetBranch mismatch for role ${task.role}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
     );
   }
   if (task.worktree) {
@@ -8512,7 +8800,7 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     const realWt = nodePath2.resolve(real.worktree);
     if (!isSameWorkspaceRoot(claimedWt, realWt)) {
       throw new Error(
-        `Task envelope worktree mismatch for role ${task.role}: envelope=${task.worktree} expected=${real.worktree}`
+        `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
       );
     }
   }
@@ -8534,12 +8822,16 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
     if (currentLaneComplete && current.roleBranchBase?.trim()) {
       return current;
     }
+    const isProfile = taskAssigneeKind(current) === "agentProfile";
     const lane = currentLaneComplete ? {
       workspace: current.workspace,
       worktree: current.worktree,
       branch: current.branch,
       targetBranch: current.targetBranch
-    } : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+    } : isProfile ? await ensureTaskWorkspaceIfGit(
+      mount.workspaceRoot,
+      current.id || current.path
+    ) : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
     if (!lane) return current;
     const patch = {
       updatedAt: mount.env.clock.now()
@@ -8561,8 +8853,30 @@ async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {
   if (!roleName) return void 0;
   const all = await ctx.runtime.registry.list();
   return all.find(
-    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && SessionRegistry.isNonTerminal(rec.state) && rec.state !== "external"
+    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && SessionRegistry.isNonTerminal(rec.state) && rec.state !== "external"
   );
+}
+function resolveA2AAuthorityRole(task, callerKind) {
+  if (callerKind === "user") return task.role;
+  if (taskAssigneeKind(task) === "agentProfile") {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    if (!dispatcher || dispatcher === "user") {
+      throw new RpcError(
+        -32602,
+        "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
+        { dispatchedBy: task.dispatchedBy, profileId: task.role }
+      );
+    }
+    if (dispatcher === task.role) {
+      throw new RpcError(
+        -32602,
+        "callerKind=role startSession on agentProfile task must not use the profileId as dispatcher role",
+        { dispatchedBy: dispatcher, profileId: task.role }
+      );
+    }
+    return dispatcher;
+  }
+  return task.role;
 }
 function projectStartSessionResult(workspaceId, taskPath, task, session, extra) {
   const cwd = extra?.cwd ?? session.runtimeWorkspace?.cwd ?? task.worktree ?? void 0;
@@ -8582,20 +8896,27 @@ function projectStartSessionResult(workspaceId, taskPath, task, session, extra) 
 }
 function buildSessionBootstrapPrompt(task, roots) {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
+  const kind = taskAssigneeKind(task);
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
-    label: `task:${task.role}`
+    label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
   });
   const sessionSteps = sessionBootstrapPromptForTask(task, {
     workspaceRoot: roots.workspaceRoot,
     systemRoot
   });
   const aux = [];
-  if (task.role) aux.push(`role: ${task.role}`);
+  if (kind === "agentProfile") {
+    aux.push(`assigneeKind: agentProfile`);
+    aux.push(`profileId: ${task.role}`);
+  } else if (task.role) {
+    aux.push(`role: ${task.role}`);
+  }
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
   if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
+  if (task.manifest) aux.push(`manifest: ${task.manifest}`);
   return `${card.prompt}
 
 --- Tent managed session bootstrap ---
@@ -8620,7 +8941,8 @@ function projectTask(task) {
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
     deliveryPolicy: task.deliveryPolicy,
-    assigneeKind: task.assigneeKind,
+    // Missing assigneeKind on disk reads as role (backward compatible).
+    assigneeKind: taskAssigneeKind(task),
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,
@@ -10609,6 +10931,7 @@ function handleFrom(record) {
     state: record.state,
     pid: record.pid,
     roleName: record.roleName,
+    assigneeKind: record.assigneeKind,
     runtimeWorkspace: record.runtimeWorkspace,
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
@@ -10769,6 +11092,7 @@ var AgentRuntime = class {
       profileId: profile.id,
       adapterId: adapter.id,
       roleName: req.roleName,
+      assigneeKind: req.assigneeKind,
       state: "starting",
       runtimeWorkspace: { cwd },
       workspace: req.workspace ?? req.workspaceLane?.workspace,

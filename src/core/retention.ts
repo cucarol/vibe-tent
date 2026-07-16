@@ -412,22 +412,46 @@ async function scanTasks(
       });
       continue;
     }
-    const taskDir = join("temp", roleEntry.name, "tasks");
-    if (!(await fs.exists(taskDir))) continue;
-    for (const entry of await fs.listDir(taskDir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path = join(taskDir, entry.name);
-      try {
-        tasks.push(await loadTaskEnvelope(fs, path));
-      } catch (err) {
-        skipped.push({
-          path,
-          reason: err instanceof Error ? err.message : String(err),
-        });
+    // Nested one-shot profile tasks: temp/agent-profiles/<safe>/tasks/
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name",
+          });
+          continue;
+        }
+        await scanTaskDir(fs, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
       }
+      continue;
     }
+    await scanTaskDir(fs, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
+}
+
+async function scanTaskDir(
+  fs: FsAdapter,
+  taskDir: string,
+  tasks: TaskEnvelope[],
+  skipped: RetentionSkipped[]
+): Promise<void> {
+  if (!(await fs.exists(taskDir))) return;
+  for (const entry of await fs.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs, path));
+    } catch (err) {
+      skipped.push({
+        path,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 async function scanDeliveries(
@@ -446,22 +470,50 @@ async function scanDeliveries(
       });
       continue;
     }
-    const dir = join("temp", roleEntry.name, "deliveries");
-    if (!(await fs.exists(dir))) continue;
-    for (const entry of await fs.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path = join(dir, entry.name);
-      try {
-        deliveries.push(await loadDelivery(fs, path));
-      } catch (err) {
-        skipped.push({
-          path,
-          reason: err instanceof Error ? err.message : String(err),
-        });
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name",
+          });
+          continue;
+        }
+        await scanDeliveryDir(
+          fs,
+          join(profilesRoot, profileEntry.name, "deliveries"),
+          deliveries,
+          skipped
+        );
       }
+      continue;
     }
+    await scanDeliveryDir(fs, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
+}
+
+async function scanDeliveryDir(
+  fs: FsAdapter,
+  dir: string,
+  deliveries: DeliveryRecord[],
+  skipped: RetentionSkipped[]
+): Promise<void> {
+  if (!(await fs.exists(dir))) return;
+  for (const entry of await fs.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path = join(dir, entry.name);
+    try {
+      deliveries.push(await loadDelivery(fs, path));
+    } catch (err) {
+      skipped.push({
+        path,
+        reason: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
 }
 
 function isSafeRoleSegment(name: string): boolean {

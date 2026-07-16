@@ -50,6 +50,12 @@ export interface StartSessionRequest {
   /** Machine-local AgentProfile id. */
   profileId: string;
   roleName?: string;
+  /**
+   * Collaboration assignee kind. Durable role sessions use "role" (default when omitted).
+   * One-shot agentProfile tasks must set "agentProfile" so live-role checks do not
+   * treat the profile assignee label as a durable role.
+   */
+  assigneeKind?: "role" | "agentProfile";
   /** Collaboration lane already prepared by service/core. */
   workspaceLane?: WorkspaceLaneRef;
   /**
@@ -89,6 +95,7 @@ export interface SessionHandle {
   state: SessionState;
   pid?: number;
   roleName?: string;
+  assigneeKind?: "role" | "agentProfile";
   runtimeWorkspace?: RuntimeWorkspace;
   createdAt: string;
   updatedAt: string;
@@ -110,6 +117,11 @@ export interface SessionRecord {
   profileId: string;
   adapterId: string;
   roleName?: string;
+  /**
+   * When "agentProfile", roleName holds the profileId label for attribution only —
+   * not a durable role registry entry. Missing reads as role for older rows.
+   */
+  assigneeKind?: "role" | "agentProfile";
   state: SessionState;
   pid?: number;
   resumeToken?: string;

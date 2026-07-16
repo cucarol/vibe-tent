@@ -15,6 +15,7 @@ import {
   loadTaskEnvelopes,
   patchTaskEnvelope,
   sessionBootstrapPromptForTask,
+  taskAssigneeKind,
   type RoleWorkspaceContract,
   type TaskEnvelope,
 } from "../core/task.js";
@@ -79,6 +80,8 @@ import {
 import {
   ensureRoleWorkspace,
   ensureRoleWorkspaceIfGit,
+  ensureTaskWorkspace,
+  ensureTaskWorkspaceIfGit,
   integrateWorkspaceCommits,
   isSameWorkspaceRoot,
   listPendingRoleCommits,
@@ -940,8 +943,12 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
     ctx.host.markSelfWrite(workspaceId);
 
     const tasks = await loadTaskEnvelopes(mount.env.fs);
+    // Only durable role tasks block role delete — profile tasks may reuse the same label.
     const activeTask = tasks.find(
-      (t) => t.role === name && isActiveTaskState(t.state)
+      (t) =>
+        t.role === name &&
+        taskAssigneeKind(t) === "role" &&
+        isActiveTaskState(t.state)
     );
     if (activeTask) {
       throw new RpcError(
@@ -1481,17 +1488,39 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const boxId = optionalString(p, "boxId") ?? optionalString(p, "id") ?? requireString(p, "claimId");
-  const role = requireString(p, "role");
+  const assigneeKindRaw = optionalString(p, "assigneeKind");
+  const assigneeKind =
+    assigneeKindRaw === "agentProfile" ? "agentProfile" : assigneeKindRaw === "role" || !assigneeKindRaw
+      ? "role"
+      : (() => {
+          throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
+        })();
+  const role = optionalString(p, "role");
+  const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
-  const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
 
+  if (assigneeKind === "role" && !role) {
+    throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
+  }
+  if (assigneeKind === "agentProfile" && !profileId) {
+    throw new RpcError(-32602, "task.dispatch with assigneeKind=agentProfile requires profileId");
+  }
+  if (assigneeKind === "agentProfile" && role && role !== profileId) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch with assigneeKind=agentProfile must not pass a different role; profileId is the assignee label"
+    );
+  }
+  if (assigneeKind === "agentProfile" && !ctx.profileCatalog.get(profileId!)) {
+    throw new RpcError(-32004, `Profile not found: ${profileId}`);
+  }
   if (startSession && !profileId) {
     throw new RpcError(
       -32602,
@@ -1502,21 +1531,29 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
+  // Profile tasks create tent-task/<taskId> lanes at managed acquisition, not at dispatch.
   // When deliveryPolicy is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
   const result = await ctx.mutations.run(workspaceId, async () => {
-    const roleLane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, role);
+    const assigneeLabel = assigneeKind === "agentProfile" ? profileId! : role!;
+    // Role: durable tent-role lane at dispatch. Profile: lane-less until startSession.
+    const roleLane =
+      assigneeKind === "role"
+        ? await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel)
+        : undefined;
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
     if (deliveryPolicy === undefined) {
       const settings = await loadWorkspaceSettings(mount.env.fs);
       deliveryPolicy = settings.defaultDeliveryPolicy;
     }
-    const dispatched = await dispatch(mount.env, boxId, role, {
+    const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
       dispatchedBy,
       deliveryPolicy,
       workspace: roleLane,
+      assigneeKind,
+      profileId: assigneeKind === "agentProfile" ? profileId : undefined,
     });
     ctx.events.emit(
       "task.state",
@@ -1524,7 +1561,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       {
         path: dispatched.taskPath,
         state: "queued",
-        role,
+        role: dispatched.assignee,
+        assigneeKind: dispatched.assigneeKind,
         boxId,
         reason: "task.dispatch",
       },
@@ -1559,6 +1597,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     manifestPath: dispatched.manifestPath,
     initPath: dispatched.initPath,
     relayPrompt: dispatched.relayPrompt,
+    assigneeKind: dispatched.assigneeKind,
+    assignee: dispatched.assignee,
     state: startSession ? "running" : "queued",
     session,
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane
@@ -1846,19 +1886,25 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
+    // A2A authority: user is root. Role callers use the dispatcher role in dispatchedBy
+    // for agentProfile tasks (profile is not a role); durable role tasks use task.role.
+    const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
-      taskRole: taskForPolicy.role,
+      taskRole: authorityRole,
+      requireRegisteredRole:
+        callerKind === "role" && taskAssigneeKind(taskForPolicy) === "agentProfile",
     });
     // User root bypasses policy + profile whitelist.
     // Role caller + registry allow: profileId must be in role.allowedProfiles.
     // Role caller + ask: enter user approval without checking whitelist (user grant may override).
     // Role caller + deny: A2A_DENIED (unchanged).
+    // Profile assignee is never the authority role — authorityRole is dispatcher/durable role.
     const profileAllowed =
       callerKind === "user"
         ? true
         : await resolveRoleProfileAllowed(mount.env.fs, {
-            taskRole: taskForPolicy.role,
+            taskRole: authorityRole,
             profileId,
             policy: a2aPolicy,
           });
@@ -1871,7 +1917,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
         policy: a2aPolicy,
         callerKind,
-        role: taskForPolicy.role,
+        role: authorityRole,
         profileId,
         profileAllowed,
       });
@@ -1883,7 +1929,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         workspaceId,
         taskPath,
         taskId: task.id,
-        role: task.role,
+        role: authorityRole || task.role,
         profileId,
         policy: "ask",
         callerKind,
@@ -1897,9 +1943,9 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         {
           approvalId: item.id,
           taskPath,
-          role: task.role,
+          role: authorityRole || task.role,
           profileId,
-          summary: `Role ${task.role} requests startSession on profile ${profileId}`,
+          summary: `Role ${authorityRole || task.role} requests startSession on profile ${profileId}`,
         },
         "service"
       );
@@ -1922,6 +1968,16 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
   }
 
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+
+  // Managed startSession for agentProfile tasks must use exactly the envelope profileId.
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new RpcError(
+      -32602,
+      `task.startSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
+      { taskAssignee: task.role, profileId }
+    );
+  }
+
   if (task.state === "queued" && callerKind === "user") {
     // User-driven convenience: claim before start.
     await taskClaimRpc(ctx, { workspaceId, taskPath });
@@ -1942,45 +1998,55 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     task = await loadTaskEnvelope(mount.env.fs, taskPath);
   }
 
-  // Same role: only one managed ACP session in starting/live/waiting-user.
-  // Tasks may be many; external role sessions are not service-registry managed.
-  // Idempotent: same task already bound to its active session returns that handle.
-  const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
-  if (activeForRole) {
-    const boundToThisTask =
-      task.sessionId === activeForRole.id ||
-      (!!task.id && activeForRole.lastTaskId === task.id) ||
-      activeForRole.lastTaskId === taskPath;
-    if (boundToThisTask) {
-      const boundTask =
-        task.sessionId === activeForRole.id
-          ? task
-          : await ctx.mutations.run(workspaceId, async () => {
-              ctx.host.markSelfWrite(workspaceId);
-              return patchTaskEnvelope(mount.env.fs, taskPath, {
-                sessionId: activeForRole.id,
-                updatedAt: mount.env.clock.now(),
+  // Durable roles: only one managed ACP session in starting/live/waiting-user.
+  // agentProfile tasks may run concurrently (even same profileId) — only same-task
+  // idempotency reuses an existing binding.
+  const isProfileTask = taskAssigneeKind(task) === "agentProfile";
+  if (!isProfileTask) {
+    const activeForRole = await findActiveManagedSessionForRole(ctx, workspaceId, task.role);
+    if (activeForRole) {
+      const boundToThisTask =
+        task.sessionId === activeForRole.id ||
+        (!!task.id && activeForRole.lastTaskId === task.id) ||
+        activeForRole.lastTaskId === taskPath;
+      if (boundToThisTask) {
+        const boundTask =
+          task.sessionId === activeForRole.id
+            ? task
+            : await ctx.mutations.run(workspaceId, async () => {
+                ctx.host.markSelfWrite(workspaceId);
+                return patchTaskEnvelope(mount.env.fs, taskPath, {
+                  sessionId: activeForRole.id,
+                  updatedAt: mount.env.clock.now(),
+                });
               });
-            });
-      return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-        cwd: boundTask.worktree || mount.workspaceRoot,
+        return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+          cwd: boundTask.worktree || mount.workspaceRoot,
+        });
+      }
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
+        {
+          role: task.role,
+          existingSessionId: activeForRole.id,
+          existingState: activeForRole.state,
+          existingTaskId: activeForRole.lastTaskId,
+        }
+      );
+    }
+  } else if (task.sessionId) {
+    // Profile task idempotency: same task already bound to an active session.
+    const prior = await ctx.runtime.registry.read(task.sessionId);
+    if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
+      return projectStartSessionResult(workspaceId, taskPath, task, prior, {
+        cwd: task.worktree || mount.workspaceRoot,
       });
     }
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      `Role "${task.role}" already has an active managed session: ${activeForRole.id}`,
-      {
-        role: task.role,
-        existingSessionId: activeForRole.id,
-        existingState: activeForRole.state,
-        existingTaskId: activeForRole.lastTaskId,
-      }
-    );
   }
 
-  // The task owns the role's managed execution window only after the active-role
-  // gate passes. Capture the branch baseline here, not at dispatch: queued tasks
-  // may be created while an earlier task is still adding commits to the same lane.
+  // Capture lane + roleBranchBase only after the execution slot is acquired.
+  // Role: durable tent-role lane. Profile: task-scoped tent-task/<taskId> lane.
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
 
   const cwd = task.worktree || mount.workspaceRoot;
@@ -2021,6 +2087,8 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         const profileMatches = !prior?.profileId || prior.profileId === profileId;
         const workspaceMatches = prior?.workspace === workspaceId;
         const roleMatches = prior?.roleName === task.role;
+        const assigneeKindMatches =
+          (prior?.assigneeKind ?? "role") === taskAssigneeKind(task);
         const taskMatches =
           prior?.lastTaskId === taskPath ||
           (!!task.id && prior?.lastTaskId === task.id);
@@ -2029,6 +2097,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
           profileMatches &&
           workspaceMatches &&
           roleMatches &&
+          assigneeKindMatches &&
           taskMatches;
       }
     } catch (err) {
@@ -2055,6 +2124,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         sessionId: makeSessionId(),
         profileId,
         roleName: task.role,
+        assigneeKind: taskAssigneeKind(task),
         workspaceLane,
         runtimeWorkspace: { cwd },
         cwd,
@@ -2313,6 +2383,7 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       adapterId: rec.adapterId,
       state: probe.state,
       roleName: rec.roleName,
+      assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       lastTaskId: rec.lastTaskId,
@@ -2335,6 +2406,7 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     adapterId: rec.adapterId,
     state: probe.state,
     roleName: rec.roleName,
+    assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
@@ -3257,19 +3329,29 @@ function requireProfileId(p: Record<string, unknown>): string {
 /**
  * Resolve A2A policy for startSession.
  * - user caller → always allow (root authority; registry unused)
- * - role caller → load role.a2aPolicy from registry (default deny)
+ * - role caller → load role.a2aPolicy from registry (default deny when missing)
  * Ordinary client `a2aPolicy` params are not applied here.
+ * agentProfile authority roles are validated separately (must exist in registry).
  */
 async function resolveStartSessionA2APolicy(
   fs: import("../core/adapter.js").FsAdapter,
   input: {
     callerKind: "user" | "role";
     taskRole: string;
+    /** When true, missing registry role fails loud (profile dispatcher path). */
+    requireRegisteredRole?: boolean;
   }
 ): Promise<A2APolicy> {
   if (input.callerKind === "user") return "allow";
   const registry = await loadRolesRegistry(fs);
   const role = registry.roles.find((r) => r.name === input.taskRole);
+  if (input.requireRegisteredRole && !role) {
+    throw new RpcError(
+      -32602,
+      `A2A authority role not found in registry: ${input.taskRole}`,
+      { role: input.taskRole }
+    );
+  }
   return roleA2APolicy(role);
 }
 
@@ -3395,9 +3477,9 @@ async function integrateWorkspaceCommitsForTask(
 }
 
 /**
- * Resolve the role lane contract for integration.
- * Re-validate envelope workspace/targetBranch against mounted root + real
- * ensureRoleWorkspace(role) contract — do not trust a stale envelope alone.
+ * Resolve the lane contract for integration.
+ * Role tasks re-validate against ensureRoleWorkspace(role).
+ * Profile tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
  */
 async function resolveIntegrationContract(
   workspaceRoot: string,
@@ -3413,17 +3495,20 @@ async function resolveIntegrationContract(
     }
   }
 
-  // Always resolve the authoritative role lane (creates/reuses worktree as needed).
-  const real = await ensureRoleWorkspace(mountedRoot, task.role);
+  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const real = isProfile
+    ? await ensureTaskWorkspace(mountedRoot, task.id || task.path)
+    : await ensureRoleWorkspace(mountedRoot, task.role);
 
+  const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
-      `Task envelope branch mismatch for role ${task.role}: envelope=${task.branch} expected=${real.branch}`
+      `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
     );
   }
   if (task.targetBranch && task.targetBranch !== real.targetBranch) {
     throw new Error(
-      `Task envelope targetBranch mismatch for role ${task.role}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
     );
   }
   if (task.worktree) {
@@ -3431,7 +3516,7 @@ async function resolveIntegrationContract(
     const realWt = nodePath.resolve(real.worktree);
     if (!isSameWorkspaceRoot(claimedWt, realWt)) {
       throw new Error(
-        `Task envelope worktree mismatch for role ${task.role}: envelope=${task.worktree} expected=${real.worktree}`
+        `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
       );
     }
   }
@@ -3442,10 +3527,9 @@ async function resolveIntegrationContract(
 
 /**
  * Ensure task envelope carries WorkspaceLane before managed startSession.
- * Git workspace → create/reuse role worktree and patch missing fields under MutationBus
- * (worktree create + envelope patch share one critical section; no nested run).
- * Also backfills roleBranchBase once when missing on legacy/pre-baseline envelopes;
- * never overwrites an existing baseline (restart / resume / reject-resume safe).
+ * - Role: create/reuse durable tent-role/<role> worktree.
+ * - agentProfile: create unique tent-task/<taskId> worktree (never tent-role/<profile>).
+ * Also backfills roleBranchBase once when missing; never overwrites an existing baseline.
  * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
  */
 async function ensureTaskWorkspaceLane(
@@ -3470,6 +3554,7 @@ async function ensureTaskWorkspaceLane(
       return current;
     }
 
+    const isProfile = taskAssigneeKind(current) === "agentProfile";
     const lane =
       currentLaneComplete
         ? {
@@ -3478,7 +3563,12 @@ async function ensureTaskWorkspaceLane(
             branch: current.branch!,
             targetBranch: current.targetBranch!,
           }
-        : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
+        : isProfile
+          ? await ensureTaskWorkspaceIfGit(
+              mount.workspaceRoot,
+              current.id || current.path
+            )
+          : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
     if (!lane) return current;
 
     const patch: Parameters<typeof patchTaskEnvelope>[2] = {
@@ -3500,9 +3590,9 @@ async function ensureTaskWorkspaceLane(
 }
 
 /**
- * Active managed ACP session for a role (starting/live/waiting-user).
- * External sessions (state=external) are intentionally excluded — they are not
- * service-registry managed and do not consume this single-slot rule.
+ * Active managed ACP session for a durable role (starting/live/waiting-user).
+ * External sessions and agentProfile sessions are excluded — profile sessions
+ * must not block role delete or one-live-session-per-role rules.
  */
 async function findActiveManagedSessionForRole(
   ctx: HandlerContext,
@@ -3515,9 +3605,42 @@ async function findActiveManagedSessionForRole(
     (rec) =>
       rec.workspace === workspaceId &&
       rec.roleName === roleName &&
+      (rec.assigneeKind ?? "role") !== "agentProfile" &&
       SessionRegistry.isNonTerminal(rec.state) &&
       rec.state !== "external"
   );
+}
+
+/**
+ * Resolve the durable role whose a2aPolicy/allowedProfiles govern startSession.
+ * - user caller: unused (root authority)
+ * - role task: task.role is the durable role
+ * - agentProfile task + role caller: dispatchedBy must name a real role (not the profile)
+ */
+function resolveA2AAuthorityRole(
+  task: TaskEnvelope,
+  callerKind: "user" | "role"
+): string {
+  if (callerKind === "user") return task.role;
+  if (taskAssigneeKind(task) === "agentProfile") {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    if (!dispatcher || dispatcher === "user") {
+      throw new RpcError(
+        -32602,
+        "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
+        { dispatchedBy: task.dispatchedBy, profileId: task.role }
+      );
+    }
+    if (dispatcher === task.role) {
+      throw new RpcError(
+        -32602,
+        "callerKind=role startSession on agentProfile task must not use the profileId as dispatcher role",
+        { dispatchedBy: dispatcher, profileId: task.role }
+      );
+    }
+    return dispatcher;
+  }
+  return task.role;
 }
 
 function projectStartSessionResult(
@@ -3560,20 +3683,27 @@ function buildSessionBootstrapPrompt(
   roots: { workspaceRoot: string; systemRoot: string }
 ): string {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
+  const kind = taskAssigneeKind(task);
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
-    label: `task:${task.role}`,
+    label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`,
   });
   const sessionSteps = sessionBootstrapPromptForTask(task, {
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
   });
   const aux: string[] = [];
-  if (task.role) aux.push(`role: ${task.role}`);
+  if (kind === "agentProfile") {
+    aux.push(`assigneeKind: agentProfile`);
+    aux.push(`profileId: ${task.role}`);
+  } else if (task.role) {
+    aux.push(`role: ${task.role}`);
+  }
   if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
   if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
+  if (task.manifest) aux.push(`manifest: ${task.manifest}`);
   return (
     `${card.prompt}\n\n` +
     `--- Tent managed session bootstrap ---\n` +
@@ -3602,7 +3732,8 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
     deliveryPolicy: task.deliveryPolicy,
-    assigneeKind: task.assigneeKind,
+    // Missing assigneeKind on disk reads as role (backward compatible).
+    assigneeKind: taskAssigneeKind(task),
     sessionId: task.sessionId,
     wait: task.wait,
     activeDeliveryId: task.activeDeliveryId,

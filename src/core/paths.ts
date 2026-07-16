@@ -15,6 +15,11 @@ export const RULES_PATH = "RULES.md";
 export const WORKSPACE_SETTINGS_PATH = "settings.json";
 export const TEMP_DIR = "temp";
 export const ATTACHMENTS_DIR = "attachments";
+/**
+ * One-shot AgentProfile operational namespace under temp/.
+ * Role lanes remain `temp/<role>/…`; profile tasks never use `tent-role/<profile>`.
+ */
+export const AGENT_PROFILES_TEMP_DIR = "agent-profiles";
 
 /** 不进入 concept 索引的顶层/路径前缀（相对 system root）。 */
 export const OPERATIONAL_TOP_LEVEL = new Set([
@@ -62,6 +67,55 @@ export function isOperationalPath(relativePath: string): boolean {
   if (!path) return false;
   const top = path.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
+}
+
+/**
+ * Sanitize profile id / task id segments for operational directory names.
+ * Deterministic, path-safe; not a security boundary.
+ */
+export function safeOperationalSegment(value: string, emptyPrefix = "id"): string {
+  const source = value.trim();
+  if (!source) throw new Error("Operational segment cannot be empty.");
+  const normalized = source.normalize("NFKC");
+  let clean = normalized
+    .replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .replace(/^[.-]+|[.-]+$/g, "")
+    .slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `${emptyPrefix}-${clean}`;
+  if (!clean) {
+    // Short stable hash of the original so empty sanitization never collides on "".
+    let h = 0;
+    for (let i = 0; i < source.length; i++) h = (h * 31 + source.charCodeAt(i)) >>> 0;
+    return `${emptyPrefix}-${h.toString(36)}`;
+  }
+  if (clean !== normalized || normalized !== source || reserved) {
+    let h = 0;
+    for (let i = 0; i < source.length; i++) h = (h * 31 + source.charCodeAt(i)) >>> 0;
+    return `${clean}-${h.toString(36)}`;
+  }
+  return clean;
+}
+
+/** `temp/agent-profiles/<safe-profile-id>` root for one-shot profile operational records. */
+export function agentProfileTempRoot(profileId: string): string {
+  return `${TEMP_DIR}/${AGENT_PROFILES_TEMP_DIR}/${safeOperationalSegment(profileId, "profile")}`;
+}
+
+export function agentProfileTasksDir(profileId: string): string {
+  return `${agentProfileTempRoot(profileId)}/tasks`;
+}
+
+export function agentProfileDeliveriesDir(profileId: string): string {
+  return `${agentProfileTempRoot(profileId)}/deliveries`;
+}
+
+/** Task-scoped immutable manifest path (never shared `manifest.yml`). */
+export function agentProfileManifestPath(profileId: string, taskId: string): string {
+  const safeTask = safeOperationalSegment(taskId, "task");
+  return `${agentProfileTempRoot(profileId)}/manifests/${safeTask}.yml`;
 }
 
 /** 是否为应排除在 concept 索引外的生成/系统文件名。 */

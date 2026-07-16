@@ -136,6 +136,8 @@ export type SessionProjection = {
   adapterId: string;
   state: string;
   roleName?: string;
+  /** Missing/undefined reads as role for older session rows. */
+  assigneeKind?: "role" | "agentProfile";
   /** PID is machine-local diagnostic; clients may show status only. */
   alive: boolean;
   resumeCapable: boolean;
