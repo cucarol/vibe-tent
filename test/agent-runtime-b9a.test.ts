@@ -539,6 +539,158 @@ test("two live sessions do not cross-contaminate cwd", async () => {
   await runtime.shutdown();
 });
 
+test("concurrent starts for one session launch exactly one managed provider", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let startCalls = 0;
+  let stopCalls = 0;
+  const adapter: ProviderAdapter = {
+    id: "start-single-flight",
+    displayNameKey: "adapter.startSingleFlight",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    startManagedSession: async (plan, emit) => {
+      startCalls += 1;
+      await new Promise((resolve) => setTimeout(resolve, 60));
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 8100 + startCalls });
+      return {
+        sessionId: plan.sessionId,
+        pid: 8100 + startCalls,
+        isAlive: () => true,
+        stop: async () => {
+          stopCalls += 1;
+        },
+      };
+    },
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "single-flight-profile", adapterId: adapter.id }],
+  });
+  const request = {
+    sessionId: "ss-startonce",
+    profileId: "single-flight-profile",
+    cwd,
+  };
+
+  const results = await Promise.allSettled([
+    runtime.startSession(request),
+    runtime.startSession(request),
+  ]);
+
+  assert.equal(startCalls, 1);
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  await runtime.shutdown();
+  assert.equal(stopCalls, 1);
+});
+
+test("concurrent starts cannot tear down the winning CLI process", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const runtime = createAgentRuntime({ dataDir, gracefulMs: 1500 });
+  const request = {
+    sessionId: "ss-clistart1",
+    profileId: "fake-default",
+    cwd,
+  };
+
+  const results = await Promise.allSettled([
+    runtime.startSession(request),
+    runtime.startSession(request),
+  ]);
+
+  assert.equal(results.filter((result) => result.status === "fulfilled").length, 1);
+  assert.equal(results.filter((result) => result.status === "rejected").length, 1);
+  assert.equal((await runtime.probe(request.sessionId)).alive, true);
+  assert.deepEqual(runtime.supervisor.listLive(), [request.sessionId]);
+  await runtime.shutdown();
+});
+
+test("shutdown waits for an in-flight managed start and rejects new work", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let markStarted!: () => void;
+  let releaseStart!: () => void;
+  const started = new Promise<void>((resolve) => {
+    markStarted = resolve;
+  });
+  const release = new Promise<void>((resolve) => {
+    releaseStart = resolve;
+  });
+  let stopCalls = 0;
+  const adapter: ProviderAdapter = {
+    id: "shutdown-start-race",
+    displayNameKey: "adapter.shutdownStartRace",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    startManagedSession: async (plan, emit) => {
+      markStarted();
+      await release;
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 8201 });
+      return {
+        sessionId: plan.sessionId,
+        pid: 8201,
+        isAlive: () => true,
+        stop: async () => {
+          stopCalls += 1;
+        },
+      };
+    },
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "shutdown-profile", adapterId: adapter.id }],
+  });
+  const start = runtime.startSession({
+    sessionId: "ss-shutdownrace",
+    profileId: "shutdown-profile",
+    cwd,
+  });
+  await started;
+
+  const shutdown = runtime.shutdown();
+  await assert.rejects(
+    () =>
+      runtime.startSession({
+        sessionId: "ss-afterclose",
+        profileId: "shutdown-profile",
+        cwd,
+      }),
+    /shut down/i
+  );
+  releaseStart();
+
+  await start;
+  await shutdown;
+  assert.equal(stopCalls, 1);
+  assert.equal(runtime.supervisor.listLive().length, 0);
+});
+
 test("shutdown stops push children (service-stop policy)", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();

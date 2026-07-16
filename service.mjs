@@ -18672,11 +18672,13 @@ var AgentRuntime = class {
     this.profiles = /* @__PURE__ */ new Map();
     this.adapters = /* @__PURE__ */ new Map();
     this.managed = /* @__PURE__ */ new Map();
+    this.startInFlight = /* @__PURE__ */ new Map();
     this.resumeInFlight = /* @__PURE__ */ new Map();
     this.childExitInFlight = /* @__PURE__ */ new Map();
     this.managedTerminalInFlight = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
+    this.closing = false;
     this.closed = false;
     this.registry = new SessionRegistry(options.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
@@ -18801,6 +18803,23 @@ var AgentRuntime = class {
     if (!isSessionId(req.sessionId)) {
       throw new Error(`Invalid session id: ${req.sessionId}`);
     }
+    if (this.startInFlight.has(req.sessionId)) {
+      throw new Error(`Session start already in progress: ${req.sessionId}`);
+    }
+    if (this.resumeInFlight.has(req.sessionId)) {
+      throw new Error(`Session resume already in progress: ${req.sessionId}`);
+    }
+    const operation = this.startSessionExclusive(req);
+    this.startInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.startInFlight.get(req.sessionId) === operation) {
+        this.startInFlight.delete(req.sessionId);
+      }
+    }
+  }
+  async startSessionExclusive(req) {
     const existing = await this.registry.read(req.sessionId);
     if (existing && SessionRegistry.isNonTerminal(existing.state)) {
       throw new Error(`Session already active: ${req.sessionId}`);
@@ -18964,6 +18983,22 @@ var AgentRuntime = class {
   }
   async resumeSession(req) {
     this.assertOpen();
+    if (this.startInFlight.has(req.sessionId)) {
+      throw new Error(`Session start already in progress: ${req.sessionId}`);
+    }
+    const existingResume = this.resumeInFlight.get(req.sessionId);
+    if (existingResume) return existingResume;
+    const operation = this.resumeSessionExclusive(req);
+    this.resumeInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.resumeInFlight.get(req.sessionId) === operation) {
+        this.resumeInFlight.delete(req.sessionId);
+      }
+    }
+  }
+  async resumeSessionExclusive(req) {
     const record = await this.registry.read(req.sessionId);
     if (!record) throw new Error(`Session not found: ${req.sessionId}`);
     const profile = this.profileForResume(record);
@@ -19005,147 +19040,135 @@ var AgentRuntime = class {
       );
     }
     const resumeManagedSession = adapter.resumeManagedSession.bind(adapter);
-    const existingResume = this.resumeInFlight.get(req.sessionId);
-    if (existingResume) return existingResume;
-    const operation = (async () => {
-      let resumedManaged;
-      if (SessionRegistry.isNonTerminal(record.state)) {
-        const managed = this.managed.get(req.sessionId);
-        if (managed?.isAlive()) {
-          throw new Error(`Session already active: ${req.sessionId}`);
-        }
-        this.managed.delete(req.sessionId);
+    let resumedManaged;
+    if (SessionRegistry.isNonTerminal(record.state)) {
+      const managed = this.managed.get(req.sessionId);
+      if (managed?.isAlive()) {
+        throw new Error(`Session already active: ${req.sessionId}`);
       }
-      const now = (/* @__PURE__ */ new Date()).toISOString();
-      await this.registry.update(req.sessionId, {
-        state: "starting",
-        pid: void 0,
+      this.managed.delete(req.sessionId);
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    await this.registry.update(req.sessionId, {
+      state: "starting",
+      pid: void 0,
+      lastError: void 0,
+      exitCode: void 0,
+      stopReason: void 0,
+      runtimeWorkspace: { cwd },
+      updatedAt: now
+    });
+    this.emit({ type: "session.starting", sessionId: req.sessionId });
+    try {
+      const resolvedEnv = await this.resolveCredentialEnv(profile);
+      const plan = {
+        sessionId: req.sessionId,
+        profileId: profile.id,
+        roleName: record.roleName,
+        cwd,
+        env: { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv },
+        bootstrapPrompt: req.bootstrapPrompt,
+        command: profile.command,
+        args: profile.args,
+        extras: {
+          fake: profile.fake,
+          acp: profile.acp
+        }
+      };
+      const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
+      let startupCommitted = false;
+      let startupLivePid;
+      let terminalProjection;
+      let terminalDuringManagedStart;
+      const managed = await resumeManagedSession(
+        plan,
+        resumeToken,
+        (ev) => {
+          if (ev.type === "session.failed") {
+            terminalDuringManagedStart = { state: "failed", error: ev.error };
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "failed",
+              ev.error
+            );
+          } else if (ev.type === "session.exited") {
+            terminalDuringManagedStart = {
+              state: "stopped",
+              exitCode: ev.exitCode
+            };
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "stopped",
+              void 0,
+              ev.exitCode
+            );
+          } else if (ev.type === "session.waiting_user") {
+            void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
+          } else if (ev.type === "session.live") {
+            if (!startupCommitted) {
+              startupLivePid = ev.pid;
+              return;
+            }
+            void this.registry.update(req.sessionId, {
+              state: "live",
+              ...ev.pid != null ? { pid: ev.pid } : {}
+            }).catch(() => void 0);
+          }
+          this.emit(ev);
+        }
+      );
+      resumedManaged = managed;
+      if (terminalDuringManagedStart) {
+        const terminal = terminalDuringManagedStart;
+        await (terminalProjection ?? this.trackManagedTerminal(
+          req.sessionId,
+          terminal.state,
+          terminal.state === "failed" ? terminal.error : void 0,
+          terminal.state === "stopped" ? terminal.exitCode : void 0
+        ));
+        throw Object.assign(
+          new Error(
+            terminal.state === "failed" ? terminal.error : `Managed session exited during resume (code=${terminal.exitCode})`
+          ),
+          { terminalAlreadyEmitted: true }
+        );
+      }
+      this.managed.set(req.sessionId, managed);
+      const pid = managed.pid;
+      const nextToken = managed.providerSessionId?.trim() || tokenRaw;
+      const live = await this.registry.update(req.sessionId, {
+        state: "live",
+        pid,
+        resumeToken: nextToken,
         lastError: void 0,
         exitCode: void 0,
         stopReason: void 0,
-        runtimeWorkspace: { cwd },
-        updatedAt: now
+        runtimeWorkspace: { cwd }
       });
-      this.emit({ type: "session.starting", sessionId: req.sessionId });
-      try {
-        const resolvedEnv = await this.resolveCredentialEnv(profile);
-        const plan = {
-          sessionId: req.sessionId,
-          profileId: profile.id,
-          roleName: record.roleName,
-          cwd,
-          env: { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv },
-          bootstrapPrompt: req.bootstrapPrompt,
-          command: profile.command,
-          args: profile.args,
-          extras: {
-            fake: profile.fake,
-            acp: profile.acp
-          }
-        };
-        const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
-        let startupCommitted = false;
-        let startupLivePid;
-        let terminalProjection;
-        let terminalDuringManagedStart;
-        const managed = await resumeManagedSession(
-          plan,
-          resumeToken,
-          (ev) => {
-            if (ev.type === "session.failed") {
-              terminalDuringManagedStart = { state: "failed", error: ev.error };
-              terminalProjection = this.trackManagedTerminal(
-                req.sessionId,
-                "failed",
-                ev.error
-              );
-            } else if (ev.type === "session.exited") {
-              terminalDuringManagedStart = {
-                state: "stopped",
-                exitCode: ev.exitCode
-              };
-              terminalProjection = this.trackManagedTerminal(
-                req.sessionId,
-                "stopped",
-                void 0,
-                ev.exitCode
-              );
-            } else if (ev.type === "session.waiting_user") {
-              void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
-            } else if (ev.type === "session.live") {
-              if (!startupCommitted) {
-                startupLivePid = ev.pid;
-                return;
-              }
-              void this.registry.update(req.sessionId, {
-                state: "live",
-                ...ev.pid != null ? { pid: ev.pid } : {}
-              }).catch(() => void 0);
-            }
-            this.emit(ev);
-          }
-        );
-        resumedManaged = managed;
-        if (terminalDuringManagedStart) {
-          const terminal = terminalDuringManagedStart;
-          await (terminalProjection ?? this.trackManagedTerminal(
-            req.sessionId,
-            terminal.state,
-            terminal.state === "failed" ? terminal.error : void 0,
-            terminal.state === "stopped" ? terminal.exitCode : void 0
-          ));
-          throw Object.assign(
-            new Error(
-              terminal.state === "failed" ? terminal.error : `Managed session exited during resume (code=${terminal.exitCode})`
-            ),
-            { terminalAlreadyEmitted: true }
-          );
-        }
-        this.managed.set(req.sessionId, managed);
-        const pid = managed.pid;
-        const nextToken = managed.providerSessionId?.trim() || tokenRaw;
-        const live = await this.registry.update(req.sessionId, {
-          state: "live",
-          pid,
-          resumeToken: nextToken,
-          lastError: void 0,
-          exitCode: void 0,
-          stopReason: void 0,
-          runtimeWorkspace: { cwd }
-        });
-        startupCommitted = true;
-        this.emit({
-          type: "session.live",
-          sessionId: req.sessionId,
-          pid: startupLivePid ?? pid
-        });
-        return handleFrom(live);
-      } catch (err) {
-        this.managed.delete(req.sessionId);
-        if (resumedManaged) {
-          await resumedManaged.stop("interrupt").catch(() => void 0);
-          await this.waitForManagedTerminal(req.sessionId, true);
-        }
-        const rawMessage = err instanceof Error ? err.message : String(err);
-        const message = redactRuntimeValue(rawMessage, tokenRaw);
-        const failed = await this.registry.update(req.sessionId, {
-          state: "failed",
-          lastError: message,
-          pid: void 0
-        });
-        if (!err?.terminalAlreadyEmitted) {
-          this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
-        }
-        throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      startupCommitted = true;
+      this.emit({
+        type: "session.live",
+        sessionId: req.sessionId,
+        pid: startupLivePid ?? pid
+      });
+      return handleFrom(live);
+    } catch (err) {
+      this.managed.delete(req.sessionId);
+      if (resumedManaged) {
+        await resumedManaged.stop("interrupt").catch(() => void 0);
+        await this.waitForManagedTerminal(req.sessionId, true);
       }
-    })();
-    this.resumeInFlight.set(req.sessionId, operation);
-    try {
-      return await operation;
-    } finally {
-      if (this.resumeInFlight.get(req.sessionId) === operation) {
-        this.resumeInFlight.delete(req.sessionId);
+      const rawMessage = err instanceof Error ? err.message : String(err);
+      const message = redactRuntimeValue(rawMessage, tokenRaw);
+      const failed = await this.registry.update(req.sessionId, {
+        state: "failed",
+        lastError: message,
+        pid: void 0
+      });
+      if (!err?.terminalAlreadyEmitted) {
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
       }
+      throw Object.assign(new Error(message), { session: handleFrom(failed) });
     }
   }
   /**
@@ -19178,6 +19201,9 @@ var AgentRuntime = class {
   }
   async stopSession(sessionId, reason) {
     this.assertOpen();
+    await this.stopSessionInternal(sessionId, reason);
+  }
+  async stopSessionInternal(sessionId, reason) {
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
     const managed = this.managed.get(sessionId);
@@ -19274,27 +19300,40 @@ var AgentRuntime = class {
   }
   /** Service shutdown: stop push children this runtime started (window close does not call this). */
   async shutdown() {
+    if (this.shutdownPromise) return this.shutdownPromise;
     if (this.closed) return;
-    const managedIds = [...this.managed.keys()];
-    const live = /* @__PURE__ */ new Set([...this.supervisor.listLive(), ...managedIds]);
-    for (const id of live) {
-      try {
-        await this.stopSession(id, "shutdown");
-      } catch {
-        const m = this.managed.get(id);
-        if (m) {
-          try {
-            await m.stop("shutdown");
-          } catch {
+    this.closing = true;
+    this.shutdownPromise = this.shutdownInternal();
+    return this.shutdownPromise;
+  }
+  async shutdownInternal() {
+    try {
+      await Promise.allSettled([
+        ...this.startInFlight.values(),
+        ...this.resumeInFlight.values()
+      ]);
+      const managedIds = [...this.managed.keys()];
+      const live = /* @__PURE__ */ new Set([...this.supervisor.listLive(), ...managedIds]);
+      for (const id of live) {
+        try {
+          await this.stopSessionInternal(id, "shutdown");
+        } catch {
+          const m = this.managed.get(id);
+          if (m) {
+            try {
+              await m.stop("shutdown");
+            } catch {
+            }
+            this.managed.delete(id);
+          } else {
+            await this.supervisor.stop(id);
           }
-          this.managed.delete(id);
-        } else {
-          await this.supervisor.stop(id);
         }
       }
+      await this.supervisor.stopAll("shutdown");
+    } finally {
+      this.closed = true;
     }
-    await this.supervisor.stopAll("shutdown");
-    this.closed = true;
   }
   /**
    * Managed ACP terminal path (no ProcessSupervisor exit). Idempotent:
@@ -19447,7 +19486,7 @@ var AgentRuntime = class {
     return { [envKey]: secret };
   }
   assertOpen() {
-    if (this.closed) throw new Error("AgentRuntime is shut down");
+    if (this.closed || this.closing) throw new Error("AgentRuntime is shut down");
   }
 };
 function sameRuntimeCwd(left, right) {

@@ -86,12 +86,15 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly profiles = new Map<string, AgentProfileConfig>();
   private readonly adapters = new Map<string, ProviderAdapter>();
   private readonly managed = new Map<string, ManagedSession>();
+  private readonly startInFlight = new Map<string, Promise<SessionHandle>>();
   private readonly resumeInFlight = new Map<string, Promise<SessionHandle>>();
   private readonly childExitInFlight = new Map<string, Promise<void>>();
   private readonly managedTerminalInFlight = new Map<string, Set<Promise<void>>>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
+  private shutdownPromise?: Promise<void>;
+  private closing = false;
   private closed = false;
 
   constructor(options: AgentRuntimeOptions) {
@@ -232,7 +235,25 @@ export class AgentRuntime implements AgentRuntimePort {
     if (!isSessionId(req.sessionId)) {
       throw new Error(`Invalid session id: ${req.sessionId}`);
     }
+    if (this.startInFlight.has(req.sessionId)) {
+      throw new Error(`Session start already in progress: ${req.sessionId}`);
+    }
+    if (this.resumeInFlight.has(req.sessionId)) {
+      throw new Error(`Session resume already in progress: ${req.sessionId}`);
+    }
 
+    const operation = this.startSessionExclusive(req);
+    this.startInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.startInFlight.get(req.sessionId) === operation) {
+        this.startInFlight.delete(req.sessionId);
+      }
+    }
+  }
+
+  private async startSessionExclusive(req: StartSessionRequest): Promise<SessionHandle> {
     const existing = await this.registry.read(req.sessionId);
     if (existing && SessionRegistry.isNonTerminal(existing.state)) {
       throw new Error(`Session already active: ${req.sessionId}`);
@@ -437,6 +458,24 @@ export class AgentRuntime implements AgentRuntimePort {
 
   async resumeSession(req: ResumeSessionRequest): Promise<SessionHandle> {
     this.assertOpen();
+    if (this.startInFlight.has(req.sessionId)) {
+      throw new Error(`Session start already in progress: ${req.sessionId}`);
+    }
+    const existingResume = this.resumeInFlight.get(req.sessionId);
+    if (existingResume) return existingResume;
+
+    const operation = this.resumeSessionExclusive(req);
+    this.resumeInFlight.set(req.sessionId, operation);
+    try {
+      return await operation;
+    } finally {
+      if (this.resumeInFlight.get(req.sessionId) === operation) {
+        this.resumeInFlight.delete(req.sessionId);
+      }
+    }
+  }
+
+  private async resumeSessionExclusive(req: ResumeSessionRequest): Promise<SessionHandle> {
     const record = await this.registry.read(req.sessionId);
     if (!record) throw new Error(`Session not found: ${req.sessionId}`);
 
@@ -487,11 +526,7 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     const resumeManagedSession = adapter.resumeManagedSession.bind(adapter);
 
-    const existingResume = this.resumeInFlight.get(req.sessionId);
-    if (existingResume) return existingResume;
-
-    const operation = (async (): Promise<SessionHandle> => {
-      let resumedManaged: ManagedSession | undefined;
+    let resumedManaged: ManagedSession | undefined;
 
     // Existing non-terminal row is expected after service restart (stopped + token).
     // Re-open the same Tent session id with a new bridge process + native load.
@@ -651,16 +686,6 @@ export class AgentRuntime implements AgentRuntimePort {
       }
       throw Object.assign(new Error(message), { session: handleFrom(failed) });
     }
-    })();
-
-    this.resumeInFlight.set(req.sessionId, operation);
-    try {
-      return await operation;
-    } finally {
-      if (this.resumeInFlight.get(req.sessionId) === operation) {
-        this.resumeInFlight.delete(req.sessionId);
-      }
-    }
   }
 
   /**
@@ -695,6 +720,10 @@ export class AgentRuntime implements AgentRuntimePort {
 
   async stopSession(sessionId: string, reason: StopReason): Promise<void> {
     this.assertOpen();
+    await this.stopSessionInternal(sessionId, reason);
+  }
+
+  private async stopSessionInternal(sessionId: string, reason: StopReason): Promise<void> {
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
 
@@ -809,28 +838,42 @@ export class AgentRuntime implements AgentRuntimePort {
 
   /** Service shutdown: stop push children this runtime started (window close does not call this). */
   async shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
     if (this.closed) return;
-    const managedIds = [...this.managed.keys()];
-    const live = new Set([...this.supervisor.listLive(), ...managedIds]);
-    for (const id of live) {
-      try {
-        await this.stopSession(id, "shutdown");
-      } catch {
-        const m = this.managed.get(id);
-        if (m) {
-          try {
-            await m.stop("shutdown");
-          } catch {
-            // best-effort
+    this.closing = true;
+    this.shutdownPromise = this.shutdownInternal();
+    return this.shutdownPromise;
+  }
+
+  private async shutdownInternal(): Promise<void> {
+    try {
+      await Promise.allSettled([
+        ...this.startInFlight.values(),
+        ...this.resumeInFlight.values(),
+      ]);
+      const managedIds = [...this.managed.keys()];
+      const live = new Set([...this.supervisor.listLive(), ...managedIds]);
+      for (const id of live) {
+        try {
+          await this.stopSessionInternal(id, "shutdown");
+        } catch {
+          const m = this.managed.get(id);
+          if (m) {
+            try {
+              await m.stop("shutdown");
+            } catch {
+              // best-effort
+            }
+            this.managed.delete(id);
+          } else {
+            await this.supervisor.stop(id);
           }
-          this.managed.delete(id);
-        } else {
-          await this.supervisor.stop(id);
         }
       }
+      await this.supervisor.stopAll("shutdown");
+    } finally {
+      this.closed = true;
     }
-    await this.supervisor.stopAll("shutdown");
-    this.closed = true;
   }
 
   /**
@@ -1026,7 +1069,7 @@ export class AgentRuntime implements AgentRuntimePort {
   }
 
   private assertOpen(): void {
-    if (this.closed) throw new Error("AgentRuntime is shut down");
+    if (this.closed || this.closing) throw new Error("AgentRuntime is shut down");
   }
 }
 
