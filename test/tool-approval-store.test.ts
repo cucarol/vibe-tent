@@ -91,6 +91,33 @@ test("tool approval store: session remains pending until every request resolves"
   assert.equal(await store.hasPendingForSession("ss-1"), false);
 });
 
+test("tool approval store: service restart expires orphaned pending requests", async () => {
+  const dataDir = await tempDir("tent-tool-appr-restart-");
+  const id = makeToolApprovalId(() => 0.37);
+  const first = new ToolApprovalStore(dataDir);
+  await first.add(pending({ id }));
+
+  const restarted = new ToolApprovalStore(dataDir);
+  const recovered = await restarted.get(id);
+  assert.equal(recovered?.status, "expired");
+  assert.equal(recovered?.resolvedBy, "service-restart");
+  assert.ok(recovered?.resolvedAt);
+  assert.deepEqual(await restarted.listPending("ws-1"), []);
+  await assert.rejects(
+    () => restarted.resolve(id, "approved", "user"),
+    /already expired/
+  );
+
+  const disk = JSON.parse(
+    await fs.readFile(path.join(dataDir, "tool-approvals.json"), "utf8")
+  ) as { items: ToolPendingApproval[] };
+  assert.equal(disk.items.find((item) => item.id === id)?.status, "expired");
+  assert.equal(
+    disk.items.find((item) => item.id === id)?.resolvedBy,
+    "service-restart"
+  );
+});
+
 test("tool approval store: atomic temp rename leaves valid JSON after concurrent writes", async () => {
   const dataDir = await tempDir("tent-tool-appr-atomic-");
   const store = new ToolApprovalStore(dataDir);
@@ -197,8 +224,14 @@ test("tool approval store: persistence failure rolls back state and does not wak
   );
   assert.equal((await store.get(id))?.status, "pending");
 
-  const disk = await new ToolApprovalStore(dataDir).get(id);
-  assert.equal(disk?.status, "pending", "disk and memory must retain the old snapshot");
+  const disk = JSON.parse(
+    await fs.readFile(path.join(dataDir, "tool-approvals.json"), "utf8")
+  ) as { items: ToolPendingApproval[] };
+  assert.equal(
+    disk.items.find((item) => item.id === id)?.status,
+    "pending",
+    "failed mutation must leave the old disk snapshot intact"
+  );
 
   failWrites = false;
   assert.equal((await store.resolve(id, "approved", "user")).status, "approved");

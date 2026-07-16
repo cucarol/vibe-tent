@@ -107,9 +107,25 @@ export class ToolApprovalStore {
           this.loaded = true;
           return;
         }
+        const loaded = new Map<string, ToolPendingApproval>();
+        const recoveredAt = new Date().toISOString();
+        let recoveredPending = false;
         for (const item of (items as ToolPendingApproval[] | undefined) ?? []) {
-          if (item?.id) this.items.set(item.id, cloneApproval(item));
+          if (!item?.id) continue;
+          const restored = cloneApproval(item);
+          if (restored.status === "pending") {
+            // A pending row represents one live ACP request and its in-memory
+            // waiter. Neither survives a service restart, so approving a
+            // restored row could resume a task with no provider behind it.
+            restored.status = "expired";
+            restored.resolvedAt = recoveredAt;
+            restored.resolvedBy = "service-restart";
+            recoveredPending = true;
+          }
+          loaded.set(restored.id, restored);
         }
+        if (recoveredPending) await this.persistSnapshot(loaded);
+        this.items = loaded;
         this.loaded = true;
       } catch (err) {
         if (isNotFoundError(err)) {

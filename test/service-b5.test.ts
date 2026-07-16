@@ -38,6 +38,10 @@ import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 import { fileURLToPath } from "node:url";
+import {
+  ToolApprovalStore,
+  makeToolApprovalId,
+} from "../src/service/tool-approval-store.js";
 
 const MOCK_ACP = path.join(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -1354,6 +1358,49 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
   }
   assert.ok(!(CLIENT_METHODS as readonly string[]).includes("AgentRuntimePort.startSession"));
   assert.equal(FAKE_ADAPTER_ID, "fake-cli");
+});
+
+test("B5 tool approval: service restart expires orphaned pending request", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-restart-"));
+  const approvalId = makeToolApprovalId(() => 0.44);
+  const seeded = new ToolApprovalStore(dataDir);
+  await seeded.add({
+    id: approvalId,
+    workspaceId: "ws-orphaned",
+    sessionId: "ss-orphaned",
+    taskId: "task-orphaned",
+    taskPath: "temp/executor/tasks/task-orphaned.md",
+    role: "executor",
+    toolTitle: "write_file",
+    options: [{ optionId: "allow_once", kind: "allow_once" }],
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    const pending = await rpc(svc, "toolApproval.listPending", {});
+    assert.ok(!pending.error, JSON.stringify(pending.error));
+    assert.deepEqual((pending.result as { approvals: unknown[] }).approvals, []);
+
+    const get = await rpc(svc, "toolApproval.get", { approvalId });
+    assert.ok(!get.error, JSON.stringify(get.error));
+    const recovered = (get.result as {
+      approval: { status: string; resolvedBy?: string };
+    }).approval;
+    assert.equal(recovered.status, "expired");
+    assert.equal(recovered.resolvedBy, "service-restart");
+
+    const approve = await rpc(svc, "toolApproval.approveOnce", {
+      approvalId,
+      actor: "user",
+    });
+    assert.ok(approve.error);
+    assert.match(approve.error!.message, /already expired/);
+  } finally {
+    await svc.stop();
+  }
 });
 
 test("B5 tool approval: ask → pending → approve once → running → deliver", async () => {

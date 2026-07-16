@@ -17431,9 +17431,22 @@ var ToolApprovalStore = class {
           this.loaded = true;
           return;
         }
+        const loaded = /* @__PURE__ */ new Map();
+        const recoveredAt = (/* @__PURE__ */ new Date()).toISOString();
+        let recoveredPending = false;
         for (const item of items ?? []) {
-          if (item?.id) this.items.set(item.id, cloneApproval2(item));
+          if (!item?.id) continue;
+          const restored = cloneApproval2(item);
+          if (restored.status === "pending") {
+            restored.status = "expired";
+            restored.resolvedAt = recoveredAt;
+            restored.resolvedBy = "service-restart";
+            recoveredPending = true;
+          }
+          loaded.set(restored.id, restored);
         }
+        if (recoveredPending) await this.persistSnapshot(loaded);
+        this.items = loaded;
         this.loaded = true;
       } catch (err) {
         if (isNotFoundError(err)) {

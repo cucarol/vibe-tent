@@ -237,6 +237,12 @@ There is **one** authoritative expiry: the Local Service `ToolApprovalStore` rec
 | `GrokAcpClient` fail-safe | Only if the service bridge hangs past `permissionTimeoutMs + slack` (default +5s). Must **expire/cancel the same store item** — never leave an approvable pending while ACP already cancelled. |
 | Late `toolApproval.approveOnce` | **Fails** after expire/deny/cancel (`already expired` / `already …`). |
 
+`pending` is durable only for crash-safe state accounting, not as a resumable tool
+request. The ACP request, waiter, and provider process do not survive a Local Service
+restart. On store recovery, every persisted `pending` row is therefore atomically
+rewritten to `expired` with `resolvedBy: service-restart`; it remains queryable as
+machine-local history but is never listed as pending or accepted by `approveOnce`.
+
 Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired).
 
 ### A2A spawn approval vs tool permission approval
