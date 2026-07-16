@@ -3701,6 +3701,7 @@ import { fileURLToPath } from "node:url";
 
 // src/service/data-dir.ts
 import * as fs5 from "node:fs/promises";
+import { isIP } from "node:net";
 import * as os2 from "node:os";
 import * as path4 from "node:path";
 
@@ -3727,6 +3728,19 @@ function defaultServiceDataDir(env = process.env) {
 function serviceEndpointPath(dataDir) {
   return path4.join(dataDir, "service.json");
 }
+function serviceBaseUrl(host, port) {
+  const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
+  return `http://${authorityHost}:${port}`;
+}
+function isLoopbackServiceHost(host) {
+  const normalized = host.trim().toLowerCase();
+  const family = isIP(normalized);
+  if (family === 4) return normalized.startsWith("127.");
+  if (family === 6) {
+    return normalized === "::1" || /^::ffff:127\./.test(normalized);
+  }
+  return false;
+}
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
@@ -3737,7 +3751,7 @@ async function readServiceEndpoint(dataDir) {
     } catch {
       return null;
     }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string" || data.instanceId !== void 0 && typeof data.instanceId !== "string") {
+    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
       return null;
     }
     return data;
@@ -4159,7 +4173,7 @@ async function tryAttachService(dataDir, fetchImpl = fetch) {
   if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
     return null;
   }
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = await client.health();

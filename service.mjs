@@ -16508,6 +16508,74 @@ function headerValue(headers, name) {
   return void 0;
 }
 
+// src/service/data-dir.ts
+import * as fs8 from "node:fs/promises";
+import { isIP } from "node:net";
+import * as os4 from "node:os";
+import * as path8 from "node:path";
+function defaultServiceDataDir(env = process.env) {
+  if (env.TENT_SERVICE_DATA_DIR) return path8.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (process.platform === "win32") {
+    const base = env.APPDATA || path8.join(os4.homedir(), "AppData", "Roaming");
+    return path8.join(base, "Tent");
+  }
+  if (process.platform === "darwin") {
+    return path8.join(os4.homedir(), "Library", "Application Support", "Tent");
+  }
+  const xdg = env.XDG_STATE_HOME || path8.join(os4.homedir(), ".local", "state");
+  return path8.join(xdg, "tent");
+}
+function serviceEndpointPath(dataDir) {
+  return path8.join(dataDir, "service.json");
+}
+function serviceBaseUrl(host, port) {
+  const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
+  return `http://${authorityHost}:${port}`;
+}
+function isLoopbackServiceHost(host) {
+  const normalized = host.trim().toLowerCase();
+  const family = isIP(normalized);
+  if (family === 4) return normalized.startsWith("127.");
+  if (family === 6) {
+    return normalized === "::1" || /^::ffff:127\./.test(normalized);
+  }
+  return false;
+}
+async function writeServiceEndpoint(dataDir, record) {
+  const file = serviceEndpointPath(dataDir);
+  await writeJsonAtomic(file, record);
+  return file;
+}
+async function readServiceEndpoint(dataDir) {
+  const file = serviceEndpointPath(dataDir);
+  try {
+    const raw = await fs8.readFile(file, "utf8");
+    let data;
+    try {
+      data = JSON.parse(raw);
+    } catch {
+      return null;
+    }
+    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
+      return null;
+    }
+    return data;
+  } catch (err) {
+    if (isNotFoundError(err)) return null;
+    throw err;
+  }
+}
+async function removeServiceEndpoint(dataDir, expectedInstanceId) {
+  try {
+    if (expectedInstanceId) {
+      const endpoint = await readServiceEndpoint(dataDir);
+      if (endpoint?.instanceId !== expectedInstanceId) return;
+    }
+    await fs8.rm(serviceEndpointPath(dataDir), { force: true });
+  } catch {
+  }
+}
+
 // src/service/http-server.ts
 var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   1,
@@ -16591,19 +16659,32 @@ var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   6697,
   10080
 ]);
+var MAX_RPC_BODY_BYTES = 36 * 1024 * 1024;
+var RequestBodyTooLargeError = class extends Error {
+  constructor(maxBytes) {
+    super(`RPC request body exceeds ${maxBytes} bytes`);
+    this.maxBytes = maxBytes;
+    this.name = "RequestBodyTooLargeError";
+  }
+};
 function isFetchBlockedPort(port) {
   return FETCH_BLOCKED_PORTS.has(port);
 }
 async function createServiceHttpServer(options) {
   const host = options.host ?? "127.0.0.1";
   const preferredPort = options.port ?? 0;
+  if (!isLoopbackServiceHost(host)) {
+    throw new Error(
+      `Local Tent Service host must be a literal loopback address (127.0.0.0/8 or ::1), got: ${host}`
+    );
+  }
   const server = http.createServer(async (req, res) => {
     try {
       await handleRequest(req, res, options);
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
       }
     }
   });
@@ -16630,7 +16711,7 @@ async function createServiceHttpServer(options) {
     server,
     host,
     port,
-    url: `http://${host}:${port}`,
+    url: serviceBaseUrl(host, port),
     close: () => new Promise((resolve10, reject) => {
       server.close((err) => err ? reject(err) : resolve10());
     })
@@ -16681,10 +16762,33 @@ async function handleRequest(req, res, options) {
       });
       return;
     }
-    const raw = await readBody(req);
-    let message;
+    let raw;
     try {
-      message = JSON.parse(raw || "{}");
+      raw = await readBody(req, MAX_RPC_BODY_BYTES);
+    } catch (error) {
+      res.setHeader("connection", "close");
+      if (error instanceof RequestBodyTooLargeError) {
+        writeJson2(res, 413, {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32013,
+            message: "RPC request body too large",
+            data: { maxBytes: error.maxBytes }
+          }
+        });
+      } else {
+        writeJson2(res, 400, {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "Request body read failed" }
+        });
+      }
+      return;
+    }
+    let parsed;
+    try {
+      parsed = JSON.parse(raw || "{}");
     } catch {
       writeJson2(res, 400, {
         jsonrpc: "2.0",
@@ -16693,12 +16797,29 @@ async function handleRequest(req, res, options) {
       });
       return;
     }
-    const id = message.id ?? null;
-    if (!message.method || typeof message.method !== "string") {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      writeJson2(res, 200, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid Request" }
+      });
+      return;
+    }
+    const message = parsed;
+    const id = isRpcId(message.id) ? message.id ?? null : null;
+    if (message.jsonrpc !== "2.0" || !message.method || typeof message.method !== "string" || !isRpcId(message.id)) {
       writeJson2(res, 200, {
         jsonrpc: "2.0",
         id,
         error: { code: -32600, message: "Invalid Request: method required" }
+      });
+      return;
+    }
+    if (message.params !== void 0 && (!message.params || typeof message.params !== "object")) {
+      writeJson2(res, 200, {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "Invalid params: expected object or array" }
       });
       return;
     }
@@ -16765,13 +16886,47 @@ function writeJson2(res, status, body) {
   });
   res.end(payload);
 }
-function readBody(req) {
+function readBody(req, maxBytes) {
   return new Promise((resolve10, reject) => {
+    const declaredLength = Number(req.headers["content-length"] ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      req.resume();
+      reject(new RequestBodyTooLargeError(maxBytes));
+      return;
+    }
     const chunks = [];
-    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve10(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    let total = 0;
+    let settled = false;
+    const finish = (action) => {
+      if (settled) return;
+      settled = true;
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      action();
+    };
+    const onData = (chunk) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.byteLength;
+      if (total > maxBytes) {
+        finish(() => reject(new RequestBodyTooLargeError(maxBytes)));
+        req.resume();
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => finish(() => resolve10(Buffer.concat(chunks, total).toString("utf8")));
+    const onError = (error) => finish(() => reject(error));
+    const onAborted = () => finish(() => reject(new Error("request aborted")));
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
   });
+}
+function isRpcId(id) {
+  return id === void 0 || id === null || typeof id === "string" || typeof id === "number";
 }
 
 // src/service/events.ts
@@ -16811,11 +16966,11 @@ var EventBus = class {
 
 // src/service/workspace-host.ts
 import { watch } from "node:fs";
-import * as fs9 from "node:fs/promises";
-import * as path8 from "node:path";
+import * as fs10 from "node:fs/promises";
+import * as path9 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs8 from "node:fs/promises";
+import * as fs9 from "node:fs/promises";
 import * as nodePath4 from "node:path";
 var NodeFs = class {
   constructor(root) {
@@ -16831,64 +16986,64 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs8.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs9.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path16) {
-    return fs8.readFile(this.abs(path16), "utf8");
+    return fs9.readFile(this.abs(path16), "utf8");
   }
   async writeFile(path16, content3) {
-    await fs8.mkdir(nodePath4.dirname(this.abs(path16)), { recursive: true });
-    await fs8.writeFile(this.abs(path16), content3, "utf8");
+    await fs9.mkdir(nodePath4.dirname(this.abs(path16)), { recursive: true });
+    await fs9.writeFile(this.abs(path16), content3, "utf8");
   }
   async readBinary(path16) {
-    const buf = await fs8.readFile(this.abs(path16));
+    const buf = await fs9.readFile(this.abs(path16));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
   async writeBinary(path16, data) {
     const abs = this.abs(path16);
-    await fs8.mkdir(nodePath4.dirname(abs), { recursive: true });
+    await fs9.mkdir(nodePath4.dirname(abs), { recursive: true });
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     try {
-      await fs8.writeFile(tmp, payload);
-      await fs8.rename(tmp, abs);
+      await fs9.writeFile(tmp, payload);
+      await fs9.rename(tmp, abs);
     } catch (err) {
-      await fs8.rm(tmp, { force: true }).catch(() => void 0);
+      await fs9.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
   async exists(path16) {
     try {
-      await fs8.access(this.abs(path16));
+      await fs9.access(this.abs(path16));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path16) {
-    await fs8.mkdir(this.abs(path16), { recursive: true });
+    await fs9.mkdir(this.abs(path16), { recursive: true });
   }
   async move(from, to) {
-    await fs8.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
-    await fs8.rename(this.abs(from), this.abs(to));
+    await fs9.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
+    await fs9.rename(this.abs(from), this.abs(to));
   }
   async remove(path16) {
-    await fs8.rm(this.abs(path16), { recursive: true, force: true });
+    await fs9.rm(this.abs(path16), { recursive: true, force: true });
   }
   async withLock(path16, action) {
     const lockPath = this.abs(path16);
-    await fs8.mkdir(nodePath4.dirname(lockPath), { recursive: true });
+    await fs9.mkdir(nodePath4.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs8.open(lockPath, "wx");
+        handle = await fs9.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs8.rm(lockPath, { force: true });
+        await fs9.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -16897,7 +17052,7 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs8.rm(lockPath, { force: true });
+      await fs9.rm(lockPath, { force: true });
     }
   }
 };
@@ -16906,7 +17061,7 @@ function isAlreadyExists(error) {
 }
 async function isStaleLock(path16) {
   try {
-    const stat2 = await fs8.stat(path16);
+    const stat2 = await fs9.stat(path16);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -16939,18 +17094,18 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path8.resolve(workspaceRoot);
+    const root = path9.resolve(workspaceRoot);
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path8.join(systemRoot, "RULES.md");
+    const rulesPath = path9.join(systemRoot, "RULES.md");
     try {
-      await fs9.access(rulesPath);
+      await fs10.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path8.resolve(existing.workspaceRoot) === root) {
+      if (path9.resolve(existing.workspaceRoot) === root) {
         return this.toInfo(existing);
       }
     }
@@ -16958,7 +17113,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path8.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path9.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -17093,63 +17248,9 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path8.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path8.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  const base = path9.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path9.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
   return `ws-${base}-${hash}`;
-}
-
-// src/service/data-dir.ts
-import * as fs10 from "node:fs/promises";
-import * as os4 from "node:os";
-import * as path9 from "node:path";
-function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path9.resolve(env.TENT_SERVICE_DATA_DIR);
-  if (process.platform === "win32") {
-    const base = env.APPDATA || path9.join(os4.homedir(), "AppData", "Roaming");
-    return path9.join(base, "Tent");
-  }
-  if (process.platform === "darwin") {
-    return path9.join(os4.homedir(), "Library", "Application Support", "Tent");
-  }
-  const xdg = env.XDG_STATE_HOME || path9.join(os4.homedir(), ".local", "state");
-  return path9.join(xdg, "tent");
-}
-function serviceEndpointPath(dataDir) {
-  return path9.join(dataDir, "service.json");
-}
-async function writeServiceEndpoint(dataDir, record) {
-  const file = serviceEndpointPath(dataDir);
-  await writeJsonAtomic(file, record);
-  return file;
-}
-async function readServiceEndpoint(dataDir) {
-  const file = serviceEndpointPath(dataDir);
-  try {
-    const raw = await fs10.readFile(file, "utf8");
-    let data;
-    try {
-      data = JSON.parse(raw);
-    } catch {
-      return null;
-    }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string" || data.instanceId !== void 0 && typeof data.instanceId !== "string") {
-      return null;
-    }
-    return data;
-  } catch (err) {
-    if (isNotFoundError(err)) return null;
-    throw err;
-  }
-}
-async function removeServiceEndpoint(dataDir, expectedInstanceId) {
-  try {
-    if (expectedInstanceId) {
-      const endpoint = await readServiceEndpoint(dataDir);
-      if (endpoint?.instanceId !== expectedInstanceId) return;
-    }
-    await fs10.rm(serviceEndpointPath(dataDir), { force: true });
-  } catch {
-  }
 }
 
 // src/service/tool-approval-store.ts

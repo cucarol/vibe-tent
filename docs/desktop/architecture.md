@@ -192,6 +192,12 @@ Field names follow the canonical vocabulary (`cx-`, `assignee`, `delivery`, `Art
 
 CLI keeps familiar verbs where possible, but implementation becomes **attach service → command/query**, not re-open tent files as a second writer.
 
+The current transport is deliberately machine-local: Local Service binds only
+to literal loopback IPs, authenticates `/rpc` and `/events` with the machine-local
+endpoint token, and caps buffered JSON-RPC bodies at 36 MiB. The cap preserves
+the 25 MiB binary-attachment contract after base64 expansion while rejecting
+unbounded request buffering before dispatch.
+
 ### 5.2 Shared shapes (cross-contract)
 
 ```ts

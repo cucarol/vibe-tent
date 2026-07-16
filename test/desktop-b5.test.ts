@@ -25,6 +25,7 @@ import { DesktopShellModel } from "../src/desktop/workbench/shell-model.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
 import { loadDesktopPrefs, rememberWorkspace, saveDesktopPrefs } from "../src/desktop/prefs.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
+import { readServiceEndpoint } from "../src/service/data-dir.js";
 
 async function makeWorkspace(): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
@@ -275,6 +276,32 @@ test("attachOrStartService can bootstrap via spawn of service entry", async () =
       }
     } catch {
       /* already gone */
+    }
+    await fs.rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("desktop concurrent bootstraps attach to the same Local Service", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-boot-race-"));
+  const serviceEntry = path.resolve("service.mjs");
+  try {
+    const [first, second] = await Promise.all([
+      attachOrStartService({ dataDir, serviceEntry, readyTimeoutMs: 20_000 }),
+      attachOrStartService({ dataDir, serviceEntry, readyTimeoutMs: 20_000 }),
+    ]);
+    assert.equal(first.endpoint.instanceId, second.endpoint.instanceId);
+    assert.equal(first.endpoint.pid, second.endpoint.pid);
+    assert.equal(first.url, second.url);
+    assert.equal((await first.client.health()).status, "ok");
+    assert.equal((await second.client.health()).status, "ok");
+  } finally {
+    const endpoint = await readServiceEndpoint(dataDir);
+    if (endpoint?.pid) {
+      try {
+        process.kill(endpoint.pid);
+      } catch {
+        // already stopped
+      }
     }
     await fs.rm(dataDir, { recursive: true, force: true }).catch(() => undefined);
   }

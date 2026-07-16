@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import * as http from "node:http";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
@@ -6,10 +7,20 @@ import { test } from "node:test";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { contentEtag } from "../src/service/etag.js";
-import { isFetchBlockedPort, rpcCall } from "../src/service/http-server.js";
+import {
+  isFetchBlockedPort,
+  MAX_RPC_BODY_BYTES,
+  rpcCall,
+} from "../src/service/http-server.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { MutationBus } from "../src/service/mutation-bus.js";
-import { defaultServiceDataDir, readServiceEndpoint } from "../src/service/data-dir.js";
+import {
+  defaultServiceDataDir,
+  isLoopbackServiceHost,
+  readServiceEndpoint,
+  serviceBaseUrl,
+} from "../src/service/data-dir.js";
+import { serviceLeasePath } from "../src/service/service-lease.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
 
 async function makeWorkspace(name = "demo"): Promise<string> {
@@ -49,12 +60,105 @@ function rpc(
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
+async function oversizedRpcHeaders(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>
+): Promise<{ status: number; body: Record<string, unknown> }> {
+  return new Promise((resolve, reject) => {
+    const req = http.request(
+      `${svc.url}/rpc`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "content-length": String(MAX_RPC_BODY_BYTES + 1),
+          "x-tent-token": svc.token,
+          connection: "close",
+        },
+      },
+      (res) => {
+        const chunks: Buffer[] = [];
+        res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+        res.on("end", () => {
+          resolve({
+            status: res.statusCode ?? 0,
+            body: JSON.parse(Buffer.concat(chunks).toString("utf8")) as Record<string, unknown>,
+          });
+        });
+      }
+    );
+    req.setTimeout(5_000, () => req.destroy(new Error("oversized RPC test timed out")));
+    req.on("error", reject);
+    req.flushHeaders();
+  });
+}
+
 test("Local Service never advertises Fetch-blocked ports", async () => {
   assert.equal(isFetchBlockedPort(6000), true);
   assert.equal(isFetchBlockedPort(6667), true);
   assert.equal(isFetchBlockedPort(4174), false);
   await withService(async (svc) => {
     assert.equal(isFetchBlockedPort(svc.port), false);
+  });
+});
+
+test("Local Service accepts literal loopback only and formats IPv6 endpoints", async () => {
+  assert.equal(isLoopbackServiceHost("127.0.0.1"), true);
+  assert.equal(isLoopbackServiceHost("127.9.8.7"), true);
+  assert.equal(isLoopbackServiceHost("::1"), true);
+  assert.equal(isLoopbackServiceHost("::ffff:127.0.0.1"), true);
+  assert.equal(isLoopbackServiceHost("localhost"), false);
+  assert.equal(isLoopbackServiceHost("0.0.0.0"), false);
+  assert.equal(isLoopbackServiceHost("192.168.1.10"), false);
+  assert.equal(serviceBaseUrl("::1", 7788), "http://[::1]:7788");
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-non-loopback-"));
+  await assert.rejects(
+    () => startLocalTentService({ dataDir, host: "0.0.0.0" }),
+    /literal loopback address/
+  );
+  await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
+});
+
+test("RPC transport rejects invalid envelopes and oversized bodies without killing service", async () => {
+  await withService(async (svc) => {
+    const send = async (body: string) => {
+      const response = await fetch(`${svc.url}/rpc`, {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          "x-tent-token": svc.token,
+        },
+        body,
+      });
+      return {
+        status: response.status,
+        json: (await response.json()) as { error?: { code?: number } },
+      };
+    };
+
+    const nullEnvelope = await send("null");
+    assert.equal(nullEnvelope.status, 200);
+    assert.equal(nullEnvelope.json.error?.code, -32600);
+
+    const wrongVersion = await send(
+      JSON.stringify({ jsonrpc: "1.0", id: 1, method: "service.health", params: {} })
+    );
+    assert.equal(wrongVersion.json.error?.code, -32600);
+
+    const primitiveParams = await send(
+      JSON.stringify({ jsonrpc: "2.0", id: 2, method: "service.health", params: "bad" })
+    );
+    assert.equal(primitiveParams.json.error?.code, -32602);
+
+    const oversized = await oversizedRpcHeaders(svc);
+    assert.equal(oversized.status, 413);
+    assert.equal(
+      (oversized.body.error as { code?: number } | undefined)?.code,
+      -32013
+    );
+
+    const health = await rpc(svc, "service.health", {});
+    assert.equal((health.result as { status: string }).status, "ok");
   });
 });
 

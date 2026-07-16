@@ -33,6 +33,7 @@ var import_node_child_process = require("node:child_process");
 
 // src/service/data-dir.ts
 var fs = __toESM(require("node:fs/promises"), 1);
+var import_node_net = require("node:net");
 var os = __toESM(require("node:os"), 1);
 var path = __toESM(require("node:path"), 1);
 
@@ -57,6 +58,19 @@ function defaultServiceDataDir(env = process.env) {
 function serviceEndpointPath(dataDir2) {
   return path.join(dataDir2, "service.json");
 }
+function serviceBaseUrl(host2, port) {
+  const authorityHost = (0, import_node_net.isIP)(host2) === 6 ? `[${host2}]` : host2;
+  return `http://${authorityHost}:${port}`;
+}
+function isLoopbackServiceHost(host2) {
+  const normalized = host2.trim().toLowerCase();
+  const family = (0, import_node_net.isIP)(normalized);
+  if (family === 4) return normalized.startsWith("127.");
+  if (family === 6) {
+    return normalized === "::1" || /^::ffff:127\./.test(normalized);
+  }
+  return false;
+}
 async function readServiceEndpoint(dataDir2) {
   const file = serviceEndpointPath(dataDir2);
   try {
@@ -67,7 +81,7 @@ async function readServiceEndpoint(dataDir2) {
     } catch {
       return null;
     }
-    if (typeof data.pid !== "number" || typeof data.port !== "number" || typeof data.host !== "string" || data.instanceId !== void 0 && typeof data.instanceId !== "string") {
+    if (!Number.isInteger(data.pid) || data.pid <= 0 || !Number.isInteger(data.port) || data.port <= 0 || data.port > 65535 || typeof data.host !== "string" || !isLoopbackServiceHost(data.host) || typeof data.startedAt !== "string" || typeof data.version !== "string" || data.token !== void 0 && typeof data.token !== "string" || data.instanceId !== void 0 && (typeof data.instanceId !== "string" || !data.instanceId)) {
       return null;
     }
     return data;
@@ -209,12 +223,6 @@ async function attachOrStartService(options = {}) {
   child.unref();
   const deadline = Date.now() + readyTimeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(
-        `Local Tent Service exited early (code=${child.exitCode}). entry=${entryAbs}
-${spawnLog}`
-      );
-    }
     const attached = await tryAttach(dataDir2, fetchImpl);
     if (attached) {
       child.stdout?.destroy();
@@ -222,6 +230,12 @@ ${spawnLog}`
       return { ...attached, started: true, child };
     }
     await sleep(pollMs);
+  }
+  if (child.exitCode !== null && child.exitCode !== 0) {
+    throw new Error(
+      `Local Tent Service exited before an endpoint became healthy (code=${child.exitCode}). entry=${entryAbs}
+${spawnLog}`
+    );
   }
   throw new Error(
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir2})
@@ -244,7 +258,7 @@ async function tryAttach(dataDir2, fetchImpl = fetch) {
   if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
     return null;
   }
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = await client.health();

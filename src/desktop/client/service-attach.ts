@@ -6,6 +6,7 @@ import { spawn, type ChildProcess } from "node:child_process";
 import {
   defaultServiceDataDir,
   readServiceEndpoint,
+  serviceBaseUrl,
   type ServiceEndpointRecord,
 } from "../../service/data-dir.js";
 import { ServiceRpcClient } from "./rpc-client.js";
@@ -82,11 +83,6 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
 
   const deadline = Date.now() + readyTimeoutMs;
   while (Date.now() < deadline) {
-    if (child.exitCode !== null && child.exitCode !== 0) {
-      throw new Error(
-        `Local Tent Service exited early (code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
-      );
-    }
     const attached = await tryAttach(dataDir, fetchImpl);
     if (attached) {
       // Close pipes after attach so we don't hold the child.
@@ -97,6 +93,12 @@ export async function attachOrStartService(options: AttachOptions = {}): Promise
     await sleep(pollMs);
   }
 
+  if (child.exitCode !== null && child.exitCode !== 0) {
+    throw new Error(
+      `Local Tent Service exited before an endpoint became healthy ` +
+        `(code=${child.exitCode}). entry=${entryAbs}\n${spawnLog}`
+    );
+  }
   throw new Error(
     `Timed out waiting for Local Tent Service after spawn (entry=${entryAbs}, dataDir=${dataDir})\n${spawnLog}`
   );
@@ -126,7 +128,7 @@ export async function tryAttach(
   if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
     return null;
   }
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = new ServiceRpcClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = await client.health();

@@ -20,6 +20,11 @@ tent-core (sole domain rules)
 - CLI **attaches** to a healthy machine-local endpoint (`%APPDATA%/Tent/service.json` on Windows, or `TENT_SERVICE_DATA_DIR`).
 - If no healthy service exists, CLI may **bootstrap** `service.mjs` / `tent-service start`, wait for ready, then RPC.
 - **Token** lives only in machine-local `service.json`. Never write token into the workspace or `.tent/`.
+- The HTTP listener accepts literal loopback addresses only (`127.0.0.0/8` or
+  `::1`); hostnames, wildcard binds, LAN, and public addresses fail before bind.
+- Authenticated `/rpc` buffers at most 36 MiB. This includes headroom for the
+  documented 25 MiB attachment after base64 expansion; larger requests return
+  HTTP 413 and do not reach a handler.
 - One process owns each service data directory through `service.lock`. A live
   owner rejects a second Service; stale crash state is reclaimed. Concurrent CLI
   bootstraps converge on the healthy winner instead of creating parallel writers.

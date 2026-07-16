@@ -1,6 +1,7 @@
 // Machine-local service data area (architecture §3.3). Not collaboration facts.
 
 import * as fs from "node:fs/promises";
+import { isIP } from "node:net";
 import * as os from "node:os";
 import * as path from "node:path";
 import { isNotFoundError, writeJsonAtomic } from "../machine-state.js";
@@ -33,6 +34,23 @@ export function serviceEndpointPath(dataDir: string): string {
   return path.join(dataDir, "service.json");
 }
 
+/** Build an HTTP base URL from a validated endpoint host (IPv6 needs brackets). */
+export function serviceBaseUrl(host: string, port: number): string {
+  const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
+  return `http://${authorityHost}:${port}`;
+}
+
+/** Local Service discovery and listeners accept literal loopback IPs only. */
+export function isLoopbackServiceHost(host: string): boolean {
+  const normalized = host.trim().toLowerCase();
+  const family = isIP(normalized);
+  if (family === 4) return normalized.startsWith("127.");
+  if (family === 6) {
+    return normalized === "::1" || /^::ffff:127\./.test(normalized);
+  }
+  return false;
+}
+
 export async function writeServiceEndpoint(dataDir: string, record: ServiceEndpointRecord): Promise<string> {
   const file = serviceEndpointPath(dataDir);
   await writeJsonAtomic(file, record);
@@ -51,10 +69,18 @@ export async function readServiceEndpoint(dataDir: string): Promise<ServiceEndpo
       return null;
     }
     if (
-      typeof data.pid !== "number" ||
-      typeof data.port !== "number" ||
+      !Number.isInteger(data.pid) ||
+      data.pid <= 0 ||
+      !Number.isInteger(data.port) ||
+      data.port <= 0 ||
+      data.port > 65535 ||
       typeof data.host !== "string" ||
-      (data.instanceId !== undefined && typeof data.instanceId !== "string")
+      !isLoopbackServiceHost(data.host) ||
+      typeof data.startedAt !== "string" ||
+      typeof data.version !== "string" ||
+      (data.token !== undefined && typeof data.token !== "string") ||
+      (data.instanceId !== undefined &&
+        (typeof data.instanceId !== "string" || !data.instanceId))
     ) {
       return null;
     }

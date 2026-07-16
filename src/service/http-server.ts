@@ -7,6 +7,7 @@ import type { EventBus } from "./events.js";
 import { dispatchMethod, RpcError, type HandlerContext } from "./handlers.js";
 import { extractRequestToken, tokensEqual } from "./auth.js";
 import { RPC_UNAUTHORIZED } from "./types.js";
+import { isLoopbackServiceHost, serviceBaseUrl } from "./data-dir.js";
 
 export interface JsonRpcRequest {
   jsonrpc?: string;
@@ -43,13 +44,30 @@ const FETCH_BLOCKED_PORTS = new Set([
   6668, 6669, 6697, 10080,
 ]);
 
+// A 25 MiB binary attachment expands to ~33.4 MiB as base64. Keep bounded
+// transport headroom for JSON fields without allowing unbounded buffering.
+export const MAX_RPC_BODY_BYTES = 36 * 1024 * 1024;
+
+class RequestBodyTooLargeError extends Error {
+  constructor(readonly maxBytes: number) {
+    super(`RPC request body exceeds ${maxBytes} bytes`);
+    this.name = "RequestBodyTooLargeError";
+  }
+}
+
 export function isFetchBlockedPort(port: number): boolean {
   return FETCH_BLOCKED_PORTS.has(port);
 }
 
+/** Local Service is never a LAN/WAN server; accept literal loopback IPs only. */
 export async function createServiceHttpServer(options: CreateHttpServerOptions): Promise<ServiceHttpServer> {
   const host = options.host ?? "127.0.0.1";
   const preferredPort = options.port ?? 0;
+  if (!isLoopbackServiceHost(host)) {
+    throw new Error(
+      `Local Tent Service host must be a literal loopback address (127.0.0.0/8 or ::1), got: ${host}`
+    );
+  }
 
   const server = http.createServer(async (req, res) => {
     try {
@@ -57,7 +75,7 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: error instanceof Error ? error.message : String(error) }));
+        res.end(JSON.stringify({ error: "Internal Server Error" }));
       }
     }
   });
@@ -85,7 +103,7 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
     server,
     host,
     port,
-    url: `http://${host}:${port}`,
+    url: serviceBaseUrl(host, port),
     close: () =>
       new Promise((resolve, reject) => {
         server.close((err) => (err ? reject(err) : resolve()));
@@ -149,10 +167,34 @@ async function handleRequest(
       return;
     }
 
-    const raw = await readBody(req);
-    let message: JsonRpcRequest;
+    let raw: string;
     try {
-      message = JSON.parse(raw || "{}") as JsonRpcRequest;
+      raw = await readBody(req, MAX_RPC_BODY_BYTES);
+    } catch (error) {
+      res.setHeader("connection", "close");
+      if (error instanceof RequestBodyTooLargeError) {
+        writeJson(res, 413, {
+          jsonrpc: "2.0",
+          id: null,
+          error: {
+            code: -32013,
+            message: "RPC request body too large",
+            data: { maxBytes: error.maxBytes },
+          },
+        });
+      } else {
+        writeJson(res, 400, {
+          jsonrpc: "2.0",
+          id: null,
+          error: { code: -32700, message: "Request body read failed" },
+        });
+      }
+      return;
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(raw || "{}");
     } catch {
       writeJson(res, 400, {
         jsonrpc: "2.0",
@@ -162,12 +204,39 @@ async function handleRequest(
       return;
     }
 
-    const id = message.id ?? null;
-    if (!message.method || typeof message.method !== "string") {
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      writeJson(res, 200, {
+        jsonrpc: "2.0",
+        id: null,
+        error: { code: -32600, message: "Invalid Request" },
+      });
+      return;
+    }
+    const message = parsed as JsonRpcRequest;
+
+    const id = isRpcId(message.id) ? (message.id ?? null) : null;
+    if (
+      message.jsonrpc !== "2.0" ||
+      !message.method ||
+      typeof message.method !== "string" ||
+      !isRpcId(message.id)
+    ) {
       writeJson(res, 200, {
         jsonrpc: "2.0",
         id,
         error: { code: -32600, message: "Invalid Request: method required" },
+      });
+      return;
+    }
+
+    if (
+      message.params !== undefined &&
+      (!message.params || typeof message.params !== "object")
+    ) {
+      writeJson(res, 200, {
+        jsonrpc: "2.0",
+        id,
+        error: { code: -32602, message: "Invalid params: expected object or array" },
       });
       return;
     }
@@ -248,13 +317,49 @@ function writeJson(res: http.ServerResponse, status: number, body: unknown): voi
   res.end(payload);
 }
 
-function readBody(req: http.IncomingMessage): Promise<string> {
+function readBody(req: http.IncomingMessage, maxBytes: number): Promise<string> {
   return new Promise((resolve, reject) => {
+    const declaredLength = Number(req.headers["content-length"] ?? 0);
+    if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
+      req.resume();
+      reject(new RequestBodyTooLargeError(maxBytes));
+      return;
+    }
+
     const chunks: Buffer[] = [];
-    req.on("data", (c) => chunks.push(Buffer.isBuffer(c) ? c : Buffer.from(c)));
-    req.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
-    req.on("error", reject);
+    let total = 0;
+    let settled = false;
+    const finish = (action: () => void) => {
+      if (settled) return;
+      settled = true;
+      req.off("data", onData);
+      req.off("end", onEnd);
+      req.off("error", onError);
+      req.off("aborted", onAborted);
+      action();
+    };
+    const onData = (chunk: Buffer | string) => {
+      const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
+      total += buffer.byteLength;
+      if (total > maxBytes) {
+        finish(() => reject(new RequestBodyTooLargeError(maxBytes)));
+        req.resume();
+        return;
+      }
+      chunks.push(buffer);
+    };
+    const onEnd = () => finish(() => resolve(Buffer.concat(chunks, total).toString("utf8")));
+    const onError = (error: Error) => finish(() => reject(error));
+    const onAborted = () => finish(() => reject(new Error("request aborted")));
+    req.on("data", onData);
+    req.on("end", onEnd);
+    req.on("error", onError);
+    req.on("aborted", onAborted);
   });
+}
+
+function isRpcId(id: JsonRpcRequest["id"]): boolean {
+  return id === undefined || id === null || typeof id === "string" || typeof id === "number";
 }
 
 /** Thin client helper for tests and future CLI attach. */

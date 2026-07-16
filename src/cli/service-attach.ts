@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   defaultServiceDataDir,
   readServiceEndpoint,
+  serviceBaseUrl,
   type ServiceEndpointRecord,
 } from "../service/data-dir.js";
 import { createServiceClient, type ServiceClient } from "../service/client.js";
@@ -137,7 +138,7 @@ export async function tryAttachService(
   if (!endpoint.token || typeof endpoint.token !== "string" || !endpoint.token.trim()) {
     return null;
   }
-  const url = `http://${endpoint.host}:${endpoint.port}`;
+  const url = serviceBaseUrl(endpoint.host, endpoint.port);
   const client = createServiceClient({ baseUrl: url, token: endpoint.token, fetchImpl });
   try {
     const health = (await client.health()) as { status?: string };
