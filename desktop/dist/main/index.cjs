@@ -764,10 +764,30 @@ var ServiceDocsClient = class {
     }
     return { raw, kind: "unresolved" };
   }
-  async importAttachment(_cx, fileName, _bytes) {
-    throw new Error(`importAttachment is not available via service client yet (${fileName})`);
+  async importAttachment(cx, fileName, bytes) {
+    const payload = typeof bytes === "string" ? new TextEncoder().encode(bytes) : bytes;
+    const bytesBase64 = typeof Buffer !== "undefined" ? Buffer.from(payload).toString("base64") : uint8ToBase64(payload);
+    const result = await this.rpc.call("docs.importAttachment", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cx),
+      fileName,
+      bytesBase64
+    });
+    return {
+      relativePath: result.relativePath,
+      markdown: result.markdown,
+      artifactRef: result.artifactRef
+    };
   }
 };
+function uint8ToBase64(bytes) {
+  let binary = "";
+  const chunk = 32768;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  return btoa(binary);
+}
 function idOrPathParams(cxOrPath) {
   const key = cxOrPath.trim().replace(/\\/g, "/");
   if (key.startsWith("cx-") || key.startsWith("bx-")) return { id: key };
