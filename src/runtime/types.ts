@@ -116,6 +116,13 @@ export interface SessionRecord {
   id: string;
   profileId: string;
   adapterId: string;
+  /**
+   * Immutable non-secret launch configuration captured when the session starts.
+   * Resume uses this snapshot so later profile edits cannot reinterpret an old
+   * provider token. credentialRef is resolved again at resume time; secret values
+   * are never stored here. Missing on legacy rows falls back to the live catalog.
+   */
+  profileSnapshot?: AgentProfileConfig;
   roleName?: string;
   /**
    * When "agentProfile", roleName holds the profileId label for attribution only —

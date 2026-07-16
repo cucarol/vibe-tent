@@ -232,7 +232,13 @@ export class AgentRuntime implements AgentRuntimePort {
     if (!profile) {
       throw new Error(`Unknown AgentProfile: ${req.profileId}`);
     }
+    return this.startSessionWithProfile(req, cloneProfileConfig(profile));
+  }
 
+  private async startSessionWithProfile(
+    req: StartSessionRequest,
+    profile: AgentProfileConfig
+  ): Promise<SessionHandle> {
     const adapter = this.adapters.get(profile.adapterId);
     if (!adapter) {
       throw new Error(`Unknown adapter: ${profile.adapterId}`);
@@ -256,6 +262,7 @@ export class AgentRuntime implements AgentRuntimePort {
       id: req.sessionId,
       profileId: profile.id,
       adapterId: adapter.id,
+      profileSnapshot: cloneProfileConfig(profile),
       roleName: req.roleName,
       assigneeKind: req.assigneeKind,
       state: "starting",
@@ -397,8 +404,7 @@ export class AgentRuntime implements AgentRuntimePort {
     const record = await this.registry.read(req.sessionId);
     if (!record) throw new Error(`Session not found: ${req.sessionId}`);
 
-    const profile = this.profiles.get(record.profileId);
-    if (!profile) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
+    const profile = this.profileForResume(record);
     const adapter = this.adapters.get(record.adapterId);
     if (!adapter) throw new Error(`Unknown adapter: ${record.adapterId}`);
 
@@ -424,17 +430,18 @@ export class AgentRuntime implements AgentRuntimePort {
     // Fake-only path: re-spawn via startSession (no provider-native load).
     // Real ACP adapters with canResume must implement resumeManagedSession.
     if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
-      return this.startSession({
+      return this.startSessionWithProfile({
         sessionId: req.sessionId,
         profileId: record.profileId,
         roleName: record.roleName,
+        assigneeKind: record.assigneeKind,
         workspaceLane: record.workspaceLane,
         runtimeWorkspace: { cwd },
         workspace: record.workspace,
         lastTaskId: record.lastTaskId,
         env: req.env,
         bootstrapPrompt: undefined,
-      });
+      }, profile);
     }
 
     if (typeof adapter.resumeManagedSession !== "function") {
@@ -603,6 +610,36 @@ export class AgentRuntime implements AgentRuntimePort {
         this.resumeInFlight.delete(req.sessionId);
       }
     }
+  }
+
+  /**
+   * New rows resume from their immutable launch snapshot. Legacy rows without a
+   * snapshot use the current catalog as a bounded read fallback.
+   */
+  private profileForResume(record: SessionRecord): AgentProfileConfig {
+    const snapshot = record.profileSnapshot;
+    if (snapshot) {
+      if (snapshot.id !== record.profileId) {
+        throw new Error(
+          `Session profile snapshot id mismatch: row=${record.profileId} snapshot=${snapshot.id}`
+        );
+      }
+      if (snapshot.adapterId !== record.adapterId) {
+        throw new Error(
+          `Session profile snapshot adapter mismatch: row=${record.adapterId} snapshot=${snapshot.adapterId}`
+        );
+      }
+      return cloneProfileConfig(snapshot);
+    }
+
+    const current = this.profiles.get(record.profileId);
+    if (!current) throw new Error(`Unknown AgentProfile: ${record.profileId}`);
+    if (current.adapterId !== record.adapterId) {
+      throw new Error(
+        `Legacy session adapter mismatch: row=${record.adapterId} profile=${current.adapterId}`
+      );
+    }
+    return cloneProfileConfig(current);
   }
 
   async stopSession(sessionId: string, reason: StopReason): Promise<void> {

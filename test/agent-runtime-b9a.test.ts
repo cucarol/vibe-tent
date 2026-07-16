@@ -458,3 +458,184 @@ test("concurrent native resume calls share one in-flight managed bridge", async 
   await runtime.shutdown();
   assert.equal(stopCalls, 1);
 });
+
+test("native resume uses immutable profile snapshot but resolves rotated credential", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const resumedPlans: Array<{
+    model?: string;
+    baseUrl?: string;
+    secret?: string;
+  }> = [];
+  let secret = "secret-v1";
+  const adapter: ProviderAdapter = {
+    id: "snapshot-resume",
+    displayNameKey: "adapter.snapshotResume",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: true,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "env",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed-only test adapter");
+    },
+    startManagedSession: async (plan, emit) => {
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 7001 });
+      return {
+        sessionId: plan.sessionId,
+        pid: 7001,
+        providerSessionId: "provider-snapshot-1",
+        isAlive: () => true,
+        stop: async () => undefined,
+      };
+    },
+    resumeManagedSession: async (plan, token, emit) => {
+      const acp = plan.extras?.acp as { model?: string; baseUrl?: string } | undefined;
+      resumedPlans.push({
+        model: acp?.model,
+        baseUrl: acp?.baseUrl,
+        secret: plan.env?.SNAPSHOT_KEY,
+      });
+      emit({ type: "session.live", sessionId: plan.sessionId, pid: 7002 });
+      return {
+        sessionId: plan.sessionId,
+        pid: 7002,
+        providerSessionId: token.providerSessionId ?? token.raw,
+        isAlive: () => true,
+        stop: async () => undefined,
+      };
+    },
+    parseResumeToken: (raw) => ({ raw, providerSessionId: raw }),
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const original = {
+    id: "snapshot-profile",
+    adapterId: adapter.id,
+    acp: {
+      model: "old-model",
+      baseUrl: "https://old.invalid/v1",
+      envKey: "SNAPSHOT_KEY",
+      credentialRef: "credential-1",
+    },
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [original],
+    resolveProfileEnv: (profile) => {
+      const env: Record<string, string> = {};
+      if (profile.acp?.credentialRef === "credential-1") {
+        env.SNAPSHOT_KEY = secret;
+      }
+      return env;
+    },
+  });
+  const sessionId = "ss-snapshot1";
+  const handle = await runtime.startSession({ sessionId, profileId: original.id, cwd });
+  assert.equal("profileSnapshot" in handle, false, "public handle must not expose launch snapshot");
+  const started = await runtime.registry.read(sessionId);
+  assert.equal(started?.profileSnapshot?.acp?.model, "old-model");
+  assert.equal(JSON.stringify(started).includes(secret), false, "snapshot must not persist secret values");
+  await runtime.stopSession(sessionId, "user");
+
+  runtime.replaceProfileCatalog([
+    {
+      ...original,
+      acp: {
+        ...original.acp,
+        model: "new-model",
+        baseUrl: "https://new.invalid/v1",
+      },
+    },
+  ]);
+  secret = "secret-v2";
+  await runtime.resumeSession({ sessionId, cwd });
+  assert.deepEqual(resumedPlans[0], {
+    model: "old-model",
+    baseUrl: "https://old.invalid/v1",
+    secret: "secret-v2",
+  });
+  await runtime.stopSession(sessionId, "user");
+
+  // A stopped custom profile may be removed; its durable session remains resumable.
+  runtime.replaceProfileCatalog([]);
+  await runtime.resumeSession({ sessionId, cwd });
+  assert.equal(resumedPlans[1]?.model, "old-model");
+  await runtime.shutdown();
+});
+
+test("resume rejects corrupt profile snapshot identity", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const adapter: ProviderAdapter = {
+    id: "snapshot-corrupt",
+    displayNameKey: "adapter.snapshotCorrupt",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: true,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("unused");
+    },
+    resumeManagedSession: async () => {
+      throw new Error("must not reach adapter");
+    },
+    mapExit: (code) => ({ type: "session.exited", sessionId: "", exitCode: code }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "expected-profile", adapterId: adapter.id }],
+  });
+  const now = new Date().toISOString();
+  await runtime.registry.write({
+    id: "ss-badsnapshot",
+    profileId: "expected-profile",
+    adapterId: adapter.id,
+    profileSnapshot: { id: "other-profile", adapterId: adapter.id },
+    state: "stopped",
+    resumeToken: "provider-1",
+    runtimeWorkspace: { cwd },
+    createdAt: now,
+    updatedAt: now,
+  });
+  await assert.rejects(
+    () => runtime.resumeSession({ sessionId: "ss-badsnapshot", cwd }),
+    /snapshot id mismatch/i
+  );
+  await runtime.shutdown();
+});
+
+test("fake resume preserves assignee kind and captured profile", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  const profile = {
+    id: "fake-snapshot",
+    adapterId: FAKE_ADAPTER_ID,
+    fake: { waitForSignal: true, canResume: true, emitStdout: false },
+  };
+  const runtime = createAgentRuntime({ dataDir, profiles: [profile] });
+  const sessionId = "ss-fakesnap1";
+  await runtime.startSession({
+    sessionId,
+    profileId: profile.id,
+    assigneeKind: "agentProfile",
+    cwd,
+  });
+  await runtime.stopSession(sessionId, "user");
+  runtime.replaceProfileCatalog([]);
+  await runtime.resumeSession({ sessionId, cwd });
+  const resumed = await runtime.registry.read(sessionId);
+  assert.equal(resumed?.assigneeKind, "agentProfile");
+  assert.equal(resumed?.profileSnapshot?.id, profile.id);
+  await runtime.shutdown();
+});

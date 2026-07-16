@@ -322,7 +322,14 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     assert.equal(box.concept.assignee, undefined);
 
     // stop session cleanup via interrupt would be after deliver; already terminal
-    await client.call("session.get", { sessionId: started.session.sessionId });
+    const projectedSession = await client.call("session.get", {
+      sessionId: started.session.sessionId,
+    });
+    assert.equal(
+      JSON.stringify(projectedSession).includes("profileSnapshot"),
+      false,
+      "session RPC projection must not expose the machine-local launch snapshot"
+    );
   });
 });
 
