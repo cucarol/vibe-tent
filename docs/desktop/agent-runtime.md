@@ -279,6 +279,10 @@ Rules:
    corresponding SessionRegistry transition commits. If that commit fails, the
    runtime must stop the new provider instance, await any child-exit projection,
    and persist `failed`; it must not leak a process or publish a false `live`.
+9. Managed terminal callbacks are tracked runtime work, not fire-and-forget
+   writes. A transient SessionRegistry failure gets one bounded retry; stop and
+   rollback drain pending terminal projections, and a rejected projection must
+   never surface as an unhandled process-level rejection.
 
 ---
 

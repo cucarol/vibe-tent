@@ -291,6 +291,82 @@ test("managed terminal during startup cannot be overwritten back to live", async
   await runtime.shutdown();
 });
 
+test("managed terminal retries a transient registry failure without an unhandled rejection", async () => {
+  const dataDir = await tempDataDir();
+  const cwd = await tempCwd();
+  let emitRuntime!: (event: RuntimeEvent) => void;
+  let alive = true;
+  const adapter: ProviderAdapter = {
+    id: "managed-terminal-retry",
+    displayNameKey: "managed-terminal-retry",
+    capabilities: () => ({
+      canSpawn: true,
+      canResume: false,
+      canStopGraceful: true,
+      needsTty: false,
+      supportsWorktreeCwd: true,
+      authModel: "none",
+      observeLevel: "structured",
+    }),
+    resolveLaunch: () => {
+      throw new Error("managed adapter should not resolve a process launch");
+    },
+    startManagedSession: async (plan, emit) => {
+      emitRuntime = emit;
+      return {
+        sessionId: plan.sessionId,
+        isAlive: () => alive,
+        stop: async () => {
+          alive = false;
+        },
+      };
+    },
+    mapExit: (_code, _signal) => ({
+      type: "session.failed",
+      sessionId: "unused",
+      error: "unused",
+    }),
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [{ id: "managed-terminal-retry", adapterId: adapter.id }],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const sessionId = "ss-termretry";
+  await runtime.startSession({ sessionId, profileId: "managed-terminal-retry", cwd });
+
+  const originalUpdate = runtime.registry.update.bind(runtime.registry);
+  let failedWrites = 0;
+  runtime.registry.update = async (id, patch) => {
+    if (patch.state === "failed" && failedWrites++ === 0) {
+      throw new Error("injected transient terminal write failure");
+    }
+    return originalUpdate(id, patch);
+  };
+
+  alive = false;
+  emitRuntime({ type: "session.failed", sessionId, error: "provider failed" });
+  const deadline = Date.now() + 2_000;
+  let record = await runtime.registry.read(sessionId);
+  while (record?.state !== "failed" && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    record = await runtime.registry.read(sessionId);
+  }
+
+  assert.equal(failedWrites, 2);
+  assert.equal(record?.state, "failed");
+  assert.equal(record?.lastError, "provider failed");
+  assert.equal(
+    events.filter((event) => event.type === "session.failed").length,
+    1,
+    "retrying persistence must not duplicate the adapter terminal event"
+  );
+
+  await runtime.shutdown();
+});
+
 test("managed start stops provider when persisting live state fails", async () => {
   const dataDir = await tempDataDir();
   const cwd = await tempCwd();

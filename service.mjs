@@ -18674,6 +18674,7 @@ var AgentRuntime = class {
     this.managed = /* @__PURE__ */ new Map();
     this.resumeInFlight = /* @__PURE__ */ new Map();
     this.childExitInFlight = /* @__PURE__ */ new Map();
+    this.managedTerminalInFlight = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
     this.closed = false;
@@ -18862,18 +18863,28 @@ var AgentRuntime = class {
       let resumeToken;
       let startupCommitted = false;
       let startupLivePid;
+      let terminalProjection;
       let terminalDuringManagedStart;
       if (typeof adapter.startManagedSession === "function") {
         const managed = await adapter.startManagedSession(plan, (ev) => {
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
-            void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "failed",
+              ev.error
+            );
           } else if (ev.type === "session.exited") {
             terminalDuringManagedStart = {
               state: "stopped",
               exitCode: ev.exitCode
             };
-            void this.onManagedTerminal(req.sessionId, "stopped", void 0, ev.exitCode);
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "stopped",
+              void 0,
+              ev.exitCode
+            );
           } else if (ev.type === "session.waiting_user") {
             void this.registry.update(req.sessionId, { state: "waiting-user" }).catch(() => void 0);
           } else if (ev.type === "session.live") {
@@ -18891,12 +18902,12 @@ var AgentRuntime = class {
         startedManaged = managed;
         if (terminalDuringManagedStart) {
           const terminal = terminalDuringManagedStart;
-          await this.onManagedTerminal(
+          await (terminalProjection ?? this.trackManagedTerminal(
             req.sessionId,
             terminal.state,
             terminal.state === "failed" ? terminal.error : void 0,
             terminal.state === "stopped" ? terminal.exitCode : void 0
-          );
+          ));
           throw Object.assign(
             new Error(
               terminal.state === "failed" ? terminal.error : `Managed session exited during startup (code=${terminal.exitCode})`
@@ -18934,6 +18945,7 @@ var AgentRuntime = class {
       this.managed.delete(req.sessionId);
       if (startedManaged) {
         await startedManaged.stop("interrupt").catch(() => void 0);
+        await this.waitForManagedTerminal(req.sessionId, true);
       } else if (this.supervisor.isAlive(req.sessionId)) {
         await this.supervisor.stop(req.sessionId).catch(() => void 0);
         await this.waitForChildExit(req.sessionId, true);
@@ -19034,6 +19046,7 @@ var AgentRuntime = class {
         const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
         let startupCommitted = false;
         let startupLivePid;
+        let terminalProjection;
         let terminalDuringManagedStart;
         const managed = await resumeManagedSession(
           plan,
@@ -19041,13 +19054,17 @@ var AgentRuntime = class {
           (ev) => {
             if (ev.type === "session.failed") {
               terminalDuringManagedStart = { state: "failed", error: ev.error };
-              void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+              terminalProjection = this.trackManagedTerminal(
+                req.sessionId,
+                "failed",
+                ev.error
+              );
             } else if (ev.type === "session.exited") {
               terminalDuringManagedStart = {
                 state: "stopped",
                 exitCode: ev.exitCode
               };
-              void this.onManagedTerminal(
+              terminalProjection = this.trackManagedTerminal(
                 req.sessionId,
                 "stopped",
                 void 0,
@@ -19071,12 +19088,12 @@ var AgentRuntime = class {
         resumedManaged = managed;
         if (terminalDuringManagedStart) {
           const terminal = terminalDuringManagedStart;
-          await this.onManagedTerminal(
+          await (terminalProjection ?? this.trackManagedTerminal(
             req.sessionId,
             terminal.state,
             terminal.state === "failed" ? terminal.error : void 0,
             terminal.state === "stopped" ? terminal.exitCode : void 0
-          );
+          ));
           throw Object.assign(
             new Error(
               terminal.state === "failed" ? terminal.error : `Managed session exited during resume (code=${terminal.exitCode})`
@@ -19107,6 +19124,7 @@ var AgentRuntime = class {
         this.managed.delete(req.sessionId);
         if (resumedManaged) {
           await resumedManaged.stop("interrupt").catch(() => void 0);
+          await this.waitForManagedTerminal(req.sessionId, true);
         }
         const rawMessage = err instanceof Error ? err.message : String(err);
         const message = redactRuntimeValue(rawMessage, tokenRaw);
@@ -19169,6 +19187,7 @@ var AgentRuntime = class {
       } finally {
         this.managed.delete(sessionId);
       }
+      await this.waitForManagedTerminal(sessionId);
     } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
@@ -19281,6 +19300,47 @@ var AgentRuntime = class {
    * Managed ACP terminal path (no ProcessSupervisor exit). Idempotent:
    * second failure/exit does not illegal-transition the session row.
    */
+  trackManagedTerminal(sessionId, terminalState, lastError, exitCode) {
+    const projection = this.onManagedTerminal(
+      sessionId,
+      terminalState,
+      lastError,
+      exitCode
+    ).catch(
+      () => this.onManagedTerminal(sessionId, terminalState, lastError, exitCode)
+    );
+    let pending = this.managedTerminalInFlight.get(sessionId);
+    if (!pending) {
+      pending = /* @__PURE__ */ new Set();
+      this.managedTerminalInFlight.set(sessionId, pending);
+    }
+    pending.add(projection);
+    void projection.finally(() => {
+      pending.delete(projection);
+      if (pending.size === 0 && this.managedTerminalInFlight.get(sessionId) === pending) {
+        this.managedTerminalInFlight.delete(sessionId);
+      }
+    }).catch(() => void 0);
+    return projection;
+  }
+  async waitForManagedTerminal(sessionId, suppressError = false) {
+    let firstError;
+    while (true) {
+      const pending = this.managedTerminalInFlight.get(sessionId);
+      if (!pending?.size) {
+        if (!suppressError && firstError !== void 0) throw firstError;
+        return;
+      }
+      const snapshot = [...pending];
+      const results = await Promise.allSettled(snapshot);
+      if (!suppressError && firstError === void 0) {
+        const rejected = results.find(
+          (result) => result.status === "rejected"
+        );
+        if (rejected) firstError = rejected.reason;
+      }
+    }
+  }
   async onManagedTerminal(sessionId, terminalState, lastError, exitCode) {
     this.managed.delete(sessionId);
     const record = await this.registry.read(sessionId);

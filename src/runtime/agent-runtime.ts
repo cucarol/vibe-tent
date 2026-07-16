@@ -88,6 +88,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly managed = new Map<string, ManagedSession>();
   private readonly resumeInFlight = new Map<string, Promise<SessionHandle>>();
   private readonly childExitInFlight = new Map<string, Promise<void>>();
+  private readonly managedTerminalInFlight = new Map<string, Set<Promise<void>>>();
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
@@ -310,6 +311,7 @@ export class AgentRuntime implements AgentRuntimePort {
       let resumeToken: string | undefined;
       let startupCommitted = false;
       let startupLivePid: number | undefined;
+      let terminalProjection: Promise<void> | undefined;
       let terminalDuringManagedStart:
         | { state: "failed"; error: string }
         | { state: "stopped"; exitCode: number | null }
@@ -322,13 +324,22 @@ export class AgentRuntime implements AgentRuntimePort {
           // Service maps task failed separately (idempotent). Process stop is adapter-owned.
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
-            void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "failed",
+              ev.error
+            );
           } else if (ev.type === "session.exited") {
             terminalDuringManagedStart = {
               state: "stopped",
               exitCode: ev.exitCode,
             };
-            void this.onManagedTerminal(req.sessionId, "stopped", undefined, ev.exitCode);
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "stopped",
+              undefined,
+              ev.exitCode
+            );
           } else if (ev.type === "session.waiting_user") {
             void this.registry
               .update(req.sessionId, { state: "waiting-user" })
@@ -352,11 +363,14 @@ export class AgentRuntime implements AgentRuntimePort {
           const terminal = terminalDuringManagedStart as
             | { state: "failed"; error: string }
             | { state: "stopped"; exitCode: number | null };
-          await this.onManagedTerminal(
-            req.sessionId,
-            terminal.state,
-            terminal.state === "failed" ? terminal.error : undefined,
-            terminal.state === "stopped" ? terminal.exitCode : undefined
+          await (
+            terminalProjection ??
+            this.trackManagedTerminal(
+              req.sessionId,
+              terminal.state,
+              terminal.state === "failed" ? terminal.error : undefined,
+              terminal.state === "stopped" ? terminal.exitCode : undefined
+            )
           );
           throw Object.assign(
             new Error(
@@ -402,6 +416,7 @@ export class AgentRuntime implements AgentRuntimePort {
       this.managed.delete(req.sessionId);
       if (startedManaged) {
         await startedManaged.stop("interrupt").catch(() => undefined);
+        await this.waitForManagedTerminal(req.sessionId, true);
       } else if (this.supervisor.isAlive(req.sessionId)) {
         await this.supervisor.stop(req.sessionId).catch(() => undefined);
         await this.waitForChildExit(req.sessionId, true);
@@ -524,6 +539,7 @@ export class AgentRuntime implements AgentRuntimePort {
 
       let startupCommitted = false;
       let startupLivePid: number | undefined;
+      let terminalProjection: Promise<void> | undefined;
       let terminalDuringManagedStart:
         | { state: "failed"; error: string }
         | { state: "stopped"; exitCode: number | null }
@@ -535,13 +551,17 @@ export class AgentRuntime implements AgentRuntimePort {
         (ev) => {
           if (ev.type === "session.failed") {
             terminalDuringManagedStart = { state: "failed", error: ev.error };
-            void this.onManagedTerminal(req.sessionId, "failed", ev.error);
+            terminalProjection = this.trackManagedTerminal(
+              req.sessionId,
+              "failed",
+              ev.error
+            );
           } else if (ev.type === "session.exited") {
             terminalDuringManagedStart = {
               state: "stopped",
               exitCode: ev.exitCode,
             };
-            void this.onManagedTerminal(
+            terminalProjection = this.trackManagedTerminal(
               req.sessionId,
               "stopped",
               undefined,
@@ -572,11 +592,14 @@ export class AgentRuntime implements AgentRuntimePort {
         const terminal = terminalDuringManagedStart as
           | { state: "failed"; error: string }
           | { state: "stopped"; exitCode: number | null };
-        await this.onManagedTerminal(
-          req.sessionId,
-          terminal.state,
-          terminal.state === "failed" ? terminal.error : undefined,
-          terminal.state === "stopped" ? terminal.exitCode : undefined
+        await (
+          terminalProjection ??
+          this.trackManagedTerminal(
+            req.sessionId,
+            terminal.state,
+            terminal.state === "failed" ? terminal.error : undefined,
+            terminal.state === "stopped" ? terminal.exitCode : undefined
+          )
         );
         throw Object.assign(
           new Error(
@@ -614,6 +637,7 @@ export class AgentRuntime implements AgentRuntimePort {
       this.managed.delete(req.sessionId);
       if (resumedManaged) {
         await resumedManaged.stop("interrupt").catch(() => undefined);
+        await this.waitForManagedTerminal(req.sessionId, true);
       }
       const rawMessage = err instanceof Error ? err.message : String(err);
       const message = redactRuntimeValue(rawMessage, tokenRaw);
@@ -681,6 +705,7 @@ export class AgentRuntime implements AgentRuntimePort {
       } finally {
         this.managed.delete(sessionId);
       }
+      await this.waitForManagedTerminal(sessionId);
     } else if (this.supervisor.isAlive(sessionId)) {
       await this.supervisor.stop(sessionId, { signal: "SIGTERM" });
     }
@@ -812,6 +837,61 @@ export class AgentRuntime implements AgentRuntimePort {
    * Managed ACP terminal path (no ProcessSupervisor exit). Idempotent:
    * second failure/exit does not illegal-transition the session row.
    */
+  private trackManagedTerminal(
+    sessionId: string,
+    terminalState: "failed" | "stopped",
+    lastError?: string,
+    exitCode?: number | null
+  ): Promise<void> {
+    // A transient machine-state write must not become an unhandled rejection or
+    // leave a managed provider terminal while its registry row remains live.
+    const projection = this.onManagedTerminal(
+      sessionId,
+      terminalState,
+      lastError,
+      exitCode
+    ).catch(() =>
+      this.onManagedTerminal(sessionId, terminalState, lastError, exitCode)
+    );
+    let pending = this.managedTerminalInFlight.get(sessionId);
+    if (!pending) {
+      pending = new Set();
+      this.managedTerminalInFlight.set(sessionId, pending);
+    }
+    pending.add(projection);
+    void projection
+      .finally(() => {
+        pending!.delete(projection);
+        if (pending!.size === 0 && this.managedTerminalInFlight.get(sessionId) === pending) {
+          this.managedTerminalInFlight.delete(sessionId);
+        }
+      })
+      .catch(() => undefined);
+    return projection;
+  }
+
+  private async waitForManagedTerminal(
+    sessionId: string,
+    suppressError = false
+  ): Promise<void> {
+    let firstError: unknown;
+    while (true) {
+      const pending = this.managedTerminalInFlight.get(sessionId);
+      if (!pending?.size) {
+        if (!suppressError && firstError !== undefined) throw firstError;
+        return;
+      }
+      const snapshot = [...pending];
+      const results = await Promise.allSettled(snapshot);
+      if (!suppressError && firstError === undefined) {
+        const rejected = results.find(
+          (result): result is PromiseRejectedResult => result.status === "rejected"
+        );
+        if (rejected) firstError = rejected.reason;
+      }
+    }
+  }
+
   private async onManagedTerminal(
     sessionId: string,
     terminalState: "failed" | "stopped",
