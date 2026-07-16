@@ -1357,9 +1357,27 @@ function normalizeRoleDefinition(value) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
+  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
+  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+function normalizeAllowedProfiles(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!Array.isArray(value)) {
+    return void 0;
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out.length > 0 ? out : void 0;
 }
 function normalizeA2APolicy(value) {
   if (value === void 0 || value === null || value === "") return void 0;
@@ -3643,12 +3661,38 @@ var ServiceClient = class {
   docsPromote(workspaceId, idOrPath, toType) {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
   }
-  // ---- convenience: registry (read-only) ----
+  // ---- convenience: registry ----
   registryTypes(workspaceId) {
     return this.call("registry.types", { workspaceId });
   }
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
+  }
+  /**
+   * User-only role create (MutationBus). Pass fields at top level — never secrets.
+   * `actor` defaults to "user"; non-user is rejected by the service.
+   */
+  registryRoleCreate(workspaceId, role) {
+    return this.call("registry.role.create", { workspaceId, ...role });
+  }
+  /**
+   * User-only role update. Name is identity and cannot be renamed.
+   * Success emits exactly one registry.roles.updated.
+   */
+  registryRoleUpdate(workspaceId, name, patch) {
+    return this.call("registry.role.update", { workspaceId, name, ...patch });
+  }
+  /**
+   * User-only role delete. confirmation must equal name.
+   * Refuses when the role has an active task or live managed session.
+   */
+  registryRoleDelete(workspaceId, name, confirmation, actor = "user") {
+    return this.call("registry.role.delete", {
+      workspaceId,
+      name,
+      confirmation,
+      actor
+    });
   }
   // ---- convenience: machine-local profiles (safe metadata / editor projection) ----
   profileList(opts) {

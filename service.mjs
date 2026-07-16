@@ -965,6 +965,40 @@ async function loadRolesRegistry(fs13) {
     return reset;
   }
 }
+async function createRole(fs13, definition) {
+  await withTentMutation(fs13, async () => {
+    const role = normalizeRole(definition);
+    if (!role.name) throw new Error("Role name cannot be empty.");
+    const registry = await loadRolesRegistry(fs13);
+    if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
+    registry.roles.push(role);
+    await writeJson(fs13, ROLES_REGISTRY_PATH, registry);
+  });
+}
+async function updateRole(fs13, name, patch) {
+  await withTentMutation(fs13, async () => {
+    const registry = await loadRolesRegistry(fs13);
+    const index = registry.roles.findIndex((role) => role.name === name);
+    if (index === -1) throw new Error(`Role does not exist: ${name}.`);
+    const next = normalizeRole({ ...registry.roles[index], ...patch, name });
+    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
+      const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
+      if (normalized) next.allowedProfiles = normalized;
+      else delete next.allowedProfiles;
+    }
+    registry.roles[index] = next;
+    await writeJson(fs13, ROLES_REGISTRY_PATH, registry);
+  });
+}
+async function deleteRole(fs13, name, confirmation) {
+  await withTentMutation(fs13, async () => {
+    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the role name ${name}.`);
+    const registry = await loadRolesRegistry(fs13);
+    const next = registry.roles.filter((role) => role.name !== name);
+    if (next.length === registry.roles.length) throw new Error(`Role does not exist: ${name}.`);
+    await writeJson(fs13, ROLES_REGISTRY_PATH, { roles: next });
+  });
+}
 function normalizeRolesRegistry(value) {
   const root = isRecord2(value) ? value : {};
   const roles = [];
@@ -986,6 +1020,8 @@ function normalizeRoleDefinition(value) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
+  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
+  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
@@ -993,10 +1029,36 @@ function normalizeRoleDefinition(value) {
 function roleA2APolicy(role) {
   return role?.a2aPolicy ?? "deny";
 }
+function roleAllowsProfile(role, profileId) {
+  const id = typeof profileId === "string" ? profileId.trim() : "";
+  if (!id) return false;
+  const allowed = role?.allowedProfiles;
+  if (!allowed || allowed.length === 0) return false;
+  return allowed.includes(id);
+}
+function normalizeAllowedProfiles(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!Array.isArray(value)) {
+    return void 0;
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out.length > 0 ? out : void 0;
+}
 function normalizeA2APolicy(value) {
   if (value === void 0 || value === null || value === "") return void 0;
   if (value === "allow" || value === "ask" || value === "deny") return value;
   return void 0;
+}
+function normalizeRole(value) {
+  return normalizeRoleDefinition(value);
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
@@ -2454,7 +2516,7 @@ async function submitProposal(fs13, clock, role, boxId, body) {
 async function submitProposalUnlocked(fs13, clock, roleInput, boxId, body) {
   const text = body.trim();
   if (!text) throw new Error("Proposal body cannot be empty.");
-  const role = normalizeRole(roleInput);
+  const role = normalizeRole2(roleInput);
   const tent = await loadTent(fs13);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
@@ -2552,7 +2614,7 @@ async function writeProposal(fs13, proposal) {
 async function ensureDir4(fs13, path15) {
   if (!await fs13.exists(path15)) await fs13.mkdir(path15);
 }
-function normalizeRole(role) {
+function normalizeRole2(role) {
   const normalized = role.trim();
   if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
   if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
@@ -3709,6 +3771,14 @@ var CLIENT_METHODS = [
   "docs.backlinks",
   "registry.types",
   "registry.roles",
+  /**
+   * User-only role registry mutations (MutationBus).
+   * Persist name/prompt/description/color/a2aPolicy/allowedProfiles/cli only —
+   * never provider secrets. Success emits exactly one registry.roles.updated.
+   */
+  "registry.role.create",
+  "registry.role.update",
+  "registry.role.delete",
   "profile.list",
   "profile.get",
   "profile.create",
@@ -5857,6 +5927,12 @@ async function dispatchMethod(ctx, method, params) {
         return registryTypes(ctx, p);
       case "registry.roles":
         return registryRoles(ctx, p);
+      case "registry.role.create":
+        return registryRoleCreate(ctx, p);
+      case "registry.role.update":
+        return registryRoleUpdate(ctx, p);
+      case "registry.role.delete":
+        return registryRoleDelete(ctx, p);
       case "profile.list":
         return profileList(ctx, p);
       case "profile.get":
@@ -6221,14 +6297,273 @@ async function registryRoles(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const registry = await loadRolesRegistry(mount.env.fs);
-  const roles = registry.roles.map((role) => ({
+  const roles = registry.roles.map((role) => projectRoleRegistryEntry(role)).sort((a, b) => a.name.localeCompare(b.name));
+  return { workspaceId, roles };
+}
+function projectRoleRegistryEntry(role) {
+  const proj = {
     name: role.name,
     description: role.description,
     color: role.color,
     prompt: role.prompt,
     a2aPolicy: roleA2APolicy(role)
-  })).sort((a, b) => a.name.localeCompare(b.name));
-  return { workspaceId, roles };
+  };
+  if (role.allowedProfiles && role.allowedProfiles.length > 0) {
+    proj.allowedProfiles = [...role.allowedProfiles];
+  }
+  return proj;
+}
+async function registryRoleCreate(ctx, p) {
+  requireUserActor(p, "registry.role.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const definition = parseRoleDefinitionParams(p, { requireName: true });
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await createRole(mount.env.fs, definition);
+    } catch (err) {
+      throw mapRoleRegistryError(err, "registry.role.create");
+    }
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const role = registry.roles.find((r) => r.name === definition.name);
+    if (!role) {
+      throw new RpcError(-32e3, `Role create succeeded but role not found: ${definition.name}`);
+    }
+    emitRegistryRolesUpdated(ctx, workspaceId, {
+      action: "create",
+      name: role.name
+    });
+    return { workspaceId, role: projectRoleRegistryEntry(role) };
+  });
+}
+async function registryRoleUpdate(ctx, p) {
+  requireUserActor(p, "registry.role.update");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  if (p.rename !== void 0 || typeof p.newName === "string" && p.newName.trim() && p.newName.trim() !== name) {
+    throw new RpcError(-32602, "registry.role.update cannot rename a role; name is immutable after create");
+  }
+  if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
+    throw new RpcError(
+      -32602,
+      "registry.role.update does not accept nested patch; pass fields at the top level with name"
+    );
+  }
+  const patch = parseRoleDefinitionParams(p, { requireName: false, forUpdate: true });
+  const { name: _ignored, ...fields } = patch;
+  const updatePatch = { ...fields };
+  for (const key of ["prompt", "description", "color"]) {
+    if (key in p && (p[key] === null || typeof p[key] === "string" && !p[key].trim())) {
+      updatePatch[key] = void 0;
+    }
+  }
+  if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
+    updatePatch.a2aPolicy = void 0;
+  }
+  if ("allowedProfiles" in p) {
+    updatePatch.allowedProfiles = normalizeAllowedProfiles(
+      Array.isArray(p.allowedProfiles) ? p.allowedProfiles : []
+    );
+  }
+  if ("cli" in p && p.cli === null) {
+    updatePatch.cli = void 0;
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await updateRole(mount.env.fs, name, updatePatch);
+    } catch (err) {
+      throw mapRoleRegistryError(err, "registry.role.update");
+    }
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const role = registry.roles.find((r) => r.name === name);
+    if (!role) {
+      throw new RpcError(-32004, `Role does not exist: ${name}`);
+    }
+    emitRegistryRolesUpdated(ctx, workspaceId, {
+      action: "update",
+      name: role.name
+    });
+    return { workspaceId, role: projectRoleRegistryEntry(role) };
+  });
+}
+async function registryRoleDelete(ctx, p) {
+  requireUserActor(p, "registry.role.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  const confirmation = requireString(p, "confirmation");
+  if (confirmation !== name) {
+    throw new RpcError(
+      -32602,
+      `Confirmation mismatch; enter the role name ${name}.`,
+      { name, confirmation }
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const tasks = await loadTaskEnvelopes(mount.env.fs);
+    const activeTask = tasks.find(
+      (t) => t.role === name && isActiveTaskState(t.state)
+    );
+    if (activeTask) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Cannot delete role "${name}": active task ${activeTask.path} (state=${activeTask.state})`,
+        {
+          role: name,
+          taskPath: activeTask.path,
+          taskState: activeTask.state
+        }
+      );
+    }
+    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, name);
+    if (activeSession) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Cannot delete role "${name}": active managed session ${activeSession.id} (state=${activeSession.state})`,
+        {
+          role: name,
+          sessionId: activeSession.id,
+          sessionState: activeSession.state
+        }
+      );
+    }
+    try {
+      await deleteRole(mount.env.fs, name, confirmation);
+    } catch (err) {
+      throw mapRoleRegistryError(err, "registry.role.delete");
+    }
+    emitRegistryRolesUpdated(ctx, workspaceId, {
+      action: "delete",
+      name
+    });
+    return { workspaceId, deleted: name };
+  });
+}
+function emitRegistryRolesUpdated(ctx, workspaceId, payload) {
+  ctx.events.emit(
+    "registry.roles.updated",
+    workspaceId,
+    {
+      action: payload.action,
+      name: payload.name
+    },
+    "self"
+  );
+}
+function parseRoleDefinitionParams(p, opts) {
+  for (const banned of [
+    "secret",
+    "secrets",
+    "token",
+    "apiKey",
+    "api_key",
+    "password",
+    "credential",
+    "credentials",
+    "env"
+  ]) {
+    if (banned in p) {
+      throw new RpcError(
+        -32602,
+        `registry.role.* does not accept ${banned}; roles store ids/policy only, never credentials`
+      );
+    }
+  }
+  if ("role" in p && typeof p.role === "object" && p.role !== null) {
+    throw new RpcError(
+      -32602,
+      "registry.role.* does not accept nested role; pass fields at the top level"
+    );
+  }
+  const raw = {};
+  if (opts.requireName || typeof p.name === "string") {
+    raw.name = requireString(p, "name");
+  } else if (!opts.forUpdate) {
+    throw new RpcError(-32602, "Missing string param: name");
+  } else {
+    raw.name = "";
+  }
+  if ("prompt" in p) {
+    if (p.prompt !== void 0 && p.prompt !== null && typeof p.prompt !== "string") {
+      throw new RpcError(-32602, "Invalid string param: prompt");
+    }
+    if (typeof p.prompt === "string") raw.prompt = p.prompt;
+  }
+  if ("description" in p) {
+    if (p.description !== void 0 && p.description !== null && typeof p.description !== "string") {
+      throw new RpcError(-32602, "Invalid string param: description");
+    }
+    if (typeof p.description === "string") raw.description = p.description;
+  }
+  if ("color" in p) {
+    if (p.color !== void 0 && p.color !== null && typeof p.color !== "string") {
+      throw new RpcError(-32602, "Invalid string param: color");
+    }
+    if (typeof p.color === "string") raw.color = p.color;
+  }
+  if ("a2aPolicy" in p) {
+    if (p.a2aPolicy === null || p.a2aPolicy === "") {
+    } else if (p.a2aPolicy === "allow" || p.a2aPolicy === "ask" || p.a2aPolicy === "deny") {
+      raw.a2aPolicy = p.a2aPolicy;
+    } else {
+      throw new RpcError(-32602, `Invalid a2aPolicy: ${String(p.a2aPolicy)}`);
+    }
+  }
+  if ("allowedProfiles" in p) {
+    if (p.allowedProfiles === null) {
+      raw.allowedProfiles = [];
+    } else if (!Array.isArray(p.allowedProfiles)) {
+      throw new RpcError(-32602, "allowedProfiles must be an array of profile id strings");
+    } else {
+      for (const item of p.allowedProfiles) {
+        if (typeof item !== "string") {
+          throw new RpcError(-32602, "allowedProfiles must be an array of profile id strings");
+        }
+      }
+      raw.allowedProfiles = normalizeAllowedProfiles(p.allowedProfiles) ?? [];
+    }
+  }
+  if ("cli" in p) {
+    if (p.cli === null) {
+    } else if (typeof p.cli !== "object" || Array.isArray(p.cli)) {
+      throw new RpcError(-32602, "role.cli must be an object");
+    } else {
+      raw.cli = p.cli;
+    }
+  }
+  try {
+    const role = normalizeRoleDefinition(raw);
+    if (opts.requireName && !role.name) {
+      throw new RpcError(-32602, "Role name cannot be empty.");
+    }
+    if ("allowedProfiles" in p) {
+      const normalized = normalizeAllowedProfiles(
+        Array.isArray(p.allowedProfiles) ? p.allowedProfiles : []
+      );
+      if (normalized) role.allowedProfiles = normalized;
+      else delete role.allowedProfiles;
+    }
+    return role;
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    const message = err instanceof Error ? err.message : "Invalid role definition";
+    throw new RpcError(-32602, message);
+  }
+}
+function mapRoleRegistryError(err, surface) {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : `${surface} failed`;
+  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\./i.test(message)) {
+    if (/does not exist/i.test(message)) {
+      return new RpcError(-32004, message);
+    }
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32e3, message);
 }
 async function profileList(ctx, p) {
   const includeTest = p.includeTest === true;
@@ -6530,7 +6865,9 @@ async function taskDispatch(ctx, p) {
   const startSession = p.startSession === true;
   const profileId = optionalString(p, "profileId");
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  const a2aPolicyOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
+  if ("a2aPolicyOverride" in p) {
+    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
+  }
   if (startSession && !profileId) {
     throw new RpcError(
       -32602,
@@ -6572,8 +6909,7 @@ async function taskDispatch(ctx, p) {
       workspaceId,
       taskPath: dispatched.taskPath,
       profileId,
-      callerKind,
-      ...a2aPolicyOverride !== void 0 ? { a2aPolicyOverride } : {}
+      callerKind
     });
   }
   const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
@@ -6810,7 +7146,9 @@ async function taskStartSessionRpc(ctx, p) {
   const taskPath = requireString(p, "taskPath");
   const profileId = requireProfileId(p);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  const trustedOverride = parseOptionalA2APolicy(optionalString(p, "a2aPolicyOverride"));
+  if ("a2aPolicyOverride" in p) {
+    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
+  }
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
   if (approvalId) {
@@ -6824,23 +7162,39 @@ async function taskStartSessionRpc(ctx, p) {
     if (approval.taskPath !== taskPath) {
       throw new RpcError(RPC_A2A_DENIED, "A2A approval taskPath mismatch", { approvalId });
     }
+    if (approval.workspaceId !== workspaceId) {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval workspace mismatch", { approvalId });
+    }
+    if (approval.profileId !== profileId) {
+      throw new RpcError(RPC_A2A_DENIED, "A2A approval profile mismatch", {
+        approvalId,
+        approvedProfileId: approval.profileId,
+        requestedProfileId: profileId
+      });
+    }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
+      taskRole: taskForPolicy.role
+    });
+    const profileAllowed = callerKind === "user" ? true : await resolveRoleProfileAllowed(mount.env.fs, {
       taskRole: taskForPolicy.role,
-      trustedOverride
+      profileId,
+      policy: a2aPolicy
     });
     const decision = evaluateA2A({
       callerKind,
       policy: a2aPolicy,
-      profileAllowed: true
+      profileAllowed
     });
     if (decision === "deny") {
       throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
         policy: a2aPolicy,
         callerKind,
-        role: taskForPolicy.role
+        role: taskForPolicy.role,
+        profileId,
+        profileAllowed
       });
     }
     if (decision === "ask") {
@@ -7194,7 +7548,7 @@ async function a2aListPending(ctx, p) {
 async function a2aResolve(ctx, p) {
   const approvalId = requireString(p, "approvalId");
   const decisionRaw = requireString(p, "decision");
-  const actor = optionalString(p, "actor") ?? "user";
+  const actor = requireUserActor(p, "a2a.resolve");
   const decision = decisionRaw === "approve" || decisionRaw === "approved" ? "approved" : decisionRaw === "deny" || decisionRaw === "denied" ? "denied" : null;
   if (!decision) {
     throw new RpcError(-32602, "decision must be approve|deny");
@@ -7323,7 +7677,7 @@ function requireUserActor(p, surface) {
   if (actorRaw !== "user") {
     throw new RpcError(
       -32001,
-      `${surface} is user-only; agent self-retention is forbidden`,
+      `${surface} is user-only; non-user actor is forbidden`,
       { actor: actorRaw }
     );
   }
@@ -7756,11 +8110,6 @@ function parseDeliveryPolicy(raw) {
   if (raw === "manual" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
-function parseOptionalA2APolicy(raw) {
-  if (!raw) return void 0;
-  if (raw === "allow" || raw === "ask" || raw === "deny") return raw;
-  throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
-}
 function requireProfileId(p) {
   const profileId = optionalString(p, "profileId");
   if (!profileId) {
@@ -7773,10 +8122,15 @@ function requireProfileId(p) {
 }
 async function resolveStartSessionA2APolicy(fs13, input) {
   if (input.callerKind === "user") return "allow";
-  if (input.trustedOverride !== void 0) return input.trustedOverride;
   const registry = await loadRolesRegistry(fs13);
   const role = registry.roles.find((r) => r.name === input.taskRole);
   return roleA2APolicy(role);
+}
+async function resolveRoleProfileAllowed(fs13, input) {
+  if (input.policy !== "allow") return true;
+  const registry = await loadRolesRegistry(fs13);
+  const role = registry.roles.find((r) => r.name === input.taskRole);
+  return roleAllowsProfile(role, input.profileId);
 }
 function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;

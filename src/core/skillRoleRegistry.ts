@@ -20,6 +20,13 @@ export interface RoleDefinition {
    * Default: deny.
    */
   a2aPolicy?: RoleA2APolicy;
+  /**
+   * Profile ids this role may use when a2aPolicy=allow (role caller startSession).
+   * Store **ids only** — never credentials, tokens, or env values. Normalized to
+   * trim + de-dupe non-empty strings. Omitted / empty means no profiles authorized
+   * for autonomous allow (user root and user-approved ask may still override).
+   */
+  allowedProfiles?: string[];
   /** Optional host-orchestrator hint. Tent records this but never spawns it. */
   cli?: RoleCliConfig;
 }
@@ -74,6 +81,13 @@ export async function updateRole(fs: FsAdapter, name: string, patch: Partial<Rol
     const index = registry.roles.findIndex((role) => role.name === name);
     if (index === -1) throw new Error(`Role does not exist: ${name}.`);
     const next = normalizeRole({ ...registry.roles[index], ...patch, name });
+    // Explicit allowedProfiles on the patch (including empty) replaces the prior list.
+    // Without this, `{ ...existing, ...patch }` cannot clear the field when normalize drops [].
+    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
+      const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
+      if (normalized) next.allowedProfiles = normalized;
+      else delete next.allowedProfiles;
+    }
     registry.roles[index] = next;
     await writeJson(fs, ROLES_REGISTRY_PATH, registry);
   });
@@ -113,6 +127,8 @@ export function normalizeRoleDefinition(value: Partial<RoleDefinition> | Record<
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
+  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
+  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
@@ -121,6 +137,46 @@ export function normalizeRoleDefinition(value: Partial<RoleDefinition> | Record<
 /** Resolve effective policy for a role definition (missing → deny). */
 export function roleA2APolicy(role: RoleDefinition | undefined): RoleA2APolicy {
   return role?.a2aPolicy ?? "deny";
+}
+
+/**
+ * Whether profileId is on the role's allowedProfiles whitelist.
+ * Missing / empty list → not allowed for autonomous role allow path.
+ * Comparison is exact on already-normalized ids (trim; case-sensitive).
+ */
+export function roleAllowsProfile(
+  role: RoleDefinition | undefined,
+  profileId: string
+): boolean {
+  const id = typeof profileId === "string" ? profileId.trim() : "";
+  if (!id) return false;
+  const allowed = role?.allowedProfiles;
+  if (!allowed || allowed.length === 0) return false;
+  return allowed.includes(id);
+}
+
+/**
+ * Normalize allowedProfiles: trim each entry, drop empties, de-dupe (first wins).
+ * Returns undefined when the field is absent or yields an empty list after normalize
+ * so roles.json does not store empty arrays / credentials bags.
+ */
+export function normalizeAllowedProfiles(value: unknown): string[] | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) {
+    // Invalid shape ignored on load (same spirit as bad a2aPolicy) so a bad field
+    // cannot wipe the registry. Mutations should validate via parse helpers.
+    return undefined;
+  }
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out.length > 0 ? out : undefined;
 }
 
 function normalizeA2APolicy(value: unknown): RoleA2APolicy | undefined {

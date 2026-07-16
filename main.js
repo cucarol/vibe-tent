@@ -1015,6 +1015,11 @@ async function updateRole(fs, name, patch) {
     const index = registry.roles.findIndex((role) => role.name === name);
     if (index === -1) throw new Error(`Role does not exist: ${name}.`);
     const next = normalizeRole({ ...registry.roles[index], ...patch, name });
+    if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
+      const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
+      if (normalized) next.allowedProfiles = normalized;
+      else delete next.allowedProfiles;
+    }
     registry.roles[index] = next;
     await writeJson(fs, ROLES_REGISTRY_PATH, registry);
   });
@@ -1049,9 +1054,27 @@ function normalizeRoleDefinition(value) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
+  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
+  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
+}
+function normalizeAllowedProfiles(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!Array.isArray(value)) {
+    return void 0;
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") continue;
+    const id = item.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out.length > 0 ? out : void 0;
 }
 function normalizeA2APolicy(value) {
   if (value === void 0 || value === null || value === "") return void 0;

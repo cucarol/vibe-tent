@@ -15,7 +15,10 @@ import {
   createRole,
   deleteRole,
   loadRolesRegistry,
+  normalizeAllowedProfiles,
+  normalizeRoleDefinition,
   roleA2APolicy,
+  roleAllowsProfile,
   updateRole,
 } from "../src/core/skillRoleRegistry.js";
 import {
@@ -310,6 +313,109 @@ test("role 注册表: a2aPolicy allow|ask|deny 默认为 deny，不存 secret", 
   assert.equal(bad.roles[0].name, "bad");
   assert.equal(bad.roles[0].a2aPolicy, undefined);
   assert.equal(roleA2APolicy(bad.roles[0]), "deny");
+});
+
+test("role 注册表: allowedProfiles trim 去重，只存 id，不存凭据", async () => {
+  assert.deepEqual(
+    normalizeAllowedProfiles(["  grok-acp-default ", "fake-default", "fake-default", "", "  "]),
+    ["grok-acp-default", "fake-default"]
+  );
+  assert.equal(normalizeAllowedProfiles([]), undefined);
+  assert.equal(normalizeAllowedProfiles(undefined), undefined);
+  assert.equal(normalizeAllowedProfiles("not-array"), undefined);
+  assert.deepEqual(normalizeAllowedProfiles(["ok", 1, null, "ok"]), ["ok"]);
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-profiles-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, {
+    name: "demo",
+    rules: "# RULES\n",
+    rolesRegistry: {
+      roles: [
+        {
+          name: "orch",
+          a2aPolicy: "allow",
+          allowedProfiles: ["  grok-acp-default ", "fake-default", "fake-default", ""],
+          // credentials-shaped fields must never be part of RoleDefinition persistence
+        },
+      ],
+    },
+  });
+
+  const loaded = await loadRolesRegistry(fsa);
+  const orch = loaded.roles.find((r) => r.name === "orch");
+  assert.deepEqual(orch?.allowedProfiles, ["grok-acp-default", "fake-default"]);
+  assert.equal(roleAllowsProfile(orch, "fake-default"), true);
+  assert.equal(roleAllowsProfile(orch, "  fake-default  "), true);
+  assert.equal(roleAllowsProfile(orch, "other"), false);
+  assert.equal(roleAllowsProfile(undefined, "fake-default"), false);
+
+  await createRole(fsa, {
+    name: "worker",
+    a2aPolicy: "allow",
+    allowedProfiles: [" codex-acp ", "codex-acp", " "],
+  });
+  const worker = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker");
+  assert.deepEqual(worker?.allowedProfiles, ["codex-acp"]);
+
+  await updateRole(fsa, "worker", { allowedProfiles: ["a", " b ", "a"] });
+  assert.deepEqual(
+    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.allowedProfiles,
+    ["a", "b"]
+  );
+
+  // Explicit clear
+  await updateRole(fsa, "worker", { allowedProfiles: [] });
+  assert.equal(
+    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.allowedProfiles,
+    undefined
+  );
+
+  // Disk: only ids, no secret-looking keys from normalize
+  const disk = JSON.parse(await fsa.readFile("roles.json")) as {
+    roles: Array<Record<string, unknown>>;
+  };
+  for (const role of disk.roles) {
+    assert.equal("secret" in role, false);
+    assert.equal("token" in role, false);
+    assert.equal("apiKey" in role, false);
+    assert.equal("env" in role, false);
+    if (role.allowedProfiles !== undefined) {
+      assert.ok(Array.isArray(role.allowedProfiles));
+      for (const id of role.allowedProfiles as unknown[]) {
+        assert.equal(typeof id, "string");
+      }
+    }
+  }
+
+  // normalizeRoleDefinition drops empty allowedProfiles
+  const empty = normalizeRoleDefinition({ name: "x", allowedProfiles: ["", "  "] });
+  assert.equal(empty.allowedProfiles, undefined);
+});
+
+test("role 注册表: updateRole 可明确清除全部可选字段", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-clear-"));
+  const fsa = new NodeFs(dir);
+  await createRole(fsa, {
+    name: "clearable",
+    prompt: "prompt",
+    description: "description",
+    color: "red",
+    a2aPolicy: "allow",
+    allowedProfiles: ["fake-default"],
+    cli: { command: "codex" },
+  });
+
+  await updateRole(fsa, "clearable", {
+    prompt: undefined,
+    description: undefined,
+    color: undefined,
+    a2aPolicy: undefined,
+    allowedProfiles: [],
+    cli: undefined,
+  });
+
+  assert.deepEqual((await loadRolesRegistry(fsa)).roles, [{ name: "clearable" }]);
 });
 
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {

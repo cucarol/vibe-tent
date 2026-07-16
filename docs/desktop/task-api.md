@@ -219,11 +219,12 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `delivery.get` / `delivery.list`
 - `proposal.list({ workspaceId, boxId?, status? })` — `status` = `pending` (default) \| `accepted` \| `rejected` \| `all`; returns `{ proposals }` projections (`path`, `boxId`, `role`, `status`, `createdAt?`, `body`)
 - `session.get` / `session.list` (projections; no secrets/tokens in client payloads)
-- `a2a.listPending` / `a2a.resolve` — **spawn** gate only (role `a2aPolicy`); not tool permissions
+- `a2a.listPending` / `a2a.resolve` — **spawn** gate only (role `a2aPolicy` + `allowedProfiles`); resolve is user-only; not tool permissions
+- `registry.roles` / `registry.role.create` / `registry.role.update` / `registry.role.delete` — role registry read + user-only mutations (see §4.3.1); success event `registry.roles.updated`
 - `toolApproval.listPending` / `toolApproval.get` / `toolApproval.approveOnce` / `toolApproval.deny` — ACP **tool** permission (`permissionPolicy=ask`); user-only; machine-local; distinct from A2A
 - `operationalRetention.preview` / `operationalRetention.purge` — user-only terminal operational heat cleanup (see §6); preview read-only; purge via MutationBus; event `retention.purged` only when files deleted
 - `box.projection` → `{ status, assignee, activeTaskId }`
-- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), plus document events `concept.changed` / `concept.removed` from the docs group
+- `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `retention.purged` (after successful purge that deleted files), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
 
@@ -304,18 +305,31 @@ the service MUST:
 ```text
 1. Authenticate caller (user token | role session token)
 2. Require explicit profileId (no fake-default / product-profile silent fallback)
-3. user caller → allow (user is root authority)
+3. user caller → allow (user is root authority; profile whitelist bypass)
 4. role caller → load role.a2aPolicy from .tent/roles.json (default deny);
-   ignore client-supplied a2aPolicy; only trusted a2aPolicyOverride (internal/harness)
-5. allow → target AgentProfile ∈ allowedProfiles / auth table → internal AgentRuntimePort.startSession
-6. ask  → enqueue a2a.ask; task.wait; do not spawn
+   ignore client-supplied a2aPolicy and reject a2aPolicyOverride over RPC
+5. allow → profileId must be ∈ role.allowedProfiles (ids only) → internal AgentRuntimePort.startSession
+6. ask  → enqueue a2a.ask; task.wait; do not spawn (user approve may override profile whitelist)
 7. deny → return A2A_DENIED; leave no half-started process state
 ```
+
+An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it cannot be replayed for another launch target. `a2a.resolve` is user-only.
 
 **Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority.
 **Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.  
 **Clients** call `task.startSession` (or dispatch with `startSession: true`); they never call `AgentRuntimePort` directly.
-**Roles** may store `a2aPolicy` only — never provider secrets or tokens.
+**Roles** may store `a2aPolicy` and `allowedProfiles` (profile **ids** only) — never provider secrets or tokens.
+
+### 4.3.1 Role registry mutations (user-only)
+
+| Method | Notes |
+| --- | --- |
+| `registry.roles` | Read projection: name, description, color, prompt, effective `a2aPolicy`, `allowedProfiles` |
+| `registry.role.create` | User actor only; MutationBus; name immutable after create |
+| `registry.role.update` | User actor only; cannot rename; `null`/empty clears optional text, policy, CLI, or profile whitelist fields |
+| `registry.role.delete` | User actor only; `confirmation` must equal `name`; refuses active task or live/starting/waiting-user managed session |
+
+Successful create/update/delete emits **exactly one** `registry.roles.updated` (`action`, `name`). Failures emit nothing.
 
 ### 4.4 Self-accept ban
 

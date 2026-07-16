@@ -147,17 +147,19 @@ Optional machine-readable spawn authority on the role (default **deny**):
 {
   "name": "orchestrator",
   "prompt": "…",
-  "a2aPolicy": "ask"
+  "a2aPolicy": "allow",
+  "allowedProfiles": ["grok-acp-default"]
 }
 ```
 
-| `a2aPolicy` | Role caller `task.startSession` |
+| Field | Role caller `task.startSession` |
 | --- | --- |
-| `allow` | May start authorized AgentProfiles |
-| `ask` | Enters user confirmation (`a2a.ask`) |
-| `deny` (default / omitted) | Hard deny |
+| `a2aPolicy: allow` | May start only when `profileId` ∈ `allowedProfiles` |
+| `a2aPolicy: ask` | Enters user confirmation (`a2a.ask`); user approve may override whitelist |
+| `a2aPolicy: deny` (default / omitted) | Hard deny |
+| `allowedProfiles` | Profile **ids** only (trim + de-dupe); never credentials |
 
-User callers always allow. Ordinary RPC clients **cannot** elevate policy via an `a2aPolicy` param; service loads policy from the role registry. Trusted harness may pass `a2aPolicyOverride` only.
+User callers always allow (root authority; whitelist bypass). Ordinary RPC clients **cannot** elevate policy via an `a2aPolicy` param, and `a2aPolicyOverride` is rejected over RPC; service loads policy from the role registry. Mutate roles via user-only `registry.role.create|update|delete` (not by writing secrets into `roles.json`).
 
 Example: use a role for collaboration identity; choose the machine profile at startSession:
 
@@ -231,7 +233,7 @@ These are **two different gates**. Do not merge them.
 
 | Gate | When | Store (machine-local) | RPC | Effect |
 | --- | --- | --- | --- | --- |
-| **A2A spawn** | Role caller `task.startSession` with `roles.json` `a2aPolicy: ask` | `a2a-approvals.json` under service data dir | `a2a.listPending` / `a2a.resolve` | Whether a **new** managed session may start |
+| **A2A spawn** | Role caller `task.startSession` with `roles.json` `a2aPolicy: ask` | `a2a-approvals.json` under service data dir | `a2a.listPending` / user-only `a2a.resolve` | Whether a **new** managed session may start |
 | **Tool permission** | Live ACP session, profile `permissionPolicy: ask`, agent sends `session/request_permission` | `tool-approvals.json` under service data dir | `toolApproval.listPending` / `get` / `approveOnce` / `deny` | Whether **one tool call** is `allow_once` or `cancelled` |
 
 Rules:

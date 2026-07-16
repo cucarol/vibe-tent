@@ -111,7 +111,8 @@ async function pollUntil<T>(
 
 async function makeWorkspace(
   name = "b5",
-  rolePolicies?: Record<string, "allow" | "ask" | "deny">
+  rolePolicies?: Record<string, "allow" | "ask" | "deny">,
+  roleProfiles?: Record<string, string[]>
 ): Promise<string> {
   const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-ws-"));
   const fsa = new NodeFs(workspace);
@@ -129,11 +130,28 @@ async function makeWorkspace(
             name: "executor",
             prompt: "do work",
             ...(rolePolicies?.executor ? { a2aPolicy: rolePolicies.executor } : {}),
+            // Default allow path needs an authorized profile id (role authority MVP).
+            ...(rolePolicies?.executor === "allow"
+              ? {
+                  allowedProfiles:
+                    roleProfiles?.executor ?? ["fake-default"],
+                }
+              : roleProfiles?.executor
+                ? { allowedProfiles: roleProfiles.executor }
+                : {}),
           },
           {
             name: "orchestrator",
             prompt: "dispatch work",
             ...(rolePolicies?.orchestrator ? { a2aPolicy: rolePolicies.orchestrator } : {}),
+            ...(rolePolicies?.orchestrator === "allow"
+              ? {
+                  allowedProfiles:
+                    roleProfiles?.orchestrator ?? ["fake-default"],
+                }
+              : roleProfiles?.orchestrator
+                ? { allowedProfiles: roleProfiles.orchestrator }
+                : {}),
           },
         ],
       },
@@ -614,7 +632,69 @@ test("B5: A2A ask deny leaves no live session", async () => {
   });
 });
 
-test("B5: trusted a2aPolicyOverride can raise policy for harness only", async () => {
+test("B5: A2A resolve is user-only and approval is bound to workspace/task/profile", async () => {
+  const ws = await makeWorkspace("b5-ask-binding", { executor: "ask" });
+  const otherWs = await makeWorkspace("b5-ask-binding-other", { executor: "ask" });
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const otherWorkspaceId = (await rpc(svc, "workspace.mount", {
+      workspaceRoot: otherWs,
+    })).result as { workspaceId: string };
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "approval binding",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const ask = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+    });
+    assert.equal(ask.error?.code, RPC_A2A_ASK);
+    const approvalId = (ask.error!.data as { approvalId: string }).approvalId;
+
+    const selfApprove = await rpc(svc, "a2a.resolve", {
+      approvalId,
+      decision: "approve",
+      actor: "executor",
+    });
+    assert.equal(selfApprove.error?.code, -32001);
+    assert.match(String(selfApprove.error?.message), /user-only/i);
+
+    // Mark approved through the internal store so the RPC re-entry binding can be tested
+    // independently from a2a.resolve, which always reuses the exact stored target.
+    await svc.ctx.a2a.resolve(approvalId, "approved", "user");
+
+    const wrongProfile = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "other-profile",
+      approvalId,
+    });
+    assert.equal(wrongProfile.error?.code, RPC_A2A_DENIED);
+    assert.match(String(wrongProfile.error?.message), /profile mismatch/i);
+
+    const wrongWorkspace = await rpc(svc, "task.startSession", {
+      workspaceId: otherWorkspaceId.workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+      approvalId,
+    });
+    assert.equal(wrongWorkspace.error?.code, RPC_A2A_DENIED);
+    assert.match(String(wrongWorkspace.error?.message), /workspace mismatch/i);
+
+    const sessions = await rpc(svc, "session.list", { workspaceId });
+    assert.equal((sessions.result as { sessions: unknown[] }).sessions.length, 0);
+  });
+});
+
+test("B5: a2aPolicyOverride cannot raise role authority over RPC", async () => {
   const ws = await makeWorkspace(); // role default deny
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
@@ -633,7 +713,10 @@ test("B5: trusted a2aPolicyOverride can raise policy for harness only", async ()
       profileId: "fake-default",
       a2aPolicyOverride: "allow",
     });
-    assert.ok(!started.error, JSON.stringify(started.error));
+    assert.ok(started.error);
+    assert.equal(started.error!.code, -32602);
+    const sessions = await rpc(svc, "session.list", { workspaceId });
+    assert.equal((sessions.result as { sessions: unknown[] }).sessions.length, 0);
   });
 });
 
@@ -661,6 +744,93 @@ test("B5: user callerKind always allows startSession even if role a2aPolicy=deny
       (started.result as { session: { sessionId: string } }).session.sessionId,
       /^ss-/
     );
+  });
+});
+
+test("B5: role a2aPolicy=allow requires profileId in allowedProfiles", async () => {
+  const ws = await makeWorkspace(
+    "b5-profile-allow",
+    { executor: "allow" },
+    { executor: ["fake-default"] }
+  );
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "profile whitelist",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const denied = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "not-on-list",
+    });
+    assert.ok(denied.error);
+    assert.equal(denied.error!.code, RPC_A2A_DENIED);
+
+    const allowed = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+    });
+    assert.ok(!allowed.error, JSON.stringify(allowed.error));
+  });
+});
+
+test("B5: role a2aPolicy=ask still parks even when profile not on whitelist; user approve overrides", async () => {
+  // ask path must not hard-deny for missing allowedProfiles; user grant may override.
+  const ws = await makeWorkspace("b5-ask-profile", { executor: "ask" }, { executor: [] });
+  // empty executor profiles via direct write (makeWorkspace skips empty arrays for non-allow)
+  await fs.writeFile(
+    path.join(ws, ".tent", "roles.json"),
+    JSON.stringify(
+      {
+        roles: [
+          { name: "executor", prompt: "do work", a2aPolicy: "ask", allowedProfiles: ["other-only"] },
+          { name: "orchestrator", prompt: "dispatch work" },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "ask override profile",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+    const ask = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "role",
+      profileId: "fake-default",
+    });
+    assert.ok(ask.error);
+    assert.equal(ask.error!.code, RPC_A2A_ASK);
+    const approvalId = (ask.error!.data as { approvalId: string }).approvalId;
+
+    const resolved = await rpc(svc, "a2a.resolve", {
+      approvalId,
+      decision: "approve",
+      actor: "user",
+    });
+    assert.ok(!resolved.error, JSON.stringify(resolved.error));
+    const started = resolved.result as {
+      started: { session: { profileId: string } };
+    };
+    assert.equal(started.started.session.profileId, "fake-default");
   });
 });
 
@@ -1135,6 +1305,9 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
     "toolApproval.deny",
     "operationalRetention.preview",
     "operationalRetention.purge",
+    "registry.role.create",
+    "registry.role.update",
+    "registry.role.delete",
   ]) {
     assert.ok((CLIENT_METHODS as readonly string[]).includes(m), m);
   }

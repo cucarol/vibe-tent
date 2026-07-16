@@ -120,12 +120,73 @@ export class ServiceClient {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
   }
 
-  // ---- convenience: registry (read-only) ----
+  // ---- convenience: registry ----
   registryTypes(workspaceId: string) {
     return this.call("registry.types", { workspaceId });
   }
   registryRoles(workspaceId: string) {
     return this.call("registry.roles", { workspaceId });
+  }
+  /**
+   * User-only role create (MutationBus). Pass fields at top level — never secrets.
+   * `actor` defaults to "user"; non-user is rejected by the service.
+   */
+  registryRoleCreate(
+    workspaceId: string,
+    role: {
+      name: string;
+      prompt?: string;
+      description?: string;
+      color?: string;
+      a2aPolicy?: "allow" | "ask" | "deny";
+      allowedProfiles?: string[];
+      cli?: { command: string; resume?: string };
+      actor?: string;
+    }
+  ) {
+    return this.call("registry.role.create", { workspaceId, ...role });
+  }
+  /**
+   * User-only role update. Name is identity and cannot be renamed.
+   * Success emits exactly one registry.roles.updated.
+   */
+  registryRoleUpdate(
+    workspaceId: string,
+    name: string,
+    patch: {
+      /** null or an empty string clears the field. */
+      prompt?: string | null;
+      /** null or an empty string clears the field. */
+      description?: string | null;
+      /** null or an empty string clears the field. */
+      color?: string | null;
+      /** null or an empty string clears the field (effective deny). */
+      a2aPolicy?: "allow" | "ask" | "deny" | null;
+      /** null or an empty array clears the whitelist. */
+      allowedProfiles?: string[] | null;
+      /** null clears the host CLI hint. */
+      cli?: { command: string; resume?: string } | null;
+      actor?: string;
+    }
+  ) {
+    return this.call("registry.role.update", { workspaceId, name, ...patch });
+  }
+  /**
+   * User-only role delete. confirmation must equal name.
+   * Refuses when the role has an active task or live managed session.
+   */
+  registryRoleDelete(
+    workspaceId: string,
+    name: string,
+    confirmation: string,
+    actor = "user"
+  ) {
+    return this.call("registry.role.delete", {
+      workspaceId,
+      name,
+      confirmation,
+      actor,
+    });
   }
 
   // ---- convenience: machine-local profiles (safe metadata / editor projection) ----
@@ -195,11 +256,6 @@ export class ServiceClient {
       startSession?: boolean;
       /** Required when startSession is true — no fake-default fallback. */
       profileId?: string;
-      /**
-       * Trusted harness/internal only. Role callers' policy is loaded from
-       * role registry; ordinary clients cannot raise A2A via this field.
-       */
-      a2aPolicyOverride?: string;
     }
   ) {
     return this.call("task.dispatch", { workspaceId, ...args });
@@ -255,11 +311,6 @@ export class ServiceClient {
       /** Required — no fake-default or product-profile fallback. */
       profileId: string;
       callerKind?: "user" | "role";
-      /**
-       * Trusted harness/internal only. Role policy comes from roles.json;
-       * ordinary clients cannot override via RPC.
-       */
-      a2aPolicyOverride?: string;
       bootstrapPrompt?: string;
       approvalId?: string;
     }

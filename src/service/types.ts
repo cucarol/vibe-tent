@@ -153,6 +153,11 @@ export type RoleRegistryEntryProjection = {
   prompt?: string;
   /** Spawn authority; omitted means deny. Never includes secrets. */
   a2aPolicy?: "allow" | "ask" | "deny";
+  /**
+   * Profile ids authorized for role-caller startSession when a2aPolicy=allow.
+   * Ids only — never credentials. Omitted / empty = none for autonomous allow.
+   */
+  allowedProfiles?: string[];
 };
 
 /**
@@ -219,6 +224,14 @@ export const CLIENT_METHODS = [
   "docs.backlinks",
   "registry.types",
   "registry.roles",
+  /**
+   * User-only role registry mutations (MutationBus).
+   * Persist name/prompt/description/color/a2aPolicy/allowedProfiles/cli only —
+   * never provider secrets. Success emits exactly one registry.roles.updated.
+   */
+  "registry.role.create",
+  "registry.role.update",
+  "registry.role.delete",
   "profile.list",
   "profile.get",
   "profile.create",

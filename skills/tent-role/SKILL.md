@@ -143,7 +143,7 @@ tent task deliver <taskPath> --summary <text> [--commits sha,sha]
 - workspace 契约：任意位置的框只要其一级/base type 在 `.tent/types.json` 开启了 `workspacePointer`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名与 type 字面名称（是否叫 `output`）不参与识别，二级 type 跟随一级。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。开启能力但未填 `workspace` 的框只是普通框。
 - claim：外部 agent 执行 `tent task claim <taskPath>`（Service RPC）后，envelope 变为 running，并把目标 box owner 设为该 role、status 设为 doing。**`task.startSession` 会在 user 路径上先 claim——managed agent 不要再 claim。**
 - deliver：**外部路径**完成后执行 `tent task deliver <taskPath> --summary …`。**Managed ACP 路径**由 Local Service 在 `session/prompt` 成功结束时用最终 assistant 回复自动 deliver；agent 不必也不应依赖 CLI deliver。user 用 Desktop 或 `tent task accept/reject` 裁决。
-- A2A：role 是否可 `startSession` 由 `.tent/roles.json` 的 `a2aPolicy: allow|ask|deny`（默认 deny）服务端硬执行；不要把 secret 写入 role。
+- A2A：role 是否可 `startSession` 由 `.tent/roles.json` 的 `a2aPolicy: allow|ask|deny`（默认 deny）服务端硬执行；`allow` 时 `profileId` 必须在该 role 的 `allowedProfiles`（只存 profile id，不存凭据）。`ask` 仍走 user 批准，用户批准可覆盖白名单。不要把 secret 写入 role；改 role 用 service `registry.role.*`（user-only）。
 - manifest 是 dispatch 时刻的快照；派活后修改 box 的 readable、writable 或 type 不影响已发出的 manifest，需要释放后重新 dispatch 才刷新。
 - spawn/唤醒：把 **relay prompt**（含 claim+deliver）交给外部/手动会话；或由 service **managed startSession bootstrap**（Context Card + user prompt，自动 deliver）推给 ACP 会话。
 - review / accept：读 delivery、commit、diff；不满意就 reject 或继续追问。只有 user（或被明确授权的编排）可 accept。

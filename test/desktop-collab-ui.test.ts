@@ -213,9 +213,12 @@ test("suggestBoxName embeds type without hardcoding goal", () => {
   assert.match(suggestBoxName("mission", 1_700_000_000_000), /^mission-/);
 });
 
-test("CLIENT_METHODS includes registry.types/roles and profile CRUD", () => {
+test("CLIENT_METHODS includes registry.types/roles, role CRUD, and profile CRUD", () => {
   assert.ok(CLIENT_METHODS.includes("registry.types"));
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
+  assert.ok(CLIENT_METHODS.includes("registry.role.create"));
+  assert.ok(CLIENT_METHODS.includes("registry.role.update"));
+  assert.ok(CLIENT_METHODS.includes("registry.role.delete"));
   assert.ok(CLIENT_METHODS.includes("profile.list"));
   assert.ok(CLIENT_METHODS.includes("profile.get"));
   assert.ok(CLIENT_METHODS.includes("profile.create"));
