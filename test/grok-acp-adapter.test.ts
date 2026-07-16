@@ -95,6 +95,7 @@ function mockProfile(
     dieExitCode?: number;
     keepAlive?: boolean;
     promptMode?: string;
+    permissionTimeoutMs?: number;
   }
 ) {
   return {
@@ -126,7 +127,7 @@ function mockProfile(
       model: DEFAULT_GROK_MODEL,
       envKey: opts.envKey ?? DEFAULT_GROK_ENV_KEY,
       permissionPolicy: opts.permissionPolicy ?? "deny",
-      permissionTimeoutMs: 500,
+      permissionTimeoutMs: opts.permissionTimeoutMs ?? 500,
       promptTimeoutMs: 10_000,
     },
   };
@@ -679,6 +680,61 @@ test("concurrent permission asks emit live only after the final decision", async
   );
 
   await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
+test("stopping a hung permission ask clears its long-lived timers", async () => {
+  const dataDir = await tempDir("tent-grok-ask-stop-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+    onPermissionAsk: () => new Promise<"allow" | "deny">(() => undefined),
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      mockProfile("grok-ask-stop", {
+        logPath,
+        apiKey: "test-key",
+        permissionPolicy: "ask",
+        requestPermission: true,
+        permissionTimeoutMs: 60_000,
+      }),
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((event) => events.push(event));
+  const timeoutCount = () =>
+    process.getActiveResourcesInfo().filter((resource) => resource === "Timeout")
+      .length;
+  const baselineTimeouts = timeoutCount();
+  const sessionId = "ss-acpaskst";
+
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-ask-stop",
+    cwd,
+    bootstrapPrompt: "pointer",
+  });
+  await waitFor(events, "session.waiting_user", sessionId, 3_000);
+  const waitingTimeouts = timeoutCount();
+  assert.ok(
+    waitingTimeouts >= baselineTimeouts + 2,
+    "the ACP request and permission waiter should both have active deadlines"
+  );
+
+  const startedAt = Date.now();
+  await runtime.stopSession(sessionId, "user");
+  assert.ok(Date.now() - startedAt < 3_000, "stop must not await permission timeout");
+  await new Promise((resolve) => setTimeout(resolve, 25));
+  assert.ok(
+    timeoutCount() < waitingTimeouts,
+    "stop must clear the request and permission deadlines"
+  );
+
   await runtime.shutdown();
 });
 

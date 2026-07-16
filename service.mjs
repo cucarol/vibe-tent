@@ -11723,6 +11723,8 @@ var AcpClient = class {
     this.loadSessionSupported = false;
     /** Concurrent ask-policy requests keep the session waiting until all resolve. */
     this.permissionAsksInFlight = 0;
+    /** Stop/exit cancellation for ask callbacks and their fail-safe timers. */
+    this.permissionWaitCancels = /* @__PURE__ */ new Set();
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
   }
   get pid() {
@@ -11894,6 +11896,7 @@ var AcpClient = class {
     if (this.closed && this.stopRequested) return;
     this.stopRequested = true;
     this.closed = true;
+    this.cancelPermissionWaiters();
     this.rejectAllPending(new Error("session stopped"));
     const proc = this.proc;
     if (!proc || proc.killed) {
@@ -11904,10 +11907,7 @@ var AcpClient = class {
       proc.kill("SIGTERM");
     } catch {
     }
-    await Promise.race([
-      this.waitExit(),
-      sleep(1500).then(() => this.forceKill())
-    ]);
+    await this.waitForExitOrForceKill(1500);
     this.cleanupStreams();
   }
   /**
@@ -11968,6 +11968,7 @@ var AcpClient = class {
       this.exitCode = code;
       this.exitSignal = signal;
       this.closed = true;
+      this.cancelPermissionWaiters();
       this.rejectAllPending(
         new Error(
           signal ? `${this.label} \u8FDB\u7A0B\u4FE1\u53F7\u9000\u51FA: ${signal}` : `${this.label} \u8FDB\u7A0B\u9000\u51FA code=${code}`
@@ -11994,6 +11995,7 @@ var AcpClient = class {
     });
     child.on("error", (err) => {
       this.closed = true;
+      this.cancelPermissionWaiters();
       this.rejectAllPending(
         new Error(`${this.label} \u8FDB\u7A0B\u9519\u8BEF: ${err.message}`)
       );
@@ -12130,24 +12132,7 @@ var AcpClient = class {
           if (this.options.onPermissionAsk) {
             const timeoutMs = this.options.permissionTimeoutMs ?? DEFAULT_PERMISSION_TIMEOUT_MS;
             const askInfo = { toolTitle, toolCallId, options };
-            let settled = false;
-            const askPromise = this.options.onPermissionAsk(askInfo).then((d) => {
-              settled = true;
-              return d;
-            });
-            const failSafePromise = sleep(
-              timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
-            ).then(async () => {
-              if (settled) return "deny";
-              if (this.options.onPermissionAskFailSafe) {
-                try {
-                  await this.options.onPermissionAskFailSafe(askInfo);
-                } catch {
-                }
-              }
-              return "deny";
-            });
-            decision = await Promise.race([askPromise, failSafePromise]);
+            decision = await this.waitForPermissionDecision(askInfo, timeoutMs);
           } else {
             decision = "deny";
           }
@@ -12180,6 +12165,34 @@ var AcpClient = class {
       }
     }
   }
+  waitForPermissionDecision(askInfo, timeoutMs) {
+    return new Promise((resolve10) => {
+      let settled = false;
+      let timer;
+      const finish = (decision) => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.permissionWaitCancels.delete(cancel);
+        resolve10(decision);
+      };
+      const cancel = () => finish("deny");
+      this.permissionWaitCancels.add(cancel);
+      timer = setTimeout(() => {
+        finish("deny");
+        if (this.options.onPermissionAskFailSafe) {
+          void this.options.onPermissionAskFailSafe(askInfo).catch(() => void 0);
+        }
+      }, Math.max(1, timeoutMs + PERMISSION_FAILSAFE_SLACK_MS));
+      void Promise.resolve().then(() => this.options.onPermissionAsk(askInfo)).then(
+        (decision) => finish(decision),
+        () => finish("deny")
+      );
+    });
+  }
+  cancelPermissionWaiters() {
+    for (const cancel of [...this.permissionWaitCancels]) cancel();
+  }
   request(method, params, timeoutMs = 3e4) {
     if (this.closed || !this.proc?.stdin) {
       return Promise.reject(
@@ -12209,10 +12222,24 @@ var AcpClient = class {
     }
   }
   waitExit() {
-    if (!this.proc || this.closed) return Promise.resolve();
+    const proc = this.proc;
+    if (!proc || this.exitCode !== null || this.exitSignal !== null || proc.exitCode !== null || proc.signalCode !== null) {
+      return Promise.resolve();
+    }
     return new Promise((resolve10) => {
       this.exitWaiters.push(resolve10);
     });
+  }
+  async waitForExitOrForceKill(timeoutMs) {
+    let timer;
+    const outcome = await Promise.race([
+      this.waitExit().then(() => "exit"),
+      new Promise((resolve10) => {
+        timer = setTimeout(() => resolve10("timeout"), timeoutMs);
+      })
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome === "timeout") await this.forceKill();
   }
   async forceKill() {
     const proc = this.proc;
@@ -12220,13 +12247,21 @@ var AcpClient = class {
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
       await new Promise((resolve10) => {
+        let settled = false;
+        let timer;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          resolve10();
+        };
         const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve10());
-        killer.on("error", () => resolve10());
-        setTimeout(resolve10, 1500);
+        killer.on("exit", finish);
+        killer.on("error", finish);
+        timer = setTimeout(finish, 1500);
       });
     } else {
       try {

@@ -128,6 +128,8 @@ export class AcpClient {
   private loadSessionSupported = false;
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
+  /** Stop/exit cancellation for ask callbacks and their fail-safe timers. */
+  private readonly permissionWaitCancels = new Set<() => void>();
 
   constructor(private readonly options: AcpClientOptions) {
     this.label =
@@ -339,6 +341,7 @@ export class AcpClient {
     if (this.closed && this.stopRequested) return;
     this.stopRequested = true;
     this.closed = true;
+    this.cancelPermissionWaiters();
     this.rejectAllPending(new Error("session stopped"));
 
     const proc = this.proc;
@@ -353,10 +356,7 @@ export class AcpClient {
       // already dead
     }
 
-    await Promise.race([
-      this.waitExit(),
-      sleep(1500).then(() => this.forceKill()),
-    ]);
+    await this.waitForExitOrForceKill(1500);
     this.cleanupStreams();
   }
 
@@ -425,6 +425,7 @@ export class AcpClient {
       this.exitCode = code;
       this.exitSignal = signal;
       this.closed = true;
+      this.cancelPermissionWaiters();
       this.rejectAllPending(
         new Error(
           signal
@@ -463,6 +464,7 @@ export class AcpClient {
 
     child.on("error", (err) => {
       this.closed = true;
+      this.cancelPermissionWaiters();
       this.rejectAllPending(
         new Error(`${this.label} 进程错误: ${err.message}`)
       );
@@ -638,27 +640,7 @@ export class AcpClient {
             // expireOne is authoritative. Fail-safe only if the bridge hangs past
             // store timeout + slack — and must expire the same store item.
             const askInfo = { toolTitle, toolCallId, options };
-            let settled = false;
-            const askPromise = this.options
-              .onPermissionAsk(askInfo)
-              .then((d) => {
-                settled = true;
-                return d;
-              });
-            const failSafePromise = sleep(
-              timeoutMs + PERMISSION_FAILSAFE_SLACK_MS
-            ).then(async (): Promise<"deny"> => {
-              if (settled) return "deny";
-              if (this.options.onPermissionAskFailSafe) {
-                try {
-                  await this.options.onPermissionAskFailSafe(askInfo);
-                } catch {
-                  // best-effort store cancel
-                }
-              }
-              return "deny";
-            });
-            decision = await Promise.race([askPromise, failSafePromise]);
+            decision = await this.waitForPermissionDecision(askInfo, timeoutMs);
           } else {
             // No service bridge → deny (safe default; never promote ask→allow).
             decision = "deny";
@@ -703,6 +685,49 @@ export class AcpClient {
     }
   }
 
+  private waitForPermissionDecision(
+    askInfo: {
+      toolTitle: string;
+      toolCallId?: string;
+      options: AcpPermissionOption[];
+    },
+    timeoutMs: number
+  ): Promise<"allow" | "deny"> {
+    return new Promise((resolve) => {
+      let settled = false;
+      let timer: ReturnType<typeof setTimeout> | undefined;
+      const finish = (decision: "allow" | "deny") => {
+        if (settled) return;
+        settled = true;
+        if (timer) clearTimeout(timer);
+        this.permissionWaitCancels.delete(cancel);
+        resolve(decision);
+      };
+      const cancel = () => finish("deny");
+      this.permissionWaitCancels.add(cancel);
+
+      timer = setTimeout(() => {
+        // Deny the live request immediately. Store expiry remains best-effort
+        // cleanup and must not keep the ACP request or Node timer alive.
+        finish("deny");
+        if (this.options.onPermissionAskFailSafe) {
+          void this.options.onPermissionAskFailSafe(askInfo).catch(() => undefined);
+        }
+      }, Math.max(1, timeoutMs + PERMISSION_FAILSAFE_SLACK_MS));
+
+      void Promise.resolve()
+        .then(() => this.options.onPermissionAsk!(askInfo))
+        .then(
+          (decision) => finish(decision),
+          () => finish("deny")
+        );
+    });
+  }
+
+  private cancelPermissionWaiters(): void {
+    for (const cancel of [...this.permissionWaitCancels]) cancel();
+  }
+
   private request(
     method: string,
     params: unknown,
@@ -739,10 +764,31 @@ export class AcpClient {
   }
 
   private waitExit(): Promise<void> {
-    if (!this.proc || this.closed) return Promise.resolve();
+    const proc = this.proc;
+    if (
+      !proc ||
+      this.exitCode !== null ||
+      this.exitSignal !== null ||
+      proc.exitCode !== null ||
+      proc.signalCode !== null
+    ) {
+      return Promise.resolve();
+    }
     return new Promise((resolve) => {
       this.exitWaiters.push(resolve);
     });
+  }
+
+  private async waitForExitOrForceKill(timeoutMs: number): Promise<void> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const outcome = await Promise.race([
+      this.waitExit().then(() => "exit" as const),
+      new Promise<"timeout">((resolve) => {
+        timer = setTimeout(() => resolve("timeout"), timeoutMs);
+      }),
+    ]);
+    if (timer) clearTimeout(timer);
+    if (outcome === "timeout") await this.forceKill();
   }
 
   private async forceKill(): Promise<void> {
@@ -751,13 +797,21 @@ export class AcpClient {
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
       await new Promise<void>((resolve) => {
+        let settled = false;
+        let timer: ReturnType<typeof setTimeout> | undefined;
+        const finish = () => {
+          if (settled) return;
+          settled = true;
+          if (timer) clearTimeout(timer);
+          resolve();
+        };
         const killer = spawn("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore",
         });
-        killer.on("exit", () => resolve());
-        killer.on("error", () => resolve());
-        setTimeout(resolve, 1500);
+        killer.on("exit", finish);
+        killer.on("error", finish);
+        timer = setTimeout(finish, 1500);
       });
     } else {
       try {
