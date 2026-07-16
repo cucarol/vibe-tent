@@ -1403,6 +1403,30 @@ test("B5 tool approval: service restart expires orphaned pending request", async
   }
 });
 
+test("B5 tool approval: service stop denies and releases store waiter", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-tool-stop-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const approvalId = makeToolApprovalId(() => 0.46);
+  await svc.ctx.toolApprovals.add({
+    id: approvalId,
+    workspaceId: "ws-stop",
+    sessionId: "ss-stop",
+    toolTitle: "shell",
+    options: [{ optionId: "allow_once", kind: "allow_once" }],
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+  });
+  const waiting = svc.ctx.toolApprovals.waitForDecision(approvalId, 60_000);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  await svc.stop();
+  assert.equal(await waiting, "denied");
+  const item = await svc.ctx.toolApprovals.get(approvalId);
+  assert.equal(item?.status, "denied");
+  assert.equal(item?.resolvedBy, "service-shutdown");
+});
+
 test("B5 tool approval: ask → pending → approve once → running → deliver", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();

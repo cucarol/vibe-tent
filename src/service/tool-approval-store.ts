@@ -65,6 +65,8 @@ export class ToolApprovalStore {
   private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private waiters = new Map<string, Waiter[]>();
   private loaded = false;
+  private closed = false;
+  private shutdownPromise: Promise<void> | null = null;
   /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
   private chain: Promise<void> = Promise.resolve();
 
@@ -170,8 +172,10 @@ export class ToolApprovalStore {
   }
 
   async add(item: ToolPendingApproval): Promise<ToolPendingApproval> {
+    if (this.closed) throw new Error("Tool approval store is closed");
     await this.ensureLoaded();
     return this.enqueue(async () => {
+      if (this.closed) throw new Error("Tool approval store is closed");
       const stored = cloneApproval(item);
       const next = new Map(this.items);
       next.set(stored.id, stored);
@@ -191,8 +195,10 @@ export class ToolApprovalStore {
     decision: "approved" | "denied",
     resolvedBy: string
   ): Promise<ToolPendingApproval> {
+    if (this.closed) throw new Error("Tool approval store is closed");
     await this.ensureLoaded();
     return this.enqueue(async () => {
+      if (this.closed) throw new Error("Tool approval store is closed");
       await this.expireStaleUnlocked(id);
       const item = this.items.get(id);
       if (!item) throw new Error(`Tool approval not found: ${id}`);
@@ -223,8 +229,10 @@ export class ToolApprovalStore {
     id: string,
     timeoutMs: number
   ): Promise<"approved" | "denied" | "expired"> {
+    if (this.closed) return Promise.resolve("denied");
     return new Promise((resolve) => {
       let settled = false;
+      let timer: ReturnType<typeof setTimeout>;
       const finish = (status: "approved" | "denied" | "expired") => {
         if (settled) return;
         settled = true;
@@ -239,6 +247,12 @@ export class ToolApprovalStore {
         }
         resolve(status);
       };
+
+      // Register before the async state read so shutdown/resolve cannot pass
+      // between observing pending and installing the waiter.
+      const list = this.waiters.get(id) ?? [];
+      list.push({ resolve: finish });
+      this.waiters.set(id, list);
 
       void this.get(id)
         .then((item) => {
@@ -255,16 +269,13 @@ export class ToolApprovalStore {
             finish("expired");
             return;
           }
-          const list = this.waiters.get(id) ?? [];
-          list.push({ resolve: finish });
-          this.waiters.set(id, list);
         })
         .catch(() => {
           // The timeout path below remains authoritative and fail-closed.
         });
 
       // Bound wait; expireOne is serialized so concurrent approve cannot resurrect pending.
-      const timer = setTimeout(() => {
+      timer = setTimeout(() => {
         void this.expireOne(id)
           .then((status) => {
             if (status === "approved" || status === "denied") {
@@ -280,6 +291,49 @@ export class ToolApprovalStore {
           });
       }, Math.max(1, timeoutMs));
     });
+  }
+
+  /**
+   * Stop accepting new tool asks and fail-close every live waiter.
+   * Persistence is attempted first; if it fails, waiters are still denied so
+   * service shutdown cannot be held open by permission deadlines. The next
+   * service boot expires any orphaned pending disk rows.
+   */
+  shutdown(): Promise<void> {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.closed = true;
+    this.shutdownPromise = this.shutdownInternal();
+    return this.shutdownPromise;
+  }
+
+  private async shutdownInternal(): Promise<void> {
+    try {
+      await this.ensureLoaded();
+      await this.enqueue(async () => {
+        const next = new Map(this.items);
+        const deniedIds: string[] = [];
+        const resolvedAt = new Date().toISOString();
+        for (const item of this.items.values()) {
+          if (item.status !== "pending") continue;
+          next.set(item.id, {
+            ...item,
+            status: "denied",
+            resolvedAt,
+            resolvedBy: "service-shutdown",
+          });
+          deniedIds.push(item.id);
+        }
+        if (deniedIds.length > 0) {
+          await this.persistSnapshot(next);
+          this.items = next;
+          for (const id of deniedIds) this.notifyWaiters(id, "denied");
+        }
+      });
+    } finally {
+      // Includes waiters whose item read/add raced shutdown and the
+      // persistence-failure path. Denial is the only safe live outcome.
+      this.notifyAllWaiters("denied");
+    }
   }
 
   /** Cancel all pending for a session (session stop / fail). */
@@ -344,6 +398,11 @@ export class ToolApprovalStore {
     if (!list?.length) return;
     this.waiters.delete(id);
     for (const w of list) w.resolve(status);
+  }
+
+  private notifyAllWaiters(status: "denied" | "expired"): void {
+    const ids = [...this.waiters.keys()];
+    for (const id of ids) this.notifyWaiters(id, status);
   }
 
   private async expireStale(onlyId?: string): Promise<void> {

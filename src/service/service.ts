@@ -425,6 +425,9 @@ async function startOwnedLocalTentService(
         // workspace dependencies are disposed. Active SSE streams are terminated
         // by the HTTP server and therefore cannot hold shutdown open.
         await attempt(() => httpServer.close());
+        // Tool asks are process-bound. Close their store before stopping ACP
+        // children so service-owned waiters/timers cannot outlive shutdown.
+        await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => runtime.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();

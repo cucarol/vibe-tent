@@ -118,6 +118,61 @@ test("tool approval store: service restart expires orphaned pending requests", a
   );
 });
 
+test("tool approval store: shutdown denies pending and clears long waiters", async () => {
+  const dataDir = await tempDir("tent-tool-appr-shutdown-");
+  const store = new ToolApprovalStore(dataDir);
+  const id = makeToolApprovalId(() => 0.39);
+  await store.add(pending({ id }));
+  const timeoutCount = () =>
+    process.getActiveResourcesInfo().filter((resource) => resource === "Timeout")
+      .length;
+  const beforeWait = timeoutCount();
+  const waiting = store.waitForDecision(id, 60_000);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  const duringWait = timeoutCount();
+  assert.ok(duringWait > beforeWait);
+
+  await store.shutdown();
+  assert.equal(await waiting, "denied");
+  assert.ok(timeoutCount() < duringWait, "shutdown must clear the approval deadline");
+  const item = await store.get(id);
+  assert.equal(item?.status, "denied");
+  assert.equal(item?.resolvedBy, "service-shutdown");
+  await assert.rejects(
+    () => store.add(pending({ id: makeToolApprovalId(() => 0.41) })),
+    /store is closed/
+  );
+  assert.equal(await store.waitForDecision(id, 60_000), "denied");
+});
+
+test("tool approval store: shutdown persistence failure still releases waiter", async () => {
+  const dataDir = await tempDir("tent-tool-appr-shutdown-fail-");
+  let failWrites = false;
+  const store = new ToolApprovalStore(dataDir, {
+    writeState: async (file, value) => {
+      if (failWrites) throw new Error("injected shutdown persist failure");
+      await writeJsonAtomic(file, value);
+    },
+  });
+  const id = makeToolApprovalId(() => 0.43);
+  await store.add(pending({ id }));
+  const waiting = store.waitForDecision(id, 60_000);
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  failWrites = true;
+  await assert.rejects(() => store.shutdown(), /injected shutdown persist failure/);
+  assert.equal(await waiting, "denied", "shutdown must fail closed in memory");
+
+  const disk = JSON.parse(
+    await fs.readFile(path.join(dataDir, "tool-approvals.json"), "utf8")
+  ) as { items: ToolPendingApproval[] };
+  assert.equal(
+    disk.items.find((item) => item.id === id)?.status,
+    "pending",
+    "failed persistence must not forge a committed denial"
+  );
+});
+
 test("tool approval store: atomic temp rename leaves valid JSON after concurrent writes", async () => {
   const dataDir = await tempDir("tent-tool-appr-atomic-");
   const store = new ToolApprovalStore(dataDir);

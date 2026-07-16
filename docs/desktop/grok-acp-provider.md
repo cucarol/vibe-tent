@@ -242,6 +242,11 @@ request. The ACP request, waiter, and provider process do not survive a Local Se
 restart. On store recovery, every persisted `pending` row is therefore atomically
 rewritten to `expired` with `resolvedBy: service-restart`; it remains queryable as
 machine-local history but is never listed as pending or accepted by `approveOnce`.
+During an orderly Local Service shutdown, the store first stops accepting new asks,
+rewrites live pending rows to `denied` with `resolvedBy: service-shutdown`, and wakes
+their waiters before ACP children stop. If that final persistence write fails, the
+live waiters are still denied and their timers cleared; restart recovery then expires
+the unchanged disk rows.
 
 Do **not** invent a second client-side timeout outcome that can disagree with the store (e.g. client denies while store still pending, or client allows after store expired).
 
@@ -300,7 +305,7 @@ Prompt/provider failure paths must leave **task / session / process** consistent
 | Event | Behavior |
 | --- | --- |
 | Desktop UI close | Does **not** stop agent sessions |
-| Local Service stop / shutdown | Stops push children this service started |
+| Local Service stop / shutdown | Denies pending tool asks, clears their waiters/timers, then stops push children this service started |
 | `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery |
 | `session.waiting_user` (tool ask) | Task `waiting(user-input)`; pending tool approval in service data dir |
 | Tool approve once / deny / timeout | Resume or cancel tool; clear pending (timeout → store `expired`; late approve fails) |
