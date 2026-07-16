@@ -19,6 +19,7 @@ import {
   isLoopbackServiceHost,
   readServiceEndpoint,
   serviceBaseUrl,
+  serviceEndpointPath,
 } from "../src/service/data-dir.js";
 import { serviceLeasePath } from "../src/service/service-lease.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
@@ -516,4 +517,104 @@ test("service continues after client disconnect (process independent of UI)", as
     const health = await rpc(svc, "service.health", {});
     assert.equal((health.result as { status: string }).status, "ok");
   });
+});
+
+test("service stop terminates active SSE and releases discovery ownership", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-sse-stop-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const baselineListeners = svc.events.listenerCount();
+
+  try {
+    const response = await fetch(`${svc.url}/events`, {
+      headers: { "x-tent-token": svc.token },
+    });
+    assert.equal(response.status, 200);
+    assert.equal(svc.events.listenerCount(), baselineListeners + 1);
+
+    const reader = response.body!.getReader();
+    const initial = await reader.read();
+    assert.equal(initial.done, false);
+    assert.match(new TextDecoder().decode(initial.value), /: ok/);
+
+    let stopTimer: NodeJS.Timeout | undefined;
+    try {
+      await Promise.race([
+        svc.stop(),
+        new Promise<never>((_, reject) => {
+          stopTimer = setTimeout(
+            () => reject(new Error("service stop hung behind active SSE")),
+            2_000
+          );
+        }),
+      ]);
+    } finally {
+      if (stopTimer) clearTimeout(stopTimer);
+    }
+
+    assert.equal(svc.events.listenerCount(), baselineListeners);
+    await assert.rejects(() => fs.access(serviceEndpointPath(dataDir)), /ENOENT/);
+    await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
+    await assert.rejects(() => fetch(`${svc.url}/health`));
+
+    try {
+      await reader.read();
+    } catch {
+      // Destroyed SSE streams may surface as either EOF or a transport error.
+    }
+  } finally {
+    await svc.stop();
+  }
+});
+
+test("service stop drains an accepted finite RPC before releasing its lease", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b2-rpc-drain-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  const payload = JSON.stringify({
+    jsonrpc: "2.0",
+    id: 1,
+    method: "service.health",
+    params: {},
+  });
+
+  try {
+    const response = new Promise<string>((resolve, reject) => {
+      const req = http.request(
+        `${svc.url}/rpc`,
+        {
+          method: "POST",
+          headers: {
+            "content-type": "application/json",
+            "content-length": Buffer.byteLength(payload),
+            "x-tent-token": svc.token,
+          },
+        },
+        (res) => {
+          const chunks: Buffer[] = [];
+          res.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
+          res.on("end", () => resolve(Buffer.concat(chunks).toString("utf8")));
+        }
+      );
+      req.on("error", reject);
+      req.write(payload.slice(0, 12));
+
+      setTimeout(() => req.end(payload.slice(12)), 100);
+    });
+
+    await new Promise((resolve) => setTimeout(resolve, 25));
+    let stopped = false;
+    const stopping = svc.stop().then(() => {
+      stopped = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    assert.equal(stopped, false, "shutdown must wait for an already accepted RPC");
+    await fs.access(serviceLeasePath(dataDir));
+
+    const raw = await response;
+    assert.equal((JSON.parse(raw) as { result?: { status?: string } }).result?.status, "ok");
+    await stopping;
+    assert.equal(stopped, true);
+    await assert.rejects(() => fs.access(serviceLeasePath(dataDir)), /ENOENT/);
+  } finally {
+    await svc.stop();
+  }
 });

@@ -16660,6 +16660,7 @@ var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   10080
 ]);
 var MAX_RPC_BODY_BYTES = 36 * 1024 * 1024;
+var MAX_SSE_QUEUE_BYTES = 1024 * 1024;
 var RequestBodyTooLargeError = class extends Error {
   constructor(maxBytes) {
     super(`RPC request body exceeds ${maxBytes} bytes`);
@@ -16678,16 +16679,27 @@ async function createServiceHttpServer(options) {
       `Local Tent Service host must be a literal loopback address (127.0.0.0/8 or ::1), got: ${host}`
     );
   }
+  const closeSseConnections = /* @__PURE__ */ new Set();
+  const activeResponses = /* @__PURE__ */ new Set();
   const server = http.createServer(async (req, res) => {
+    activeResponses.add(res);
+    const releaseResponse = () => activeResponses.delete(res);
+    res.once("finish", releaseResponse);
+    res.once("close", releaseResponse);
     try {
-      await handleRequest(req, res, options);
+      await handleRequest(req, res, options, closeSseConnections);
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: "Internal Server Error" }));
+      } else {
+        res.destroy();
       }
     }
   });
+  server.requestTimeout = 6e4;
+  server.headersTimeout = 1e4;
+  server.keepAliveTimeout = 5e3;
   let port = 0;
   for (let attempt = 0; attempt < 20; attempt++) {
     await listen(server, preferredPort, host);
@@ -16707,14 +16719,22 @@ async function createServiceHttpServer(options) {
   if (!port) {
     throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
   }
+  let closePromise = null;
   return {
     server,
     host,
     port,
     url: serviceBaseUrl(host, port),
-    close: () => new Promise((resolve10, reject) => {
-      server.close((err) => err ? reject(err) : resolve10());
-    })
+    close: () => {
+      if (closePromise) return closePromise;
+      closePromise = closeServer(server);
+      for (const response of activeResponses) {
+        if (!response.headersSent) response.setHeader("connection", "close");
+      }
+      for (const closeSse of [...closeSseConnections]) closeSse();
+      server.closeIdleConnections?.();
+      return closePromise;
+    }
   };
 }
 function listen(server, port, host) {
@@ -16737,7 +16757,7 @@ function closeServer(server) {
     server.close((err) => err ? reject(err) : resolve10());
   });
 }
-async function handleRequest(req, res, options) {
+async function handleRequest(req, res, options, closeSseConnections) {
   const { ctx, events, token } = options;
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
   if (req.method === "GET" && (url.pathname === "/health" || url.pathname === "/")) {
@@ -16750,7 +16770,7 @@ async function handleRequest(req, res, options) {
       writeJson2(res, 401, { error: "Unauthorized: invalid or missing service token" });
       return;
     }
-    handleSse(req, res, events);
+    handleSse(req, res, events, closeSseConnections);
     return;
   }
   if (req.method === "POST" && (url.pathname === "/rpc" || url.pathname === "/")) {
@@ -16853,30 +16873,83 @@ function authorize(req, expectedToken) {
   const provided = extractRequestToken(req.headers);
   return tokensEqual(expectedToken, provided);
 }
-function handleSse(req, res, events) {
+function handleSse(req, res, events, closeSseConnections) {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache",
     connection: "keep-alive"
   });
-  res.write(": ok\n\n");
+  let closed = false;
+  let blocked = false;
+  let queuedBytes = 0;
+  const queue = [];
+  let unsubscribe = () => {
+  };
+  const cleanup = () => {
+    if (closed) return;
+    closed = true;
+    clearInterval(heartbeat);
+    unsubscribe();
+    queue.length = 0;
+    queuedBytes = 0;
+    closeSseConnections.delete(close);
+    req.off("close", cleanup);
+    res.off("close", cleanup);
+    res.off("drain", flush);
+  };
+  const close = () => {
+    if (closed) return;
+    cleanup();
+    res.destroy();
+  };
+  const send = (payload) => {
+    if (closed) return;
+    const bytes = Buffer.byteLength(payload);
+    if (bytes > MAX_SSE_QUEUE_BYTES || blocked && queuedBytes + bytes > MAX_SSE_QUEUE_BYTES) {
+      close();
+      return;
+    }
+    if (blocked) {
+      queue.push({ payload, bytes });
+      queuedBytes += bytes;
+      return;
+    }
+    try {
+      blocked = !res.write(payload);
+    } catch {
+      close();
+    }
+  };
+  function flush() {
+    if (closed) return;
+    blocked = false;
+    while (queue.length > 0) {
+      const next = queue.shift();
+      queuedBytes -= next.bytes;
+      try {
+        if (!res.write(next.payload)) {
+          blocked = true;
+          return;
+        }
+      } catch {
+        close();
+        return;
+      }
+    }
+  }
   const onEvent = (event) => {
-    res.write(`event: ${event.type}
-`);
-    res.write(`data: ${JSON.stringify(event)}
+    send(`event: ${event.type}
+data: ${JSON.stringify(event)}
 
 `);
   };
-  const unsubscribe = events.subscribe(onEvent);
-  const heartbeat = setInterval(() => {
-    res.write(": ping\n\n");
-  }, 15e3);
-  const cleanup = () => {
-    clearInterval(heartbeat);
-    unsubscribe();
-  };
-  req.on("close", cleanup);
-  res.on("close", cleanup);
+  unsubscribe = events.subscribe(onEvent);
+  const heartbeat = setInterval(() => send(": ping\n\n"), 15e3);
+  closeSseConnections.add(close);
+  req.once("close", cleanup);
+  res.once("close", cleanup);
+  res.on("drain", flush);
+  send(": ok\n\n");
 }
 function writeJson2(res, status, body) {
   const payload = JSON.stringify(body);
@@ -19587,7 +19660,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     events,
     token
   });
-  registerStartupCleanup(40, () => httpServer.close());
+  registerStartupCleanup(5, () => httpServer.close());
   let endpoint = null;
   if (options.writeEndpoint !== false) {
     endpoint = {
@@ -19614,28 +19687,28 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const stop = () => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
+      let firstError;
+      const attempt = async (action, bestEffort = false) => {
+        try {
+          await action();
+        } catch (error) {
+          if (!bestEffort && firstError === void 0) firstError = error;
+        }
+      };
       try {
         events.emit("service.health", "", { action: "stopping" });
-        try {
-          await runtime.shutdown();
-        } catch {
-        }
-        try {
-          await drainRuntimeProjections();
-        } finally {
-          unsubscribeRuntimeEvents();
-          try {
-            await workspaceHost.dispose();
-          } finally {
-            await httpServer.close();
-          }
-        }
+        await attempt(() => httpServer.close());
+        await attempt(() => runtime.shutdown(), true);
+        await attempt(() => drainRuntimeProjections());
+        unsubscribeRuntimeEvents();
+        await attempt(() => workspaceHost.dispose());
       } finally {
         if (options.writeEndpoint !== false) {
-          await removeServiceEndpoint(dataDir, serviceLease.instanceId);
+          await attempt(() => removeServiceEndpoint(dataDir, serviceLease.instanceId));
         }
-        await serviceLease.release();
+        await attempt(() => serviceLease.release());
       }
+      if (firstError !== void 0) throw firstError;
     })();
     return stopPromise;
   };

@@ -379,7 +379,9 @@ async function startOwnedLocalTentService(
     events,
     token,
   });
-  registerStartupCleanup(40, () => httpServer.close());
+  // Quiesce the transport before startup rollback tears down dependencies that
+  // an already accepted request may still be using.
+  registerStartupCleanup(5, () => httpServer.close());
 
   let endpoint: ServiceEndpointRecord | null = null;
   if (options.writeEndpoint !== false) {
@@ -408,30 +410,32 @@ async function startOwnedLocalTentService(
   const stop = (): Promise<void> => {
     if (stopPromise) return stopPromise;
     stopPromise = (async () => {
+      let firstError: unknown;
+      const attempt = async (action: () => void | Promise<void>, bestEffort = false) => {
+        try {
+          await action();
+        } catch (error) {
+          if (!bestEffort && firstError === undefined) firstError = error;
+        }
+      };
+
       try {
         events.emit("service.health", "", { action: "stopping" });
-        try {
-          await runtime.shutdown();
-        } catch {
-          // best-effort
-        }
-        try {
-          await drainRuntimeProjections();
-        } finally {
-          unsubscribeRuntimeEvents();
-          try {
-            await workspaceHost.dispose();
-          } finally {
-            // Never release the data-dir lease while its HTTP listener survives.
-            await httpServer.close();
-          }
-        }
+        // Stop accepting work and drain finite requests before their runtime and
+        // workspace dependencies are disposed. Active SSE streams are terminated
+        // by the HTTP server and therefore cannot hold shutdown open.
+        await attempt(() => httpServer.close());
+        await attempt(() => runtime.shutdown(), true);
+        await attempt(() => drainRuntimeProjections());
+        unsubscribeRuntimeEvents();
+        await attempt(() => workspaceHost.dispose());
       } finally {
         if (options.writeEndpoint !== false) {
-          await removeServiceEndpoint(dataDir, serviceLease.instanceId);
+          await attempt(() => removeServiceEndpoint(dataDir, serviceLease.instanceId));
         }
-        await serviceLease.release();
+        await attempt(() => serviceLease.release());
       }
+      if (firstError !== undefined) throw firstError;
     })();
     return stopPromise;
   };

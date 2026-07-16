@@ -47,6 +47,7 @@ const FETCH_BLOCKED_PORTS = new Set([
 // A 25 MiB binary attachment expands to ~33.4 MiB as base64. Keep bounded
 // transport headroom for JSON fields without allowing unbounded buffering.
 export const MAX_RPC_BODY_BYTES = 36 * 1024 * 1024;
+export const MAX_SSE_QUEUE_BYTES = 1024 * 1024;
 
 class RequestBodyTooLargeError extends Error {
   constructor(readonly maxBytes: number) {
@@ -69,16 +70,27 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
     );
   }
 
+  const closeSseConnections = new Set<() => void>();
+  const activeResponses = new Set<http.ServerResponse>();
   const server = http.createServer(async (req, res) => {
+    activeResponses.add(res);
+    const releaseResponse = () => activeResponses.delete(res);
+    res.once("finish", releaseResponse);
+    res.once("close", releaseResponse);
     try {
-      await handleRequest(req, res, options);
+      await handleRequest(req, res, options, closeSseConnections);
     } catch (error) {
       if (!res.headersSent) {
         res.writeHead(500, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify({ error: "Internal Server Error" }));
+      } else {
+        res.destroy();
       }
     }
   });
+  server.requestTimeout = 60_000;
+  server.headersTimeout = 10_000;
+  server.keepAliveTimeout = 5_000;
 
   let port = 0;
   for (let attempt = 0; attempt < 20; attempt++) {
@@ -99,15 +111,24 @@ export async function createServiceHttpServer(options: CreateHttpServerOptions):
   if (!port) {
     throw new Error("Failed to allocate a Fetch-compatible Local Tent Service port");
   }
+  let closePromise: Promise<void> | null = null;
   return {
     server,
     host,
     port,
     url: serviceBaseUrl(host, port),
-    close: () =>
-      new Promise((resolve, reject) => {
-        server.close((err) => (err ? reject(err) : resolve()));
-      }),
+    close: () => {
+      if (closePromise) return closePromise;
+      // Stop accepting first, then tear down long-lived streams. Finite RPCs
+      // are allowed to drain before the close promise resolves.
+      closePromise = closeServer(server);
+      for (const response of activeResponses) {
+        if (!response.headersSent) response.setHeader("connection", "close");
+      }
+      for (const closeSse of [...closeSseConnections]) closeSse();
+      server.closeIdleConnections?.();
+      return closePromise;
+    },
   };
 }
 
@@ -136,7 +157,8 @@ function closeServer(server: http.Server): Promise<void> {
 async function handleRequest(
   req: http.IncomingMessage,
   res: http.ServerResponse,
-  options: CreateHttpServerOptions
+  options: CreateHttpServerOptions,
+  closeSseConnections: Set<() => void>
 ): Promise<void> {
   const { ctx, events, token } = options;
   const url = new URL(req.url || "/", `http://${req.headers.host || "127.0.0.1"}`);
@@ -153,7 +175,7 @@ async function handleRequest(
       writeJson(res, 401, { error: "Unauthorized: invalid or missing service token" });
       return;
     }
-    handleSse(req, res, events);
+    handleSse(req, res, events, closeSseConnections);
     return;
   }
 
@@ -282,30 +304,93 @@ function authorize(req: http.IncomingMessage, expectedToken: string): boolean {
   return tokensEqual(expectedToken, provided);
 }
 
-function handleSse(req: http.IncomingMessage, res: http.ServerResponse, events: EventBus): void {
+function handleSse(
+  req: http.IncomingMessage,
+  res: http.ServerResponse,
+  events: EventBus,
+  closeSseConnections: Set<() => void>
+): void {
   res.writeHead(200, {
     "content-type": "text/event-stream; charset=utf-8",
     "cache-control": "no-cache",
     connection: "keep-alive",
   });
-  res.write(": ok\n\n");
-
-  const onEvent = (event: EventEnvelope) => {
-    res.write(`event: ${event.type}\n`);
-    res.write(`data: ${JSON.stringify(event)}\n\n`);
-  };
-  const unsubscribe = events.subscribe(onEvent);
-
-  const heartbeat = setInterval(() => {
-    res.write(": ping\n\n");
-  }, 15000);
+  let closed = false;
+  let blocked = false;
+  let queuedBytes = 0;
+  const queue: Array<{ payload: string; bytes: number }> = [];
+  let unsubscribe = () => {};
 
   const cleanup = () => {
+    if (closed) return;
+    closed = true;
     clearInterval(heartbeat);
     unsubscribe();
+    queue.length = 0;
+    queuedBytes = 0;
+    closeSseConnections.delete(close);
+    req.off("close", cleanup);
+    res.off("close", cleanup);
+    res.off("drain", flush);
   };
-  req.on("close", cleanup);
-  res.on("close", cleanup);
+
+  const close = () => {
+    if (closed) return;
+    cleanup();
+    // A graceful end can remain buffered forever behind a stalled SSE client.
+    // Destroying only this long-lived stream lets finite RPCs drain normally.
+    res.destroy();
+  };
+
+  const send = (payload: string) => {
+    if (closed) return;
+    const bytes = Buffer.byteLength(payload);
+    if (bytes > MAX_SSE_QUEUE_BYTES || (blocked && queuedBytes + bytes > MAX_SSE_QUEUE_BYTES)) {
+      close();
+      return;
+    }
+    if (blocked) {
+      queue.push({ payload, bytes });
+      queuedBytes += bytes;
+      return;
+    }
+    try {
+      blocked = !res.write(payload);
+    } catch {
+      close();
+    }
+  };
+
+  function flush(): void {
+    if (closed) return;
+    blocked = false;
+    while (queue.length > 0) {
+      const next = queue.shift()!;
+      queuedBytes -= next.bytes;
+      try {
+        if (!res.write(next.payload)) {
+          blocked = true;
+          return;
+        }
+      } catch {
+        close();
+        return;
+      }
+    }
+  }
+
+  const onEvent = (event: EventEnvelope) => {
+    send(`event: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`);
+  };
+  unsubscribe = events.subscribe(onEvent);
+
+  const heartbeat = setInterval(() => send(": ping\n\n"), 15000);
+
+  closeSseConnections.add(close);
+  req.once("close", cleanup);
+  res.once("close", cleanup);
+  res.on("drain", flush);
+  send(": ok\n\n");
 }
 
 function writeJson(res: http.ServerResponse, status: number, body: unknown): void {

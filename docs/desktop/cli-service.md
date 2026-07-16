@@ -31,6 +31,10 @@ tent-core (sole domain rules)
 - `service.json` carries the owning instance id. Shutdown removes the endpoint
   only when it still belongs to that instance, so an old process cannot erase a
   replacement Service's discovery record.
+- Shutdown first stops accepting new HTTP work, terminates long-lived SSE
+  streams, and lets finite RPCs drain before disposing runtime/workspace state
+  or releasing the data-directory lease. Each SSE subscriber has a bounded
+  1 MiB pending queue; stalled subscribers are disconnected on overflow.
 - **CLI exit does not stop the service** (detached child + no stop on process end). Closing Desktop windows likewise leaves the service running so claim/deliver still work.
 
 ## Commands (stable names)
