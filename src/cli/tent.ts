@@ -312,6 +312,11 @@ async function main() {
           );
         }
         if (!dispatcher || dispatcher === "user") return fail("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        if (dispatcher === role) return fail("--as-sub dispatchedBy must not equal the assignee itself");
+        const registry = await loadRolesRegistry(env.fs);
+        if (!registry.roles.some((item) => item.name === dispatcher)) {
+          return fail(`--as-sub dispatchedBy role not found in registry: ${dispatcher}`);
+        }
         const dispatcherWorkspace = await ensureRoleWorkspace(workspacePath, dispatcher);
         workspace = { ...(workspace ?? await ensureRoleWorkspace(workspacePath, role)), targetBranch: dispatcherWorkspace.branch };
       }
@@ -319,6 +324,7 @@ async function main() {
         userPrompt: localPrompt,
         workspace,
         dispatchedBy: dispatcher,
+        asSub: flags["as-sub"] === "true",
       });
       console.log(`✓ Dispatched. Task: ${r.taskPath}\n\n--- Relay prompt ---\n${r.relayPrompt}`);
       break;

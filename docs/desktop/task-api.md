@@ -42,13 +42,14 @@ assigneeKind: role | agentProfile   # missing → role (backward compatible; no 
 # `assignee` as that same label.
 role: <role-name|profile-id>
 dispatchedBy: user | <role>      # for agentProfile + role caller, must name a real dispatcher role
+asSub: true                      # optional; missing → false (peer). Sub requires durable dispatcher + Git lane
 sessionId: ss-…                  # optional until claim/start; **reference only**
 manifest: temp/…                 # honor-contract snapshot path at dispatch
 workspaceLane:                   # omit when tent has no Git/workspace lane (pure Tent task)
   workspace: …
   worktree: …
   branch: …                      # role: tent-role/<role>; profile: tent-task/<taskId>
-  targetBranch: …                # peer → mainline; sub → dispatcher role branch
+  targetBranch: …                # peer → mainline; sub → dispatcher role branch tent-role/<dispatcher>
   roleBranchBase: <full-sha>      # captured once when managed execution acquires the lane slot
 deliveryPolicy: manual | bypass | agent-decide
 wait:
@@ -70,10 +71,10 @@ prompt: |                        # immutable after dispatch
 | Git lane | durable `tent-role/<role>` worktree (created at dispatch when Git) | task-scoped `tent-task/<taskId>` (created at managed acquisition; **not** `tent-role/<profile>`) |
 | Concurrency | one live managed session per durable role | multiple concurrent tasks/sessions even with the same profile config |
 | startSession | any authorized profileId | **must** equal envelope profileId / assignee label |
-| A2A (role caller) | authority = task role’s `a2aPolicy` / `allowedProfiles` | authority = **dispatcher** role named in `dispatchedBy` (must be a real registry role); profile is not a role |
+| A2A (role caller) | peer: authority = task role’s `a2aPolicy` / `allowedProfiles`; **sub (`asSub`)**: authority = **dispatcher** in `dispatchedBy` | authority = **dispatcher** role named in `dispatchedBy` (must be a real registry role); profile is not a role — peer and sub |
 | Claim / delivery | submitter / box.assignee = role name | submitter / box.assignee = profileId |
 
-Missing `assigneeKind` on disk **reads as `role`**. Historical tasks are not migrated.
+Missing `assigneeKind` on disk **reads as `role`**. Missing `asSub` **reads as `false` (peer)**. Historical tasks are not migrated.
 
 #### WorkspaceLane (task) vs RuntimeWorkspace (runtime)
 
@@ -217,7 +218,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 
 | API | Default callers | Effect |
 | --- | --- | --- |
-| `task.dispatch` | user; authorized orchestrator role | Create `queued` task + manifest snapshot. Params: `assigneeKind` (default `role`), `role` (required for role), `profileId` (required for agentProfile and must exist in the machine-local profile catalog), optional `startSession` + same `profileId`. Does **not** start a session unless `startSession: true` and A2A allows. |
+| `task.dispatch` | user; authorized orchestrator role | Create `queued` task + manifest snapshot. Params: `assigneeKind` (default `role`), `role` (required for role), `profileId` (required for agentProfile and must exist in the machine-local profile catalog), optional `asSub` + `dispatchedBy`, optional `startSession` + same `profileId`. Does **not** start a session unless `startSession: true` and A2A allows. `asSub: true` fails before envelope creation without a durable registry dispatcher role, real Git workspace, and dispatcher lane. |
 | `task.claim` | target assignee/session (or user on behalf) | `queued → running`; bind `sessionId` reference; project assignee (role name or profileId) |
 | `task.startSession` | authorized orchestration / user | Resolve **machine-local AgentProfile**, enforce **A2APolicy**, then service calls **internal** `AgentRuntimePort`. For agentProfile tasks, `profileId` must match the envelope assignee. |
 | `task.wait` | executing session / service | `running → waiting` with reason + summary |
@@ -356,18 +357,22 @@ Successful create/update/delete emits **exactly one** `registry.roles.updated` (
 
 ### 4.4 Self-accept ban
 
-- `task.accept` actor **must not** equal the delivery submitter role.
-- An authorized orchestrator may accept deliveries it dispatched (sub chain) subject to service policy; peer deliveries default to user final accept unless explicitly delegated.
+- `task.accept` / `task.reject` actor **must not** equal the delivery submitter (self-review ban).
+- Peer tasks: any non-submitter actor may review (typically user). This is **not** cryptographic auth — self-declared `actor` rides the shared service token.
+- Sub tasks (`asSub: true`): actor must be **`user`** or the exact **`dispatchedBy`** role; an unrelated role fails. Dispatcher still cannot self-accept if they were also the submitter.
 - Recording `review.by = submitter` is a hard error.
 
 ### 4.5 Peer vs sub (hardened)
 
 | | Peer | Sub (`asSub: true`) |
 | --- | --- | --- |
-| Target | first-class role or **AgentProfile** | tool-like helper of dispatcher |
-| `targetBranch` | workspace mainline (e.g. `main`) | dispatcher role branch |
-| Default accept authority | user (or user-delegated orchestrator) | dispatcher role (still not self) |
-| **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without lane) |
+| Target | first-class role or **AgentProfile** | tool-like helper of dispatcher (role **or** agentProfile assignee) |
+| `targetBranch` | workspace mainline (e.g. `main`) | dispatcher role branch `tent-role/<dispatcher>` |
+| Execution lane | role: `tent-role/<assignee>` at dispatch; profile: deferred to `startSession` as `tent-task/<taskId>` | role: `tent-role/<assignee>`; profile: `tent-task/<taskId>` allocated at dispatch (taskId before lane) |
+| Default accept authority | user (or any non-submitter actor; soft policy) | user **or** exact `dispatchedBy` (still not self) |
+| A2A (`callerKind=role`) | role assignee → task role; profile assignee → `dispatchedBy` | **always** `dispatchedBy` durable role (role and profile assignees) |
+| **WorkspaceLane** | optional (pure Tent tasks legal—no code lane) | required (dispatch rejected without Git + dispatcher lane) |
+| Integrate cwd | worktree that already has target (usually main workspace on mainline) | dispatcher worktree (already on `tent-role/<dispatcher>`); **never** auto-switch branches |
 
 ---
 

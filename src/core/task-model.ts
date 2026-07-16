@@ -113,6 +113,7 @@ export type TransitionErrorCode =
   | "POLICY_FORBIDS_AUTO_INTEGRATE"
   | "DECISION_REQUIRED"
   | "SELF_ACCEPT_FORBIDDEN"
+  | "REVIEW_FORBIDDEN"
   | "A2A_DENIED"
   | "NO_ACTIVE_DELIVERY"
   | "TASK_NOT_ACTIVE"
@@ -224,6 +225,47 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
       `task.accept actor must not equal delivery submitter (${submitterRole}).`
     );
   }
+}
+
+/**
+ * Review authority for task.accept / task.reject (task-api §4.4 / §4.5).
+ * - Self-review (actor === submitter) is always forbidden.
+ * - Peer tasks: any non-submitter actor may review (typically user; not crypto-bound).
+ * - Sub tasks (`asSub`): actor must be `user` or the exact `dispatchedBy` role.
+ *   Unrelated roles fail. This is a soft policy check, not cryptographic auth.
+ */
+export function assertReviewAuthority(input: {
+  actor: string;
+  submitterRole: string;
+  asSub?: boolean;
+  dispatchedBy?: string;
+  action?: "accept" | "reject";
+}): void {
+  const actor = input.actor.trim();
+  const submitter = input.submitterRole.trim();
+  const action = input.action ?? "accept";
+  if (!actor) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires a non-empty actor.`
+    );
+  }
+  if (actor === submitter) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.${action} actor must not equal delivery submitter (${submitter}).`
+    );
+  }
+  if (input.asSub !== true) return;
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (actor === "user") return;
+  if (dispatcher && actor === dispatcher) return;
+  throw new TaskLifecycleError(
+    "REVIEW_FORBIDDEN",
+    `task.${action} on sub task requires actor user or dispatchedBy role` +
+      (dispatcher ? ` (${dispatcher})` : "") +
+      `; got ${actor}.`
+  );
 }
 
 /** A2A hard gate pure evaluation (task-api §4). User is root authority. */

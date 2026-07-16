@@ -142,29 +142,42 @@ export async function runTaskCommand(
         const promptParts = positionals.slice(2);
         if (!boxId || !role) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
         if (prompt === "-") prompt = await readStdinText();
+        const asSub = flags["as-sub"] === "true";
+        const dispatchedBy =
+          flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
+        if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
+          return failUsage("--as-sub requires --by <dispatching-role> or TENT_ROLE");
+        }
         const result = await client.taskDispatch(workspaceId, {
           boxId,
           role,
           prompt,
-          dispatchedBy: flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user",
+          dispatchedBy,
+          asSub: asSub || undefined,
           deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
         });
         return okPrint(result, json, (r) => {
-          const row = r as { taskPath: string; state?: string; relayPrompt?: string };
+          const row = r as {
+            taskPath: string;
+            state?: string;
+            relayPrompt?: string;
+            asSub?: boolean;
+          };
           return (
             `✓ Dispatched via service RPC\n` +
             `taskPath: ${row.taskPath}\n` +
             `state: ${row.state ?? "queued"}\n` +
+            (row.asSub ? `asSub: true\n` : "") +
             (row.relayPrompt ? `\n--- Relay prompt ---\n${row.relayPrompt}` : "")
           );
         });
@@ -306,6 +319,7 @@ const BOOLEAN_FLAGS = new Set([
   "resume",
   "no-resume",
   "yes",
+  "as-sub",
 ]);
 
 export function parseTaskFlags(args: string[]): {
@@ -352,7 +366,7 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--workspace <path>] [--json]
+  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]

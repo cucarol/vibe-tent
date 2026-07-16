@@ -56,6 +56,11 @@ export interface DispatchOptions {
   userPrompt?: string;
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
+  /**
+   * Sub-dispatch flag. Missing/false = peer. When true, requires real Git lane
+   * and a durable dispatcher role in dispatchedBy (validated by service/CLI).
+   */
+  asSub?: boolean;
   /** Delivery policy for this task (default manual). */
   deliveryPolicy?: DeliveryPolicy;
   /**
@@ -64,6 +69,11 @@ export interface DispatchOptions {
   assigneeKind?: AssigneeKind;
   /** Required when assigneeKind=agentProfile; stable assignee / delivery label. */
   profileId?: string;
+  /**
+   * Optional preallocated task id (tk-…). Used by asSub profile dispatch so the
+   * tent-task/<taskId> lane can be created before the envelope is written.
+   */
+  taskId?: string;
 }
 
 export async function dispatch(
@@ -153,7 +163,10 @@ async function dispatchUnlocked(
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
-    const taskId = makeTaskId();
+    const taskId =
+      options.taskId && options.taskId.trim()
+        ? options.taskId.trim()
+        : makeTaskId();
     let manifestPath: string;
     let initPath: string | undefined;
 
@@ -183,6 +196,7 @@ async function dispatchUnlocked(
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
       id: taskId,

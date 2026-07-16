@@ -1450,6 +1450,7 @@ async function loadTaskEnvelope(fs, path) {
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
@@ -1562,6 +1563,7 @@ async function writeTaskEnvelope(fs, clock, input) {
     createdAt: now,
     updatedAt: now
   };
+  if (input.asSub === true) data.asSub = true;
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
@@ -2182,7 +2184,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
-    const taskId = makeTaskId();
+    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
     let manifestPath;
     let initPath;
     if (assigneeKind === "agentProfile") {
@@ -2205,6 +2207,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
       id: taskId,
@@ -3105,52 +3108,82 @@ async function integrateWorkspaceCommits(contract, refs) {
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
   if (commits.length === 0) return [];
   const root = contract.workspace;
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (current !== contract.targetBranch) {
-    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
+  const target = contract.targetBranch;
+  const integrationCwd = await resolveIntegrationCwd(root, target);
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
+    );
   }
-  const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
     resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
   }
-  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef)
+  );
   if (fastForwardRef) {
     try {
-      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
       return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
         sourceRef,
         integratedRef,
         alreadyIntegrated: false
       }));
     } catch (error) {
-      await rollbackIntegration(root, originalRef, error);
+      await rollbackIntegration(integrationCwd, originalRef, error);
     }
   }
   const results = [];
   try {
     for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
       if (ancestor) {
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
+      const prior = await findCherryPick(root, sourceRef, target);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
       }
-      await git(root, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    await rollbackIntegration(root, originalRef, error);
+    await rollbackIntegration(integrationCwd, originalRef, error);
   }
   return results;
+}
+async function resolveIntegrationCwd(root, targetBranch) {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs2.realpath(nodePath2.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
 }
 async function listRoleCommits(contract) {
   try {

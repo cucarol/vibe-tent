@@ -283,6 +283,11 @@ export class ServiceClient {
       assigneeKind?: "role" | "agentProfile";
       prompt: string;
       dispatchedBy?: string;
+      /**
+       * Sub-dispatch. When true, requires durable dispatcher role in dispatchedBy
+       * and a real Git workspace lane; targetBranch becomes tent-role/<dispatcher>.
+       */
+      asSub?: boolean;
       deliveryPolicy?: string;
       startSession?: boolean;
       /**

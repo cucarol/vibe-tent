@@ -16,6 +16,7 @@ import {
   patchTaskEnvelope,
   sessionBootstrapPromptForTask,
   taskAssigneeKind,
+  taskAsSub,
   type RoleWorkspaceContract,
   type TaskEnvelope,
 } from "../core/task.js";
@@ -83,10 +84,12 @@ import {
   ensureTaskWorkspace,
   ensureTaskWorkspaceIfGit,
   integrateWorkspaceCommits,
+  isGitWorkspace,
   isSameWorkspaceRoot,
   listPendingRoleCommits,
   readRoleBranchTip,
 } from "../core/workspace.js";
+import { makeTaskId } from "../core/task-model.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
 import { makeSessionId } from "../runtime/types.js";
 import type { RuntimeEvent, SessionRecord } from "../runtime/types.js";
@@ -1499,6 +1502,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
+  const asSub = p.asSub === true;
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
@@ -1531,16 +1535,44 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   // P0-1: role worktree create/reuse + envelope dispatch share the workspace MutationBus
   // critical section so concurrent role worktree add cannot race. Git ops stay inside the
   // bus action (never nested mutations.run).
-  // Profile tasks create tent-task/<taskId> lanes at managed acquisition, not at dispatch.
+  // Peer profile tasks: lane deferred until startSession (tent-task/<taskId>).
+  // Sub profile tasks: allocate taskId + create task lane at dispatch (target = dispatcher).
   // When deliveryPolicy is omitted, snapshot current workspace default into the task
   // envelope at dispatch time (settings changes never rewrite existing tasks).
   const result = await ctx.mutations.run(workspaceId, async () => {
     const assigneeLabel = assigneeKind === "agentProfile" ? profileId! : role!;
-    // Role: durable tent-role lane at dispatch. Profile: lane-less until startSession.
-    const roleLane =
-      assigneeKind === "role"
-        ? await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel)
-        : undefined;
+    // Keep registry/Git validation in the same workspace mutation section as lane
+    // creation and envelope persistence. Otherwise a concurrent role update could
+    // invalidate a check made just before entering the bus.
+    if (asSub) {
+      await assertSubDispatchPreconditions(mount.env.fs, {
+        workspaceRoot: mount.workspaceRoot,
+        dispatcher: dispatchedBy,
+        assigneeKind,
+        assigneeLabel,
+      });
+    }
+    let workspaceLane: RoleWorkspaceContract | undefined;
+    let preallocatedTaskId: string | undefined;
+
+    if (asSub) {
+      // Dispatcher lane must exist so targetBranch is a real checked-out worktree.
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatchedBy!.trim());
+      if (assigneeKind === "role") {
+        const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
+        workspaceLane = { ...assigneeLane, targetBranch: dispatcherLane.branch };
+      } else {
+        // Profile sub: allocate taskId before lane creation; peer profile stays deferred.
+        preallocatedTaskId = makeTaskId();
+        const taskLane = await ensureTaskWorkspace(mount.workspaceRoot, preallocatedTaskId);
+        workspaceLane = { ...taskLane, targetBranch: dispatcherLane.branch };
+      }
+    } else if (assigneeKind === "role") {
+      // Peer role: durable tent-role lane when Git; pure Tent otherwise.
+      workspaceLane = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+    }
+    // Peer profile: no lane at dispatch (deferred to startSession).
+
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
     if (deliveryPolicy === undefined) {
@@ -1550,10 +1582,12 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     const dispatched = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : undefined, {
       userPrompt: prompt,
       dispatchedBy,
+      asSub,
       deliveryPolicy,
-      workspace: roleLane,
+      workspace: workspaceLane,
       assigneeKind,
       profileId: assigneeKind === "agentProfile" ? profileId : undefined,
+      ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
     });
     ctx.events.emit(
       "task.state",
@@ -1568,9 +1602,9 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       },
       "self"
     );
-    return { dispatched, roleLane };
+    return { dispatched, workspaceLane };
   });
-  const roleLane = result.roleLane;
+  const workspaceLane = result.workspaceLane;
   const dispatched = result.dispatched;
 
   let session: unknown = undefined;
@@ -1599,17 +1633,63 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     relayPrompt: dispatched.relayPrompt,
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
+    asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
     state: startSession ? "running" : "queued",
     session,
-    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane
+    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane
       ? {
-          workspace: roleLane.workspace,
-          worktree: roleLane.worktree,
-          branch: roleLane.branch,
-          targetBranch: roleLane.targetBranch,
+          workspace: workspaceLane.workspace,
+          worktree: workspaceLane.worktree,
+          branch: workspaceLane.branch,
+          targetBranch: workspaceLane.targetBranch,
         }
       : undefined,
   };
+}
+
+/**
+ * Fail before lane/envelope creation for asSub dispatch.
+ * Requires durable registry dispatcher role (not user, not the assignee itself),
+ * and a real Git workspace. Soft policy only — not cryptographic auth.
+ */
+async function assertSubDispatchPreconditions(
+  fs: import("../core/adapter.js").FsAdapter,
+  input: {
+    workspaceRoot: string;
+    dispatcher: string | undefined;
+    assigneeKind: "role" | "agentProfile";
+    assigneeLabel: string;
+  }
+): Promise<void> {
+  const dispatcher = (input.dispatcher || "").trim();
+  if (!dispatcher || dispatcher === "user") {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires dispatchedBy naming a real durable registry role (not user)"
+    );
+  }
+  if (dispatcher === input.assigneeLabel) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub dispatchedBy must not equal the assignee itself",
+      { dispatchedBy: dispatcher, assignee: input.assigneeLabel }
+    );
+  }
+  const registry = await loadRolesRegistry(fs);
+  const role = registry.roles.find((r) => r.name === dispatcher);
+  if (!role) {
+    throw new RpcError(
+      -32602,
+      `task.dispatch asSub dispatchedBy role not found in registry: ${dispatcher}`,
+      { dispatchedBy: dispatcher }
+    );
+  }
+  if (!(await isGitWorkspace(input.workspaceRoot))) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires a real Git workspace lane; pure Tent / non-Git workspaces cannot host sub dispatch"
+    );
+  }
 }
 
 async function taskClaimRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -1886,14 +1966,16 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
-    // A2A authority: user is root. Role callers use the dispatcher role in dispatchedBy
-    // for agentProfile tasks (profile is not a role); durable role tasks use task.role.
+    // A2A authority: user is root. Role callers use dispatchedBy for sub tasks
+    // (role or profile assignee) and for peer agentProfile tasks; peer role tasks
+    // use task.role.
     const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
       taskRole: authorityRole,
       requireRegisteredRole:
-        callerKind === "role" && taskAssigneeKind(taskForPolicy) === "agentProfile",
+        callerKind === "role" &&
+        (taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile"),
     });
     // User root bypasses policy + profile whitelist.
     // Role caller + registry allow: profileId must be in role.allowedProfiles.
@@ -3480,6 +3562,8 @@ async function integrateWorkspaceCommitsForTask(
  * Resolve the lane contract for integration.
  * Role tasks re-validate against ensureRoleWorkspace(role).
  * Profile tasks re-validate against ensureTaskWorkspace(taskId) (tent-task/<id>).
+ * Sub tasks keep envelope targetBranch (dispatcher role branch) as first-class —
+ * do not overwrite with peer mainline from ensure*Workspace.
  */
 async function resolveIntegrationContract(
   workspaceRoot: string,
@@ -3506,11 +3590,6 @@ async function resolveIntegrationContract(
       `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
     );
   }
-  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
-    throw new Error(
-      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
-    );
-  }
   if (task.worktree) {
     const claimedWt = nodePath.resolve(task.worktree);
     const realWt = nodePath.resolve(real.worktree);
@@ -3519,6 +3598,35 @@ async function resolveIntegrationContract(
         `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
       );
     }
+  }
+
+  // Sub: targetBranch is dispatcher tent-role/<dispatcher>, not mainline.
+  // Re-validate against the real dispatcher lane; never trust a corrupted envelope.
+  if (taskAsSub(task)) {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    if (!dispatcher || dispatcher === "user") {
+      throw new Error(
+        `Sub task envelope missing durable dispatchedBy for ${label}; cannot resolve targetBranch`
+      );
+    }
+    const dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
+    if (task.targetBranch && task.targetBranch !== dispatcherLane.branch) {
+      throw new Error(
+        `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${dispatcherLane.branch}`
+      );
+    }
+    if (dispatcherLane.branch === real.branch) {
+      throw new Error(
+        `Sub task targetBranch must not equal assignee branch for ${label}: ${dispatcherLane.branch}`
+      );
+    }
+    return { ...real, targetBranch: dispatcherLane.branch };
+  }
+
+  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
+    throw new Error(
+      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+    );
   }
 
   // Prefer real contract paths (normalized realpath) over envelope strings.
@@ -3571,6 +3679,22 @@ async function ensureTaskWorkspaceLane(
           : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
     if (!lane) return current;
 
+    // Sub tasks keep dispatcher tent-role/* as targetBranch; never rewrite to mainline
+    // when backfilling an incomplete lane (peer profile still defers lane creation).
+    let targetBranch = lane.targetBranch;
+    if (taskAsSub(current)) {
+      const existingTarget = (current.targetBranch || "").trim();
+      if (existingTarget) {
+        targetBranch = existingTarget;
+      } else {
+        const dispatcher = (current.dispatchedBy || "").trim();
+        if (dispatcher && dispatcher !== "user") {
+          const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+          targetBranch = dispatcherLane.branch;
+        }
+      }
+    }
+
     const patch: Parameters<typeof patchTaskEnvelope>[2] = {
       updatedAt: mount.env.clock.now(),
     };
@@ -3578,7 +3702,7 @@ async function ensureTaskWorkspaceLane(
       patch.workspace = lane.workspace;
       patch.worktree = lane.worktree;
       patch.branch = lane.branch;
-      patch.targetBranch = lane.targetBranch;
+      patch.targetBranch = targetBranch;
     }
     // Capture-once: only set when still missing. Never rewrite on restart/resume.
     if (!current.roleBranchBase?.trim()) {
@@ -3614,28 +3738,31 @@ async function findActiveManagedSessionForRole(
 /**
  * Resolve the durable role whose a2aPolicy/allowedProfiles govern startSession.
  * - user caller: unused (root authority)
- * - role task: task.role is the durable role
- * - agentProfile task + role caller: dispatchedBy must name a real role (not the profile)
+ * - sub task (asSub) + role caller: authority = dispatchedBy (role or profile assignee)
+ * - peer role task: authority = task.role
+ * - peer agentProfile task + role caller: dispatchedBy must name a real role (not the profile)
  */
 function resolveA2AAuthorityRole(
   task: TaskEnvelope,
   callerKind: "user" | "role"
 ): string {
   if (callerKind === "user") return task.role;
-  if (taskAssigneeKind(task) === "agentProfile") {
+  if (taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
     const dispatcher = (task.dispatchedBy || "").trim();
     if (!dispatcher || dispatcher === "user") {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
-        { dispatchedBy: task.dispatchedBy, profileId: task.role }
+        taskAsSub(task)
+          ? "callerKind=role startSession on sub task requires dispatchedBy to name a real dispatcher role"
+          : "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
+        { dispatchedBy: task.dispatchedBy, assignee: task.role, asSub: taskAsSub(task) }
       );
     }
     if (dispatcher === task.role) {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession on agentProfile task must not use the profileId as dispatcher role",
-        { dispatchedBy: dispatcher, profileId: task.role }
+        "callerKind=role startSession must not use the assignee label as dispatcher role",
+        { dispatchedBy: dispatcher, assignee: task.role }
       );
     }
     return dispatcher;
@@ -3731,6 +3858,8 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     state: task.state,
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
+    // Missing asSub on disk reads as false (peer).
+    asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
     // Missing assigneeKind on disk reads as role (backward compatible).
     assigneeKind: taskAssigneeKind(task),

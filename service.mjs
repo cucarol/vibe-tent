@@ -1246,13 +1246,30 @@ function resolveDeliverRouting(policy, decision) {
   }
   return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
 }
-function assertNotSelfAccept(actor, submitterRole) {
-  if (actor.trim() === submitterRole.trim()) {
+function assertReviewAuthority(input) {
+  const actor = input.actor.trim();
+  const submitter = input.submitterRole.trim();
+  const action = input.action ?? "accept";
+  if (!actor) {
     throw new TaskLifecycleError(
-      "SELF_ACCEPT_FORBIDDEN",
-      `task.accept actor must not equal delivery submitter (${submitterRole}).`
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires a non-empty actor.`
     );
   }
+  if (actor === submitter) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.${action} actor must not equal delivery submitter (${submitter}).`
+    );
+  }
+  if (input.asSub !== true) return;
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (actor === "user") return;
+  if (dispatcher && actor === dispatcher) return;
+  throw new TaskLifecycleError(
+    "REVIEW_FORBIDDEN",
+    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
+  );
 }
 function evaluateA2A(input) {
   if (input.callerKind === "user") return "allow";
@@ -1296,6 +1313,9 @@ async function collectTaskFiles(fs13, taskDir, tasks) {
 function taskAssigneeKind(task) {
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
+function taskAsSub(task) {
+  return task.asSub === true;
+}
 async function loadTaskEnvelope(fs13, path15) {
   if (!await fs13.exists(path15)) throw new Error(`Task envelope not found: ${path15}.`);
   const { data, body } = parseFrontmatter(await fs13.readFile(path15));
@@ -1315,6 +1335,7 @@ async function loadTaskEnvelope(fs13, path15) {
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
@@ -1457,6 +1478,7 @@ async function writeTaskEnvelope(fs13, clock, input) {
     createdAt: now,
     updatedAt: now
   };
+  if (input.asSub === true) data.asSub = true;
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
@@ -1971,7 +1993,13 @@ async function taskAccept(env, taskPath, options) {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    assertNotSelfAccept(options.actor, delivery.role);
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "accept"
+    });
     const commits = options.commits ?? delivery.commits;
     if (commits.length > 0) {
       if (!options.integrate) throw new Error("Delivery contains commits; workspace integration is required.");
@@ -2001,12 +2029,13 @@ async function taskReject(env, taskPath, options) {
     const to = resume ? "running" : "rejected";
     assertTransition(task.state, event, to);
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    if (options.actor.trim() === delivery.role.trim()) {
-      throw new TaskLifecycleError(
-        "SELF_ACCEPT_FORBIDDEN",
-        `task.reject actor must not equal delivery submitter (${delivery.role}).`
-      );
-    }
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "reject"
+    });
     delivery.status = "rejected";
     delivery.review = {
       by: options.actor,
@@ -2306,7 +2335,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
-    const taskId = makeTaskId();
+    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
     let manifestPath;
     let initPath;
     if (assigneeKind === "agentProfile") {
@@ -2329,6 +2358,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       userPrompt,
       workspace: options.workspace,
       dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
       id: taskId,
@@ -3418,52 +3448,82 @@ async function integrateWorkspaceCommits(contract, refs) {
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
   if (commits.length === 0) return [];
   const root = contract.workspace;
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (current !== contract.targetBranch) {
-    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
+  const target = contract.targetBranch;
+  const integrationCwd = await resolveIntegrationCwd(root, target);
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
+    );
   }
-  const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
     resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
   }
-  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef)
+  );
   if (fastForwardRef) {
     try {
-      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
       return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
         sourceRef,
         integratedRef,
         alreadyIntegrated: false
       }));
     } catch (error) {
-      await rollbackIntegration(root, originalRef, error);
+      await rollbackIntegration(integrationCwd, originalRef, error);
     }
   }
   const results = [];
   try {
     for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
       if (ancestor) {
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
+      const prior = await findCherryPick(root, sourceRef, target);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
       }
-      await git(root, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    await rollbackIntegration(root, originalRef, error);
+    await rollbackIntegration(integrationCwd, originalRef, error);
   }
   return results;
+}
+async function resolveIntegrationCwd(root, targetBranch) {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
 }
 async function listRoleCommitsSince(contract, base) {
   const since = base.trim();
@@ -7334,6 +7394,7 @@ async function taskDispatch(ctx, p) {
   const profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
   const dispatchedBy = optionalString(p, "dispatchedBy");
+  const asSub = p.asSub === true;
   const explicitDeliveryPolicy = parseDeliveryPolicy(optionalString(p, "deliveryPolicy"));
   const startSession = p.startSession === true;
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
@@ -7363,7 +7424,29 @@ async function taskDispatch(ctx, p) {
   }
   const result = await ctx.mutations.run(workspaceId, async () => {
     const assigneeLabel = assigneeKind === "agentProfile" ? profileId : role;
-    const roleLane2 = assigneeKind === "role" ? await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel) : void 0;
+    if (asSub) {
+      await assertSubDispatchPreconditions(mount.env.fs, {
+        workspaceRoot: mount.workspaceRoot,
+        dispatcher: dispatchedBy,
+        assigneeKind,
+        assigneeLabel
+      });
+    }
+    let workspaceLane2;
+    let preallocatedTaskId;
+    if (asSub) {
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatchedBy.trim());
+      if (assigneeKind === "role") {
+        const assigneeLane = await ensureRoleWorkspace(mount.workspaceRoot, assigneeLabel);
+        workspaceLane2 = { ...assigneeLane, targetBranch: dispatcherLane.branch };
+      } else {
+        preallocatedTaskId = makeTaskId();
+        const taskLane = await ensureTaskWorkspace(mount.workspaceRoot, preallocatedTaskId);
+        workspaceLane2 = { ...taskLane, targetBranch: dispatcherLane.branch };
+      }
+    } else if (assigneeKind === "role") {
+      workspaceLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
+    }
     ctx.host.markSelfWrite(workspaceId);
     let deliveryPolicy = explicitDeliveryPolicy;
     if (deliveryPolicy === void 0) {
@@ -7373,10 +7456,12 @@ async function taskDispatch(ctx, p) {
     const dispatched2 = await dispatch(mount.env, boxId, assigneeKind === "role" ? role : void 0, {
       userPrompt: prompt,
       dispatchedBy,
+      asSub,
       deliveryPolicy,
-      workspace: roleLane2,
+      workspace: workspaceLane2,
       assigneeKind,
-      profileId: assigneeKind === "agentProfile" ? profileId : void 0
+      profileId: assigneeKind === "agentProfile" ? profileId : void 0,
+      ...preallocatedTaskId ? { taskId: preallocatedTaskId } : {}
     });
     ctx.events.emit(
       "task.state",
@@ -7391,9 +7476,9 @@ async function taskDispatch(ctx, p) {
       },
       "self"
     );
-    return { dispatched: dispatched2, roleLane: roleLane2 };
+    return { dispatched: dispatched2, workspaceLane: workspaceLane2 };
   });
-  const roleLane = result.roleLane;
+  const workspaceLane = result.workspaceLane;
   const dispatched = result.dispatched;
   let session = void 0;
   if (startSession) {
@@ -7417,15 +7502,47 @@ async function taskDispatch(ctx, p) {
     relayPrompt: dispatched.relayPrompt,
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
+    asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
     state: startSession ? "running" : "queued",
     session,
-    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : roleLane ? {
-      workspace: roleLane.workspace,
-      worktree: roleLane.worktree,
-      branch: roleLane.branch,
-      targetBranch: roleLane.targetBranch
+    workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane ? {
+      workspace: workspaceLane.workspace,
+      worktree: workspaceLane.worktree,
+      branch: workspaceLane.branch,
+      targetBranch: workspaceLane.targetBranch
     } : void 0
   };
+}
+async function assertSubDispatchPreconditions(fs13, input) {
+  const dispatcher = (input.dispatcher || "").trim();
+  if (!dispatcher || dispatcher === "user") {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires dispatchedBy naming a real durable registry role (not user)"
+    );
+  }
+  if (dispatcher === input.assigneeLabel) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub dispatchedBy must not equal the assignee itself",
+      { dispatchedBy: dispatcher, assignee: input.assigneeLabel }
+    );
+  }
+  const registry = await loadRolesRegistry(fs13);
+  const role = registry.roles.find((r) => r.name === dispatcher);
+  if (!role) {
+    throw new RpcError(
+      -32602,
+      `task.dispatch asSub dispatchedBy role not found in registry: ${dispatcher}`,
+      { dispatchedBy: dispatcher }
+    );
+  }
+  if (!await isGitWorkspace(input.workspaceRoot)) {
+    throw new RpcError(
+      -32602,
+      "task.dispatch asSub requires a real Git workspace lane; pure Tent / non-Git workspaces cannot host sub dispatch"
+    );
+  }
 }
 async function taskClaimRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -7676,7 +7793,7 @@ async function taskStartSessionRpc(ctx, p) {
     const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
       callerKind,
       taskRole: authorityRole,
-      requireRegisteredRole: callerKind === "role" && taskAssigneeKind(taskForPolicy) === "agentProfile"
+      requireRegisteredRole: callerKind === "role" && (taskAsSub(taskForPolicy) || taskAssigneeKind(taskForPolicy) === "agentProfile")
     });
     const profileAllowed = callerKind === "user" ? true : await resolveRoleProfileAllowed(mount.env.fs, {
       taskRole: authorityRole,
@@ -8790,11 +8907,6 @@ async function resolveIntegrationContract(workspaceRoot, task) {
       `Task envelope branch mismatch for ${label}: envelope=${task.branch} expected=${real.branch}`
     );
   }
-  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
-    throw new Error(
-      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
-    );
-  }
   if (task.worktree) {
     const claimedWt = nodePath2.resolve(task.worktree);
     const realWt = nodePath2.resolve(real.worktree);
@@ -8803,6 +8915,31 @@ async function resolveIntegrationContract(workspaceRoot, task) {
         `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
       );
     }
+  }
+  if (taskAsSub(task)) {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    if (!dispatcher || dispatcher === "user") {
+      throw new Error(
+        `Sub task envelope missing durable dispatchedBy for ${label}; cannot resolve targetBranch`
+      );
+    }
+    const dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
+    if (task.targetBranch && task.targetBranch !== dispatcherLane.branch) {
+      throw new Error(
+        `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${dispatcherLane.branch}`
+      );
+    }
+    if (dispatcherLane.branch === real.branch) {
+      throw new Error(
+        `Sub task targetBranch must not equal assignee branch for ${label}: ${dispatcherLane.branch}`
+      );
+    }
+    return { ...real, targetBranch: dispatcherLane.branch };
+  }
+  if (task.targetBranch && task.targetBranch !== real.targetBranch) {
+    throw new Error(
+      `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${real.targetBranch}`
+    );
   }
   return real;
 }
@@ -8833,6 +8970,19 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       current.id || current.path
     ) : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
     if (!lane) return current;
+    let targetBranch = lane.targetBranch;
+    if (taskAsSub(current)) {
+      const existingTarget = (current.targetBranch || "").trim();
+      if (existingTarget) {
+        targetBranch = existingTarget;
+      } else {
+        const dispatcher = (current.dispatchedBy || "").trim();
+        if (dispatcher && dispatcher !== "user") {
+          const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+          targetBranch = dispatcherLane.branch;
+        }
+      }
+    }
     const patch = {
       updatedAt: mount.env.clock.now()
     };
@@ -8840,7 +8990,7 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       patch.workspace = lane.workspace;
       patch.worktree = lane.worktree;
       patch.branch = lane.branch;
-      patch.targetBranch = lane.targetBranch;
+      patch.targetBranch = targetBranch;
     }
     if (!current.roleBranchBase?.trim()) {
       patch.roleBranchBase = await readRoleBranchTip(lane.workspace, lane.branch);
@@ -8858,20 +9008,20 @@ async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {
 }
 function resolveA2AAuthorityRole(task, callerKind) {
   if (callerKind === "user") return task.role;
-  if (taskAssigneeKind(task) === "agentProfile") {
+  if (taskAsSub(task) || taskAssigneeKind(task) === "agentProfile") {
     const dispatcher = (task.dispatchedBy || "").trim();
     if (!dispatcher || dispatcher === "user") {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
-        { dispatchedBy: task.dispatchedBy, profileId: task.role }
+        taskAsSub(task) ? "callerKind=role startSession on sub task requires dispatchedBy to name a real dispatcher role" : "callerKind=role startSession on agentProfile task requires dispatchedBy to name a real dispatcher role",
+        { dispatchedBy: task.dispatchedBy, assignee: task.role, asSub: taskAsSub(task) }
       );
     }
     if (dispatcher === task.role) {
       throw new RpcError(
         -32602,
-        "callerKind=role startSession on agentProfile task must not use the profileId as dispatcher role",
-        { dispatchedBy: dispatcher, profileId: task.role }
+        "callerKind=role startSession must not use the assignee label as dispatcher role",
+        { dispatchedBy: dispatcher, assignee: task.role }
       );
     }
     return dispatcher;
@@ -8940,6 +9090,8 @@ function projectTask(task) {
     state: task.state,
     manifest: task.manifest,
     dispatchedBy: task.dispatchedBy,
+    // Missing asSub on disk reads as false (peer).
+    asSub: taskAsSub(task),
     deliveryPolicy: task.deliveryPolicy,
     // Missing assigneeKind on disk reads as role (backward compatible).
     assigneeKind: taskAssigneeKind(task),

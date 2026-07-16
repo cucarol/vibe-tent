@@ -22,11 +22,12 @@ import {
   patchTaskEnvelope,
   primaryBoxId,
   taskAssigneeKind,
+  taskAsSub,
   type TaskEnvelope,
 } from "./task.js";
 import { agentProfileDeliveriesDir } from "./paths.js";
 import {
-  assertNotSelfAccept,
+  assertReviewAuthority,
   assertTransition,
   evaluateA2A,
   isActiveTaskState,
@@ -268,7 +269,13 @@ export async function taskAccept(
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    assertNotSelfAccept(options.actor, delivery.role);
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "accept",
+    });
 
     const commits = options.commits ?? delivery.commits;
     if (commits.length > 0) {
@@ -308,14 +315,14 @@ export async function taskReject(
     assertTransition(task.state, event, to);
 
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    // Reject may be by user or non-submitter; still ban submitter self-reject-as-review if desired —
-    // contract only hard-bans self-accept. Allow submitter? Prefer non-submitter for symmetry.
-    if (options.actor.trim() === delivery.role.trim()) {
-      throw new TaskLifecycleError(
-        "SELF_ACCEPT_FORBIDDEN",
-        `task.reject actor must not equal delivery submitter (${delivery.role}).`
-      );
-    }
+    // Self-reject-as-review forbidden; sub tasks further require user or exact dispatchedBy.
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "reject",
+    });
 
     delivery.status = "rejected";
     delivery.review = {

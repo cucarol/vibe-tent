@@ -212,7 +212,14 @@ export async function ensureTaskWorkspace(
   };
 }
 
-/** 把 user 在验收交互中明确选中的 commits 逐个纳入正式分支；不 push。 */
+/**
+ * Integrate selected commits into contract.targetBranch.
+ *
+ * Mutations run in the worktree that already has targetBranch checked out
+ * (main workspace for peer → mainline; dispatcher role worktree for sub →
+ * tent-role/<dispatcher>). Never switches branches automatically.
+ * Preserves dirty checks, rollback, and idempotence (ancestor / -x cherry-pick).
+ */
 export async function integrateWorkspaceCommits(
   contract: RoleWorkspaceContract,
   refs: string[]
@@ -220,54 +227,96 @@ export async function integrateWorkspaceCommits(
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
   if (commits.length === 0) return [];
   const root = contract.workspace;
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (current !== contract.targetBranch) {
-    throw new Error(`Workspace must have ${contract.targetBranch} checked out; current branch is ${current || "(detached)"}.`);
-  }
-  const dirty = (await git(root, ["status", "--porcelain"])).trim();
-  if (dirty) throw new Error("Workspace has uncommitted changes; cannot integrate commits.");
+  const target = contract.targetBranch;
+  // Prefer an existing worktree that already has targetBranch checked out
+  // (dispatcher lane for sub tasks; main workspace for peer). Never checkout.
+  const integrationCwd = await resolveIntegrationCwd(root, target);
 
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${contract.targetBranch}`])).trim();
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. ` +
+        `Never auto-switch branches — ensure the target lane worktree exists and stays on ${target}.`
+    );
+  }
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
   const resolved = [];
   for (const sourceRef of commits) {
+    // Object database is shared; resolve via repo root.
     await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
     resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
   }
-  const fastForwardRef = await completeFastForwardRef(root, originalRef, resolved.map((item) => item.fullRef));
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef)
+  );
   if (fastForwardRef) {
     try {
-      await git(root, ["merge", "--ff-only", fastForwardRef]);
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
       return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
         sourceRef,
         integratedRef,
         alreadyIntegrated: false,
       }));
     } catch (error) {
-      await rollbackIntegration(root, originalRef, error);
+      await rollbackIntegration(integrationCwd, originalRef, error);
     }
   }
 
   const results: IntegrationResult[] = [];
   try {
     for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, contract.targetBranch);
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
       if (ancestor) {
         results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
         continue;
       }
-      const prior = await findCherryPick(root, sourceRef, contract.targetBranch);
+      const prior = await findCherryPick(root, sourceRef, target);
       if (prior) {
         results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
         continue;
       }
-      await git(root, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(root, ["rev-parse", "HEAD"])).trim();
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
       results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
     }
   } catch (error) {
-    await rollbackIntegration(root, originalRef, error);
+    await rollbackIntegration(integrationCwd, originalRef, error);
   }
   return results;
+}
+
+/**
+ * Locate a worktree where `targetBranch` is the current branch.
+ * Prefer the main workspace root when it is already on target; otherwise any
+ * registered worktree (e.g. tent-role/<dispatcher>). Never creates or switches.
+ */
+async function resolveIntegrationCwd(root: string, targetBranch: string): Promise<string> {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. ` +
+      `For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
 }
 
 /** 列出 role lane 尚未进入正式分支的 commits；只读，异常按空候选处理。 */

@@ -37,6 +37,12 @@ export interface TaskEnvelopeInput {
   userPrompt: string;
   workspace?: RoleWorkspaceContract;
   dispatchedBy?: string;
+  /**
+   * Sub-dispatch flag. Missing on disk reads as false (peer).
+   * When true, targetBranch is the dispatcher role branch and review/A2A
+   * authority follow dispatchedBy.
+   */
+  asSub?: boolean;
   /** Full operational id (tk-…). Generated if omitted. */
   id?: string;
   deliveryPolicy?: DeliveryPolicy;
@@ -68,6 +74,11 @@ export interface TaskEnvelope {
   /** Operational task id (tk-…). May be absent on pre-B4 envelopes. */
   id?: string;
   dispatchedBy?: string;
+  /**
+   * Peer vs sub. Missing field reads as false (backward compatible).
+   * Persisted only when true; see taskAsSub().
+   */
+  asSub?: boolean;
   workspace?: string;
   worktree?: string;
   branch?: string;
@@ -135,6 +146,11 @@ export function taskAssigneeKind(task: Pick<TaskEnvelope, "assigneeKind">): Assi
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
 
+/** Effective sub-dispatch flag; missing field reads as false (peer). */
+export function taskAsSub(task: Pick<TaskEnvelope, "asSub">): boolean {
+  return task.asSub === true;
+}
+
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
   if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
@@ -162,6 +178,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   };
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (typeof data.dispatchedBy === "string") task.dispatchedBy = data.dispatchedBy;
+  if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
   if (typeof data.worktree === "string") task.worktree = data.worktree;
   if (typeof data.branch === "string") task.branch = data.branch;
@@ -364,6 +381,8 @@ export async function writeTaskEnvelope(
     createdAt: now,
     updatedAt: now,
   };
+  // Persist only when true; missing means peer (false).
+  if (input.asSub === true) data.asSub = true;
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;

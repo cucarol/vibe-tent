@@ -158,11 +158,14 @@ receiver hand-writes those envelope fields. Without a workspace pointer, a
 normal peer dispatch is a valid pure-Tent task and its envelope has no workspace
 contract.
 
-`--as-sub --by <role>` records the dispatching role in `dispatchedBy` and changes
-the delivery target from the workspace's formal branch to the dispatcher's role
-branch. This makes the subagent's commits part of the dispatcher's delivery.
-Because that relationship requires real Git lanes, sub dispatch is invalid
-without a registered workspace pointer. User/peer dispatch does not require one.
+`--as-sub --by <role>` sets envelope `asSub: true`, records the dispatching role
+in `dispatchedBy`, and sets `targetBranch` to the dispatcher's role branch
+(`tent-role/<dispatcher>`). Sub commits integrate into that dispatcher lane
+(not mainline). Service `task.dispatch` with `asSub: true` is the same contract
+for durable role and agentProfile assignees. Because that relationship requires
+real Git lanes and a durable registry dispatcher (not `user`, not the assignee),
+sub dispatch fails before envelope creation without them. User/peer dispatch
+does not require a Git workspace. Missing `asSub` reads as peer (`false`).
 
 Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
 workspace lane. Dynamic claim/task data never enters role init.

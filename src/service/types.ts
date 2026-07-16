@@ -86,6 +86,8 @@ export type TaskProjection = {
   state: string;
   manifest: string;
   dispatchedBy?: string;
+  /** Peer vs sub; missing/false = peer. */
+  asSub?: boolean;
   deliveryPolicy?: string;
   assigneeKind?: string;
   sessionId?: string;
