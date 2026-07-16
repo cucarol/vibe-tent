@@ -663,9 +663,7 @@ test("SessionRegistry: corrupt row is backed up, ignored, and does not poison li
 
   const cap = captureConsoleError();
   try {
-    const read = await reg.read(badId);
-    assert.equal(read, null);
-
+    // list() must encounter and quarantine the malformed row itself.
     const listed = await reg.list();
     assert.equal(listed.length, 1);
     assert.equal(listed[0].id, "ss-good01");
@@ -712,6 +710,102 @@ test("SessionRegistry: missing session is null without corrupt backup", async ()
       names.some((n) => n.includes(".corrupt-")),
       false
     );
+  } finally {
+    cap.restore();
+  }
+});
+
+test("SessionRegistry: missing createdAt is quarantined so list does not crash", async () => {
+  // Repro: older list() sorted with createdAt.localeCompare and threw when a
+  // malformed row lacked createdAt. Validation must isolate that file first.
+  const dataDir = await tempDir("tent-sess-no-createdAt-");
+  const reg = new SessionRegistry(dataDir);
+  const now = "2026-01-01T00:00:00.000Z";
+  await reg.write({
+    id: "ss-good02",
+    profileId: "fake-default",
+    adapterId: "fake",
+    state: "live",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const badId = "ss-nocreat";
+  const badFile = path.join(dataDir, "sessions", `${badId}.json`);
+  await fs.writeFile(
+    badFile,
+    JSON.stringify({
+      id: badId,
+      profileId: "fake-default",
+      adapterId: "fake",
+      state: "live",
+      // intentionally omit createdAt
+      updatedAt: now,
+    }),
+    "utf8"
+  );
+
+  const cap = captureConsoleError();
+  try {
+    const read = await reg.read(badId);
+    assert.equal(read, null);
+
+    const listed = await reg.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, "ss-good02");
+    // list must not throw on localeCompare of undefined createdAt
+    assert.equal(typeof listed[0].createdAt, "string");
+
+    const names = await fs.readdir(path.join(dataDir, "sessions"));
+    const backups = names.filter((n) => n.startsWith(`${badId}.json.corrupt-`));
+    assert.equal(backups.length, 1, "corrupt backup must exist");
+    assert.equal(names.includes(`${badId}.json`), false);
+    assert.match(cap.lines.join("\n"), /ss-nocreat\.json was corrupt.*ignored/);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("SessionRegistry: illegal state is quarantined with corrupt backup", async () => {
+  const dataDir = await tempDir("tent-sess-bad-state-");
+  const reg = new SessionRegistry(dataDir);
+  const now = "2026-01-01T00:00:00.000Z";
+  await reg.write({
+    id: "ss-good03",
+    profileId: "fake-default",
+    adapterId: "fake",
+    state: "stopped",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  const badId = "ss-badstat";
+  const badFile = path.join(dataDir, "sessions", `${badId}.json`);
+  await fs.writeFile(
+    badFile,
+    JSON.stringify({
+      id: badId,
+      profileId: "fake-default",
+      adapterId: "fake",
+      state: "running", // not a formal SessionState
+      createdAt: now,
+      updatedAt: now,
+    }),
+    "utf8"
+  );
+
+  const cap = captureConsoleError();
+  try {
+    // Exercise the aggregate path directly; one bad file must not poison list().
+    const listed = await reg.list();
+    assert.equal(listed.length, 1);
+    assert.equal(listed[0].id, "ss-good03");
+
+    const names = await fs.readdir(path.join(dataDir, "sessions"));
+    const backups = names.filter((n) => n.startsWith(`${badId}.json.corrupt-`));
+    assert.equal(backups.length, 1, "corrupt backup must exist");
+    assert.equal(names.includes(`${badId}.json`), false);
+    assert.match(cap.lines.join("\n"), /ss-badstat\.json was corrupt.*ignored/);
   } finally {
     cap.restore();
   }

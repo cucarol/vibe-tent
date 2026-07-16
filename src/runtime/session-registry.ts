@@ -9,8 +9,20 @@ import {
   warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
-import type { SessionRecord, SessionState } from "./types.js";
+import type { SessionRecord, SessionState, StopReason } from "./types.js";
 import { isSessionId } from "./types.js";
+
+const SESSION_STATES = new Set<SessionState>([
+  "starting",
+  "live",
+  "waiting-user",
+  "stopped",
+  "failed",
+  "external",
+]);
+
+const STOP_REASONS = new Set<StopReason>(["user", "interrupt", "shutdown"]);
+const ASSIGNEE_KINDS = new Set(["role", "agentProfile"]);
 
 export function sessionsDir(dataDir: string): string {
   return path.join(dataDir, "sessions");
@@ -24,6 +36,96 @@ function assertSessionId(sessionId: string): void {
   if (!isSessionId(sessionId)) {
     throw new Error(`Invalid session id: ${sessionId}`);
   }
+}
+
+function isNonEmptyString(value: unknown): value is string {
+  return typeof value === "string" && value.length > 0;
+}
+
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+
+function isSessionState(value: unknown): value is SessionState {
+  return typeof value === "string" && SESSION_STATES.has(value as SessionState);
+}
+
+/**
+ * Validate a parsed session JSON row. Returns the record when shape is safe for
+ * runtime consumers (list sort, probe, stop). Identity consistency of
+ * profileSnapshot vs live catalog is checked by AgentRuntime, not here.
+ * Unknown keys are allowed for forward compatibility.
+ */
+function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | null {
+  if (!isPlainObject(data)) return null;
+
+  // Required non-empty strings + formal state enum.
+  if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
+  if (!isNonEmptyString(data.profileId)) return null;
+  if (!isNonEmptyString(data.adapterId)) return null;
+  if (!isSessionState(data.state)) return null;
+  if (!isNonEmptyString(data.createdAt)) return null;
+  if (!isNonEmptyString(data.updatedAt)) return null;
+
+  // Optional fields that runtime code reads directly — type-check when present.
+  if ("pid" in data && data.pid !== undefined) {
+    if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
+      return null;
+    }
+  }
+  if ("exitCode" in data && data.exitCode !== undefined) {
+    if (
+      data.exitCode !== null &&
+      (typeof data.exitCode !== "number" || !Number.isInteger(data.exitCode))
+    ) {
+      return null;
+    }
+  }
+  for (const key of [
+    "roleName",
+    "resumeToken",
+    "workspace",
+    "lastTaskId",
+    "lastError",
+  ] as const) {
+    if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
+      return null;
+    }
+  }
+  if ("assigneeKind" in data && data.assigneeKind !== undefined) {
+    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
+      return null;
+    }
+  }
+  if ("stopReason" in data && data.stopReason !== undefined) {
+    if (typeof data.stopReason !== "string" || !STOP_REASONS.has(data.stopReason as StopReason)) {
+      return null;
+    }
+  }
+  if ("runtimeWorkspace" in data && data.runtimeWorkspace !== undefined) {
+    if (!isPlainObject(data.runtimeWorkspace)) return null;
+    if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
+  }
+  if ("workspaceLane" in data && data.workspaceLane !== undefined) {
+    if (!isPlainObject(data.workspaceLane)) return null;
+    const lane = data.workspaceLane;
+    if (!isNonEmptyString(lane.workspace)) return null;
+    if (!isNonEmptyString(lane.worktree)) return null;
+    if (!isNonEmptyString(lane.branch)) return null;
+    if (
+      "targetBranch" in lane &&
+      lane.targetBranch !== undefined &&
+      typeof lane.targetBranch !== "string"
+    ) {
+      return null;
+    }
+  }
+  // profileSnapshot: plain object only; field identity left to AgentRuntime.
+  if ("profileSnapshot" in data && data.profileSnapshot !== undefined) {
+    if (!isPlainObject(data.profileSnapshot)) return null;
+  }
+
+  return data as unknown as SessionRecord;
 }
 
 export class SessionRegistry {
@@ -147,16 +249,8 @@ export class SessionRegistry {
         await this.quarantineCorrupt(file);
         return null;
       }
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      const rec = data as SessionRecord;
-      if (typeof rec.id !== "string" || typeof rec.state !== "string") {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      if (rec.id !== sessionId) {
+      const rec = parseSessionRecord(data, sessionId);
+      if (!rec) {
         await this.quarantineCorrupt(file);
         return null;
       }

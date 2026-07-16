@@ -3871,6 +3871,16 @@ function corruptTimestamp() {
 }
 
 // src/runtime/session-registry.ts
+var SESSION_STATES = /* @__PURE__ */ new Set([
+  "starting",
+  "live",
+  "waiting-user",
+  "stopped",
+  "failed",
+  "external"
+]);
+var STOP_REASONS = /* @__PURE__ */ new Set(["user", "interrupt", "shutdown"]);
+var ASSIGNEE_KINDS = /* @__PURE__ */ new Set(["role", "agentProfile"]);
 function sessionsDir(dataDir) {
   return path2.join(dataDir, "sessions");
 }
@@ -3881,6 +3891,73 @@ function assertSessionId(sessionId) {
   if (!isSessionId(sessionId)) {
     throw new Error(`Invalid session id: ${sessionId}`);
   }
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isSessionState(value) {
+  return typeof value === "string" && SESSION_STATES.has(value);
+}
+function parseSessionRecord(data, sessionId) {
+  if (!isPlainObject(data)) return null;
+  if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
+  if (!isNonEmptyString(data.profileId)) return null;
+  if (!isNonEmptyString(data.adapterId)) return null;
+  if (!isSessionState(data.state)) return null;
+  if (!isNonEmptyString(data.createdAt)) return null;
+  if (!isNonEmptyString(data.updatedAt)) return null;
+  if ("pid" in data && data.pid !== void 0) {
+    if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
+      return null;
+    }
+  }
+  if ("exitCode" in data && data.exitCode !== void 0) {
+    if (data.exitCode !== null && (typeof data.exitCode !== "number" || !Number.isInteger(data.exitCode))) {
+      return null;
+    }
+  }
+  for (const key of [
+    "roleName",
+    "resumeToken",
+    "workspace",
+    "lastTaskId",
+    "lastError"
+  ]) {
+    if (key in data && data[key] !== void 0 && typeof data[key] !== "string") {
+      return null;
+    }
+  }
+  if ("assigneeKind" in data && data.assigneeKind !== void 0) {
+    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
+      return null;
+    }
+  }
+  if ("stopReason" in data && data.stopReason !== void 0) {
+    if (typeof data.stopReason !== "string" || !STOP_REASONS.has(data.stopReason)) {
+      return null;
+    }
+  }
+  if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
+    if (!isPlainObject(data.runtimeWorkspace)) return null;
+    if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
+  }
+  if ("workspaceLane" in data && data.workspaceLane !== void 0) {
+    if (!isPlainObject(data.workspaceLane)) return null;
+    const lane = data.workspaceLane;
+    if (!isNonEmptyString(lane.workspace)) return null;
+    if (!isNonEmptyString(lane.worktree)) return null;
+    if (!isNonEmptyString(lane.branch)) return null;
+    if ("targetBranch" in lane && lane.targetBranch !== void 0 && typeof lane.targetBranch !== "string") {
+      return null;
+    }
+  }
+  if ("profileSnapshot" in data && data.profileSnapshot !== void 0) {
+    if (!isPlainObject(data.profileSnapshot)) return null;
+  }
+  return data;
 }
 var SessionRegistry = class {
   constructor(dataDir) {
@@ -3981,16 +4058,8 @@ var SessionRegistry = class {
         await this.quarantineCorrupt(file);
         return null;
       }
-      if (!data || typeof data !== "object" || Array.isArray(data)) {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      const rec = data;
-      if (typeof rec.id !== "string" || typeof rec.state !== "string") {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      if (rec.id !== sessionId) {
+      const rec = parseSessionRecord(data, sessionId);
+      if (!rec) {
         await this.quarantineCorrupt(file);
         return null;
       }
