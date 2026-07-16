@@ -139,6 +139,39 @@ test("A2AApprovalStore: concurrent add leaves valid atomic JSON", async () => {
   assert.equal(raw.endsWith("\n"), true);
 });
 
+test("A2AApprovalStore: persistence failure leaves memory and disk uncommitted", async () => {
+  const dataDir = await tempDir("tent-a2a-rollback-");
+  let failWrites = true;
+  const store = new A2AApprovalStore(dataDir, {
+    writeState: async (file, value) => {
+      if (failWrites) throw new Error("injected A2A persist failure");
+      await writeJsonAtomic(file, value);
+    },
+  });
+  const id = makeApprovalId(() => 0.61);
+
+  await assert.rejects(
+    () => store.add(a2aPending({ id })),
+    /injected A2A persist failure/
+  );
+  assert.equal(await store.get(id), undefined, "failed add must not leak into memory");
+
+  failWrites = false;
+  await store.add(a2aPending({ id }));
+  failWrites = true;
+  await assert.rejects(
+    () => store.resolve(id, "approved", "user"),
+    /injected A2A persist failure/
+  );
+  assert.equal((await store.get(id))?.status, "pending");
+
+  const disk = await new A2AApprovalStore(dataDir).get(id);
+  assert.equal(disk?.status, "pending", "disk and memory must retain the old snapshot");
+
+  failWrites = false;
+  assert.equal((await store.resolve(id, "approved", "user")).status, "approved");
+});
+
 test("machine stores retry loading after a transient non-ENOENT read error", async () => {
   const dataDir = await tempDir("tent-store-retry-");
 

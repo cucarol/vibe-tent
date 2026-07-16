@@ -12,6 +12,7 @@ import {
   makeToolApprovalId,
   type ToolPendingApproval,
 } from "../src/service/tool-approval-store.js";
+import { writeJsonAtomic } from "../src/machine-state.js";
 
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));
@@ -128,4 +129,125 @@ test("tool approval store: waitForDecision expires and late approve fails", asyn
     () => store.resolve(id, "approved", "user"),
     /already expired/
   );
+});
+
+test("tool approval store: persistence failure rolls back state and does not wake waiters", async () => {
+  const dataDir = await tempDir("tent-tool-appr-rollback-");
+  let failWrites = true;
+  const store = new ToolApprovalStore(dataDir, {
+    writeState: async (file, value) => {
+      if (failWrites) throw new Error("injected tool persist failure");
+      await writeJsonAtomic(file, value);
+    },
+  });
+  const id = makeToolApprovalId(() => 0.81);
+
+  await assert.rejects(
+    () => store.add(pending({ id })),
+    /injected tool persist failure/
+  );
+  assert.equal(await store.get(id), undefined, "failed add must not leak into memory");
+
+  failWrites = false;
+  await store.add(pending({ id }));
+  let waiterSettled = false;
+  const waiting = store.waitForDecision(id, 2_000).then((decision) => {
+    waiterSettled = true;
+    return decision;
+  });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  failWrites = true;
+  await assert.rejects(
+    () => store.resolve(id, "approved", "user"),
+    /injected tool persist failure/
+  );
+  assert.equal((await store.get(id))?.status, "pending");
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(waiterSettled, false, "failed persistence must not notify ACP waiter");
+
+  await assert.rejects(
+    () => store.cancelSession("ss-1", "denied"),
+    /injected tool persist failure/
+  );
+  assert.equal((await store.get(id))?.status, "pending");
+
+  await assert.rejects(
+    () => store.expireOne(id),
+    /injected tool persist failure/
+  );
+  assert.equal((await store.get(id))?.status, "pending");
+
+  const disk = await new ToolApprovalStore(dataDir).get(id);
+  assert.equal(disk?.status, "pending", "disk and memory must retain the old snapshot");
+
+  failWrites = false;
+  assert.equal((await store.resolve(id, "approved", "user")).status, "approved");
+  assert.equal(await waiting, "approved");
+});
+
+test("tool approval store: stale-expiry write failure keeps pending until a retry commits", async () => {
+  const dataDir = await tempDir("tent-tool-appr-stale-rollback-");
+  let failWrites = false;
+  const store = new ToolApprovalStore(dataDir, {
+    writeState: async (file, value) => {
+      if (failWrites) throw new Error("injected stale persist failure");
+      await writeJsonAtomic(file, value);
+    },
+  });
+  const id = makeToolApprovalId(() => 0.91);
+  await store.add(
+    pending({
+      id,
+      expiresAt: new Date(Date.now() - 1_000).toISOString(),
+    })
+  );
+
+  failWrites = true;
+  await assert.rejects(() => store.get(id), /injected stale persist failure/);
+  const raw = JSON.parse(
+    await fs.readFile(path.join(dataDir, "tool-approvals.json"), "utf8")
+  ) as { items: ToolPendingApproval[] };
+  assert.equal(raw.items.find((item) => item.id === id)?.status, "pending");
+
+  failWrites = false;
+  assert.equal((await store.get(id))?.status, "expired");
+});
+
+test("tool approval store: timeout fails closed when expiry persistence is unavailable", async () => {
+  const dataDir = await tempDir("tent-tool-appr-timeout-failclosed-");
+  let failWrites = false;
+  const store = new ToolApprovalStore(dataDir, {
+    writeState: async (file, value) => {
+      if (failWrites) throw new Error("injected timeout persist failure");
+      await writeJsonAtomic(file, value);
+    },
+  });
+  const id = makeToolApprovalId(() => 0.95);
+  await store.add(
+    pending({
+      id,
+      expiresAt: new Date(Date.now() + 40).toISOString(),
+    })
+  );
+
+  const unhandled: unknown[] = [];
+  const onUnhandled = (reason: unknown) => unhandled.push(reason);
+  process.on("unhandledRejection", onUnhandled);
+  try {
+    failWrites = true;
+    assert.equal(await store.waitForDecision(id, 40), "expired");
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepEqual(unhandled, []);
+
+    const raw = JSON.parse(
+      await fs.readFile(path.join(dataDir, "tool-approvals.json"), "utf8")
+    ) as { items: ToolPendingApproval[] };
+    assert.equal(raw.items.find((item) => item.id === id)?.status, "pending");
+
+    failWrites = false;
+    assert.equal((await store.get(id))?.status, "expired");
+  } finally {
+    process.off("unhandledRejection", onUnhandled);
+  }
 });

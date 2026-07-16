@@ -38,6 +38,18 @@ export interface ToolPendingApproval {
   resolvedBy?: string;
 }
 
+export type ToolApprovalStoreOptions = {
+  /** Injectable atomic writer for deterministic persistence-failure tests. */
+  writeState?: (filePath: string, value: unknown) => Promise<void>;
+};
+
+function cloneApproval(item: ToolPendingApproval): ToolPendingApproval {
+  return {
+    ...item,
+    options: item.options.map((option) => ({ ...option })),
+  };
+}
+
 type Waiter = {
   resolve: (status: "approved" | "denied" | "expired") => void;
 };
@@ -50,13 +62,15 @@ type Waiter = {
 export class ToolApprovalStore {
   private readonly file: string;
   private items = new Map<string, ToolPendingApproval>();
+  private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private waiters = new Map<string, Waiter[]>();
   private loaded = false;
   /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options?: ToolApprovalStoreOptions) {
     this.file = path.join(dataDir, "tool-approvals.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -94,7 +108,7 @@ export class ToolApprovalStore {
           return;
         }
         for (const item of (items as ToolPendingApproval[] | undefined) ?? []) {
-          if (item?.id) this.items.set(item.id, item);
+          if (item?.id) this.items.set(item.id, cloneApproval(item));
         }
         this.loaded = true;
       } catch (err) {
@@ -110,23 +124,29 @@ export class ToolApprovalStore {
   async listPending(workspaceId?: string): Promise<ToolPendingApproval[]> {
     await this.ensureLoaded();
     await this.expireStale();
-    return [...this.items.values()].filter(
-      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    );
+    return [...this.items.values()]
+      .filter(
+        (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
+      )
+      .map(cloneApproval);
   }
 
   async get(id: string): Promise<ToolPendingApproval | undefined> {
     await this.ensureLoaded();
     await this.expireStale(id);
-    return this.items.get(id);
+    const item = this.items.get(id);
+    return item ? cloneApproval(item) : undefined;
   }
 
   async add(item: ToolPendingApproval): Promise<ToolPendingApproval> {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      this.items.set(item.id, { ...item });
-      await this.persistUnlocked();
-      return this.items.get(item.id)!;
+      const stored = cloneApproval(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(stored);
     });
   }
 
@@ -148,13 +168,18 @@ export class ToolApprovalStore {
       if (item.status !== "pending") {
         throw new Error(`Tool approval already ${item.status}: ${id}`);
       }
-      item.status = decision;
-      item.resolvedAt = new Date().toISOString();
-      item.resolvedBy = resolvedBy;
-      this.items.set(id, item);
-      await this.persistUnlocked();
+      const resolved: ToolPendingApproval = {
+        ...item,
+        status: decision,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy,
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
       this.notifyWaiters(id, decision);
-      return item;
+      return cloneApproval(resolved);
     });
   }
 
@@ -184,34 +209,44 @@ export class ToolApprovalStore {
         resolve(status);
       };
 
-      void this.get(id).then((item) => {
-        if (settled) return;
-        if (!item) {
-          finish("expired");
-          return;
-        }
-        if (item.status === "approved" || item.status === "denied") {
-          finish(item.status);
-          return;
-        }
-        if (item.status === "expired") {
-          finish("expired");
-          return;
-        }
-        const list = this.waiters.get(id) ?? [];
-        list.push({ resolve: finish });
-        this.waiters.set(id, list);
-      });
+      void this.get(id)
+        .then((item) => {
+          if (settled) return;
+          if (!item) {
+            finish("expired");
+            return;
+          }
+          if (item.status === "approved" || item.status === "denied") {
+            finish(item.status);
+            return;
+          }
+          if (item.status === "expired") {
+            finish("expired");
+            return;
+          }
+          const list = this.waiters.get(id) ?? [];
+          list.push({ resolve: finish });
+          this.waiters.set(id, list);
+        })
+        .catch(() => {
+          // The timeout path below remains authoritative and fail-closed.
+        });
 
       // Bound wait; expireOne is serialized so concurrent approve cannot resurrect pending.
       const timer = setTimeout(() => {
-        void this.expireOne(id).then((status) => {
-          if (status === "approved" || status === "denied") {
-            finish(status);
-            return;
-          }
-          finish("expired");
-        });
+        void this.expireOne(id)
+          .then((status) => {
+            if (status === "approved" || status === "denied") {
+              finish(status);
+              return;
+            }
+            finish("expired");
+          })
+          .catch(() => {
+            // Persistence failure must never leave an ACP permission request
+            // hanging. Deny the live request without pretending the row committed.
+            finish("expired");
+          });
       }, Math.max(1, timeoutMs));
     });
   }
@@ -223,17 +258,25 @@ export class ToolApprovalStore {
   ): Promise<void> {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      let changed = false;
+      const next = new Map(this.items);
+      const resolvedIds: string[] = [];
       for (const item of this.items.values()) {
         if (item.sessionId !== sessionId || item.status !== "pending") continue;
-        item.status = reason;
-        item.resolvedAt = new Date().toISOString();
-        item.resolvedBy = "service";
-        this.items.set(item.id, item);
-        this.notifyWaiters(item.id, reason === "expired" ? "expired" : "denied");
-        changed = true;
+        next.set(item.id, {
+          ...item,
+          status: reason,
+          resolvedAt: new Date().toISOString(),
+          resolvedBy: "service",
+        });
+        resolvedIds.push(item.id);
       }
-      if (changed) await this.persistUnlocked();
+      if (resolvedIds.length > 0) {
+        await this.persistSnapshot(next);
+        this.items = next;
+        for (const id of resolvedIds) {
+          this.notifyWaiters(id, reason === "expired" ? "expired" : "denied");
+        }
+      }
     });
   }
 
@@ -247,11 +290,16 @@ export class ToolApprovalStore {
       const item = this.items.get(id);
       if (!item) return "expired";
       if (item.status !== "pending") return item.status;
-      item.status = "expired";
-      item.resolvedAt = new Date().toISOString();
-      item.resolvedBy = "timeout";
-      this.items.set(id, item);
-      await this.persistUnlocked();
+      const expired: ToolPendingApproval = {
+        ...item,
+        status: "expired",
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: "timeout",
+      };
+      const next = new Map(this.items);
+      next.set(id, expired);
+      await this.persistSnapshot(next);
+      this.items = next;
       this.notifyWaiters(id, "expired");
       return "expired";
     });
@@ -275,34 +323,40 @@ export class ToolApprovalStore {
 
   private async expireStaleUnlocked(onlyId?: string): Promise<void> {
     const now = Date.now();
-    let changed = false;
+    const next = new Map(this.items);
+    const expiredIds: string[] = [];
     for (const item of this.items.values()) {
       if (onlyId && item.id !== onlyId) continue;
       if (item.status !== "pending") continue;
       const exp = Date.parse(item.expiresAt);
       if (!Number.isFinite(exp) || exp > now) continue;
-      item.status = "expired";
-      item.resolvedAt = new Date().toISOString();
-      item.resolvedBy = "timeout";
-      this.items.set(item.id, item);
-      this.notifyWaiters(item.id, "expired");
-      changed = true;
+      next.set(item.id, {
+        ...item,
+        status: "expired",
+        resolvedAt: new Date().toISOString(),
+        resolvedBy: "timeout",
+      });
+      expiredIds.push(item.id);
     }
-    if (changed) await this.persistUnlocked();
+    if (expiredIds.length > 0) {
+      await this.persistSnapshot(next);
+      this.items = next;
+      for (const id of expiredIds) this.notifyWaiters(id, "expired");
+    }
   }
 
   /**
    * Atomic temp-file + rename so a crashed mid-write cannot leave a partial file,
    * and concurrent readers never observe a torn document. Call only under enqueue.
    */
-  private async persistUnlocked(): Promise<void> {
-    const items = [...this.items.values()];
+  private async persistSnapshot(snapshot: Map<string, ToolPendingApproval>): Promise<void> {
+    const items = [...snapshot.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items
       .filter((i) => i.status !== "pending")
       .sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""))
       .slice(0, 50);
-    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
   }
 
   private async quarantineCorrupt(): Promise<void> {

@@ -121,6 +121,12 @@ the deleted id. Connected clients use the event as an invalidation signal and ma
 re-query `profile.list`; no secret value or raw environment map is included. Existing
 sessions keep their launch-profile snapshot, while later starts use the updated catalog.
 
+Machine-local A2A and tool-approval stores use persist-before-swap snapshots: a failed
+atomic write leaves both the visible in-memory state and the prior disk state unchanged,
+and cannot notify a tool waiter as approved/denied. Tool timeout is fail-closed: if its
+expiry marker cannot be persisted, the live ACP request still resolves as expired rather
+than hanging, while the stored row remains pending until a later successful expiry pass.
+
 **Create `adapterId` whitelist:** `grok-acp` \| `codex-acp` \| `claude-acp` \| `antigravity-acp` \| `opencode-acp` \| `copilot-acp`. Unknown / `fake-cli` / `gemini-acp` → RpcError.
 
 **Create defaults:** only `grok-acp` auto-fills `DEFAULT_GROK_MODEL` / `CPA_GROK_API_KEY` / `CPA_GROK_BASE_URL` env key names; other whitelist adapters default `permissionPolicy=deny` only (no invented model/envKey).

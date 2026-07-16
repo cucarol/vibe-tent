@@ -11291,13 +11291,17 @@ var MutationBus = class {
 // src/service/a2a-store.ts
 import * as fs3 from "node:fs/promises";
 import * as path3 from "node:path";
+function cloneApproval(item) {
+  return { ...item };
+}
 var A2AApprovalStore = class {
-  constructor(dataDir) {
+  constructor(dataDir, options) {
     this.items = /* @__PURE__ */ new Map();
     this.loaded = false;
     /** Serialize load + mutations + persist (same pattern as ToolApprovalStore). */
     this.chain = Promise.resolve();
     this.file = path3.join(dataDir, "a2a-approvals.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
     const run = this.chain.then(fn, fn);
@@ -11333,7 +11337,7 @@ var A2AApprovalStore = class {
           return;
         }
         for (const item of items ?? []) {
-          if (item?.id) this.items.set(item.id, item);
+          if (item?.id) this.items.set(item.id, cloneApproval(item));
         }
         this.loaded = true;
       } catch (err) {
@@ -11349,18 +11353,22 @@ var A2AApprovalStore = class {
     await this.ensureLoaded();
     return [...this.items.values()].filter(
       (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    );
+    ).map(cloneApproval);
   }
   async get(id) {
     await this.ensureLoaded();
-    return this.items.get(id);
+    const item = this.items.get(id);
+    return item ? cloneApproval(item) : void 0;
   }
   async add(item) {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      this.items.set(item.id, { ...item });
-      await this.persistUnlocked();
-      return this.items.get(item.id);
+      const stored = cloneApproval(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(stored);
     });
   }
   async resolve(id, decision, resolvedBy) {
@@ -11371,12 +11379,17 @@ var A2AApprovalStore = class {
       if (item.status !== "pending") {
         throw new Error(`A2A approval already ${item.status}: ${id}`);
       }
-      item.status = decision;
-      item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-      item.resolvedBy = resolvedBy;
-      this.items.set(id, item);
-      await this.persistUnlocked();
-      return item;
+      const resolved = {
+        ...item,
+        status: decision,
+        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        resolvedBy
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(resolved);
     });
   }
   async quarantineCorrupt(action) {
@@ -11384,12 +11397,12 @@ var A2AApprovalStore = class {
     warnCorruptMachineState(this.file, backupPath, action);
     this.items.clear();
   }
-  /** Call only under enqueue after ensureLoaded. */
-  async persistUnlocked() {
-    const items = [...this.items.values()];
+  /** Persist a candidate snapshot before making it visible in memory. */
+  async persistSnapshot(snapshot) {
+    const items = [...snapshot.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
   }
 };
 function makeApprovalId(rand = Math.random) {
@@ -17138,14 +17151,21 @@ async function removeServiceEndpoint(dataDir) {
 // src/service/tool-approval-store.ts
 import * as fs11 from "node:fs/promises";
 import * as path10 from "node:path";
+function cloneApproval2(item) {
+  return {
+    ...item,
+    options: item.options.map((option) => ({ ...option }))
+  };
+}
 var ToolApprovalStore = class {
-  constructor(dataDir) {
+  constructor(dataDir, options) {
     this.items = /* @__PURE__ */ new Map();
     this.waiters = /* @__PURE__ */ new Map();
     this.loaded = false;
     /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
     this.chain = Promise.resolve();
     this.file = path10.join(dataDir, "tool-approvals.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
     const run = this.chain.then(fn, fn);
@@ -17181,7 +17201,7 @@ var ToolApprovalStore = class {
           return;
         }
         for (const item of items ?? []) {
-          if (item?.id) this.items.set(item.id, item);
+          if (item?.id) this.items.set(item.id, cloneApproval2(item));
         }
         this.loaded = true;
       } catch (err) {
@@ -17198,19 +17218,23 @@ var ToolApprovalStore = class {
     await this.expireStale();
     return [...this.items.values()].filter(
       (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    );
+    ).map(cloneApproval2);
   }
   async get(id) {
     await this.ensureLoaded();
     await this.expireStale(id);
-    return this.items.get(id);
+    const item = this.items.get(id);
+    return item ? cloneApproval2(item) : void 0;
   }
   async add(item) {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      this.items.set(item.id, { ...item });
-      await this.persistUnlocked();
-      return this.items.get(item.id);
+      const stored = cloneApproval2(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval2(stored);
     });
   }
   /**
@@ -17227,13 +17251,18 @@ var ToolApprovalStore = class {
       if (item.status !== "pending") {
         throw new Error(`Tool approval already ${item.status}: ${id}`);
       }
-      item.status = decision;
-      item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-      item.resolvedBy = resolvedBy;
-      this.items.set(id, item);
-      await this.persistUnlocked();
+      const resolved = {
+        ...item,
+        status: decision,
+        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        resolvedBy
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
       this.notifyWaiters(id, decision);
-      return item;
+      return cloneApproval2(resolved);
     });
   }
   /**
@@ -17275,6 +17304,7 @@ var ToolApprovalStore = class {
         const list2 = this.waiters.get(id) ?? [];
         list2.push({ resolve: finish });
         this.waiters.set(id, list2);
+      }).catch(() => {
       });
       const timer = setTimeout(() => {
         void this.expireOne(id).then((status) => {
@@ -17282,6 +17312,8 @@ var ToolApprovalStore = class {
             finish(status);
             return;
           }
+          finish("expired");
+        }).catch(() => {
           finish("expired");
         });
       }, Math.max(1, timeoutMs));
@@ -17291,17 +17323,25 @@ var ToolApprovalStore = class {
   async cancelSession(sessionId, reason = "denied") {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      let changed = false;
+      const next = new Map(this.items);
+      const resolvedIds = [];
       for (const item of this.items.values()) {
         if (item.sessionId !== sessionId || item.status !== "pending") continue;
-        item.status = reason;
-        item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-        item.resolvedBy = "service";
-        this.items.set(item.id, item);
-        this.notifyWaiters(item.id, reason === "expired" ? "expired" : "denied");
-        changed = true;
+        next.set(item.id, {
+          ...item,
+          status: reason,
+          resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+          resolvedBy: "service"
+        });
+        resolvedIds.push(item.id);
       }
-      if (changed) await this.persistUnlocked();
+      if (resolvedIds.length > 0) {
+        await this.persistSnapshot(next);
+        this.items = next;
+        for (const id of resolvedIds) {
+          this.notifyWaiters(id, reason === "expired" ? "expired" : "denied");
+        }
+      }
     });
   }
   /**
@@ -17314,11 +17354,16 @@ var ToolApprovalStore = class {
       const item = this.items.get(id);
       if (!item) return "expired";
       if (item.status !== "pending") return item.status;
-      item.status = "expired";
-      item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-      item.resolvedBy = "timeout";
-      this.items.set(id, item);
-      await this.persistUnlocked();
+      const expired = {
+        ...item,
+        status: "expired",
+        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        resolvedBy: "timeout"
+      };
+      const next = new Map(this.items);
+      next.set(id, expired);
+      await this.persistSnapshot(next);
+      this.items = next;
       this.notifyWaiters(id, "expired");
       return "expired";
     });
@@ -17336,30 +17381,36 @@ var ToolApprovalStore = class {
   }
   async expireStaleUnlocked(onlyId) {
     const now = Date.now();
-    let changed = false;
+    const next = new Map(this.items);
+    const expiredIds = [];
     for (const item of this.items.values()) {
       if (onlyId && item.id !== onlyId) continue;
       if (item.status !== "pending") continue;
       const exp = Date.parse(item.expiresAt);
       if (!Number.isFinite(exp) || exp > now) continue;
-      item.status = "expired";
-      item.resolvedAt = (/* @__PURE__ */ new Date()).toISOString();
-      item.resolvedBy = "timeout";
-      this.items.set(item.id, item);
-      this.notifyWaiters(item.id, "expired");
-      changed = true;
+      next.set(item.id, {
+        ...item,
+        status: "expired",
+        resolvedAt: (/* @__PURE__ */ new Date()).toISOString(),
+        resolvedBy: "timeout"
+      });
+      expiredIds.push(item.id);
     }
-    if (changed) await this.persistUnlocked();
+    if (expiredIds.length > 0) {
+      await this.persistSnapshot(next);
+      this.items = next;
+      for (const id of expiredIds) this.notifyWaiters(id, "expired");
+    }
   }
   /**
    * Atomic temp-file + rename so a crashed mid-write cannot leave a partial file,
    * and concurrent readers never observe a torn document. Call only under enqueue.
    */
-  async persistUnlocked() {
-    const items = [...this.items.values()];
+  async persistSnapshot(snapshot) {
+    const items = [...snapshot.values()];
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 50);
-    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
   }
   async quarantineCorrupt() {
     const backupPath = await backupCorruptMachineFile(this.file);

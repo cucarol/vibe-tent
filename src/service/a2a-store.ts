@@ -28,6 +28,15 @@ export interface A2APendingApproval {
   resolvedBy?: string;
 }
 
+export type A2AApprovalStoreOptions = {
+  /** Injectable atomic writer for deterministic persistence-failure tests. */
+  writeState?: (filePath: string, value: unknown) => Promise<void>;
+};
+
+function cloneApproval(item: A2APendingApproval): A2APendingApproval {
+  return { ...item };
+}
+
 /**
  * Single-process store for A2A spawn approvals.
  * Mutations + disk persistence are serialized so concurrent add/resolve
@@ -36,12 +45,14 @@ export interface A2APendingApproval {
 export class A2AApprovalStore {
   private readonly file: string;
   private items = new Map<string, A2APendingApproval>();
+  private readonly writeState: (filePath: string, value: unknown) => Promise<void>;
   private loaded = false;
   /** Serialize load + mutations + persist (same pattern as ToolApprovalStore). */
   private chain: Promise<void> = Promise.resolve();
 
-  constructor(dataDir: string) {
+  constructor(dataDir: string, options?: A2AApprovalStoreOptions) {
     this.file = path.join(dataDir, "a2a-approvals.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
   }
 
   private enqueue<T>(fn: () => Promise<T>): Promise<T> {
@@ -79,7 +90,7 @@ export class A2AApprovalStore {
           return;
         }
         for (const item of (items as A2APendingApproval[] | undefined) ?? []) {
-          if (item?.id) this.items.set(item.id, item);
+          if (item?.id) this.items.set(item.id, cloneApproval(item));
         }
         this.loaded = true;
       } catch (err) {
@@ -94,22 +105,28 @@ export class A2AApprovalStore {
 
   async listPending(workspaceId?: string): Promise<A2APendingApproval[]> {
     await this.ensureLoaded();
-    return [...this.items.values()].filter(
-      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
-    );
+    return [...this.items.values()]
+      .filter(
+        (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
+      )
+      .map(cloneApproval);
   }
 
   async get(id: string): Promise<A2APendingApproval | undefined> {
     await this.ensureLoaded();
-    return this.items.get(id);
+    const item = this.items.get(id);
+    return item ? cloneApproval(item) : undefined;
   }
 
   async add(item: A2APendingApproval): Promise<A2APendingApproval> {
     await this.ensureLoaded();
     return this.enqueue(async () => {
-      this.items.set(item.id, { ...item });
-      await this.persistUnlocked();
-      return this.items.get(item.id)!;
+      const stored = cloneApproval(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(stored);
     });
   }
 
@@ -125,12 +142,17 @@ export class A2AApprovalStore {
       if (item.status !== "pending") {
         throw new Error(`A2A approval already ${item.status}: ${id}`);
       }
-      item.status = decision;
-      item.resolvedAt = new Date().toISOString();
-      item.resolvedBy = resolvedBy;
-      this.items.set(id, item);
-      await this.persistUnlocked();
-      return item;
+      const resolved: A2APendingApproval = {
+        ...item,
+        status: decision,
+        resolvedAt: new Date().toISOString(),
+        resolvedBy,
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneApproval(resolved);
     });
   }
 
@@ -140,16 +162,16 @@ export class A2AApprovalStore {
     this.items.clear();
   }
 
-  /** Call only under enqueue after ensureLoaded. */
-  private async persistUnlocked(): Promise<void> {
-    const items = [...this.items.values()];
+  /** Persist a candidate snapshot before making it visible in memory. */
+  private async persistSnapshot(snapshot: Map<string, A2APendingApproval>): Promise<void> {
+    const items = [...snapshot.values()];
     // Keep only recent terminal + all pending (cap history lightly).
     const pending = items.filter((i) => i.status === "pending");
     const terminal = items
       .filter((i) => i.status !== "pending")
       .sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || ""))
       .slice(0, 50);
-    await writeJsonAtomic(this.file, { items: [...pending, ...terminal] });
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
   }
 }
 
