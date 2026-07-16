@@ -28,7 +28,19 @@ import {
   warnCorruptMachineState,
   writeJsonAtomic,
 } from "../machine-state.js";
+import {
+  parseBaseUrlValue,
+  parseCredentialRefValue,
+  parseEnvKeyValue,
+  parseNonEmptyStringValue,
+  parsePermissionPolicyValue,
+  parsePositiveTimeoutValue,
+  parseProfileIdValue,
+  type FieldResult,
+} from "./profile-field-rules.js";
 import type { AgentProfileProjection } from "./types.js";
+import type { AcpProfileOptions } from "../adapters/acp/types.js";
+import type { FakeProfileOptions } from "../runtime/types.js";
 
 export {
   normalizeProfileToCanonicalAcp,
@@ -115,8 +127,299 @@ export const PROFILE_UPDATE_FIELDS = [
   "permissionTimeoutMs",
 ] as const;
 
+// ---------------------------------------------------------------------------
+// Disk-row validation (load-path only). Pure value rules live in
+// profile-field-rules.ts (shared with profile-catalog CRUD).
+// One bad row (including unknown keys) → whole-file quarantine; never silent skip.
+// ---------------------------------------------------------------------------
+
+/**
+ * Exact top-level allowlist for agent-profiles.json rows (10 fields).
+ * Any other top-level key is malformed and quarantines the whole catalog.
+ */
+const DISK_PROFILE_TOP_LEVEL_KEYS = new Set([
+  "id",
+  "adapterId",
+  "displayName",
+  "displayNameKey",
+  "command",
+  "args",
+  "env",
+  "fake",
+  "acp",
+  "grokAcp",
+]);
+
+/** Keys allowed inside canonical `acp` / legacy `grokAcp` bags. */
+const DISK_ACP_KEYS = new Set([
+  "executable",
+  "model",
+  "envKey",
+  "credentialRef",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "promptTimeoutMs",
+  "permissionPolicy",
+  "permissionTimeoutMs",
+]);
+
+const DISK_FAKE_KEYS = new Set([
+  "sleepMs",
+  "exitCode",
+  "waitForSignal",
+  "emitStdout",
+  "failLaunch",
+  "canResume",
+]);
+
 export function profilesPath(dataDir: string): string {
   return path.join(dataDir, "agent-profiles.json");
+}
+
+async function quarantineAgentProfilesFile(
+  file: string
+): Promise<{ profiles: AgentProfileConfig[]; migrated: boolean }> {
+  const backupPath = await backupCorruptMachineFile(file);
+  warnCorruptMachineState(file, backupPath, "reset");
+  return { profiles: [], migrated: false };
+}
+
+/** Map FieldResult → disk optional: undefined/null omit; invalid → null (quarantine). */
+function diskOptional<T>(
+  value: unknown,
+  parse: (v: unknown) => FieldResult<T>
+): T | undefined | null {
+  if (value === undefined || value === null) return undefined;
+  const r = parse(value);
+  return r.ok ? r.value : null;
+}
+
+/**
+ * Strict ACP bag parse for disk rows. Shared FieldResult rules:
+ * invalid type/value or unknown key → null (caller quarantines whole file).
+ */
+function parseDiskAcpBag(value: unknown): AcpProfileOptions | null {
+  if (value === undefined || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const acp: AcpProfileOptions = {};
+
+  for (const key of Object.keys(raw)) {
+    if (!DISK_ACP_KEYS.has(key)) return null; // unknown acp/grokAcp key → malformed
+    const v = raw[key];
+    switch (key) {
+      case "executable": {
+        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "executable"));
+        if (s === null) return null;
+        if (s !== undefined) acp.executable = s;
+        break;
+      }
+      case "model": {
+        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "model"));
+        if (s === null) return null;
+        if (s !== undefined) acp.model = s;
+        break;
+      }
+      case "envKey": {
+        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "envKey"));
+        if (s === null) return null;
+        if (s !== undefined) acp.envKey = s;
+        break;
+      }
+      case "baseUrlEnvKey": {
+        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "baseUrlEnvKey"));
+        if (s === null) return null;
+        if (s !== undefined) acp.baseUrlEnvKey = s;
+        break;
+      }
+      case "credentialRef": {
+        const s = diskOptional(v, parseCredentialRefValue);
+        if (s === null) return null;
+        if (s !== undefined) acp.credentialRef = s;
+        break;
+      }
+      case "baseUrl": {
+        const s = diskOptional(v, parseBaseUrlValue);
+        if (s === null) return null;
+        if (s !== undefined) acp.baseUrl = s;
+        break;
+      }
+      case "permissionPolicy": {
+        const p = diskOptional(v, parsePermissionPolicyValue);
+        if (p === null) return null;
+        if (p !== undefined) acp.permissionPolicy = p;
+        break;
+      }
+      case "promptTimeoutMs": {
+        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "promptTimeoutMs"));
+        if (n === null) return null;
+        if (n !== undefined) acp.promptTimeoutMs = n;
+        break;
+      }
+      case "permissionTimeoutMs": {
+        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "permissionTimeoutMs"));
+        if (n === null) return null;
+        if (n !== undefined) acp.permissionTimeoutMs = n;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return acp;
+}
+
+function parseDiskFakeBag(value: unknown): FakeProfileOptions | null {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const raw = value as Record<string, unknown>;
+  const fake: FakeProfileOptions = {};
+  for (const key of Object.keys(raw)) {
+    if (!DISK_FAKE_KEYS.has(key)) return null; // unknown fake key → malformed
+    const v = raw[key];
+    switch (key) {
+      case "sleepMs": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "number" || !Number.isFinite(v)) return null;
+        fake.sleepMs = v;
+        break;
+      }
+      case "exitCode": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "number" || !Number.isFinite(v)) return null;
+        fake.exitCode = v;
+        break;
+      }
+      case "waitForSignal": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.waitForSignal = v;
+        break;
+      }
+      case "emitStdout": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.emitStdout = v;
+        break;
+      }
+      case "canResume": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.canResume = v;
+        break;
+      }
+      case "failLaunch": {
+        if (v === undefined || v === null) break;
+        if (typeof v !== "string") return null;
+        fake.failLaunch = v;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return fake;
+}
+
+function parseDiskEnvMap(value: unknown): Record<string, string> | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+    if (typeof v !== "string") return null;
+    out[k] = v;
+  }
+  return out;
+}
+
+function parseDiskArgs(value: unknown): string[] | null | undefined {
+  if (value === undefined || value === null) return undefined;
+  if (!Array.isArray(value)) return null;
+  const out: string[] = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    out.push(item);
+  }
+  return out;
+}
+
+/**
+ * Strict disk-row parser for agent-profiles.json.
+ * Returns null for any malformed row so the loader can quarantine the whole file —
+ * never silently skip bad rows. Exact top-level allowlist only; unknown top-level /
+ * acp / grokAcp / fake keys are malformed. Legacy `grokAcp` migrates to canonical
+ * `acp` via normalizeProfileToCanonicalAcp.
+ * Not exported — load path only; tests exercise via load/ensureDefaultProfiles.
+ */
+function parseAgentProfileDiskRow(
+  value: unknown
+): { profile: AgentProfileConfig; migrated: boolean } | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value as Record<string, unknown>;
+
+  // Exact top-level allowlist: any extra key (apiKey, secrets, typos) is malformed.
+  for (const key of Object.keys(item)) {
+    if (!DISK_PROFILE_TOP_LEVEL_KEYS.has(key)) return null;
+  }
+
+  // id / adapterId are required structural fields (same gate as product CRUD id shape).
+  const idResult = parseProfileIdValue(item.id);
+  if (!idResult.ok) return null;
+  const id = idResult.value;
+  if (typeof item.adapterId !== "string" || !item.adapterId.trim()) return null;
+  const adapterId = item.adapterId.trim();
+
+  const raw: AgentProfileConfigRaw = { id, adapterId };
+
+  if ("displayName" in item && item.displayName !== undefined && item.displayName !== null) {
+    const displayName = diskOptional(item.displayName, (x) =>
+      parseNonEmptyStringValue(x, "displayName")
+    );
+    if (displayName === null) return null;
+    if (displayName !== undefined) raw.displayName = displayName;
+  }
+
+  if ("displayNameKey" in item && item.displayNameKey !== undefined && item.displayNameKey !== null) {
+    if (typeof item.displayNameKey !== "string" || !item.displayNameKey.trim()) return null;
+    raw.displayNameKey = item.displayNameKey.trim();
+  }
+
+  if ("command" in item && item.command !== undefined && item.command !== null) {
+    const command = diskOptional(item.command, (x) => parseNonEmptyStringValue(x, "command"));
+    if (command === null) return null;
+    if (command !== undefined) raw.command = command;
+  }
+
+  if ("args" in item) {
+    const args = parseDiskArgs(item.args);
+    if (args === null) return null;
+    if (args !== undefined) raw.args = args;
+  }
+
+  if ("env" in item) {
+    const env = parseDiskEnvMap(item.env);
+    if (env === null) return null;
+    if (env !== undefined) raw.env = env;
+  }
+
+  if ("fake" in item && item.fake !== undefined && item.fake !== null) {
+    const fake = parseDiskFakeBag(item.fake);
+    if (fake === null) return null;
+    raw.fake = fake;
+  }
+
+  if ("acp" in item && item.acp !== undefined && item.acp !== null) {
+    const acp = parseDiskAcpBag(item.acp);
+    if (acp === null) return null;
+    raw.acp = acp;
+  }
+
+  if ("grokAcp" in item && item.grokAcp !== undefined && item.grokAcp !== null) {
+    const grokAcp = parseDiskAcpBag(item.grokAcp);
+    if (grokAcp === null) return null;
+    raw.grokAcp = grokAcp;
+  }
+
+  return normalizeProfileToCanonicalAcp(raw);
 }
 
 export async function loadAgentProfiles(dataDir: string): Promise<AgentProfileConfig[]> {
@@ -126,6 +429,9 @@ export async function loadAgentProfiles(dataDir: string): Promise<AgentProfileCo
 /**
  * Load profiles and report whether any row still carried legacy `grokAcp` on disk.
  * ensureDefaultProfiles uses `migrated` to atomic-rewrite canonical `acp` without dual-write.
+ *
+ * Any malformed row (missing id/adapterId, unknown top-level/acp/fake key, bad acp shape)
+ * quarantines the whole agent-profiles.json — never silent-skip into a shrunk catalog.
  */
 export async function loadAgentProfilesWithMigration(
   dataDir: string
@@ -137,27 +443,24 @@ export async function loadAgentProfilesWithMigration(
     try {
       parsed = JSON.parse(raw);
     } catch {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
     const profiles = (parsed as { profiles?: unknown }).profiles;
     if (profiles !== undefined && !Array.isArray(profiles)) {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
-    const list = Array.isArray(profiles) ? (profiles as AgentProfileConfigRaw[]) : [];
+    const list = Array.isArray(profiles) ? profiles : [];
     let migrated = false;
     const out: AgentProfileConfig[] = [];
     for (const p of list) {
-      if (!p || typeof p.id !== "string" || typeof p.adapterId !== "string") continue;
-      const n = normalizeProfileToCanonicalAcp(p);
+      const n = parseAgentProfileDiskRow(p);
+      if (!n) {
+        // One bad row poisons the whole machine-state file — never skip.
+        return quarantineAgentProfilesFile(file);
+      }
       if (n.migrated) migrated = true;
       out.push(n.profile);
     }

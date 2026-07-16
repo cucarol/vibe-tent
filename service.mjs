@@ -11578,8 +11578,8 @@ var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/profiles.ts
-import * as fs6 from "node:fs/promises";
-import * as path6 from "node:path";
+import * as fs7 from "node:fs/promises";
+import * as path7 from "node:path";
 
 // src/runtime/profile-config.ts
 function normalizeProfileToCanonicalAcp(raw) {
@@ -13234,6 +13234,528 @@ function createCopilotAcpAdapter(options) {
   return new CopilotAcpProviderAdapter(options);
 }
 
+// src/service/credential-store.ts
+import * as fs6 from "node:fs/promises";
+import * as path6 from "node:path";
+
+// src/service/credential-protector.ts
+import { spawn as spawn3 } from "node:child_process";
+var NON_WINDOWS_MSG = "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
+function createPlatformCredentialProtector(platform = process.platform) {
+  if (platform !== "win32") {
+    return {
+      protect: async () => {
+        throw new Error(NON_WINDOWS_MSG);
+      },
+      unprotect: async () => {
+        throw new Error(NON_WINDOWS_MSG);
+      }
+    };
+  }
+  return createWindowsDpapiProtector();
+}
+function createWindowsDpapiProtector() {
+  return {
+    protect: async (plaintext) => {
+      const b64In = Buffer.from(plaintext, "utf8").toString("base64");
+      const b64Out = await runPowerShellStdin(
+        [
+          "Add-Type -AssemblyName System.Security",
+          "$b64 = [Console]::In.ReadToEnd().Trim()",
+          "$plain = [Convert]::FromBase64String($b64)",
+          "$prot = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+          "[Convert]::ToBase64String($prot)"
+        ].join("; "),
+        b64In,
+        "protect"
+      );
+      return b64Out.trim();
+    },
+    unprotect: async (ciphertext) => {
+      const b64Out = await runPowerShellStdin(
+        [
+          "Add-Type -AssemblyName System.Security",
+          "$b64 = [Console]::In.ReadToEnd().Trim()",
+          "$prot = [Convert]::FromBase64String($b64)",
+          "$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($prot, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
+          "[Convert]::ToBase64String($plain)"
+        ].join("; "),
+        ciphertext.trim(),
+        "unprotect"
+      );
+      return Buffer.from(b64Out.trim(), "base64").toString("utf8");
+    }
+  };
+}
+function runPowerShellStdin(command, stdinData, op) {
+  return new Promise((resolve10, reject) => {
+    const child = spawn3(
+      "powershell.exe",
+      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
+      {
+        stdio: ["pipe", "pipe", "pipe"],
+        windowsHide: true
+      }
+    );
+    let stdout = "";
+    child.stderr?.on("data", () => {
+    });
+    child.stdout?.on("data", (chunk) => {
+      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
+    });
+    child.on("error", (err) => {
+      reject(
+        new Error(
+          `DPAPI PowerShell ${op} failed to start: ${err instanceof Error ? err.message : "spawn error"}`
+        )
+      );
+    });
+    child.on("close", (code) => {
+      if (code !== 0) {
+        reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
+        return;
+      }
+      resolve10(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+    });
+    child.stdin?.on("error", (err) => {
+      reject(
+        new Error(
+          `DPAPI PowerShell ${op} stdin failed: ${err instanceof Error ? err.message : "stdin error"}`
+        )
+      );
+    });
+    child.stdin?.end(stdinData, "utf8");
+  });
+}
+
+// src/service/credential-store.ts
+var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var MAX_SECRET_BYTES = 64 * 1024;
+var MAX_LABEL_LEN = 200;
+function credentialsPath(dataDir) {
+  return path6.join(dataDir, "credentials.json");
+}
+function assertCredentialId(id) {
+  if (typeof id !== "string" || !id.trim()) {
+    throw new Error("Missing or invalid credential id");
+  }
+  const trimmed = id.trim();
+  if (!CREDENTIAL_ID_RE.test(trimmed)) {
+    throw new Error(
+      `Invalid credential id: must match ${CREDENTIAL_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
+    );
+  }
+  return trimmed;
+}
+function project(rec) {
+  const out = {
+    id: rec.id,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt
+  };
+  if (rec.metadata?.label) {
+    out.label = rec.metadata.label;
+    out.metadata = { label: rec.metadata.label };
+  }
+  return out;
+}
+function normalizeSetOpts(opts) {
+  if (opts === void 0) return void 0;
+  if (opts === null) return null;
+  if ("metadata" in opts && opts.metadata !== void 0) {
+    return normalizeMetadata(opts.metadata);
+  }
+  if ("label" in opts) {
+    if (opts.label === null) return null;
+    if (opts.label === void 0) return void 0;
+    return normalizeMetadata({ label: opts.label });
+  }
+  return normalizeMetadata(opts);
+}
+function normalizeMetadata(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error("Invalid credential metadata: must be a plain object when set");
+  }
+  const obj = raw;
+  const out = {};
+  if ("label" in obj) {
+    if (obj.label === void 0 || obj.label === null) {
+    } else if (typeof obj.label !== "string") {
+      throw new Error("Invalid credential metadata.label: must be a string");
+    } else {
+      const t = obj.label.trim();
+      if (!t) throw new Error("Invalid credential metadata.label: must be non-empty when set");
+      if (t.length > MAX_LABEL_LEN) {
+        throw new Error(
+          `Invalid credential metadata.label: exceeds ${MAX_LABEL_LEN} characters`
+        );
+      }
+      out.label = t;
+    }
+  }
+  for (const key of Object.keys(obj)) {
+    if (key !== "label") {
+      throw new Error(`Unknown credential metadata field: ${key}`);
+    }
+  }
+  return Object.keys(out).length > 0 ? out : void 0;
+}
+function isValidDate2(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseCredentialRecord(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) {
+    return null;
+  }
+  const item = value;
+  if (typeof item.id !== "string") return null;
+  let id;
+  try {
+    id = assertCredentialId(item.id);
+  } catch {
+    return null;
+  }
+  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
+    return null;
+  }
+  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
+    return null;
+  }
+  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
+    return null;
+  }
+  if (!isValidDate2(item.createdAt) || !isValidDate2(item.updatedAt)) {
+    return null;
+  }
+  let metaSrc = item.metadata;
+  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
+    metaSrc = { label: item.label };
+  }
+  let metadata;
+  if (metaSrc !== void 0 && metaSrc !== null) {
+    try {
+      metadata = normalizeMetadata(metaSrc);
+    } catch {
+      return null;
+    }
+  }
+  const rec = {
+    id,
+    ciphertext: item.ciphertext,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt
+  };
+  if (metadata) rec.metadata = metadata;
+  return rec;
+}
+var CredentialStore = class {
+  constructor(dataDir, options) {
+    this.records = /* @__PURE__ */ new Map();
+    this.loaded = false;
+    this.chain = Promise.resolve();
+    this.file = credentialsPath(dataDir);
+    if (options && typeof options === "object" && "protect" in options && "unprotect" in options) {
+      this.protector = options;
+    } else if (options && typeof options === "object" && "protector" in options) {
+      this.protector = options.protector ?? createPlatformCredentialProtector();
+    } else {
+      this.protector = createPlatformCredentialProtector();
+    }
+  }
+  enqueue(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    return this.enqueue(async () => {
+      if (this.loaded) return;
+      await this.loadFromDisk();
+    });
+  }
+  async loadFromDisk() {
+    try {
+      const raw = await fs6.readFile(this.file, "utf8");
+      let parsed;
+      try {
+        parsed = JSON.parse(raw);
+      } catch {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      const list2 = parsed.credentials;
+      if (list2 !== void 0 && !Array.isArray(list2)) {
+        await this.quarantineCorrupt();
+        this.loaded = true;
+        return;
+      }
+      const loaded = /* @__PURE__ */ new Map();
+      for (const item of list2 ?? []) {
+        const restored = parseCredentialRecord(item);
+        if (!restored) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        loaded.set(restored.id, restored);
+      }
+      this.records = loaded;
+      this.loaded = true;
+    } catch (err) {
+      if (isNotFoundError(err)) {
+        this.loaded = true;
+        return;
+      }
+      throw err;
+    }
+  }
+  async quarantineCorrupt() {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, "reset");
+    this.records.clear();
+  }
+  async persist() {
+    const credentials = [...this.records.values()].map((r) => {
+      const row = {
+        id: r.id,
+        ciphertext: r.ciphertext,
+        createdAt: r.createdAt,
+        updatedAt: r.updatedAt
+      };
+      if (r.metadata) row.metadata = { ...r.metadata };
+      return row;
+    }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
+    await writeJsonAtomic(this.file, { credentials });
+  }
+  /**
+   * Sync presence after ensureLoaded (projection helper).
+   * Call ensureLoaded() first from async handlers when needed.
+   */
+  has(idRaw) {
+    try {
+      const id = assertCredentialId(idRaw);
+      return this.records.has(id);
+    } catch {
+      return false;
+    }
+  }
+  async list() {
+    await this.ensureLoaded();
+    return this.enqueue(
+      async () => [...this.records.values()].map(project).sort((a, b) => a.id.localeCompare(b.id))
+    );
+  }
+  /**
+   * Store secret under id. Overwrites ciphertext if id exists.
+   * Response is id/metadata only — never echoes secret or ciphertext.
+   */
+  async set(idRaw, secret, opts) {
+    const id = assertCredentialId(idRaw);
+    if (typeof secret !== "string" || secret.length === 0) {
+      throw new Error("credential secret must be a non-empty string");
+    }
+    if (Buffer.byteLength(secret, "utf8") > MAX_SECRET_BYTES) {
+      throw new Error(`credential secret exceeds ${MAX_SECRET_BYTES} bytes`);
+    }
+    const metaNorm = normalizeSetOpts(opts);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const ciphertext = await this.protector.protect(secret);
+      if (typeof ciphertext !== "string" || !ciphertext.trim()) {
+        throw new Error("credential protect() returned empty ciphertext");
+      }
+      if (ciphertext === secret) {
+        throw new Error("credential protect() must not return plaintext");
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const prev = this.records.get(id);
+      const record = {
+        id,
+        ciphertext: ciphertext.trim(),
+        createdAt: prev?.createdAt ?? now,
+        updatedAt: now
+      };
+      if (opts !== void 0) {
+        if (metaNorm === null) {
+        } else if (metaNorm !== void 0) {
+          record.metadata = metaNorm;
+        }
+      } else if (prev?.metadata) {
+        record.metadata = { ...prev.metadata };
+      }
+      this.records.set(id, record);
+      try {
+        await this.persist();
+      } catch (err) {
+        if (prev) this.records.set(id, prev);
+        else this.records.delete(id);
+        throw err;
+      }
+      return project(record);
+    });
+  }
+  async delete(idRaw) {
+    const id = assertCredentialId(idRaw);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (!this.records.has(id)) {
+        throw new Error(`Credential not found: ${id}`);
+      }
+      const prev = this.records.get(id);
+      this.records.delete(id);
+      try {
+        await this.persist();
+      } catch (err) {
+        this.records.set(id, prev);
+        throw err;
+      }
+      return { deleted: id };
+    });
+  }
+  /**
+   * Service-internal only — returns plaintext for LaunchPlan.env injection.
+   * Never exposed as client RPC. Fail-loud when missing.
+   */
+  async resolve(idRaw) {
+    const id = assertCredentialId(idRaw);
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const rec = this.records.get(id);
+      if (!rec) {
+        throw new Error(`Credential not found: ${id}`);
+      }
+      const plain = await this.protector.unprotect(rec.ciphertext);
+      if (typeof plain !== "string" || !plain) {
+        throw new Error(`Credential unprotect failed for ${id}`);
+      }
+      return plain;
+    });
+  }
+};
+
+// src/service/profile-field-rules.ts
+function fieldOk(value) {
+  return { ok: true, value };
+}
+function fieldErr(message) {
+  return { ok: false, message };
+}
+var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
+var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
+var DANGEROUS_FIELD_HINTS = [
+  "apiKey",
+  "api_key",
+  "token",
+  "secret",
+  "password",
+  "credential",
+  "authorization",
+  "bearer",
+  "env",
+  "fake",
+  "command",
+  "args",
+  "displayNameKey",
+  "grokAcp",
+  "acp"
+];
+function parseProfileIdValue(raw, field = "id") {
+  if (typeof raw !== "string" || !raw.trim()) {
+    return fieldErr(`Missing or invalid string param: ${field}`);
+  }
+  const id = raw.trim();
+  if (!PROFILE_ID_RE.test(id)) {
+    return fieldErr(
+      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
+    );
+  }
+  return fieldOk(id);
+}
+function parseNonEmptyStringValue(raw, key) {
+  if (typeof raw !== "string") {
+    return fieldErr(`Invalid string param: ${key}`);
+  }
+  const v = raw.trim();
+  if (!v) {
+    return fieldErr(`Invalid string param: ${key} must be non-empty when set`);
+  }
+  return fieldOk(v);
+}
+function parseEnvKeyValue(raw, key) {
+  const base = parseNonEmptyStringValue(raw, key);
+  if (!base.ok) return base;
+  if (!ENV_KEY_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function validateBaseUrlValue(v) {
+  let parsed;
+  try {
+    parsed = new URL(v);
+  } catch {
+    return fieldErr("Invalid baseUrl: must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return fieldErr("Invalid baseUrl: only http: and https: are allowed");
+  }
+  if (parsed.username || parsed.password) {
+    return fieldErr("Invalid baseUrl: username/password in URL are not allowed");
+  }
+  if (parsed.search || parsed.hash) {
+    return fieldErr("Invalid baseUrl: query string and hash fragment are not allowed");
+  }
+  return fieldOk(v);
+}
+function parseBaseUrlValue(raw) {
+  const base = parseNonEmptyStringValue(raw, "baseUrl");
+  if (!base.ok) return base;
+  return validateBaseUrlValue(base.value);
+}
+function parsePermissionPolicyValue(raw) {
+  if (typeof raw !== "string") {
+    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  if (!PERMISSION_POLICIES.has(raw)) {
+    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
+  }
+  return fieldOk(raw);
+}
+function parsePositiveTimeoutValue(raw, key) {
+  if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
+    return fieldErr(
+      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
+    );
+  }
+  return fieldOk(raw);
+}
+function parseCredentialRefValue(raw) {
+  const base = parseNonEmptyStringValue(raw, "credentialRef");
+  if (!base.ok) return base;
+  try {
+    return fieldOk(assertCredentialId(base.value));
+  } catch (err) {
+    return fieldErr(
+      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
+    );
+  }
+}
+
 // src/service/profiles.ts
 var FAKE_DEFAULT_PROFILE_ID = "fake-default";
 var GROK_ACP_DEFAULT_PROFILE_ID = "grok-acp-default";
@@ -13292,38 +13814,270 @@ var PROFILE_UPDATE_FIELDS = [
   "promptTimeoutMs",
   "permissionTimeoutMs"
 ];
+var DISK_PROFILE_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
+  "id",
+  "adapterId",
+  "displayName",
+  "displayNameKey",
+  "command",
+  "args",
+  "env",
+  "fake",
+  "acp",
+  "grokAcp"
+]);
+var DISK_ACP_KEYS = /* @__PURE__ */ new Set([
+  "executable",
+  "model",
+  "envKey",
+  "credentialRef",
+  "baseUrlEnvKey",
+  "baseUrl",
+  "promptTimeoutMs",
+  "permissionPolicy",
+  "permissionTimeoutMs"
+]);
+var DISK_FAKE_KEYS = /* @__PURE__ */ new Set([
+  "sleepMs",
+  "exitCode",
+  "waitForSignal",
+  "emitStdout",
+  "failLaunch",
+  "canResume"
+]);
 function profilesPath(dataDir) {
-  return path6.join(dataDir, "agent-profiles.json");
+  return path7.join(dataDir, "agent-profiles.json");
+}
+async function quarantineAgentProfilesFile(file) {
+  const backupPath = await backupCorruptMachineFile(file);
+  warnCorruptMachineState(file, backupPath, "reset");
+  return { profiles: [], migrated: false };
+}
+function diskOptional(value, parse2) {
+  if (value === void 0 || value === null) return void 0;
+  const r = parse2(value);
+  return r.ok ? r.value : null;
+}
+function parseDiskAcpBag(value) {
+  if (value === void 0 || value === null) return {};
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const raw = value;
+  const acp = {};
+  for (const key of Object.keys(raw)) {
+    if (!DISK_ACP_KEYS.has(key)) return null;
+    const v = raw[key];
+    switch (key) {
+      case "executable": {
+        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "executable"));
+        if (s === null) return null;
+        if (s !== void 0) acp.executable = s;
+        break;
+      }
+      case "model": {
+        const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "model"));
+        if (s === null) return null;
+        if (s !== void 0) acp.model = s;
+        break;
+      }
+      case "envKey": {
+        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "envKey"));
+        if (s === null) return null;
+        if (s !== void 0) acp.envKey = s;
+        break;
+      }
+      case "baseUrlEnvKey": {
+        const s = diskOptional(v, (x) => parseEnvKeyValue(x, "baseUrlEnvKey"));
+        if (s === null) return null;
+        if (s !== void 0) acp.baseUrlEnvKey = s;
+        break;
+      }
+      case "credentialRef": {
+        const s = diskOptional(v, parseCredentialRefValue);
+        if (s === null) return null;
+        if (s !== void 0) acp.credentialRef = s;
+        break;
+      }
+      case "baseUrl": {
+        const s = diskOptional(v, parseBaseUrlValue);
+        if (s === null) return null;
+        if (s !== void 0) acp.baseUrl = s;
+        break;
+      }
+      case "permissionPolicy": {
+        const p = diskOptional(v, parsePermissionPolicyValue);
+        if (p === null) return null;
+        if (p !== void 0) acp.permissionPolicy = p;
+        break;
+      }
+      case "promptTimeoutMs": {
+        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "promptTimeoutMs"));
+        if (n === null) return null;
+        if (n !== void 0) acp.promptTimeoutMs = n;
+        break;
+      }
+      case "permissionTimeoutMs": {
+        const n = diskOptional(v, (x) => parsePositiveTimeoutValue(x, "permissionTimeoutMs"));
+        if (n === null) return null;
+        if (n !== void 0) acp.permissionTimeoutMs = n;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return acp;
+}
+function parseDiskFakeBag(value) {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
+  const raw = value;
+  const fake = {};
+  for (const key of Object.keys(raw)) {
+    if (!DISK_FAKE_KEYS.has(key)) return null;
+    const v = raw[key];
+    switch (key) {
+      case "sleepMs": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "number" || !Number.isFinite(v)) return null;
+        fake.sleepMs = v;
+        break;
+      }
+      case "exitCode": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "number" || !Number.isFinite(v)) return null;
+        fake.exitCode = v;
+        break;
+      }
+      case "waitForSignal": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.waitForSignal = v;
+        break;
+      }
+      case "emitStdout": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.emitStdout = v;
+        break;
+      }
+      case "canResume": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "boolean") return null;
+        fake.canResume = v;
+        break;
+      }
+      case "failLaunch": {
+        if (v === void 0 || v === null) break;
+        if (typeof v !== "string") return null;
+        fake.failLaunch = v;
+        break;
+      }
+      default:
+        return null;
+    }
+  }
+  return fake;
+}
+function parseDiskEnvMap(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (typeof value !== "object" || Array.isArray(value)) return null;
+  const out = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v !== "string") return null;
+    out[k] = v;
+  }
+  return out;
+}
+function parseDiskArgs(value) {
+  if (value === void 0 || value === null) return void 0;
+  if (!Array.isArray(value)) return null;
+  const out = [];
+  for (const item of value) {
+    if (typeof item !== "string") return null;
+    out.push(item);
+  }
+  return out;
+}
+function parseAgentProfileDiskRow(value) {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const item = value;
+  for (const key of Object.keys(item)) {
+    if (!DISK_PROFILE_TOP_LEVEL_KEYS.has(key)) return null;
+  }
+  const idResult = parseProfileIdValue(item.id);
+  if (!idResult.ok) return null;
+  const id = idResult.value;
+  if (typeof item.adapterId !== "string" || !item.adapterId.trim()) return null;
+  const adapterId = item.adapterId.trim();
+  const raw = { id, adapterId };
+  if ("displayName" in item && item.displayName !== void 0 && item.displayName !== null) {
+    const displayName = diskOptional(
+      item.displayName,
+      (x) => parseNonEmptyStringValue(x, "displayName")
+    );
+    if (displayName === null) return null;
+    if (displayName !== void 0) raw.displayName = displayName;
+  }
+  if ("displayNameKey" in item && item.displayNameKey !== void 0 && item.displayNameKey !== null) {
+    if (typeof item.displayNameKey !== "string" || !item.displayNameKey.trim()) return null;
+    raw.displayNameKey = item.displayNameKey.trim();
+  }
+  if ("command" in item && item.command !== void 0 && item.command !== null) {
+    const command = diskOptional(item.command, (x) => parseNonEmptyStringValue(x, "command"));
+    if (command === null) return null;
+    if (command !== void 0) raw.command = command;
+  }
+  if ("args" in item) {
+    const args = parseDiskArgs(item.args);
+    if (args === null) return null;
+    if (args !== void 0) raw.args = args;
+  }
+  if ("env" in item) {
+    const env = parseDiskEnvMap(item.env);
+    if (env === null) return null;
+    if (env !== void 0) raw.env = env;
+  }
+  if ("fake" in item && item.fake !== void 0 && item.fake !== null) {
+    const fake = parseDiskFakeBag(item.fake);
+    if (fake === null) return null;
+    raw.fake = fake;
+  }
+  if ("acp" in item && item.acp !== void 0 && item.acp !== null) {
+    const acp = parseDiskAcpBag(item.acp);
+    if (acp === null) return null;
+    raw.acp = acp;
+  }
+  if ("grokAcp" in item && item.grokAcp !== void 0 && item.grokAcp !== null) {
+    const grokAcp = parseDiskAcpBag(item.grokAcp);
+    if (grokAcp === null) return null;
+    raw.grokAcp = grokAcp;
+  }
+  return normalizeProfileToCanonicalAcp(raw);
 }
 async function loadAgentProfilesWithMigration(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs6.readFile(file, "utf8");
+    const raw = await fs7.readFile(file, "utf8");
     let parsed;
     try {
       parsed = JSON.parse(raw);
     } catch {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
     if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
     const profiles = parsed.profiles;
     if (profiles !== void 0 && !Array.isArray(profiles)) {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "reset");
-      return { profiles: [], migrated: false };
+      return quarantineAgentProfilesFile(file);
     }
     const list2 = Array.isArray(profiles) ? profiles : [];
     let migrated = false;
     const out = [];
     for (const p of list2) {
-      if (!p || typeof p.id !== "string" || typeof p.adapterId !== "string") continue;
-      const n = normalizeProfileToCanonicalAcp(p);
+      const n = parseAgentProfileDiskRow(p);
+      if (!n) {
+        return quarantineAgentProfilesFile(file);
+      }
       if (n.migrated) migrated = true;
       out.push(n.profile);
     }
@@ -13488,9 +14242,9 @@ var RpcError = class extends Error {
 };
 
 // src/machine/skills.ts
-import * as fs7 from "node:fs/promises";
+import * as fs8 from "node:fs/promises";
 import * as os3 from "node:os";
-import * as path7 from "node:path";
+import * as path8 from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
 var SAFE_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 function isSkillTargetId(value) {
@@ -13500,9 +14254,9 @@ function skillTargetDir(target, home) {
   const root = home ?? os3.homedir();
   switch (target) {
     case "claude":
-      return path7.join(root, ".claude", "skills");
+      return path8.join(root, ".claude", "skills");
     case "shared-agents":
-      return path7.join(root, ".agents", "skills");
+      return path8.join(root, ".agents", "skills");
     default: {
       const _exhaustive = target;
       throw new Error(`Unknown skill target: ${String(_exhaustive)}`);
@@ -13511,7 +14265,7 @@ function skillTargetDir(target, home) {
 }
 function assertSafeSkillName(name) {
   const trimmed = name.trim();
-  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path7.basename(trimmed) !== trimmed) {
+  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path8.basename(trimmed) !== trimmed) {
     throw new Error(`Invalid skill name: ${name}`);
   }
   return trimmed;
@@ -13526,13 +14280,13 @@ function parseSkillTargetId(value) {
   return trimmed;
 }
 function bundledSkillsDir(packageRoot) {
-  return path7.join(packageRoot, "skills");
+  return path8.join(packageRoot, "skills");
 }
 async function listBundledSkillNames(packageRoot) {
   const sourceDir = bundledSkillsDir(packageRoot);
   let entries;
   try {
-    entries = await fs7.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs8.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -13544,7 +14298,7 @@ async function listBundledSkillNames(packageRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!SAFE_SKILL_NAME.test(entry.name)) continue;
-    if (await existsPath(path7.join(sourceDir, entry.name, "SKILL.md"))) {
+    if (await existsPath(path8.join(sourceDir, entry.name, "SKILL.md"))) {
       skillNames.push(entry.name);
     }
   }
@@ -13559,7 +14313,7 @@ async function listSkills(options) {
     const targets = [];
     for (const target of SKILL_TARGET_IDS) {
       const dir = skillTargetDir(target, home);
-      const skillPath = path7.join(dir, name);
+      const skillPath = path8.join(dir, name);
       assertChildPath(dir, skillPath);
       targets.push({
         target,
@@ -13586,10 +14340,10 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs7.mkdir(dest.dir, { recursive: true });
+    await fs8.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
-      const source = path7.join(sourceDir, name);
-      const target = path7.join(dest.dir, name);
+      const source = path8.join(sourceDir, name);
+      const target = path8.join(dest.dir, name);
       assertChildPath(sourceDir, source);
       assertChildPath(dest.dir, target);
       const exists = await existsPath(target);
@@ -13604,9 +14358,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists && force) {
-        await fs7.rm(target, { recursive: true, force: true });
+        await fs8.rm(target, { recursive: true, force: true });
       }
-      await fs7.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs8.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -13639,7 +14393,7 @@ function resolveInstallDestinations(options, home) {
     if (options.targetDirs.length === 0) {
       throw new Error("skill-install requires at least one target directory");
     }
-    return options.targetDirs.map((dir) => ({ dir: path7.resolve(dir) }));
+    return options.targetDirs.map((dir) => ({ dir: path8.resolve(dir) }));
   }
   const targetIds = options.targets && options.targets.length > 0 ? options.targets.map((t) => parseSkillTargetId(t)) : [...SKILL_TARGET_IDS];
   const seen = /* @__PURE__ */ new Set();
@@ -13652,14 +14406,14 @@ function resolveInstallDestinations(options, home) {
   return out;
 }
 function assertChildPath(parent, child) {
-  const rel = path7.relative(path7.resolve(parent), path7.resolve(child));
-  if (rel.startsWith("..") || path7.isAbsolute(rel)) {
+  const rel = path8.relative(path8.resolve(parent), path8.resolve(child));
+  if (rel.startsWith("..") || path8.isAbsolute(rel)) {
     throw new Error(`Install target escapes the destination directory: ${child}`);
   }
 }
 async function existsPath(target) {
   try {
-    await fs7.access(target);
+    await fs8.access(target);
     return true;
   } catch {
     return false;
@@ -16625,24 +17379,24 @@ function headerValue(headers, name) {
 }
 
 // src/service/data-dir.ts
-import * as fs8 from "node:fs/promises";
+import * as fs9 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os4 from "node:os";
-import * as path8 from "node:path";
+import * as path9 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path8.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path9.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path8.join(os4.homedir(), "AppData", "Roaming");
-    return path8.join(base, "Tent");
+    const base = env.APPDATA || path9.join(os4.homedir(), "AppData", "Roaming");
+    return path9.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path8.join(os4.homedir(), "Library", "Application Support", "Tent");
+    return path9.join(os4.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path8.join(os4.homedir(), ".local", "state");
-  return path8.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path9.join(os4.homedir(), ".local", "state");
+  return path9.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path8.join(dataDir, "service.json");
+  return path9.join(dataDir, "service.json");
 }
 function serviceBaseUrl(host, port) {
   const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
@@ -16665,7 +17419,7 @@ async function writeServiceEndpoint(dataDir, record) {
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs8.readFile(file, "utf8");
+    const raw = await fs9.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -16687,7 +17441,7 @@ async function removeServiceEndpoint(dataDir, expectedInstanceId) {
       const endpoint = await readServiceEndpoint(dataDir);
       if (endpoint?.instanceId !== expectedInstanceId) return;
     }
-    await fs8.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs9.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
@@ -17155,11 +17909,11 @@ var EventBus = class {
 
 // src/service/workspace-host.ts
 import { watch } from "node:fs";
-import * as fs10 from "node:fs/promises";
-import * as path9 from "node:path";
+import * as fs11 from "node:fs/promises";
+import * as path10 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs9 from "node:fs/promises";
+import * as fs10 from "node:fs/promises";
 import * as nodePath4 from "node:path";
 var NodeFs = class {
   constructor(root) {
@@ -17175,64 +17929,64 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs9.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs10.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path16) {
-    return fs9.readFile(this.abs(path16), "utf8");
+    return fs10.readFile(this.abs(path16), "utf8");
   }
   async writeFile(path16, content3) {
-    await fs9.mkdir(nodePath4.dirname(this.abs(path16)), { recursive: true });
-    await fs9.writeFile(this.abs(path16), content3, "utf8");
+    await fs10.mkdir(nodePath4.dirname(this.abs(path16)), { recursive: true });
+    await fs10.writeFile(this.abs(path16), content3, "utf8");
   }
   async readBinary(path16) {
-    const buf = await fs9.readFile(this.abs(path16));
+    const buf = await fs10.readFile(this.abs(path16));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
   async writeBinary(path16, data) {
     const abs = this.abs(path16);
-    await fs9.mkdir(nodePath4.dirname(abs), { recursive: true });
+    await fs10.mkdir(nodePath4.dirname(abs), { recursive: true });
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     try {
-      await fs9.writeFile(tmp, payload);
-      await fs9.rename(tmp, abs);
+      await fs10.writeFile(tmp, payload);
+      await fs10.rename(tmp, abs);
     } catch (err) {
-      await fs9.rm(tmp, { force: true }).catch(() => void 0);
+      await fs10.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
   async exists(path16) {
     try {
-      await fs9.access(this.abs(path16));
+      await fs10.access(this.abs(path16));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path16) {
-    await fs9.mkdir(this.abs(path16), { recursive: true });
+    await fs10.mkdir(this.abs(path16), { recursive: true });
   }
   async move(from, to) {
-    await fs9.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
-    await fs9.rename(this.abs(from), this.abs(to));
+    await fs10.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
+    await fs10.rename(this.abs(from), this.abs(to));
   }
   async remove(path16) {
-    await fs9.rm(this.abs(path16), { recursive: true, force: true });
+    await fs10.rm(this.abs(path16), { recursive: true, force: true });
   }
   async withLock(path16, action) {
     const lockPath = this.abs(path16);
-    await fs9.mkdir(nodePath4.dirname(lockPath), { recursive: true });
+    await fs10.mkdir(nodePath4.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs9.open(lockPath, "wx");
+        handle = await fs10.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs9.rm(lockPath, { force: true });
+        await fs10.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -17241,7 +17995,7 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs9.rm(lockPath, { force: true });
+      await fs10.rm(lockPath, { force: true });
     }
   }
 };
@@ -17250,7 +18004,7 @@ function isAlreadyExists(error) {
 }
 async function isStaleLock(path16) {
   try {
-    const stat2 = await fs9.stat(path16);
+    const stat2 = await fs10.stat(path16);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -17283,18 +18037,18 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const root = path9.resolve(workspaceRoot);
+    const root = path10.resolve(workspaceRoot);
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path9.join(systemRoot, "RULES.md");
+    const rulesPath = path10.join(systemRoot, "RULES.md");
     try {
-      await fs10.access(rulesPath);
+      await fs11.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
       );
     }
     for (const existing of this.mounts.values()) {
-      if (path9.resolve(existing.workspaceRoot) === root) {
+      if (path10.resolve(existing.workspaceRoot) === root) {
         return this.toInfo(existing);
       }
     }
@@ -17302,7 +18056,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path9.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path10.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -17437,14 +18191,14 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path9.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
-  const hash = Buffer.from(path9.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
+  const base = path10.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const hash = Buffer.from(path10.resolve(workspaceRoot)).toString("base64url").slice(0, 10);
   return `ws-${base}-${hash}`;
 }
 
 // src/service/tool-approval-store.ts
-import * as fs11 from "node:fs/promises";
-import * as path10 from "node:path";
+import * as fs12 from "node:fs/promises";
+import * as path11 from "node:path";
 function cloneApproval2(item) {
   return {
     ...item,
@@ -17466,7 +18220,7 @@ function isRequiredString2(value) {
 function isOptionalString2(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate2(value) {
+function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
@@ -17487,7 +18241,7 @@ function parseApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(sessionId) || !isRequiredString2(toolTitle) || !isRequiredString2(createdAt) || !isRequiredString2(expiresAt) || !isValidDate2(createdAt) || !isValidDate2(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString2(taskId) || !isOptionalString2(taskPath) || !isOptionalString2(role) || !isOptionalString2(toolCallId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
+  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(sessionId) || !isRequiredString2(toolTitle) || !isRequiredString2(createdAt) || !isRequiredString2(expiresAt) || !isValidDate3(createdAt) || !isValidDate3(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString2(taskId) || !isOptionalString2(taskPath) || !isOptionalString2(role) || !isOptionalString2(toolCallId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate3(resolvedAt)) {
     return null;
   }
   const parsedOptions = [];
@@ -17527,7 +18281,7 @@ var ToolApprovalStore = class {
     this.shutdownPromise = null;
     /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
     this.chain = Promise.resolve();
-    this.file = path10.join(dataDir, "tool-approvals.json");
+    this.file = path11.join(dataDir, "tool-approvals.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -17543,7 +18297,7 @@ var ToolApprovalStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs11.readFile(this.file, "utf8");
+        const raw = await fs12.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -17868,438 +18622,11 @@ function makeToolApprovalId(rand = Math.random) {
   return s;
 }
 
-// src/service/credential-store.ts
-import * as fs12 from "node:fs/promises";
-import * as path11 from "node:path";
-
-// src/service/credential-protector.ts
-import { spawn as spawn3 } from "node:child_process";
-var NON_WINDOWS_MSG = "CredentialStore requires Windows DPAPI (CurrentUser); non-Windows is not supported in this MVP (no weak-crypto fallback)";
-function createPlatformCredentialProtector(platform = process.platform) {
-  if (platform !== "win32") {
-    return {
-      protect: async () => {
-        throw new Error(NON_WINDOWS_MSG);
-      },
-      unprotect: async () => {
-        throw new Error(NON_WINDOWS_MSG);
-      }
-    };
-  }
-  return createWindowsDpapiProtector();
-}
-function createWindowsDpapiProtector() {
-  return {
-    protect: async (plaintext) => {
-      const b64In = Buffer.from(plaintext, "utf8").toString("base64");
-      const b64Out = await runPowerShellStdin(
-        [
-          "Add-Type -AssemblyName System.Security",
-          "$b64 = [Console]::In.ReadToEnd().Trim()",
-          "$plain = [Convert]::FromBase64String($b64)",
-          "$prot = [System.Security.Cryptography.ProtectedData]::Protect($plain, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
-          "[Convert]::ToBase64String($prot)"
-        ].join("; "),
-        b64In,
-        "protect"
-      );
-      return b64Out.trim();
-    },
-    unprotect: async (ciphertext) => {
-      const b64Out = await runPowerShellStdin(
-        [
-          "Add-Type -AssemblyName System.Security",
-          "$b64 = [Console]::In.ReadToEnd().Trim()",
-          "$prot = [Convert]::FromBase64String($b64)",
-          "$plain = [System.Security.Cryptography.ProtectedData]::Unprotect($prot, $null, [System.Security.Cryptography.DataProtectionScope]::CurrentUser)",
-          "[Convert]::ToBase64String($plain)"
-        ].join("; "),
-        ciphertext.trim(),
-        "unprotect"
-      );
-      return Buffer.from(b64Out.trim(), "base64").toString("utf8");
-    }
-  };
-}
-function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve10, reject) => {
-    const child = spawn3(
-      "powershell.exe",
-      ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
-      {
-        stdio: ["pipe", "pipe", "pipe"],
-        windowsHide: true
-      }
-    );
-    let stdout = "";
-    child.stderr?.on("data", () => {
-    });
-    child.stdout?.on("data", (chunk) => {
-      stdout += typeof chunk === "string" ? chunk : chunk.toString("utf8");
-    });
-    child.on("error", (err) => {
-      reject(
-        new Error(
-          `DPAPI PowerShell ${op} failed to start: ${err instanceof Error ? err.message : "spawn error"}`
-        )
-      );
-    });
-    child.on("close", (code) => {
-      if (code !== 0) {
-        reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
-        return;
-      }
-      resolve10(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
-    });
-    child.stdin?.on("error", (err) => {
-      reject(
-        new Error(
-          `DPAPI PowerShell ${op} stdin failed: ${err instanceof Error ? err.message : "stdin error"}`
-        )
-      );
-    });
-    child.stdin?.end(stdinData, "utf8");
-  });
-}
-
-// src/service/credential-store.ts
-var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var MAX_SECRET_BYTES = 64 * 1024;
-var MAX_LABEL_LEN = 200;
-function credentialsPath(dataDir) {
-  return path11.join(dataDir, "credentials.json");
-}
-function assertCredentialId(id) {
-  if (typeof id !== "string" || !id.trim()) {
-    throw new Error("Missing or invalid credential id");
-  }
-  const trimmed = id.trim();
-  if (!CREDENTIAL_ID_RE.test(trimmed)) {
-    throw new Error(
-      `Invalid credential id: must match ${CREDENTIAL_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return trimmed;
-}
-function project(rec) {
-  const out = {
-    id: rec.id,
-    createdAt: rec.createdAt,
-    updatedAt: rec.updatedAt
-  };
-  if (rec.metadata?.label) {
-    out.label = rec.metadata.label;
-    out.metadata = { label: rec.metadata.label };
-  }
-  return out;
-}
-function normalizeSetOpts(opts) {
-  if (opts === void 0) return void 0;
-  if (opts === null) return null;
-  if ("metadata" in opts && opts.metadata !== void 0) {
-    return normalizeMetadata(opts.metadata);
-  }
-  if ("label" in opts) {
-    if (opts.label === null) return null;
-    if (opts.label === void 0) return void 0;
-    return normalizeMetadata({ label: opts.label });
-  }
-  return normalizeMetadata(opts);
-}
-function normalizeMetadata(raw) {
-  if (raw === void 0 || raw === null) return void 0;
-  if (typeof raw !== "object" || Array.isArray(raw)) {
-    throw new Error("Invalid credential metadata: must be a plain object when set");
-  }
-  const obj = raw;
-  const out = {};
-  if ("label" in obj) {
-    if (obj.label === void 0 || obj.label === null) {
-    } else if (typeof obj.label !== "string") {
-      throw new Error("Invalid credential metadata.label: must be a string");
-    } else {
-      const t = obj.label.trim();
-      if (!t) throw new Error("Invalid credential metadata.label: must be non-empty when set");
-      if (t.length > MAX_LABEL_LEN) {
-        throw new Error(
-          `Invalid credential metadata.label: exceeds ${MAX_LABEL_LEN} characters`
-        );
-      }
-      out.label = t;
-    }
-  }
-  for (const key of Object.keys(obj)) {
-    if (key !== "label") {
-      throw new Error(`Unknown credential metadata field: ${key}`);
-    }
-  }
-  return Object.keys(out).length > 0 ? out : void 0;
-}
-function isValidDate3(value) {
-  return Number.isFinite(Date.parse(value));
-}
-function parseCredentialRecord(value) {
-  if (!value || typeof value !== "object" || Array.isArray(value)) {
-    return null;
-  }
-  const item = value;
-  if (typeof item.id !== "string") return null;
-  let id;
-  try {
-    id = assertCredentialId(item.id);
-  } catch {
-    return null;
-  }
-  if (typeof item.ciphertext !== "string" || item.ciphertext.length === 0) {
-    return null;
-  }
-  if (typeof item.createdAt !== "string" || item.createdAt.length === 0) {
-    return null;
-  }
-  if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
-    return null;
-  }
-  if (!isValidDate3(item.createdAt) || !isValidDate3(item.updatedAt)) {
-    return null;
-  }
-  let metaSrc = item.metadata;
-  if ((metaSrc === void 0 || metaSrc === null) && typeof item.label === "string") {
-    metaSrc = { label: item.label };
-  }
-  let metadata;
-  if (metaSrc !== void 0 && metaSrc !== null) {
-    try {
-      metadata = normalizeMetadata(metaSrc);
-    } catch {
-      return null;
-    }
-  }
-  const rec = {
-    id,
-    ciphertext: item.ciphertext,
-    createdAt: item.createdAt,
-    updatedAt: item.updatedAt
-  };
-  if (metadata) rec.metadata = metadata;
-  return rec;
-}
-var CredentialStore = class {
-  constructor(dataDir, options) {
-    this.records = /* @__PURE__ */ new Map();
-    this.loaded = false;
-    this.chain = Promise.resolve();
-    this.file = credentialsPath(dataDir);
-    if (options && typeof options === "object" && "protect" in options && "unprotect" in options) {
-      this.protector = options;
-    } else if (options && typeof options === "object" && "protector" in options) {
-      this.protector = options.protector ?? createPlatformCredentialProtector();
-    } else {
-      this.protector = createPlatformCredentialProtector();
-    }
-  }
-  enqueue(fn) {
-    const run = this.chain.then(fn, fn);
-    this.chain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async ensureLoaded() {
-    if (this.loaded) return;
-    return this.enqueue(async () => {
-      if (this.loaded) return;
-      await this.loadFromDisk();
-    });
-  }
-  async loadFromDisk() {
-    try {
-      const raw = await fs12.readFile(this.file, "utf8");
-      let parsed;
-      try {
-        parsed = JSON.parse(raw);
-      } catch {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      const list2 = parsed.credentials;
-      if (list2 !== void 0 && !Array.isArray(list2)) {
-        await this.quarantineCorrupt();
-        this.loaded = true;
-        return;
-      }
-      const loaded = /* @__PURE__ */ new Map();
-      for (const item of list2 ?? []) {
-        const restored = parseCredentialRecord(item);
-        if (!restored) {
-          await this.quarantineCorrupt();
-          this.loaded = true;
-          return;
-        }
-        loaded.set(restored.id, restored);
-      }
-      this.records = loaded;
-      this.loaded = true;
-    } catch (err) {
-      if (isNotFoundError(err)) {
-        this.loaded = true;
-        return;
-      }
-      throw err;
-    }
-  }
-  async quarantineCorrupt() {
-    const backupPath = await backupCorruptMachineFile(this.file);
-    warnCorruptMachineState(this.file, backupPath, "reset");
-    this.records.clear();
-  }
-  async persist() {
-    const credentials = [...this.records.values()].map((r) => {
-      const row = {
-        id: r.id,
-        ciphertext: r.ciphertext,
-        createdAt: r.createdAt,
-        updatedAt: r.updatedAt
-      };
-      if (r.metadata) row.metadata = { ...r.metadata };
-      return row;
-    }).sort((a, b) => String(a.id).localeCompare(String(b.id)));
-    await writeJsonAtomic(this.file, { credentials });
-  }
-  /**
-   * Sync presence after ensureLoaded (projection helper).
-   * Call ensureLoaded() first from async handlers when needed.
-   */
-  has(idRaw) {
-    try {
-      const id = assertCredentialId(idRaw);
-      return this.records.has(id);
-    } catch {
-      return false;
-    }
-  }
-  async list() {
-    await this.ensureLoaded();
-    return this.enqueue(
-      async () => [...this.records.values()].map(project).sort((a, b) => a.id.localeCompare(b.id))
-    );
-  }
-  /**
-   * Store secret under id. Overwrites ciphertext if id exists.
-   * Response is id/metadata only — never echoes secret or ciphertext.
-   */
-  async set(idRaw, secret, opts) {
-    const id = assertCredentialId(idRaw);
-    if (typeof secret !== "string" || secret.length === 0) {
-      throw new Error("credential secret must be a non-empty string");
-    }
-    if (Buffer.byteLength(secret, "utf8") > MAX_SECRET_BYTES) {
-      throw new Error(`credential secret exceeds ${MAX_SECRET_BYTES} bytes`);
-    }
-    const metaNorm = normalizeSetOpts(opts);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const ciphertext = await this.protector.protect(secret);
-      if (typeof ciphertext !== "string" || !ciphertext.trim()) {
-        throw new Error("credential protect() returned empty ciphertext");
-      }
-      if (ciphertext === secret) {
-        throw new Error("credential protect() must not return plaintext");
-      }
-      const now = (/* @__PURE__ */ new Date()).toISOString();
-      const prev = this.records.get(id);
-      const record = {
-        id,
-        ciphertext: ciphertext.trim(),
-        createdAt: prev?.createdAt ?? now,
-        updatedAt: now
-      };
-      if (opts !== void 0) {
-        if (metaNorm === null) {
-        } else if (metaNorm !== void 0) {
-          record.metadata = metaNorm;
-        }
-      } else if (prev?.metadata) {
-        record.metadata = { ...prev.metadata };
-      }
-      this.records.set(id, record);
-      try {
-        await this.persist();
-      } catch (err) {
-        if (prev) this.records.set(id, prev);
-        else this.records.delete(id);
-        throw err;
-      }
-      return project(record);
-    });
-  }
-  async delete(idRaw) {
-    const id = assertCredentialId(idRaw);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      if (!this.records.has(id)) {
-        throw new Error(`Credential not found: ${id}`);
-      }
-      const prev = this.records.get(id);
-      this.records.delete(id);
-      try {
-        await this.persist();
-      } catch (err) {
-        this.records.set(id, prev);
-        throw err;
-      }
-      return { deleted: id };
-    });
-  }
-  /**
-   * Service-internal only — returns plaintext for LaunchPlan.env injection.
-   * Never exposed as client RPC. Fail-loud when missing.
-   */
-  async resolve(idRaw) {
-    const id = assertCredentialId(idRaw);
-    await this.ensureLoaded();
-    return this.enqueue(async () => {
-      const rec = this.records.get(id);
-      if (!rec) {
-        throw new Error(`Credential not found: ${id}`);
-      }
-      const plain = await this.protector.unprotect(rec.ciphertext);
-      if (typeof plain !== "string" || !plain) {
-        throw new Error(`Credential unprotect failed for ${id}`);
-      }
-      return plain;
-    });
-  }
-};
-
 // src/service/profile-catalog.ts
-var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
-var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
-var DANGEROUS_FIELD_HINTS = [
-  "apiKey",
-  "api_key",
-  "token",
-  "secret",
-  "password",
-  "credential",
-  "authorization",
-  "bearer",
-  "env",
-  "fake",
-  "command",
-  "args",
-  "displayNameKey",
-  "grokAcp",
-  "acp"
-];
+function unwrapField(result) {
+  if (!result.ok) throw new RpcError(-32602, result.message);
+  return result.value;
+}
 function rejectUnknownAndDangerous(raw, allowed) {
   const allowedSet = new Set(allowed);
   for (const key of Object.keys(raw)) {
@@ -18318,168 +18645,65 @@ function rejectUnknownAndDangerous(raw, allowed) {
   }
 }
 function requireProfileId2(raw, field = "id") {
-  if (typeof raw !== "string" || !raw.trim()) {
-    throw new RpcError(-32602, `Missing or invalid string param: ${field}`);
-  }
-  const id = raw.trim();
-  if (!PROFILE_ID_RE.test(id)) {
-    throw new RpcError(
-      -32602,
-      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return id;
+  return unwrapField(parseProfileIdValue(raw, field));
 }
 function optionalNonEmptyString(raw, key) {
   if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
-  if (typeof raw[key] !== "string") {
-    throw new RpcError(-32602, `Invalid string param: ${key}`);
-  }
-  const v = raw[key].trim();
-  if (!v) {
-    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
-  }
-  return v;
+  return unwrapField(parseNonEmptyStringValue(raw[key], key));
 }
 function clearableNonEmptyString(raw, key) {
   if (!(key in raw) || raw[key] === void 0) return void 0;
   if (raw[key] === null) return null;
-  if (typeof raw[key] !== "string") {
-    throw new RpcError(-32602, `Invalid string param: ${key}`);
-  }
-  const v = raw[key].trim();
-  if (!v) {
-    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
-  }
-  return v;
+  return unwrapField(parseNonEmptyStringValue(raw[key], key));
 }
 function optionalEnvKey(raw, key) {
-  const v = optionalNonEmptyString(raw, key);
-  if (v === void 0) return void 0;
-  if (!ENV_KEY_RE.test(v)) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return v;
+  if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
+  return unwrapField(parseEnvKeyValue(raw[key], key));
 }
 function clearableEnvKey(raw, key) {
-  const v = clearableNonEmptyString(raw, key);
-  if (v === void 0 || v === null) return v;
-  if (!ENV_KEY_RE.test(v)) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return v;
+  if (!(key in raw) || raw[key] === void 0) return void 0;
+  if (raw[key] === null) return null;
+  return unwrapField(parseEnvKeyValue(raw[key], key));
 }
 function optionalCredentialRef(raw) {
-  const v = optionalNonEmptyString(raw, "credentialRef");
-  if (v === void 0) return void 0;
-  try {
-    return assertCredentialId(v);
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
-    );
+  if (!("credentialRef" in raw) || raw.credentialRef === void 0 || raw.credentialRef === null) {
+    return void 0;
   }
+  return unwrapField(parseCredentialRefValue(raw.credentialRef));
 }
 function clearableCredentialRef(raw) {
-  const v = clearableNonEmptyString(raw, "credentialRef");
-  if (v === void 0 || v === null) return v;
-  try {
-    return assertCredentialId(v);
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
-    );
-  }
-}
-function validateBaseUrl(v) {
-  let parsed;
-  try {
-    parsed = new URL(v);
-  } catch {
-    throw new RpcError(-32602, "Invalid baseUrl: must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RpcError(-32602, "Invalid baseUrl: only http: and https: are allowed");
-  }
-  if (parsed.username || parsed.password) {
-    throw new RpcError(
-      -32602,
-      "Invalid baseUrl: username/password in URL are not allowed"
-    );
-  }
-  if (parsed.search || parsed.hash) {
-    throw new RpcError(
-      -32602,
-      "Invalid baseUrl: query string and hash fragment are not allowed"
-    );
-  }
-  return v;
+  if (!("credentialRef" in raw) || raw.credentialRef === void 0) return void 0;
+  if (raw.credentialRef === null) return null;
+  return unwrapField(parseCredentialRefValue(raw.credentialRef));
 }
 function optionalBaseUrl(raw) {
-  const v = optionalNonEmptyString(raw, "baseUrl");
-  if (v === void 0) return void 0;
-  return validateBaseUrl(v);
+  if (!("baseUrl" in raw) || raw.baseUrl === void 0 || raw.baseUrl === null) return void 0;
+  return unwrapField(parseBaseUrlValue(raw.baseUrl));
 }
 function clearableBaseUrl(raw) {
-  const v = clearableNonEmptyString(raw, "baseUrl");
-  if (v === void 0 || v === null) return v;
-  return validateBaseUrl(v);
+  if (!("baseUrl" in raw) || raw.baseUrl === void 0) return void 0;
+  if (raw.baseUrl === null) return null;
+  return unwrapField(parseBaseUrlValue(raw.baseUrl));
 }
 function optionalPermissionPolicy(raw) {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0 || raw.permissionPolicy === null) {
     return void 0;
   }
-  if (typeof raw.permissionPolicy !== "string") {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  const v = raw.permissionPolicy;
-  if (!PERMISSION_POLICIES.has(v)) {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return v;
+  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
 }
 function clearablePermissionPolicy(raw) {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === void 0) return void 0;
   if (raw.permissionPolicy === null) return null;
-  if (typeof raw.permissionPolicy !== "string") {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  const v = raw.permissionPolicy;
-  if (!PERMISSION_POLICIES.has(v)) {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return v;
+  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
 }
 function optionalPositiveInt(raw, key) {
   if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
-  const v = raw[key];
-  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0 || v > MAX_TIMEOUT_MS) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return v;
+  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
 }
 function clearablePositiveInt(raw, key) {
   if (!(key in raw) || raw[key] === void 0) return void 0;
   if (raw[key] === null) return null;
-  const v = raw[key];
-  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0 || v > MAX_TIMEOUT_MS) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return v;
+  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
 }
 function parseAcpFieldsCreate(raw) {
   const displayName = optionalNonEmptyString(raw, "displayName");

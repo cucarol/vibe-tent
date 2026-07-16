@@ -25,36 +25,28 @@ import {
   saveAgentProfiles,
   type ProductAcpAdapterId,
 } from "./profiles.js";
-import { CREDENTIAL_ID_RE, assertCredentialId } from "./credential-store.js";
+import {
+  DANGEROUS_FIELD_HINTS,
+  parseBaseUrlValue,
+  parseCredentialRefValue,
+  parseEnvKeyValue,
+  parseNonEmptyStringValue,
+  parsePermissionPolicyValue,
+  parsePositiveTimeoutValue,
+  parseProfileIdValue,
+  type FieldResult,
+} from "./profile-field-rules.js";
 import { RpcError } from "./rpc-error.js";
 
 // ---------------------------------------------------------------------------
-// Validation helpers (clear RpcError, never silent discard of bad input)
+// CRUD boundary: presence / clearable-null / dangerous-unknown → RpcError.
+// Pure value rules live in profile-field-rules.ts (shared with disk load).
 // ---------------------------------------------------------------------------
 
-const PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-const ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const MAX_TIMEOUT_MS = 24 * 60 * 60_000;
-const PERMISSION_POLICIES = new Set<AcpPermissionPolicy>(["allow", "ask", "deny"]);
-
-/** Field names that must never be accepted via product CRUD (explicit reject). */
-const DANGEROUS_FIELD_HINTS = [
-  "apiKey",
-  "api_key",
-  "token",
-  "secret",
-  "password",
-  "credential",
-  "authorization",
-  "bearer",
-  "env",
-  "fake",
-  "command",
-  "args",
-  "displayNameKey",
-  "grokAcp",
-  "acp",
-] as const;
+function unwrapField<T>(result: FieldResult<T>): T {
+  if (!result.ok) throw new RpcError(-32602, result.message);
+  return result.value;
+}
 
 function rejectUnknownAndDangerous(
   raw: Record<string, unknown>,
@@ -78,17 +70,7 @@ function rejectUnknownAndDangerous(
 }
 
 function requireProfileId(raw: unknown, field = "id"): string {
-  if (typeof raw !== "string" || !raw.trim()) {
-    throw new RpcError(-32602, `Missing or invalid string param: ${field}`);
-  }
-  const id = raw.trim();
-  if (!PROFILE_ID_RE.test(id)) {
-    throw new RpcError(
-      -32602,
-      `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
-    );
-  }
-  return id;
+  return unwrapField(parseProfileIdValue(raw, field));
 }
 
 /**
@@ -100,14 +82,7 @@ function optionalNonEmptyString(
   key: string
 ): string | undefined {
   if (!(key in raw) || raw[key] === undefined || raw[key] === null) return undefined;
-  if (typeof raw[key] !== "string") {
-    throw new RpcError(-32602, `Invalid string param: ${key}`);
-  }
-  const v = (raw[key] as string).trim();
-  if (!v) {
-    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
-  }
-  return v;
+  return unwrapField(parseNonEmptyStringValue(raw[key], key));
 }
 
 /** Update: undefined/absent keep; null clear; string set. */
@@ -117,112 +92,48 @@ function clearableNonEmptyString(
 ): string | null | undefined {
   if (!(key in raw) || raw[key] === undefined) return undefined;
   if (raw[key] === null) return null;
-  if (typeof raw[key] !== "string") {
-    throw new RpcError(-32602, `Invalid string param: ${key}`);
-  }
-  const v = (raw[key] as string).trim();
-  if (!v) {
-    throw new RpcError(-32602, `Invalid string param: ${key} must be non-empty when set`);
-  }
-  return v;
+  return unwrapField(parseNonEmptyStringValue(raw[key], key));
 }
 
 function optionalEnvKey(raw: Record<string, unknown>, key: string): string | undefined {
-  const v = optionalNonEmptyString(raw, key);
-  if (v === undefined) return undefined;
-  if (!ENV_KEY_RE.test(v)) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return v;
+  if (!(key in raw) || raw[key] === undefined || raw[key] === null) return undefined;
+  return unwrapField(parseEnvKeyValue(raw[key], key));
 }
 
 function clearableEnvKey(
   raw: Record<string, unknown>,
   key: string
 ): string | null | undefined {
-  const v = clearableNonEmptyString(raw, key);
-  if (v === undefined || v === null) return v;
-  if (!ENV_KEY_RE.test(v)) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
-    );
-  }
-  return v;
+  if (!(key in raw) || raw[key] === undefined) return undefined;
+  if (raw[key] === null) return null;
+  return unwrapField(parseEnvKeyValue(raw[key], key));
 }
 
 /** credentialRef is a vault id (not a secret); same id rules as CredentialStore. */
 function optionalCredentialRef(raw: Record<string, unknown>): string | undefined {
-  const v = optionalNonEmptyString(raw, "credentialRef");
-  if (v === undefined) return undefined;
-  try {
-    return assertCredentialId(v);
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error
-        ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef")
-        : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
-    );
+  if (!("credentialRef" in raw) || raw.credentialRef === undefined || raw.credentialRef === null) {
+    return undefined;
   }
+  return unwrapField(parseCredentialRefValue(raw.credentialRef));
 }
 
 function clearableCredentialRef(
   raw: Record<string, unknown>
 ): string | null | undefined {
-  const v = clearableNonEmptyString(raw, "credentialRef");
-  if (v === undefined || v === null) return v;
-  try {
-    return assertCredentialId(v);
-  } catch (err) {
-    throw new RpcError(
-      -32602,
-      err instanceof Error
-        ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef")
-        : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
-    );
-  }
-}
-
-function validateBaseUrl(v: string): string {
-  let parsed: URL;
-  try {
-    parsed = new URL(v);
-  } catch {
-    throw new RpcError(-32602, "Invalid baseUrl: must be an absolute http(s) URL");
-  }
-  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    throw new RpcError(-32602, "Invalid baseUrl: only http: and https: are allowed");
-  }
-  // Reject credentials / query / hash so secrets cannot hide in the URL.
-  if (parsed.username || parsed.password) {
-    throw new RpcError(
-      -32602,
-      "Invalid baseUrl: username/password in URL are not allowed"
-    );
-  }
-  if (parsed.search || parsed.hash) {
-    throw new RpcError(
-      -32602,
-      "Invalid baseUrl: query string and hash fragment are not allowed"
-    );
-  }
-  return v;
+  if (!("credentialRef" in raw) || raw.credentialRef === undefined) return undefined;
+  if (raw.credentialRef === null) return null;
+  return unwrapField(parseCredentialRefValue(raw.credentialRef));
 }
 
 function optionalBaseUrl(raw: Record<string, unknown>): string | undefined {
-  const v = optionalNonEmptyString(raw, "baseUrl");
-  if (v === undefined) return undefined;
-  return validateBaseUrl(v);
+  if (!("baseUrl" in raw) || raw.baseUrl === undefined || raw.baseUrl === null) return undefined;
+  return unwrapField(parseBaseUrlValue(raw.baseUrl));
 }
 
 function clearableBaseUrl(raw: Record<string, unknown>): string | null | undefined {
-  const v = clearableNonEmptyString(raw, "baseUrl");
-  if (v === undefined || v === null) return v;
-  return validateBaseUrl(v);
+  if (!("baseUrl" in raw) || raw.baseUrl === undefined) return undefined;
+  if (raw.baseUrl === null) return null;
+  return unwrapField(parseBaseUrlValue(raw.baseUrl));
 }
 
 function optionalPermissionPolicy(
@@ -231,14 +142,7 @@ function optionalPermissionPolicy(
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === undefined || raw.permissionPolicy === null) {
     return undefined;
   }
-  if (typeof raw.permissionPolicy !== "string") {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  const v = raw.permissionPolicy as string;
-  if (!PERMISSION_POLICIES.has(v as AcpPermissionPolicy)) {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return v as AcpPermissionPolicy;
+  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
 }
 
 function clearablePermissionPolicy(
@@ -246,26 +150,12 @@ function clearablePermissionPolicy(
 ): AcpPermissionPolicy | null | undefined {
   if (!("permissionPolicy" in raw) || raw.permissionPolicy === undefined) return undefined;
   if (raw.permissionPolicy === null) return null;
-  if (typeof raw.permissionPolicy !== "string") {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  const v = raw.permissionPolicy as string;
-  if (!PERMISSION_POLICIES.has(v as AcpPermissionPolicy)) {
-    throw new RpcError(-32602, "Invalid permissionPolicy: must be allow|ask|deny");
-  }
-  return v as AcpPermissionPolicy;
+  return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
 }
 
 function optionalPositiveInt(raw: Record<string, unknown>, key: string): number | undefined {
   if (!(key in raw) || raw[key] === undefined || raw[key] === null) return undefined;
-  const v = raw[key];
-  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0 || v > MAX_TIMEOUT_MS) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return v;
+  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
 }
 
 function clearablePositiveInt(
@@ -274,14 +164,7 @@ function clearablePositiveInt(
 ): number | null | undefined {
   if (!(key in raw) || raw[key] === undefined) return undefined;
   if (raw[key] === null) return null;
-  const v = raw[key];
-  if (typeof v !== "number" || !Number.isInteger(v) || v <= 0 || v > MAX_TIMEOUT_MS) {
-    throw new RpcError(
-      -32602,
-      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
-    );
-  }
-  return v;
+  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
 }
 
 /**

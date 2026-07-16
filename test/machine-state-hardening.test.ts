@@ -342,6 +342,308 @@ test("profiles: corrupt catalog is backed up before defaults; warning has no sec
   }
 });
 
+test("profiles: good legacy + bad row quarantines whole file; defaults restore; backup keeps bad row", async () => {
+  const dataDir = await tempDir("tent-profiles-row-quarantine-");
+  const file = profilesPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+
+  const badMarker = "BAD-PROFILE-ROW-MUST-SURVIVE-BACKUP";
+  // Mix: valid legacy grokAcp row + one illegal row. Must NOT silent-skip the bad line
+  // into a shrunk catalog — whole file backup/quarantine/reset.
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      profiles: [
+        {
+          id: "legacy-good",
+          adapterId: "grok-acp",
+          displayName: "Legacy Good",
+          grokAcp: {
+            model: "user-model",
+            envKey: "USER_GROK_KEY",
+            permissionPolicy: "ask",
+            permissionTimeoutMs: 12_000,
+          },
+        },
+        {
+          id: "bad-row",
+          adapterId: "grok-acp",
+          displayName: badMarker,
+          acp: {
+            // Invalid permissionPolicy (CRUD rejects "yolo") → row poison.
+            permissionPolicy: "yolo",
+            executable: "",
+          },
+        },
+      ],
+    }) + "\n",
+    "utf8"
+  );
+
+  const cap = captureConsoleError();
+  try {
+    const profiles = await ensureDefaultProfiles(dataDir);
+    // From empty (quarantined) library, defaults are fully restored.
+    assert.ok(profiles.some((p) => p.id === "fake-default"));
+    assert.ok(profiles.some((p) => p.id === "grok-acp-default"));
+    assert.ok(
+      !profiles.some((p) => p.id === "legacy-good" || p.id === "bad-row"),
+      "must not keep a shrunk mix of good+skipped-bad rows"
+    );
+
+    const names = await fs.readdir(dataDir);
+    const backups = names.filter((n) => n.startsWith("agent-profiles.json.corrupt-"));
+    assert.equal(backups.length, 1);
+
+    const backupRaw = await fs.readFile(path.join(dataDir, backups[0]!), "utf8");
+    assert.ok(backupRaw.includes(badMarker), "quarantine backup must retain original bad row");
+    assert.ok(backupRaw.includes("legacy-good"));
+    assert.ok(
+      backupRaw.includes('"permissionPolicy": "yolo"') ||
+        backupRaw.includes('"permissionPolicy":"yolo"')
+    );
+    const quarantined = JSON.parse(backupRaw) as { profiles: unknown[] };
+    assert.equal(quarantined.profiles.length, 2, "corrupt backup must keep the full original file");
+
+    assert.ok(cap.lines.some((l) => /agent-profiles\.json was corrupt/.test(l)));
+
+    // Active path is rewritten with full defaults (not a silent partial keep of only legacy-good).
+    await fs.access(file);
+    const active = JSON.parse(await fs.readFile(file, "utf8")) as {
+      profiles: Array<{ id: string }>;
+    };
+    assert.ok(active.profiles.some((p) => p.id === "grok-acp-default"));
+    assert.ok(active.profiles.every((p) => p.id !== "bad-row" && p.id !== "legacy-good"));
+    assert.ok(active.profiles.length >= 2);
+  } finally {
+    cap.restore();
+  }
+});
+
+test("profiles: legal legacy-only catalog migrates to acp without quarantine", async () => {
+  const dataDir = await tempDir("tent-profiles-legacy-ok-");
+  const file = profilesPath(dataDir);
+  await fs.mkdir(dataDir, { recursive: true });
+  await fs.writeFile(
+    file,
+    JSON.stringify({
+      profiles: [
+        {
+          id: "fake-default",
+          adapterId: "fake",
+          displayNameKey: "profile.fake.default",
+          fake: { waitForSignal: true },
+        },
+        {
+          id: "grok-acp-default",
+          adapterId: "grok-acp",
+          displayNameKey: "profile.grokAcp.default",
+          grokAcp: {
+            model: "legacy-model",
+            envKey: "LEGACY_GROK_KEY",
+            permissionPolicy: "deny",
+          },
+        },
+      ],
+    }) + "\n",
+    "utf8"
+  );
+
+  const cap = captureConsoleError();
+  try {
+    const profiles = await ensureDefaultProfiles(dataDir);
+    const grok = profiles.find((p) => p.id === "grok-acp-default");
+    assert.ok(grok);
+    assert.equal(grok!.acp?.model, "legacy-model");
+    assert.equal(grok!.acp?.envKey, "LEGACY_GROK_KEY");
+    assert.equal((grok as { grokAcp?: unknown }).grokAcp, undefined);
+
+    const names = await fs.readdir(dataDir);
+    assert.equal(
+      names.filter((n) => n.startsWith("agent-profiles.json.corrupt-")).length,
+      0,
+      "valid legacy grokAcp file must not be quarantined"
+    );
+    assert.ok(cap.lines.every((l) => !/agent-profiles\.json was corrupt/.test(l)));
+
+    const disk = JSON.parse(await fs.readFile(file, "utf8")) as {
+      profiles: Array<Record<string, unknown>>;
+    };
+    const diskGrok = disk.profiles.find((p) => p.id === "grok-acp-default")!;
+    assert.ok(!("grokAcp" in diskGrok));
+    assert.equal((diskGrok.acp as { model?: string }).model, "legacy-model");
+  } finally {
+    cap.restore();
+  }
+});
+
+test("profiles: invalid executable / permissionPolicy / acp shape quarantines whole file", async () => {
+  async function expectQuarantine(label: string, row: Record<string, unknown>): Promise<void> {
+    const dataDir = await tempDir(`tent-profiles-bad-${label}-`);
+    const file = profilesPath(dataDir);
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        profiles: [
+          {
+            id: "ok-peer",
+            adapterId: "fake",
+            fake: { waitForSignal: true },
+          },
+          row,
+        ],
+      }) + "\n",
+      "utf8"
+    );
+
+    const cap = captureConsoleError();
+    try {
+      const loaded = await loadAgentProfiles(dataDir);
+      assert.deepEqual(loaded, [], `${label}: bad row must empty catalog after quarantine`);
+      await assert.rejects(() => fs.access(file), { code: "ENOENT" });
+      const names = await fs.readdir(dataDir);
+      assert.ok(
+        names.some((n) => n.startsWith("agent-profiles.json.corrupt-")),
+        `${label}: expected corrupt backup`
+      );
+      assert.ok(cap.lines.some((l) => /agent-profiles\.json was corrupt/.test(l)));
+    } finally {
+      cap.restore();
+    }
+  }
+
+  // Empty executable rejected by optionalNonEmptyString-equivalent rules.
+  await expectQuarantine("empty-executable", {
+    id: "bad-exec",
+    adapterId: "grok-acp",
+    acp: { executable: "   ", permissionPolicy: "deny" },
+  });
+
+  // Non-string executable is an illegal acp shape.
+  await expectQuarantine("exec-not-string", {
+    id: "bad-exec-type",
+    adapterId: "grok-acp",
+    acp: { executable: 42 },
+  });
+
+  await expectQuarantine("bad-permission", {
+    id: "bad-policy",
+    adapterId: "grok-acp",
+    acp: { permissionPolicy: "yolo" },
+  });
+
+  // acp bag must be an object when present.
+  await expectQuarantine("acp-string", {
+    id: "bad-acp-shape",
+    adapterId: "grok-acp",
+    acp: "not-an-object",
+  });
+
+  await expectQuarantine("acp-array", {
+    id: "bad-acp-array",
+    adapterId: "grok-acp",
+    acp: [{ model: "x" }],
+  });
+
+  // Structural: missing adapterId must not silent-skip.
+  await expectQuarantine("missing-adapter", {
+    id: "no-adapter",
+    acp: { permissionPolicy: "deny" },
+  });
+});
+
+test("profiles: unknown top-level / acp / fake keys quarantine whole file; backup keeps them", async () => {
+  const cases: Array<{
+    label: string;
+    row: Record<string, unknown>;
+    /** Substring that must remain in the corrupt backup (unknown field preserved). */
+    backupMarker: string;
+  }> = [
+    {
+      label: "unknown-top-level",
+      row: {
+        id: "bad-top",
+        adapterId: "grok-acp",
+        displayName: "has-unknown-top",
+        acp: { permissionPolicy: "deny" },
+        apiKey: "MUST-NOT-STRIP-TOP-LEVEL",
+      },
+      backupMarker: "MUST-NOT-STRIP-TOP-LEVEL",
+    },
+    {
+      label: "unknown-acp-key",
+      row: {
+        id: "bad-acp-key",
+        adapterId: "grok-acp",
+        acp: {
+          permissionPolicy: "deny",
+          secretToken: "MUST-NOT-STRIP-ACP-KEY",
+        },
+      },
+      backupMarker: "MUST-NOT-STRIP-ACP-KEY",
+    },
+    {
+      label: "unknown-fake-key",
+      row: {
+        id: "bad-fake-key",
+        adapterId: "fake",
+        fake: {
+          waitForSignal: true,
+          unknownFake: "MUST-NOT-STRIP-FAKE-KEY",
+        },
+      },
+      backupMarker: "MUST-NOT-STRIP-FAKE-KEY",
+    },
+  ];
+
+  for (const { label, row, backupMarker } of cases) {
+    const dataDir = await tempDir(`tent-profiles-unknown-${label}-`);
+    const file = profilesPath(dataDir);
+    await fs.mkdir(dataDir, { recursive: true });
+    await fs.writeFile(
+      file,
+      JSON.stringify({
+        profiles: [
+          {
+            id: "ok-peer",
+            adapterId: "fake",
+            fake: { waitForSignal: true },
+          },
+          row,
+        ],
+      }) + "\n",
+      "utf8"
+    );
+
+    const cap = captureConsoleError();
+    try {
+      const loaded = await loadAgentProfiles(dataDir);
+      assert.deepEqual(loaded, [], `${label}: unknown key must empty catalog after quarantine`);
+      await assert.rejects(() => fs.access(file), { code: "ENOENT" });
+
+      const names = await fs.readdir(dataDir);
+      const backups = names.filter((n) => n.startsWith("agent-profiles.json.corrupt-"));
+      assert.equal(backups.length, 1, `${label}: expected one corrupt backup`);
+
+      const backupRaw = await fs.readFile(path.join(dataDir, backups[0]!), "utf8");
+      assert.ok(
+        backupRaw.includes(backupMarker),
+        `${label}: quarantine backup must retain unknown field`
+      );
+      const quarantined = JSON.parse(backupRaw) as { profiles: unknown[] };
+      assert.equal(
+        quarantined.profiles.length,
+        2,
+        `${label}: backup must keep the full original file`
+      );
+      assert.ok(cap.lines.some((l) => /agent-profiles\.json was corrupt/.test(l)));
+    } finally {
+      cap.restore();
+    }
+  }
+});
+
 test("SessionRegistry: corrupt row is backed up, ignored, and does not poison list", async () => {
   const dataDir = await tempDir("tent-sess-corrupt-");
   const reg = new SessionRegistry(dataDir);
