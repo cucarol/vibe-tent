@@ -2713,6 +2713,105 @@ function taskContextCard(taskId, opts) {
   return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
 }
 
+// src/markdown/attachments.ts
+import { createHash } from "node:crypto";
+import * as nodePath from "node:path";
+var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+function sanitizeAttachmentFileName(fileName) {
+  const source = fileName.normalize("NFKC");
+  if (!source.trim()) throw new Error("Attachment file name is required");
+  if (source.includes("/") || source.includes("\\") || source === "." || source === "..") {
+    throw new Error("Attachment file name must be a single path segment");
+  }
+  let clean = source.replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "");
+  if (!clean || clean === "." || clean === "..") clean = "file";
+  if (clean.length > 120) {
+    const ext2 = nodePath.posix.extname(clean).slice(0, 20);
+    const stem2 = clean.slice(0, Math.max(1, 120 - ext2.length));
+    clean = `${stem2}${ext2}`;
+  }
+  const ext = nodePath.posix.extname(clean);
+  const stem = ext ? clean.slice(0, -ext.length) : clean;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) {
+    clean = `file-${clean}`;
+  }
+  return clean;
+}
+function decodeBase64Strict(b64) {
+  const compact = b64.replace(/\s+/g, "");
+  if (!compact) throw new Error("Invalid base64: empty payload");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error("Invalid base64: non-alphabet characters");
+  }
+  if (compact.length % 4 !== 0) {
+    throw new Error("Invalid base64: length must be a multiple of 4");
+  }
+  let buf;
+  try {
+    buf = Buffer.from(compact, "base64");
+  } catch {
+    throw new Error("Invalid base64: decode failed");
+  }
+  const reencoded = buf.toString("base64");
+  if (reencoded !== compact) {
+    throw new Error("Invalid base64: strict decode mismatch");
+  }
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+function assertAttachmentSize(byteLength) {
+  if (byteLength < 0 || !Number.isFinite(byteLength)) {
+    throw new Error("Invalid attachment size");
+  }
+  if (byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${byteLength} bytes)`
+    );
+  }
+}
+function contentId(bytes) {
+  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
+}
+function attachmentRelativePath(conceptId, safeName, bytes) {
+  const id = contentId(bytes);
+  const ext = nodePath.posix.extname(safeName);
+  const base = nodePath.posix.basename(safeName, ext) || "file";
+  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
+}
+function bytesEqual(a, b) {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+async function storeAttachmentBytes(fs13, conceptId, fileName, bytes, sourceNotePath) {
+  if (!conceptId.trim()) throw new Error("Concept id is required");
+  const safe = sanitizeAttachmentFileName(fileName);
+  assertAttachmentSize(bytes.byteLength);
+  const rel = attachmentRelativePath(conceptId, safe, bytes);
+  const normalized = rel.replace(/\\/g, "/");
+  if (normalized.includes("..") || !normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
+    throw new Error(`Attachment path rejected: ${rel}`);
+  }
+  if (await fs13.exists(rel)) {
+    const existing = await fs13.readBinary(rel);
+    if (!bytesEqual(existing, bytes)) {
+      throw new Error(`Attachment content-address collision at ${rel}`);
+    }
+    return attachmentResult(rel, safe, sourceNotePath);
+  }
+  await fs13.writeBinary(rel, bytes);
+  return attachmentResult(rel, safe, sourceNotePath);
+}
+function attachmentResult(relativePath2, label, sourceNotePath) {
+  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath2) : relativePath2;
+  return {
+    relativePath: relativePath2,
+    markdown: `![](${target})`,
+    artifactRef: { kind: "path", target: relativePath2, label }
+  };
+}
+
 // src/core/proposal.ts
 async function submitProposal(fs13, clock, role, boxId, body) {
   return withTentMutation(fs13, async () => submitProposalUnlocked(fs13, clock, role, boxId, body));
@@ -3342,11 +3441,11 @@ function isRecord3(value) {
 }
 
 // src/core/workspace.ts
-import * as nodePath from "node:path";
+import * as nodePath2 from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
 async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
-  const root = nodePath.resolve(workspace);
+  const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
   const full = await fullRef(root, sourceRef);
   const ancestor = await findAncestorIntegration(root, full, targetBranch);
@@ -3356,7 +3455,7 @@ async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
   return void 0;
 }
 async function readRoleBranchTip(workspace, branch) {
-  const root = nodePath.resolve(workspace);
+  const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
   const name = branch.trim();
   if (!name) throw new Error("Role branch name is required.");
@@ -3366,7 +3465,7 @@ async function readRoleBranchTip(workspace, branch) {
 }
 async function isGitWorkspace(workspace) {
   try {
-    await assertGitWorkspace(nodePath.resolve(workspace));
+    await assertGitWorkspace(nodePath2.resolve(workspace));
     return true;
   } catch {
     return false;
@@ -3377,19 +3476,19 @@ async function ensureRoleWorkspaceIfGit(workspace, role) {
   return ensureRoleWorkspace(workspace, role);
 }
 async function ensureRoleWorkspace(workspace, role) {
-  const root = nodePath.resolve(workspace);
+  const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
   const targetBranch = await resolveTargetBranch(root);
   const roleSlug = safeComponent(role);
   const branch = `tent-role/${roleSlug}`;
-  const worktree = nodePath.join(
-    nodePath.dirname(root),
-    `${nodePath.basename(root)}-worktrees`,
+  const worktree = nodePath2.join(
+    nodePath2.dirname(root),
+    `${nodePath2.basename(root)}-worktrees`,
     roleSlug
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath.resolve(existing)), branch, targetBranch };
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
   }
   if (await pathExists(worktree)) {
     throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
@@ -3407,23 +3506,23 @@ async function ensureTaskWorkspaceIfGit(workspace, taskId) {
   return ensureTaskWorkspace(workspace, taskId);
 }
 async function ensureTaskWorkspace(workspace, taskId) {
-  const root = nodePath.resolve(workspace);
+  const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
   const id = taskId.trim();
   if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
   const targetBranch = await resolveTargetBranch(root);
   const taskSlug = safeComponent(id);
   const branch = `tent-task/${taskSlug}`;
-  const worktree = nodePath.join(
-    nodePath.dirname(root),
-    `${nodePath.basename(root)}-worktrees`,
+  const worktree = nodePath2.join(
+    nodePath2.dirname(root),
+    `${nodePath2.basename(root)}-worktrees`,
     `task-${taskSlug}`
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
     return {
       workspace: root,
-      worktree: await nodeFs.realpath(nodePath.resolve(existing)),
+      worktree: await nodeFs.realpath(nodePath2.resolve(existing)),
       branch,
       targetBranch
     };
@@ -3514,7 +3613,7 @@ async function resolveIntegrationCwd(root, targetBranch) {
   }
   const existing = await worktreeForBranch(root, targetBranch);
   if (existing) {
-    const wt = await nodeFs.realpath(nodePath.resolve(existing));
+    const wt = await nodeFs.realpath(nodePath2.resolve(existing));
     const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
     if (wtCurrent === targetBranch) return wt;
     throw new Error(
@@ -3561,7 +3660,7 @@ async function listPendingRoleCommits(contract, base) {
 async function assertGitWorkspace(root) {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
   const [realTop, realRoot] = await Promise.all([
-    nodeFs.realpath(nodePath.resolve(top)),
+    nodeFs.realpath(nodePath2.resolve(top)),
     nodeFs.realpath(root)
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
@@ -3906,7 +4005,7 @@ var SessionRegistry = class {
 };
 
 // src/service/handlers.ts
-import * as nodePath2 from "node:path";
+import * as nodePath3 from "node:path";
 
 // src/core/okf.ts
 function resolveConcept2(index, target) {
@@ -4039,9 +4138,9 @@ function normalizeTarget(raw, fromNotePath) {
 }
 
 // src/service/etag.ts
-import { createHash } from "node:crypto";
+import { createHash as createHash2 } from "node:crypto";
 function contentEtag(content) {
-  return createHash("sha256").update(content, "utf8").digest("hex").slice(0, 24);
+  return createHash2("sha256").update(content, "utf8").digest("hex").slice(0, 24);
 }
 
 // src/service/mutation-bus.ts
@@ -4204,6 +4303,12 @@ var CLIENT_METHODS = [
   "docs.fork",
   "docs.search",
   "docs.backlinks",
+  /**
+   * Import binary attachment for a concept.
+   * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
+   * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
+   */
+  "docs.importAttachment",
   "registry.types",
   "registry.roles",
   /**
@@ -6368,6 +6473,8 @@ async function dispatchMethod(ctx, method, params) {
         return docsSearch(ctx, p);
       case "docs.backlinks":
         return docsBacklinks(ctx, p);
+      case "docs.importAttachment":
+        return docsImportAttachment(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
       case "registry.roles":
@@ -7342,6 +7449,60 @@ async function docsCreateNote(ctx, p) {
     return { workspaceId, id, path: notePath, type };
   });
 }
+async function docsImportAttachment(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const fileName = requireString(p, "fileName");
+  const rawBase64 = typeof p.bytesBase64 === "string" ? p.bytesBase64 : typeof p.contentBase64 === "string" ? p.contentBase64 : typeof p.bytes === "string" ? p.bytes : void 0;
+  if (rawBase64 === void 0) {
+    throw new RpcError(
+      -32602,
+      "docs.importAttachment requires bytesBase64 (base64-encoded file bytes)"
+    );
+  }
+  let bytes;
+  try {
+    bytes = rawBase64 === "" ? new Uint8Array() : decodeBase64Strict(rawBase64);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Invalid base64";
+    throw new RpcError(-32602, message);
+  }
+  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new RpcError(
+      -32602,
+      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${bytes.byteLength} bytes)`,
+      { maxBytes: MAX_ATTACHMENT_BYTES, byteLength: bytes.byteLength }
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept3(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await storeAttachmentBytes(
+        mount.env.fs,
+        concept.id,
+        fileName,
+        bytes,
+        boxNotePath(concept.path)
+      );
+      return {
+        workspaceId,
+        id: concept.id,
+        cx: concept.id,
+        relativePath: result.relativePath,
+        markdown: result.markdown,
+        artifactRef: result.artifactRef
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "importAttachment failed";
+      if (/exceeds max size|Invalid base64|path rejected|file name/i.test(message)) {
+        throw new RpcError(-32602, message);
+      }
+      throw new RpcError(-32e3, message);
+    }
+  });
+}
 async function docsPromote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -7935,7 +8096,7 @@ async function taskStartSessionRpc(ctx, p) {
       if (probe.resumeCapable && !probe.alive) {
         const prior = await ctx.runtime.registry.read(priorSessionId);
         const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
-        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath2.resolve(recordedCwd), nodePath2.resolve(cwd));
+        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath3.resolve(recordedCwd), nodePath3.resolve(cwd));
         const profileMatches = !prior?.profileId || prior.profileId === profileId;
         const workspaceMatches = prior?.workspace === workspaceId;
         const roleMatches = prior?.roleName === task.role;
@@ -8890,9 +9051,9 @@ async function integrateWorkspaceCommitsForTask(workspaceRoot, task, commits) {
   await integrateWorkspaceCommits(contract, commits);
 }
 async function resolveIntegrationContract(workspaceRoot, task) {
-  const mountedRoot = nodePath2.resolve(workspaceRoot);
+  const mountedRoot = nodePath3.resolve(workspaceRoot);
   if (task.workspace) {
-    const claimed = nodePath2.resolve(task.workspace);
+    const claimed = nodePath3.resolve(task.workspace);
     if (!isSameWorkspaceRoot(claimed, mountedRoot)) {
       throw new Error(
         `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`
@@ -8908,8 +9069,8 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     );
   }
   if (task.worktree) {
-    const claimedWt = nodePath2.resolve(task.worktree);
-    const realWt = nodePath2.resolve(real.worktree);
+    const claimedWt = nodePath3.resolve(task.worktree);
+    const realWt = nodePath3.resolve(real.worktree);
     if (!isSameWorkspaceRoot(claimedWt, realWt)) {
       throw new Error(
         `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
@@ -9501,16 +9662,16 @@ import * as path8 from "node:path";
 
 // src/fs/node-fs.ts
 import * as fs8 from "node:fs/promises";
-import * as nodePath3 from "node:path";
+import * as nodePath4 from "node:path";
 var NodeFs = class {
   constructor(root) {
-    this.root = nodePath3.resolve(root);
+    this.root = nodePath4.resolve(root);
   }
   abs(p) {
-    const resolved = nodePath3.resolve(this.root, p);
+    const resolved = nodePath4.resolve(this.root, p);
     const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
     const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-    if (candidate !== root && !candidate.startsWith(root + nodePath3.sep)) {
+    if (candidate !== root && !candidate.startsWith(root + nodePath4.sep)) {
       throw new Error(`Path escapes Tent root: ${p}`);
     }
     return resolved;
@@ -9523,8 +9684,25 @@ var NodeFs = class {
     return fs8.readFile(this.abs(path15), "utf8");
   }
   async writeFile(path15, content) {
-    await fs8.mkdir(nodePath3.dirname(this.abs(path15)), { recursive: true });
+    await fs8.mkdir(nodePath4.dirname(this.abs(path15)), { recursive: true });
     await fs8.writeFile(this.abs(path15), content, "utf8");
+  }
+  async readBinary(path15) {
+    const buf = await fs8.readFile(this.abs(path15));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  async writeBinary(path15, data) {
+    const abs = this.abs(path15);
+    await fs8.mkdir(nodePath4.dirname(abs), { recursive: true });
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    try {
+      await fs8.writeFile(tmp, payload);
+      await fs8.rename(tmp, abs);
+    } catch (err) {
+      await fs8.rm(tmp, { force: true }).catch(() => void 0);
+      throw err;
+    }
   }
   async exists(path15) {
     try {
@@ -9538,7 +9716,7 @@ var NodeFs = class {
     await fs8.mkdir(this.abs(path15), { recursive: true });
   }
   async move(from, to) {
-    await fs8.mkdir(nodePath3.dirname(this.abs(to)), { recursive: true });
+    await fs8.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
     await fs8.rename(this.abs(from), this.abs(to));
   }
   async remove(path15) {
@@ -9546,7 +9724,7 @@ var NodeFs = class {
   }
   async withLock(path15, action) {
     const lockPath = this.abs(path15);
-    await fs8.mkdir(nodePath3.dirname(lockPath), { recursive: true });
+    await fs8.mkdir(nodePath4.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {

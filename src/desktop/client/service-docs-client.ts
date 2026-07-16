@@ -238,13 +238,46 @@ export class ServiceDocsClient implements DocsClient {
   }
 
   async importAttachment(
-    _cx: string,
+    cx: string,
     fileName: string,
-    _bytes: Uint8Array | string
+    bytes: Uint8Array | string
   ): Promise<{ relativePath: string; markdown: string; artifactRef?: ArtifactRef }> {
-    // Attachment binary upload is out of B5 MVP scope; keep interface for DocsClient.
-    throw new Error(`importAttachment is not available via service client yet (${fileName})`);
+    const payload =
+      typeof bytes === "string"
+        ? new TextEncoder().encode(bytes)
+        : bytes;
+    const bytesBase64 =
+      typeof Buffer !== "undefined"
+        ? Buffer.from(payload).toString("base64")
+        : uint8ToBase64(payload);
+
+    const result = await this.rpc.call<{
+      relativePath: string;
+      markdown: string;
+      artifactRef?: ArtifactRef;
+    }>("docs.importAttachment", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cx),
+      fileName,
+      bytesBase64,
+    });
+
+    return {
+      relativePath: result.relativePath,
+      markdown: result.markdown,
+      artifactRef: result.artifactRef,
+    };
   }
+}
+
+function uint8ToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const chunk = 0x8000;
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
+  }
+  // btoa is available in Chromium renderer; Node path uses Buffer above.
+  return btoa(binary);
 }
 
 function idOrPathParams(cxOrPath: string): Record<string, string> {

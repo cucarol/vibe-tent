@@ -32,6 +32,23 @@ var NodeFs = class {
     await fs.mkdir(nodePath.dirname(this.abs(path8)), { recursive: true });
     await fs.writeFile(this.abs(path8), content, "utf8");
   }
+  async readBinary(path8) {
+    const buf = await fs.readFile(this.abs(path8));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  async writeBinary(path8, data) {
+    const abs = this.abs(path8);
+    await fs.mkdir(nodePath.dirname(abs), { recursive: true });
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    try {
+      await fs.writeFile(tmp, payload);
+      await fs.rename(tmp, abs);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => void 0);
+      throw err;
+    }
+  }
   async exists(path8) {
     try {
       await fs.access(this.abs(path8));
@@ -3829,6 +3846,12 @@ var ServiceClient = class {
   }
   docsPromote(workspaceId, idOrPath, toType) {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
+  }
+  /**
+   * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.
+   */
+  docsImportAttachment(workspaceId, args) {
+    return this.call("docs.importAttachment", { workspaceId, ...args });
   }
   // ---- convenience: registry ----
   registryTypes(workspaceId) {

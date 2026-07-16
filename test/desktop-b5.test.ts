@@ -44,9 +44,10 @@ async function makeWorkspace(): Promise<string> {
   return workspace;
 }
 
-test("CLIENT_METHODS includes docs.search/backlinks for desktop", () => {
+test("CLIENT_METHODS includes docs.search/backlinks/importAttachment for desktop", () => {
   assert.ok(CLIENT_METHODS.includes("docs.search"));
   assert.ok(CLIENT_METHODS.includes("docs.backlinks"));
+  assert.ok(CLIENT_METHODS.includes("docs.importAttachment"));
 });
 
 test("ContextCardStore + drag text/plain payload is stable pointer prompt", () => {
@@ -100,6 +101,12 @@ test("ServiceDocsClient over real Local Service: list/open/write/search/promote"
 
     const promoted = await docs.promote(created.cx, "goal");
     assert.equal(promoted.toType, "goal");
+
+    const bin = new Uint8Array([0x00, 0x01, 0xff, 0xfe]);
+    const att = await docs.importAttachment(created.cx, "desk.bin", bin);
+    assert.match(att.relativePath, new RegExp(`^attachments/${created.cx}/`));
+    const disk = await fs.readFile(path.join(ws, ".tent", ...att.relativePath.split("/")));
+    assert.deepEqual([...disk], [...bin]);
 
     const controller = new WorkspaceController(docs);
     await controller.refreshTree();

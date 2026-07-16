@@ -57,6 +57,20 @@ export class ObsidianFs implements FsAdapter {
     await this.a.write(this.vp(path), content);
   }
 
+  async readBinary(path: string): Promise<Uint8Array> {
+    const ab = await this.a.readBinary(this.vp(path));
+    return new Uint8Array(ab);
+  }
+
+  async writeBinary(path: string, data: Uint8Array): Promise<void> {
+    const vp = this.vp(path);
+    await this.ensureDirAbs(parentOf(vp));
+    // Copy into a fresh ArrayBuffer — vault adapter expects ArrayBuffer, not a view.
+    const copy = new Uint8Array(data.byteLength);
+    copy.set(data);
+    await this.a.writeBinary(vp, copy.buffer);
+  }
+
   async exists(path: string): Promise<boolean> {
     return this.a.exists(this.vp(path));
   }

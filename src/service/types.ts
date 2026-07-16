@@ -245,6 +245,12 @@ export const CLIENT_METHODS = [
   "docs.fork",
   "docs.search",
   "docs.backlinks",
+  /**
+   * Import binary attachment for a concept.
+   * Wire: base64 string in `bytesBase64` (or legacy `contentBase64`).
+   * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
+   */
+  "docs.importAttachment",
   "registry.types",
   "registry.roles",
   /**

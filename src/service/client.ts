@@ -144,6 +144,21 @@ export class ServiceClient {
   docsPromote(workspaceId: string, idOrPath: { id?: string; path?: string }, toType: string) {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
   }
+  /**
+   * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.
+   */
+  docsImportAttachment(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      fileName: string;
+      bytesBase64: string;
+    }
+  ) {
+    return this.call("docs.importAttachment", { workspaceId, ...args });
+  }
 
   // ---- convenience: registry ----
   registryTypes(workspaceId: string) {

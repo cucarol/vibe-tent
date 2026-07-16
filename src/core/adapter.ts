@@ -10,6 +10,16 @@ export interface FsAdapter {
   listDir(dir: string): Promise<{ name: string; isDir: boolean }[]>;
   readFile(path: string): Promise<string>;
   writeFile(path: string, content: string): Promise<void>;
+  /**
+   * Read raw bytes (attachments, non-UTF-8 payloads).
+   * Path traversal defenses must match readFile.
+   */
+  readBinary(path: string): Promise<Uint8Array>;
+  /**
+   * Write raw bytes. Prefer atomic temp+rename where the backend allows.
+   * Path traversal defenses must match writeFile.
+   */
+  writeBinary(path: string, data: Uint8Array): Promise<void>;
   exists(path: string): Promise<boolean>;
   mkdir(path: string): Promise<void>;
   /** 移动/重命名(换爹或改名)。 */

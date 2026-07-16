@@ -158,6 +158,107 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
   });
 });
 
+test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/size", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "attach-me",
+      type: "note",
+    });
+    assert.ok(!created.error, JSON.stringify(created.error));
+    const id = (created.result as { id: string }).id;
+
+    const raw = Buffer.from([0x00, 0xff, 0x10, 0x80, 0x00, 0x7f]);
+    const imported = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "blob.bin",
+      bytesBase64: raw.toString("base64"),
+    });
+    assert.ok(!imported.error, JSON.stringify(imported.error));
+    const result = imported.result as {
+      relativePath: string;
+      markdown: string;
+      artifactRef: { kind: string; target: string };
+    };
+    assert.match(result.relativePath, new RegExp(`^attachments/${id}/blob-[0-9a-f]{12}\\.bin$`));
+    assert.equal(result.markdown, `![](../${result.relativePath})`);
+    assert.equal(result.artifactRef.target, result.relativePath);
+
+    const onDisk = await fs.readFile(path.join(ws, ".tent", ...result.relativePath.split("/")));
+    assert.deepEqual([...onDisk], [...raw]);
+    await assert.rejects(
+      () => fs.access(path.join(ws, ".tent", result.relativePath + ".b64")),
+      /ENOENT/
+    );
+
+    // Idempotent re-import
+    const again = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "blob.bin",
+      bytesBase64: raw.toString("base64"),
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    assert.equal((again.result as { relativePath: string }).relativePath, result.relativePath);
+
+    const empty = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "empty.bin",
+      bytesBase64: "",
+    });
+    assert.ok(!empty.error, JSON.stringify(empty.error));
+    const emptyPath = (empty.result as { relativePath: string }).relativePath;
+    assert.equal((await fs.readFile(path.join(ws, ".tent", ...emptyPath.split("/")))).byteLength, 0);
+
+    const traversal = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "../escape.bin",
+      bytesBase64: raw.toString("base64"),
+    });
+    assert.equal(traversal.error?.code, -32602);
+
+    // Invalid base64
+    const badB64 = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "x.bin",
+      bytesBase64: "!!!not-base64!!!",
+    });
+    assert.ok(badB64.error);
+    assert.equal(badB64.error!.code, -32602);
+
+    // Missing concept
+    const missing = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id: "cx-does-not-exist",
+      fileName: "x.bin",
+      bytesBase64: raw.toString("base64"),
+    });
+    assert.ok(missing.error);
+    assert.equal(missing.error!.code, -32004);
+
+    // Oversized (decoded length check without allocating full 25MiB+1 on wire when possible —
+    // use a small invalid path: still enforce via oversized buffer under limit of test memory).
+    const over = Buffer.alloc(25 * 1024 * 1024 + 1, 1);
+    const tooBig = await rpc(svc, "docs.importAttachment", {
+      workspaceId,
+      id,
+      fileName: "huge.bin",
+      bytesBase64: over.toString("base64"),
+    });
+    assert.ok(tooBig.error);
+    assert.equal(tooBig.error!.code, -32602);
+    assert.match(tooBig.error!.message, /exceeds max size/i);
+  });
+});
+
 test("task.dispatch + task.claim project doing; docs.write blocks collab fields", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {

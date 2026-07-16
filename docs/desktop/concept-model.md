@@ -177,7 +177,7 @@ Principles:
 | **Box concept** | `Name/Name.md` (folder + same-named identity note); nested folders express service/organization relations | **required** |
 | **Note concept** | Same `Name/Name.md` isomorphism | **required** |
 | **Transparent group** | Directory without same-named note; organizational only, **not** a concept | retained |
-| **Attachments** | Prefer `.tent/attachments/<cx>/<uuid>.<ext>` (gitignore-friendly) | MVP minimum |
+| **Attachments** | Prefer `.tent/attachments/<cx>/<name>-<contentId>.<ext>` (gitignore-friendly; original bytes on disk) | MVP minimum |
 | **Single-file note** `Name.md` | Compatibility only | **post-MVP** |
 
 Agents creating concepts must choose meaningful path/name segments; path remains OKF identity.
@@ -246,9 +246,15 @@ Default edit path does **not** perform destructive link projection on every save
 
 ### 6.3 Attachments (MVP)
 
-- Store under tent attachment root keyed by `cx-` (recommended: `.tent/attachments/…`).
+- Store under tent attachment root keyed by `cx-`: **`<workspace>/.tent/attachments/<cx>/…`** (FsAdapter / system-root relative: `attachments/<cx>/…`).
+- **Disk format:** original binary bytes only. No `.b64` companion files or text markers.
+- **Wire format (JSON-RPC):** `docs.importAttachment` carries base64 in `bytesBase64` (optional alias `contentBase64`). Service decodes strictly and writes raw bytes.
+- Path is content-addressed for idempotency: `attachments/<cx>/<safeName>-<sha256-12><ext>`. Re-importing the same concept + file name + bytes returns the same path without rewriting when the file already matches.
+- Filename validation: directory separators and traversal segments are rejected; Windows-invalid characters and reserved device names (`CON`, `NUL`, …) are neutralized.
+- **Size limit:** decoded payload max **25 MiB** (`MAX_ATTACHMENT_BYTES`); larger imports are rejected.
+- Return value includes `relativePath` (system-root relative), a Markdown link relative to the owning concept note, and optional `ArtifactRef` `{ kind: "path", target, label }`.
 - Insert ordinary relative Markdown image/file links (or service-logical URLs resolved in preview).
-- No cloud image host; large-file warnings allowed.
+- No cloud image host; large-file warnings allowed. No migration layer for legacy `.b64` markers.
 
 ### 6.4 Editor session state
 
@@ -339,7 +345,7 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | `docs.promote` | Command | Note → box in place |
 | `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |
 | `docs.search` / `docs.backlinks` / `docs.resolveLink` | Query | Navigation |
-| `docs.importAttachment` | Command | Store attachment + return link target |
+| `docs.importAttachment` | Command | Params: `workspaceId`, concept `id`\|`path`\|`boxId`, `fileName`, `bytesBase64`. Store **original bytes** under `attachments/<cx>/…`; return `{ relativePath, markdown, artifactRef }` |
 | `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals (EventEnvelope) |
 
 Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries. Clients use **`docs.*`** and **`task.*`** only; **`AgentRuntimePort.*`** is service-internal.

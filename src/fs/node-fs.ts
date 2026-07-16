@@ -38,6 +38,26 @@ export class NodeFs implements FsAdapter {
     await fs.writeFile(this.abs(path), content, "utf8");
   }
 
+  async readBinary(path: string): Promise<Uint8Array> {
+    const buf = await fs.readFile(this.abs(path));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+
+  async writeBinary(path: string, data: Uint8Array): Promise<void> {
+    const abs = this.abs(path);
+    await fs.mkdir(nodePath.dirname(abs), { recursive: true });
+    // Atomic replace: write temp sibling then rename into place.
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    try {
+      await fs.writeFile(tmp, payload);
+      await fs.rename(tmp, abs);
+    } catch (err) {
+      await fs.rm(tmp, { force: true }).catch(() => undefined);
+      throw err;
+    }
+  }
+
   async exists(path: string): Promise<boolean> {
     try {
       await fs.access(this.abs(path));

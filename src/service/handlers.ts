@@ -22,6 +22,11 @@ import {
 } from "../core/task.js";
 import { taskContextCard } from "../core/context-card.js";
 import { systemRootFromWorkspace } from "../core/paths.js";
+import {
+  decodeBase64Strict,
+  MAX_ATTACHMENT_BYTES,
+  storeAttachmentBytes,
+} from "../markdown/attachments.js";
 import { loadDeliveries } from "../core/delivery.js";
 import {
   acceptProposal,
@@ -231,6 +236,8 @@ export async function dispatchMethod(
         return docsSearch(ctx, p);
       case "docs.backlinks":
         return docsBacklinks(ctx, p);
+      case "docs.importAttachment":
+        return docsImportAttachment(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
       case "registry.roles":
@@ -1438,6 +1445,75 @@ async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
       "self"
     );
     return { workspaceId, id, path: notePath, type };
+  });
+}
+
+/**
+ * Store original attachment bytes under attachments/<cx>/….
+ * Wire transport is base64 (`bytesBase64` preferred; `contentBase64` accepted).
+ * No .b64 companion files; disk is the decoded binary payload.
+ */
+async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const fileName = requireString(p, "fileName");
+  const rawBase64 =
+    typeof p.bytesBase64 === "string"
+      ? p.bytesBase64
+      : typeof p.contentBase64 === "string"
+        ? p.contentBase64
+        : typeof p.bytes === "string"
+          ? p.bytes
+          : undefined;
+  if (rawBase64 === undefined) {
+    throw new RpcError(
+      -32602,
+      "docs.importAttachment requires bytesBase64 (base64-encoded file bytes)"
+    );
+  }
+
+  let bytes: Uint8Array;
+  try {
+    bytes = rawBase64 === "" ? new Uint8Array() : decodeBase64Strict(rawBase64);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : "Invalid base64";
+    throw new RpcError(-32602, message);
+  }
+  if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new RpcError(
+      -32602,
+      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${bytes.byteLength} bytes)`,
+      { maxBytes: MAX_ATTACHMENT_BYTES, byteLength: bytes.byteLength }
+    );
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await storeAttachmentBytes(
+        mount.env.fs,
+        concept.id,
+        fileName,
+        bytes,
+        boxNotePath(concept.path)
+      );
+      return {
+        workspaceId,
+        id: concept.id,
+        cx: concept.id,
+        relativePath: result.relativePath,
+        markdown: result.markdown,
+        artifactRef: result.artifactRef,
+      };
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "importAttachment failed";
+      if (/exceeds max size|Invalid base64|path rejected|file name/i.test(message)) {
+        throw new RpcError(-32602, message);
+      }
+      throw new RpcError(-32000, message);
+    }
   });
 }
 

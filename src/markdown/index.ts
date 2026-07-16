@@ -2,6 +2,13 @@
 
 export type { DocsClient } from "./docs-client.js";
 export { CoreDocsClient } from "./core-docs-client.js";
+export {
+  MAX_ATTACHMENT_BYTES,
+  sanitizeAttachmentFileName,
+  decodeBase64Strict,
+  storeAttachmentBytes,
+} from "./attachments.js";
+
 export { contentEtag } from "./etag.js";
 export {
   extractOutLinks,

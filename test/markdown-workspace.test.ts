@@ -10,6 +10,11 @@ import { createBox, dispatch, taskAck } from "../src/core/ops.js";
 import { loadTent } from "../src/core/tree.js";
 import { contentEtag } from "../src/markdown/etag.js";
 import { CoreDocsClient } from "../src/markdown/core-docs-client.js";
+import {
+  MAX_ATTACHMENT_BYTES,
+  decodeBase64Strict,
+  sanitizeAttachmentFileName,
+} from "../src/markdown/attachments.js";
 import { extractOutLinks, buildBacklinkIndex } from "../src/markdown/links.js";
 import { renderMarkdownToHtml } from "../src/markdown/render.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
@@ -207,6 +212,83 @@ test("preview server: serves tree and opens concept", async () => {
   } finally {
     await handle.close();
   }
+});
+
+test("NodeFs binary read/write: exact bytes including NUL and non-UTF8", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-bin-"));
+  const fsa = new NodeFs(dir);
+  const bytes = new Uint8Array([0x00, 0xff, 0xfe, 0x01, 0x00, 0x80, 0x7f]);
+  await fsa.writeBinary("attachments/cx-x/raw.bin", bytes);
+  const round = await fsa.readBinary("attachments/cx-x/raw.bin");
+  assert.deepEqual([...round], [...bytes]);
+  // No path escape
+  await assert.rejects(() => fsa.writeBinary("../outside.bin", bytes), /escapes Tent root/i);
+  await assert.rejects(() => fsa.readBinary("..\\..\\windows\\system32\\drivers\\etc\\hosts"), /escapes Tent root/i);
+});
+
+test("sanitizeAttachmentFileName: rejects traversal and neutralizes Windows-invalid names", () => {
+  assert.throws(() => sanitizeAttachmentFileName("../../etc/passwd"), /single path segment/);
+  assert.throws(() => sanitizeAttachmentFileName("a\\b\\c.png"), /single path segment/);
+  assert.equal(sanitizeAttachmentFileName("CON"), "file-CON");
+  assert.equal(sanitizeAttachmentFileName("nul.txt"), "file-nul.txt");
+  assert.ok(!sanitizeAttachmentFileName("foo:bar*.png").includes(":"));
+  assert.ok(!sanitizeAttachmentFileName("foo:bar*.png").includes("*"));
+});
+
+test("decodeBase64Strict: rejects invalid encodings", () => {
+  assert.deepEqual([...decodeBase64Strict("AQID")], [1, 2, 3]);
+  assert.throws(() => decodeBase64Strict("@@@"), /Invalid base64/);
+  assert.throws(() => decodeBase64Strict("A"), /Invalid base64/);
+  assert.throws(() => decodeBase64Strict("===="), /Invalid base64/);
+});
+
+test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempotent", async () => {
+  const { env, fsa, dir } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const note = await docs.createNote({ name: "with-pic", type: "note", body: "# pic\n" });
+
+  const payload = new Uint8Array([0x00, 0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]);
+  const first = await docs.importAttachment(note.cx, "shot.png", payload);
+  assert.match(first.relativePath, new RegExp(`^attachments/${note.cx}/shot-[0-9a-f]{12}\\.png$`));
+  assert.equal(first.markdown, `![](../${first.relativePath})`);
+  assert.equal(first.artifactRef?.kind, "path");
+  assert.equal(first.artifactRef?.target, first.relativePath);
+
+  // Disk is exact bytes — not a .b64 companion or text marker.
+  const onDisk = await fsa.readBinary(first.relativePath);
+  assert.deepEqual([...onDisk], [...payload]);
+  assert.equal(await fsa.exists(first.relativePath + ".b64"), false);
+  const abs = path.join(dir, first.relativePath);
+  const nodeBytes = await fs.readFile(abs);
+  assert.deepEqual([...nodeBytes], [...payload]);
+
+  // Identical re-import is deterministic and does not create a second file.
+  const second = await docs.importAttachment(note.cx, "shot.png", payload);
+  assert.equal(second.relativePath, first.relativePath);
+  const listing = await fsa.listDir(`attachments/${note.cx}`);
+  assert.equal(listing.filter((e) => !e.isDir).length, 1);
+
+  await assert.rejects(
+    () => docs.importAttachment(note.cx, "../../evil/../../x.bin", payload),
+    /single path segment/
+  );
+
+  // Empty binary files are valid attachments.
+  const empty = await docs.importAttachment(note.cx, "empty.bin", new Uint8Array());
+  assert.equal((await fsa.readBinary(empty.relativePath)).byteLength, 0);
+
+  // Size limit
+  const huge = new Uint8Array(MAX_ATTACHMENT_BYTES + 1);
+  await assert.rejects(
+    () => docs.importAttachment(note.cx, "huge.bin", huge),
+    /exceeds max size/i
+  );
+
+  // Unknown concept
+  await assert.rejects(
+    () => docs.importAttachment("cx-missing", "a.png", payload),
+    /Concept not found/
+  );
 });
 
 function httpGet(url: string): Promise<{ status: number; body: string }> {

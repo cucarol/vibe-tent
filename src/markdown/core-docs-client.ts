@@ -1,18 +1,19 @@
 // In-process DocsClient over tent-core (B3 interim until B2 service attach lands).
 
-import { createHash } from "node:crypto";
-import * as nodePath from "node:path";
 import type { OpsEnv } from "../core/ops-context.js";
 import { createBox, forkNode } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, boxNotePath, type LoadedTent } from "../core/tree.js";
 import { loadTaskEnvelopes } from "../core/task.js";
-import { ATTACHMENTS_DIR } from "../core/paths.js";
 import type { Box } from "../core/types.js";
 import { withTentMutation } from "../core/adapter.js";
 import type { DocsClient } from "./docs-client.js";
 import { contentEtag } from "./etag.js";
+import {
+  attachmentBytesFromInput,
+  storeAttachmentBytes,
+} from "./attachments.js";
 import {
   buildBacklinkIndex,
   extractOutLinks,
@@ -282,31 +283,8 @@ export class CoreDocsClient implements DocsClient {
     const tent = await loadTent(this.env.fs);
     const box = resolveBox(tent, cx);
     if (!box) throw new Error(`Concept not found: ${cx}`);
-    const safe = sanitizeFileName(fileName);
-    const id = createHash("sha256")
-      .update(typeof bytes === "string" ? bytes : Buffer.from(bytes))
-      .digest("hex")
-      .slice(0, 12);
-    const ext = nodePath.extname(safe) || "";
-    const base = nodePath.basename(safe, ext) || "file";
-    const rel = `${ATTACHMENTS_DIR}/${box.id}/${base}-${id}${ext}`;
-    const content =
-      typeof bytes === "string" ? bytes : Buffer.from(bytes).toString("base64");
-    // Store text as utf8; binary as base64 with .b64 companion only if needed.
-    // MVP: write bytes as binary via base64 decode when Uint8Array.
-    if (typeof bytes === "string") {
-      await this.env.fs.writeFile(rel, bytes);
-    } else {
-      // FsAdapter is string-based; write base64 payload with marker for binary MVP.
-      await this.env.fs.writeFile(rel + ".b64", Buffer.from(bytes).toString("base64"));
-      await this.env.fs.writeFile(rel, `[binary attachment stored as ${rel}.b64]\n`);
-    }
-    const markdown = `![](${rel})`;
-    return {
-      relativePath: rel,
-      markdown,
-      artifactRef: { kind: "path", target: rel, label: safe },
-    };
+    const payload = attachmentBytesFromInput(bytes);
+    return storeAttachmentBytes(this.env.fs, box.id, fileName, payload, boxNotePath(box.path));
   }
 }
 
@@ -383,8 +361,4 @@ function isAncestorPath(ancestor: string, child: string): boolean {
 function stringifyField(v: unknown): string {
   if (v === undefined || v === null) return "";
   return String(v);
-}
-
-function sanitizeFileName(name: string): string {
-  return name.replace(/[<>:"/\\|?*\u0000-\u001f]/g, "_").slice(0, 120) || "file";
 }
