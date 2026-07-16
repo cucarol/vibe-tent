@@ -15,7 +15,12 @@ import {
   decodeBase64Strict,
   sanitizeAttachmentFileName,
 } from "../src/markdown/attachments.js";
-import { extractOutLinks, buildBacklinkIndex } from "../src/markdown/links.js";
+import {
+  buildBacklinkIndex,
+  extractOutLinks,
+  extractOutLinksDetailed,
+} from "../src/markdown/links.js";
+import { fromMarkdown } from "mdast-util-from-markdown";
 import { renderMarkdownToHtml } from "../src/markdown/render.js";
 import { WorkspaceController } from "../src/markdown/workspace-controller.js";
 import { startMarkdownPreviewServer } from "../src/markdown/preview-server.js";
@@ -233,6 +238,8 @@ test("sanitizeAttachmentFileName: rejects traversal and neutralizes Windows-inva
   assert.equal(sanitizeAttachmentFileName("nul.txt"), "file-nul.txt");
   assert.ok(!sanitizeAttachmentFileName("foo:bar*.png").includes(":"));
   assert.ok(!sanitizeAttachmentFileName("foo:bar*.png").includes("*"));
+  // Double-dot inside a stem is a valid filename segment (not traversal).
+  assert.equal(sanitizeAttachmentFileName("draft..final.png"), "draft..final.png");
 });
 
 test("decodeBase64Strict: rejects invalid encodings", () => {
@@ -289,6 +296,66 @@ test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempot
     () => docs.importAttachment("cx-missing", "a.png", payload),
     /Concept not found/
   );
+});
+
+test("storeAttachmentBytes: draft..final.png stores; spaces/parens use angle-bracket destinations", async () => {
+  const { env, fsa } = await makeEnv();
+  const docs = new CoreDocsClient(env as any);
+  const note = await docs.createNote({ name: "attach-names", type: "note", body: "# names\n" });
+  const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
+
+  // Filename with embedded ".." must not be false-rejected by path guards.
+  const dotted = await docs.importAttachment(note.cx, "draft..final.png", payload);
+  assert.match(dotted.relativePath, new RegExp(`^attachments/${note.cx}/draft\\.\\.final-[0-9a-f]{12}\\.png$`));
+  assert.equal(dotted.markdown, `![](../${dotted.relativePath})`);
+  assert.deepEqual([...(await fsa.readBinary(dotted.relativePath))], [...payload]);
+
+  // Whitespace / parentheses → CommonMark angle-bracket destinations; plain targets stay bare.
+  const spaced = await docs.importAttachment(note.cx, "my shot.png", payload);
+  assert.match(spaced.relativePath, /\/my shot-[0-9a-f]{12}\.png$/);
+  assert.equal(spaced.markdown, `![](<../${spaced.relativePath}>)`);
+
+  const parens = await docs.importAttachment(note.cx, "file(1).bin", payload);
+  assert.match(parens.relativePath, /\/file\(1\)-[0-9a-f]{12}\.bin$/);
+  assert.equal(parens.markdown, `![](<../${parens.relativePath}>)`);
+
+  // mdast parses the generated image destinations intact (not truncated at space/paren).
+  for (const result of [dotted, spaced, parens]) {
+    const tree = fromMarkdown(result.markdown);
+    const image = tree.children[0] && "children" in tree.children[0]
+      ? (tree.children[0].children as { type: string; url?: string }[]).find((n) => n.type === "image")
+      : undefined;
+    assert.ok(image, `mdast image missing for ${result.markdown}`);
+    assert.equal(image!.url, `../${result.relativePath}`);
+  }
+
+  // extractOutLinks treats attachment paths as non-concept (skipped), not broken md edges.
+  const body = [dotted, spaced, parens].map((r) => r.markdown).join("\n") + "\nSee [[RealConcept]]\n";
+  const links = extractOutLinks(body);
+  assert.equal(links.some((l) => l.raw.includes("attachments") || l.raw.includes("draft")), false);
+  assert.ok(links.some((l) => l.kind === "wiki" && l.raw === "RealConcept"));
+
+  // Non-image markdown with the same destinations still resolves as attachment paths (not concept md).
+  const asLinks = [
+    `[a](../${dotted.relativePath})`,
+    `[b](<../${spaced.relativePath}>)`,
+    `[c](<../${parens.relativePath}>)`,
+  ].join("\n");
+  const detailed = extractOutLinksDetailed(asLinks);
+  assert.equal(detailed.length, 0, "attachment destinations must not become concept out-links");
+
+  // Traversal / multi-segment names remain rejected.
+  await assert.rejects(
+    () => docs.importAttachment(note.cx, "../../evil.png", payload),
+    /single path segment/
+  );
+  await assert.rejects(
+    () => docs.importAttachment(note.cx, "a/b.png", payload),
+    /single path segment/
+  );
+  assert.throws(() => sanitizeAttachmentFileName(".."), /single path segment/);
+  assert.throws(() => sanitizeAttachmentFileName("."), /single path segment/);
+
 });
 
 function httpGet(url: string): Promise<{ status: number; body: string }> {

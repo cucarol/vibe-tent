@@ -131,9 +131,9 @@ export async function storeAttachmentBytes(
   const rel = attachmentRelativePath(conceptId, safe, bytes);
 
   // Path must stay under attachments/<conceptId>/ (defense in depth beyond FsAdapter).
+  // Segment checks only: do not use includes("..") — it false-rejects draft..final.png.
   const normalized = rel.replace(/\\/g, "/");
   if (
-    normalized.includes("..") ||
     !normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) ||
     normalized.split("/").some((p) => p === ".." || p === "")
   ) {
@@ -152,6 +152,15 @@ export async function storeAttachmentBytes(
   return attachmentResult(rel, safe, sourceNotePath);
 }
 
+/**
+ * CommonMark link/image destination. Bare form for safe targets; angle-bracket
+ * form when whitespace or parentheses would break unquoted destinations.
+ */
+function markdownAttachmentDestination(destination: string): string {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+}
+
 function attachmentResult(
   relativePath: string,
   label: string,
@@ -162,7 +171,7 @@ function attachmentResult(
     : relativePath;
   return {
     relativePath,
-    markdown: `![](${target})`,
+    markdown: `![](${markdownAttachmentDestination(target)})`,
     artifactRef: { kind: "path", target: relativePath, label },
   };
 }

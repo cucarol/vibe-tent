@@ -2795,7 +2795,7 @@ async function storeAttachmentBytes(fs14, conceptId, fileName, bytes, sourceNote
   assertAttachmentSize(bytes.byteLength);
   const rel = attachmentRelativePath(conceptId, safe, bytes);
   const normalized = rel.replace(/\\/g, "/");
-  if (normalized.includes("..") || !normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
+  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
     throw new Error(`Attachment path rejected: ${rel}`);
   }
   if (await fs14.exists(rel)) {
@@ -2808,11 +2808,15 @@ async function storeAttachmentBytes(fs14, conceptId, fileName, bytes, sourceNote
   await fs14.writeBinary(rel, bytes);
   return attachmentResult(rel, safe, sourceNotePath);
 }
+function markdownAttachmentDestination(destination) {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+}
 function attachmentResult(relativePath2, label, sourceNotePath) {
   const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath2) : relativePath2;
   return {
     relativePath: relativePath2,
-    markdown: `![](${target})`,
+    markdown: `![](${markdownAttachmentDestination(target)})`,
     artifactRef: { kind: "path", target: relativePath2, label }
   };
 }
