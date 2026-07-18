@@ -18,6 +18,7 @@ import {
   makeToolApprovalId,
   ToolApprovalStore,
 } from "./tool-approval-store.js";
+import { UserAskStore } from "./user-ask-store.js";
 import { ensureDefaultProfiles } from "./profiles.js";
 import { AgentProfileCatalog } from "./profile-catalog.js";
 import type { CredentialProtector } from "./credential-protector.js";
@@ -139,6 +140,8 @@ async function startOwnedLocalTentService(
   await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
+  const userAsks = new UserAskStore(dataDir);
+  await userAsks.ensureLoaded();
 
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector,
@@ -317,6 +320,7 @@ async function startOwnedLocalTentService(
     runtime,
     a2a,
     toolApprovals,
+    userAsks,
     credentials,
     dataDir,
     profileCatalog,
@@ -407,6 +411,7 @@ async function startOwnedLocalTentService(
         // Tool asks are process-bound. Close their store before stopping ACP
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
+        await attempt(() => userAsks.shutdown(), true);
         await attempt(() => runtime.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();

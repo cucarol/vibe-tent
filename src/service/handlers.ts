@@ -110,6 +110,13 @@ import type { WorkspaceHost } from "./workspace-host.js";
 import type { A2AApprovalStore } from "./a2a-store.js";
 import { makeApprovalId } from "./a2a-store.js";
 import type { ToolApprovalStore, ToolPendingApproval } from "./tool-approval-store.js";
+import {
+  formatUserAskAnswerPrompt,
+  makeUserAskId,
+  type UserAskChoice,
+  type UserAskRecord,
+  type UserAskStore,
+} from "./user-ask-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import {
   isClientMethod,
@@ -155,6 +162,8 @@ export interface HandlerContext {
   a2a: A2AApprovalStore;
   /** Machine-local ACP tool permission approvals (permissionPolicy=ask). */
   toolApprovals: ToolApprovalStore;
+  /** Machine-local A2U business UserAsk rows (not chat; not tool permission). */
+  userAsks: UserAskStore;
   /**
    * Machine-local encrypted credential vault (Windows DPAPI).
    * Client RPC: list/set/delete only — never get/resolve plaintext.
@@ -278,6 +287,8 @@ export async function dispatchMethod(
         return taskWaitRpc(ctx, p);
       case "task.resume":
         return taskResumeRpc(ctx, p);
+      case "task.askUser":
+        return taskAskUserRpc(ctx, p);
       case "task.deliver":
         return taskDeliverRpc(ctx, p);
       case "task.requestReview":
@@ -324,6 +335,14 @@ export async function dispatchMethod(
         return toolApprovalResolve(ctx, p, "approved");
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
+      case "userAsk.listPending":
+        return userAskListPending(ctx, p);
+      case "userAsk.get":
+        return userAskGet(ctx, p);
+      case "userAsk.reply":
+        return userAskReplyRpc(ctx, p);
+      case "userAsk.deny":
+        return userAskDenyRpc(ctx, p);
       case "operationalRetention.preview":
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
@@ -1993,6 +2012,127 @@ async function taskResumeRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   });
 }
 
+/**
+ * A2U: create one pending business UserAsk and park the task on waiting(user-input).
+ * Not tool permission, not chat. Same task may have at most one pending business ask.
+ */
+async function taskAskUserRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const question = requireString(p, "question").trim();
+  if (!question) {
+    throw new RpcError(-32602, "task.askUser requires non-empty question");
+  }
+  const choices = parseUserAskChoices(p.choices);
+  const existing = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+  if (existing) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Task already has a pending UserAsk (${existing.id})`,
+      { askId: existing.id, workspaceId, taskPath }
+    );
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current.state !== "running") {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.askUser requires running task (state=${current.state})`,
+        { taskPath, state: current.state }
+      );
+    }
+    // Re-check under mutation lock so concurrent askUser cannot create two pendings.
+    const again = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+    if (again) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Task already has a pending UserAsk (${again.id})`,
+        { askId: again.id, workspaceId, taskPath }
+      );
+    }
+    const now = new Date().toISOString();
+    const ask = await ctx.userAsks.add({
+      id: makeUserAskId(),
+      workspaceId,
+      taskPath,
+      taskId: current.id || undefined,
+      sessionId: current.sessionId || undefined,
+      role: current.role || undefined,
+      question,
+      ...(choices ? { choices } : {}),
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    const summary = `UserAsk pending: ${question.slice(0, 200)}`;
+    const task = await taskWait(mount.env, taskPath, {
+      reason: "user-input",
+      summary,
+    });
+    emitTaskState(ctx, workspaceId, task, "task.askUser");
+    ctx.events.emit(
+      "userAsk.pending",
+      workspaceId,
+      {
+        askId: ask.id,
+        taskPath: ask.taskPath,
+        taskId: ask.taskId,
+        sessionId: ask.sessionId,
+        role: ask.role,
+        question: ask.question,
+        choices: ask.choices,
+        createdAt: ask.createdAt,
+      },
+      "self"
+    );
+    // Reflect waiting-user on bound managed session when present.
+    if (ask.sessionId) {
+      try {
+        const rec = await ctx.runtime.registry.read(ask.sessionId);
+        if (rec && SessionRegistry.isNonTerminal(rec.state)) {
+          await ctx.runtime.registry.update(ask.sessionId, {
+            state: "waiting-user",
+          });
+        }
+      } catch {
+        // session projection is best-effort
+      }
+    }
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(task),
+      state: task.state,
+      ask: projectUserAsk(ask),
+    };
+  });
+}
+
+function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
+  if (raw === undefined || raw === null) return undefined;
+  if (!Array.isArray(raw)) {
+    throw new RpcError(-32602, "task.askUser choices must be an array");
+  }
+  if (raw.length === 0) return undefined;
+  const choices: UserAskChoice[] = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new RpcError(-32602, "task.askUser choice must be {id,label}");
+    }
+    const row = item as Record<string, unknown>;
+    const id = typeof row.id === "string" ? row.id.trim() : "";
+    const label = typeof row.label === "string" ? row.label.trim() : "";
+    if (!id || !label) {
+      throw new RpcError(-32602, "task.askUser choice requires non-empty id and label");
+    }
+    choices.push({ id, label });
+  }
+  return choices;
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -2138,7 +2278,18 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskInterrupt(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    await cancelUserAsksForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
+      try {
+        await ctx.toolApprovals.cancelSession(sessionId, "denied");
+      } catch {
+        // ignore
+      }
+      try {
+        await cancelUserAsksForSession(ctx, workspaceId, sessionId, "task.interrupt");
+      } catch {
+        // ignore
+      }
       try {
         await ctx.runtime.stopSession(sessionId, "interrupt");
       } catch {
@@ -2844,17 +2995,24 @@ async function toolApprovalResolve(
   // Adapter re-emits session.live after decision; service also resumes here for
   // approve path so UI does not wait solely on racey runtime events. Concurrent
   // tool requests keep the task waiting until the final pending request resolves.
+  // Do not resume when a business UserAsk is still pending for this task.
   if (decision === "approved" && !hasPendingForSession && item.taskPath) {
     try {
-      const mount = ctx.host.get(item.workspaceId);
-      if (mount) {
-        const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-        if (task.state === "waiting" && task.wait?.reason === "user-input") {
-          await ctx.mutations.run(item.workspaceId, async () => {
-            ctx.host.markSelfWrite(item.workspaceId);
-            const resumed = await taskResume(mount.env, item.taskPath!);
-            emitTaskState(ctx, item.workspaceId, resumed, "toolApproval.approveOnce");
-          });
+      const pendingAsk = await ctx.userAsks.getPendingForTask(
+        item.workspaceId,
+        item.taskPath
+      );
+      if (!pendingAsk) {
+        const mount = ctx.host.get(item.workspaceId);
+        if (mount) {
+          const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+          if (task.state === "waiting" && task.wait?.reason === "user-input") {
+            await ctx.mutations.run(item.workspaceId, async () => {
+              ctx.host.markSelfWrite(item.workspaceId);
+              const resumed = await taskResume(mount.env, item.taskPath!);
+              emitTaskState(ctx, item.workspaceId, resumed, "toolApproval.approveOnce");
+            });
+          }
         }
       }
     } catch {
@@ -2883,6 +3041,279 @@ function projectToolApproval(item: ToolPendingApproval) {
     resolvedAt: item.resolvedAt,
     resolvedBy: item.resolvedBy,
   };
+}
+
+// ---- A2U UserAsk (business question; not tool permission; not chat) ----
+
+async function userAskListPending(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const pending = await ctx.userAsks.listPending(workspaceId);
+  return { asks: pending.map(projectUserAsk) };
+}
+
+async function userAskGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const askId = requireString(p, "askId");
+  const item = await ctx.userAsks.get(askId);
+  if (!item) throw new RpcError(-32004, `UserAsk not found: ${askId}`);
+  return { ask: projectUserAsk(item) };
+}
+
+/**
+ * User-only reply. Persist answer first, then resume task, then optional managed
+ * follow-up prompt. Answer is never lost if follow-up fails.
+ */
+async function userAskReplyRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const askId = requireString(p, "askId");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "userAsk.reply is user-only; agent self-reply is forbidden",
+      { actor: actorRaw }
+    );
+  }
+  const answer = optionalString(p, "answer");
+  const choiceId = optionalString(p, "choiceId");
+  if (!(answer?.trim() || choiceId?.trim())) {
+    throw new RpcError(-32602, "userAsk.reply requires answer and/or choiceId");
+  }
+
+  const item = await ctx.userAsks.reply(askId, {
+    answer,
+    choiceId,
+    resolvedBy: actorRaw,
+  });
+
+  ctx.events.emit(
+    "userAsk.resolved",
+    item.workspaceId,
+    {
+      askId: item.id,
+      decision: "reply",
+      actor: actorRaw,
+      taskPath: item.taskPath,
+      sessionId: item.sessionId,
+      choiceId: item.choiceId,
+      answer: item.answer,
+    },
+    "self"
+  );
+
+  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.reply");
+  const continueResult = await continueManagedAfterUserAsk(ctx, item);
+
+  return {
+    ask: projectUserAsk(item),
+    task: resume.task,
+    state: resume.state,
+    continued: continueResult.continued,
+    continueError: continueResult.error,
+  };
+}
+
+/** User-only deny: cancel the business ask and resume the task for rework/decision. */
+async function userAskDenyRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const askId = requireString(p, "askId");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "userAsk.deny is user-only; agent self-deny is forbidden",
+      { actor: actorRaw }
+    );
+  }
+
+  const item = await ctx.userAsks.deny(askId, actorRaw);
+  ctx.events.emit(
+    "userAsk.resolved",
+    item.workspaceId,
+    {
+      askId: item.id,
+      decision: "deny",
+      actor: actorRaw,
+      taskPath: item.taskPath,
+      sessionId: item.sessionId,
+    },
+    "self"
+  );
+
+  // Deny still resumes task occupation so agent/external path can observe denial
+  // and deliver/interrupt — not a silent hang.
+  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.deny");
+  const continueResult =
+    item.sessionId != null
+      ? await continueManagedAfterUserAsk(ctx, item)
+      : { continued: false as const, error: undefined as string | undefined };
+
+  return {
+    ask: projectUserAsk(item),
+    task: resume.task,
+    state: resume.state,
+    continued: continueResult.continued,
+    continueError: continueResult.error,
+  };
+}
+
+async function resumeTaskAfterUserAsk(
+  ctx: HandlerContext,
+  item: UserAskRecord,
+  reason: string
+): Promise<{ task: TaskProjection | null; state: string | null }> {
+  try {
+    const mount = ctx.host.get(item.workspaceId);
+    if (!mount) return { task: null, state: null };
+    return await ctx.mutations.run(item.workspaceId, async () => {
+      ctx.host.markSelfWrite(item.workspaceId);
+      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+      if (task.state === "waiting" && task.wait?.reason === "user-input") {
+        const resumed = await taskResume(mount.env, item.taskPath);
+        emitTaskState(ctx, item.workspaceId, resumed, reason);
+        return { task: projectTask(resumed), state: resumed.state };
+      }
+      return { task: projectTask(task), state: task.state };
+    });
+  } catch {
+    return { task: null, state: null };
+  }
+}
+
+/**
+ * Managed ACP: after user answer, feed fixed-format prompt into the same session.
+ * Prefer live sendFollowUpPrompt; else resumeSession with bootstrapPrompt when capable.
+ * External agents query userAsk.get — no auto chat.
+ */
+async function continueManagedAfterUserAsk(
+  ctx: HandlerContext,
+  item: UserAskRecord
+): Promise<{ continued: boolean; error?: string }> {
+  if (!item.sessionId) return { continued: false };
+  const prompt = formatUserAskAnswerPrompt(item);
+  try {
+    // Live follow-up path (same process still holding the managed ACP session).
+    try {
+      await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
+      return { continued: true };
+    } catch (liveErr) {
+      const liveMessage =
+        liveErr instanceof Error ? liveErr.message : String(liveErr);
+      // Fall through to provider-native resume when live follow-up is unavailable.
+      if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
+        // Unexpected live error — still try resume if possible.
+      }
+    }
+
+    const probe = await ctx.runtime.probe(item.sessionId);
+    if (!probe.resumeCapable) {
+      return {
+        continued: false,
+        error:
+          "managed session not live and not resume-capable; external agent may poll userAsk.get",
+      };
+    }
+    const rec = await ctx.runtime.registry.read(item.sessionId);
+    const cwd = rec?.runtimeWorkspace?.cwd;
+    await ctx.runtime.resumeSession({
+      sessionId: item.sessionId,
+      bootstrapPrompt: prompt,
+      ...(cwd ? { runtimeWorkspace: { cwd } } : {}),
+    });
+    return { continued: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Answer already persisted + task already resumed — continue failure is diagnostic only.
+    ctx.events.emit(
+      "session.state",
+      item.workspaceId,
+      {
+        sessionId: item.sessionId,
+        taskPath: item.taskPath,
+        runtimeEvent: "userAsk.continue.failed",
+        error: message,
+        taskFailed: false,
+      },
+      "service"
+    );
+    return { continued: false, error: message };
+  }
+}
+
+function projectUserAsk(item: UserAskRecord) {
+  return {
+    id: item.id,
+    workspaceId: item.workspaceId,
+    taskPath: item.taskPath,
+    taskId: item.taskId,
+    sessionId: item.sessionId,
+    role: item.role,
+    question: item.question,
+    choices: item.choices,
+    status: item.status,
+    answer: item.answer,
+    choiceId: item.choiceId,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    resolvedAt: item.resolvedAt,
+    resolvedBy: item.resolvedBy,
+  };
+}
+
+/** Best-effort: cancel pending business asks when task occupation ends. */
+async function cancelUserAsksForTask(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  resolvedBy: string
+): Promise<void> {
+  try {
+    const cancelled = await ctx.userAsks.cancelTask(
+      workspaceId,
+      taskPath,
+      resolvedBy
+    );
+    for (const ask of cancelled) {
+      ctx.events.emit(
+        "userAsk.resolved",
+        workspaceId,
+        {
+          askId: ask.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: ask.taskPath,
+          sessionId: ask.sessionId,
+        },
+        "service"
+      );
+    }
+  } catch {
+    // cleanup must not block interrupt/fail
+  }
+}
+
+async function cancelUserAsksForSession(
+  ctx: HandlerContext,
+  workspaceId: string,
+  sessionId: string,
+  resolvedBy: string
+): Promise<void> {
+  try {
+    const cancelled = await ctx.userAsks.cancelSession(sessionId, resolvedBy);
+    for (const ask of cancelled) {
+      ctx.events.emit(
+        "userAsk.resolved",
+        workspaceId || ask.workspaceId,
+        {
+          askId: ask.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: ask.taskPath,
+          sessionId: ask.sessionId,
+        },
+        "service"
+      );
+    }
+  } catch {
+    // cleanup must not block session teardown
+  }
 }
 
 // ---- operational retention (task-api §6; user-only) ----
@@ -3194,6 +3625,13 @@ async function projectRuntimeEventOnce(
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     // Pending tool approvals must not hang after process death.
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
+    // Pending business UserAsks bound to this session are cancelled (not answered).
+    await cancelUserAsksForSession(
+      ctx,
+      workspaceId,
+      ev.sessionId,
+      ev.type === "session.failed" ? "session.failed" : "session.exited"
+    );
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
@@ -3228,11 +3666,18 @@ async function projectRuntimeEventOnce(
         task.wait?.reason === "user-input"
       ) {
         // Tool approval resolved (or session resumed) → running again.
-        await ctx.mutations.run(mount.workspaceId, async () => {
-          ctx.host.markSelfWrite(mount.workspaceId);
-          const resumed = await taskResume(mount.env, task.path);
-          emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
-        });
+        // Keep waiting when a business UserAsk is still pending for this task.
+        const pendingAsk = await ctx.userAsks.getPendingForTask(
+          mount.workspaceId,
+          task.path
+        );
+        if (!pendingAsk) {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const resumed = await taskResume(mount.env, task.path);
+            emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
+          });
+        }
       } else if (
         (ev.type === "session.failed" || ev.type === "session.exited") &&
         (task.state === "running" || task.state === "waiting")
@@ -3299,9 +3744,20 @@ async function failTaskFromRuntime(
   if (!mount) return;
 
   // Stop managed process first when still live (idempotent).
+  await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
   if (input.sessionId) {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "task.fail"
+      );
     } catch {
       // ignore
     }
@@ -3531,6 +3987,16 @@ async function stopManagedSessionAfterDelivery(
   try {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
     } catch {
       // ignore
     }

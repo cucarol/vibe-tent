@@ -1132,20 +1132,75 @@ function dedupe(entries) {
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 var CONCEPT_ID_PREFIX = "cx-";
+var ROLE_ID_PREFIX = "rl-";
 var LEGACY_BOX_ID_PREFIX = "bx-";
-function makeConceptId(rand = Math.random, len = 6) {
+function deterministicDigest(input, byteLen = 32) {
+  const out = new Uint8Array(byteLen);
+  for (let offset = 0; offset < byteLen; offset += 4) {
+    let h = (2166136261 ^ Math.imul(offset + 1, 2654435769)) >>> 0;
+    const salted = `${offset}\0${input}`;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 2246822507) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 3266489909) >>> 0;
+    h ^= h >>> 16;
+    out[offset] = h & 255;
+    if (offset + 1 < byteLen) out[offset + 1] = h >>> 8 & 255;
+    if (offset + 2 < byteLen) out[offset + 2] = h >>> 16 & 255;
+    if (offset + 3 < byteLen) out[offset + 3] = h >>> 24 & 255;
+  }
+  return out;
+}
+function encodeAlphabetBytes(bytes, len) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    const b = bytes[i % bytes.length] ^ i * 17 & 255;
+    s += ALPHABET[b % ALPHABET.length];
+  }
+  return s;
+}
+function makePrefixedId(prefix, rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
     s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
   }
-  return CONCEPT_ID_PREFIX + s;
+  return prefix + s;
 }
-function makeUniqueConceptId(existing, rand = Math.random) {
+function makeUniquePrefixedId(prefix, existing, rand = Math.random) {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeConceptId(rand);
+    const id = makePrefixedId(prefix, rand);
     if (!existing.has(id)) return id;
   }
-  return makeConceptId(rand, 10);
+  return makePrefixedId(prefix, rand, 10);
+}
+function makeConceptId(rand = Math.random, len = 6) {
+  return makePrefixedId(CONCEPT_ID_PREFIX, rand, len);
+}
+function makeUniqueConceptId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(CONCEPT_ID_PREFIX, existing, rand);
+}
+function makeUniqueRoleId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
+}
+function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set()) {
+  const key = name.trim();
+  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
+  for (let len = 6; len <= 16; len++) {
+    const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
+    if (!existing.has(id)) return id;
+  }
+  const fallback = deterministicDigest(
+    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
+    32
+  );
+  return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
+}
+function isRoleId(id) {
+  return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
 }
 function isLegacyBoxId(id) {
   return id.startsWith(LEGACY_BOX_ID_PREFIX) && id.length > LEGACY_BOX_ID_PREFIX.length;
@@ -1321,21 +1376,29 @@ var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
 async function loadRolesRegistry(fs8) {
-  if (!await fs8.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  const { registry } = await readRolesRegistryState(fs8);
+  return registry;
+}
+async function readRolesRegistryState(fs8) {
+  if (!await fs8.exists(ROLES_REGISTRY_PATH)) {
+    return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
+  }
   try {
-    const parsed = JSON.parse(await fs8.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
+    const rawText = await fs8.readFile(ROLES_REGISTRY_PATH);
+    const parsed = JSON.parse(rawText);
+    const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
+    return { registry, migrated, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs8, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs8, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs8, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
       "reset",
       "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
     );
-    return reset;
+    return { registry: reset, migrated: false, recovered: true };
   }
 }
 function assertRoleNameAvailable(name) {
@@ -1343,24 +1406,56 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
   }
 }
-function normalizeRolesRegistry(value) {
+function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord3(value) ? value : {};
   const roles = [];
+  let migrated = false;
+  const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord3(item)) continue;
-      const role = normalizeRoleDefinition(item);
+      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
+      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
+      const role = normalizeRoleDefinition(item, {
+        usedIds,
+        assignMissingId: "deterministic"
+      });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      if (roles.some((existing) => existing.id === role.id)) continue;
+      if (!hadId || !hadDisplayName) migrated = true;
+      usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { roles };
+  return { registry: { roles }, migrated };
 }
-function normalizeRoleDefinition(value) {
+function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const role = { name };
+  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
+  const assign = opts.assignMissingId ?? "deterministic";
+  let id = typeof value.id === "string" ? value.id.trim() : "";
+  if (id && !isRoleId(id)) {
+    id = "";
+  }
+  if (id && usedIds.has(id) && assign !== "keep") {
+    id = "";
+  }
+  if (!id) {
+    if (assign === "random") {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    } else if (name) {
+      id = deterministicRoleIdFromName(name, usedIds);
+    } else {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    }
+  }
+  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const displayName = displayRaw || name;
+  const role = { id, name, displayName };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
-  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
@@ -1403,6 +1498,26 @@ function normalizeCliConfig(value) {
     cli.resume = resume;
   }
   return cli;
+}
+function serializeRolesRegistry(registry) {
+  return {
+    roles: registry.roles.map((role) => {
+      const row = {
+        id: role.id,
+        name: role.name,
+        displayName: role.displayName || role.name
+      };
+      if (role.prompt) row.prompt = role.prompt;
+      if (role.description) row.description = role.description;
+      if (role.color) row.color = role.color;
+      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
+      if (role.allowedProfiles && role.allowedProfiles.length > 0) {
+        row.allowedProfiles = [...role.allowedProfiles];
+      }
+      if (role.cli) row.cli = { ...role.cli };
+      return row;
+    })
+  };
 }
 function cloneDefaultRoles() {
   return {
@@ -3924,20 +4039,21 @@ var ServiceClient = class {
   }
   /**
    * User-only role create (MutationBus). Pass fields at top level — never secrets.
-   * `actor` defaults to "user"; non-user is rejected by the service.
+   * Server assigns immutable roleId. `actor` defaults to "user"; non-user is rejected.
    */
   registryRoleCreate(workspaceId, role) {
     return this.call("registry.role.create", { workspaceId, ...role });
   }
   /**
-   * User-only role update. Name is identity and cannot be renamed.
+   * User-only role update. Resolve by operational name (compat) or pass roleId in patch.
+   * Operational name cannot be renamed in identity batch 1; change displayName instead.
    * Success emits exactly one registry.roles.updated.
    */
   registryRoleUpdate(workspaceId, name, patch) {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
   }
   /**
-   * User-only role delete. confirmation must equal name.
+   * User-only role delete. confirmation must equal operational name or roleId.
    * Refuses when the role has an active task or live managed session.
    */
   registryRoleDelete(workspaceId, name, confirmation, actor = "user") {
@@ -4007,6 +4123,13 @@ var ServiceClient = class {
   }
   taskResume(workspaceId, taskPath) {
     return this.call("task.resume", { workspaceId, taskPath });
+  }
+  /**
+   * A2U business ask: running task → pending UserAsk + waiting(user-input).
+   * Not multi-turn chat. choices optional.
+   */
+  taskAskUser(workspaceId, taskPath, args) {
+    return this.call("task.askUser", { workspaceId, taskPath, ...args });
   }
   taskDeliver(workspaceId, taskPath, args) {
     return this.call("task.deliver", { workspaceId, taskPath, ...args });
@@ -4080,6 +4203,26 @@ var ServiceClient = class {
   /** User-only: deny/cancel one ACP tool request. */
   toolApprovalDeny(approvalId, actor = "user") {
     return this.call("toolApproval.deny", { approvalId, actor });
+  }
+  /** A2U UserAsk pending list (business questions). Not tool permission / not chat. */
+  userAskListPending(workspaceId) {
+    return this.call("userAsk.listPending", workspaceId ? { workspaceId } : {});
+  }
+  userAskGet(askId) {
+    return this.call("userAsk.get", { askId });
+  }
+  /** User-only: answer a business ask; resumes task + optional managed continue. */
+  userAskReply(askId, args = {}) {
+    return this.call("userAsk.reply", {
+      askId,
+      actor: args.actor ?? "user",
+      answer: args.answer,
+      choiceId: args.choiceId
+    });
+  }
+  /** User-only: deny a business ask; resumes task for rework/observe. */
+  userAskDeny(askId, actor = "user") {
+    return this.call("userAsk.deny", { askId, actor });
   }
   /**
    * User-only operational retention preview (task-api §6).
@@ -4490,6 +4633,105 @@ state: ${row.state ?? "interrupted"}
 `;
         });
       }
+      case "ask-user":
+      case "askUser": {
+        const taskPath = positionals[0];
+        if (!taskPath) {
+          return failUsage(
+            "Usage: tent task ask-user <taskPath> --question <text>|- [--choices id=label,id=label] [--workspace <path>] [--json]"
+          );
+        }
+        if (!Object.prototype.hasOwnProperty.call(flags, "question")) {
+          return failUsage("tent task ask-user requires --question <text> or --question -");
+        }
+        let question = flags.question ?? "";
+        if (question === "-") question = await readStdinText();
+        if (!question.trim()) {
+          return failUsage("tent task ask-user: --question must be non-empty");
+        }
+        const choices = parseChoicesFlag(flags.choices);
+        const result = await client.taskAskUser(workspaceId, taskPath, {
+          question,
+          choices
+        });
+        return okPrint(result, json, (r) => {
+          const row = r;
+          return `\u2713 UserAsk created via service RPC
+taskPath: ${row.taskPath}
+state: ${row.state ?? "waiting"}
+` + (row.ask?.id ? `askId: ${row.ask.id}
+` : "") + (row.ask?.status ? `askStatus: ${row.ask.status}
+` : "");
+        });
+      }
+      case "user-ask":
+      case "userAsk": {
+        const action = positionals[0];
+        if (!action || action === "list") {
+          const result = await client.userAskListPending(workspaceId);
+          return okPrint(result, json, (r) => formatUserAskList(r));
+        }
+        if (action === "get") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask get <askId> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.userAskGet(askId);
+          return okPrint(result, json, (r) => formatUserAskGet(r));
+        }
+        if (action === "reply") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask reply <askId> [--answer <text>|-] [--choice <id>] [--workspace <path>] [--json]"
+            );
+          }
+          let answer = flags.answer;
+          if (answer === "-") answer = await readStdinText();
+          const choiceId = flags.choice || flags["choice-id"] || flags.choiceId;
+          if (!(answer?.trim() || choiceId?.trim())) {
+            return failUsage(
+              "tent task user-ask reply requires --answer and/or --choice"
+            );
+          }
+          const result = await client.userAskReply(askId, {
+            answer,
+            choiceId,
+            actor: flags.actor || "user"
+          });
+          return okPrint(result, json, (r) => {
+            const row = r;
+            return `\u2713 UserAsk answered via service RPC
+` + (row.ask?.id ? `askId: ${row.ask.id}
+` : "") + (row.ask?.status ? `askStatus: ${row.ask.status}
+` : "") + (row.state ? `taskState: ${row.state}
+` : "") + (row.continued != null ? `continued: ${row.continued}
+` : "");
+          });
+        }
+        if (action === "deny") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask deny <askId> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.userAskDeny(askId, flags.actor || "user");
+          return okPrint(result, json, (r) => {
+            const row = r;
+            return `\u2713 UserAsk denied via service RPC
+` + (row.ask?.id ? `askId: ${row.ask.id}
+` : "") + (row.ask?.status ? `askStatus: ${row.ask.status}
+` : "") + (row.state ? `taskState: ${row.state}
+` : "");
+          });
+        }
+        return failUsage(
+          "Usage: tent task user-ask list|get|reply|deny \u2026\n" + taskHelpText()
+        );
+      }
       case "help":
       case "--help":
       case "-h":
@@ -4549,6 +4791,54 @@ function parseCommitsFlag(raw) {
   const commits = raw.split(",").map((s) => s.trim()).filter(Boolean);
   return commits;
 }
+function parseChoicesFlag(raw) {
+  if (raw === void 0 || !raw.trim()) return void 0;
+  const choices = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`Invalid --choices entry (expected id=label): ${trimmed}`);
+    }
+    const id = trimmed.slice(0, eq).trim();
+    const label = trimmed.slice(eq + 1).trim();
+    if (!id || !label) {
+      throw new Error(`Invalid --choices entry (empty id/label): ${trimmed}`);
+    }
+    choices.push({ id, label });
+  }
+  return choices.length ? choices : void 0;
+}
+function formatUserAskList(result) {
+  const row = result;
+  const asks = row.asks ?? [];
+  if (asks.length === 0) return "asks: (none)\n";
+  const lines = [`asks: ${asks.length}`, ""];
+  for (const a of asks) {
+    lines.push(
+      `- ${a.id ?? "?"}	task=${a.taskPath ?? "?"}	status=${a.status ?? "?"}	q=${(a.question ?? "").slice(0, 80)}`
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+function formatUserAskGet(result) {
+  const row = result;
+  const a = row.ask ?? {};
+  const lines = [
+    `id: ${a.id ?? "?"}`,
+    `taskPath: ${a.taskPath ?? "?"}`,
+    `status: ${a.status ?? "?"}`,
+    `question: ${a.question ?? ""}`
+  ];
+  if (a.choiceId) lines.push(`choiceId: ${a.choiceId}`);
+  if (a.answer) lines.push(`answer: ${a.answer}`);
+  if (a.choices?.length) {
+    lines.push("choices:");
+    for (const c of a.choices) lines.push(`  - ${c.id}=${c.label}`);
+  }
+  return lines.join("\n") + "\n";
+}
 var BOOLEAN_FLAGS = /* @__PURE__ */ new Set([
   "json",
   "attach-only",
@@ -4600,6 +4890,8 @@ Commands:
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
+  tent task ask-user <taskPath> --question <text>|- [--choices id=label,\u2026] [--workspace <path>] [--json]
+  tent task user-ask list|get <askId>|reply <askId>|deny <askId> [\u2026] [--workspace <path>] [--json]
 
 Service options:
   --data-dir <path>       Machine-local service data area (default: %APPDATA%/Tent)

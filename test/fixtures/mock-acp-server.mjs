@@ -6,6 +6,8 @@
  *
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
+ *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer" (default MOCK_ACP_PROMPT_TEXT)
+ *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing session/prompt (default 0)
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
@@ -30,6 +32,12 @@ for (const arg of process.argv) {
 }
 
 const promptText = process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
+const followupText =
+  process.env.MOCK_ACP_FOLLOWUP_TEXT || process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
+const promptDelayMs = Math.max(
+  0,
+  Number(process.env.MOCK_ACP_PROMPT_DELAY_MS || "0") || 0
+);
 const requestPermission = process.env.MOCK_ACP_REQUEST_PERMISSION === "1";
 const permissionCount = Math.max(
   1,
@@ -297,82 +305,96 @@ rl.on("line", (line) => {
       .join("");
     // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
     log.prompts.push(textParts.slice(0, 8000));
+    const isUserAnswer = textParts.includes("## User Answer");
+    // Follow-up continuation uses a distinct report so delivery is exercised
+    // even when the bootstrap prompt was empty / non-delivering.
+    const activePromptText = isUserAnswer ? followupText : promptText;
 
-    if (promptMode === "error") {
+    const finishPrompt = () => {
+      if (promptMode === "error" && !isUserAnswer) {
+        write({
+          jsonrpc: "2.0",
+          id: msg.id,
+          error: { code: -32000, message: "mock ACP prompt failed" },
+        });
+        flushLog();
+        if (!keepAlive) setTimeout(() => process.exit(0), 50);
+        return;
+      }
+
+      if (promptMode === "interrupt" && !isUserAnswer) {
+        // Never answer the bootstrap prompt — hang until SIGTERM.
+        // Follow-up User Answer prompts still complete (managed continue path).
+        flushLog();
+        return;
+      }
+
+      // Stream thought + optional message + tool call updates.
+      notifyUpdate({
+        sessionUpdate: "agent_thought_chunk",
+        content: { type: "text", text: "thinking..." },
+      });
+      const modeForThis = isUserAnswer ? "ok" : promptMode;
+      if (modeForThis !== "empty") {
+        notifyUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: activePromptText },
+        });
+      }
+      notifyUpdate({
+        sessionUpdate: "tool_call",
+        toolCallId: "tc-1",
+        title: "read_file",
+        status: "pending",
+      });
+
+      if (requestPermission && !isUserAnswer) {
+        for (let i = 0; i < permissionCount; i += 1) {
+          const permId = nextServerId++;
+          const suffix = permissionCount > 1 ? `_${i + 1}` : "";
+          write({
+            jsonrpc: "2.0",
+            id: permId,
+            method: "session/request_permission",
+            params: {
+              toolCall: {
+                toolCallId: `tc-1${suffix}`,
+                title: `read_file${suffix}`,
+              },
+              options: [
+                { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
+                { optionId: "allow_always", kind: "allow_always", name: "Always" },
+                { optionId: "reject", kind: "reject_once", name: "Reject" },
+              ],
+            },
+          });
+          pendingPermission.set(permId, msg.id);
+        }
+        flushLog();
+        return;
+      }
+
+      notifyUpdate({
+        sessionUpdate: "tool_call_update",
+        toolCallId: "tc-1",
+        status: "completed",
+      });
       write({
         jsonrpc: "2.0",
         id: msg.id,
-        error: { code: -32000, message: "mock ACP prompt failed" },
+        result: { stopReason: stopReasonEnv },
       });
       flushLog();
-      if (!keepAlive) setTimeout(() => process.exit(0), 50);
-      return;
-    }
-
-    if (promptMode === "interrupt") {
-      // Never answer the prompt — hang until SIGTERM so client sees interrupted.
-      flushLog();
-      return;
-    }
-
-    // Stream thought + optional message + tool call updates.
-    notifyUpdate({
-      sessionUpdate: "agent_thought_chunk",
-      content: { type: "text", text: "thinking..." },
-    });
-    if (promptMode !== "empty") {
-      notifyUpdate({
-        sessionUpdate: "agent_message_chunk",
-        content: { type: "text", text: promptText },
-      });
-    }
-    notifyUpdate({
-      sessionUpdate: "tool_call",
-      toolCallId: "tc-1",
-      title: "read_file",
-      status: "pending",
-    });
-
-    if (requestPermission) {
-      for (let i = 0; i < permissionCount; i += 1) {
-        const permId = nextServerId++;
-        const suffix = permissionCount > 1 ? `_${i + 1}` : "";
-        write({
-          jsonrpc: "2.0",
-          id: permId,
-          method: "session/request_permission",
-          params: {
-            toolCall: {
-              toolCallId: `tc-1${suffix}`,
-              title: `read_file${suffix}`,
-            },
-            options: [
-              { optionId: "allow_once", kind: "allow_once", name: "Allow once" },
-              { optionId: "allow_always", kind: "allow_always", name: "Always" },
-              { optionId: "reject", kind: "reject_once", name: "Reject" },
-            ],
-          },
-        });
-        pendingPermission.set(permId, msg.id);
+      if (!keepAlive) {
+        setTimeout(() => process.exit(0), 50);
       }
-      flushLog();
+    };
+
+    if (promptDelayMs > 0 && !isUserAnswer) {
+      setTimeout(finishPrompt, promptDelayMs);
       return;
     }
-
-    notifyUpdate({
-      sessionUpdate: "tool_call_update",
-      toolCallId: "tc-1",
-      status: "completed",
-    });
-    write({
-      jsonrpc: "2.0",
-      id: msg.id,
-      result: { stopReason: stopReasonEnv },
-    });
-    flushLog();
-    if (!keepAlive) {
-      setTimeout(() => process.exit(0), 50);
-    }
+    finishPrompt();
     return;
   }
 

@@ -43,6 +43,7 @@ export class AcpManagedSession implements ManagedSession {
     readonly sessionId: string,
     private readonly client: ManagedAcpClient,
     private readonly bootstrapDone: Promise<void>,
+    private readonly emit: (ev: RuntimeEvent) => void,
     private stopRequested = false
   ) {}
 
@@ -61,6 +62,28 @@ export class AcpManagedSession implements ManagedSession {
   /** Tests / callers may await bootstrap completion (prompt path finished). */
   async waitBootstrap(): Promise<void> {
     await this.bootstrapDone;
+  }
+
+  /**
+   * U2A follow-up: send a fixed-format user answer as the next session/prompt.
+   * Same delivery rules as bootstrap — end_turn + non-empty text → prompt_complete.
+   */
+  async sendFollowUpPrompt(prompt: string): Promise<void> {
+    if (this.stopRequested || !this.client.isAlive()) {
+      throw new Error(`Managed session not alive for follow-up: ${this.sessionId}`);
+    }
+    const text = prompt.trim();
+    if (!text) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    // Wait for any in-flight bootstrap/prior prompt before sending the next one.
+    await this.bootstrapDone;
+    // Only sessionId is read from plan for prompt_complete emission.
+    const plan: LaunchPlan = {
+      sessionId: this.sessionId,
+      profileId: "",
+      cwd: "",
+      env: {},
+    };
+    await runManagedBootstrapPrompt(plan, this.emit, this.client, text);
   }
 
   async stop(reason: StopReason): Promise<void> {
@@ -218,7 +241,7 @@ export async function startManagedAcpSession(
   }
 
   const promptDone = runManagedBootstrapPrompt(plan, emit, client, bootstrap);
-  return new AcpManagedSession(plan.sessionId, client, promptDone);
+  return new AcpManagedSession(plan.sessionId, client, promptDone, emit);
 }
 
 /**
@@ -250,7 +273,7 @@ export async function resumeManagedAcpSession(
     ? runManagedBootstrapPrompt(plan, emit, client, bootstrap)
     : Promise.resolve();
 
-  return new AcpManagedSession(plan.sessionId, client, promptDone);
+  return new AcpManagedSession(plan.sessionId, client, promptDone, emit);
 }
 
 export function parseAcpResumeToken(raw: string): ResumeToken {

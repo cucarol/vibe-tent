@@ -13,6 +13,7 @@ export * from "./service.js";
 export * from "./client.js";
 export * from "./a2a-store.js";
 export * from "./tool-approval-store.js";
+export * from "./user-ask-store.js";
 export * from "./profiles.js";
 export * from "./profile-catalog.js";
 export * from "./credential-protector.js";

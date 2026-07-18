@@ -229,6 +229,120 @@ export async function runTaskCommand(
           return `✓ Cancelled via service RPC\ntaskPath: ${row.taskPath}\nstate: ${row.state ?? "interrupted"}\n`;
         });
       }
+      case "ask-user":
+      case "askUser": {
+        const taskPath = positionals[0];
+        if (!taskPath) {
+          return failUsage(
+            "Usage: tent task ask-user <taskPath> --question <text>|- [--choices id=label,id=label] [--workspace <path>] [--json]"
+          );
+        }
+        if (!Object.prototype.hasOwnProperty.call(flags, "question")) {
+          return failUsage("tent task ask-user requires --question <text> or --question -");
+        }
+        let question = flags.question ?? "";
+        if (question === "-") question = await readStdinText();
+        if (!question.trim()) {
+          return failUsage("tent task ask-user: --question must be non-empty");
+        }
+        const choices = parseChoicesFlag(flags.choices);
+        const result = await client.taskAskUser(workspaceId, taskPath, {
+          question,
+          choices,
+        });
+        return okPrint(result, json, (r) => {
+          const row = r as {
+            taskPath: string;
+            state?: string;
+            ask?: { id?: string; question?: string; status?: string };
+          };
+          return (
+            `✓ UserAsk created via service RPC\n` +
+            `taskPath: ${row.taskPath}\n` +
+            `state: ${row.state ?? "waiting"}\n` +
+            (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
+            (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "")
+          );
+        });
+      }
+      case "user-ask":
+      case "userAsk": {
+        // tent task user-ask list|get|reply|deny
+        const action = positionals[0];
+        if (!action || action === "list") {
+          const result = await client.userAskListPending(workspaceId);
+          return okPrint(result, json, (r) => formatUserAskList(r));
+        }
+        if (action === "get") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask get <askId> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.userAskGet(askId);
+          return okPrint(result, json, (r) => formatUserAskGet(r));
+        }
+        if (action === "reply") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask reply <askId> [--answer <text>|-] [--choice <id>] [--workspace <path>] [--json]"
+            );
+          }
+          let answer = flags.answer;
+          if (answer === "-") answer = await readStdinText();
+          const choiceId = flags.choice || flags["choice-id"] || flags.choiceId;
+          if (!(answer?.trim() || choiceId?.trim())) {
+            return failUsage(
+              "tent task user-ask reply requires --answer and/or --choice"
+            );
+          }
+          const result = await client.userAskReply(askId, {
+            answer,
+            choiceId,
+            actor: flags.actor || "user",
+          });
+          return okPrint(result, json, (r) => {
+            const row = r as {
+              ask?: { id?: string; status?: string };
+              state?: string;
+              continued?: boolean;
+            };
+            return (
+              `✓ UserAsk answered via service RPC\n` +
+              (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
+              (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "") +
+              (row.state ? `taskState: ${row.state}\n` : "") +
+              (row.continued != null ? `continued: ${row.continued}\n` : "")
+            );
+          });
+        }
+        if (action === "deny") {
+          const askId = positionals[1];
+          if (!askId) {
+            return failUsage(
+              "Usage: tent task user-ask deny <askId> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.userAskDeny(askId, flags.actor || "user");
+          return okPrint(result, json, (r) => {
+            const row = r as {
+              ask?: { id?: string; status?: string };
+              state?: string;
+            };
+            return (
+              `✓ UserAsk denied via service RPC\n` +
+              (row.ask?.id ? `askId: ${row.ask.id}\n` : "") +
+              (row.ask?.status ? `askStatus: ${row.ask.status}\n` : "") +
+              (row.state ? `taskState: ${row.state}\n` : "")
+            );
+          });
+        }
+        return failUsage(
+          "Usage: tent task user-ask list|get|reply|deny …\n" + taskHelpText()
+        );
+      }
       case "help":
       case "--help":
       case "-h":
@@ -313,6 +427,80 @@ function parseCommitsFlag(raw: string | undefined): string[] | undefined {
   return commits;
 }
 
+/** Parse `id=label,id=label` into UserAsk choices. */
+function parseChoicesFlag(
+  raw: string | undefined
+): Array<{ id: string; label: string }> | undefined {
+  if (raw === undefined || !raw.trim()) return undefined;
+  const choices: Array<{ id: string; label: string }> = [];
+  for (const part of raw.split(",")) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0) {
+      throw new Error(`Invalid --choices entry (expected id=label): ${trimmed}`);
+    }
+    const id = trimmed.slice(0, eq).trim();
+    const label = trimmed.slice(eq + 1).trim();
+    if (!id || !label) {
+      throw new Error(`Invalid --choices entry (empty id/label): ${trimmed}`);
+    }
+    choices.push({ id, label });
+  }
+  return choices.length ? choices : undefined;
+}
+
+function formatUserAskList(result: unknown): string {
+  const row = result as {
+    asks?: Array<{
+      id?: string;
+      taskPath?: string;
+      question?: string;
+      status?: string;
+    }>;
+  };
+  const asks = row.asks ?? [];
+  if (asks.length === 0) return "asks: (none)\n";
+  const lines = [`asks: ${asks.length}`, ""];
+  for (const a of asks) {
+    lines.push(
+      `- ${a.id ?? "?"}` +
+        `\ttask=${a.taskPath ?? "?"}` +
+        `\tstatus=${a.status ?? "?"}` +
+        `\tq=${(a.question ?? "").slice(0, 80)}`
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+function formatUserAskGet(result: unknown): string {
+  const row = result as {
+    ask?: {
+      id?: string;
+      taskPath?: string;
+      question?: string;
+      status?: string;
+      answer?: string;
+      choiceId?: string;
+      choices?: Array<{ id: string; label: string }>;
+    };
+  };
+  const a = row.ask ?? {};
+  const lines = [
+    `id: ${a.id ?? "?"}`,
+    `taskPath: ${a.taskPath ?? "?"}`,
+    `status: ${a.status ?? "?"}`,
+    `question: ${a.question ?? ""}`,
+  ];
+  if (a.choiceId) lines.push(`choiceId: ${a.choiceId}`);
+  if (a.answer) lines.push(`answer: ${a.answer}`);
+  if (a.choices?.length) {
+    lines.push("choices:");
+    for (const c of a.choices) lines.push(`  - ${c.id}=${c.label}`);
+  }
+  return lines.join("\n") + "\n";
+}
+
 const BOOLEAN_FLAGS = new Set([
   "json",
   "attach-only",
@@ -370,6 +558,8 @@ Commands:
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
+  tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
+  tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
 
 Service options:
   --data-dir <path>       Machine-local service data area (default: %APPDATA%/Tent)

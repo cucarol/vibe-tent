@@ -408,6 +408,20 @@ export class ServiceClient {
   taskResume(workspaceId: string, taskPath: string) {
     return this.call("task.resume", { workspaceId, taskPath });
   }
+  /**
+   * A2U business ask: running task → pending UserAsk + waiting(user-input).
+   * Not multi-turn chat. choices optional.
+   */
+  taskAskUser(
+    workspaceId: string,
+    taskPath: string,
+    args: {
+      question: string;
+      choices?: Array<{ id: string; label: string }>;
+    }
+  ) {
+    return this.call("task.askUser", { workspaceId, taskPath, ...args });
+  }
   taskDeliver(
     workspaceId: string,
     taskPath: string,
@@ -524,6 +538,30 @@ export class ServiceClient {
   /** User-only: deny/cancel one ACP tool request. */
   toolApprovalDeny(approvalId: string, actor = "user") {
     return this.call("toolApproval.deny", { approvalId, actor });
+  }
+
+  /** A2U UserAsk pending list (business questions). Not tool permission / not chat. */
+  userAskListPending(workspaceId?: string) {
+    return this.call("userAsk.listPending", workspaceId ? { workspaceId } : {});
+  }
+  userAskGet(askId: string) {
+    return this.call("userAsk.get", { askId });
+  }
+  /** User-only: answer a business ask; resumes task + optional managed continue. */
+  userAskReply(
+    askId: string,
+    args: { answer?: string; choiceId?: string; actor?: string } = {}
+  ) {
+    return this.call("userAsk.reply", {
+      askId,
+      actor: args.actor ?? "user",
+      answer: args.answer,
+      choiceId: args.choiceId,
+    });
+  }
+  /** User-only: deny a business ask; resumes task for rework/observe. */
+  userAskDeny(askId: string, actor = "user") {
+    return this.call("userAsk.deny", { askId, actor });
   }
 
   /**

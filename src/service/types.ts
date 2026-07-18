@@ -295,6 +295,11 @@ export const CLIENT_METHODS = [
   "task.claim",
   "task.wait",
   "task.resume",
+  /**
+   * A2U business ask: running task → create pending UserAsk + waiting(user-input).
+   * Not tool permission; not multi-turn chat.
+   */
+  "task.askUser",
   "task.deliver",
   "task.requestReview",
   "task.accept",
@@ -325,6 +330,14 @@ export const CLIENT_METHODS = [
   "toolApproval.get",
   "toolApproval.approveOnce",
   "toolApproval.deny",
+  /**
+   * A2U UserAsk (business question) — machine-local; not chat.
+   * reply/deny are user-only; resolve atomically resumes the task.
+   */
+  "userAsk.listPending",
+  "userAsk.get",
+  "userAsk.reply",
+  "userAsk.deny",
   /**
    * Operational retention (task-api §6) — user-only.
    * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.

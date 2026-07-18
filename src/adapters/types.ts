@@ -61,6 +61,12 @@ export interface ManagedSession {
   readonly providerSessionId?: string;
   isAlive(): boolean;
   stop(reason: StopReason): Promise<void>;
+  /**
+   * Optional follow-up session/prompt on a live managed session (U2A resume).
+   * Used after UserAsk reply — not multi-turn chat. Adapters without structured
+   * prompt transport leave this undefined; service falls back to resumeSession.
+   */
+  sendFollowUpPrompt?(prompt: string): Promise<void>;
 }
 
 export interface ProviderAdapter {

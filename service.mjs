@@ -7,7 +7,7 @@ var __export = (target, all2) => {
 };
 
 // src/service/cli.ts
-import * as path15 from "node:path";
+import * as path17 from "node:path";
 
 // src/service/http-server.ts
 import * as http from "node:http";
@@ -229,14 +229,14 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs14, path16) {
-  const backupPath = `${path16}.corrupt-${timestamp()}`;
-  await fs14.writeFile(backupPath, await fs14.readFile(path16));
+async function backupCorruptRegistry(fs16, path18) {
+  const backupPath = `${path18}.corrupt-${timestamp()}`;
+  await fs16.writeFile(backupPath, await fs16.readFile(path18));
   return backupPath;
 }
-function warnRegistryRecovered(path16, backupPath, action, extra = "") {
+function warnRegistryRecovered(path18, backupPath, action, extra = "") {
   console.error(
-    `WARNING: ${path16} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+    `WARNING: ${path18} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
   );
 }
 function timestamp() {
@@ -278,9 +278,9 @@ function systemRootFromWorkspace(workspaceRoot) {
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath2) {
-  const path16 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!path16) return false;
-  const top = path16.split("/")[0] ?? "";
+  const path18 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!path18) return false;
+  const top = path18.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
 }
 function safeOperationalSegment(value, emptyPrefix = "id") {
@@ -321,19 +321,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs14) {
-  if (!await fs14.exists(ORDER_PATH)) return {};
+async function loadOrder(fs16) {
+  if (!await fs16.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs14.readFile(ORDER_PATH));
+    return JSON.parse(await fs16.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs14, ORDER_PATH);
-    await saveOrder(fs14, {});
+    const backupPath = await backupCorruptRegistry(fs16, ORDER_PATH);
+    await saveOrder(fs16, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs14, map) {
-  await fs14.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs16, map) {
+  await fs16.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -446,10 +446,10 @@ function baseDefinitionCoordination(definition2) {
   if (!definition2 || definition2.tier === "modifier") return void 0;
   return definition2.coordination;
 }
-async function loadTypeRegistry(fs14) {
-  if (!await fs14.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs16) {
+  if (!await fs16.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs14.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs16.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -543,19 +543,19 @@ function isRecord(value) {
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs14) {
+async function loadTent(fs16) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs14);
-  const top = await fs14.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs16);
+  const top = await fs16.listDir("");
   for (const entry of top) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     if (isSystemNoteName(entry.name)) continue;
-    await loadBoxInto(fs14, entry.name, null, typeRegistry, roots);
+    await loadBoxInto(fs16, entry.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs14);
+  const order = await loadOrder(fs16);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -590,13 +590,13 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-async function loadBox(fs14, path16, parent, registry) {
-  if (isOperationalPath(path16)) return null;
-  const boxFile = boxNotePath(path16);
-  if (!await fs14.exists(boxFile)) {
+async function loadBox(fs16, path18, parent, registry) {
+  if (isOperationalPath(path18)) return null;
+  const boxFile = boxNotePath(path18);
+  if (!await fs16.exists(boxFile)) {
     return null;
   }
-  const raw = await fs14.readFile(boxFile);
+  const raw = await fs16.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -606,7 +606,7 @@ async function loadBox(fs14, path16, parent, registry) {
     parsed = { data: {}, body: raw, keyOrder: [] };
   }
   const { data, body } = parsed;
-  const name = baseName(path16);
+  const name = baseName(path18);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
     id: fm.id,
@@ -616,7 +616,7 @@ async function loadBox(fs14, path16, parent, registry) {
     // filled in resolveSubtree
     archived: false,
     invalid: !!parseError,
-    path: path16,
+    path: path18,
     name,
     fm,
     body,
@@ -627,14 +627,14 @@ async function loadBox(fs14, path16, parent, registry) {
     writable: { value: false, source: "type" }
   };
   if (parseError) {
-    box.invalidRootId = path16;
+    box.invalidRootId = path18;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs14.listDir(path16);
+  const sub = await fs16.listDir(path18);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs14, join(path16, entry.name), box, registry, box.children);
+    await loadBoxInto(fs16, join(path18, entry.name), box, registry, box.children);
   }
   return box;
 }
@@ -664,18 +664,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs14, path16, parent, registry, target) {
-  if (isOperationalPath(path16)) return;
-  const box = await loadBox(fs14, path16, parent, registry);
+async function loadBoxInto(fs16, path18, parent, registry, target) {
+  if (isOperationalPath(path18)) return;
+  const box = await loadBox(fs16, path18, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs14.listDir(path16);
+  const sub = await fs16.listDir(path18);
   for (const entry of sub) {
     if (!entry.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
-    await loadBoxInto(fs14, join(path16, entry.name), parent, registry, target);
+    await loadBoxInto(fs16, join(path18, entry.name), parent, registry, target);
   }
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
@@ -757,18 +757,18 @@ function indexSubtree(box, byId, byPath, duplicateIds) {
 function join(...parts) {
   return parts.filter((p) => p !== "").join("/");
 }
-function baseName(path16) {
-  const i = path16.lastIndexOf("/");
-  return i === -1 ? path16 : path16.slice(i + 1);
+function baseName(path18) {
+  const i = path18.lastIndexOf("/");
+  return i === -1 ? path18 : path18.slice(i + 1);
 }
-function dirName(path16) {
-  const i = path16.lastIndexOf("/");
-  return i === -1 ? "" : path16.slice(0, i);
+function dirName(path18) {
+  const i = path18.lastIndexOf("/");
+  return i === -1 ? "" : path18.slice(0, i);
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs14, action) {
-  return fs14.withLock ? fs14.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs16, action) {
+  return fs16.withLock ? fs16.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/manifest.ts
@@ -864,19 +864,74 @@ function dedupe(entries) {
 // src/core/id.ts
 var ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 var CONCEPT_ID_PREFIX = "cx-";
-function makeConceptId(rand = Math.random, len = 6) {
+var ROLE_ID_PREFIX = "rl-";
+function deterministicDigest(input, byteLen = 32) {
+  const out = new Uint8Array(byteLen);
+  for (let offset = 0; offset < byteLen; offset += 4) {
+    let h = (2166136261 ^ Math.imul(offset + 1, 2654435769)) >>> 0;
+    const salted = `${offset}\0${input}`;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 2246822507) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 3266489909) >>> 0;
+    h ^= h >>> 16;
+    out[offset] = h & 255;
+    if (offset + 1 < byteLen) out[offset + 1] = h >>> 8 & 255;
+    if (offset + 2 < byteLen) out[offset + 2] = h >>> 16 & 255;
+    if (offset + 3 < byteLen) out[offset + 3] = h >>> 24 & 255;
+  }
+  return out;
+}
+function encodeAlphabetBytes(bytes, len) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    const b = bytes[i % bytes.length] ^ i * 17 & 255;
+    s += ALPHABET[b % ALPHABET.length];
+  }
+  return s;
+}
+function makePrefixedId(prefix, rand = Math.random, len = 6) {
   let s = "";
   for (let i = 0; i < len; i++) {
     s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
   }
-  return CONCEPT_ID_PREFIX + s;
+  return prefix + s;
 }
-function makeUniqueConceptId(existing, rand = Math.random) {
+function makeUniquePrefixedId(prefix, existing, rand = Math.random) {
   for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeConceptId(rand);
+    const id = makePrefixedId(prefix, rand);
     if (!existing.has(id)) return id;
   }
-  return makeConceptId(rand, 10);
+  return makePrefixedId(prefix, rand, 10);
+}
+function makeConceptId(rand = Math.random, len = 6) {
+  return makePrefixedId(CONCEPT_ID_PREFIX, rand, len);
+}
+function makeUniqueConceptId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(CONCEPT_ID_PREFIX, existing, rand);
+}
+function makeUniqueRoleId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
+}
+function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set()) {
+  const key = name.trim();
+  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
+  for (let len = 6; len <= 16; len++) {
+    const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
+    if (!existing.has(id)) return id;
+  }
+  const fallback = deterministicDigest(
+    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
+    32
+  );
+  return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
+}
+function isRoleId(id) {
+  return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
 }
 
 // src/core/claim.ts
@@ -940,33 +995,54 @@ function normalizeTagName(name) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs14) {
-  if (!await fs14.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+async function loadRolesRegistry(fs16) {
+  const { registry } = await readRolesRegistryState(fs16);
+  return registry;
+}
+async function loadRolesRegistryForMutation(fs16) {
+  return loadRolesRegistry(fs16);
+}
+async function readRolesRegistryState(fs16) {
+  if (!await fs16.exists(ROLES_REGISTRY_PATH)) {
+    return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
+  }
   try {
-    const parsed = JSON.parse(await fs14.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
+    const rawText = await fs16.readFile(ROLES_REGISTRY_PATH);
+    const parsed = JSON.parse(rawText);
+    const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
+    return { registry, migrated, recovered: false };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs14, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs16, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs14, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs16, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
       "reset",
       "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
     );
-    return reset;
+    return { registry: reset, migrated: false, recovered: true };
   }
 }
-async function createRole(fs14, definition2) {
-  await withTentMutation(fs14, async () => {
-    const role = normalizeRole(definition2);
+async function createRole(fs16, definition2, rand = Math.random) {
+  await withTentMutation(fs16, async () => {
+    const registry = await loadRolesRegistryForMutation(fs16);
+    const usedIds = roleIdSet(registry.roles);
+    const role = normalizeRoleDefinition(definition2, {
+      usedIds,
+      assignMissingId: "random",
+      rand
+    });
     if (!role.name) throw new Error("Role name cannot be empty.");
     assertRoleNameAvailable(role.name);
-    const registry = await loadRolesRegistry(fs14);
-    if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
+    if (registry.roles.some((item) => item.name === role.name)) {
+      throw new Error(`Role already exists: ${role.name}.`);
+    }
+    if (registry.roles.some((item) => item.id === role.id)) {
+      throw new Error(`Role id already exists: ${role.id}.`);
+    }
     registry.roles.push(role);
-    await writeJson(fs14, ROLES_REGISTRY_PATH, registry);
+    await writeJson(fs16, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
 function assertRoleNameAvailable(name) {
@@ -974,48 +1050,121 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
   }
 }
-async function updateRole(fs14, name, patch) {
-  await withTentMutation(fs14, async () => {
-    const registry = await loadRolesRegistry(fs14);
-    const index2 = registry.roles.findIndex((role) => role.name === name);
-    if (index2 === -1) throw new Error(`Role does not exist: ${name}.`);
-    const next = normalizeRole({ ...registry.roles[index2], ...patch, name });
+async function updateRole(fs16, ref, patch) {
+  await withTentMutation(fs16, async () => {
+    const registry = await loadRolesRegistryForMutation(fs16);
+    const index2 = findRoleIndex(registry.roles, ref);
+    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const current = registry.roles[index2];
+    if (patch.id !== void 0 && patch.id !== current.id) {
+      throw new Error("Role id is immutable.");
+    }
+    if (patch.name !== void 0 && patch.name.trim() !== current.name) {
+      throw new Error(
+        "Role operational name cannot be renamed in this batch (temp/path migration is deferred); change displayName instead."
+      );
+    }
+    const next = normalizeRoleDefinition(
+      {
+        ...current,
+        ...patch,
+        id: current.id,
+        name: current.name
+      },
+      { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
+    );
     if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
       const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
       if (normalized) next.allowedProfiles = normalized;
       else delete next.allowedProfiles;
     }
+    if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
+      const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
+      next.displayName = dn || current.name;
+    }
     registry.roles[index2] = next;
-    await writeJson(fs14, ROLES_REGISTRY_PATH, registry);
+    await writeJson(fs16, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
-async function deleteRole(fs14, name, confirmation) {
-  await withTentMutation(fs14, async () => {
-    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the role name ${name}.`);
-    const registry = await loadRolesRegistry(fs14);
-    const next = registry.roles.filter((role) => role.name !== name);
-    if (next.length === registry.roles.length) throw new Error(`Role does not exist: ${name}.`);
-    await writeJson(fs14, ROLES_REGISTRY_PATH, { roles: next });
+async function deleteRole(fs16, ref, confirmation) {
+  await withTentMutation(fs16, async () => {
+    const registry = await loadRolesRegistryForMutation(fs16);
+    const index2 = findRoleIndex(registry.roles, ref);
+    if (index2 === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const role = registry.roles[index2];
+    if (confirmation !== role.name && confirmation !== role.id) {
+      throw new Error(
+        `Confirmation mismatch; enter the role name ${role.name} or id ${role.id}.`
+      );
+    }
+    registry.roles.splice(index2, 1);
+    await writeJson(fs16, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
   });
 }
-function normalizeRolesRegistry(value) {
+function resolveRole(roles, ref) {
+  const key = typeof ref === "string" ? ref.trim() : "";
+  if (!key) return void 0;
+  const byId = roles.find((role) => role.id === key);
+  if (byId) return byId;
+  return roles.find((role) => role.name === key);
+}
+function findRoleIndex(roles, ref) {
+  const key = typeof ref === "string" ? ref.trim() : "";
+  if (!key) return -1;
+  let idx = roles.findIndex((role) => role.id === key);
+  if (idx !== -1) return idx;
+  return roles.findIndex((role) => role.name === key);
+}
+function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord2(value) ? value : {};
   const roles = [];
+  let migrated = false;
+  const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord2(item)) continue;
-      const role = normalizeRoleDefinition(item);
+      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
+      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
+      const role = normalizeRoleDefinition(item, {
+        usedIds,
+        assignMissingId: "deterministic"
+      });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      if (roles.some((existing) => existing.id === role.id)) continue;
+      if (!hadId || !hadDisplayName) migrated = true;
+      usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { roles };
+  return { registry: { roles }, migrated };
 }
-function normalizeRoleDefinition(value) {
+function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const role = { name };
+  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
+  const assign = opts.assignMissingId ?? "deterministic";
+  let id = typeof value.id === "string" ? value.id.trim() : "";
+  if (id && !isRoleId(id)) {
+    id = "";
+  }
+  if (id && usedIds.has(id) && assign !== "keep") {
+    id = "";
+  }
+  if (!id) {
+    if (assign === "random") {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    } else if (name) {
+      id = deterministicRoleIdFromName(name, usedIds);
+    } else {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    }
+  }
+  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const displayName = displayRaw || name;
+  const role = { id, name, displayName };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
-  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
@@ -1056,9 +1205,6 @@ function normalizeA2APolicy(value) {
   if (value === "allow" || value === "ask" || value === "deny") return value;
   return void 0;
 }
-function normalizeRole(value) {
-  return normalizeRoleDefinition(value);
-}
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
   if (!isRecord2(value)) throw new Error("role.cli must be an object.");
@@ -1072,14 +1218,43 @@ function normalizeCliConfig(value) {
   }
   return cli;
 }
+function roleIdSet(roles, exceptId) {
+  const set = /* @__PURE__ */ new Set();
+  for (const role of roles) {
+    if (!role.id) continue;
+    if (exceptId && role.id === exceptId) continue;
+    set.add(role.id);
+  }
+  return set;
+}
+function serializeRolesRegistry(registry) {
+  return {
+    roles: registry.roles.map((role) => {
+      const row = {
+        id: role.id,
+        name: role.name,
+        displayName: role.displayName || role.name
+      };
+      if (role.prompt) row.prompt = role.prompt;
+      if (role.description) row.description = role.description;
+      if (role.color) row.color = role.color;
+      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
+      if (role.allowedProfiles && role.allowedProfiles.length > 0) {
+        row.allowedProfiles = [...role.allowedProfiles];
+      }
+      if (role.cli) row.cli = { ...role.cli };
+      return row;
+    })
+  };
+}
 function cloneDefaultRoles() {
   return {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs14, path16, value) {
-  if (!await fs14.exists(".tent")) await fs14.mkdir(".tent");
-  await fs14.writeFile(path16, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs16, path18, value) {
+  if (!await fs16.exists(".tent")) await fs16.mkdir(".tent");
+  await fs16.writeFile(path18, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -1239,31 +1414,31 @@ function evaluateA2A(input) {
 }
 
 // src/core/task.ts
-async function loadTaskEnvelopes(fs14) {
+async function loadTaskEnvelopes(fs16) {
   const tasks = [];
-  if (!await fs14.exists(TEMP_DIR)) return tasks;
-  for (const entry of await fs14.listDir(TEMP_DIR)) {
+  if (!await fs16.exists(TEMP_DIR)) return tasks;
+  for (const entry of await fs16.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs14.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs14.listDir(profilesRoot)) {
+      if (!await fs16.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs14, join(profilesRoot, profileEntry.name, "tasks"), tasks);
+        await collectTaskFiles(fs16, join(profilesRoot, profileEntry.name, "tasks"), tasks);
       }
       continue;
     }
-    await collectTaskFiles(fs14, join(TEMP_DIR, entry.name, "tasks"), tasks);
+    await collectTaskFiles(fs16, join(TEMP_DIR, entry.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function collectTaskFiles(fs14, taskDir, tasks) {
-  if (!await fs14.exists(taskDir)) return;
-  for (const entry of await fs14.listDir(taskDir)) {
+async function collectTaskFiles(fs16, taskDir, tasks) {
+  if (!await fs16.exists(taskDir)) return;
+  for (const entry of await fs16.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path16 = join(taskDir, entry.name);
+    const path18 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs14, path16));
+      tasks.push(await loadTaskEnvelope(fs16, path18));
     } catch {
     }
   }
@@ -1274,16 +1449,16 @@ function taskAssigneeKind(task) {
 function taskAsSub(task) {
   return task.asSub === true;
 }
-async function loadTaskEnvelope(fs14, path16) {
-  if (!await fs14.exists(path16)) throw new Error(`Task envelope not found: ${path16}.`);
-  const { data, body } = parseFrontmatter(await fs14.readFile(path16));
+async function loadTaskEnvelope(fs16, path18) {
+  if (!await fs16.exists(path18)) throw new Error(`Task envelope not found: ${path18}.`);
+  const { data, body } = parseFrontmatter(await fs16.readFile(path18));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
-    throw new Error(`Invalid task envelope format: ${path16}.`);
+    throw new Error(`Invalid task envelope format: ${path18}.`);
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
   const task = {
-    path: path16,
+    path: path18,
     role: data.role,
     claims: data.claims,
     manifest: data.manifest,
@@ -1403,8 +1578,8 @@ ${userPrompt}
 (no user prompt on envelope)
 `);
 }
-async function ensureRoleInit(fs14, role, tentName) {
-  const path16 = join("temp", role.name, "init.md");
+async function ensureRoleInit(fs16, role, tentName) {
+  const path18 = join("temp", role.name, "init.md");
   const body = `# Role Init
 
 - Tent: ${tentName}
@@ -1421,18 +1596,18 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs14.writeFile(path16, serializeFrontmatter({ type: "role-init", role: role.name }, body));
-  return path16;
+  await fs16.writeFile(path18, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  return path18;
 }
-async function writeTaskEnvelope(fs14, clock, input) {
+async function writeTaskEnvelope(fs16, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const assigneeKind = input.assigneeKind ?? "role";
   const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join(TEMP_DIR, input.role, "tasks"));
-  await ensureDir(fs14, dir);
+  await ensureDir(fs16, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path16 = await uniqueMarkdownPath(fs14, dir, stem);
+  const path18 = await uniqueMarkdownPath(fs16, dir, stem);
   const now = clock.now();
   const data = {
     type: "task",
@@ -1470,20 +1645,20 @@ ${pointers}
 
 ${userPrompt}
 `;
-  await fs14.writeFile(path16, serializeFrontmatter(data, body));
-  return path16;
+  await fs16.writeFile(path18, serializeFrontmatter(data, body));
+  return path18;
 }
-async function ackTaskEnvelope(fs14, path16) {
-  await patchTaskEnvelope(fs14, path16, {
+async function ackTaskEnvelope(fs16, path18) {
+  await patchTaskEnvelope(fs16, path18, {
     status: "taken",
     state: "running"
   });
 }
-async function patchTaskEnvelope(fs14, path16, patch) {
-  if (!await fs14.exists(path16)) throw new Error(`Task envelope not found: ${path16}.`);
-  const raw = await fs14.readFile(path16);
+async function patchTaskEnvelope(fs16, path18, patch) {
+  if (!await fs16.exists(path18)) throw new Error(`Task envelope not found: ${path18}.`);
+  const raw = await fs16.readFile(path18);
   const { data, body, keyOrder } = parseFrontmatter(raw);
-  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path16}.`);
+  if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path18}.`);
   if (patch.state) {
     data.state = patch.state;
     data.status = stateToLegacyStatus(patch.state);
@@ -1513,8 +1688,8 @@ async function patchTaskEnvelope(fs14, path16, patch) {
   else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
     data.roleBranchBase = patch.roleBranchBase.trim();
   }
-  await fs14.writeFile(path16, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs14, path16);
+  await fs16.writeFile(path18, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs16, path18);
 }
 function primaryBoxId(task) {
   return task.claims.find((c) => c !== "root");
@@ -1540,15 +1715,15 @@ function taskStem(now, claimId) {
   const stamp = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs14, dir, stem) {
+async function uniqueMarkdownPath(fs16, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
-    const path16 = join(dir, `${stem}${suffix}.md`);
-    if (!await fs14.exists(path16)) return path16;
+    const path18 = join(dir, `${stem}${suffix}.md`);
+    if (!await fs16.exists(path18)) return path18;
   }
 }
-async function ensureDir(fs14, path16) {
-  if (!await fs14.exists(path16)) await fs14.mkdir(path16);
+async function ensureDir(fs16, path18) {
+  if (!await fs16.exists(path18)) await fs16.mkdir(path18);
 }
 
 // src/core/delivery.ts
@@ -1569,17 +1744,17 @@ var KEY_ORDER = [
   "createdAt",
   "updatedAt"
 ];
-async function createDeliveryUnlocked(fs14, clock, input) {
+async function createDeliveryUnlocked(fs16, clock, input) {
   const summary = input.summary.trim();
   if (!summary) throw new Error("Delivery summary cannot be empty.");
   const now = clock.now();
   const id = input.id && isDeliveryId(input.id) ? input.id : makeDeliveryId();
   const deliveriesDir = input.deliveriesDir?.trim() || join(TEMP_DIR, input.role, "deliveries");
-  await ensureDir2(fs14, deliveriesDir);
-  const path16 = join(deliveriesDir, `${id}.md`);
-  if (await fs14.exists(path16)) throw new Error(`Delivery already exists: ${path16}.`);
+  await ensureDir2(fs16, deliveriesDir);
+  const path18 = join(deliveriesDir, `${id}.md`);
+  if (await fs16.exists(path18)) throw new Error(`Delivery already exists: ${path18}.`);
   const record = {
-    path: path16,
+    path: path18,
     id,
     taskId: input.taskId,
     boxId: input.boxId,
@@ -1593,24 +1768,24 @@ async function createDeliveryUnlocked(fs14, clock, input) {
     createdAt: now,
     updatedAt: now
   };
-  await writeDelivery(fs14, record);
+  await writeDelivery(fs16, record);
   return record;
 }
-async function loadDelivery(fs14, inputPath) {
-  const path16 = normalizeDeliveryPath(inputPath);
-  if (!await fs14.exists(path16)) throw new Error(`Delivery not found: ${path16}.`);
-  const { data, body } = parseFrontmatter(await fs14.readFile(path16));
+async function loadDelivery(fs16, inputPath) {
+  const path18 = normalizeDeliveryPath(inputPath);
+  if (!await fs16.exists(path18)) throw new Error(`Delivery not found: ${path18}.`);
+  const { data, body } = parseFrontmatter(await fs16.readFile(path18));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path16}.`);
+    throw new Error(`Invalid delivery format: ${path18}.`);
   }
   if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path16}.`);
+    throw new Error(`Invalid delivery format: ${path18}.`);
   }
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
   return {
-    path: path16,
+    path: path18,
     id: data.id,
     taskId: data.taskId,
     boxId: data.boxId,
@@ -1630,18 +1805,18 @@ async function loadDelivery(fs14, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs14, filter) {
+async function loadDeliveries(fs16, filter) {
   const out = [];
-  if (!await fs14.exists(TEMP_DIR)) return out;
-  for (const entry of await fs14.listDir(TEMP_DIR)) {
+  if (!await fs16.exists(TEMP_DIR)) return out;
+  for (const entry of await fs16.listDir(TEMP_DIR)) {
     if (!entry.isDir) continue;
     if (entry.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs14.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs14.listDir(profilesRoot)) {
+      if (!await fs16.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         await collectDeliveryFiles(
-          fs14,
+          fs16,
           join(profilesRoot, profileEntry.name, "deliveries"),
           filter,
           out
@@ -1649,16 +1824,16 @@ async function loadDeliveries(fs14, filter) {
       }
       continue;
     }
-    await collectDeliveryFiles(fs14, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
+    await collectDeliveryFiles(fs16, join(TEMP_DIR, entry.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function collectDeliveryFiles(fs14, dir, filter, out) {
-  if (!await fs14.exists(dir)) return;
-  for (const entry of await fs14.listDir(dir)) {
+async function collectDeliveryFiles(fs16, dir, filter, out) {
+  if (!await fs16.exists(dir)) return;
+  for (const entry of await fs16.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
     try {
-      const d = await loadDelivery(fs14, join(dir, entry.name));
+      const d = await loadDelivery(fs16, join(dir, entry.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
       if (filter?.boxId && d.boxId !== filter.boxId) continue;
       out.push(d);
@@ -1666,13 +1841,13 @@ async function collectDeliveryFiles(fs14, dir, filter, out) {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForBox(fs14, boxId) {
-  for (const delivery of await loadDeliveries(fs14, { boxId })) {
+async function removeNonAcceptedDeliveriesForBox(fs16, boxId) {
+  for (const delivery of await loadDeliveries(fs16, { boxId })) {
     if (delivery.status === "accepted") continue;
-    if (await fs14.exists(delivery.path)) await fs14.remove(delivery.path);
+    if (await fs16.exists(delivery.path)) await fs16.remove(delivery.path);
   }
 }
-async function writeDelivery(fs14, record) {
+async function writeDelivery(fs16, record) {
   const data = {
     type: "delivery",
     id: record.id,
@@ -1690,16 +1865,16 @@ async function writeDelivery(fs14, record) {
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
-  await fs14.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+  await fs16.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
 }
 function normalizeDeliveryPath(input) {
-  const path16 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path16) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path16)) {
+  const path18 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path18) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path18)) {
     throw new Error(
       "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
     );
   }
-  return path16;
+  return path18;
 }
 function parseDeliveryStatus(value) {
   if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
@@ -1747,8 +1922,8 @@ function parseArtifactRefs(value) {
   }
   return out;
 }
-async function ensureDir2(fs14, path16) {
-  if (!await fs14.exists(path16)) await fs14.mkdir(path16);
+async function ensureDir2(fs16, path18) {
+  if (!await fs16.exists(path18)) await fs16.mkdir(path18);
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
@@ -2038,8 +2213,8 @@ async function taskCancel(env, taskPath) {
     await env.fs.remove(taskPath);
   });
 }
-async function findActiveTaskForBox(fs14, boxId) {
-  const tasks = await loadTaskEnvelopes(fs14);
+async function findActiveTaskForBox(fs16, boxId) {
+  const tasks = await loadTaskEnvelopes(fs16);
   return tasks.find((t) => t.claims.includes(boxId) && isActiveTaskState(t.state));
 }
 function boxProjectionOf(task) {
@@ -2062,38 +2237,38 @@ function deliveryDirForTask(task) {
   }
   return void 0;
 }
-async function requireActiveReadyDelivery(fs14, task) {
+async function requireActiveReadyDelivery(fs16, task) {
   if (task.activeDeliveryId) {
-    const byId = (await loadDeliveries(fs14, { taskId: task.id || task.path })).find(
+    const byId = (await loadDeliveries(fs16, { taskId: task.id || task.path })).find(
       (d) => d.id === task.activeDeliveryId
     );
     if (byId && byId.status === "ready") return byId;
     if (byId) {
     }
   }
-  const ready = (await loadDeliveries(fs14, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  const ready = (await loadDeliveries(fs16, { taskId: task.id || task.path })).find((d) => d.status === "ready");
   if (!ready) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
 }
-async function projectAssignee(fs14, box, owner, status, acceptedBy) {
+async function projectAssignee(fs16, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter(fs14, box, patch);
+  await patchFrontmatter(fs16, box, patch);
 }
-async function restoreProjection(fs14, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs14, box, {
+async function restoreProjection(fs16, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs16, box, {
     owner: owner ?? void 0,
     status: status ?? void 0,
     acceptedBy: acceptedBy ?? void 0
   });
 }
-async function patchFrontmatter(fs14, box, patch) {
+async function patchFrontmatter(fs16, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs14.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs16.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
@@ -2102,7 +2277,7 @@ async function patchFrontmatter(fs14, box, patch) {
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
-  await fs14.writeFile(boxFile, serializeFrontmatter(data, body, order));
+  await fs16.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -2112,8 +2287,8 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs14, action) {
-  return withTentMutation(fs14, action);
+async function withMutation(fs16, action) {
+  return withTentMutation(fs16, action);
 }
 
 // src/core/forkOps.ts
@@ -2167,22 +2342,22 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs14, parentPath, base) {
+async function uniqueSiblingPath(fs16, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join(parentPath, name);
-    if (!await fs14.exists(candidate)) return candidate;
+    if (!await fs16.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs14, from, to) {
-  await fs14.mkdir(to);
-  for (const entry of await fs14.listDir(from)) {
+async function copyTree(fs16, from, to) {
+  await fs16.mkdir(to);
+  for (const entry of await fs16.listDir(from)) {
     const src = join(from, entry.name);
     const dst = join(to, entry.name);
-    if (entry.isDir) await copyTree(fs14, src, dst);
-    else await fs14.writeFile(dst, await fs14.readFile(src));
+    if (entry.isDir) await copyTree(fs16, src, dst);
+    else await fs16.writeFile(dst, await fs16.readFile(src));
   }
 }
 function collectSubtree(box, out = []) {
@@ -2194,12 +2369,12 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs14, newBoxPath, oldBoxPath) {
+async function ensureIdentityFileName(fs16, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs14.exists(expected)) return;
+  if (await fs16.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
   const copied = join(newBoxPath, oldName);
-  if (await fs14.exists(copied)) await fs14.move(copied, expected);
+  if (await fs16.exists(copied)) await fs16.move(copied, expected);
 }
 
 // src/core/ops.ts
@@ -2346,14 +2521,14 @@ async function createBoxUnlocked(env, input) {
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
-  const path16 = join(input.parentPath, name);
-  assertNotTempPath(path16);
-  await ensureDir3(env.fs, path16);
+  const path18 = join(input.parentPath, name);
+  assertNotTempPath(path18);
+  await ensureDir3(env.fs, path18);
   const fm = { id, type: input.type };
   const content3 = serializeFrontmatter(fm, `
 # ${name}
 `, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path16), content3);
+  await env.fs.writeFile(boxNotePath(path18), content3);
   const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
   const parentKey = parent ? parent.id : ROOT_KEY;
   try {
@@ -2362,7 +2537,7 @@ async function createBoxUnlocked(env, input) {
     order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
     await saveOrder(env.fs, order);
   } catch (error) {
-    await env.fs.remove(path16);
+    await env.fs.remove(path18);
     throw error;
   }
   return id;
@@ -2415,8 +2590,8 @@ async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
-async function ensureDir3(fs14, path16) {
-  if (path16 && !await fs14.exists(path16)) await fs14.mkdir(path16);
+async function ensureDir3(fs16, path18) {
+  if (path18 && !await fs16.exists(path18)) await fs16.mkdir(path18);
 }
 function normalizeTagPatch(value) {
   if (value === void 0) return void 0;
@@ -2435,8 +2610,8 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function assertNotTempPath(path16) {
-  if (path16 === "temp" || path16.startsWith("temp/")) {
+function assertNotTempPath(path18) {
+  if (path18 === "temp" || path18.startsWith("temp/")) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
@@ -2511,8 +2686,8 @@ function requireBoxById2(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation2(fs14, action) {
-  return withTentMutation(fs14, action);
+async function withMutation2(fs16, action) {
+  return withTentMutation(fs16, action);
 }
 
 // src/core/concept.ts
@@ -2706,7 +2881,7 @@ function bytesEqual(a, b) {
   }
   return true;
 }
-async function storeAttachmentBytes(fs14, conceptId, fileName, bytes, sourceNotePath) {
+async function storeAttachmentBytes(fs16, conceptId, fileName, bytes, sourceNotePath) {
   if (!conceptId.trim()) throw new Error("Concept id is required");
   const safe = sanitizeAttachmentFileName(fileName);
   assertAttachmentSize(bytes.byteLength);
@@ -2715,14 +2890,14 @@ async function storeAttachmentBytes(fs14, conceptId, fileName, bytes, sourceNote
   if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
     throw new Error(`Attachment path rejected: ${rel}`);
   }
-  if (await fs14.exists(rel)) {
-    const existing = await fs14.readBinary(rel);
+  if (await fs16.exists(rel)) {
+    const existing = await fs16.readBinary(rel);
     if (!bytesEqual(existing, bytes)) {
       throw new Error(`Attachment content-address collision at ${rel}`);
     }
     return attachmentResult(rel, safe, sourceNotePath);
   }
-  await fs14.writeBinary(rel, bytes);
+  await fs16.writeBinary(rel, bytes);
   return attachmentResult(rel, safe, sourceNotePath);
 }
 function markdownAttachmentDestination(destination) {
@@ -2739,61 +2914,61 @@ function attachmentResult(relativePath2, label, sourceNotePath) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs14, clock, role, boxId, body) {
-  return withTentMutation(fs14, async () => submitProposalUnlocked(fs14, clock, role, boxId, body));
+async function submitProposal(fs16, clock, role, boxId, body) {
+  return withTentMutation(fs16, async () => submitProposalUnlocked(fs16, clock, role, boxId, body));
 }
-async function submitProposalUnlocked(fs14, clock, roleInput, boxId, body) {
+async function submitProposalUnlocked(fs16, clock, roleInput, boxId, body) {
   const text3 = body.trim();
   if (!text3) throw new Error("Proposal body cannot be empty.");
-  const role = normalizeRole2(roleInput);
-  const tent = await loadTent(fs14);
+  const role = normalizeRole(roleInput);
+  const tent = await loadTent(fs16);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path16 = proposalPath(role, box.id);
-  if (await fs14.exists(path16)) {
-    const current = await loadProposal(fs14, path16);
+  const path18 = proposalPath(role, box.id);
+  if (await fs16.exists(path18)) {
+    const current = await loadProposal(fs16, path18);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
-    path: path16,
+    path: path18,
     boxId: box.id,
     role,
     status: "pending",
     createdAt: clock.now(),
     body: text3
   };
-  await ensureDir4(fs14, join("temp", role, "proposals"));
-  await writeProposal(fs14, proposal);
+  await ensureDir4(fs16, join("temp", role, "proposals"));
+  await writeProposal(fs16, proposal);
   return proposal;
 }
-async function loadProposals(fs14) {
+async function loadProposals(fs16) {
   const proposals = [];
-  if (!await fs14.exists("temp")) return proposals;
-  for (const roleDir of await fs14.listDir("temp")) {
+  if (!await fs16.exists("temp")) return proposals;
+  for (const roleDir of await fs16.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs14.exists(dir)) continue;
-    for (const entry of await fs14.listDir(dir)) {
+    if (!await fs16.exists(dir)) continue;
+    for (const entry of await fs16.listDir(dir)) {
       if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path16 = join(dir, entry.name);
+      const path18 = join(dir, entry.name);
       try {
-        proposals.push(await loadProposal(fs14, path16));
+        proposals.push(await loadProposal(fs16, path18));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs14, inputPath) {
-  const path16 = normalizeProposalPath(inputPath);
-  if (!await fs14.exists(path16)) throw new Error(`Proposal not found: ${path16}.`);
-  const { data, body } = parseFrontmatter(await fs14.readFile(path16));
+async function loadProposal(fs16, inputPath) {
+  const path18 = normalizeProposalPath(inputPath);
+  if (!await fs16.exists(path18)) throw new Error(`Proposal not found: ${path18}.`);
+  const { data, body } = parseFrontmatter(await fs16.readFile(path18));
   if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path16}.`);
+    throw new Error(`Invalid proposal format: ${path18}.`);
   }
   return {
-    path: path16,
+    path: path18,
     boxId: data.box,
     role: data.role,
     status: data.status,
@@ -2801,33 +2976,33 @@ async function loadProposal(fs14, inputPath) {
     body: body.trim()
   };
 }
-async function acceptProposal(fs14, inputPath) {
-  await withTentMutation(fs14, async () => {
-    const proposal = await loadProposal(fs14, inputPath);
+async function acceptProposal(fs16, inputPath) {
+  await withTentMutation(fs16, async () => {
+    const proposal = await loadProposal(fs16, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
     proposal.status = "accepted";
-    await writeProposal(fs14, proposal);
+    await writeProposal(fs16, proposal);
   });
 }
-async function rejectProposal(fs14, inputPath) {
-  await withTentMutation(fs14, async () => {
-    const proposal = await loadProposal(fs14, inputPath);
+async function rejectProposal(fs16, inputPath) {
+  await withTentMutation(fs16, async () => {
+    const proposal = await loadProposal(fs16, inputPath);
     if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
     proposal.status = "rejected";
-    await writeProposal(fs14, proposal);
+    await writeProposal(fs16, proposal);
   });
 }
 function proposalPath(role, boxId) {
   return join("temp", role, "proposals", `${boxId}.md`);
 }
 function normalizeProposalPath(input) {
-  const path16 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path16)) {
+  const path18 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path18)) {
     throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
   }
-  return path16;
+  return path18;
 }
-async function writeProposal(fs14, proposal) {
+async function writeProposal(fs16, proposal) {
   const data = {
     type: "proposal",
     box: proposal.boxId,
@@ -2835,15 +3010,15 @@ async function writeProposal(fs14, proposal) {
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs14.writeFile(
+  await fs16.writeFile(
     proposal.path,
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs14, path16) {
-  if (!await fs14.exists(path16)) await fs14.mkdir(path16);
+async function ensureDir4(fs16, path18) {
+  if (!await fs16.exists(path18)) await fs16.mkdir(path18);
 }
-function normalizeRole2(role) {
+function normalizeRole(role) {
   const normalized = role.trim();
   if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
   if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
@@ -2893,16 +3068,16 @@ function isTerminalTaskState(state) {
 function isPurgeableDeliveryStatus(status) {
   return TERMINAL_DELIVERY_STATUSES.has(status);
 }
-async function previewOperationalRetention(fs14, options = {}) {
+async function previewOperationalRetention(fs16, options = {}) {
   const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
   const nowMs = resolveNowMs(options.now);
   const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
   const cutoff = new Date(cutoffMs).toISOString();
   const skipped = [];
   const warnings = [];
-  const { tasks, skipped: taskSkipped } = await scanTasks(fs14);
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs16);
   skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs14);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs16);
   skipped.push(...deliverySkipped);
   for (const s of skipped) {
     warnings.push(`skipped ${s.path}: ${s.reason}`);
@@ -3020,15 +3195,15 @@ async function previewOperationalRetention(fs14, options = {}) {
     candidateDeliveryCount
   };
 }
-async function purgeOperationalRetention(fs14, options = {}) {
-  return withTentMutation(fs14, async () => {
-    const preview = await previewOperationalRetention(fs14, options);
+async function purgeOperationalRetention(fs16, options = {}) {
+  return withTentMutation(fs16, async () => {
+    const preview = await previewOperationalRetention(fs16, options);
     const purgedTaskPaths = [];
     const purgedDeliveryPaths = [];
     for (const c of preview.candidates) {
       if (c.kind === "task-group" && c.taskPath) {
         try {
-          const live = await loadTaskEnvelope(fs14, c.taskPath);
+          const live = await loadTaskEnvelope(fs16, c.taskPath);
           if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
             preview.warnings.push(
               `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
@@ -3044,7 +3219,7 @@ async function purgeOperationalRetention(fs14, options = {}) {
         let deliveryValidationFailed = false;
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs14, dp);
+            const liveD = await loadDelivery(fs16, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
@@ -3062,8 +3237,8 @@ async function purgeOperationalRetention(fs14, options = {}) {
         }
         if (deliveryValidationFailed) continue;
         try {
-          if (await fs14.exists(c.taskPath)) {
-            await fs14.remove(c.taskPath);
+          if (await fs16.exists(c.taskPath)) {
+            await fs16.remove(c.taskPath);
             purgedTaskPaths.push(c.taskPath);
           }
         } catch (err) {
@@ -3074,8 +3249,8 @@ async function purgeOperationalRetention(fs14, options = {}) {
         }
         for (const dp of c.deliveryPaths) {
           try {
-            if (await fs14.exists(dp)) {
-              await fs14.remove(dp);
+            if (await fs16.exists(dp)) {
+              await fs16.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -3089,15 +3264,15 @@ async function purgeOperationalRetention(fs14, options = {}) {
       if (c.kind === "orphan-delivery") {
         for (const dp of c.deliveryPaths) {
           try {
-            const liveD = await loadDelivery(fs14, dp);
+            const liveD = await loadDelivery(fs16, dp);
             if (!isPurgeableDeliveryStatus(liveD.status)) {
               preview.warnings.push(
                 `refused purge of delivery ${dp}: status=${liveD.status}`
               );
               continue;
             }
-            if (await fs14.exists(dp)) {
-              await fs14.remove(dp);
+            if (await fs16.exists(dp)) {
+              await fs16.remove(dp);
               purgedDeliveryPaths.push(dp);
             }
           } catch (err) {
@@ -3119,11 +3294,11 @@ async function purgeOperationalRetention(fs14, options = {}) {
     };
   });
 }
-async function scanTasks(fs14) {
+async function scanTasks(fs16) {
   const tasks = [];
   const skipped = [];
-  if (!await fs14.exists("temp")) return { tasks, skipped };
-  for (const roleEntry of await fs14.listDir("temp")) {
+  if (!await fs16.exists("temp")) return { tasks, skipped };
+  for (const roleEntry of await fs16.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -3134,7 +3309,7 @@ async function scanTasks(fs14) {
     }
     if (roleEntry.name === "agent-profiles") {
       const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs14.listDir(profilesRoot)) {
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         if (!isSafeRoleSegment(profileEntry.name)) {
           skipped.push({
@@ -3143,34 +3318,34 @@ async function scanTasks(fs14) {
           });
           continue;
         }
-        await scanTaskDir(fs14, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
+        await scanTaskDir(fs16, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
       }
       continue;
     }
-    await scanTaskDir(fs14, join("temp", roleEntry.name, "tasks"), tasks, skipped);
+    await scanTaskDir(fs16, join("temp", roleEntry.name, "tasks"), tasks, skipped);
   }
   return { tasks, skipped };
 }
-async function scanTaskDir(fs14, taskDir, tasks, skipped) {
-  if (!await fs14.exists(taskDir)) return;
-  for (const entry of await fs14.listDir(taskDir)) {
+async function scanTaskDir(fs16, taskDir, tasks, skipped) {
+  if (!await fs16.exists(taskDir)) return;
+  for (const entry of await fs16.listDir(taskDir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path16 = join(taskDir, entry.name);
+    const path18 = join(taskDir, entry.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs14, path16));
+      tasks.push(await loadTaskEnvelope(fs16, path18));
     } catch (err) {
       skipped.push({
-        path: path16,
+        path: path18,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
   }
 }
-async function scanDeliveries(fs14) {
+async function scanDeliveries(fs16) {
   const deliveries = [];
   const skipped = [];
-  if (!await fs14.exists("temp")) return { deliveries, skipped };
-  for (const roleEntry of await fs14.listDir("temp")) {
+  if (!await fs16.exists("temp")) return { deliveries, skipped };
+  for (const roleEntry of await fs16.listDir("temp")) {
     if (!roleEntry.isDir) continue;
     if (!isSafeRoleSegment(roleEntry.name)) {
       skipped.push({
@@ -3181,7 +3356,7 @@ async function scanDeliveries(fs14) {
     }
     if (roleEntry.name === "agent-profiles") {
       const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs14.listDir(profilesRoot)) {
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         if (!isSafeRoleSegment(profileEntry.name)) {
           skipped.push({
@@ -3191,7 +3366,7 @@ async function scanDeliveries(fs14) {
           continue;
         }
         await scanDeliveryDir(
-          fs14,
+          fs16,
           join(profilesRoot, profileEntry.name, "deliveries"),
           deliveries,
           skipped
@@ -3199,20 +3374,20 @@ async function scanDeliveries(fs14) {
       }
       continue;
     }
-    await scanDeliveryDir(fs14, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
+    await scanDeliveryDir(fs16, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
   }
   return { deliveries, skipped };
 }
-async function scanDeliveryDir(fs14, dir, deliveries, skipped) {
-  if (!await fs14.exists(dir)) return;
-  for (const entry of await fs14.listDir(dir)) {
+async function scanDeliveryDir(fs16, dir, deliveries, skipped) {
+  if (!await fs16.exists(dir)) return;
+  for (const entry of await fs16.listDir(dir)) {
     if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path16 = join(dir, entry.name);
+    const path18 = join(dir, entry.name);
     try {
-      deliveries.push(await loadDelivery(fs14, path16));
+      deliveries.push(await loadDelivery(fs16, path18));
     } catch (err) {
       skipped.push({
-        path: path16,
+        path: path18,
         reason: err instanceof Error ? err.message : String(err)
       });
     }
@@ -3275,17 +3450,17 @@ function normalizeWorkspaceSettings(value) {
 function defaultWorkspaceSettings() {
   return { ...DEFAULT_SETTINGS };
 }
-async function loadWorkspaceSettings(fs14) {
-  if (!await fs14.exists(WORKSPACE_SETTINGS_PATH)) {
+async function loadWorkspaceSettings(fs16) {
+  if (!await fs16.exists(WORKSPACE_SETTINGS_PATH)) {
     return defaultWorkspaceSettings();
   }
   try {
-    const parsed = JSON.parse(await fs14.readFile(WORKSPACE_SETTINGS_PATH));
+    const parsed = JSON.parse(await fs16.readFile(WORKSPACE_SETTINGS_PATH));
     return normalizeWorkspaceSettings(parsed);
   } catch {
-    const backupPath = await backupCorruptRegistry(fs14, WORKSPACE_SETTINGS_PATH);
+    const backupPath = await backupCorruptRegistry(fs16, WORKSPACE_SETTINGS_PATH);
     const reset = defaultWorkspaceSettings();
-    await writeSettingsUnlocked(fs14, reset);
+    await writeSettingsUnlocked(fs16, reset);
     warnRegistryRecovered(
       WORKSPACE_SETTINGS_PATH,
       backupPath,
@@ -3295,15 +3470,15 @@ async function loadWorkspaceSettings(fs14) {
     return reset;
   }
 }
-async function updateWorkspaceSettings(fs14, patch) {
-  return withTentMutation(fs14, async () => {
+async function updateWorkspaceSettings(fs16, patch) {
+  return withTentMutation(fs16, async () => {
     if (!isRecord3(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
       );
     }
-    const before = await loadWorkspaceSettings(fs14);
+    const before = await loadWorkspaceSettings(fs16);
     const nextRaw = { ...before };
     for (const [key, value] of Object.entries(patch)) {
       if (key === "defaultDeliveryPolicy") {
@@ -3323,7 +3498,7 @@ async function updateWorkspaceSettings(fs14, patch) {
     const next = normalizeWorkspaceSettings(nextRaw);
     const changed = !settingsEqual(before, next);
     if (changed) {
-      await writeSettingsUnlocked(fs14, next);
+      await writeSettingsUnlocked(fs16, next);
     }
     return { settings: next, changed };
   });
@@ -3335,7 +3510,7 @@ var WorkspaceSettingsError = class extends Error {
     this.name = "WorkspaceSettingsError";
   }
 };
-async function writeSettingsUnlocked(fs14, settings) {
+async function writeSettingsUnlocked(fs16, settings) {
   const known = ["defaultDeliveryPolicy"];
   const ordered = {};
   for (const key of known) {
@@ -3345,7 +3520,7 @@ async function writeSettingsUnlocked(fs14, settings) {
   for (const key of rest) {
     ordered[key] = settings[key];
   }
-  await fs14.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+  await fs16.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
 function settingsEqual(a, b) {
   return stableStringify(a) === stableStringify(b);
@@ -3678,9 +3853,9 @@ function shortHash(value) {
   }
   return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
 }
-async function pathExists(path16) {
+async function pathExists(path18) {
   try {
-    await nodeFs.access(path16);
+    await nodeFs.access(path18);
     return true;
   } catch {
     return false;
@@ -3695,14 +3870,14 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve10(out);
+      if (code === 0) resolve11(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
@@ -6573,10 +6748,10 @@ function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
   while (++index2 < constructs2.length) {
-    const resolve10 = constructs2[index2].resolveAll;
-    if (resolve10 && !called.includes(resolve10)) {
-      events = resolve10(events, context);
-      called.push(resolve10);
+    const resolve11 = constructs2[index2].resolveAll;
+    if (resolve11 && !called.includes(resolve11)) {
+      events = resolve11(events, context);
+      called.push(resolve11);
     }
   }
   return events;
@@ -11262,8 +11437,8 @@ var MutationBus = class {
   async run(workspaceId, action) {
     const prev = this.tails.get(workspaceId) ?? Promise.resolve();
     let release;
-    const gate = new Promise((resolve10) => {
-      release = resolve10;
+    const gate = new Promise((resolve11) => {
+      release = resolve11;
     });
     const chain = prev.catch(() => void 0).then(() => gate);
     this.tails.set(workspaceId, chain);
@@ -11466,6 +11641,362 @@ function makeApprovalId(rand = Math.random) {
   return s;
 }
 
+// src/service/user-ask-store.ts
+import * as fs4 from "node:fs/promises";
+import * as path4 from "node:path";
+function cloneAsk(item) {
+  return {
+    ...item,
+    ...item.choices ? { choices: item.choices.map((c) => ({ ...c })) } : {}
+  };
+}
+var USER_ASK_STATUSES = /* @__PURE__ */ new Set([
+  "pending",
+  "answered",
+  "denied",
+  "cancelled"
+]);
+function isRecord5(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isRequiredString2(value) {
+  return typeof value === "string" && value.trim().length > 0;
+}
+function isOptionalString2(value) {
+  return value === void 0 || typeof value === "string";
+}
+function isValidDate2(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function parseChoice(value) {
+  if (!isRecord5(value) || !isRequiredString2(value.id) || !isRequiredString2(value.label)) {
+    return null;
+  }
+  return { id: value.id, label: value.label };
+}
+function parseAsk(value) {
+  if (!isRecord5(value)) return null;
+  const {
+    id,
+    workspaceId,
+    taskPath,
+    taskId,
+    sessionId,
+    role,
+    question,
+    choices,
+    status,
+    answer,
+    choiceId,
+    createdAt,
+    updatedAt,
+    resolvedAt,
+    resolvedBy
+  } = value;
+  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(taskPath) || !isRequiredString2(question) || !isRequiredString2(createdAt) || !isRequiredString2(updatedAt) || !isValidDate2(createdAt) || !isValidDate2(updatedAt) || typeof status !== "string" || !USER_ASK_STATUSES.has(status) || !isOptionalString2(taskId) || !isOptionalString2(sessionId) || !isOptionalString2(role) || !isOptionalString2(answer) || !isOptionalString2(choiceId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
+    return null;
+  }
+  let parsedChoices;
+  if (choices !== void 0) {
+    if (!Array.isArray(choices)) return null;
+    parsedChoices = [];
+    for (const c of choices) {
+      const parsed = parseChoice(c);
+      if (!parsed) return null;
+      parsedChoices.push(parsed);
+    }
+  }
+  return {
+    id,
+    workspaceId,
+    taskPath,
+    ...taskId !== void 0 ? { taskId } : {},
+    ...sessionId !== void 0 ? { sessionId } : {},
+    ...role !== void 0 ? { role } : {},
+    question,
+    ...parsedChoices !== void 0 ? { choices: parsedChoices } : {},
+    status,
+    ...answer !== void 0 ? { answer } : {},
+    ...choiceId !== void 0 ? { choiceId } : {},
+    createdAt,
+    updatedAt,
+    ...resolvedAt !== void 0 ? { resolvedAt } : {},
+    ...resolvedBy !== void 0 ? { resolvedBy } : {}
+  };
+}
+var UserAskStore = class {
+  constructor(dataDir, options) {
+    this.items = /* @__PURE__ */ new Map();
+    this.loaded = false;
+    this.closed = false;
+    this.shutdownPromise = null;
+    this.chain = Promise.resolve();
+    this.file = path4.join(dataDir, "user-asks.json");
+    this.writeState = options?.writeState ?? writeJsonAtomic;
+  }
+  enqueue(fn) {
+    const run = this.chain.then(fn, fn);
+    this.chain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async ensureLoaded() {
+    if (this.loaded) return;
+    return this.enqueue(async () => {
+      if (this.loaded) return;
+      try {
+        const raw = await fs4.readFile(this.file, "utf8");
+        let parsed;
+        try {
+          parsed = JSON.parse(raw);
+        } catch {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        const items = parsed.items;
+        if (items !== void 0 && !Array.isArray(items)) {
+          await this.quarantineCorrupt();
+          this.loaded = true;
+          return;
+        }
+        const loaded = /* @__PURE__ */ new Map();
+        for (const item of items ?? []) {
+          const restored = parseAsk(item);
+          if (!restored) {
+            await this.quarantineCorrupt();
+            this.loaded = true;
+            return;
+          }
+          loaded.set(restored.id, restored);
+        }
+        this.items = loaded;
+        this.loaded = true;
+      } catch (err) {
+        if (isNotFoundError(err)) {
+          this.loaded = true;
+          return;
+        }
+        throw err;
+      }
+    });
+  }
+  async listPending(workspaceId) {
+    await this.ensureLoaded();
+    return [...this.items.values()].filter(
+      (i) => i.status === "pending" && (!workspaceId || i.workspaceId === workspaceId)
+    ).map(cloneAsk);
+  }
+  async get(id) {
+    await this.ensureLoaded();
+    const item = this.items.get(id);
+    return item ? cloneAsk(item) : void 0;
+  }
+  /**
+   * Machine-global store: relative task paths collide across workspaces.
+   * Pending lookup must always scope by (workspaceId, taskPath).
+   */
+  async getPendingForTask(workspaceId, taskPath) {
+    await this.ensureLoaded();
+    for (const item of this.items.values()) {
+      if (item.status === "pending" && item.workspaceId === workspaceId && item.taskPath === taskPath) {
+        return cloneAsk(item);
+      }
+    }
+    return void 0;
+  }
+  async hasPendingForTask(workspaceId, taskPath) {
+    return await this.getPendingForTask(workspaceId, taskPath) !== void 0;
+  }
+  async add(item) {
+    if (this.closed) throw new Error("UserAsk store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("UserAsk store is closed");
+      for (const existing of this.items.values()) {
+        if (existing.status === "pending" && existing.workspaceId === item.workspaceId && existing.taskPath === item.taskPath) {
+          throw new Error(
+            `Task already has a pending UserAsk (${existing.id}): ${item.workspaceId} ${item.taskPath}`
+          );
+        }
+      }
+      const stored = cloneAsk(item);
+      const next = new Map(this.items);
+      next.set(stored.id, stored);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneAsk(stored);
+    });
+  }
+  /**
+   * User-only reply. Agent callers must not reach this via RPC auth (handlers enforce).
+   * Late reply after deny/cancel fails (status !== pending).
+   */
+  async reply(id, input) {
+    if (this.closed) throw new Error("UserAsk store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("UserAsk store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`UserAsk not found: ${id}`);
+      if (item.status !== "pending") {
+        throw new Error(`UserAsk already ${item.status}: ${id}`);
+      }
+      const answer = input.answer?.trim() ?? "";
+      const choiceId = input.choiceId?.trim() ?? "";
+      if (!answer && !choiceId) {
+        throw new Error("UserAsk reply requires answer and/or choiceId");
+      }
+      if (choiceId && item.choices?.length) {
+        const ok = item.choices.some((c) => c.id === choiceId);
+        if (!ok) {
+          throw new Error(`Unknown choiceId for UserAsk ${id}: ${choiceId}`);
+        }
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const resolved = {
+        ...item,
+        status: "answered",
+        ...answer ? { answer } : {},
+        ...choiceId ? { choiceId } : {},
+        updatedAt: now,
+        resolvedAt: now,
+        resolvedBy: input.resolvedBy
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneAsk(resolved);
+    });
+  }
+  async deny(id, resolvedBy) {
+    if (this.closed) throw new Error("UserAsk store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("UserAsk store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`UserAsk not found: ${id}`);
+      if (item.status !== "pending") {
+        throw new Error(`UserAsk already ${item.status}: ${id}`);
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const resolved = {
+        ...item,
+        status: "denied",
+        updatedAt: now,
+        resolvedAt: now,
+        resolvedBy
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneAsk(resolved);
+    });
+  }
+  /** Cancel pending asks for one (workspace, task) only (interrupt / fail). */
+  async cancelTask(workspaceId, taskPath, resolvedBy = "service") {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const next = new Map(this.items);
+      const cancelled = [];
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      for (const item of this.items.values()) {
+        if (item.workspaceId !== workspaceId || item.taskPath !== taskPath || item.status !== "pending") {
+          continue;
+        }
+        const row = {
+          ...item,
+          status: "cancelled",
+          updatedAt: now,
+          resolvedAt: now,
+          resolvedBy
+        };
+        next.set(item.id, row);
+        cancelled.push(cloneAsk(row));
+      }
+      if (cancelled.length > 0) {
+        await this.persistSnapshot(next);
+        this.items = next;
+      }
+      return cancelled;
+    });
+  }
+  /** Cancel all pending asks bound to a session (session stop / fail). */
+  async cancelSession(sessionId, resolvedBy = "service") {
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      const next = new Map(this.items);
+      const cancelled = [];
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      for (const item of this.items.values()) {
+        if (item.sessionId !== sessionId || item.status !== "pending") continue;
+        const row = {
+          ...item,
+          status: "cancelled",
+          updatedAt: now,
+          resolvedAt: now,
+          resolvedBy
+        };
+        next.set(item.id, row);
+        cancelled.push(cloneAsk(row));
+      }
+      if (cancelled.length > 0) {
+        await this.persistSnapshot(next);
+        this.items = next;
+      }
+      return cancelled;
+    });
+  }
+  shutdown() {
+    if (this.shutdownPromise) return this.shutdownPromise;
+    this.closed = true;
+    this.shutdownPromise = this.ensureLoaded().then(() => void 0);
+    return this.shutdownPromise;
+  }
+  async persistSnapshot(snapshot) {
+    const items = [...snapshot.values()];
+    const pending = items.filter((i) => i.status === "pending");
+    const terminal = items.filter((i) => i.status !== "pending").sort((a, b) => (b.resolvedAt || "").localeCompare(a.resolvedAt || "")).slice(0, 100);
+    await this.writeState(this.file, { items: [...pending, ...terminal] });
+  }
+  async quarantineCorrupt() {
+    const backupPath = await backupCorruptMachineFile(this.file);
+    warnCorruptMachineState(this.file, backupPath, "reset");
+    this.items.clear();
+  }
+};
+function makeUserAskId(rand = Math.random) {
+  const alphabet = "0123456789abcdefghjkmnpqrstvwxyz";
+  let s = "ua-";
+  for (let i = 0; i < 10; i++) s += alphabet[Math.floor(rand() * alphabet.length)];
+  return s;
+}
+function formatUserAskAnswerPrompt(ask) {
+  const lines = [
+    "## User Answer",
+    `askId: ${ask.id}`,
+    `decision: ${ask.status === "answered" ? "reply" : ask.status}`,
+    `question: ${ask.question}`
+  ];
+  if (ask.choiceId) lines.push(`choiceId: ${ask.choiceId}`);
+  if (ask.answer) lines.push(`answer: ${ask.answer}`);
+  if (ask.resolvedAt) lines.push(`resolvedAt: ${ask.resolvedAt}`);
+  lines.push(
+    "",
+    "Continue the same task with this answer. Do not invent chat history. Final report still goes through Delivery only."
+  );
+  return lines.join("\n");
+}
+
 // src/service/types.ts
 var CLIENT_METHODS = [
   "service.health",
@@ -11500,8 +12031,10 @@ var CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist name/prompt/description/color/a2aPolicy/allowedProfiles/cli only —
-   * never provider secrets. Success emits exactly one registry.roles.updated.
+   * Persist id/name/displayName/prompt/description/color/a2aPolicy/allowedProfiles/cli —
+   * never provider secrets. id is server-assigned and immutable; displayName is
+   * mutable; operational name is not renamed in identity batch 1.
+   * Success emits exactly one registry.roles.updated.
    */
   "registry.role.create",
   "registry.role.update",
@@ -11522,6 +12055,11 @@ var CLIENT_METHODS = [
   "task.claim",
   "task.wait",
   "task.resume",
+  /**
+   * A2U business ask: running task → create pending UserAsk + waiting(user-input).
+   * Not tool permission; not multi-turn chat.
+   */
+  "task.askUser",
   "task.deliver",
   "task.requestReview",
   "task.accept",
@@ -11553,6 +12091,14 @@ var CLIENT_METHODS = [
   "toolApproval.approveOnce",
   "toolApproval.deny",
   /**
+   * A2U UserAsk (business question) — machine-local; not chat.
+   * reply/deny are user-only; resolve atomically resumes the task.
+   */
+  "userAsk.listPending",
+  "userAsk.get",
+  "userAsk.reply",
+  "userAsk.deny",
+  /**
    * Operational retention (task-api §6) — user-only.
    * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.
    */
@@ -11569,8 +12115,509 @@ var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/profiles.ts
-import * as fs7 from "node:fs/promises";
-import * as path7 from "node:path";
+import * as fs9 from "node:fs/promises";
+import * as path9 from "node:path";
+
+// src/adapters/acp/mcp-skills.ts
+import * as fs5 from "node:fs";
+import * as os from "node:os";
+import * as path5 from "node:path";
+var SAFE_SKILL_NAME_RE = /^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/;
+var MCP_SERVER_NAME_RE = /^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/;
+var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var MAX_PROFILE_SKILLS = 64;
+var MAX_PROFILE_MCP_SERVERS = 32;
+var MAX_MCP_ARGS = 64;
+var MAX_MCP_ENV_ENTRIES = 32;
+var MAX_MCP_HEADER_ENTRIES = 16;
+function fieldOk(value) {
+  return { ok: true, value };
+}
+function fieldErr(message) {
+  return { ok: false, message };
+}
+function defaultAllowedSkillRoots(home) {
+  const root = home ?? os.homedir();
+  return [
+    path5.join(root, ".agents", "skills"),
+    path5.join(root, ".claude", "skills"),
+    path5.join(root, ".grok", "skills"),
+    path5.join(root, ".cursor", "skills")
+  ];
+}
+function normalizePathForCompare(p) {
+  const resolved = path5.resolve(p);
+  return process.platform === "win32" ? resolved.toLowerCase() : resolved;
+}
+function isPathInsideRoot(candidate, root) {
+  const c = normalizePathForCompare(candidate);
+  const r = normalizePathForCompare(root);
+  if (c === r) return true;
+  const rel = path5.relative(r, c);
+  return rel !== "" && !rel.startsWith("..") && !path5.isAbsolute(rel);
+}
+function isUnderAllowedSkillRoots(absolutePath, allowedRoots) {
+  const abs = path5.resolve(absolutePath);
+  return allowedRoots.some((root) => isPathInsideRoot(abs, root));
+}
+function parseNonEmptyString(raw, key) {
+  if (typeof raw !== "string") {
+    return fieldErr(`Invalid string param: ${key}`);
+  }
+  const v = raw.trim();
+  if (!v) {
+    return fieldErr(`Invalid string param: ${key} must be non-empty when set`);
+  }
+  return fieldOk(v);
+}
+function parseEnvKeyName(raw, key) {
+  const base = parseNonEmptyString(raw, key);
+  if (!base.ok) return base;
+  if (!ENV_KEY_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseCredentialId(raw, key) {
+  const base = parseNonEmptyString(raw, key);
+  if (!base.ok) return base;
+  if (!CREDENTIAL_ID_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid ${key}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function assertSafeSkillName(name) {
+  const base = parseNonEmptyString(name, "skills[].name");
+  if (!base.ok) return base;
+  if (!SAFE_SKILL_NAME_RE.test(base.value) || base.value.includes("..")) {
+    return fieldErr(
+      `Invalid skills[].name: must match ${SAFE_SKILL_NAME_RE} (no path separators)`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseStringRecord(raw, field, valueParse, maxEntries) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr(`Invalid ${field}: must be an object of string\u2192string`);
+  }
+  const entries = Object.entries(raw);
+  if (entries.length > maxEntries) {
+    return fieldErr(`Invalid ${field}: at most ${maxEntries} entries`);
+  }
+  const out = {};
+  for (const [k, v] of entries) {
+    const key = k.trim();
+    if (!key) return fieldErr(`Invalid ${field}: empty key`);
+    const parsed = valueParse(v, `${field}.${key}`);
+    if (!parsed.ok) return parsed;
+    out[key] = parsed.value;
+  }
+  return fieldOk(out);
+}
+function parseEnvKeyMap(raw, field, maxEntries) {
+  return parseStringRecord(raw, field, (v, k) => parseEnvKeyName(v, k), maxEntries);
+}
+function parseCredentialRefMap(raw, field, maxEntries) {
+  return parseStringRecord(raw, field, (v, k) => parseCredentialId(v, k), maxEntries);
+}
+function parseSkillPathValue(raw, allowedRoots) {
+  const base = parseNonEmptyString(raw, "skills[].path");
+  if (!base.ok) return base;
+  const p = base.value;
+  if (!path5.isAbsolute(p)) {
+    return fieldErr(
+      "Invalid skills[].path: must be an absolute path under an allowed skill root"
+    );
+  }
+  if (p.includes("\0")) {
+    return fieldErr("Invalid skills[].path: contains NUL");
+  }
+  const resolved = path5.resolve(p);
+  if (!isUnderAllowedSkillRoots(resolved, allowedRoots)) {
+    return fieldErr(
+      `Invalid skills[].path: must be under allowed skill roots (${allowedRoots.join(", ")})`
+    );
+  }
+  return fieldOk(resolved);
+}
+function parseSkillRefValue(raw, allowedRoots) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr("Invalid skills[] entry: must be an object with name");
+  }
+  const o = raw;
+  for (const key of Object.keys(o)) {
+    if (key !== "name" && key !== "path" && key !== "enabled") {
+      return fieldErr(`Unknown skills[] field: ${key}`);
+    }
+  }
+  const nameR = assertSafeSkillName(o.name);
+  if (!nameR.ok) return nameR;
+  let pathVal;
+  if ("path" in o && o.path !== void 0 && o.path !== null) {
+    const pr = parseSkillPathValue(o.path, allowedRoots);
+    if (!pr.ok) return pr;
+    pathVal = pr.value;
+  }
+  let enabled;
+  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
+    if (typeof o.enabled !== "boolean") {
+      return fieldErr("Invalid skills[].enabled: must be boolean");
+    }
+    enabled = o.enabled;
+  }
+  const ref = { name: nameR.value };
+  if (pathVal !== void 0) ref.path = pathVal;
+  if (enabled !== void 0) ref.enabled = enabled;
+  return fieldOk(ref);
+}
+function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (!Array.isArray(raw)) {
+    return fieldErr("Invalid skills: must be an array");
+  }
+  if (raw.length > MAX_PROFILE_SKILLS) {
+    return fieldErr(`Invalid skills: at most ${MAX_PROFILE_SKILLS} entries`);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of raw) {
+    const r = parseSkillRefValue(item, allowedRoots);
+    if (!r.ok) return r;
+    const key = r.value.name.toLowerCase();
+    if (seen.has(key)) {
+      return fieldErr(`Duplicate skill name in skills: ${r.value.name}`);
+    }
+    seen.add(key);
+    out.push(r.value);
+  }
+  return fieldOk(out);
+}
+function parseMcpName(raw) {
+  const base = parseNonEmptyString(raw, "mcpServers[].name");
+  if (!base.ok) return base;
+  if (!MCP_SERVER_NAME_RE.test(base.value)) {
+    return fieldErr(
+      `Invalid mcpServers[].name: must match ${MCP_SERVER_NAME_RE}`
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseHttpUrl(raw) {
+  const base = parseNonEmptyString(raw, "mcpServers[].url");
+  if (!base.ok) return base;
+  let parsed;
+  try {
+    parsed = new URL(base.value);
+  } catch {
+    return fieldErr("Invalid mcpServers[].url: must be an absolute http(s) URL");
+  }
+  if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
+    return fieldErr("Invalid mcpServers[].url: only http: and https: are allowed");
+  }
+  if (parsed.username || parsed.password) {
+    return fieldErr(
+      "Invalid mcpServers[].url: username/password in URL are not allowed"
+    );
+  }
+  return fieldOk(base.value);
+}
+function parseMcpServerValue(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    return fieldErr("Invalid mcpServers[] entry: must be an object");
+  }
+  const o = raw;
+  const allowed = /* @__PURE__ */ new Set([
+    "name",
+    "transport",
+    "enabled",
+    "command",
+    "args",
+    "envKeys",
+    "envCredentialRefs",
+    "url",
+    "headerEnvKeys",
+    "headerCredentialRefs"
+  ]);
+  for (const key of Object.keys(o)) {
+    if (!allowed.has(key)) {
+      const lower = key.toLowerCase();
+      if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
+        return fieldErr(
+          `Rejected dangerous or unsupported mcpServers[] field: ${key} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
+        );
+      }
+      return fieldErr(`Unknown mcpServers[] field: ${key}`);
+    }
+  }
+  const nameR = parseMcpName(o.name);
+  if (!nameR.ok) return nameR;
+  if (typeof o.transport !== "string" || o.transport !== "stdio" && o.transport !== "http") {
+    return fieldErr("Invalid mcpServers[].transport: must be stdio|http");
+  }
+  const transport = o.transport;
+  let enabled;
+  if ("enabled" in o && o.enabled !== void 0 && o.enabled !== null) {
+    if (typeof o.enabled !== "boolean") {
+      return fieldErr("Invalid mcpServers[].enabled: must be boolean");
+    }
+    enabled = o.enabled;
+  }
+  const server = { name: nameR.value, transport };
+  if (enabled !== void 0) server.enabled = enabled;
+  if (transport === "stdio") {
+    if ("url" in o && o.url !== void 0 && o.url !== null) {
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set url");
+    }
+    if ("headerEnvKeys" in o && o.headerEnvKeys != null) {
+      return fieldErr("Invalid mcpServers[]: stdio transport must not set headerEnvKeys");
+    }
+    if ("headerCredentialRefs" in o && o.headerCredentialRefs != null) {
+      return fieldErr(
+        "Invalid mcpServers[]: stdio transport must not set headerCredentialRefs"
+      );
+    }
+    const cmd = parseNonEmptyString(o.command, "mcpServers[].command");
+    if (!cmd.ok) return cmd;
+    server.command = cmd.value;
+    if ("args" in o && o.args !== void 0 && o.args !== null) {
+      if (!Array.isArray(o.args) || !o.args.every((a) => typeof a === "string")) {
+        return fieldErr("Invalid mcpServers[].args: must be an array of strings");
+      }
+      if (o.args.length > MAX_MCP_ARGS) {
+        return fieldErr(`Invalid mcpServers[].args: at most ${MAX_MCP_ARGS} entries`);
+      }
+      server.args = o.args.map((a) => a);
+    }
+    const envKeys = parseEnvKeyMap(o.envKeys, "mcpServers[].envKeys", MAX_MCP_ENV_ENTRIES);
+    if (!envKeys.ok) return envKeys;
+    if (envKeys.value) server.envKeys = envKeys.value;
+    const envCreds = parseCredentialRefMap(
+      o.envCredentialRefs,
+      "mcpServers[].envCredentialRefs",
+      MAX_MCP_ENV_ENTRIES
+    );
+    if (!envCreds.ok) return envCreds;
+    if (envCreds.value) server.envCredentialRefs = envCreds.value;
+  } else {
+    if ("command" in o && o.command !== void 0 && o.command !== null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set command");
+    }
+    if ("args" in o && o.args !== void 0 && o.args !== null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set args");
+    }
+    if ("envKeys" in o && o.envKeys != null) {
+      return fieldErr("Invalid mcpServers[]: http transport must not set envKeys");
+    }
+    if ("envCredentialRefs" in o && o.envCredentialRefs != null) {
+      return fieldErr(
+        "Invalid mcpServers[]: http transport must not set envCredentialRefs"
+      );
+    }
+    const urlR = parseHttpUrl(o.url);
+    if (!urlR.ok) return urlR;
+    server.url = urlR.value;
+    const headerEnv = parseEnvKeyMap(
+      o.headerEnvKeys,
+      "mcpServers[].headerEnvKeys",
+      MAX_MCP_HEADER_ENTRIES
+    );
+    if (!headerEnv.ok) return headerEnv;
+    if (headerEnv.value) server.headerEnvKeys = headerEnv.value;
+    const headerCreds = parseCredentialRefMap(
+      o.headerCredentialRefs,
+      "mcpServers[].headerCredentialRefs",
+      MAX_MCP_HEADER_ENTRIES
+    );
+    if (!headerCreds.ok) return headerCreds;
+    if (headerCreds.value) server.headerCredentialRefs = headerCreds.value;
+  }
+  return fieldOk(server);
+}
+function parseMcpServersArrayValue(raw) {
+  if (raw === void 0 || raw === null) return fieldOk(void 0);
+  if (!Array.isArray(raw)) {
+    return fieldErr("Invalid mcpServers: must be an array");
+  }
+  if (raw.length > MAX_PROFILE_MCP_SERVERS) {
+    return fieldErr(`Invalid mcpServers: at most ${MAX_PROFILE_MCP_SERVERS} entries`);
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of raw) {
+    const r = parseMcpServerValue(item);
+    if (!r.ok) return r;
+    const key = r.value.name.toLowerCase();
+    if (seen.has(key)) {
+      return fieldErr(`Duplicate mcpServers name: ${r.value.name}`);
+    }
+    seen.add(key);
+    out.push(r.value);
+  }
+  return fieldOk(out);
+}
+function cloneSkillRefs(skills) {
+  if (!skills) return void 0;
+  return skills.map((s) => ({
+    name: s.name,
+    ...s.path !== void 0 ? { path: s.path } : {},
+    ...s.enabled !== void 0 ? { enabled: s.enabled } : {}
+  }));
+}
+function cloneMcpServers(servers) {
+  if (!servers) return void 0;
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    ...s.enabled !== void 0 ? { enabled: s.enabled } : {},
+    ...s.command !== void 0 ? { command: s.command } : {},
+    ...s.args !== void 0 ? { args: [...s.args] } : {},
+    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
+    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.url !== void 0 ? { url: s.url } : {},
+    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
+    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+  }));
+}
+function projectSkillRefs(skills) {
+  if (!skills || skills.length === 0) return void 0;
+  return skills.map((s) => ({
+    name: s.name,
+    ...s.path !== void 0 ? { path: s.path } : {},
+    enabled: s.enabled !== false
+  }));
+}
+function projectMcpServers(servers) {
+  if (!servers || servers.length === 0) return void 0;
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    enabled: s.enabled !== false,
+    ...s.command !== void 0 ? { command: s.command } : {},
+    ...s.args !== void 0 ? { args: [...s.args] } : {},
+    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
+    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.url !== void 0 ? { url: s.url } : {},
+    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
+    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+  }));
+}
+function resolveEnvValue(envKey, planEnv) {
+  const fromPlan = planEnv[envKey];
+  if (typeof fromPlan === "string" && fromPlan.length > 0) return fromPlan;
+  const fromProc = process.env[envKey];
+  if (typeof fromProc === "string" && fromProc.length > 0) return fromProc;
+  return void 0;
+}
+function resolveAcpMcpServersWire(servers, opts) {
+  if (!servers || servers.length === 0) return [];
+  const wire = [];
+  for (const s of servers) {
+    if (s.enabled === false) continue;
+    if (s.transport === "stdio") {
+      const command = s.command?.trim();
+      if (!command) {
+        throw new Error(`MCP server ${s.name}: stdio requires command`);
+      }
+      const env = [];
+      if (s.envKeys) {
+        for (const [envName, envKey] of Object.entries(s.envKeys)) {
+          const value = resolveEnvValue(envKey, opts.planEnv);
+          if (value === void 0) {
+            throw new Error(
+              `MCP server ${s.name}: missing process env ${envKey} for env var ${envName}`
+            );
+          }
+          env.push({ name: envName, value });
+        }
+      }
+      if (s.envCredentialRefs) {
+        for (const [envName, credId] of Object.entries(s.envCredentialRefs)) {
+          if (!opts.resolveCredential) {
+            throw new Error(
+              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+            );
+          }
+          const value = opts.resolveCredential(credId);
+          if (typeof value !== "string" || !value) {
+            throw new Error(
+              `MCP server ${s.name}: credential not found or empty for ${credId} (env ${envName})`
+            );
+          }
+          env.push({ name: envName, value });
+        }
+      }
+      wire.push({
+        name: s.name,
+        command,
+        args: s.args ? [...s.args] : [],
+        env
+      });
+    } else {
+      const url = s.url?.trim();
+      if (!url) {
+        throw new Error(`MCP server ${s.name}: http requires url`);
+      }
+      const headers = [];
+      if (s.headerEnvKeys) {
+        for (const [headerName, envKey] of Object.entries(s.headerEnvKeys)) {
+          const value = resolveEnvValue(envKey, opts.planEnv);
+          if (value === void 0) {
+            throw new Error(
+              `MCP server ${s.name}: missing process env ${envKey} for header ${headerName}`
+            );
+          }
+          headers.push({ name: headerName, value });
+        }
+      }
+      if (s.headerCredentialRefs) {
+        for (const [headerName, credId] of Object.entries(s.headerCredentialRefs)) {
+          if (!opts.resolveCredential) {
+            throw new Error(
+              `MCP server ${s.name}: credentialRef ${credId} requires resolveCredential hook`
+            );
+          }
+          const value = opts.resolveCredential(credId);
+          if (typeof value !== "string" || !value) {
+            throw new Error(
+              `MCP server ${s.name}: credential not found or empty for ${credId} (header ${headerName})`
+            );
+          }
+          headers.push({ name: headerName, value });
+        }
+      }
+      wire.push({
+        name: s.name,
+        type: "http",
+        url,
+        ...headers.length > 0 ? { headers } : {}
+      });
+    }
+  }
+  return wire;
+}
+function resolveAcpSkillMeta(skills, opts) {
+  if (!skills || skills.length === 0) return [];
+  const out = [];
+  for (const s of skills) {
+    if (s.enabled === false) continue;
+    if (s.path && opts?.requirePathExists) {
+      if (!fs5.existsSync(s.path)) {
+        throw new Error(`Skill ${s.name}: path does not exist: ${s.path}`);
+      }
+    }
+    out.push({
+      name: s.name,
+      ...s.path !== void 0 ? { path: s.path } : {}
+    });
+  }
+  return out;
+}
 
 // src/runtime/profile-config.ts
 function normalizeProfileToCanonicalAcp(raw) {
@@ -11600,14 +12647,16 @@ function cloneAgentProfileConfig(p) {
     acp: canonical.acp ? { ...canonical.acp } : void 0,
     fake: canonical.fake ? { ...canonical.fake } : void 0,
     env: canonical.env ? { ...canonical.env } : void 0,
-    args: canonical.args ? [...canonical.args] : void 0
+    args: canonical.args ? [...canonical.args] : void 0,
+    skills: cloneSkillRefs(canonical.skills),
+    mcpServers: cloneMcpServers(canonical.mcpServers)
   };
 }
 
 // src/adapters/fake/index.ts
-import * as fs4 from "node:fs";
-import * as os from "node:os";
-import * as path4 from "node:path";
+import * as fs6 from "node:fs";
+import * as os2 from "node:os";
+import * as path6 from "node:path";
 var FAKE_ADAPTER_ID = "fake-cli";
 function buildInlineScript(opts) {
   return `
@@ -11673,11 +12722,11 @@ var FakeProviderAdapter = class {
     }
     let bootstrapFile;
     if (plan.bootstrapPrompt != null && plan.bootstrapPrompt.length > 0) {
-      bootstrapFile = path4.join(
-        os.tmpdir(),
+      bootstrapFile = path6.join(
+        os2.tmpdir(),
         `tent-bootstrap-${plan.sessionId.replace(/[^a-zA-Z0-9_-]/g, "")}.txt`
       );
-      fs4.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
+      fs6.writeFileSync(bootstrapFile, plan.bootstrapPrompt, "utf8");
     }
     const script = buildInlineScript(fake);
     const env = {
@@ -11731,9 +12780,9 @@ function createFakeAdapter(options) {
 }
 
 // src/adapters/grok-acp/index.ts
-import * as fs5 from "node:fs";
-import * as os2 from "node:os";
-import * as path5 from "node:path";
+import * as fs7 from "node:fs";
+import * as os3 from "node:os";
+import * as path7 from "node:path";
 
 // src/adapters/acp/client.ts
 import { spawn as spawn2 } from "node:child_process";
@@ -11779,6 +12828,29 @@ var AcpClient = class {
     /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
     this.permissionWaitCancels = /* @__PURE__ */ new Set();
     this.label = typeof options.label === "string" && options.label.trim() ? options.label.trim() : "ACP";
+  }
+  /**
+   * Build session/new or session/load params from the start/resume snapshot.
+   * mcpServers always present (array; may be empty).
+   * Skill name/path refs go under `_meta.tent.skills` as Tent metadata only
+   * (not a guarantee that every provider activates skills from this field).
+   * Must not log returned params (mcpServers may hold secret values).
+   */
+  sessionStartParams(base) {
+    const mcpServers = Array.isArray(this.options.mcpServers) ? this.options.mcpServers : [];
+    const params = {
+      ...base,
+      mcpServers
+    };
+    const skills = Array.isArray(this.options.skills) ? this.options.skills : [];
+    if (skills.length > 0) {
+      params._meta = {
+        tent: {
+          skills
+        }
+      };
+    }
+    return params;
   }
   get pid() {
     return this.proc?.pid ?? void 0;
@@ -11856,11 +12928,10 @@ var AcpClient = class {
         try {
           await this.request(
             "session/load",
-            {
+            this.sessionStartParams({
               sessionId: loadId,
-              cwd: this.options.cwd,
-              mcpServers: []
-            },
+              cwd: this.options.cwd
+            }),
             6e4
           );
           await this.waitForLoadReplayQuiescence();
@@ -11873,7 +12944,7 @@ var AcpClient = class {
       } else {
         const session = await this.request(
           "session/new",
-          { cwd: this.options.cwd, mcpServers: [] },
+          this.sessionStartParams({ cwd: this.options.cwd }),
           6e4
         );
         if (!session.sessionId) {
@@ -12223,13 +13294,13 @@ var AcpClient = class {
     }
   }
   waitForPermissionDecision(askInfo) {
-    return new Promise((resolve10) => {
+    return new Promise((resolve11) => {
       let settled = false;
       const finish = (decision) => {
         if (settled) return;
         settled = true;
         this.permissionWaitCancels.delete(cancel);
-        resolve10(decision);
+        resolve11(decision);
       };
       const cancel = () => finish("deny");
       this.permissionWaitCancels.add(cancel);
@@ -12249,12 +13320,12 @@ var AcpClient = class {
       );
     }
     const id = this.nextId++;
-    return new Promise((resolve10, reject) => {
+    return new Promise((resolve11, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve10, reject, timer });
+      this.pending.set(id, { resolve: resolve11, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params }, (err) => {
         this.failPendingWrite(id, method, err);
       });
@@ -12300,16 +13371,16 @@ var AcpClient = class {
     if (!proc || this.exitCode !== null || this.exitSignal !== null || proc.exitCode !== null || proc.signalCode !== null) {
       return Promise.resolve();
     }
-    return new Promise((resolve10) => {
-      this.exitWaiters.push(resolve10);
+    return new Promise((resolve11) => {
+      this.exitWaiters.push(resolve11);
     });
   }
   async waitForExitOrForceKill(timeoutMs) {
     let timer;
     const outcome = await Promise.race([
       this.waitExit().then(() => "exit"),
-      new Promise((resolve10) => {
-        timer = setTimeout(() => resolve10("timeout"), timeoutMs);
+      new Promise((resolve11) => {
+        timer = setTimeout(() => resolve11("timeout"), timeoutMs);
       })
     ]);
     if (timer) clearTimeout(timer);
@@ -12320,14 +13391,14 @@ var AcpClient = class {
     const pid = proc?.pid;
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve10) => {
+      await new Promise((resolve11) => {
         let settled = false;
         let timer;
         const finish = () => {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
-          resolve10();
+          resolve11();
         };
         const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
@@ -12360,16 +13431,17 @@ function selectAllowOnce(options) {
   return { outcome: "cancelled" };
 }
 function sleep(ms) {
-  return new Promise((resolve10) => setTimeout(resolve10, ms));
+  return new Promise((resolve11) => setTimeout(resolve11, ms));
 }
 
 // src/adapters/acp/managed-session.ts
 var DEFAULT_BOOTSTRAP = "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
 var AcpManagedSession = class {
-  constructor(sessionId, client, bootstrapDone, stopRequested = false) {
+  constructor(sessionId, client, bootstrapDone, emit2, stopRequested = false) {
     this.sessionId = sessionId;
     this.client = client;
     this.bootstrapDone = bootstrapDone;
+    this.emit = emit2;
     this.stopRequested = stopRequested;
   }
   get pid() {
@@ -12384,6 +13456,25 @@ var AcpManagedSession = class {
   /** Tests / callers may await bootstrap completion (prompt path finished). */
   async waitBootstrap() {
     await this.bootstrapDone;
+  }
+  /**
+   * U2A follow-up: send a fixed-format user answer as the next session/prompt.
+   * Same delivery rules as bootstrap — end_turn + non-empty text → prompt_complete.
+   */
+  async sendFollowUpPrompt(prompt) {
+    if (this.stopRequested || !this.client.isAlive()) {
+      throw new Error(`Managed session not alive for follow-up: ${this.sessionId}`);
+    }
+    const text3 = prompt.trim();
+    if (!text3) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    await this.bootstrapDone;
+    const plan = {
+      sessionId: this.sessionId,
+      profileId: "",
+      cwd: "",
+      env: {}
+    };
+    await runManagedBootstrapPrompt(plan, this.emit, this.client, text3);
   }
   async stop(reason) {
     this.stopRequested = true;
@@ -12459,7 +13550,7 @@ async function startManagedAcpSession(input) {
     throw err;
   }
   const promptDone = runManagedBootstrapPrompt(plan, emit2, client, bootstrap);
-  return new AcpManagedSession(plan.sessionId, client, promptDone);
+  return new AcpManagedSession(plan.sessionId, client, promptDone, emit2);
 }
 async function resumeManagedAcpSession(input) {
   const { plan, emit: emit2, client, providerSessionId } = input;
@@ -12476,7 +13567,7 @@ async function resumeManagedAcpSession(input) {
   }
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
   const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
-  return new AcpManagedSession(plan.sessionId, client, promptDone);
+  return new AcpManagedSession(plan.sessionId, client, promptDone, emit2);
 }
 function parseAcpResumeToken(raw) {
   return { raw, providerSessionId: raw };
@@ -12525,6 +13616,16 @@ function readAcpExtras(extras, legacyKeys = []) {
   }
   return {};
 }
+function readAcpSessionProjection(extras) {
+  if (!extras || typeof extras !== "object") {
+    return { mcpServers: [], skills: [] };
+  }
+  const mcpRaw = extras.acpMcpServers;
+  const skillRaw = extras.acpSkills;
+  const mcpServers = Array.isArray(mcpRaw) ? mcpRaw : [];
+  const skills = Array.isArray(skillRaw) ? skillRaw : [];
+  return { mcpServers, skills };
+}
 function normalizeAcpPermissionPolicy(raw) {
   return raw === "allow" || raw === "ask" || raw === "deny" ? raw : "deny";
 }
@@ -12542,8 +13643,8 @@ function normalizeSharedAcpOpts(raw) {
     permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
   };
 }
-function resolvePlanOrProcessEnv(envKey, planEnv, resolve10) {
-  if (resolve10) return resolve10(envKey, planEnv);
+function resolvePlanOrProcessEnv(envKey, planEnv, resolve11) {
+  if (resolve11) return resolve11(envKey, planEnv);
   const fromPlan = planEnv[envKey];
   if (typeof fromPlan === "string" && fromPlan.trim()) return fromPlan;
   const fromProc = process.env[envKey];
@@ -12573,6 +13674,8 @@ var GrokAcpClient = class {
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
+      mcpServers: options.mcpServers,
+      skills: options.skills,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,
@@ -12630,11 +13733,11 @@ var DEFAULT_GROK_BASE_URL_ENV_KEY = "CPA_GROK_BASE_URL";
 // src/adapters/grok-acp/index.ts
 function defaultGrokExecutable() {
   if (process.platform === "win32") {
-    const home2 = process.env.USERPROFILE || os2.homedir();
-    return path5.join(home2, ".grok", "bin", "grok.exe");
+    const home2 = process.env.USERPROFILE || os3.homedir();
+    return path7.join(home2, ".grok", "bin", "grok.exe");
   }
-  const home = process.env.HOME || os2.homedir();
-  return path5.join(home, ".grok", "bin", "grok");
+  const home = process.env.HOME || os3.homedir();
+  return path7.join(home, ".grok", "bin", "grok");
 }
 function normalizeGrokOpts(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
@@ -12687,13 +13790,13 @@ var GrokAcpProviderAdapter = class {
       );
     }
     if (!plan.command && opts.executable) {
-      if (!fs5.existsSync(opts.executable)) {
+      if (!fs7.existsSync(opts.executable)) {
         throw new Error(
           `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
-      if (!fs5.existsSync(command)) {
+      if (!fs7.existsSync(command)) {
         throw new Error(
           `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E acp.executable\u3002`
         );
@@ -12730,9 +13833,9 @@ var GrokAcpProviderAdapter = class {
       env.OPENAI_API_BASE = baseUrl;
       env.TENT_GROK_BASE_URL = baseUrl;
     }
-    const home = process.env.USERPROFILE || process.env.HOME || os2.homedir();
+    const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
     if (!env.GROK_HOME) {
-      env.GROK_HOME = path5.join(home, ".grok");
+      env.GROK_HOME = path7.join(home, ".grok");
     }
     return {
       command,
@@ -12767,6 +13870,7 @@ var GrokAcpProviderAdapter = class {
   createClient(plan, emit2) {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -12779,6 +13883,8 @@ var GrokAcpProviderAdapter = class {
       model: opts.model,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
     });
@@ -12860,6 +13966,7 @@ var CodexAcpProviderAdapter = class {
   async startManagedSession(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -12871,6 +13978,8 @@ var CodexAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "Codex ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -12942,6 +14051,7 @@ var ClaudeAcpProviderAdapter = class {
   async startManagedSession(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -12953,6 +14063,8 @@ var ClaudeAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "Claude ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -13016,6 +14128,7 @@ var AntigravityAcpProviderAdapter = class {
   async startManagedSession(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -13027,6 +14140,8 @@ var AntigravityAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -13113,6 +14228,7 @@ var OpenCodeAcpProviderAdapter = class {
   createClient(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -13124,6 +14240,8 @@ var OpenCodeAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "OpenCode ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -13188,6 +14306,7 @@ var CopilotAcpProviderAdapter = class {
   async startManagedSession(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -13199,6 +14318,8 @@ var CopilotAcpProviderAdapter = class {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "GitHub Copilot ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -13217,8 +14338,8 @@ function createCopilotAcpAdapter(options) {
 }
 
 // src/service/credential-store.ts
-import * as fs6 from "node:fs/promises";
-import * as path6 from "node:path";
+import * as fs8 from "node:fs/promises";
+import * as path8 from "node:path";
 
 // src/service/credential-protector.ts
 import { spawn as spawn3 } from "node:child_process";
@@ -13270,7 +14391,7 @@ function createWindowsDpapiProtector() {
   };
 }
 function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     const child = spawn3(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -13297,7 +14418,7 @@ function runPowerShellStdin(command, stdinData, op) {
         reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
         return;
       }
-      resolve10(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+      resolve11(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
     });
     child.stdin?.on("error", (err) => {
       reject(
@@ -13311,20 +14432,20 @@ function runPowerShellStdin(command, stdinData, op) {
 }
 
 // src/service/credential-store.ts
-var CREDENTIAL_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
+var CREDENTIAL_ID_RE2 = /^[a-z][a-z0-9-]{0,62}$/;
 var MAX_SECRET_BYTES = 64 * 1024;
 var MAX_LABEL_LEN = 200;
 function credentialsPath(dataDir) {
-  return path6.join(dataDir, "credentials.json");
+  return path8.join(dataDir, "credentials.json");
 }
 function assertCredentialId(id) {
   if (typeof id !== "string" || !id.trim()) {
     throw new Error("Missing or invalid credential id");
   }
   const trimmed = id.trim();
-  if (!CREDENTIAL_ID_RE.test(trimmed)) {
+  if (!CREDENTIAL_ID_RE2.test(trimmed)) {
     throw new Error(
-      `Invalid credential id: must match ${CREDENTIAL_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
+      `Invalid credential id: must match ${CREDENTIAL_ID_RE2} (lowercase letter, then a-z0-9-, max 63)`
     );
   }
   return trimmed;
@@ -13383,7 +14504,7 @@ function normalizeMetadata(raw) {
   }
   return Object.keys(out).length > 0 ? out : void 0;
 }
-function isValidDate2(value) {
+function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseCredentialRecord(value) {
@@ -13407,7 +14528,7 @@ function parseCredentialRecord(value) {
   if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
     return null;
   }
-  if (!isValidDate2(item.createdAt) || !isValidDate2(item.updatedAt)) {
+  if (!isValidDate3(item.createdAt) || !isValidDate3(item.updatedAt)) {
     return null;
   }
   let metaSrc = item.metadata;
@@ -13462,7 +14583,7 @@ var CredentialStore = class {
   }
   async loadFromDisk() {
     try {
-      const raw = await fs6.readFile(this.file, "utf8");
+      const raw = await fs8.readFile(this.file, "utf8");
       let parsed;
       try {
         parsed = JSON.parse(raw);
@@ -13627,14 +14748,14 @@ var CredentialStore = class {
 };
 
 // src/service/profile-field-rules.ts
-function fieldOk(value) {
+function fieldOk2(value) {
   return { ok: true, value };
 }
-function fieldErr(message) {
+function fieldErr2(message) {
   return { ok: false, message };
 }
 var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
-var ENV_KEY_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
+var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
 var MAX_TIMEOUT_MS = 24 * 60 * 6e4;
 var PERMISSION_POLICIES = /* @__PURE__ */ new Set(["allow", "ask", "deny"]);
 var DANGEROUS_FIELD_HINTS = [
@@ -13656,53 +14777,53 @@ var DANGEROUS_FIELD_HINTS = [
 ];
 function parseProfileIdValue(raw, field = "id") {
   if (typeof raw !== "string" || !raw.trim()) {
-    return fieldErr(`Missing or invalid string param: ${field}`);
+    return fieldErr2(`Missing or invalid string param: ${field}`);
   }
   const id = raw.trim();
   if (!PROFILE_ID_RE.test(id)) {
-    return fieldErr(
+    return fieldErr2(
       `Invalid profile id: must match ${PROFILE_ID_RE} (lowercase letter, then a-z0-9-, max 63)`
     );
   }
-  return fieldOk(id);
+  return fieldOk2(id);
 }
 function parseNonEmptyStringValue(raw, key) {
   if (typeof raw !== "string") {
-    return fieldErr(`Invalid string param: ${key}`);
+    return fieldErr2(`Invalid string param: ${key}`);
   }
   const v = raw.trim();
   if (!v) {
-    return fieldErr(`Invalid string param: ${key} must be non-empty when set`);
+    return fieldErr2(`Invalid string param: ${key} must be non-empty when set`);
   }
-  return fieldOk(v);
+  return fieldOk2(v);
 }
 function parseEnvKeyValue(raw, key) {
   const base = parseNonEmptyStringValue(raw, key);
   if (!base.ok) return base;
-  if (!ENV_KEY_RE.test(base.value)) {
-    return fieldErr(
+  if (!ENV_KEY_RE2.test(base.value)) {
+    return fieldErr2(
       `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
     );
   }
-  return fieldOk(base.value);
+  return fieldOk2(base.value);
 }
 function validateBaseUrlValue(v) {
   let parsed;
   try {
     parsed = new URL(v);
   } catch {
-    return fieldErr("Invalid baseUrl: must be an absolute http(s) URL");
+    return fieldErr2("Invalid baseUrl: must be an absolute http(s) URL");
   }
   if (parsed.protocol !== "http:" && parsed.protocol !== "https:") {
-    return fieldErr("Invalid baseUrl: only http: and https: are allowed");
+    return fieldErr2("Invalid baseUrl: only http: and https: are allowed");
   }
   if (parsed.username || parsed.password) {
-    return fieldErr("Invalid baseUrl: username/password in URL are not allowed");
+    return fieldErr2("Invalid baseUrl: username/password in URL are not allowed");
   }
   if (parsed.search || parsed.hash) {
-    return fieldErr("Invalid baseUrl: query string and hash fragment are not allowed");
+    return fieldErr2("Invalid baseUrl: query string and hash fragment are not allowed");
   }
-  return fieldOk(v);
+  return fieldOk2(v);
 }
 function parseBaseUrlValue(raw) {
   const base = parseNonEmptyStringValue(raw, "baseUrl");
@@ -13711,29 +14832,29 @@ function parseBaseUrlValue(raw) {
 }
 function parsePermissionPolicyValue(raw) {
   if (typeof raw !== "string") {
-    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
+    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
   }
   if (!PERMISSION_POLICIES.has(raw)) {
-    return fieldErr("Invalid permissionPolicy: must be allow|ask|deny");
+    return fieldErr2("Invalid permissionPolicy: must be allow|ask|deny");
   }
-  return fieldOk(raw);
+  return fieldOk2(raw);
 }
 function parsePositiveTimeoutValue(raw, key) {
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
-    return fieldErr(
+    return fieldErr2(
       `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
     );
   }
-  return fieldOk(raw);
+  return fieldOk2(raw);
 }
 function parseCredentialRefValue(raw) {
   const base = parseNonEmptyStringValue(raw, "credentialRef");
   if (!base.ok) return base;
   try {
-    return fieldOk(assertCredentialId(base.value));
+    return fieldOk2(assertCredentialId(base.value));
   } catch (err) {
-    return fieldErr(
-      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE}`
+    return fieldErr2(
+      err instanceof Error ? err.message.replace(/^Invalid credential id/, "Invalid credentialRef") : `Invalid credentialRef: must match ${CREDENTIAL_ID_RE2}`
     );
   }
 }
@@ -13782,7 +14903,9 @@ var PROFILE_CREATE_FIELDS = [
   "baseUrl",
   "permissionPolicy",
   "promptTimeoutMs",
-  "permissionTimeoutMs"
+  "permissionTimeoutMs",
+  "skills",
+  "mcpServers"
 ];
 var PROFILE_UPDATE_FIELDS = [
   "displayName",
@@ -13794,7 +14917,9 @@ var PROFILE_UPDATE_FIELDS = [
   "baseUrl",
   "permissionPolicy",
   "promptTimeoutMs",
-  "permissionTimeoutMs"
+  "permissionTimeoutMs",
+  "skills",
+  "mcpServers"
 ];
 var DISK_PROFILE_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
   "id",
@@ -13806,7 +14931,9 @@ var DISK_PROFILE_TOP_LEVEL_KEYS = /* @__PURE__ */ new Set([
   "env",
   "fake",
   "acp",
-  "grokAcp"
+  "grokAcp",
+  "skills",
+  "mcpServers"
 ]);
 var DISK_ACP_KEYS = /* @__PURE__ */ new Set([
   "executable",
@@ -13828,7 +14955,7 @@ var DISK_FAKE_KEYS = /* @__PURE__ */ new Set([
   "canResume"
 ]);
 function profilesPath(dataDir) {
-  return path7.join(dataDir, "agent-profiles.json");
+  return path9.join(dataDir, "agent-profiles.json");
 }
 async function quarantineAgentProfilesFile(file) {
   const backupPath = await backupCorruptMachineFile(file);
@@ -14033,12 +15160,22 @@ function parseAgentProfileDiskRow(value) {
     if (grokAcp === null) return null;
     raw.grokAcp = grokAcp;
   }
+  if ("skills" in item && item.skills !== void 0 && item.skills !== null) {
+    const skillsR = parseSkillsArrayValue(item.skills, defaultAllowedSkillRoots());
+    if (!skillsR.ok) return null;
+    if (skillsR.value !== void 0) raw.skills = skillsR.value;
+  }
+  if ("mcpServers" in item && item.mcpServers !== void 0 && item.mcpServers !== null) {
+    const mcpR = parseMcpServersArrayValue(item.mcpServers);
+    if (!mcpR.ok) return null;
+    if (mcpR.value !== void 0) raw.mcpServers = mcpR.value;
+  }
   return normalizeProfileToCanonicalAcp(raw);
 }
 async function loadAgentProfilesWithMigration(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs7.readFile(file, "utf8");
+    const raw = await fs9.readFile(file, "utf8");
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -14179,6 +15316,8 @@ function projectAgentProfile(profile, opts) {
   const canonical = cloneAgentProfileConfig(profile);
   const g = canonical.acp;
   const credentialRef = typeof g?.credentialRef === "string" && g.credentialRef.trim() ? g.credentialRef.trim() : void 0;
+  const skills = projectSkillRefs(canonical.skills);
+  const mcpServers = projectMcpServers(canonical.mcpServers);
   return {
     id: profile.id,
     adapterId: profile.adapterId,
@@ -14194,7 +15333,9 @@ function projectAgentProfile(profile, opts) {
     testOnly,
     permissionPolicy: g?.permissionPolicy,
     promptTimeoutMs: g?.promptTimeoutMs,
-    permissionTimeoutMs: g?.permissionTimeoutMs
+    permissionTimeoutMs: g?.permissionTimeoutMs,
+    ...skills !== void 0 ? { skills } : {},
+    ...mcpServers !== void 0 ? { mcpServers } : {}
   };
 }
 function projectAgentProfiles(profiles, opts) {
@@ -14224,30 +15365,30 @@ var RpcError = class extends Error {
 };
 
 // src/machine/skills.ts
-import * as fs8 from "node:fs/promises";
-import * as os3 from "node:os";
-import * as path8 from "node:path";
+import * as fs10 from "node:fs/promises";
+import * as os4 from "node:os";
+import * as path10 from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
 var SAFE_SKILL_NAME = /^[a-zA-Z0-9][a-zA-Z0-9._-]*$/;
 function isSkillTargetId(value) {
   return SKILL_TARGET_IDS.includes(value);
 }
 function skillTargetDir(target, home) {
-  const root = home ?? os3.homedir();
+  const root = home ?? os4.homedir();
   switch (target) {
     case "claude":
-      return path8.join(root, ".claude", "skills");
+      return path10.join(root, ".claude", "skills");
     case "shared-agents":
-      return path8.join(root, ".agents", "skills");
+      return path10.join(root, ".agents", "skills");
     default: {
       const _exhaustive = target;
       throw new Error(`Unknown skill target: ${String(_exhaustive)}`);
     }
   }
 }
-function assertSafeSkillName(name) {
+function assertSafeSkillName2(name) {
   const trimmed = name.trim();
-  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path8.basename(trimmed) !== trimmed) {
+  if (!trimmed || !SAFE_SKILL_NAME.test(trimmed) || trimmed.includes("..") || trimmed.includes("/") || trimmed.includes("\\") || path10.basename(trimmed) !== trimmed) {
     throw new Error(`Invalid skill name: ${name}`);
   }
   return trimmed;
@@ -14262,13 +15403,13 @@ function parseSkillTargetId(value) {
   return trimmed;
 }
 function bundledSkillsDir(packageRoot) {
-  return path8.join(packageRoot, "skills");
+  return path10.join(packageRoot, "skills");
 }
 async function listBundledSkillNames(packageRoot) {
   const sourceDir = bundledSkillsDir(packageRoot);
   let entries;
   try {
-    entries = await fs8.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs10.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -14280,7 +15421,7 @@ async function listBundledSkillNames(packageRoot) {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     if (!SAFE_SKILL_NAME.test(entry.name)) continue;
-    if (await existsPath(path8.join(sourceDir, entry.name, "SKILL.md"))) {
+    if (await existsPath(path10.join(sourceDir, entry.name, "SKILL.md"))) {
       skillNames.push(entry.name);
     }
   }
@@ -14288,14 +15429,14 @@ async function listBundledSkillNames(packageRoot) {
   return skillNames;
 }
 async function listSkills(options) {
-  const home = options.home ?? os3.homedir();
+  const home = options.home ?? os4.homedir();
   const names = await listBundledSkillNames(options.packageRoot);
   const skills = [];
   for (const name of names) {
     const targets = [];
     for (const target of SKILL_TARGET_IDS) {
       const dir = skillTargetDir(target, home);
-      const skillPath = path8.join(dir, name);
+      const skillPath = path10.join(dir, name);
       assertChildPath(dir, skillPath);
       targets.push({
         target,
@@ -14308,7 +15449,7 @@ async function listSkills(options) {
   return { skills };
 }
 async function installSkills(options) {
-  const home = options.home ?? os3.homedir();
+  const home = options.home ?? os4.homedir();
   const force = options.force === true;
   const sourceDir = bundledSkillsDir(options.packageRoot);
   const allNames = await listBundledSkillNames(options.packageRoot);
@@ -14322,10 +15463,10 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs8.mkdir(dest.dir, { recursive: true });
+    await fs10.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
-      const source = path8.join(sourceDir, name);
-      const target = path8.join(dest.dir, name);
+      const source = path10.join(sourceDir, name);
+      const target = path10.join(dest.dir, name);
       assertChildPath(sourceDir, source);
       assertChildPath(dest.dir, target);
       const exists = await existsPath(target);
@@ -14340,9 +15481,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists && force) {
-        await fs8.rm(target, { recursive: true, force: true });
+        await fs10.rm(target, { recursive: true, force: true });
       }
-      await fs8.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs10.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -14359,7 +15500,7 @@ function resolveSkillSelection(requested, allNames) {
   const selected = [];
   const seen = /* @__PURE__ */ new Set();
   for (const raw of requested) {
-    const name = assertSafeSkillName(raw);
+    const name = assertSafeSkillName2(raw);
     if (!known.has(name)) {
       throw new Error(`Unknown bundled skill: ${name}`);
     }
@@ -14375,7 +15516,7 @@ function resolveInstallDestinations(options, home) {
     if (options.targetDirs.length === 0) {
       throw new Error("skill-install requires at least one target directory");
     }
-    return options.targetDirs.map((dir) => ({ dir: path8.resolve(dir) }));
+    return options.targetDirs.map((dir) => ({ dir: path10.resolve(dir) }));
   }
   const targetIds = options.targets && options.targets.length > 0 ? options.targets.map((t) => parseSkillTargetId(t)) : [...SKILL_TARGET_IDS];
   const seen = /* @__PURE__ */ new Set();
@@ -14388,14 +15529,14 @@ function resolveInstallDestinations(options, home) {
   return out;
 }
 function assertChildPath(parent, child) {
-  const rel = path8.relative(path8.resolve(parent), path8.resolve(child));
-  if (rel.startsWith("..") || path8.isAbsolute(rel)) {
+  const rel = path10.relative(path10.resolve(parent), path10.resolve(child));
+  if (rel.startsWith("..") || path10.isAbsolute(rel)) {
     throw new Error(`Install target escapes the destination directory: ${child}`);
   }
 }
 async function existsPath(target) {
   try {
-    await fs8.access(target);
+    await fs10.access(target);
     return true;
   } catch {
     return false;
@@ -14490,6 +15631,8 @@ async function dispatchMethod(ctx, method, params) {
         return taskWaitRpc(ctx, p);
       case "task.resume":
         return taskResumeRpc(ctx, p);
+      case "task.askUser":
+        return taskAskUserRpc(ctx, p);
       case "task.deliver":
         return taskDeliverRpc(ctx, p);
       case "task.requestReview":
@@ -14536,6 +15679,14 @@ async function dispatchMethod(ctx, method, params) {
         return toolApprovalResolve(ctx, p, "approved");
       case "toolApproval.deny":
         return toolApprovalResolve(ctx, p, "denied");
+      case "userAsk.listPending":
+        return userAskListPending(ctx, p);
+      case "userAsk.get":
+        return userAskGet(ctx, p);
+      case "userAsk.reply":
+        return userAskReplyRpc(ctx, p);
+      case "userAsk.deny":
+        return userAskDenyRpc(ctx, p);
       case "operationalRetention.preview":
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
@@ -14953,7 +16104,9 @@ async function registryRoles(ctx, p) {
 }
 function projectRoleRegistryEntry(role) {
   const proj = {
+    roleId: role.id ?? "",
     name: role.name,
+    displayName: role.displayName || role.name,
     description: role.description,
     color: role.color,
     prompt: role.prompt,
@@ -14968,6 +16121,12 @@ async function registryRoleCreate(ctx, p) {
   requireUserActor(p, "registry.role.create");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
+  if ("id" in p || "roleId" in p) {
+    throw new RpcError(
+      -32602,
+      "registry.role.create does not accept client-supplied id/roleId; server assigns rl- handles"
+    );
+  }
   const definition2 = parseRoleDefinitionParams(p, { requireName: true });
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
@@ -14977,13 +16136,15 @@ async function registryRoleCreate(ctx, p) {
       throw mapRoleRegistryError(err, "registry.role.create");
     }
     const registry = await loadRolesRegistry(mount.env.fs);
-    const role = registry.roles.find((r) => r.name === definition2.name);
+    const role = resolveRole(registry.roles, definition2.name);
     if (!role) {
       throw new RpcError(-32e3, `Role create succeeded but role not found: ${definition2.name}`);
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "create",
-      name: role.name
+      name: role.name,
+      roleId: role.id || "",
+      displayName: role.displayName || role.name
     });
     return { workspaceId, role: projectRoleRegistryEntry(role) };
   });
@@ -14992,22 +16153,35 @@ async function registryRoleUpdate(ctx, p) {
   requireUserActor(p, "registry.role.update");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const name = requireString(p, "name");
-  if (p.rename !== void 0 || typeof p.newName === "string" && p.newName.trim() && p.newName.trim() !== name) {
-    throw new RpcError(-32602, "registry.role.update cannot rename a role; name is immutable after create");
+  const ref = typeof p.roleId === "string" && p.roleId.trim() ? p.roleId.trim() : requireString(p, "name");
+  if (p.rename !== void 0 || typeof p.newName === "string" && p.newName.trim()) {
+    throw new RpcError(
+      -32602,
+      "registry.role.update cannot rename operational name in this batch; pass displayName to change the label"
+    );
   }
   if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
     throw new RpcError(
       -32602,
-      "registry.role.update does not accept nested patch; pass fields at the top level with name"
+      "registry.role.update does not accept nested patch; pass fields at the top level with name or roleId"
     );
   }
+  if ("id" in p) {
+    throw new RpcError(-32602, "registry.role.update cannot change id; role id is immutable");
+  }
   const patch = parseRoleDefinitionParams(p, { requireName: false, forUpdate: true });
-  const { name: _ignored, ...fields } = patch;
+  const { name: _ignoredName, id: _ignoredId, displayName: _ignoredDn, ...fields } = patch;
   const updatePatch = { ...fields };
   for (const key of ["prompt", "description", "color"]) {
     if (key in p && (p[key] === null || typeof p[key] === "string" && !p[key].trim())) {
       updatePatch[key] = void 0;
+    }
+  }
+  if ("displayName" in p) {
+    if (p.displayName === null || typeof p.displayName === "string" && !p.displayName.trim()) {
+      updatePatch.displayName = void 0;
+    } else if (typeof p.displayName === "string") {
+      updatePatch.displayName = p.displayName;
     }
   }
   if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
@@ -15024,18 +16198,20 @@ async function registryRoleUpdate(ctx, p) {
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await updateRole(mount.env.fs, name, updatePatch);
+      await updateRole(mount.env.fs, ref, updatePatch);
     } catch (err) {
       throw mapRoleRegistryError(err, "registry.role.update");
     }
     const registry = await loadRolesRegistry(mount.env.fs);
-    const role = registry.roles.find((r) => r.name === name);
+    const role = resolveRole(registry.roles, ref);
     if (!role) {
-      throw new RpcError(-32004, `Role does not exist: ${name}`);
+      throw new RpcError(-32004, `Role does not exist: ${ref}`);
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "update",
-      name: role.name
+      name: role.name,
+      roleId: role.id || "",
+      displayName: role.displayName || role.name
     });
     return { workspaceId, role: projectRoleRegistryEntry(role) };
   });
@@ -15044,54 +16220,69 @@ async function registryRoleDelete(ctx, p) {
   requireUserActor(p, "registry.role.delete");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const name = requireString(p, "name");
+  const ref = typeof p.roleId === "string" && p.roleId.trim() ? p.roleId.trim() : requireString(p, "name");
   const confirmation = requireString(p, "confirmation");
-  if (confirmation !== name) {
-    throw new RpcError(
-      -32602,
-      `Confirmation mismatch; enter the role name ${name}.`,
-      { name, confirmation }
-    );
-  }
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const existing = resolveRole(registry.roles, ref);
+    if (!existing) {
+      throw new RpcError(-32004, `Role does not exist: ${ref}`);
+    }
+    const roleId = existing.id || "";
+    if (confirmation !== existing.name && confirmation !== roleId) {
+      throw new RpcError(
+        -32602,
+        `Confirmation mismatch; enter the role name ${existing.name} or id ${roleId}.`,
+        { name: existing.name, roleId, confirmation }
+      );
+    }
     const tasks = await loadTaskEnvelopes(mount.env.fs);
     const activeTask = tasks.find(
-      (t) => t.role === name && taskAssigneeKind(t) === "role" && isActiveTaskState(t.state)
+      (t) => taskAssigneeKind(t) === "role" && isActiveTaskState(t.state) && (t.role === existing.name || roleId !== "" && t.role === roleId)
     );
     if (activeTask) {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Cannot delete role "${name}": active task ${activeTask.path} (state=${activeTask.state})`,
+        `Cannot delete role "${existing.name}": active task ${activeTask.path} (state=${activeTask.state})`,
         {
-          role: name,
+          role: existing.name,
+          roleId,
           taskPath: activeTask.path,
           taskState: activeTask.state
         }
       );
     }
-    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, name);
+    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, existing.name);
     if (activeSession) {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Cannot delete role "${name}": active managed session ${activeSession.id} (state=${activeSession.state})`,
+        `Cannot delete role "${existing.name}": active managed session ${activeSession.id} (state=${activeSession.state})`,
         {
-          role: name,
+          role: existing.name,
+          roleId,
           sessionId: activeSession.id,
           sessionState: activeSession.state
         }
       );
     }
     try {
-      await deleteRole(mount.env.fs, name, confirmation);
+      await deleteRole(mount.env.fs, roleId || existing.name, confirmation);
     } catch (err) {
       throw mapRoleRegistryError(err, "registry.role.delete");
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "delete",
-      name
+      name: existing.name,
+      roleId,
+      displayName: existing.displayName || existing.name
     });
-    return { workspaceId, deleted: name };
+    return {
+      workspaceId,
+      deleted: existing.name,
+      roleId,
+      displayName: existing.displayName || existing.name
+    };
   });
 }
 function emitRegistryRolesUpdated(ctx, workspaceId, payload) {
@@ -15100,7 +16291,9 @@ function emitRegistryRolesUpdated(ctx, workspaceId, payload) {
     workspaceId,
     {
       action: payload.action,
-      name: payload.name
+      name: payload.name,
+      roleId: payload.roleId,
+      displayName: payload.displayName
     },
     "self"
   );
@@ -15137,6 +16330,12 @@ function parseRoleDefinitionParams(p, opts) {
     throw new RpcError(-32602, "Missing string param: name");
   } else {
     raw.name = "";
+  }
+  if ("displayName" in p) {
+    if (p.displayName !== void 0 && p.displayName !== null && typeof p.displayName !== "string") {
+      throw new RpcError(-32602, "Invalid string param: displayName");
+    }
+    if (typeof p.displayName === "string") raw.displayName = p.displayName;
   }
   if ("prompt" in p) {
     if (p.prompt !== void 0 && p.prompt !== null && typeof p.prompt !== "string") {
@@ -15208,7 +16407,9 @@ function parseRoleDefinitionParams(p, opts) {
 function mapRoleRegistryError(err, surface) {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
-  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\./i.test(message)) {
+  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
+    message
+  )) {
     if (/does not exist/i.test(message)) {
       return new RpcError(-32004, message);
     }
@@ -15711,7 +16912,7 @@ async function taskDispatch(ctx, p) {
     } : void 0
   };
 }
-async function assertSubDispatchPreconditions(fs14, input) {
+async function assertSubDispatchPreconditions(fs16, input) {
   const dispatcher = (input.dispatcher || "").trim();
   if (!dispatcher || dispatcher === "user") {
     throw new RpcError(
@@ -15726,8 +16927,8 @@ async function assertSubDispatchPreconditions(fs14, input) {
       { dispatchedBy: dispatcher, assignee: input.assigneeLabel }
     );
   }
-  const registry = await loadRolesRegistry(fs14);
-  const role = registry.roles.find((r) => r.name === dispatcher);
+  const registry = await loadRolesRegistry(fs16);
+  const role = resolveRole(registry.roles, dispatcher);
   if (!role) {
     throw new RpcError(
       -32602,
@@ -15794,6 +16995,117 @@ async function taskResumeRpc(ctx, p) {
     emitTaskState(ctx, workspaceId, task, "task.resume");
     return { workspaceId, taskPath, task: projectTask(task), state: task.state };
   });
+}
+async function taskAskUserRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const question = requireString(p, "question").trim();
+  if (!question) {
+    throw new RpcError(-32602, "task.askUser requires non-empty question");
+  }
+  const choices = parseUserAskChoices(p.choices);
+  const existing = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+  if (existing) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Task already has a pending UserAsk (${existing.id})`,
+      { askId: existing.id, workspaceId, taskPath }
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current.state !== "running") {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.askUser requires running task (state=${current.state})`,
+        { taskPath, state: current.state }
+      );
+    }
+    const again = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+    if (again) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `Task already has a pending UserAsk (${again.id})`,
+        { askId: again.id, workspaceId, taskPath }
+      );
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const ask = await ctx.userAsks.add({
+      id: makeUserAskId(),
+      workspaceId,
+      taskPath,
+      taskId: current.id || void 0,
+      sessionId: current.sessionId || void 0,
+      role: current.role || void 0,
+      question,
+      ...choices ? { choices } : {},
+      status: "pending",
+      createdAt: now,
+      updatedAt: now
+    });
+    const summary = `UserAsk pending: ${question.slice(0, 200)}`;
+    const task = await taskWait(mount.env, taskPath, {
+      reason: "user-input",
+      summary
+    });
+    emitTaskState(ctx, workspaceId, task, "task.askUser");
+    ctx.events.emit(
+      "userAsk.pending",
+      workspaceId,
+      {
+        askId: ask.id,
+        taskPath: ask.taskPath,
+        taskId: ask.taskId,
+        sessionId: ask.sessionId,
+        role: ask.role,
+        question: ask.question,
+        choices: ask.choices,
+        createdAt: ask.createdAt
+      },
+      "self"
+    );
+    if (ask.sessionId) {
+      try {
+        const rec = await ctx.runtime.registry.read(ask.sessionId);
+        if (rec && SessionRegistry.isNonTerminal(rec.state)) {
+          await ctx.runtime.registry.update(ask.sessionId, {
+            state: "waiting-user"
+          });
+        }
+      } catch {
+      }
+    }
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(task),
+      state: task.state,
+      ask: projectUserAsk(ask)
+    };
+  });
+}
+function parseUserAskChoices(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (!Array.isArray(raw)) {
+    throw new RpcError(-32602, "task.askUser choices must be an array");
+  }
+  if (raw.length === 0) return void 0;
+  const choices = [];
+  for (const item of raw) {
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new RpcError(-32602, "task.askUser choice must be {id,label}");
+    }
+    const row = item;
+    const id = typeof row.id === "string" ? row.id.trim() : "";
+    const label = typeof row.label === "string" ? row.label.trim() : "";
+    if (!id || !label) {
+      throw new RpcError(-32602, "task.askUser choice requires non-empty id and label");
+    }
+    choices.push({ id, label });
+  }
+  return choices;
 }
 async function taskDeliverRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -15928,7 +17240,16 @@ async function taskInterruptRpc(ctx, p) {
     ctx.host.markSelfWrite(workspaceId);
     const task = await taskInterrupt(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.interrupt");
+    await cancelUserAsksForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
+      try {
+        await ctx.toolApprovals.cancelSession(sessionId, "denied");
+      } catch {
+      }
+      try {
+        await cancelUserAsksForSession(ctx, workspaceId, sessionId, "task.interrupt");
+      } catch {
+      }
       try {
         await ctx.runtime.stopSession(sessionId, "interrupt");
       } catch {
@@ -16480,15 +17801,21 @@ async function toolApprovalResolve(ctx, p, decision) {
   );
   if (decision === "approved" && !hasPendingForSession && item.taskPath) {
     try {
-      const mount = ctx.host.get(item.workspaceId);
-      if (mount) {
-        const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-        if (task.state === "waiting" && task.wait?.reason === "user-input") {
-          await ctx.mutations.run(item.workspaceId, async () => {
-            ctx.host.markSelfWrite(item.workspaceId);
-            const resumed = await taskResume(mount.env, item.taskPath);
-            emitTaskState(ctx, item.workspaceId, resumed, "toolApproval.approveOnce");
-          });
+      const pendingAsk = await ctx.userAsks.getPendingForTask(
+        item.workspaceId,
+        item.taskPath
+      );
+      if (!pendingAsk) {
+        const mount = ctx.host.get(item.workspaceId);
+        if (mount) {
+          const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+          if (task.state === "waiting" && task.wait?.reason === "user-input") {
+            await ctx.mutations.run(item.workspaceId, async () => {
+              ctx.host.markSelfWrite(item.workspaceId);
+              const resumed = await taskResume(mount.env, item.taskPath);
+              emitTaskState(ctx, item.workspaceId, resumed, "toolApproval.approveOnce");
+            });
+          }
         }
       }
     } catch {
@@ -16513,6 +17840,219 @@ function projectToolApproval(item) {
     resolvedAt: item.resolvedAt,
     resolvedBy: item.resolvedBy
   };
+}
+async function userAskListPending(ctx, p) {
+  const workspaceId = optionalString(p, "workspaceId");
+  const pending = await ctx.userAsks.listPending(workspaceId);
+  return { asks: pending.map(projectUserAsk) };
+}
+async function userAskGet(ctx, p) {
+  const askId = requireString(p, "askId");
+  const item = await ctx.userAsks.get(askId);
+  if (!item) throw new RpcError(-32004, `UserAsk not found: ${askId}`);
+  return { ask: projectUserAsk(item) };
+}
+async function userAskReplyRpc(ctx, p) {
+  const askId = requireString(p, "askId");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "userAsk.reply is user-only; agent self-reply is forbidden",
+      { actor: actorRaw }
+    );
+  }
+  const answer = optionalString(p, "answer");
+  const choiceId = optionalString(p, "choiceId");
+  if (!(answer?.trim() || choiceId?.trim())) {
+    throw new RpcError(-32602, "userAsk.reply requires answer and/or choiceId");
+  }
+  const item = await ctx.userAsks.reply(askId, {
+    answer,
+    choiceId,
+    resolvedBy: actorRaw
+  });
+  ctx.events.emit(
+    "userAsk.resolved",
+    item.workspaceId,
+    {
+      askId: item.id,
+      decision: "reply",
+      actor: actorRaw,
+      taskPath: item.taskPath,
+      sessionId: item.sessionId,
+      choiceId: item.choiceId,
+      answer: item.answer
+    },
+    "self"
+  );
+  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.reply");
+  const continueResult = await continueManagedAfterUserAsk(ctx, item);
+  return {
+    ask: projectUserAsk(item),
+    task: resume.task,
+    state: resume.state,
+    continued: continueResult.continued,
+    continueError: continueResult.error
+  };
+}
+async function userAskDenyRpc(ctx, p) {
+  const askId = requireString(p, "askId");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "userAsk.deny is user-only; agent self-deny is forbidden",
+      { actor: actorRaw }
+    );
+  }
+  const item = await ctx.userAsks.deny(askId, actorRaw);
+  ctx.events.emit(
+    "userAsk.resolved",
+    item.workspaceId,
+    {
+      askId: item.id,
+      decision: "deny",
+      actor: actorRaw,
+      taskPath: item.taskPath,
+      sessionId: item.sessionId
+    },
+    "self"
+  );
+  const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.deny");
+  const continueResult = item.sessionId != null ? await continueManagedAfterUserAsk(ctx, item) : { continued: false, error: void 0 };
+  return {
+    ask: projectUserAsk(item),
+    task: resume.task,
+    state: resume.state,
+    continued: continueResult.continued,
+    continueError: continueResult.error
+  };
+}
+async function resumeTaskAfterUserAsk(ctx, item, reason) {
+  try {
+    const mount = ctx.host.get(item.workspaceId);
+    if (!mount) return { task: null, state: null };
+    return await ctx.mutations.run(item.workspaceId, async () => {
+      ctx.host.markSelfWrite(item.workspaceId);
+      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+      if (task.state === "waiting" && task.wait?.reason === "user-input") {
+        const resumed = await taskResume(mount.env, item.taskPath);
+        emitTaskState(ctx, item.workspaceId, resumed, reason);
+        return { task: projectTask(resumed), state: resumed.state };
+      }
+      return { task: projectTask(task), state: task.state };
+    });
+  } catch {
+    return { task: null, state: null };
+  }
+}
+async function continueManagedAfterUserAsk(ctx, item) {
+  if (!item.sessionId) return { continued: false };
+  const prompt = formatUserAskAnswerPrompt(item);
+  try {
+    try {
+      await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
+      return { continued: true };
+    } catch (liveErr) {
+      const liveMessage = liveErr instanceof Error ? liveErr.message : String(liveErr);
+      if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
+      }
+    }
+    const probe = await ctx.runtime.probe(item.sessionId);
+    if (!probe.resumeCapable) {
+      return {
+        continued: false,
+        error: "managed session not live and not resume-capable; external agent may poll userAsk.get"
+      };
+    }
+    const rec = await ctx.runtime.registry.read(item.sessionId);
+    const cwd = rec?.runtimeWorkspace?.cwd;
+    await ctx.runtime.resumeSession({
+      sessionId: item.sessionId,
+      bootstrapPrompt: prompt,
+      ...cwd ? { runtimeWorkspace: { cwd } } : {}
+    });
+    return { continued: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    ctx.events.emit(
+      "session.state",
+      item.workspaceId,
+      {
+        sessionId: item.sessionId,
+        taskPath: item.taskPath,
+        runtimeEvent: "userAsk.continue.failed",
+        error: message,
+        taskFailed: false
+      },
+      "service"
+    );
+    return { continued: false, error: message };
+  }
+}
+function projectUserAsk(item) {
+  return {
+    id: item.id,
+    workspaceId: item.workspaceId,
+    taskPath: item.taskPath,
+    taskId: item.taskId,
+    sessionId: item.sessionId,
+    role: item.role,
+    question: item.question,
+    choices: item.choices,
+    status: item.status,
+    answer: item.answer,
+    choiceId: item.choiceId,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    resolvedAt: item.resolvedAt,
+    resolvedBy: item.resolvedBy
+  };
+}
+async function cancelUserAsksForTask(ctx, workspaceId, taskPath, resolvedBy) {
+  try {
+    const cancelled = await ctx.userAsks.cancelTask(
+      workspaceId,
+      taskPath,
+      resolvedBy
+    );
+    for (const ask of cancelled) {
+      ctx.events.emit(
+        "userAsk.resolved",
+        workspaceId,
+        {
+          askId: ask.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: ask.taskPath,
+          sessionId: ask.sessionId
+        },
+        "service"
+      );
+    }
+  } catch {
+  }
+}
+async function cancelUserAsksForSession(ctx, workspaceId, sessionId, resolvedBy) {
+  try {
+    const cancelled = await ctx.userAsks.cancelSession(sessionId, resolvedBy);
+    for (const ask of cancelled) {
+      ctx.events.emit(
+        "userAsk.resolved",
+        workspaceId || ask.workspaceId,
+        {
+          askId: ask.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: ask.taskPath,
+          sessionId: ask.sessionId
+        },
+        "service"
+      );
+    }
+  } catch {
+  }
 }
 async function operationalRetentionPreviewRpc(ctx, p) {
   requireUserActor(p, "operationalRetention.preview");
@@ -16595,7 +18135,7 @@ function projectionRetryDelayMs() {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
 function sleepMs(ms) {
-  return new Promise((resolve10) => setTimeout(resolve10, ms));
+  return new Promise((resolve11) => setTimeout(resolve11, ms));
 }
 function classifyProjectionError(err) {
   if (err instanceof TaskLifecycleError) {
@@ -16696,6 +18236,12 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
     }
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
+    await cancelUserAsksForSession(
+      ctx,
+      workspaceId,
+      ev.sessionId,
+      ev.type === "session.failed" ? "session.failed" : "session.exited"
+    );
   }
   if (rec?.lastTaskId) {
     const mountInfos = ctx.host.list();
@@ -16718,11 +18264,17 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
           emitTaskState(ctx, mount.workspaceId, waited, "session.waiting_user");
         });
       } else if (ev.type === "session.live" && !hasPendingToolApproval && task.state === "waiting" && task.wait?.reason === "user-input") {
-        await ctx.mutations.run(mount.workspaceId, async () => {
-          ctx.host.markSelfWrite(mount.workspaceId);
-          const resumed = await taskResume(mount.env, task.path);
-          emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
-        });
+        const pendingAsk = await ctx.userAsks.getPendingForTask(
+          mount.workspaceId,
+          task.path
+        );
+        if (!pendingAsk) {
+          await ctx.mutations.run(mount.workspaceId, async () => {
+            ctx.host.markSelfWrite(mount.workspaceId);
+            const resumed = await taskResume(mount.env, task.path);
+            emitTaskState(ctx, mount.workspaceId, resumed, "session.live");
+          });
+        }
       } else if ((ev.type === "session.failed" || ev.type === "session.exited") && (task.state === "running" || task.state === "waiting")) {
         await failTaskFromRuntime(ctx, {
           workspaceId: mount.workspaceId,
@@ -16759,9 +18311,19 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
 async function failTaskFromRuntime(ctx, input) {
   const mount = ctx.host.get(input.workspaceId);
   if (!mount) return;
+  await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
   if (input.sessionId) {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+    }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "task.fail"
+      );
     } catch {
     }
     try {
@@ -16913,6 +18475,15 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
     } catch {
     }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+    }
     const probe = await ctx.runtime.probe(input.sessionId);
     if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
       await ctx.runtime.stopSession(input.sessionId, "user");
@@ -17000,10 +18571,10 @@ function requireProfileId(p) {
   }
   return profileId;
 }
-async function resolveStartSessionA2APolicy(fs14, input) {
+async function resolveStartSessionA2APolicy(fs16, input) {
   if (input.callerKind === "user") return "allow";
-  const registry = await loadRolesRegistry(fs14);
-  const role = registry.roles.find((r) => r.name === input.taskRole);
+  const registry = await loadRolesRegistry(fs16);
+  const role = resolveRole(registry.roles, input.taskRole);
   if (input.requireRegisteredRole && !role) {
     throw new RpcError(
       -32602,
@@ -17013,10 +18584,10 @@ async function resolveStartSessionA2APolicy(fs14, input) {
   }
   return roleA2APolicy(role);
 }
-async function resolveRoleProfileAllowed(fs14, input) {
+async function resolveRoleProfileAllowed(fs16, input) {
   if (input.policy !== "allow") return true;
-  const registry = await loadRolesRegistry(fs14);
-  const role = registry.roles.find((r) => r.name === input.taskRole);
+  const registry = await loadRolesRegistry(fs16);
+  const role = resolveRole(registry.roles, input.taskRole);
   return roleAllowsProfile(role, input.profileId);
 }
 function parseCallerKind(raw) {
@@ -17025,16 +18596,16 @@ function parseCallerKind(raw) {
 }
 function resolveConcept3(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
-  const path16 = optionalString(p, "path");
+  const path18 = optionalString(p, "path");
   if (id) {
     const byId = tent.byId.get(id);
     if (byId) return byId;
     throw new RpcError(-32004, `Concept not found: ${id}`);
   }
-  if (path16) {
-    const byPath = tent.byPath.get(path16);
+  if (path18) {
+    const byPath = tent.byPath.get(path18);
     if (byPath) return byPath;
-    throw new RpcError(-32004, `Concept not found: ${path16}`);
+    throw new RpcError(-32004, `Concept not found: ${path18}`);
   }
   throw new RpcError(-32602, "Concept lookup requires id, boxId, or path");
 }
@@ -17389,24 +18960,24 @@ function headerValue(headers, name) {
 }
 
 // src/service/data-dir.ts
-import * as fs9 from "node:fs/promises";
+import * as fs11 from "node:fs/promises";
 import { isIP } from "node:net";
-import * as os4 from "node:os";
-import * as path9 from "node:path";
+import * as os5 from "node:os";
+import * as path11 from "node:path";
 function defaultServiceDataDir(env = process.env) {
-  if (env.TENT_SERVICE_DATA_DIR) return path9.resolve(env.TENT_SERVICE_DATA_DIR);
+  if (env.TENT_SERVICE_DATA_DIR) return path11.resolve(env.TENT_SERVICE_DATA_DIR);
   if (process.platform === "win32") {
-    const base = env.APPDATA || path9.join(os4.homedir(), "AppData", "Roaming");
-    return path9.join(base, "Tent");
+    const base = env.APPDATA || path11.join(os5.homedir(), "AppData", "Roaming");
+    return path11.join(base, "Tent");
   }
   if (process.platform === "darwin") {
-    return path9.join(os4.homedir(), "Library", "Application Support", "Tent");
+    return path11.join(os5.homedir(), "Library", "Application Support", "Tent");
   }
-  const xdg = env.XDG_STATE_HOME || path9.join(os4.homedir(), ".local", "state");
-  return path9.join(xdg, "tent");
+  const xdg = env.XDG_STATE_HOME || path11.join(os5.homedir(), ".local", "state");
+  return path11.join(xdg, "tent");
 }
 function serviceEndpointPath(dataDir) {
-  return path9.join(dataDir, "service.json");
+  return path11.join(dataDir, "service.json");
 }
 function serviceBaseUrl(host, port) {
   const authorityHost = isIP(host) === 6 ? `[${host}]` : host;
@@ -17429,7 +19000,7 @@ async function writeServiceEndpoint(dataDir, record) {
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs9.readFile(file, "utf8");
+    const raw = await fs11.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -17451,7 +19022,7 @@ async function removeServiceEndpoint(dataDir, expectedInstanceId) {
       const endpoint = await readServiceEndpoint(dataDir);
       if (endpoint?.instanceId !== expectedInstanceId) return;
     }
-    await fs9.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs11.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
@@ -17618,14 +19189,14 @@ async function createServiceHttpServer(options) {
   };
 }
 function listen(server, port, host) {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     const onError = (error) => {
       server.off("listening", onListening);
       reject(error);
     };
     const onListening = () => {
       server.off("error", onError);
-      resolve10();
+      resolve11();
     };
     server.once("error", onError);
     server.once("listening", onListening);
@@ -17633,8 +19204,8 @@ function listen(server, port, host) {
   });
 }
 function closeServer(server) {
-  return new Promise((resolve10, reject) => {
-    server.close((err) => err ? reject(err) : resolve10());
+  return new Promise((resolve11, reject) => {
+    server.close((err) => err ? reject(err) : resolve11());
   });
 }
 async function handleRequest(req, res, options, closeSseConnections) {
@@ -17840,7 +19411,7 @@ function writeJson2(res, status, body) {
   res.end(payload);
 }
 function readBody(req, maxBytes) {
-  return new Promise((resolve10, reject) => {
+  return new Promise((resolve11, reject) => {
     const declaredLength = Number(req.headers["content-length"] ?? 0);
     if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
       req.resume();
@@ -17869,7 +19440,7 @@ function readBody(req, maxBytes) {
       }
       chunks.push(buffer);
     };
-    const onEnd = () => finish(() => resolve10(Buffer.concat(chunks, total).toString("utf8")));
+    const onEnd = () => finish(() => resolve11(Buffer.concat(chunks, total).toString("utf8")));
     const onError = (error) => finish(() => reject(error));
     const onAborted = () => finish(() => reject(new Error("request aborted")));
     req.on("data", onData);
@@ -17920,11 +19491,11 @@ var EventBus = class {
 // src/service/workspace-host.ts
 import { createHash as createHash3 } from "node:crypto";
 import { watch } from "node:fs";
-import * as fs11 from "node:fs/promises";
-import * as path10 from "node:path";
+import * as fs13 from "node:fs/promises";
+import * as path12 from "node:path";
 
 // src/fs/node-fs.ts
-import * as fs10 from "node:fs/promises";
+import * as fs12 from "node:fs/promises";
 import * as nodePath4 from "node:path";
 var NodeFs = class {
   constructor(root) {
@@ -17940,64 +19511,64 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs10.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs12.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
-  async readFile(path16) {
-    return fs10.readFile(this.abs(path16), "utf8");
+  async readFile(path18) {
+    return fs12.readFile(this.abs(path18), "utf8");
   }
-  async writeFile(path16, content3) {
-    await fs10.mkdir(nodePath4.dirname(this.abs(path16)), { recursive: true });
-    await fs10.writeFile(this.abs(path16), content3, "utf8");
+  async writeFile(path18, content3) {
+    await fs12.mkdir(nodePath4.dirname(this.abs(path18)), { recursive: true });
+    await fs12.writeFile(this.abs(path18), content3, "utf8");
   }
-  async readBinary(path16) {
-    const buf = await fs10.readFile(this.abs(path16));
+  async readBinary(path18) {
+    const buf = await fs12.readFile(this.abs(path18));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
-  async writeBinary(path16, data) {
-    const abs = this.abs(path16);
-    await fs10.mkdir(nodePath4.dirname(abs), { recursive: true });
+  async writeBinary(path18, data) {
+    const abs = this.abs(path18);
+    await fs12.mkdir(nodePath4.dirname(abs), { recursive: true });
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     try {
-      await fs10.writeFile(tmp, payload);
-      await fs10.rename(tmp, abs);
+      await fs12.writeFile(tmp, payload);
+      await fs12.rename(tmp, abs);
     } catch (err) {
-      await fs10.rm(tmp, { force: true }).catch(() => void 0);
+      await fs12.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
-  async exists(path16) {
+  async exists(path18) {
     try {
-      await fs10.access(this.abs(path16));
+      await fs12.access(this.abs(path18));
       return true;
     } catch {
       return false;
     }
   }
-  async mkdir(path16) {
-    await fs10.mkdir(this.abs(path16), { recursive: true });
+  async mkdir(path18) {
+    await fs12.mkdir(this.abs(path18), { recursive: true });
   }
   async move(from, to) {
-    await fs10.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
-    await fs10.rename(this.abs(from), this.abs(to));
+    await fs12.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
+    await fs12.rename(this.abs(from), this.abs(to));
   }
-  async remove(path16) {
-    await fs10.rm(this.abs(path16), { recursive: true, force: true });
+  async remove(path18) {
+    await fs12.rm(this.abs(path18), { recursive: true, force: true });
   }
-  async withLock(path16, action) {
-    const lockPath = this.abs(path16);
-    await fs10.mkdir(nodePath4.dirname(lockPath), { recursive: true });
+  async withLock(path18, action) {
+    const lockPath = this.abs(path18);
+    await fs12.mkdir(nodePath4.dirname(lockPath), { recursive: true });
     let handle;
     for (let attempt = 0; attempt < 2; attempt++) {
       try {
-        handle = await fs10.open(lockPath, "wx");
+        handle = await fs12.open(lockPath, "wx");
         break;
       } catch (error) {
         if (!isAlreadyExists(error)) throw error;
         const stale = await isStaleLock(lockPath);
         if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs10.rm(lockPath, { force: true });
+        await fs12.rm(lockPath, { force: true });
       }
     }
     if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
@@ -18006,16 +19577,16 @@ var NodeFs = class {
       return await action();
     } finally {
       await handle.close();
-      await fs10.rm(lockPath, { force: true });
+      await fs12.rm(lockPath, { force: true });
     }
   }
 };
 function isAlreadyExists(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
 }
-async function isStaleLock(path16) {
+async function isStaleLock(path18) {
   try {
-    const stat2 = await fs10.stat(path16);
+    const stat2 = await fs12.stat(path18);
     return Date.now() - stat2.mtimeMs > 12e4;
   } catch {
     return true;
@@ -18049,10 +19620,10 @@ var WorkspaceHost = class {
     return this.foregroundId;
   }
   async mount(workspaceRoot, opts) {
-    const resolved = path10.resolve(workspaceRoot);
+    const resolved = path12.resolve(workspaceRoot);
     let root;
     try {
-      root = await fs11.realpath(resolved);
+      root = await fs13.realpath(resolved);
     } catch (error) {
       const err = error;
       if (err?.code === "ENOENT") {
@@ -18061,9 +19632,9 @@ var WorkspaceHost = class {
       throw error;
     }
     const systemRoot = systemRootFromWorkspace(root);
-    const rulesPath = path10.join(systemRoot, "RULES.md");
+    const rulesPath = path12.join(systemRoot, "RULES.md");
     try {
-      await fs11.access(rulesPath);
+      await fs13.access(rulesPath);
     } catch {
       throw new Error(
         `No in-workspace Tent at ${systemRoot}. Expected ${TENT_SYSTEM_DIR}/RULES.md (B1 single-location model).`
@@ -18078,7 +19649,7 @@ var WorkspaceHost = class {
     if (this.mounts.has(workspaceId)) {
       throw new Error(`workspaceId already mounted: ${workspaceId}`);
     }
-    const tentName = opts?.tentName?.trim() || path10.basename(root) || "tent";
+    const tentName = opts?.tentName?.trim() || path12.basename(root) || "tent";
     const fsa = new NodeFs(systemRoot);
     const env = {
       fs: fsa,
@@ -18213,15 +19784,15 @@ var WorkspaceHost = class {
   }
 };
 function makeWorkspaceId(workspaceRoot) {
-  const base = path10.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
+  const base = path12.basename(workspaceRoot).replace(/[^a-zA-Z0-9._-]+/g, "-") || "ws";
   const identity = process.platform === "win32" ? workspaceRoot.toLowerCase() : workspaceRoot;
   const digest = createHash3("sha256").update(identity).digest("base64url").slice(0, WORKSPACE_ID_DIGEST_LEN);
   return `ws-${base}-${digest}`;
 }
 
 // src/service/tool-approval-store.ts
-import * as fs12 from "node:fs/promises";
-import * as path11 from "node:path";
+import * as fs14 from "node:fs/promises";
+import * as path13 from "node:path";
 function cloneApproval2(item) {
   return {
     ...item,
@@ -18234,20 +19805,20 @@ var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "expired"
 ]);
-function isRecord5(value) {
+function isRecord6(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString2(value) {
+function isRequiredString3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
-function isOptionalString2(value) {
+function isOptionalString3(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate3(value) {
+function isValidDate4(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
-  if (!isRecord5(value)) return null;
+  if (!isRecord6(value)) return null;
   const {
     id,
     workspaceId,
@@ -18264,12 +19835,12 @@ function parseApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(sessionId) || !isRequiredString2(toolTitle) || !isRequiredString2(createdAt) || !isRequiredString2(expiresAt) || !isValidDate3(createdAt) || !isValidDate3(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString2(taskId) || !isOptionalString2(taskPath) || !isOptionalString2(role) || !isOptionalString2(toolCallId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate3(resolvedAt)) {
+  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(sessionId) || !isRequiredString3(toolTitle) || !isRequiredString3(createdAt) || !isRequiredString3(expiresAt) || !isValidDate4(createdAt) || !isValidDate4(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString3(taskId) || !isOptionalString3(taskPath) || !isOptionalString3(role) || !isOptionalString3(toolCallId) || !isOptionalString3(resolvedAt) || !isOptionalString3(resolvedBy) || resolvedAt !== void 0 && !isValidDate4(resolvedAt)) {
     return null;
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord5(option) || !isRequiredString2(option.optionId) || !isOptionalString2(option.kind) || !isOptionalString2(option.name)) {
+    if (!isRecord6(option) || !isRequiredString3(option.optionId) || !isOptionalString3(option.kind) || !isOptionalString3(option.name)) {
       return null;
     }
     parsedOptions.push({
@@ -18304,7 +19875,7 @@ var ToolApprovalStore = class {
     this.shutdownPromise = null;
     /** Serialize mutations + persist (same pattern as SessionRegistry write chain). */
     this.chain = Promise.resolve();
-    this.file = path11.join(dataDir, "tool-approvals.json");
+    this.file = path13.join(dataDir, "tool-approvals.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
   enqueue(fn) {
@@ -18320,7 +19891,7 @@ var ToolApprovalStore = class {
     return this.enqueue(async () => {
       if (this.loaded) return;
       try {
-        const raw = await fs12.readFile(this.file, "utf8");
+        const raw = await fs14.readFile(this.file, "utf8");
         let parsed;
         try {
           parsed = JSON.parse(raw);
@@ -18447,7 +20018,7 @@ var ToolApprovalStore = class {
    */
   waitForDecision(id, timeoutMs) {
     if (this.closed) return Promise.resolve("denied");
-    return new Promise((resolve10) => {
+    return new Promise((resolve11) => {
       let settled = false;
       let timer;
       const finish = (status) => {
@@ -18462,7 +20033,7 @@ var ToolApprovalStore = class {
           );
           if ((this.waiters.get(id) ?? []).length === 0) this.waiters.delete(id);
         }
-        resolve10(status);
+        resolve11(status);
       };
       const list2 = this.waiters.get(id) ?? [];
       list2.push({ resolve: finish });
@@ -18749,7 +20320,36 @@ function parseAcpFieldsCreate(raw) {
   if (promptTimeoutMs !== void 0) acp.promptTimeoutMs = promptTimeoutMs;
   const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
   if (permissionTimeoutMs !== void 0) acp.permissionTimeoutMs = permissionTimeoutMs;
-  return { displayName, acp };
+  const skills = parseSkillsFieldCreate(raw);
+  const mcpServers = parseMcpServersFieldCreate(raw);
+  return {
+    displayName,
+    acp,
+    ...skills !== void 0 ? { skills } : {},
+    ...mcpServers !== void 0 ? { mcpServers } : {}
+  };
+}
+function parseSkillsFieldCreate(raw) {
+  if (!("skills" in raw) || raw.skills === void 0 || raw.skills === null) {
+    return void 0;
+  }
+  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
+}
+function parseMcpServersFieldCreate(raw) {
+  if (!("mcpServers" in raw) || raw.mcpServers === void 0 || raw.mcpServers === null) {
+    return void 0;
+  }
+  return unwrapField(parseMcpServersArrayValue(raw.mcpServers));
+}
+function clearableSkills(raw) {
+  if (!("skills" in raw) || raw.skills === void 0) return void 0;
+  if (raw.skills === null) return null;
+  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots())) ?? null;
+}
+function clearableMcpServers(raw) {
+  if (!("mcpServers" in raw) || raw.mcpServers === void 0) return void 0;
+  if (raw.mcpServers === null) return null;
+  return unwrapField(parseMcpServersArrayValue(raw.mcpServers)) ?? null;
 }
 function parseAcpFieldsUpdate(raw) {
   return {
@@ -18762,7 +20362,9 @@ function parseAcpFieldsUpdate(raw) {
     baseUrl: clearableBaseUrl(raw),
     permissionPolicy: clearablePermissionPolicy(raw),
     promptTimeoutMs: clearablePositiveInt(raw, "promptTimeoutMs"),
-    permissionTimeoutMs: clearablePositiveInt(raw, "permissionTimeoutMs")
+    permissionTimeoutMs: clearablePositiveInt(raw, "permissionTimeoutMs"),
+    skills: clearableSkills(raw),
+    mcpServers: clearableMcpServers(raw)
   };
 }
 function applyClearablePatch(current, patch) {
@@ -18808,6 +20410,16 @@ function applyClearablePatch(current, patch) {
     "permissionTimeoutMs",
     patch.permissionTimeoutMs
   );
+  if (patch.skills === null) {
+    delete next.skills;
+  } else if (patch.skills !== void 0) {
+    next.skills = cloneSkillRefs(patch.skills);
+  }
+  if (patch.mcpServers === null) {
+    delete next.mcpServers;
+  } else if (patch.mcpServers !== void 0) {
+    next.mcpServers = cloneMcpServers(patch.mcpServers);
+  }
   return next;
 }
 function applyCreateDefaults(adapterId, acp) {
@@ -18894,13 +20506,15 @@ var AgentProfileCatalog = class {
         throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
       }
       const adapterId = parseCreateAdapterId(raw);
-      const { displayName, acp } = parseAcpFieldsCreate(raw);
+      const { displayName, acp, skills, mcpServers } = parseAcpFieldsCreate(raw);
       applyCreateDefaults(adapterId, acp);
       const profile = {
         id,
         adapterId,
         ...displayName !== void 0 ? { displayName } : {},
-        acp
+        acp,
+        ...skills !== void 0 ? { skills: cloneSkillRefs(skills) } : {},
+        ...mcpServers !== void 0 ? { mcpServers: cloneMcpServers(mcpServers) } : {}
       };
       await this.commit([...this.profiles, profile]);
       return this.get(id);
@@ -18972,7 +20586,7 @@ var AgentProfileCatalog = class {
 };
 
 // src/runtime/agent-runtime.ts
-import * as path12 from "node:path";
+import * as path14 from "node:path";
 
 // src/runtime/process-supervisor.ts
 import { spawn as spawn4 } from "node:child_process";
@@ -19084,11 +20698,11 @@ var ProcessSupervisor = class {
       notifyExit();
     });
     try {
-      await new Promise((resolve10, reject) => {
+      await new Promise((resolve11, reject) => {
         const onSpawn = () => {
           child.off("error", onStartError);
           spawned = true;
-          resolve10();
+          resolve11();
         };
         const onStartError = (error) => {
           child.off("spawn", onSpawn);
@@ -19135,13 +20749,13 @@ var ProcessSupervisor = class {
       this.children.delete(sessionId);
       return;
     }
-    await new Promise((resolve10) => {
+    await new Promise((resolve11) => {
       const done = () => {
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = void 0;
         }
-        resolve10();
+        resolve11();
       };
       if (live.exited) {
         done();
@@ -19170,14 +20784,14 @@ var ProcessSupervisor = class {
     const pid = live.child.pid;
     if (pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve10) => {
+      await new Promise((resolve11) => {
         const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve10());
-        killer.on("error", () => resolve10());
-        setTimeout(resolve10, 1500);
+        killer.on("exit", () => resolve11());
+        killer.on("error", () => resolve11());
+        setTimeout(resolve11, 1500);
       });
     } else {
       try {
@@ -19186,11 +20800,11 @@ var ProcessSupervisor = class {
       }
     }
     if (!live.exited) {
-      await new Promise((resolve10) => {
-        const t = setTimeout(resolve10, 500);
+      await new Promise((resolve11) => {
+        const t = setTimeout(resolve11, 500);
         live.child.once("exit", () => {
           clearTimeout(t);
-          resolve10();
+          resolve11();
         });
       });
     }
@@ -19230,6 +20844,7 @@ var AgentRuntime = class {
     this.closed = false;
     this.registry = new SessionRegistry(options.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
+    this.resolveCredentialRef = options.resolveCredentialRef;
     for (const p of options.profiles ?? []) {
       this.profiles.set(p.id, cloneProfileConfig(p));
     }
@@ -19412,18 +21027,21 @@ var AgentRuntime = class {
     let startedManaged;
     try {
       const resolvedEnv = await this.resolveCredentialEnv(profile);
+      const planEnv = { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
         cwd,
-        env: { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv },
+        env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
-          acp: profile.acp
+          acp: profile.acp,
+          // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
+          ...await this.buildAcpLaunchExtras(profile, planEnv)
         }
       };
       let pid;
@@ -19609,18 +21227,21 @@ var AgentRuntime = class {
     this.emit({ type: "session.starting", sessionId: req.sessionId });
     try {
       const resolvedEnv = await this.resolveCredentialEnv(profile);
+      const planEnv = { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: record.roleName,
         cwd,
-        env: { ...profile.env ?? {}, ...req.env ?? {}, ...resolvedEnv },
+        env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
-          acp: profile.acp
+          acp: profile.acp,
+          // Resume uses profileSnapshot (not live catalog edits).
+          ...await this.buildAcpLaunchExtras(profile, planEnv)
         }
       };
       const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };
@@ -19746,6 +21367,27 @@ var AgentRuntime = class {
       );
     }
     return cloneProfileConfig(current);
+  }
+  /**
+   * U2A follow-up on a live managed session: send a fixed-format user answer
+   * as the next session/prompt. Not multi-turn chat. Throws when the session
+   * is not live with a structured prompt transport.
+   */
+  async sendFollowUpPrompt(sessionId, prompt) {
+    this.assertOpen();
+    const text3 = prompt.trim();
+    if (!text3) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    const managed = this.managed.get(sessionId);
+    if (!managed || !managed.isAlive()) {
+      throw new Error(`Session not alive for follow-up: ${sessionId}`);
+    }
+    if (typeof managed.sendFollowUpPrompt !== "function") {
+      throw new Error(
+        `Session ${sessionId} adapter does not support live follow-up prompts`
+      );
+    }
+    await this.registry.update(sessionId, { state: "live" });
+    await managed.sendFollowUpPrompt(text3);
   }
   async stopSession(sessionId, reason) {
     this.assertOpen();
@@ -20006,6 +21648,52 @@ var AgentRuntime = class {
     }
   }
   /**
+   * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
+   * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
+   * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
+   */
+  async buildAcpLaunchExtras(profile, planEnv) {
+    const hasSkills = Array.isArray(profile.skills) && profile.skills.length > 0;
+    const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
+    if (!hasSkills && !hasMcp) return {};
+    const credCache = /* @__PURE__ */ new Map();
+    if (hasMcp && this.resolveCredentialRef) {
+      for (const s of profile.mcpServers ?? []) {
+        if (s.enabled === false) continue;
+        const refs = /* @__PURE__ */ new Set();
+        if (s.envCredentialRefs) {
+          for (const id of Object.values(s.envCredentialRefs)) refs.add(id);
+        }
+        if (s.headerCredentialRefs) {
+          for (const id of Object.values(s.headerCredentialRefs)) refs.add(id);
+        }
+        for (const id of refs) {
+          if (credCache.has(id)) continue;
+          let value;
+          try {
+            value = await this.resolveCredentialRef(id);
+          } catch {
+            throw new Error(
+              `MCP server ${s.name}: credential resolve failed for profile ${profile.id} credentialRef=${id}`
+            );
+          }
+          if (typeof value === "string" && value) {
+            credCache.set(id, value);
+          }
+        }
+      }
+    }
+    const acpSkills = hasSkills ? resolveAcpSkillMeta(profile.skills, { requirePathExists: true }) : void 0;
+    const acpMcpServers = hasMcp ? resolveAcpMcpServersWire(profile.mcpServers, {
+      planEnv,
+      resolveCredential: (id) => credCache.get(id)
+    }) : void 0;
+    return {
+      ...acpSkills !== void 0 ? { acpSkills } : {},
+      ...acpMcpServers !== void 0 ? { acpMcpServers } : {}
+    };
+  }
+  /**
    * When profile.acp.credentialRef is set, call resolveProfileEnv and require
    * a non-empty value for profile.acp.envKey. Fail-loud otherwise.
    * Never persists secrets onto SessionRecord.
@@ -20038,8 +21726,8 @@ var AgentRuntime = class {
   }
 };
 function sameRuntimeCwd(left, right) {
-  const a = path12.resolve(left);
-  const b = path12.resolve(right);
+  const a = path14.resolve(left);
+  const b = path14.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
 function redactRuntimeValue(message, value) {
@@ -20050,14 +21738,14 @@ function createAgentRuntime(options) {
 }
 
 // src/service/service.ts
-import * as os5 from "node:os";
-import * as path14 from "node:path";
+import * as os6 from "node:os";
+import * as path16 from "node:path";
 import { fileURLToPath } from "node:url";
 
 // src/service/service-lease.ts
 import { randomUUID } from "node:crypto";
-import * as fs13 from "node:fs/promises";
-import * as path13 from "node:path";
+import * as fs15 from "node:fs/promises";
+import * as path15 from "node:path";
 var ServiceDataDirBusyError = class extends Error {
   constructor(dataDir, owner) {
     super(
@@ -20068,7 +21756,7 @@ var ServiceDataDirBusyError = class extends Error {
   }
 };
 function serviceLeasePath(dataDir) {
-  return path13.join(dataDir, "service.lock");
+  return path15.join(dataDir, "service.lock");
 }
 async function acquireServiceDataDirLease(dataDir, options = {}) {
   const pid = options.pid ?? process.pid;
@@ -20077,16 +21765,16 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
   const isProcessAlive = options.isProcessAlive ?? processIsAlive;
   const record = { instanceId, pid, startedAt };
   const lockPath = serviceLeasePath(dataDir);
-  await fs13.mkdir(dataDir, { recursive: true });
+  await fs15.mkdir(dataDir, { recursive: true });
   const candidate = `${lockPath}.candidate-${instanceId}`;
-  await fs13.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
+  await fs15.writeFile(candidate, JSON.stringify(record, null, 2) + "\n", {
     encoding: "utf8",
     flag: "wx"
   });
   try {
     for (; ; ) {
       try {
-        await fs13.link(candidate, lockPath);
+        await fs15.link(candidate, lockPath);
         break;
       } catch (error) {
         if (!hasCode(error, "EEXIST")) throw error;
@@ -20096,9 +21784,9 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
         }
         const stalePath = `${lockPath}.stale-${randomUUID()}`;
         try {
-          await fs13.rename(lockPath, stalePath);
+          await fs15.rename(lockPath, stalePath);
           try {
-            await fs13.rm(stalePath, { force: true });
+            await fs15.rm(stalePath, { force: true });
           } catch {
           }
         } catch (error2) {
@@ -20109,7 +21797,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
     }
   } finally {
     try {
-      await fs13.rm(candidate, { force: true });
+      await fs15.rm(candidate, { force: true });
     } catch {
     }
   }
@@ -20121,7 +21809,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
       if (released) return;
       const owner = await readLeaseRecord(lockPath);
       if (owner?.instanceId === instanceId) {
-        await fs13.rm(lockPath, { force: true });
+        await fs15.rm(lockPath, { force: true });
       }
       released = true;
     }
@@ -20129,7 +21817,7 @@ async function acquireServiceDataDirLease(dataDir, options = {}) {
 }
 async function readLeaseRecord(file) {
   try {
-    const value = JSON.parse(await fs13.readFile(file, "utf8"));
+    const value = JSON.parse(await fs15.readFile(file, "utf8"));
     if (typeof value.instanceId !== "string" || !value.instanceId || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.startedAt !== "string") {
       return null;
     }
@@ -20191,6 +21879,8 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   await a2a.ensureLoaded();
   const toolApprovals = new ToolApprovalStore(dataDir);
   await toolApprovals.ensureLoaded();
+  const userAsks = new UserAskStore(dataDir);
+  await userAsks.ensureLoaded();
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector
   });
@@ -20290,6 +21980,12 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         );
       }
       return { [envKey]: secret };
+    },
+    resolveCredentialRef: async (credentialRef) => {
+      const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
+      if (!id) return void 0;
+      const secret = await credentials.resolve(id);
+      return typeof secret === "string" && secret ? secret : void 0;
     }
   });
   runtimeHolder.current = runtime;
@@ -20306,7 +22002,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   });
   await runtime.reconcileOnBoot();
   const packageRoot = options.packageRoot ?? defaultPackageRoot();
-  const home = options.home ?? os5.homedir();
+  const home = options.home ?? os6.homedir();
   const ctx = {
     host: workspaceHost,
     mutations,
@@ -20317,6 +22013,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
     runtime,
     a2a,
     toolApprovals,
+    userAsks,
     credentials,
     dataDir,
     profileCatalog,
@@ -20388,6 +22085,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         events.emit("service.health", "", { action: "stopping" });
         await attempt(() => httpServer.close());
         await attempt(() => toolApprovals.shutdown(), true);
+        await attempt(() => userAsks.shutdown(), true);
         await attempt(() => runtime.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
@@ -20418,11 +22116,11 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   };
 }
 function defaultPackageRoot() {
-  const here = path14.dirname(fileURLToPath(import.meta.url));
-  if (path14.basename(here) === "service" && path14.basename(path14.dirname(here)) === "src") {
-    return path14.resolve(here, "../..");
+  const here = path16.dirname(fileURLToPath(import.meta.url));
+  if (path16.basename(here) === "service" && path16.basename(path16.dirname(here)) === "src") {
+    return path16.resolve(here, "../..");
   }
-  return path14.resolve(here);
+  return path16.resolve(here);
 }
 
 // src/service/cli.ts
@@ -20472,10 +22170,10 @@ async function main() {
   const mountPath = flagValue(args, "--mount");
   const service = await startLocalTentService({
     port: portRaw ? Number(portRaw) : 0,
-    dataDir: dataDir ? path15.resolve(dataDir) : void 0
+    dataDir: dataDir ? path17.resolve(dataDir) : void 0
   });
   if (mountPath) {
-    const info = await service.hostApi.mount(path15.resolve(mountPath));
+    const info = await service.hostApi.mount(path17.resolve(mountPath));
     process.stdout.write(`Mounted ${info.workspaceRoot} as ${info.workspaceId}
 `);
   }

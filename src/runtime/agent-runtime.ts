@@ -736,6 +736,28 @@ export class AgentRuntime implements AgentRuntimePort {
     return cloneProfileConfig(current);
   }
 
+  /**
+   * U2A follow-up on a live managed session: send a fixed-format user answer
+   * as the next session/prompt. Not multi-turn chat. Throws when the session
+   * is not live with a structured prompt transport.
+   */
+  async sendFollowUpPrompt(sessionId: string, prompt: string): Promise<void> {
+    this.assertOpen();
+    const text = prompt.trim();
+    if (!text) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    const managed = this.managed.get(sessionId);
+    if (!managed || !managed.isAlive()) {
+      throw new Error(`Session not alive for follow-up: ${sessionId}`);
+    }
+    if (typeof managed.sendFollowUpPrompt !== "function") {
+      throw new Error(
+        `Session ${sessionId} adapter does not support live follow-up prompts`
+      );
+    }
+    await this.registry.update(sessionId, { state: "live" });
+    await managed.sendFollowUpPrompt(text);
+  }
+
   async stopSession(sessionId: string, reason: StopReason): Promise<void> {
     this.assertOpen();
     await this.stopSessionInternal(sessionId, reason);

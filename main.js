@@ -1001,34 +1001,134 @@ var init_tags = __esm({
   }
 });
 
+// src/core/id.ts
+function deterministicDigest(input, byteLen = 32) {
+  const out = new Uint8Array(byteLen);
+  for (let offset = 0; offset < byteLen; offset += 4) {
+    let h = (2166136261 ^ Math.imul(offset + 1, 2654435769)) >>> 0;
+    const salted = `${offset}\0${input}`;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 2246822507) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 3266489909) >>> 0;
+    h ^= h >>> 16;
+    out[offset] = h & 255;
+    if (offset + 1 < byteLen) out[offset + 1] = h >>> 8 & 255;
+    if (offset + 2 < byteLen) out[offset + 2] = h >>> 16 & 255;
+    if (offset + 3 < byteLen) out[offset + 3] = h >>> 24 & 255;
+  }
+  return out;
+}
+function encodeAlphabetBytes(bytes, len) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    const b = bytes[i % bytes.length] ^ i * 17 & 255;
+    s += ALPHABET[b % ALPHABET.length];
+  }
+  return s;
+}
+function makePrefixedId(prefix, rand = Math.random, len = 6) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
+  }
+  return prefix + s;
+}
+function makeUniquePrefixedId(prefix, existing, rand = Math.random) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = makePrefixedId(prefix, rand);
+    if (!existing.has(id)) return id;
+  }
+  return makePrefixedId(prefix, rand, 10);
+}
+function makeConceptId(rand = Math.random, len = 6) {
+  return makePrefixedId(CONCEPT_ID_PREFIX, rand, len);
+}
+function makeUniqueConceptId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(CONCEPT_ID_PREFIX, existing, rand);
+}
+function makeUniqueRoleId(existing, rand = Math.random) {
+  return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
+}
+function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set()) {
+  const key = name.trim();
+  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
+  for (let len = 6; len <= 16; len++) {
+    const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
+    if (!existing.has(id)) return id;
+  }
+  const fallback = deterministicDigest(
+    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
+    32
+  );
+  return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
+}
+function isRoleId(id) {
+  return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
+}
+var ALPHABET, CONCEPT_ID_PREFIX, ROLE_ID_PREFIX;
+var init_id = __esm({
+  "src/core/id.ts"() {
+    "use strict";
+    ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+    CONCEPT_ID_PREFIX = "cx-";
+    ROLE_ID_PREFIX = "rl-";
+  }
+});
+
 // src/core/skillRoleRegistry.ts
 async function loadRolesRegistry(fs) {
-  if (!await fs.exists(ROLES_REGISTRY_PATH)) return cloneDefaultRoles();
+  const { registry } = await readRolesRegistryState(fs);
+  return registry;
+}
+async function loadRolesRegistryForMutation(fs) {
+  return loadRolesRegistry(fs);
+}
+async function readRolesRegistryState(fs) {
+  if (!await fs.exists(ROLES_REGISTRY_PATH)) {
+    return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
+  }
   try {
-    const parsed = JSON.parse(await fs.readFile(ROLES_REGISTRY_PATH));
-    return normalizeRolesRegistry(parsed);
+    const rawText = await fs.readFile(ROLES_REGISTRY_PATH);
+    const parsed = JSON.parse(rawText);
+    const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
+    return { registry, migrated, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs, ROLES_REGISTRY_PATH, reset);
+    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
       "reset",
       "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
     );
-    return reset;
+    return { registry: reset, migrated: false, recovered: true };
   }
 }
-async function createRole(fs, definition) {
+async function createRole(fs, definition, rand = Math.random) {
   await withTentMutation(fs, async () => {
-    const role = normalizeRole(definition);
+    const registry = await loadRolesRegistryForMutation(fs);
+    const usedIds = roleIdSet(registry.roles);
+    const role = normalizeRoleDefinition(definition, {
+      usedIds,
+      assignMissingId: "random",
+      rand
+    });
     if (!role.name) throw new Error("Role name cannot be empty.");
     assertRoleNameAvailable(role.name);
-    const registry = await loadRolesRegistry(fs);
-    if (registry.roles.some((item) => item.name === role.name)) throw new Error(`Role already exists: ${role.name}.`);
+    if (registry.roles.some((item) => item.name === role.name)) {
+      throw new Error(`Role already exists: ${role.name}.`);
+    }
+    if (registry.roles.some((item) => item.id === role.id)) {
+      throw new Error(`Role id already exists: ${role.id}.`);
+    }
     registry.roles.push(role);
-    await writeJson(fs, ROLES_REGISTRY_PATH, registry);
+    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
 function assertRoleNameAvailable(name) {
@@ -1036,48 +1136,114 @@ function assertRoleNameAvailable(name) {
     throw new Error(`Role name is reserved by Tent: ${AGENT_PROFILES_TEMP_DIR}.`);
   }
 }
-async function updateRole(fs, name, patch) {
+async function updateRole(fs, ref, patch) {
   await withTentMutation(fs, async () => {
-    const registry = await loadRolesRegistry(fs);
-    const index = registry.roles.findIndex((role) => role.name === name);
-    if (index === -1) throw new Error(`Role does not exist: ${name}.`);
-    const next = normalizeRole({ ...registry.roles[index], ...patch, name });
+    const registry = await loadRolesRegistryForMutation(fs);
+    const index = findRoleIndex(registry.roles, ref);
+    if (index === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const current = registry.roles[index];
+    if (patch.id !== void 0 && patch.id !== current.id) {
+      throw new Error("Role id is immutable.");
+    }
+    if (patch.name !== void 0 && patch.name.trim() !== current.name) {
+      throw new Error(
+        "Role operational name cannot be renamed in this batch (temp/path migration is deferred); change displayName instead."
+      );
+    }
+    const next = normalizeRoleDefinition(
+      {
+        ...current,
+        ...patch,
+        id: current.id,
+        name: current.name
+      },
+      { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
+    );
     if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
       const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
       if (normalized) next.allowedProfiles = normalized;
       else delete next.allowedProfiles;
     }
+    if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
+      const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
+      next.displayName = dn || current.name;
+    }
     registry.roles[index] = next;
-    await writeJson(fs, ROLES_REGISTRY_PATH, registry);
+    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
   });
 }
-async function deleteRole(fs, name, confirmation) {
+async function deleteRole(fs, ref, confirmation) {
   await withTentMutation(fs, async () => {
-    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the role name ${name}.`);
-    const registry = await loadRolesRegistry(fs);
-    const next = registry.roles.filter((role) => role.name !== name);
-    if (next.length === registry.roles.length) throw new Error(`Role does not exist: ${name}.`);
-    await writeJson(fs, ROLES_REGISTRY_PATH, { roles: next });
+    const registry = await loadRolesRegistryForMutation(fs);
+    const index = findRoleIndex(registry.roles, ref);
+    if (index === -1) throw new Error(`Role does not exist: ${ref}.`);
+    const role = registry.roles[index];
+    if (confirmation !== role.name && confirmation !== role.id) {
+      throw new Error(
+        `Confirmation mismatch; enter the role name ${role.name} or id ${role.id}.`
+      );
+    }
+    registry.roles.splice(index, 1);
+    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry({ roles: registry.roles }));
   });
 }
-function normalizeRolesRegistry(value) {
+function findRoleIndex(roles, ref) {
+  const key = typeof ref === "string" ? ref.trim() : "";
+  if (!key) return -1;
+  let idx = roles.findIndex((role) => role.id === key);
+  if (idx !== -1) return idx;
+  return roles.findIndex((role) => role.name === key);
+}
+function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord3(value) ? value : {};
   const roles = [];
+  let migrated = false;
+  const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord3(item)) continue;
-      const role = normalizeRoleDefinition(item);
+      const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
+      const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
+      const role = normalizeRoleDefinition(item, {
+        usedIds,
+        assignMissingId: "deterministic"
+      });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
+      if (roles.some((existing) => existing.id === role.id)) continue;
+      if (!hadId || !hadDisplayName) migrated = true;
+      usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { roles };
+  return { registry: { roles }, migrated };
 }
-function normalizeRoleDefinition(value) {
+function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
-  const role = { name };
+  const usedIds = opts.usedIds ?? /* @__PURE__ */ new Set();
+  const assign = opts.assignMissingId ?? "deterministic";
+  let id = typeof value.id === "string" ? value.id.trim() : "";
+  if (id && !isRoleId(id)) {
+    id = "";
+  }
+  if (id && usedIds.has(id) && assign !== "keep") {
+    id = "";
+  }
+  if (!id) {
+    if (assign === "random") {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    } else if (name) {
+      id = deterministicRoleIdFromName(name, usedIds);
+    } else {
+      id = makeUniqueRoleId(usedIds, opts.rand ?? Math.random);
+    }
+  }
+  const displayRaw = typeof value.displayName === "string" ? value.displayName.trim() : "";
+  const displayName = displayRaw || name;
+  const role = { id, name, displayName };
   if (typeof value.prompt === "string" && value.prompt.trim()) role.prompt = value.prompt.trim();
-  if (typeof value.description === "string" && value.description.trim()) role.description = value.description.trim();
+  if (typeof value.description === "string" && value.description.trim()) {
+    role.description = value.description.trim();
+  }
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
@@ -1108,9 +1274,6 @@ function normalizeA2APolicy(value) {
   if (value === "allow" || value === "ask" || value === "deny") return value;
   return void 0;
 }
-function normalizeRole(value) {
-  return normalizeRoleDefinition(value);
-}
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
   if (!isRecord3(value)) throw new Error("role.cli must be an object.");
@@ -1123,6 +1286,35 @@ function normalizeCliConfig(value) {
     cli.resume = resume;
   }
   return cli;
+}
+function roleIdSet(roles, exceptId) {
+  const set = /* @__PURE__ */ new Set();
+  for (const role of roles) {
+    if (!role.id) continue;
+    if (exceptId && role.id === exceptId) continue;
+    set.add(role.id);
+  }
+  return set;
+}
+function serializeRolesRegistry(registry) {
+  return {
+    roles: registry.roles.map((role) => {
+      const row = {
+        id: role.id,
+        name: role.name,
+        displayName: role.displayName || role.name
+      };
+      if (role.prompt) row.prompt = role.prompt;
+      if (role.description) row.description = role.description;
+      if (role.color) row.color = role.color;
+      if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
+      if (role.allowedProfiles && role.allowedProfiles.length > 0) {
+        row.allowedProfiles = [...role.allowedProfiles];
+      }
+      if (role.cli) row.cli = { ...role.cli };
+      return row;
+    })
+  };
 }
 function cloneDefaultRoles() {
   return {
@@ -1141,6 +1333,7 @@ var init_skillRoleRegistry = __esm({
   "src/core/skillRoleRegistry.ts"() {
     "use strict";
     init_adapter();
+    init_id();
     init_registryRecovery();
     init_paths();
     DEFAULT_ROLES_REGISTRY = {
@@ -1203,30 +1396,6 @@ function isFrozen(box) {
 var init_claim = __esm({
   "src/core/claim.ts"() {
     "use strict";
-  }
-});
-
-// src/core/id.ts
-function makeConceptId(rand = Math.random, len = 6) {
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    s += ALPHABET[Math.floor(rand() * ALPHABET.length)];
-  }
-  return CONCEPT_ID_PREFIX + s;
-}
-function makeUniqueConceptId(existing, rand = Math.random) {
-  for (let attempt = 0; attempt < 50; attempt++) {
-    const id = makeConceptId(rand);
-    if (!existing.has(id)) return id;
-  }
-  return makeConceptId(rand, 10);
-}
-var ALPHABET, CONCEPT_ID_PREFIX;
-var init_id = __esm({
-  "src/core/id.ts"() {
-    "use strict";
-    ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-    CONCEPT_ID_PREFIX = "cx-";
   }
 });
 
