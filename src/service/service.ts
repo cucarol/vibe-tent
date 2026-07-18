@@ -281,12 +281,9 @@ async function startOwnedLocalTentService(
     resolveCredentialRef: async (credentialRef) => {
       const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
       if (!id) return undefined;
-      try {
-        const secret = await credentials.resolve(id);
-        return typeof secret === "string" && secret ? secret : undefined;
-      } catch {
-        return undefined;
-      }
+      // Fail-loud: do not swallow vault/resolver errors (AgentRuntime redacts to profile/server/ref).
+      const secret = await credentials.resolve(id);
+      return typeof secret === "string" && secret ? secret : undefined;
     },
   });
   runtimeHolder.current = runtime;

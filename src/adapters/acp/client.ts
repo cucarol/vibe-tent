@@ -41,6 +41,7 @@ export type AcpClientOptions = {
   mcpServers?: AcpMcpServerWire[];
   /**
    * Skill name/path refs for session `_meta.tent.skills` (no SKILL.md bodies).
+   * Tent metadata only — not a claim of universal provider-side skill activation.
    * Optional; omitted when profile has no enabled skills.
    */
   skills?: AcpSkillMetaRef[];
@@ -140,7 +141,9 @@ export class AcpClient {
 
   /**
    * Build session/new or session/load params from the start/resume snapshot.
-   * mcpServers always present (array; may be empty). Skill refs go under _meta.tent.skills.
+   * mcpServers always present (array; may be empty).
+   * Skill name/path refs go under `_meta.tent.skills` as Tent metadata only
+   * (not a guarantee that every provider activates skills from this field).
    * Must not log returned params (mcpServers may hold secret values).
    */
   private sessionStartParams(

@@ -25,7 +25,10 @@ export type GrokAcpClientOptions = {
   permissionPolicy: GrokAcpPermissionPolicy;
   /** Snapshot mcpServers for session/new|load (may hold secrets; never log). */
   mcpServers?: AcpMcpServerWire[];
-  /** Skill name/path refs for `_meta.tent.skills` (no SKILL.md bodies). */
+  /**
+   * Skill name/path refs for `_meta.tent.skills` (no SKILL.md bodies).
+   * Tent metadata only — not universal provider-side skill activation.
+   */
   skills?: AcpSkillMetaRef[];
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;

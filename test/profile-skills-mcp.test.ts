@@ -287,12 +287,45 @@ test("profile.create rejects skill path outside allowed roots", async () => {
   });
 });
 
+async function waitForMockLog(
+  logPath: string,
+  predicate: (raw: string) => boolean,
+  attempts = 80
+): Promise<string> {
+  let logRaw = "";
+  for (let i = 0; i < attempts; i++) {
+    try {
+      logRaw = await fs.readFile(logPath, "utf8");
+      if (predicate(logRaw)) return logRaw;
+    } catch {
+      // not yet
+    }
+    await new Promise((r) => setTimeout(r, 50));
+  }
+  assert.ok(logRaw, "mock log should exist");
+  return logRaw;
+}
+
 test("session/new projects mcpServers + skill meta from profile snapshot; live edits do not hot-update", async () => {
   const logPath = path.join(
     await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-log-")),
     "mock.json"
   );
-  const skillPath = path.join(os.homedir(), ".agents", "skills", "tent-role");
+  // Create a real skill path so requirePathExists=true succeeds at start.
+  const skillRoot = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-skills-")),
+    "tent-role"
+  );
+  await fs.mkdir(skillRoot, { recursive: true });
+  await fs.writeFile(path.join(skillRoot, "SKILL.md"), "# fixture\n", "utf8");
+  // Temporarily treat this dir as allowed by using name-only for skill that may
+  // not be under home roots — path existence is what start/resume validates.
+  // For CRUD roots check is separate; runtime only checks existence when path set.
+  // Use a path under ~/.agents/skills if possible, else any existing path.
+  const homeSkill = path.join(os.homedir(), ".agents", "skills", "tent-role-skmcp-fixture");
+  await fs.mkdir(homeSkill, { recursive: true });
+  await fs.writeFile(path.join(homeSkill, "SKILL.md"), "# fixture\n", "utf8");
+
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-rt-"));
   const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cwd-"));
 
@@ -314,7 +347,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
       permissionPolicy: "deny",
       promptTimeoutMs: 8_000,
     },
-    skills: [{ name: "tent-role", path: skillPath }],
+    skills: [{ name: "tent-role", path: homeSkill }],
     mcpServers: [
       {
         name: "fs",
@@ -346,18 +379,7 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
       bootstrapPrompt: "report ok",
     });
 
-    // Wait for mock log to flush after session/new
-    let logRaw = "";
-    for (let i = 0; i < 40; i++) {
-      try {
-        logRaw = await fs.readFile(logPath, "utf8");
-        if (logRaw.includes("news")) break;
-      } catch {
-        // not yet
-      }
-      await new Promise((r) => setTimeout(r, 50));
-    }
-    assert.ok(logRaw, "mock log should exist");
+    const logRaw = await waitForMockLog(logPath, (raw) => raw.includes("news"));
     const log = JSON.parse(logRaw) as {
       news?: Array<{
         mcpServersLen?: number;
@@ -387,6 +409,340 @@ test("session/new projects mcpServers + skill meta from profile snapshot; live e
     await runtime.stopSession(sessionId, "user");
   } finally {
     await runtime.shutdown();
+    await fs.rm(skillRoot, { recursive: true, force: true }).catch(() => undefined);
+    await fs.rm(homeSkill, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("session/load sends original snapshot mcpServers/skills after live profile mutation", async () => {
+  // Separate logs: resume spawns a new bridge process that overwrites MOCK_ACP_LOG.
+  const logDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-load-log-"));
+  const startLogPath = path.join(logDir, "start.json");
+  const resumeLogPath = path.join(logDir, "resume.json");
+  const homeSkill = path.join(
+    os.homedir(),
+    ".agents",
+    "skills",
+    "tent-role-skmcp-load-fixture"
+  );
+  await fs.mkdir(homeSkill, { recursive: true });
+  await fs.writeFile(path.join(homeSkill, "SKILL.md"), "# fixture load\n", "utf8");
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-load-rt-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-load-cwd-"));
+
+  const baseEnv = {
+    MOCK_ACP_KEEP_ALIVE: "1",
+    MOCK_ACP_LOAD_SESSION: "1",
+    MOCK_ACP_HISTORY_TEXT: "HISTORY_NO_DELIVER",
+    MOCK_ACP_PROMPT_TEXT: "LOAD_SKMCP_OK",
+    CPA_GROK_API_KEY: "test-key-not-real",
+    MCP_API_KEY: "mcp-secret-should-not-log",
+  };
+
+  const profile: AgentProfileConfig = {
+    id: "grok-acp-mcp-load",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    env: {
+      ...baseEnv,
+      MOCK_ACP_LOG: startLogPath,
+    },
+    acp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 8_000,
+    },
+    skills: [{ name: "tent-role", path: homeSkill }],
+    mcpServers: [
+      {
+        name: "fs",
+        transport: "stdio",
+        command: "npx",
+        args: ["-y", "server"],
+        envKeys: { API_KEY: "MCP_API_KEY" },
+      },
+    ],
+  };
+
+  const runtime = createAgentRuntime({
+    dataDir,
+    profiles: [profile],
+  });
+
+  try {
+    const sessionId = makeSessionId();
+    await runtime.startSession({
+      sessionId,
+      profileId: profile.id,
+      runtimeWorkspace: { cwd },
+      bootstrapPrompt: "start ok",
+    });
+
+    const startRaw = await waitForMockLog(startLogPath, (raw) => {
+      try {
+        const j = JSON.parse(raw) as { news?: unknown[]; methods?: string[] };
+        return (
+          Array.isArray(j.news) &&
+          j.news.length >= 1 &&
+          Array.isArray(j.methods) &&
+          j.methods.includes("session/new")
+        );
+      } catch {
+        return false;
+      }
+    });
+    const startLog = JSON.parse(startRaw) as {
+      methods: string[];
+      news?: Array<{
+        mcpServersLen?: number;
+        mcpServerNames?: string[];
+        skillNames?: string[];
+      }>;
+    };
+    assert.ok(startLog.methods.includes("session/new"));
+    assert.equal(startLog.news?.[0]?.mcpServersLen, 1);
+    assert.deepEqual(startLog.news?.[0]?.mcpServerNames, ["fs"]);
+    assert.deepEqual(startLog.news?.[0]?.skillNames, ["tent-role"]);
+
+    // Live catalog mutation after start must not affect resume projection.
+    // Also point resume bridge log at a separate file (snapshot env still has start path).
+    runtime.registerProfile({
+      ...profile,
+      env: {
+        ...baseEnv,
+        MOCK_ACP_LOG: resumeLogPath,
+      },
+      skills: [{ name: "mutated-skill-only" }],
+      mcpServers: [
+        {
+          name: "mutated-only",
+          transport: "http",
+          url: "https://mcp.example.com/mutated",
+        },
+      ],
+    });
+
+    await runtime.stopSession(sessionId, "user");
+
+    // Resume uses profileSnapshot (original skills/mcp) + session/load, not live catalog.
+    // Snapshot still has startLogPath in env — that is fine for asserting load payload.
+    // Point resume env override so the new process writes a clean load log.
+    await runtime.resumeSession({
+      sessionId,
+      cwd,
+      env: { MOCK_ACP_LOG: resumeLogPath },
+      bootstrapPrompt: "resume ok",
+    });
+
+    const loadRaw = await waitForMockLog(resumeLogPath, (raw) => {
+      try {
+        const j = JSON.parse(raw) as { loads?: unknown[]; methods?: string[] };
+        return (
+          Array.isArray(j.loads) &&
+          j.loads.length >= 1 &&
+          Array.isArray(j.methods) &&
+          j.methods.includes("session/load")
+        );
+      } catch {
+        return false;
+      }
+    });
+    const loadLog = JSON.parse(loadRaw) as {
+      methods: string[];
+      loads?: Array<{
+        mcpServersLen?: number;
+        mcpServerNames?: string[];
+        skillNames?: string[];
+        sessionId?: string | null;
+      }>;
+    };
+    assert.ok(loadLog.methods.includes("session/load"));
+    // Honest resume: new process must not call session/new.
+    assert.ok(!loadLog.methods.includes("session/new"));
+    assert.ok(Array.isArray(loadLog.loads) && loadLog.loads.length >= 1);
+    const load = loadLog.loads[0]!;
+    // Original snapshot wire — not the mutated live profile.
+    assert.equal(load.mcpServersLen, 1);
+    assert.deepEqual(load.mcpServerNames, ["fs"]);
+    assert.deepEqual(load.skillNames, ["tent-role"]);
+    assert.equal(loadRaw.includes("mcp-secret-should-not-log"), false);
+    assert.equal(loadRaw.includes("mutated-only"), false);
+    assert.equal(loadRaw.includes("mutated-skill-only"), false);
+
+    const record = await runtime.registry.read(sessionId);
+    assert.equal(record?.profileSnapshot?.skills?.[0]?.name, "tent-role");
+    assert.equal(record?.profileSnapshot?.mcpServers?.[0]?.name, "fs");
+
+    await runtime.stopSession(sessionId, "user");
+  } finally {
+    await runtime.shutdown();
+    await fs.rm(homeSkill, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("startSession fails loud when enabled skill path is missing", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-miss-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-miss-cwd-"));
+  const missing = path.join(
+    os.homedir(),
+    ".agents",
+    "skills",
+    "tent-role-skmcp-missing-" + Date.now()
+  );
+  const profile: AgentProfileConfig = {
+    id: "grok-acp-skill-missing",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    env: {
+      CPA_GROK_API_KEY: "test-key-not-real",
+    },
+    acp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 4_000,
+    },
+    skills: [{ name: "missing-skill", path: missing, enabled: true }],
+  };
+  const runtime = createAgentRuntime({ dataDir, profiles: [profile] });
+  try {
+    await assert.rejects(
+      () =>
+        runtime.startSession({
+          sessionId: makeSessionId(),
+          profileId: profile.id,
+          runtimeWorkspace: { cwd },
+          bootstrapPrompt: "should fail",
+        }),
+      /path does not exist/i
+    );
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("resumeSession fails loud when snapshot skill path is missing", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-resmiss-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-resmiss-cwd-"));
+  const skillDir = path.join(
+    os.homedir(),
+    ".agents",
+    "skills",
+    "tent-role-skmcp-resmiss-fixture"
+  );
+  await fs.mkdir(skillDir, { recursive: true });
+  await fs.writeFile(path.join(skillDir, "SKILL.md"), "# fixture\n", "utf8");
+
+  const logPath = path.join(dataDir, "mock.json");
+  const profile: AgentProfileConfig = {
+    id: "grok-acp-skill-resmiss",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    env: {
+      MOCK_ACP_LOG: logPath,
+      MOCK_ACP_KEEP_ALIVE: "1",
+      MOCK_ACP_LOAD_SESSION: "1",
+      MOCK_ACP_PROMPT_TEXT: "OK",
+      CPA_GROK_API_KEY: "test-key-not-real",
+    },
+    acp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 8_000,
+    },
+    skills: [{ name: "will-vanish", path: skillDir, enabled: true }],
+  };
+  const runtime = createAgentRuntime({ dataDir, profiles: [profile] });
+  try {
+    const sessionId = makeSessionId();
+    await runtime.startSession({
+      sessionId,
+      profileId: profile.id,
+      runtimeWorkspace: { cwd },
+      bootstrapPrompt: "start ok",
+    });
+    await waitForMockLog(logPath, (raw) => raw.includes("news"));
+    await runtime.stopSession(sessionId, "user");
+
+    // Remove the path after snapshot was captured — resume must fail loud.
+    await fs.rm(skillDir, { recursive: true, force: true });
+
+    await assert.rejects(
+      () =>
+        runtime.resumeSession({
+          sessionId,
+          cwd,
+          bootstrapPrompt: "resume should fail",
+        }),
+      /path does not exist/i
+    );
+  } finally {
+    await runtime.shutdown();
+    await fs.rm(skillDir, { recursive: true, force: true }).catch(() => undefined);
+  }
+});
+
+test("buildAcpLaunchExtras / startSession does not swallow credential resolver errors", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-"));
+  const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "tent-skmcp-cred-cwd-"));
+  const profile: AgentProfileConfig = {
+    id: "grok-acp-cred-throw",
+    adapterId: GROK_ACP_ADAPTER_ID,
+    command: process.execPath,
+    args: [MOCK, "agent", "--model", DEFAULT_GROK_MODEL, "stdio"],
+    env: {
+      CPA_GROK_API_KEY: "test-key-not-real",
+    },
+    acp: {
+      model: DEFAULT_GROK_MODEL,
+      envKey: "CPA_GROK_API_KEY",
+      permissionPolicy: "deny",
+      promptTimeoutMs: 4_000,
+    },
+    mcpServers: [
+      {
+        name: "vaulted",
+        transport: "stdio",
+        command: "npx",
+        envCredentialRefs: { API_KEY: "mcp-secret-ref" },
+      },
+    ],
+  };
+  const runtime = createAgentRuntime({
+    dataDir,
+    profiles: [profile],
+    resolveCredentialRef: async () => {
+      throw new Error("vault backend exploded with secret=sk-should-not-leak");
+    },
+  });
+  try {
+    await assert.rejects(
+      () =>
+        runtime.startSession({
+          sessionId: makeSessionId(),
+          profileId: profile.id,
+          runtimeWorkspace: { cwd },
+          bootstrapPrompt: "should fail loud",
+        }),
+      (err: unknown) => {
+        const msg = err instanceof Error ? err.message : String(err);
+        assert.match(msg, /credential resolve failed/i);
+        assert.match(msg, /vaulted/);
+        assert.match(msg, /mcp-secret-ref/);
+        assert.match(msg, /grok-acp-cred-throw/);
+        assert.equal(msg.includes("sk-should-not-leak"), false);
+        assert.equal(msg.includes("vault backend exploded"), false);
+        return true;
+      }
+    );
+  } finally {
+    await runtime.shutdown();
   }
 });
 
@@ -413,6 +769,26 @@ test("resolveAcpSkillMeta skips disabled and does not read SKILL.md", () => {
     meta.map((s) => s.name),
     ["a", "c"]
   );
+});
+
+test("resolveAcpSkillMeta requirePathExists fails loud for missing path; name-only ok", () => {
+  const missing = path.join(
+    os.homedir(),
+    ".agents",
+    "skills",
+    "no-such-skill-" + Date.now()
+  );
+  assert.throws(
+    () =>
+      resolveAcpSkillMeta([{ name: "gone", path: missing }], {
+        requirePathExists: true,
+      }),
+    /path does not exist/i
+  );
+  const nameOnly = resolveAcpSkillMeta([{ name: "name-only" }], {
+    requirePathExists: true,
+  });
+  assert.deepEqual(nameOnly, [{ name: "name-only" }]);
 });
 
 test("disk quarantine on unknown mcpServers field with secret shape", async () => {

@@ -115,7 +115,10 @@ export type AcpMcpServerWire =
       headers?: Array<{ name: string; value: string }>;
     };
 
-/** Skill refs projected into session/new|load `_meta.tent.skills` (paths/names only). */
+/**
+ * Skill refs projected into session/new|load `_meta.tent.skills` (paths/names only).
+ * Tent metadata for adapters that honor it — not universal provider skill activation.
+ */
 export type AcpSkillMetaRef = {
   name: string;
   path?: string;
@@ -712,6 +715,8 @@ export function resolveAcpMcpServersWire(
 /**
  * Enabled skill refs for session `_meta.tent.skills` (names/paths only).
  * Does not read or embed SKILL.md content.
+ * When requirePathExists is true (start/resume), enabled path refs fail loud if missing;
+ * name-only refs remain allowed.
  */
 export function resolveAcpSkillMeta(
   skills: AgentProfileSkillRef[] | undefined,

@@ -1052,6 +1052,7 @@ export class AgentRuntime implements AgentRuntimePort {
   /**
    * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
+   * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
    */
   private async buildAcpLaunchExtras(
     profile: AgentProfileConfig,
@@ -1064,36 +1065,40 @@ export class AgentRuntime implements AgentRuntimePort {
     const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return {};
 
-    const resolveCredential = this.resolveCredentialRef
-      ? async (id: string): Promise<string | undefined> => {
-          try {
-            return await this.resolveCredentialRef!(id);
-          } catch {
-            return undefined;
-          }
-        }
-      : undefined;
-
-    // Sync resolveCredential wrapper for wire builder (collects all refs first via async pre-resolve).
+    // Pre-resolve credential refs per server so failures name profile/server/ref only (never secrets).
     const credCache = new Map<string, string>();
-    if (hasMcp && resolveCredential) {
-      const refs = new Set<string>();
+    if (hasMcp && this.resolveCredentialRef) {
       for (const s of profile.mcpServers ?? []) {
+        if (s.enabled === false) continue;
+        const refs = new Set<string>();
         if (s.envCredentialRefs) {
           for (const id of Object.values(s.envCredentialRefs)) refs.add(id);
         }
         if (s.headerCredentialRefs) {
           for (const id of Object.values(s.headerCredentialRefs)) refs.add(id);
         }
-      }
-      for (const id of refs) {
-        const v = await resolveCredential(id);
-        if (typeof v === "string" && v) credCache.set(id, v);
+        for (const id of refs) {
+          if (credCache.has(id)) continue;
+          let value: string | undefined;
+          try {
+            value = await this.resolveCredentialRef(id);
+          } catch {
+            // Fail loud; do not convert resolver throws into "not found".
+            // Name only profile / server / ref — never secret material.
+            throw new Error(
+              `MCP server ${s.name}: credential resolve failed for profile ${profile.id} credentialRef=${id}`
+            );
+          }
+          if (typeof value === "string" && value) {
+            credCache.set(id, value);
+          }
+        }
       }
     }
 
+    // Enabled path refs must exist at start/resume; name-only refs remain allowed.
     const acpSkills = hasSkills
-      ? resolveAcpSkillMeta(profile.skills, { requirePathExists: false })
+      ? resolveAcpSkillMeta(profile.skills, { requirePathExists: true })
       : undefined;
     const acpMcpServers = hasMcp
       ? resolveAcpMcpServersWire(profile.mcpServers, {
