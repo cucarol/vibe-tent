@@ -572,7 +572,8 @@ function drawNewRoleForm(
       new Notice("请填写 role 名");
       return;
     }
-    const definition: RoleDefinition = { name: form.name };
+    // id/displayName filled by createRole / normalize (displayName defaults to name).
+    const definition = { name: form.name } as RoleDefinition;
     if (form.description) definition.description = form.description;
     if (form.prompt) definition.prompt = form.prompt;
     if (form.color) definition.color = form.color;

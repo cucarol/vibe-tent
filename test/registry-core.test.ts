@@ -17,10 +17,15 @@ import {
   loadRolesRegistry,
   normalizeAllowedProfiles,
   normalizeRoleDefinition,
+  resolveRole,
   roleA2APolicy,
   roleAllowsProfile,
   updateRole,
 } from "../src/core/skillRoleRegistry.js";
+import {
+  deterministicRoleIdFromName,
+  isRoleId,
+} from "../src/core/id.js";
 import {
   addRegistryTag,
   addTag,
@@ -406,6 +411,10 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     cli: { command: "codex" },
   });
 
+  const beforeClear = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "clearable");
+  assert.ok(beforeClear);
+  assert.ok(isRoleId(beforeClear!.id));
+
   await updateRole(fsa, "clearable", {
     prompt: undefined,
     description: undefined,
@@ -415,7 +424,75 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     cli: undefined,
   });
 
-  assert.deepEqual((await loadRolesRegistry(fsa)).roles, [{ name: "clearable" }]);
+  const cleared = (await loadRolesRegistry(fsa)).roles;
+  assert.equal(cleared.length, 1);
+  assert.equal(cleared[0]!.name, "clearable");
+  assert.equal(cleared[0]!.id, beforeClear!.id);
+  assert.equal(cleared[0]!.displayName, "clearable");
+  assert.equal(cleared[0]!.prompt, undefined);
+  assert.equal(cleared[0]!.cli, undefined);
+});
+
+test("role 注册表: 旧数据无 id 时确定性补齐并写回；displayName 可改；id/name 不可改", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-id-"));
+  const fsa = new NodeFs(dir);
+  await fsa.mkdir(".tent");
+  // Legacy disk shape: name only
+  await fsa.writeFile(
+    "roles.json",
+    JSON.stringify({ roles: [{ name: "planner", prompt: "plan" }] }, null, 2) + "\n"
+  );
+
+  const expectedId = deterministicRoleIdFromName("planner");
+  const loaded = await loadRolesRegistry(fsa);
+  assert.equal(loaded.roles.length, 1);
+  assert.equal(loaded.roles[0]!.id, expectedId);
+  assert.equal(loaded.roles[0]!.displayName, "planner");
+  assert.ok(isRoleId(loaded.roles[0]!.id));
+
+  // Persisted on first load
+  const disk1 = JSON.parse(await fsa.readFile("roles.json")) as {
+    roles: Array<{ id: string; name: string; displayName: string }>;
+  };
+  assert.equal(disk1.roles[0]!.id, expectedId);
+  assert.equal(disk1.roles[0]!.displayName, "planner");
+
+  // Stable across reloads
+  const loaded2 = await loadRolesRegistry(fsa);
+  assert.equal(loaded2.roles[0]!.id, expectedId);
+
+  // Compat resolve: id / name / displayName
+  assert.equal(resolveRole(loaded2.roles, expectedId)?.name, "planner");
+  assert.equal(resolveRole(loaded2.roles, "planner")?.id, expectedId);
+
+  await updateRole(fsa, expectedId, { displayName: "规划者" });
+  const renamed = await loadRolesRegistry(fsa);
+  assert.equal(renamed.roles[0]!.id, expectedId);
+  assert.equal(renamed.roles[0]!.name, "planner");
+  assert.equal(renamed.roles[0]!.displayName, "规划者");
+  assert.equal(resolveRole(renamed.roles, "规划者")?.id, expectedId);
+
+  await assert.rejects(
+    () => updateRole(fsa, "planner", { name: "planner-v2" }),
+    /cannot be renamed|displayName/i
+  );
+  await assert.rejects(
+    () => updateRole(fsa, "planner", { id: "rl-hacked" }),
+    /immutable/i
+  );
+
+  // New create gets a random rl- (not forced equal to deterministic name hash)
+  await createRole(fsa, { name: "worker" }, () => 0.42);
+  const worker = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker");
+  assert.ok(worker);
+  assert.ok(isRoleId(worker!.id));
+  assert.equal(worker!.displayName, "worker");
+  assert.notEqual(worker!.id, deterministicRoleIdFromName("worker"));
+
+  // normalizeRoleDefinition fills missing fields without requiring callers to pass id
+  const normalized = normalizeRoleDefinition({ name: "x" });
+  assert.equal(normalized.id, deterministicRoleIdFromName("x"));
+  assert.equal(normalized.displayName, "x");
 });
 
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {

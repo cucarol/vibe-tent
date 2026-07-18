@@ -424,7 +424,19 @@ During migration window only: resolve layer may dual-read `bx-` and `cx-`. After
 
 ---
 
-## 12. Frozen decisions (B0)
+## 12. Cross-entity identity (roles / types / tags)
+
+Concept dual identity (`path` + `cx-`) is specified above. Other registries:
+
+| Entity | Immutable id | Mutable label | Notes |
+| --- | --- | --- | --- |
+| Role | `rl-…` | `displayName` | Operational `name` still keys temp/tasks until a later migration; see `identity-rename.md` |
+| AgentProfile | profile `id` | `displayName` | Machine-local only |
+| Type / tag | registry string key | same | No separate id in batch 1 — not forced for uniformity |
+
+**Rename rule:** id is never edited; rename changes display label and/or path only. Node native rename remains a follow-up with atomic path+link rewrite (contract in `identity-rename.md` §4).
+
+## 13. Frozen decisions (B0)
 
 1. **OKF path** = concept identity; **`cx-`** = immutable handle; no semantic key.
 2. **`coordination`** is a type capability; box = coordination-enabled concept.

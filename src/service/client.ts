@@ -242,12 +242,13 @@ export class ServiceClient {
   }
   /**
    * User-only role create (MutationBus). Pass fields at top level — never secrets.
-   * `actor` defaults to "user"; non-user is rejected by the service.
+   * Server assigns immutable roleId. `actor` defaults to "user"; non-user is rejected.
    */
   registryRoleCreate(
     workspaceId: string,
     role: {
       name: string;
+      displayName?: string;
       prompt?: string;
       description?: string;
       color?: string;
@@ -260,13 +261,18 @@ export class ServiceClient {
     return this.call("registry.role.create", { workspaceId, ...role });
   }
   /**
-   * User-only role update. Name is identity and cannot be renamed.
+   * User-only role update. Resolve by operational name (compat) or pass roleId in patch.
+   * Operational name cannot be renamed in identity batch 1; change displayName instead.
    * Success emits exactly one registry.roles.updated.
    */
   registryRoleUpdate(
     workspaceId: string,
     name: string,
     patch: {
+      /** Optional stable id ref (preferred when known). */
+      roleId?: string;
+      /** Mutable human label; null/empty resets to operational name. */
+      displayName?: string | null;
       /** null or an empty string clears the field. */
       prompt?: string | null;
       /** null or an empty string clears the field. */
@@ -285,7 +291,7 @@ export class ServiceClient {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
   }
   /**
-   * User-only role delete. confirmation must equal name.
+   * User-only role delete. confirmation must equal operational name or roleId.
    * Refuses when the role has an active task or live managed session.
    */
   registryRoleDelete(

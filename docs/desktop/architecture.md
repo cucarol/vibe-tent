@@ -223,6 +223,21 @@ type EventEnvelope<TType extends string, TPayload> = {
 type A2APolicy = "allow" | "ask" | "deny";
 
 /**
+ * Project role registry row (`.tent/roles.json`).
+ * `id` (`rl-…`) is immutable; `displayName` is the mutable UI label;
+ * `name` remains the operational path key (`temp/<name>/`, task.role) until a
+ * later temp/git migration batch. See `docs/desktop/identity-rename.md`.
+ */
+type RoleDefinition = {
+  id: string;
+  name: string;
+  displayName: string;
+  a2aPolicy?: A2APolicy;
+  allowedProfiles?: string[];
+  // prompt, description, color, cli — non-secret only
+};
+
+/**
  * Machine-local launch profile — binary paths, argv templates, auth refs.
  * Lives only in service data area; never in workspace git / concept bodies.
  */

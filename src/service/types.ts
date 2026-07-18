@@ -163,7 +163,15 @@ export type TypeRegistryEntryProjection = {
 
 /** Project role registry row (read-only projection for clients). */
 export type RoleRegistryEntryProjection = {
+  /** Stable immutable role handle (`rl-…`). */
+  roleId: string;
+  /**
+   * Operational key (temp/<name>/, task.role). Immutable in identity batch 1;
+   * kept for path/compat. Prefer roleId for new internal refs.
+   */
   name: string;
+  /** Mutable human label for UI. */
+  displayName: string;
   description?: string;
   color?: string;
   prompt?: string;
@@ -255,8 +263,10 @@ export const CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist name/prompt/description/color/a2aPolicy/allowedProfiles/cli only —
-   * never provider secrets. Success emits exactly one registry.roles.updated.
+   * Persist id/name/displayName/prompt/description/color/a2aPolicy/allowedProfiles/cli —
+   * never provider secrets. id is server-assigned and immutable; displayName is
+   * mutable; operational name is not renamed in identity batch 1.
+   * Success emits exactly one registry.roles.updated.
    */
   "registry.role.create",
   "registry.role.update",

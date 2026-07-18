@@ -78,22 +78,40 @@ test("CLIENT_METHODS includes registry.role.create/update/delete", () => {
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
 });
 
-test("registry.roles projection returns allowedProfiles", async () => {
+test("registry.roles projection returns allowedProfiles + roleId/displayName", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
     const listed = await rpc(svc, "registry.roles", { workspaceId });
     assert.ok(!listed.error, JSON.stringify(listed.error));
     const roles = (listed.result as {
-      roles: Array<{ name: string; a2aPolicy?: string; allowedProfiles?: string[] }>;
+      roles: Array<{
+        roleId: string;
+        name: string;
+        displayName: string;
+        a2aPolicy?: string;
+        allowedProfiles?: string[];
+      }>;
     }).roles;
     const orch = roles.find((r) => r.name === "orchestrator");
     assert.ok(orch);
+    assert.ok(orch!.roleId.startsWith("rl-"));
+    assert.equal(orch!.displayName, "orchestrator");
     assert.equal(orch!.a2aPolicy, "allow");
     assert.deepEqual(orch!.allowedProfiles, ["fake-default"]);
     const exec = roles.find((r) => r.name === "executor");
     assert.ok(exec);
+    assert.ok(exec!.roleId.startsWith("rl-"));
+    assert.equal(exec!.displayName, "executor");
     assert.equal(exec!.allowedProfiles, undefined);
+
+    // Legacy roles.json without id was backfilled on disk
+    const disk = JSON.parse(
+      await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
+    ) as { roles: Array<{ id: string; name: string; displayName: string }> };
+    const diskOrch = disk.roles.find((r) => r.name === "orchestrator");
+    assert.ok(diskOrch?.id.startsWith("rl-"));
+    assert.equal(diskOrch!.displayName, "orchestrator");
   });
 });
 
@@ -131,26 +149,33 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const created = (await client.registryRoleCreate(workspaceId, {
       name: "critic",
+      displayName: "评审",
       prompt: "挑问题",
       description: "reviewer",
       a2aPolicy: "allow",
       allowedProfiles: ["  fake-default ", "fake-default", ""],
     })) as {
       role: {
+        roleId: string;
         name: string;
+        displayName: string;
         prompt?: string;
         a2aPolicy?: string;
         allowedProfiles?: string[];
       };
     };
     assert.equal(created.role.name, "critic");
+    assert.equal(created.role.displayName, "评审");
+    assert.ok(created.role.roleId.startsWith("rl-"));
     assert.equal(created.role.a2aPolicy, "allow");
     assert.deepEqual(created.role.allowedProfiles, ["fake-default"]);
     assert.equal(events.length, 1);
     assert.equal(events[0]!.action, "create");
     assert.equal(events[0]!.name, "critic");
+    assert.equal(events[0]!.roleId, created.role.roleId);
+    assert.equal(events[0]!.displayName, "评审");
 
-    // name immutable
+    // operational name rename rejected; displayName rename allowed
     const rename = await rpc(svc, "registry.role.update", {
       workspaceId,
       name: "critic",
@@ -159,19 +184,38 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     });
     assert.ok(rename.error);
     assert.equal(rename.error!.code, -32602);
-    assert.match(String(rename.error!.message), /rename|immutable/i);
+    assert.match(String(rename.error!.message), /rename|displayName|operational/i);
     assert.equal(events.length, 1);
+
+    const label = await rpc(svc, "registry.role.update", {
+      workspaceId,
+      roleId: created.role.roleId,
+      name: "critic",
+      displayName: "评审官",
+    });
+    assert.ok(!label.error, JSON.stringify(label.error));
+    assert.equal(
+      (label.result as { role: { displayName: string; roleId: string; name: string } }).role
+        .displayName,
+      "评审官"
+    );
+    assert.equal(
+      (label.result as { role: { name: string } }).role.name,
+      "critic"
+    );
+    assert.equal(events.length, 2);
 
     const updated = (await client.registryRoleUpdate(workspaceId, "critic", {
       prompt: "挑关键问题",
       allowedProfiles: ["codex-acp", " fake-default "],
     })) as {
-      role: { prompt?: string; allowedProfiles?: string[] };
+      role: { prompt?: string; allowedProfiles?: string[]; roleId: string };
     };
     assert.equal(updated.role.prompt, "挑关键问题");
     assert.deepEqual(updated.role.allowedProfiles, ["codex-acp", "fake-default"]);
-    assert.equal(events.length, 2);
-    assert.equal(events[1]!.action, "update");
+    assert.equal(updated.role.roleId, created.role.roleId);
+    assert.equal(events.length, 3);
+    assert.equal(events[2]!.action, "update");
 
     // clear whitelist
     const cleared = (await client.registryRoleUpdate(workspaceId, "critic", {
@@ -188,6 +232,7 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
         color?: string;
         a2aPolicy?: string;
         allowedProfiles?: string[];
+        roleId: string;
       };
     };
     assert.equal(cleared.role.prompt, undefined);
@@ -195,14 +240,17 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(cleared.role.color, undefined);
     assert.equal(cleared.role.a2aPolicy, "deny");
     assert.equal(cleared.role.allowedProfiles, undefined);
-    assert.equal(events.length, 3);
+    assert.equal(cleared.role.roleId, created.role.roleId);
+    assert.equal(events.length, 4);
 
-    // disk: ids only
+    // disk: role id present; no secrets
     const disk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
     ) as { roles: Array<Record<string, unknown>> };
     const critic = disk.roles.find((r) => r.name === "critic");
     assert.ok(critic);
+    assert.equal(critic!.id, created.role.roleId);
+    assert.equal(critic!.displayName, "评审官");
     assert.equal("secret" in critic!, false);
     assert.equal(critic!.allowedProfiles, undefined);
 
@@ -213,7 +261,7 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
       prompt: "x",
     });
     assert.ok(missing.error);
-    assert.equal(events.length, 3);
+    assert.equal(events.length, 4);
 
     unsub();
   });

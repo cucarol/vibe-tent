@@ -43,6 +43,7 @@ import {
   loadRolesRegistry,
   normalizeAllowedProfiles,
   normalizeRoleDefinition,
+  resolveRole,
   roleA2APolicy,
   roleAllowsProfile,
   updateRole,
@@ -904,7 +905,9 @@ async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
 
 function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjection {
   const proj: RoleRegistryEntryProjection = {
+    roleId: role.id ?? "",
     name: role.name,
+    displayName: role.displayName || role.name,
     description: role.description,
     color: role.color,
     prompt: role.prompt,
@@ -918,12 +921,18 @@ function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjec
 
 /**
  * User-only role registry create. MutationBus; emits registry.roles.updated once on success.
- * Name is immutable after create (update rejects name renames).
+ * Server assigns immutable roleId; operational name is fixed in this batch; displayName is mutable.
  */
 async function registryRoleCreate(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "registry.role.create");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
+  if ("id" in p || "roleId" in p) {
+    throw new RpcError(
+      -32602,
+      "registry.role.create does not accept client-supplied id/roleId; server assigns rl- handles"
+    );
+  }
   const definition = parseRoleDefinitionParams(p, { requireName: true });
 
   return ctx.mutations.run(workspaceId, async () => {
@@ -934,45 +943,65 @@ async function registryRoleCreate(ctx: HandlerContext, p: Record<string, unknown
       throw mapRoleRegistryError(err, "registry.role.create");
     }
     const registry = await loadRolesRegistry(mount.env.fs);
-    const role = registry.roles.find((r) => r.name === definition.name);
+    const role = resolveRole(registry.roles, definition.name);
     if (!role) {
       throw new RpcError(-32000, `Role create succeeded but role not found: ${definition.name}`);
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "create",
       name: role.name,
+      roleId: role.id || "",
+      displayName: role.displayName || role.name,
     });
     return { workspaceId, role: projectRoleRegistryEntry(role) };
   });
 }
 
 /**
- * User-only role registry update. Name cannot change after create.
+ * User-only role registry update. Resolve by name (compat) or roleId.
+ * Cannot change id or operational name; displayName and metadata may change.
  * MutationBus; emits registry.roles.updated once on success.
  */
 async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "registry.role.update");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const name = requireString(p, "name");
-  if (p.rename !== undefined || (typeof p.newName === "string" && p.newName.trim() && p.newName.trim() !== name)) {
-    throw new RpcError(-32602, "registry.role.update cannot rename a role; name is immutable after create");
+  // Identity ref: prefer roleId when provided; else name (legacy operational key).
+  const ref =
+    typeof p.roleId === "string" && p.roleId.trim()
+      ? p.roleId.trim()
+      : requireString(p, "name");
+  if (p.rename !== undefined || (typeof p.newName === "string" && p.newName.trim())) {
+    throw new RpcError(
+      -32602,
+      "registry.role.update cannot rename operational name in this batch; pass displayName to change the label"
+    );
   }
-  // Reject attempts to change identity via patch.name when it differs.
   if (typeof p.patch === "object" && p.patch !== null && !Array.isArray(p.patch)) {
     throw new RpcError(
       -32602,
-      "registry.role.update does not accept nested patch; pass fields at the top level with name"
+      "registry.role.update does not accept nested patch; pass fields at the top level with name or roleId"
     );
   }
+  if ("id" in p) {
+    throw new RpcError(-32602, "registry.role.update cannot change id; role id is immutable");
+  }
   const patch = parseRoleDefinitionParams(p, { requireName: false, forUpdate: true });
-  // Strip name from patch so core always keeps the identity key.
-  const { name: _ignored, ...fields } = patch;
-  // Preserve explicit allowedProfiles clears (normalize drops empty arrays).
+  // Strip identity keys. Also drop displayName unless the client sent it —
+  // normalizeRoleDefinition invents displayName from name, which would wipe a
+  // prior custom label on unrelated field updates.
+  const { name: _ignoredName, id: _ignoredId, displayName: _ignoredDn, ...fields } = patch;
   const updatePatch: Partial<RoleDefinition> = { ...fields };
   for (const key of ["prompt", "description", "color"] as const) {
     if (key in p && (p[key] === null || (typeof p[key] === "string" && !p[key].trim()))) {
       updatePatch[key] = undefined;
+    }
+  }
+  if ("displayName" in p) {
+    if (p.displayName === null || (typeof p.displayName === "string" && !p.displayName.trim())) {
+      updatePatch.displayName = undefined;
+    } else if (typeof p.displayName === "string") {
+      updatePatch.displayName = p.displayName;
     }
   }
   if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
@@ -990,25 +1019,27 @@ async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     try {
-      await updateRole(mount.env.fs, name, updatePatch);
+      await updateRole(mount.env.fs, ref, updatePatch);
     } catch (err) {
       throw mapRoleRegistryError(err, "registry.role.update");
     }
     const registry = await loadRolesRegistry(mount.env.fs);
-    const role = registry.roles.find((r) => r.name === name);
+    const role = resolveRole(registry.roles, ref);
     if (!role) {
-      throw new RpcError(-32004, `Role does not exist: ${name}`);
+      throw new RpcError(-32004, `Role does not exist: ${ref}`);
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "update",
       name: role.name,
+      roleId: role.id || "",
+      displayName: role.displayName || role.name,
     });
     return { workspaceId, role: projectRoleRegistryEntry(role) };
   });
 }
 
 /**
- * User-only role registry delete. Requires confirmation === name.
+ * User-only role registry delete. Requires confirmation === operational name or roleId.
  * Refuses when the role has an active task or a live/starting/waiting-user managed session.
  * MutationBus; emits registry.roles.updated once on success. Failure emits nothing.
  */
@@ -1016,46 +1047,59 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
   requireUserActor(p, "registry.role.delete");
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const name = requireString(p, "name");
+  const ref =
+    typeof p.roleId === "string" && p.roleId.trim()
+      ? p.roleId.trim()
+      : requireString(p, "name");
   const confirmation = requireString(p, "confirmation");
-  if (confirmation !== name) {
-    throw new RpcError(
-      -32602,
-      `Confirmation mismatch; enter the role name ${name}.`,
-      { name, confirmation }
-    );
-  }
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
 
+    const registry = await loadRolesRegistry(mount.env.fs);
+    const existing = resolveRole(registry.roles, ref);
+    if (!existing) {
+      throw new RpcError(-32004, `Role does not exist: ${ref}`);
+    }
+    const roleId = existing.id || "";
+    if (confirmation !== existing.name && confirmation !== roleId) {
+      throw new RpcError(
+        -32602,
+        `Confirmation mismatch; enter the role name ${existing.name} or id ${roleId}.`,
+        { name: existing.name, roleId, confirmation }
+      );
+    }
+
     const tasks = await loadTaskEnvelopes(mount.env.fs);
     // Only durable role tasks block role delete — profile tasks may reuse the same label.
+    // Match operational name (task.role) and future roleId if present on envelope.
     const activeTask = tasks.find(
       (t) =>
-        t.role === name &&
         taskAssigneeKind(t) === "role" &&
-        isActiveTaskState(t.state)
+        isActiveTaskState(t.state) &&
+        (t.role === existing.name || (roleId !== "" && t.role === roleId))
     );
     if (activeTask) {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Cannot delete role "${name}": active task ${activeTask.path} (state=${activeTask.state})`,
+        `Cannot delete role "${existing.name}": active task ${activeTask.path} (state=${activeTask.state})`,
         {
-          role: name,
+          role: existing.name,
+          roleId,
           taskPath: activeTask.path,
           taskState: activeTask.state,
         }
       );
     }
 
-    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, name);
+    const activeSession = await findActiveManagedSessionForRole(ctx, workspaceId, existing.name);
     if (activeSession) {
       throw new RpcError(
         RPC_LIFECYCLE,
-        `Cannot delete role "${name}": active managed session ${activeSession.id} (state=${activeSession.state})`,
+        `Cannot delete role "${existing.name}": active managed session ${activeSession.id} (state=${activeSession.state})`,
         {
-          role: name,
+          role: existing.name,
+          roleId,
           sessionId: activeSession.id,
           sessionState: activeSession.state,
         }
@@ -1063,22 +1107,34 @@ async function registryRoleDelete(ctx: HandlerContext, p: Record<string, unknown
     }
 
     try {
-      await deleteRole(mount.env.fs, name, confirmation);
+      await deleteRole(mount.env.fs, roleId || existing.name, confirmation);
     } catch (err) {
       throw mapRoleRegistryError(err, "registry.role.delete");
     }
     emitRegistryRolesUpdated(ctx, workspaceId, {
       action: "delete",
-      name,
+      name: existing.name,
+      roleId,
+      displayName: existing.displayName || existing.name,
     });
-    return { workspaceId, deleted: name };
+    return {
+      workspaceId,
+      deleted: existing.name,
+      roleId,
+      displayName: existing.displayName || existing.name,
+    };
   });
 }
 
 function emitRegistryRolesUpdated(
   ctx: HandlerContext,
   workspaceId: string,
-  payload: { action: "create" | "update" | "delete"; name: string }
+  payload: {
+    action: "create" | "update" | "delete";
+    name: string;
+    roleId: string;
+    displayName: string;
+  }
 ): void {
   ctx.events.emit(
     "registry.roles.updated",
@@ -1086,6 +1142,8 @@ function emitRegistryRolesUpdated(
     {
       action: payload.action,
       name: payload.name,
+      roleId: payload.roleId,
+      displayName: payload.displayName,
     },
     "self"
   );
@@ -1134,6 +1192,12 @@ function parseRoleDefinitionParams(
     raw.name = "";
   }
 
+  if ("displayName" in p) {
+    if (p.displayName !== undefined && p.displayName !== null && typeof p.displayName !== "string") {
+      throw new RpcError(-32602, "Invalid string param: displayName");
+    }
+    if (typeof p.displayName === "string") raw.displayName = p.displayName;
+  }
   if ("prompt" in p) {
     if (p.prompt !== undefined && p.prompt !== null && typeof p.prompt !== "string") {
       throw new RpcError(-32602, "Invalid string param: prompt");
@@ -1211,7 +1275,11 @@ function parseRoleDefinitionParams(
 function mapRoleRegistryError(err: unknown, surface: string): RpcError {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
-  if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\./i.test(message)) {
+  if (
+    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
+      message
+    )
+  ) {
     if (/does not exist/i.test(message)) {
       return new RpcError(-32004, message);
     }
@@ -1850,7 +1918,7 @@ async function assertSubDispatchPreconditions(
     );
   }
   const registry = await loadRolesRegistry(fs);
-  const role = registry.roles.find((r) => r.name === dispatcher);
+  const role = resolveRole(registry.roles, dispatcher);
   if (!role) {
     throw new RpcError(
       -32602,
@@ -3616,7 +3684,8 @@ async function resolveStartSessionA2APolicy(
 ): Promise<A2APolicy> {
   if (input.callerKind === "user") return "allow";
   const registry = await loadRolesRegistry(fs);
-  const role = registry.roles.find((r) => r.name === input.taskRole);
+  // Compat: taskRole may be operational name, displayName, or future roleId.
+  const role = resolveRole(registry.roles, input.taskRole);
   if (input.requireRegisteredRole && !role) {
     throw new RpcError(
       -32602,
@@ -3642,7 +3711,7 @@ async function resolveRoleProfileAllowed(
 ): Promise<boolean> {
   if (input.policy !== "allow") return true;
   const registry = await loadRolesRegistry(fs);
-  const role = registry.roles.find((r) => r.name === input.taskRole);
+  const role = resolveRole(registry.roles, input.taskRole);
   return roleAllowsProfile(role, input.profileId);
 }
 
