@@ -15,6 +15,7 @@ import type {
 import {
   DEFAULT_PROMPT_TIMEOUT_MS,
 } from "./types.js";
+import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
@@ -32,6 +33,17 @@ export type AcpClientOptions = {
    * Default: "ACP". Never used for argv/auth selection.
    */
   label?: string;
+  /**
+   * ACP session/new and session/load mcpServers from the start/resume snapshot.
+   * Default []. Running sessions do not hot-update this list.
+   * May contain secret values for the in-process JSON-RPC request only — never log.
+   */
+  mcpServers?: AcpMcpServerWire[];
+  /**
+   * Skill name/path refs for session `_meta.tent.skills` (no SKILL.md bodies).
+   * Optional; omitted when profile has no enabled skills.
+   */
+  skills?: AcpSkillMetaRef[];
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
@@ -124,6 +136,32 @@ export class AcpClient {
       typeof options.label === "string" && options.label.trim()
         ? options.label.trim()
         : "ACP";
+  }
+
+  /**
+   * Build session/new or session/load params from the start/resume snapshot.
+   * mcpServers always present (array; may be empty). Skill refs go under _meta.tent.skills.
+   * Must not log returned params (mcpServers may hold secret values).
+   */
+  private sessionStartParams(
+    base: Record<string, unknown>
+  ): Record<string, unknown> {
+    const mcpServers = Array.isArray(this.options.mcpServers)
+      ? this.options.mcpServers
+      : [];
+    const params: Record<string, unknown> = {
+      ...base,
+      mcpServers,
+    };
+    const skills = Array.isArray(this.options.skills) ? this.options.skills : [];
+    if (skills.length > 0) {
+      params._meta = {
+        tent: {
+          skills,
+        },
+      };
+    }
+    return params;
   }
 
   get pid(): number | undefined {
@@ -224,11 +262,10 @@ export class AcpClient {
         try {
           await this.request(
             "session/load",
-            {
+            this.sessionStartParams({
               sessionId: loadId,
               cwd: this.options.cwd,
-              mcpServers: [],
-            },
+            }),
             60_000
           );
           await this.waitForLoadReplayQuiescence();
@@ -241,7 +278,7 @@ export class AcpClient {
       } else {
         const session = (await this.request(
           "session/new",
-          { cwd: this.options.cwd, mcpServers: [] },
+          this.sessionStartParams({ cwd: this.options.cwd }),
           60_000
         )) as { sessionId?: string };
         if (!session.sessionId) {

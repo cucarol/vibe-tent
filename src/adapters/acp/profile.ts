@@ -6,6 +6,7 @@ import {
   type AcpPermissionPolicy,
   type AcpProfileOptions,
 } from "./types.js";
+import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
 
 /**
  * Read ACP profile bag from LaunchPlan.extras.
@@ -21,6 +22,25 @@ export function readAcpExtras(
     if (extras[key] !== undefined) return extras[key];
   }
   return {};
+}
+
+/**
+ * Read snapshot-time ACP session projection from LaunchPlan.extras.
+ * Built by AgentRuntime at start/resume from profileSnapshot — not hot-reloaded.
+ * Wire values may contain secrets; never log the returned mcpServers array.
+ */
+export function readAcpSessionProjection(extras: Record<string, unknown> | undefined): {
+  mcpServers: AcpMcpServerWire[];
+  skills: AcpSkillMetaRef[];
+} {
+  if (!extras || typeof extras !== "object") {
+    return { mcpServers: [], skills: [] };
+  }
+  const mcpRaw = extras.acpMcpServers;
+  const skillRaw = extras.acpSkills;
+  const mcpServers = Array.isArray(mcpRaw) ? (mcpRaw as AcpMcpServerWire[]) : [];
+  const skills = Array.isArray(skillRaw) ? (skillRaw as AcpSkillMetaRef[]) : [];
+  return { mcpServers, skills };
 }
 
 export function normalizeAcpPermissionPolicy(

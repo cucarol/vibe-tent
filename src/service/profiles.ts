@@ -41,6 +41,13 @@ import {
 import type { AgentProfileProjection } from "./types.js";
 import type { AcpProfileOptions } from "../adapters/acp/types.js";
 import type { FakeProfileOptions } from "../runtime/types.js";
+import {
+  defaultAllowedSkillRoots,
+  parseMcpServersArrayValue,
+  parseSkillsArrayValue,
+  projectMcpServers,
+  projectSkillRefs,
+} from "../adapters/acp/mcp-skills.js";
 
 export {
   normalizeProfileToCanonicalAcp,
@@ -111,6 +118,8 @@ export const PROFILE_CREATE_FIELDS = [
   "permissionPolicy",
   "promptTimeoutMs",
   "permissionTimeoutMs",
+  "skills",
+  "mcpServers",
 ] as const;
 
 /** Whitelist of client-writable profile fields (update). id and adapterId are immutable. */
@@ -125,6 +134,8 @@ export const PROFILE_UPDATE_FIELDS = [
   "permissionPolicy",
   "promptTimeoutMs",
   "permissionTimeoutMs",
+  "skills",
+  "mcpServers",
 ] as const;
 
 // ---------------------------------------------------------------------------
@@ -134,7 +145,7 @@ export const PROFILE_UPDATE_FIELDS = [
 // ---------------------------------------------------------------------------
 
 /**
- * Exact top-level allowlist for agent-profiles.json rows (10 fields).
+ * Exact top-level allowlist for agent-profiles.json rows.
  * Any other top-level key is malformed and quarantines the whole catalog.
  */
 const DISK_PROFILE_TOP_LEVEL_KEYS = new Set([
@@ -148,6 +159,8 @@ const DISK_PROFILE_TOP_LEVEL_KEYS = new Set([
   "fake",
   "acp",
   "grokAcp",
+  "skills",
+  "mcpServers",
 ]);
 
 /** Keys allowed inside canonical `acp` / legacy `grokAcp` bags. */
@@ -419,6 +432,18 @@ function parseAgentProfileDiskRow(
     raw.grokAcp = grokAcp;
   }
 
+  if ("skills" in item && item.skills !== undefined && item.skills !== null) {
+    const skillsR = parseSkillsArrayValue(item.skills, defaultAllowedSkillRoots());
+    if (!skillsR.ok) return null;
+    if (skillsR.value !== undefined) raw.skills = skillsR.value;
+  }
+
+  if ("mcpServers" in item && item.mcpServers !== undefined && item.mcpServers !== null) {
+    const mcpR = parseMcpServersArrayValue(item.mcpServers);
+    if (!mcpR.ok) return null;
+    if (mcpR.value !== undefined) raw.mcpServers = mcpR.value;
+  }
+
   return normalizeProfileToCanonicalAcp(raw);
 }
 
@@ -621,6 +646,8 @@ export function projectAgentProfile(
     typeof g?.credentialRef === "string" && g.credentialRef.trim()
       ? g.credentialRef.trim()
       : undefined;
+  const skills = projectSkillRefs(canonical.skills);
+  const mcpServers = projectMcpServers(canonical.mcpServers);
   return {
     id: profile.id,
     adapterId: profile.adapterId,
@@ -639,6 +666,8 @@ export function projectAgentProfile(
     permissionPolicy: g?.permissionPolicy,
     promptTimeoutMs: g?.promptTimeoutMs,
     permissionTimeoutMs: g?.permissionTimeoutMs,
+    ...(skills !== undefined ? { skills } : {}),
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
   };
 }
 

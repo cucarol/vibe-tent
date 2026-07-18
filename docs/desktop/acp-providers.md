@@ -56,7 +56,7 @@ Tent only advertises `capabilities.canResume = true` for bridges whose ACP `init
 Rules:
 
 1. **Runtime gate:** each load call checks **this** process’s `initialize` result for `agentCapabilities.loadSession === true`. Missing capability fails loud; Tent never falls back to `session/new` while pretending to resume.
-2. **RPC shape:** `session/load` always sends required `{ sessionId, cwd, mcpServers }` (`mcpServers: []` today, same as `session/new`).
+2. **RPC shape:** `session/load` always sends required `{ sessionId, cwd, mcpServers }`. `mcpServers` comes from the session start/resume **profile snapshot** (AgentProfile `mcpServers` resolved with envKey/credentialRef at launch). Empty list when the profile has no enabled MCP servers. Optional skill name/path refs go under `_meta.tent.skills` (never SKILL.md bodies). Running sessions do not hot-reload profile edits.
 3. **Token:** machine-local `SessionRecord.resumeToken` is the provider ACP `sessionId` from `session/new`. Tasks still store only Tent `ss-` ids.
 4. **History isolation:** load may stream full conversation history via `session/update`. Those notifications are quarantined until replay is quiet, are not projected as transcript diagnostics, and **must not** enter the next prompt’s `assistantText` or trigger `session.prompt_complete` / auto-`task.deliver`.
 5. **Process model:** resume always spawns a **new** bridge process (managed handles do not survive service restart). `AgentRuntime.resumeSession` reuses the same Tent `sessionId` + original provider token.

@@ -19,6 +19,7 @@ import {
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
+  readAcpSessionProjection,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
   startManagedAcpSession,
@@ -138,6 +139,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   ): Promise<ManagedSession> {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
@@ -152,6 +154,8 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "Codex ACP",
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,

@@ -19,6 +19,7 @@ import {
   mapAcpProcessExit,
   parseAcpResumeToken,
   readAcpExtras,
+  readAcpSessionProjection,
   resumeManagedAcpSession,
   startManagedAcpSession,
 } from "../acp/index.js";
@@ -298,6 +299,7 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     // Fail-loud on missing key / binary before spawn (Chinese errors from resolveLaunch).
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
 
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
@@ -312,6 +314,8 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       model: opts.model,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,
     });

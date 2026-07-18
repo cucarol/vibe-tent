@@ -18,6 +18,7 @@ import {
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
+  readAcpSessionProjection,
   resolvePlanOrProcessEnv,
   startManagedAcpSession,
   type AcpPermissionAskHooks,
@@ -110,6 +111,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   ): Promise<ManagedSession> {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -121,6 +123,8 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "GitHub Copilot ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

@@ -8,6 +8,7 @@ import {
   type AcpConnectResult,
   type AcpStartResult,
 } from "../acp/client.js";
+import type { AcpMcpServerWire, AcpSkillMetaRef } from "../acp/mcp-skills.js";
 import type { AcpPermissionOption } from "../acp/types.js";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import type { GrokAcpPermissionPolicy } from "./types.js";
@@ -22,6 +23,10 @@ export type GrokAcpClientOptions = {
   model: string;
   promptTimeoutMs?: number;
   permissionPolicy: GrokAcpPermissionPolicy;
+  /** Snapshot mcpServers for session/new|load (may hold secrets; never log). */
+  mcpServers?: AcpMcpServerWire[];
+  /** Skill name/path refs for `_meta.tent.skills` (no SKILL.md bodies). */
+  skills?: AcpSkillMetaRef[];
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
@@ -55,6 +60,8 @@ export class GrokAcpClient {
       sessionId: options.sessionId,
       promptTimeoutMs: options.promptTimeoutMs,
       permissionPolicy: options.permissionPolicy,
+      mcpServers: options.mcpServers,
+      skills: options.skills,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,

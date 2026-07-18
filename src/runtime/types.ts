@@ -175,6 +175,16 @@ export interface AgentProfileConfig {
    * On load, legacy disk field `grokAcp` is migrated into `acp` (canonical save writes only `acp`).
    */
   acp?: import("../adapters/acp/types.js").AcpProfileOptions;
+  /**
+   * Enabled machine-local Skill references (name + optional absolute path under allowed roots).
+   * Never stores SKILL.md body. Captured into session profileSnapshot at start.
+   */
+  skills?: import("../adapters/acp/mcp-skills.js").AgentProfileSkillRef[];
+  /**
+   * MCP server descriptions projected into ACP session/new|load mcpServers.
+   * Secrets only as envKey/credentialRef names — never plaintext. Not hot-updated mid-session.
+   */
+  mcpServers?: import("../adapters/acp/mcp-skills.js").AgentProfileMcpServer[];
 }
 
 /**
@@ -186,6 +196,14 @@ export interface AgentProfileConfig {
 export type ResolveProfileEnv = (
   profile: AgentProfileConfig
 ) => Promise<Record<string, string>> | Record<string, string>;
+
+/**
+ * Optional service hook: resolve one CredentialStore id → plaintext for MCP env/header injection.
+ * Process-scoped only — never written to SessionRecord / profile disk / events / logs.
+ */
+export type ResolveCredentialRef = (
+  credentialRef: string
+) => Promise<string | undefined> | string | undefined;
 
 export interface FakeProfileOptions {
   /** Sleep before clean exit when not waiting for stop (default 30_000). */

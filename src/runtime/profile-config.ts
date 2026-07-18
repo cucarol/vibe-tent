@@ -3,6 +3,10 @@
 // All legacy `grokAcp` reads/writes for disk + test fixtures go through this module.
 
 import type { AcpProfileOptions } from "../adapters/acp/types.js";
+import {
+  cloneMcpServers,
+  cloneSkillRefs,
+} from "../adapters/acp/mcp-skills.js";
 import type { AgentProfileConfig } from "./types.js";
 
 /**
@@ -49,7 +53,7 @@ export function normalizeProfileToCanonicalAcp(
   return { profile: { ...rest }, migrated: false };
 }
 
-/** Shallow clone of a canonical profile (one level of acp / fake / env / args). */
+/** Shallow clone of a canonical profile (one level of acp / fake / env / args / skills / mcp). */
 export function cloneAgentProfileConfig(p: AgentProfileConfig): AgentProfileConfig {
   const { profile: canonical } = normalizeProfileToCanonicalAcp(p as AgentProfileConfigRaw);
   return {
@@ -58,6 +62,8 @@ export function cloneAgentProfileConfig(p: AgentProfileConfig): AgentProfileConf
     fake: canonical.fake ? { ...canonical.fake } : undefined,
     env: canonical.env ? { ...canonical.env } : undefined,
     args: canonical.args ? [...canonical.args] : undefined,
+    skills: cloneSkillRefs(canonical.skills),
+    mcpServers: cloneMcpServers(canonical.mcpServers),
   };
 }
 

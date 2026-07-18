@@ -278,6 +278,16 @@ async function startOwnedLocalTentService(
       }
       return { [envKey]: secret };
     },
+    resolveCredentialRef: async (credentialRef) => {
+      const id = typeof credentialRef === "string" ? credentialRef.trim() : "";
+      if (!id) return undefined;
+      try {
+        const secret = await credentials.resolve(id);
+        return typeof secret === "string" && secret ? secret : undefined;
+      } catch {
+        return undefined;
+      }
+    },
   });
   runtimeHolder.current = runtime;
   registerStartupCleanup(10, async () => {

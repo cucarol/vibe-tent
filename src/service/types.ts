@@ -220,6 +220,14 @@ export type AgentProfileProjection = {
   permissionPolicy?: string;
   promptTimeoutMs?: number;
   permissionTimeoutMs?: number;
+  /**
+   * Skill name/path refs only — never SKILL.md bodies or secret values.
+   */
+  skills?: import("../adapters/acp/mcp-skills.js").AgentProfileSkillProjection[];
+  /**
+   * MCP server descriptions with envKey/credentialRef *names* only — never secret values.
+   */
+  mcpServers?: import("../adapters/acp/mcp-skills.js").AgentProfileMcpServerProjection[];
 };
 
 /**

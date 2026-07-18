@@ -25,12 +25,17 @@ import {
   COPILOT_ACP_ADAPTER_ID,
   createCopilotAcpAdapter,
 } from "../adapters/copilot-acp/index.js";
+import {
+  resolveAcpMcpServersWire,
+  resolveAcpSkillMeta,
+} from "../adapters/acp/mcp-skills.js";
 import { cloneAgentProfileConfig } from "./profile-config.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
 import type {
   AgentProfileConfig,
   AgentRuntimePort,
+  ResolveCredentialRef,
   ResolveProfileEnv,
   ResumeSessionRequest,
   RuntimeEvent,
@@ -58,6 +63,11 @@ export interface AgentRuntimeOptions {
    * Service wires CredentialStore.resolve here. Secrets never enter SessionRecord.
    */
   resolveProfileEnv?: ResolveProfileEnv;
+  /**
+   * Optional hook to resolve arbitrary credential ids for MCP env/header injection.
+   * Process-scoped only; never persisted on SessionRecord.
+   */
+  resolveCredentialRef?: ResolveCredentialRef;
 }
 
 function handleFrom(record: SessionRecord): SessionHandle {
@@ -93,6 +103,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly sinks = new Map<string, Set<(ev: RuntimeEvent) => void>>();
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
+  private readonly resolveCredentialRef?: ResolveCredentialRef;
   private shutdownPromise?: Promise<void>;
   private closing = false;
   private closed = false;
@@ -100,6 +111,7 @@ export class AgentRuntime implements AgentRuntimePort {
   constructor(options: AgentRuntimeOptions) {
     this.registry = new SessionRegistry(options.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
+    this.resolveCredentialRef = options.resolveCredentialRef;
 
     for (const p of options.profiles ?? []) {
       this.profiles.set(p.id, cloneProfileConfig(p));
@@ -313,18 +325,21 @@ export class AgentRuntime implements AgentRuntimePort {
       // becomes an ordinary failed session without ever persisting the plaintext.
       const resolvedEnv = await this.resolveCredentialEnv(profile);
       // Vault injection wins for envKey; profile.env / req.env supply non-secret knobs.
+      const planEnv = { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: req.roleName,
         cwd,
-        env: { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv },
+        env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
           acp: profile.acp,
+          // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
+          ...(await this.buildAcpLaunchExtras(profile, planEnv)),
         },
       };
 
@@ -553,18 +568,21 @@ export class AgentRuntime implements AgentRuntimePort {
 
     try {
       const resolvedEnv = await this.resolveCredentialEnv(profile);
+      const planEnv = { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv };
       const plan = {
         sessionId: req.sessionId,
         profileId: profile.id,
         roleName: record.roleName,
         cwd,
-        env: { ...(profile.env ?? {}), ...(req.env ?? {}), ...resolvedEnv },
+        env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
           acp: profile.acp,
+          // Resume uses profileSnapshot (not live catalog edits).
+          ...(await this.buildAcpLaunchExtras(profile, planEnv)),
         },
       };
 
@@ -1029,6 +1047,65 @@ export class AgentRuntime implements AgentRuntimePort {
         // ignore
       }
     }
+  }
+
+  /**
+   * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
+   * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
+   */
+  private async buildAcpLaunchExtras(
+    profile: AgentProfileConfig,
+    planEnv: Record<string, string>
+  ): Promise<{
+    acpSkills?: ReturnType<typeof resolveAcpSkillMeta>;
+    acpMcpServers?: ReturnType<typeof resolveAcpMcpServersWire>;
+  }> {
+    const hasSkills = Array.isArray(profile.skills) && profile.skills.length > 0;
+    const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
+    if (!hasSkills && !hasMcp) return {};
+
+    const resolveCredential = this.resolveCredentialRef
+      ? async (id: string): Promise<string | undefined> => {
+          try {
+            return await this.resolveCredentialRef!(id);
+          } catch {
+            return undefined;
+          }
+        }
+      : undefined;
+
+    // Sync resolveCredential wrapper for wire builder (collects all refs first via async pre-resolve).
+    const credCache = new Map<string, string>();
+    if (hasMcp && resolveCredential) {
+      const refs = new Set<string>();
+      for (const s of profile.mcpServers ?? []) {
+        if (s.envCredentialRefs) {
+          for (const id of Object.values(s.envCredentialRefs)) refs.add(id);
+        }
+        if (s.headerCredentialRefs) {
+          for (const id of Object.values(s.headerCredentialRefs)) refs.add(id);
+        }
+      }
+      for (const id of refs) {
+        const v = await resolveCredential(id);
+        if (typeof v === "string" && v) credCache.set(id, v);
+      }
+    }
+
+    const acpSkills = hasSkills
+      ? resolveAcpSkillMeta(profile.skills, { requirePathExists: false })
+      : undefined;
+    const acpMcpServers = hasMcp
+      ? resolveAcpMcpServersWire(profile.mcpServers, {
+          planEnv,
+          resolveCredential: (id) => credCache.get(id),
+        })
+      : undefined;
+
+    return {
+      ...(acpSkills !== undefined ? { acpSkills } : {}),
+      ...(acpMcpServers !== undefined ? { acpMcpServers } : {}),
+    };
   }
 
   /**

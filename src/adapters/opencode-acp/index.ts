@@ -17,6 +17,7 @@ import {
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
+  readAcpSessionProjection,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
   startManagedAcpSession,
@@ -135,6 +136,7 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
   ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -146,6 +148,8 @@ export class OpenCodeAcpProviderAdapter implements ProviderAdapter {
       sessionId: plan.sessionId,
       promptTimeoutMs: opts.promptTimeoutMs,
       permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
       label: "OpenCode ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

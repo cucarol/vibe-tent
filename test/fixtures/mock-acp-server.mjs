@@ -62,6 +62,7 @@ const log = {
   methods: [],
   authenticateParams: null,
   prompts: [],
+  news: [],
   loads: [],
   permissionOutcomes: [],
   loadSessionCapable,
@@ -87,6 +88,30 @@ function flushLog() {
   } catch {
     // ignore
   }
+}
+
+/** Redacted session/new|load params for mock logs (no secret values). */
+function summarizeSessionStartParams(params) {
+  const mcp = Array.isArray(params?.mcpServers) ? params.mcpServers : null;
+  const skillMeta = params?._meta?.tent?.skills;
+  return {
+    hasMcpServers: Array.isArray(mcp),
+    mcpServersLen: Array.isArray(mcp) ? mcp.length : null,
+    mcpServerNames: Array.isArray(mcp)
+      ? mcp.map((s) => (s && typeof s.name === "string" ? s.name : null))
+      : null,
+    mcpTransports: Array.isArray(mcp)
+      ? mcp.map((s) => {
+          if (!s || typeof s !== "object") return null;
+          if (typeof s.command === "string") return "stdio";
+          if (s.type === "http" || typeof s.url === "string") return "http";
+          return "unknown";
+        })
+      : null,
+    skillNames: Array.isArray(skillMeta)
+      ? skillMeta.map((s) => (s && typeof s.name === "string" ? s.name : null))
+      : null,
+  };
 }
 
 function write(msg) {
@@ -143,6 +168,21 @@ rl.on("line", (line) => {
   }
 
   if (msg.method === "session/new") {
+    const params = msg.params ?? {};
+    // Never log secret values from mcpServers env/headers — names + counts only.
+    log.news.push(summarizeSessionStartParams(params));
+    if (!Array.isArray(params.mcpServers)) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32602,
+          message: "mock session/new requires mcpServers array",
+        },
+      });
+      flushLog();
+      return;
+    }
     const sessionId = knownSessionId;
     write({
       jsonrpc: "2.0",
@@ -162,6 +202,7 @@ rl.on("line", (line) => {
   if (msg.method === "session/load") {
     const params = msg.params ?? {};
     log.loads.push({
+      ...summarizeSessionStartParams(params),
       sessionId: params.sessionId ?? null,
       cwd: params.cwd ?? null,
       hasMcpServers: Array.isArray(params.mcpServers),

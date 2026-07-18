@@ -3,6 +3,15 @@
 // Load / save / defaults / projection stay in profiles.ts (no circular import).
 
 import type { AcpPermissionPolicy, AcpProfileOptions } from "../adapters/acp/types.js";
+import {
+  cloneMcpServers,
+  cloneSkillRefs,
+  defaultAllowedSkillRoots,
+  parseMcpServersArrayValue,
+  parseSkillsArrayValue,
+  type AgentProfileMcpServer,
+  type AgentProfileSkillRef,
+} from "../adapters/acp/mcp-skills.js";
 import type { AgentProfileConfig } from "../runtime/types.js";
 import { cloneAgentProfileConfig } from "../runtime/profile-config.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
@@ -168,12 +177,14 @@ function clearablePositiveInt(
 }
 
 /**
- * Parse create-time ACP fields into the shared bag.
+ * Parse create-time ACP fields into the shared bag + top-level skills/mcp.
  * Field names stay top-level on the RPC (not nested `acp` / `grokAcp`).
  */
 function parseAcpFieldsCreate(raw: Record<string, unknown>): {
   displayName?: string;
   acp: AcpProfileOptions;
+  skills?: AgentProfileSkillRef[];
+  mcpServers?: AgentProfileMcpServer[];
 } {
   const displayName = optionalNonEmptyString(raw, "displayName");
   const acp: AcpProfileOptions = {};
@@ -195,7 +206,14 @@ function parseAcpFieldsCreate(raw: Record<string, unknown>): {
   if (promptTimeoutMs !== undefined) acp.promptTimeoutMs = promptTimeoutMs;
   const permissionTimeoutMs = optionalPositiveInt(raw, "permissionTimeoutMs");
   if (permissionTimeoutMs !== undefined) acp.permissionTimeoutMs = permissionTimeoutMs;
-  return { displayName, acp };
+  const skills = parseSkillsFieldCreate(raw);
+  const mcpServers = parseMcpServersFieldCreate(raw);
+  return {
+    displayName,
+    acp,
+    ...(skills !== undefined ? { skills } : {}),
+    ...(mcpServers !== undefined ? { mcpServers } : {}),
+  };
 }
 
 /** Patch values: undefined = keep, null = clear field, else set. */
@@ -210,7 +228,44 @@ type ClearablePatch = {
   permissionPolicy?: AcpPermissionPolicy | null;
   promptTimeoutMs?: number | null;
   permissionTimeoutMs?: number | null;
+  skills?: AgentProfileSkillRef[] | null;
+  mcpServers?: AgentProfileMcpServer[] | null;
 };
+
+function parseSkillsFieldCreate(
+  raw: Record<string, unknown>
+): AgentProfileSkillRef[] | undefined {
+  if (!("skills" in raw) || raw.skills === undefined || raw.skills === null) {
+    return undefined;
+  }
+  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots()));
+}
+
+function parseMcpServersFieldCreate(
+  raw: Record<string, unknown>
+): AgentProfileMcpServer[] | undefined {
+  if (!("mcpServers" in raw) || raw.mcpServers === undefined || raw.mcpServers === null) {
+    return undefined;
+  }
+  return unwrapField(parseMcpServersArrayValue(raw.mcpServers));
+}
+
+/** Update: undefined keep; null clear; array set (replace whole list). */
+function clearableSkills(
+  raw: Record<string, unknown>
+): AgentProfileSkillRef[] | null | undefined {
+  if (!("skills" in raw) || raw.skills === undefined) return undefined;
+  if (raw.skills === null) return null;
+  return unwrapField(parseSkillsArrayValue(raw.skills, defaultAllowedSkillRoots())) ?? null;
+}
+
+function clearableMcpServers(
+  raw: Record<string, unknown>
+): AgentProfileMcpServer[] | null | undefined {
+  if (!("mcpServers" in raw) || raw.mcpServers === undefined) return undefined;
+  if (raw.mcpServers === null) return null;
+  return unwrapField(parseMcpServersArrayValue(raw.mcpServers)) ?? null;
+}
 
 function parseAcpFieldsUpdate(raw: Record<string, unknown>): ClearablePatch {
   return {
@@ -224,6 +279,8 @@ function parseAcpFieldsUpdate(raw: Record<string, unknown>): ClearablePatch {
     permissionPolicy: clearablePermissionPolicy(raw),
     promptTimeoutMs: clearablePositiveInt(raw, "promptTimeoutMs"),
     permissionTimeoutMs: clearablePositiveInt(raw, "permissionTimeoutMs"),
+    skills: clearableSkills(raw),
+    mcpServers: clearableMcpServers(raw),
   };
 }
 
@@ -279,6 +336,18 @@ function applyClearablePatch(
     "permissionTimeoutMs",
     patch.permissionTimeoutMs as AcpProfileOptions["permissionTimeoutMs"] | null | undefined
   );
+
+  if (patch.skills === null) {
+    delete next.skills;
+  } else if (patch.skills !== undefined) {
+    next.skills = cloneSkillRefs(patch.skills);
+  }
+
+  if (patch.mcpServers === null) {
+    delete next.mcpServers;
+  } else if (patch.mcpServers !== undefined) {
+    next.mcpServers = cloneMcpServers(patch.mcpServers);
+  }
 
   return next;
 }
@@ -416,7 +485,7 @@ export class AgentProfileCatalog {
         throw new RpcError(-32602, "Cannot create reserved test profile id: fake-default");
       }
       const adapterId = parseCreateAdapterId(raw);
-      const { displayName, acp } = parseAcpFieldsCreate(raw);
+      const { displayName, acp, skills, mcpServers } = parseAcpFieldsCreate(raw);
       applyCreateDefaults(adapterId, acp);
 
       const profile: AgentProfileConfig = {
@@ -424,6 +493,10 @@ export class AgentProfileCatalog {
         adapterId,
         ...(displayName !== undefined ? { displayName } : {}),
         acp,
+        ...(skills !== undefined ? { skills: cloneSkillRefs(skills) } : {}),
+        ...(mcpServers !== undefined
+          ? { mcpServers: cloneMcpServers(mcpServers) }
+          : {}),
       };
       await this.commit([...this.profiles, profile]);
       return this.get(id)!;
