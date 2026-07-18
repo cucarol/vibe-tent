@@ -17206,21 +17206,24 @@ async function taskRejectRpc(ctx, p) {
   const actor = requireString(p, "actor");
   const note = optionalString(p, "note");
   const resume = p.resume !== false;
-  return ctx.mutations.run(workspaceId, async () => {
+  const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const result = await taskReject(mount.env, taskPath, { actor, note, resume });
-    emitTaskState(ctx, workspaceId, result.task, "task.reject");
+    const rejected = await taskReject(mount.env, taskPath, { actor, note, resume });
+    emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
     ctx.events.emit(
       "delivery.updated",
       workspaceId,
       {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
+        id: rejected.delivery.id,
+        taskId: rejected.delivery.taskId,
+        status: rejected.delivery.status,
         reason: "task.reject"
       },
       "self"
     );
+    return rejected;
+  });
+  if (!resume) {
     return {
       workspaceId,
       taskPath,
@@ -17228,7 +17231,46 @@ async function taskRejectRpc(ctx, p) {
       delivery: projectDelivery(result.delivery),
       state: result.task.state
     };
-  });
+  }
+  const boundSessionId = result.task.sessionId?.trim() || "";
+  if (!boundSessionId) {
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state
+    };
+  }
+  clearManagedAutoDeliverDedup(boundSessionId, taskPath);
+  try {
+    const restored = await restoreManagedSessionAfterRejectResume(ctx, {
+      workspaceId,
+      taskPath,
+      note
+    });
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(restored.task),
+      delivery: projectDelivery(result.delivery),
+      state: restored.task.state,
+      session: restored.session
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    await parkTaskAfterRejectResumeFailure(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: boundSessionId,
+      message
+    });
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.reject resume failed to restore managed session: ${message}`,
+      { taskPath, sessionId: boundSessionId }
+    );
+  }
 }
 async function taskInterruptRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -18510,6 +18552,235 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
       "service"
     );
   }
+}
+function clearManagedAutoDeliverDedup(sessionId, taskPath) {
+  const key = managedDeliverKey(sessionId, taskPath);
+  managedAutoDeliverDone.delete(key);
+  managedAutoDeliverInFlight.delete(key);
+}
+var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D managed session\u3002\u53EF\u91CD\u65B0 startSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+async function restoreManagedSessionAfterRejectResume(ctx, input) {
+  const mount = ctx.host.require(input.workspaceId);
+  let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+  if (task.state !== "running") {
+    throw new Error(
+      `reject-resume restore requires task state running; got ${task.state}`
+    );
+  }
+  const priorSessionId = task.sessionId?.trim() || "";
+  if (!priorSessionId) {
+    throw new Error("reject-resume restore requires task.sessionId");
+  }
+  task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
+  const cwd = task.worktree || mount.workspaceRoot;
+  const workspaceLane = task.workspace || task.worktree || task.branch ? {
+    workspace: task.workspace || mount.workspaceRoot,
+    worktree: task.worktree || mount.workspaceRoot,
+    branch: task.branch || "HEAD",
+    targetBranch: task.targetBranch
+  } : void 0;
+  const prior = await ctx.runtime.registry.read(priorSessionId);
+  if (!prior) {
+    throw new Error(
+      `Managed session registry row missing for ${priorSessionId}; cannot restore after reject-resume`
+    );
+  }
+  const profileId = prior.profileId?.trim();
+  if (!profileId) {
+    throw new Error(
+      `Managed session ${priorSessionId} has no profileId for reject-resume restore`
+    );
+  }
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new Error(
+      `reject-resume profileId must match agentProfile assignee (${task.role}); session has ${profileId}`
+    );
+  }
+  if (taskAssigneeKind(task) !== "agentProfile") {
+    const activeForRole = await findActiveManagedSessionForRole(
+      ctx,
+      input.workspaceId,
+      task.role
+    );
+    if (activeForRole && activeForRole.id !== priorSessionId) {
+      const boundToThisTask = !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === input.taskPath;
+      if (!boundToThisTask) {
+        throw new Error(
+          `Role "${task.role}" already has an active managed session: ${activeForRole.id}`
+        );
+      }
+    }
+  }
+  const sessionBootstrap = buildRejectResumeBootstrapPrompt(task, {
+    workspaceRoot: mount.workspaceRoot,
+    systemRoot: mount.systemRoot,
+    note: input.note
+  });
+  let resumePrior = false;
+  try {
+    const probe = await ctx.runtime.probe(priorSessionId);
+    if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
+      const bound2 = await ctx.mutations.run(input.workspaceId, async () => {
+        ctx.host.markSelfWrite(input.workspaceId);
+        return patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          sessionId: priorSessionId,
+          updatedAt: mount.env.clock.now()
+        });
+      });
+      emitTaskState(ctx, input.workspaceId, bound2, "task.reject.resume");
+      ctx.events.emit(
+        "session.state",
+        input.workspaceId,
+        {
+          sessionId: priorSessionId,
+          state: probe.state,
+          profileId,
+          taskPath: input.taskPath,
+          reason: "task.reject.resume.alive"
+        },
+        "self"
+      );
+      return {
+        task: bound2,
+        session: {
+          sessionId: priorSessionId,
+          profileId,
+          adapterId: prior.adapterId,
+          state: probe.state,
+          cwd
+        }
+      };
+    }
+    if (probe.resumeCapable && !probe.alive) {
+      const recordedCwd = prior.runtimeWorkspace?.cwd?.trim() || "";
+      const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath3.resolve(recordedCwd), nodePath3.resolve(cwd));
+      const profileMatches = !prior.profileId || prior.profileId === profileId;
+      const workspaceMatches = prior.workspace === input.workspaceId;
+      const roleMatches = prior.roleName === task.role;
+      const assigneeKindMatches = (prior.assigneeKind ?? "role") === taskAssigneeKind(task);
+      const taskMatches = prior.lastTaskId === input.taskPath || !!task.id && prior.lastTaskId === task.id;
+      resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && taskMatches;
+    }
+  } catch (err) {
+    if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
+      throw err;
+    }
+  }
+  let handle;
+  if (resumePrior) {
+    handle = await ctx.runtime.resumeSession({
+      sessionId: priorSessionId,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: sessionBootstrap
+    });
+  } else {
+    handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: sessionBootstrap,
+      lastTaskId: task.id || input.taskPath,
+      workspace: input.workspaceId
+    });
+    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+  }
+  const bound = await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+      sessionId: handle.sessionId,
+      updatedAt: mount.env.clock.now()
+    });
+    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: handle.sessionId,
+        state: handle.state,
+        profileId: handle.profileId,
+        taskPath: input.taskPath,
+        reason: resumePrior ? "task.reject.resume.session" : "task.reject.resume.new-session"
+      },
+      "self"
+    );
+    return next;
+  });
+  return {
+    task: bound,
+    session: {
+      sessionId: handle.sessionId,
+      profileId: handle.profileId,
+      adapterId: handle.adapterId,
+      state: handle.state,
+      cwd
+    }
+  };
+}
+async function parkTaskAfterRejectResumeFailure(ctx, input) {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return;
+  if (input.sessionId) {
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `reject-resume restore failed: ${input.message}`
+      });
+    } catch {
+    }
+  }
+  await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    if (current.state !== "running" && current.state !== "waiting") return;
+    const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
+    let next = current;
+    if (current.state === "running") {
+      next = await taskWait(mount.env, input.taskPath, {
+        reason: "external",
+        summary
+      });
+    } else {
+      next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+        state: "waiting",
+        wait: { reason: "external", summary },
+        updatedAt: mount.env.clock.now()
+      });
+    }
+    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume.failed");
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        taskState: next.state,
+        runtimeEvent: "task.reject.resume.failed",
+        error: input.message,
+        taskFailed: false
+      },
+      "service"
+    );
+  });
+}
+function buildRejectResumeBootstrapPrompt(task, roots) {
+  const base = buildSessionBootstrapPrompt(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot
+  });
+  const note = roots.note?.trim();
+  const rework = `--- Tent reject-resume rework ---
+Delivery was rejected; continue work on the same task (state=running).
+` + (note ? `Review note: ${note}
+` : `Review note: (none)
+`) + `Managed path: your final assistant reply is the report and will be delivered automatically.
+`;
+  return `${base}
+
+${rework}`;
 }
 function emitTaskState(ctx, workspaceId, task, reason) {
   ctx.events.emit(
@@ -21197,7 +21468,7 @@ var AgentRuntime = class {
         workspace: record.workspace,
         lastTaskId: record.lastTaskId,
         env: req.env,
-        bootstrapPrompt: void 0
+        bootstrapPrompt: req.bootstrapPrompt
       }, profile);
     }
     if (typeof adapter.resumeManagedSession !== "function") {

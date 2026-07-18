@@ -30,6 +30,7 @@ import {
   mapRuntimeEventToService,
   migrateSessionWorkspaceIdsOnMount,
   reconcileTaskSessionsOnMount,
+  REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY,
   resetManagedAutoDeliverDedupForTests,
   resetRuntimeProjectionForTests,
   setRuntimeProjectionTestHooksForTests,
@@ -2879,6 +2880,209 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
     assert.equal(got.state, "running");
     // Sanity: rework commit is above base (collection would include it).
     assert.notEqual(reworkRef, baseAtStart);
+  });
+});
+
+test("reject-resume restores live managed session for durable role (no false-running)", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("reject-resume-role-live");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "reject resume must wake session",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "FIRST_DELIVERY",
+    });
+
+    const afterDeliver = await loadTaskEnvelope(
+      svc.ctx.host.require(workspaceId).env.fs,
+      taskPath
+    );
+    assert.equal(afterDeliver.state, "delivered");
+    const probeStopped = await svc.runtime.probe(sessionId);
+    assert.equal(probeStopped.alive, false, "managed session stops after deliver");
+
+    const rejected = await rpc(svc, "task.reject", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      resume: true,
+      note: "please fix tests",
+    });
+    assert.ok(!rejected.error, JSON.stringify(rejected.error));
+    const body = rejected.result as {
+      state: string;
+      task: { state: string; sessionId?: string };
+      session?: { sessionId: string; state: string };
+    };
+    assert.equal(body.state, "running");
+    assert.equal(body.task.state, "running");
+    assert.ok(body.session?.sessionId, "reject-resume must return a session projection");
+    assert.equal(body.task.sessionId, body.session!.sessionId);
+
+    const probeLive = await svc.runtime.probe(body.session!.sessionId);
+    assert.equal(probeLive.alive, true, "runtime process must be alive after reject-resume");
+    assert.ok(
+      probeLive.state === "live" || probeLive.state === "starting" || probeLive.state === "waiting-user",
+      `session state must be non-terminal, got ${probeLive.state}`
+    );
+
+    // Rework can deliver again (dedup cleared for session+task).
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: body.session!.sessionId,
+      assistantText: "REWORK_DELIVERY",
+    });
+    const afterRework = await loadTaskEnvelope(
+      svc.ctx.host.require(workspaceId).env.fs,
+      taskPath
+    );
+    assert.equal(afterRework.state, "delivered");
+  });
+});
+
+test("reject-resume restores live managed session for agentProfile tasks", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("reject-resume-profile-live");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "profile reject resume",
+      deliveryPolicy: "manual",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    assert.match(taskPath, /^temp\/agent-profiles\/fake-default\/tasks\//);
+
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "PROFILE_FIRST",
+    });
+    assert.equal(
+      (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
+      "delivered"
+    );
+    assert.equal((await svc.runtime.probe(sessionId)).alive, false);
+
+    const rejected = await rpc(svc, "task.reject", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      resume: true,
+      note: "profile rework",
+    });
+    assert.ok(!rejected.error, JSON.stringify(rejected.error));
+    const body = rejected.result as {
+      state: string;
+      task: { state: string; sessionId?: string; assigneeKind?: string };
+      session?: { sessionId: string };
+    };
+    assert.equal(body.state, "running");
+    assert.equal(body.task.assigneeKind, "agentProfile");
+    assert.ok(body.session?.sessionId);
+    assert.equal(body.task.sessionId, body.session!.sessionId);
+    assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
+  });
+});
+
+test("reject-resume fails loud and parks waiting when session cannot be restored", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("reject-resume-fail-loud");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "force restore failure",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "WILL_REJECT",
+    });
+
+    // Destroy registry identity so restore cannot resume or re-bind profile.
+    await svc.runtime.registry.remove(sessionId);
+
+    const rejected = await rpc(svc, "task.reject", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      resume: true,
+      note: "should fail loud",
+    });
+    assert.ok(rejected.error, "reject-resume must fail the RPC when session restore fails");
+    assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+    assert.match(String(rejected.error!.message), /resume failed to restore managed session/i);
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      got.result as {
+        task: { state: string; wait?: { reason?: string; summary?: string } };
+      }
+    ).task;
+    assert.equal(task.state, "waiting", "must not stay running without a live session");
+    assert.equal(task.wait?.reason, "external");
+    assert.ok(
+      task.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY),
+      task.wait?.summary
+    );
   });
 });
 

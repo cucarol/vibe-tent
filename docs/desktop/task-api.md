@@ -227,7 +227,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `task.deliver` | assignee **or Local Service** (managed ACP auto-deliver) | Create/update delivery; enter `delivered` (or auto-integrate path per policy). Managed path: service calls the same lifecycle with `summary` = final assistant reply — never auto-accept beyond existing deliveryPolicy. |
 | `task.requestReview` | assignee | Explicit review queue (used when `agent-decide` chooses upgrade) |
 | `task.accept` | user; authorized orchestrator **≠ deliverer** | Integrate commits if any → `accepted`; clear occupation |
-| `task.reject` | same as accept | Reject delivery; default resume rework |
+| `task.reject` | same as accept | Reject delivery; default resume rework. When `resume: true` and the task already has a managed `sessionId`, Local Service **must** restore a live session (native `resumeSession` when resume-capable, otherwise a trackable new `ss-`) before returning `running`. Restore failure parks the task in `waiting(external)` and fails the RPC — never leave `running` with a stopped session. Tasks without `sessionId` (external/manual) keep core-only rework. |
 | `task.interrupt` | user; authorized orchestrator | No integrate; `interrupted`; clear occupation; keep git lane |
 | `task.cancel` | user; `queued` only | Drop unclaimed task |
 | `docs.fork` | user; authorized orchestration | Fork box/concept subtree for parallel work (see §2.4); not a task transition |

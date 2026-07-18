@@ -2242,21 +2242,28 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const note = optionalString(p, "note");
   const resume = p.resume !== false;
 
-  return ctx.mutations.run(workspaceId, async () => {
+  // Core reject first (MutationBus). Managed session restore happens after so
+  // runtime start/resume never nests inside the mutation lock.
+  const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const result = await taskReject(mount.env, taskPath, { actor, note, resume });
-    emitTaskState(ctx, workspaceId, result.task, "task.reject");
+    const rejected = await taskReject(mount.env, taskPath, { actor, note, resume });
+    emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
     ctx.events.emit(
       "delivery.updated",
       workspaceId,
       {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
+        id: rejected.delivery.id,
+        taskId: rejected.delivery.taskId,
+        status: rejected.delivery.status,
         reason: "task.reject",
       },
       "self"
     );
+    return rejected;
+  });
+
+  // Terminal reject: collaboration only; no session restore.
+  if (!resume) {
     return {
       workspaceId,
       taskPath,
@@ -2264,7 +2271,56 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       delivery: projectDelivery(result.delivery),
       state: result.task.state,
     };
-  });
+  }
+
+  // Rework path: if this task was bound to a managed ACP session, restore a live
+  // session (native resume or trackable new ss-). Never leave task=running with a
+  // stopped session (false-running). External/manual tasks without sessionId stay
+  // running for human/CLI rework without a service-owned process.
+  const boundSessionId = result.task.sessionId?.trim() || "";
+  if (!boundSessionId) {
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(result.task),
+      delivery: projectDelivery(result.delivery),
+      state: result.task.state,
+    };
+  }
+
+  // Prior managed delivery marks sessionId+taskPath delivered; clear dedup so a
+  // successful rework prompt_complete can deliver again.
+  clearManagedAutoDeliverDedup(boundSessionId, taskPath);
+
+  try {
+    const restored = await restoreManagedSessionAfterRejectResume(ctx, {
+      workspaceId,
+      taskPath,
+      note,
+    });
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(restored.task),
+      delivery: projectDelivery(result.delivery),
+      state: restored.task.state,
+      session: restored.session,
+    };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Fail-loud: must not remain running while the managed process is dead.
+    await parkTaskAfterRejectResumeFailure(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: boundSessionId,
+      message,
+    });
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.reject resume failed to restore managed session: ${message}`,
+      { taskPath, sessionId: boundSessionId }
+    );
+  }
 }
 
 async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -4034,6 +4090,319 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
 }
+
+/** Drop managed auto-deliver success/in-flight markers for one session+task pair. */
+function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void {
+  const key = managedDeliverKey(sessionId, taskPath);
+  managedAutoDeliverDone.delete(key);
+  managedAutoDeliverInFlight.delete(key);
+}
+
+/**
+ * Chinese summary when reject-resume could not restore a live managed session.
+ * Task stays occupied (waiting) so the user can retry startSession or interrupt.
+ */
+export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
+  "驳回续跑未能恢复 managed session。可重新 startSession，或 interrupt 任务；occupation 保持。";
+
+/**
+ * After core reject(resume) for a managed task: resume the prior ss- when
+ * resumeCapable, otherwise start a trackable new session. Reuses the same
+ * profile/cwd/role identity checks as task.startSession.
+ */
+async function restoreManagedSessionAfterRejectResume(
+  ctx: HandlerContext,
+  input: { workspaceId: string; taskPath: string; note?: string }
+): Promise<{
+  task: TaskEnvelope;
+  session: {
+    sessionId: string;
+    profileId: string;
+    adapterId: string;
+    state: string;
+    cwd?: string;
+  };
+}> {
+  const mount = ctx.host.require(input.workspaceId);
+  let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+  if (task.state !== "running") {
+    throw new Error(
+      `reject-resume restore requires task state running; got ${task.state}`
+    );
+  }
+
+  const priorSessionId = task.sessionId?.trim() || "";
+  if (!priorSessionId) {
+    throw new Error("reject-resume restore requires task.sessionId");
+  }
+
+  // Lane + baseline must already exist for managed tasks that delivered once.
+  task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
+  const cwd = task.worktree || mount.workspaceRoot;
+  const workspaceLane =
+    task.workspace || task.worktree || task.branch
+      ? {
+          workspace: task.workspace || mount.workspaceRoot,
+          worktree: task.worktree || mount.workspaceRoot,
+          branch: task.branch || "HEAD",
+          targetBranch: task.targetBranch,
+        }
+      : undefined;
+
+  const prior = await ctx.runtime.registry.read(priorSessionId);
+  if (!prior) {
+    throw new Error(
+      `Managed session registry row missing for ${priorSessionId}; cannot restore after reject-resume`
+    );
+  }
+
+  const profileId = prior.profileId?.trim();
+  if (!profileId) {
+    throw new Error(
+      `Managed session ${priorSessionId} has no profileId for reject-resume restore`
+    );
+  }
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new Error(
+      `reject-resume profileId must match agentProfile assignee (${task.role}); session has ${profileId}`
+    );
+  }
+
+  // Durable role: another live managed session for the same role blocks restore
+  // (same rule as startSession) unless it is already this task's binding.
+  if (taskAssigneeKind(task) !== "agentProfile") {
+    const activeForRole = await findActiveManagedSessionForRole(
+      ctx,
+      input.workspaceId,
+      task.role
+    );
+    if (activeForRole && activeForRole.id !== priorSessionId) {
+      const boundToThisTask =
+        (!!task.id && activeForRole.lastTaskId === task.id) ||
+        activeForRole.lastTaskId === input.taskPath;
+      if (!boundToThisTask) {
+        throw new Error(
+          `Role "${task.role}" already has an active managed session: ${activeForRole.id}`
+        );
+      }
+    }
+  }
+
+  const sessionBootstrap = buildRejectResumeBootstrapPrompt(task, {
+    workspaceRoot: mount.workspaceRoot,
+    systemRoot: mount.systemRoot,
+    note: input.note,
+  });
+
+  let resumePrior = false;
+  try {
+    const probe = await ctx.runtime.probe(priorSessionId);
+    if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
+      // Still live (unusual after managed deliver stop) — rebind only.
+      const bound = await ctx.mutations.run(input.workspaceId, async () => {
+        ctx.host.markSelfWrite(input.workspaceId);
+        return patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          sessionId: priorSessionId,
+          updatedAt: mount.env.clock.now(),
+        });
+      });
+      emitTaskState(ctx, input.workspaceId, bound, "task.reject.resume");
+      ctx.events.emit(
+        "session.state",
+        input.workspaceId,
+        {
+          sessionId: priorSessionId,
+          state: probe.state,
+          profileId,
+          taskPath: input.taskPath,
+          reason: "task.reject.resume.alive",
+        },
+        "self"
+      );
+      return {
+        task: bound,
+        session: {
+          sessionId: priorSessionId,
+          profileId,
+          adapterId: prior.adapterId,
+          state: probe.state,
+          cwd,
+        },
+      };
+    }
+    if (probe.resumeCapable && !probe.alive) {
+      const recordedCwd = prior.runtimeWorkspace?.cwd?.trim() || "";
+      const cwdMatches =
+        !!recordedCwd &&
+        isSameWorkspaceRoot(nodePath.resolve(recordedCwd), nodePath.resolve(cwd));
+      const profileMatches = !prior.profileId || prior.profileId === profileId;
+      const workspaceMatches = prior.workspace === input.workspaceId;
+      const roleMatches = prior.roleName === task.role;
+      const assigneeKindMatches =
+        (prior.assigneeKind ?? "role") === taskAssigneeKind(task);
+      const taskMatches =
+        prior.lastTaskId === input.taskPath ||
+        (!!task.id && prior.lastTaskId === task.id);
+      resumePrior =
+        cwdMatches &&
+        profileMatches &&
+        workspaceMatches &&
+        roleMatches &&
+        assigneeKindMatches &&
+        taskMatches;
+    }
+  } catch (err) {
+    if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
+      throw err;
+    }
+  }
+
+  let handle;
+  if (resumePrior) {
+    handle = await ctx.runtime.resumeSession({
+      sessionId: priorSessionId,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: sessionBootstrap,
+    });
+  } else {
+    // New trackable session when prior cannot be loaded (no token / identity mismatch).
+    // Clear the dead binding first so we do not pretend continuity.
+    handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: sessionBootstrap,
+      lastTaskId: task.id || input.taskPath,
+      workspace: input.workspaceId,
+    });
+    // New ss- must also clear deliver dedup under the new key.
+    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+  }
+
+  const bound = await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+      sessionId: handle.sessionId,
+      updatedAt: mount.env.clock.now(),
+    });
+    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: handle.sessionId,
+        state: handle.state,
+        profileId: handle.profileId,
+        taskPath: input.taskPath,
+        reason: resumePrior
+          ? "task.reject.resume.session"
+          : "task.reject.resume.new-session",
+      },
+      "self"
+    );
+    return next;
+  });
+
+  return {
+    task: bound,
+    session: {
+      sessionId: handle.sessionId,
+      profileId: handle.profileId,
+      adapterId: handle.adapterId,
+      state: handle.state,
+      cwd,
+    },
+  };
+}
+
+/**
+ * Fail-loud companion for reject-resume: park task in waiting(external) with a
+ * diagnostic summary. Does not release occupation; does not leave state=running.
+ */
+async function parkTaskAfterRejectResumeFailure(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId?: string;
+    message: string;
+  }
+): Promise<void> {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return;
+
+  if (input.sessionId) {
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `reject-resume restore failed: ${input.message}`,
+      });
+    } catch {
+      // registry row may be gone
+    }
+  }
+
+  await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    if (current.state !== "running" && current.state !== "waiting") return;
+
+    const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
+    let next = current;
+    if (current.state === "running") {
+      next = await taskWait(mount.env, input.taskPath, {
+        reason: "external",
+        summary,
+      });
+    } else {
+      next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+        state: "waiting",
+        wait: { reason: "external", summary },
+        updatedAt: mount.env.clock.now(),
+      });
+    }
+    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume.failed");
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        taskState: next.state,
+        runtimeEvent: "task.reject.resume.failed",
+        error: input.message,
+        taskFailed: false,
+      },
+      "service"
+    );
+  });
+}
+
+/**
+ * Bootstrap for reject-resume rework: same Context Card + managed session steps,
+ * plus an explicit rework header so the agent sees the review note.
+ */
+function buildRejectResumeBootstrapPrompt(
+  task: TaskEnvelope,
+  roots: { workspaceRoot: string; systemRoot: string; note?: string }
+): string {
+  const base = buildSessionBootstrapPrompt(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot,
+  });
+  const note = roots.note?.trim();
+  const rework =
+    `--- Tent reject-resume rework ---\n` +
+    `Delivery was rejected; continue work on the same task (state=running).\n` +
+    (note ? `Review note: ${note}\n` : `Review note: (none)\n`) +
+    `Managed path: your final assistant reply is the report and will be delivered automatically.\n`;
+  return `${base}\n\n${rework}`;
+}
+
 
 /**
  * Test helper: invoke managed auto-deliver.

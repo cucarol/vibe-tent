@@ -519,6 +519,7 @@ export class AgentRuntime implements AgentRuntimePort {
 
     // Fake-only path: re-spawn via startSession (no provider-native load).
     // Real ACP adapters with canResume must implement resumeManagedSession.
+    // Preserve bootstrapPrompt so reject-resume rework / post-load prompts reach the child.
     if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
       return this.startSessionWithProfile({
         sessionId: req.sessionId,
@@ -530,7 +531,7 @@ export class AgentRuntime implements AgentRuntimePort {
         workspace: record.workspace,
         lastTaskId: record.lastTaskId,
         env: req.env,
-        bootstrapPrompt: undefined,
+        bootstrapPrompt: req.bootstrapPrompt,
       }, profile);
     }
 
