@@ -558,7 +558,15 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
   const roles = JSON.parse(await fs.readFile(path.join(systemRoot, "roles.json"), "utf8"));
   assert.equal(registry.goal.color, "orange");
   assert.equal(registry.goal.description, "自定义目标");
-  assert.deepEqual(roles.roles, [{ name: "maker", color: "green", description: "负责实现" }]);
+  assert.equal(roles.roles.length, 1);
+  assert.match(roles.roles[0].id, /^rl-[a-z0-9]+$/);
+  assert.deepEqual(roles.roles[0], {
+    id: roles.roles[0].id,
+    name: "maker",
+    displayName: "maker",
+    color: "green",
+    description: "负责实现",
+  });
   assert.equal(await fs.readFile(path.join(systemRoot, "RULES.md"), "utf8"), "# demo\n\n本机默认规则\n");
 });
 

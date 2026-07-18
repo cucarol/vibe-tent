@@ -247,8 +247,13 @@ test("plugin settings:migrates legacy defaults", () => {
   );
   assert.equal(typeAllowsWorkspacePointer("repo", settings.newTentDefaults.typeRegistry), false, "workspacePointer 运行时退役");
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
+  const migratedRoleId = settings.newTentDefaults.rolesRegistry.roles[0].id;
+  assert.ok(migratedRoleId);
+  assert.match(migratedRoleId, /^rl-[a-z0-9]+$/);
   assert.deepEqual(settings.newTentDefaults.rolesRegistry.roles[0], {
+    id: migratedRoleId,
     name: "planner",
+    displayName: "planner",
     color: "purple",
     description: "Plan",
   });
