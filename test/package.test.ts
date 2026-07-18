@@ -519,7 +519,7 @@ test("tent new:in-workspace .tent 空骨架,生成 RULES 且 workspace 可无 Gi
   assert.equal(await exists(path.join(systemRoot, "CLAUDE.md")), false);
   assert.equal(await exists(path.join(systemRoot, "AGENTS.md")), false);
 
-  // 空骨架:无强制 zone,但有 temp / 注册表
+  // 空骨架:无强制顶层文件夹,但有 temp / 注册表
   assert.equal(await exists(path.join(systemRoot, "goal")), false);
   assert.equal(await exists(path.join(systemRoot, "temp")), true);
   assert.equal(await exists(path.join(systemRoot, "temp", "temp.md")), false);

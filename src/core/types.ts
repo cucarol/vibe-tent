@@ -2,12 +2,6 @@
 
 export type BoxType = string;
 
-/**
- * 顶层展示 zone 名（文件夹名碰巧为这些时用于排序）。
- * 不是 type 硬编码；仅 UI/排序提示。artifact 替代旧 output zone 名。
- */
-export type ZoneType = "goal" | "prompt" | "artifact" | "output" | "note";
-
 export type Status = "todo" | "doing" | "done";
 
 /** concept 身份文件 frontmatter。type 必填。id 为 cx- handle（迁移前可有 bx-）。 */
@@ -59,8 +53,6 @@ export interface Box {
   body: string;
   children: Box[];
   parent: Box | null;
-  /** 所属顶层 zone(自身是 zone 时即自己)。custom 顶层框无 zone。 */
-  zone: ZoneType | null;
   /** owner 关系派生出的认领锁；不落盘。 */
   locked: boolean;
   lockSource?: "self" | "ancestor" | "descendant";

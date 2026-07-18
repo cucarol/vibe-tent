@@ -104,6 +104,27 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
   assert.equal(g3.lockOwner, "executor");
 });
 
+test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () => {
+  const dir = await makeTent();
+  // 额外顶层框:名称在字母序上夹在 goal 与 prompt 之间,且不在旧 zone 名单里
+  await fs.mkdir(path.join(dir, "middle"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "middle", "middle.md"),
+    "---\nid: bx-middle\ntype: prompt\n---\n",
+  );
+  const tent = await loadTent(new NodeFs(dir));
+  const rootNames = tent.roots.map((box) => box.name);
+  assert.deepEqual(
+    rootNames,
+    [...rootNames].sort((a, b) => a.localeCompare(b)),
+    "缺省根顺序应等于稳定名称排序",
+  );
+  assert.ok(
+    !("zone" in tent.roots[0]),
+    "Box 不再携带 zone 领域属性",
+  );
+});
+
 test("loadTent:顶层普通目录透传其下合法框", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, "普通分组", "嵌套框"), { recursive: true });
@@ -408,7 +429,6 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
   };
   const { placeBox } = await import("../src/core/ops.js");
 
-  // 把"字段调研"无关:用 prompt zone 下三个框排序。先看现状
   // prompt 下:表达式任务书(bx-p1)、旧站资料(bx-a1)。把 a1 拖到 p1 之前。
   await placeBox(env as any, "prompt/旧站资料", "prompt", {
     mode: "before",
@@ -483,7 +503,7 @@ test("orphan box:同名 md 缺 id 时进入 invalid 态且不进 byId", async ()
   assert.equal(tent.byId.has(""), false);
 });
 
-test("buildCanvas:zone=group,叶子=file 节点,路径带前缀", async () => {
+test("buildCanvas:顶层根=group,叶子=file 节点,路径带前缀", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
   const { buildCanvas } = await import("../src/core/canvas.js");
@@ -492,7 +512,7 @@ test("buildCanvas:zone=group,叶子=file 节点,路径带前缀", async () => {
   const files = data.nodes.filter((n) => n.type === "file");
   assert.ok(
     groups.some((g) => g.label?.startsWith("goal")),
-    "goal zone 是 group",
+    "goal 顶层根是 group",
   );
   assert.ok(
     files.every((f) => f.file?.startsWith("tents/wqb/")),

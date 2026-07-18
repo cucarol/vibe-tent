@@ -540,7 +540,6 @@ function isRecord(value) {
 }
 
 // src/core/tree.ts
-var ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
 }
@@ -557,7 +556,7 @@ async function loadTent(fs14) {
     await loadBoxInto(fs14, entry.name, null, typeRegistry, roots);
   }
   const order = await loadOrder(fs14);
-  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
   const duplicateIds = findDuplicateIds(sortedRoots);
@@ -591,10 +590,6 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-function zoneRank(name) {
-  const i = ZONE_NAMES.indexOf(name);
-  return i === -1 ? 99 : i;
-}
 async function loadBox(fs14, path16, parent, registry) {
   if (isOperationalPath(path16)) return null;
   const boxFile = boxNotePath(path16);
@@ -612,7 +607,6 @@ async function loadBox(fs14, path16, parent, registry) {
   }
   const { data, body } = parsed;
   const name = baseName(path16);
-  const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
     id: fm.id,
@@ -628,7 +622,6 @@ async function loadBox(fs14, path16, parent, registry) {
     body,
     children: [],
     parent,
-    zone,
     locked: false,
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" }
@@ -684,9 +677,6 @@ async function loadBoxInto(fs14, path16, parent, registry, target) {
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs14, join(path16, entry.name), parent, registry, target);
   }
-}
-function zoneOf(name) {
-  return ZONE_NAMES.includes(name) ? name : null;
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
   const directInvalid = box.invalid ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." } : invalidTypeReference(box, registry);

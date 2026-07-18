@@ -8,7 +8,6 @@ import {
   Box,
   BoxFrontmatter,
   ResolvedAxis,
-  ZoneType,
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
@@ -21,15 +20,13 @@ import {
 } from "./typeRegistry.js";
 import { isOperationalPath, isSystemNoteName, OPERATIONAL_TOP_LEVEL } from "./paths.js";
 
-const ZONE_NAMES: ZoneType[] = ["goal", "prompt", "artifact", "output", "note"];
-
 /** concept 身份文件路径 = <文件夹名>.md */
 export function boxNotePath(boxPath: string): string {
   return join(boxPath, baseName(boxPath) + ".md");
 }
 
 export interface LoadedTent {
-  /** 顶层 concept,按 zone 排名+名字排。temp 等 operational 不在树内。 */
+  /** 顶层 concept，order.json 优先，缺省按稳定名称排序。temp 等 operational 不在树内。 */
   roots: Box[];
   /** id → concept 索引（仅 user-facing concepts）。 */
   byId: Map<string, Box>;
@@ -53,9 +50,9 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
     await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
   }
 
-  // 排序:隐藏 order 表优先;缺省时根按 zone 排名+名字,子框按名字
+  // 排序:隐藏 order 表优先;缺省时根与子框均按稳定名称排序
   const order = await loadOrder(fs);
-  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
 
   // 解析权限/隔离状态 + 建索引
@@ -118,11 +115,6 @@ function sortChildren(box: Box, order: OrderMap): void {
   for (const c of box.children) sortChildren(c, order);
 }
 
-function zoneRank(name: string): number {
-  const i = ZONE_NAMES.indexOf(name as ZoneType);
-  return i === -1 ? 99 : i;
-}
-
 async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry: TypeRegistry): Promise<Box | null> {
   if (isOperationalPath(path)) return null;
   const boxFile = boxNotePath(path);
@@ -141,7 +133,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   }
   const { data, body } = parsed;
   const name = baseName(path);
-  const zone = parent ? parent.zone : zoneOf(name);
 
   const { fm, tags } = normalizeIdentity(data);
   const box: Box = {
@@ -157,7 +148,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     body,
     children: [],
     parent,
-    zone,
     locked: false,
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" },
@@ -224,10 +214,6 @@ async function loadBoxInto(
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join(path, entry.name), parent, registry, target);
   }
-}
-
-function zoneOf(name: string): ZoneType | null {
-  return ZONE_NAMES.includes(name as ZoneType) ? (name as ZoneType) : null;
 }
 
 function resolveSubtree(

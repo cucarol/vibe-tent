@@ -1,5 +1,5 @@
 // 白板生成层:把帐结构吐成 JSON Canvas(jsoncanvas.org,Obsidian 原生格式)。
-// v1 用嵌套 group 铺开:zone = 带色 group,容器框 = group,叶子框 = file 节点指向同名 .md。
+// v1 用嵌套 group 铺开:顶层根框 = 带色 group,容器框 = group,叶子框 = file 节点指向同名 .md。
 // 纯函数、可测;file 路径用 pathPrefix 转成 vault 相对(插件传入)。
 
 import { Box } from "./types.js";
@@ -29,8 +29,8 @@ const HEADER = 36;
 const GAP = 12;
 const COL_GAP = 48;
 
-// JSON Canvas 预设色:1红 2橙 3黄 4绿 5青 6紫
-const ZONE_COLOR: Record<string, string> = {
+// JSON Canvas 预设色:1红 2橙 3黄 4绿 5青 6紫（按常见顶层文件夹名/type 名着色，非领域分类）
+const ROOT_COLOR: Record<string, string> = {
   goal: "5",
   prompt: "6",
   artifact: "4",
@@ -48,9 +48,9 @@ interface Size {
 export function buildCanvas(tent: LoadedTent, pathPrefix: string): CanvasData {
   const nodes: CanvasNode[] = [];
   let cursorX = 0;
-  for (const zone of tent.roots) {
-    const s = sizeOf(zone);
-    layout(zone, cursorX, 0, nodes, pathPrefix, true);
+  for (const root of tent.roots) {
+    const s = sizeOf(root);
+    layout(root, cursorX, 0, nodes, pathPrefix, true);
     cursorX += s.w + COL_GAP;
   }
   return { nodes, edges: [] };
@@ -69,7 +69,7 @@ function sizeOf(box: Box): Size {
   return { w: innerW + PAD * 2, h: innerH + HEADER + PAD };
 }
 
-function layout(box: Box, x: number, y: number, out: CanvasNode[], prefix: string, isZone: boolean): Size {
+function layout(box: Box, x: number, y: number, out: CanvasNode[], prefix: string, isRoot: boolean): Size {
   const s = sizeOf(box);
   if (box.children.length === 0) {
     out.push({
@@ -80,7 +80,7 @@ function layout(box: Box, x: number, y: number, out: CanvasNode[], prefix: strin
       width: CARD_W,
       height: CARD_H,
       file: filePath(box, prefix),
-      color: colorFor(box, isZone),
+      color: colorFor(box, isRoot),
     });
     return s;
   }
@@ -91,8 +91,8 @@ function layout(box: Box, x: number, y: number, out: CanvasNode[], prefix: strin
     y,
     width: s.w,
     height: s.h,
-    label: labelFor(box, isZone),
-    color: colorFor(box, isZone),
+    label: labelFor(box, isRoot),
+    color: colorFor(box, isRoot),
   });
   let cy = y + HEADER;
   for (const c of box.children) {
@@ -109,13 +109,13 @@ function filePath(box: Box, prefix: string): string {
   const p = boxNotePath(box.path);
   return prefix ? `${prefix}/${p}` : p;
 }
-function labelFor(box: Box, isZone: boolean): string {
-  const tag = isZone ? "" : ` · ${box.type}`;
+function labelFor(box: Box, isRoot: boolean): string {
+  const tag = isRoot ? "" : ` · ${box.type}`;
   const owner = box.fm.owner ? ` ⚑${box.fm.owner}` : "";
   return `${box.name}${tag}${owner}`;
 }
-function colorFor(box: Box, isZone: boolean): string | undefined {
-  if (isZone) return ZONE_COLOR[box.name] || undefined;
+function colorFor(box: Box, isRoot: boolean): string | undefined {
+  if (isRoot) return ROOT_COLOR[box.name] || undefined;
   const { base, modifier } = splitType(box.type);
   if (base === "goal") return "5";
   if (base === "prompt") return "6";
@@ -124,19 +124,19 @@ function colorFor(box: Box, isZone: boolean): string | undefined {
   return undefined;
 }
 
-// 保留上次手摆的位置:把旧 canvas 里同 id 顶层 zone 的位移,整体平移到新生成的对应 zone 子树。
+// 保留上次手摆的位置:把旧 canvas 里同 id 顶层根框的位移,整体平移到新生成的对应根子树。
 export function preservePositions(fresh: CanvasData, old: CanvasData | null, tent: LoadedTent): CanvasData {
   if (!old) return fresh;
   const oldById = new Map(old.nodes.map((n) => [n.id, n]));
-  for (const zone of tent.roots) {
-    const zid = zone.id || zone.path;
-    const freshZone = fresh.nodes.find((n) => n.id === zid);
-    const oldZone = oldById.get(zid);
-    if (!freshZone || !oldZone) continue;
-    const dx = oldZone.x - freshZone.x;
-    const dy = oldZone.y - freshZone.y;
+  for (const root of tent.roots) {
+    const rid = root.id || root.path;
+    const freshRoot = fresh.nodes.find((n) => n.id === rid);
+    const oldRoot = oldById.get(rid);
+    if (!freshRoot || !oldRoot) continue;
+    const dx = oldRoot.x - freshRoot.x;
+    const dy = oldRoot.y - freshRoot.y;
     if (dx === 0 && dy === 0) continue;
-    const subtreeIds = collectIds(zone);
+    const subtreeIds = collectIds(root);
     for (const n of fresh.nodes) {
       if (subtreeIds.has(n.id)) {
         n.x += dx;

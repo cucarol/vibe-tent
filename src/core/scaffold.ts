@@ -15,7 +15,7 @@ import {
   systemRootFromWorkspace,
 } from "./paths.js";
 
-/** 顶层 concept:genesis grill 出的真名节点(非强制的通用 zone)。 */
+/** 顶层 concept:genesis grill 出的真名节点(非强制通用顶层文件夹)。 */
 export interface ScaffoldBox {
   name: string;   // 文件夹名 = 框身份(真名)
   type: string;   // OKF/Tent 单层 type
@@ -27,7 +27,7 @@ export interface ScaffoldTentOptions {
   name: string;
   /** 帐根 RULES.md 正文:本项目约定(global rule)。机制规范不进帐(见仓库 docs/SPEC.md)。 */
   rules: string;
-  /** 顶层节点;由 genesis grill 决定。缺省 = 空帐(不强制建 zone)。 */
+  /** 顶层节点;由 genesis grill 决定。缺省 = 空帐(不强制建顶层文件夹)。 */
   boxes?: ScaffoldBox[];
   typeRegistry?: TypeRegistry;
   rolesRegistry?: RolesRegistry;

@@ -647,7 +647,7 @@ async function loadTent(fs) {
     await loadBoxInto(fs, entry.name, null, typeRegistry, roots);
   }
   const order = await loadOrder(fs);
-  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => zoneRank(a.name) - zoneRank(b.name) || a.name.localeCompare(b.name));
+  const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
   const duplicateIds = findDuplicateIds(sortedRoots);
@@ -695,10 +695,6 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-function zoneRank(name) {
-  const i = ZONE_NAMES.indexOf(name);
-  return i === -1 ? 99 : i;
-}
 async function loadBox(fs, path, parent, registry) {
   if (isOperationalPath(path)) return null;
   const boxFile = boxNotePath(path);
@@ -716,7 +712,6 @@ async function loadBox(fs, path, parent, registry) {
   }
   const { data, body } = parsed;
   const name = baseName(path);
-  const zone = parent ? parent.zone : zoneOf(name);
   const { fm, tags } = normalizeIdentity(data);
   const box = {
     id: fm.id,
@@ -732,7 +727,6 @@ async function loadBox(fs, path, parent, registry) {
     body,
     children: [],
     parent,
-    zone,
     locked: false,
     readable: { value: false, source: "type" },
     writable: { value: false, source: "type" }
@@ -788,9 +782,6 @@ async function loadBoxInto(fs, path, parent, registry, target) {
     if (OPERATIONAL_TOP_LEVEL.has(entry.name)) continue;
     await loadBoxInto(fs, join2(path, entry.name), parent, registry, target);
   }
-}
-function zoneOf(name) {
-  return ZONE_NAMES.includes(name) ? name : null;
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
   const directInvalid = box.invalid ? { rootId: box.invalidRootId || box.path, reason: box.invalidReason || "Invalid frontmatter." } : invalidTypeReference(box, registry);
@@ -879,7 +870,6 @@ function dirName(path) {
   const i = path.lastIndexOf("/");
   return i === -1 ? "" : path.slice(0, i);
 }
-var ZONE_NAMES;
 var init_tree = __esm({
   "src/core/tree.ts"() {
     "use strict";
@@ -887,7 +877,6 @@ var init_tree = __esm({
     init_order();
     init_typeRegistry();
     init_paths();
-    ZONE_NAMES = ["goal", "prompt", "artifact", "output", "note"];
   }
 });
 
@@ -2905,7 +2894,7 @@ var PAD = 18;
 var HEADER = 36;
 var GAP = 12;
 var COL_GAP = 48;
-var ZONE_COLOR = {
+var ROOT_COLOR = {
   goal: "5",
   prompt: "6",
   artifact: "4",
@@ -2917,9 +2906,9 @@ var ZONE_COLOR = {
 function buildCanvas(tent, pathPrefix) {
   const nodes = [];
   let cursorX = 0;
-  for (const zone of tent.roots) {
-    const s = sizeOf(zone);
-    layout(zone, cursorX, 0, nodes, pathPrefix, true);
+  for (const root of tent.roots) {
+    const s = sizeOf(root);
+    layout(root, cursorX, 0, nodes, pathPrefix, true);
     cursorX += s.w + COL_GAP;
   }
   return { nodes, edges: [] };
@@ -2936,7 +2925,7 @@ function sizeOf(box) {
   innerH += GAP * (box.children.length - 1);
   return { w: innerW + PAD * 2, h: innerH + HEADER + PAD };
 }
-function layout(box, x, y, out, prefix, isZone) {
+function layout(box, x, y, out, prefix, isRoot) {
   const s = sizeOf(box);
   if (box.children.length === 0) {
     out.push({
@@ -2947,7 +2936,7 @@ function layout(box, x, y, out, prefix, isZone) {
       width: CARD_W,
       height: CARD_H,
       file: filePath(box, prefix),
-      color: colorFor(box, isZone)
+      color: colorFor(box, isRoot)
     });
     return s;
   }
@@ -2958,8 +2947,8 @@ function layout(box, x, y, out, prefix, isZone) {
     y,
     width: s.w,
     height: s.h,
-    label: labelFor(box, isZone),
-    color: colorFor(box, isZone)
+    label: labelFor(box, isRoot),
+    color: colorFor(box, isRoot)
   });
   let cy = y + HEADER;
   for (const c of box.children) {
@@ -2975,13 +2964,13 @@ function filePath(box, prefix) {
   const p = boxNotePath(box.path);
   return prefix ? `${prefix}/${p}` : p;
 }
-function labelFor(box, isZone) {
-  const tag = isZone ? "" : ` \xB7 ${box.type}`;
+function labelFor(box, isRoot) {
+  const tag = isRoot ? "" : ` \xB7 ${box.type}`;
   const owner = box.fm.owner ? ` \u2691${box.fm.owner}` : "";
   return `${box.name}${tag}${owner}`;
 }
-function colorFor(box, isZone) {
-  if (isZone) return ZONE_COLOR[box.name] || void 0;
+function colorFor(box, isRoot) {
+  if (isRoot) return ROOT_COLOR[box.name] || void 0;
   const { base: base2, modifier } = splitType(box.type);
   if (base2 === "goal") return "5";
   if (base2 === "prompt") return "6";
@@ -2992,15 +2981,15 @@ function colorFor(box, isZone) {
 function preservePositions(fresh, old, tent) {
   if (!old) return fresh;
   const oldById = new Map(old.nodes.map((n) => [n.id, n]));
-  for (const zone of tent.roots) {
-    const zid = zone.id || zone.path;
-    const freshZone = fresh.nodes.find((n) => n.id === zid);
-    const oldZone = oldById.get(zid);
-    if (!freshZone || !oldZone) continue;
-    const dx = oldZone.x - freshZone.x;
-    const dy = oldZone.y - freshZone.y;
+  for (const root of tent.roots) {
+    const rid = root.id || root.path;
+    const freshRoot = fresh.nodes.find((n) => n.id === rid);
+    const oldRoot = oldById.get(rid);
+    if (!freshRoot || !oldRoot) continue;
+    const dx = oldRoot.x - freshRoot.x;
+    const dy = oldRoot.y - freshRoot.y;
     if (dx === 0 && dy === 0) continue;
-    const subtreeIds = collectIds(zone);
+    const subtreeIds = collectIds(root);
     for (const n of fresh.nodes) {
       if (subtreeIds.has(n.id)) {
         n.x += dx;

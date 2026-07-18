@@ -77,7 +77,7 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 1. 轻量追问出 Tent 名称、Obsidian vault 路径、唯一真实 workspace、第一批具体目标/上下文/产出，以及初始 role 名称。
 2. 对每个初始 role 做轻量 role init 校准，并让 user 确认 `description`、`prompt`、可选 `color`。
 3. 运行 `tent new <tent-name> --vault <vault-path>`。CLI 会读取 vault 的 `tentsRoot` 设置；不要硬编码 `_tents`，也不要把 Tent 放在 vault 根目录。若 user 明确给出独立路径，可用 `tent new <explicit-path>`。
-4. scaffold 只包含 `RULES.md`、`.tent/types.json`、`.tent/roles.json`、`.tent/tags.json`、`temp/`。不创建通用 zone，不初始化 Tent Git，不创建 `SPEC.md`、agent 配置文件或 `.gitignore`。
+4. scaffold 只包含 `RULES.md`、`.tent/types.json`、`.tent/roles.json`、`.tent/tags.json`、`temp/`。不创建通用顶层文件夹分类，不初始化 Tent Git，不创建 `SPEC.md`、agent 配置文件或 `.gitignore`。
 5. 初始化或连接真实 workspace。如果 workspace 还不是 Git 仓库，创建目录并 `git init`，优先使用 `main`。如果它已经是仓库，保留历史和配置。随后在 workspace 根放一份 agent 规则文件，让在这个仓里干活的 coding agent 知道它由 Tent 驱动：若仓里没有 `AGENTS.md`（也没有既有的等价文件如 `CLAUDE.md`），新建一份 `AGENTS.md`，写清「本仓由一顶 Tent / 帷幄驱动：任务在各 role 的 worktree/branch 上执行，交付通过 `tent report` / `tent propose` 回到 user 的待裁由 user 确认；不要直接 push 或自行合并，合入由 user 裁决」；若已存在这类规则文件，以清晰分隔的一段**幂等追加**同样说明（先检查是否已写过，写过就跳过），绝不覆盖原有内容。这属于 workspace 文件改动，按第 11 条 commit。
 6. 根据追问结果创建真实 box 树。优先用 `tent new-box <name> <type> [parentId]` 创建——它生成防撞 id 并校验 type；创建后补写身份笔记正文。只有 CLI 不可用时才手写文件夹加同名笔记（frontmatter 至少含 `id: bx-<six random chars>` 与有意选择的 `type`）。
 7. box 名称创建后视为不可在 Tent 内重命名。不要创建 legacy `kind`。
