@@ -433,6 +433,21 @@ export class ServiceClient {
   ) {
     return this.call("task.askUser", { workspaceId, taskPath, ...args });
   }
+  /**
+   * U2A one-shot append to a running/waiting managed task (user-only).
+   * Provide text and/or contextRefs (stable entity ids). Not chat; not UserAsk reply.
+   */
+  taskSendInput(
+    workspaceId: string,
+    taskPath: string,
+    args: {
+      text?: string;
+      contextRefs?: string[];
+      actor?: string;
+    }
+  ) {
+    return this.call("task.sendInput", { workspaceId, taskPath, ...args });
+  }
   taskDeliver(
     workspaceId: string,
     taskPath: string,
@@ -573,6 +588,37 @@ export class ServiceClient {
   /** User-only: deny a business ask; resumes task for rework/observe. */
   userAskDeny(askId: string, actor = "user") {
     return this.call("userAsk.deny", { askId, actor });
+  }
+
+  /**
+   * U2A pending one-shot inputs for external poll.
+   * Always requires workspaceId + taskPath — no machine-global inbox.
+   */
+  taskInputListPending(workspaceId: string, taskPath: string) {
+    return this.call("taskInput.listPending", { workspaceId, taskPath });
+  }
+  /**
+   * Scoped get: workspaceId + taskPath + inputId (no id-only lookup).
+   */
+  taskInputGet(workspaceId: string, taskPath: string, inputId: string) {
+    return this.call("taskInput.get", { workspaceId, taskPath, inputId });
+  }
+  /**
+   * External agent formal ack after observing one-shot input (poll+ack).
+   * Actor must match stored task role / session binding; scope is workspaceId+taskPath.
+   */
+  taskInputAck(
+    workspaceId: string,
+    taskPath: string,
+    inputId: string,
+    actor?: string
+  ) {
+    return this.call("taskInput.ack", {
+      workspaceId,
+      taskPath,
+      inputId,
+      ...(actor ? { actor } : {}),
+    });
   }
 
   /**

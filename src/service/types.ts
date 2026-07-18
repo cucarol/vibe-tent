@@ -306,6 +306,11 @@ export const CLIENT_METHODS = [
    * Not tool permission; not multi-turn chat.
    */
   "task.askUser",
+  /**
+   * U2A one-shot append: user-only text and/or contextRefs to a running/waiting task.
+   * Not chat; does not answer a pending UserAsk; does not mutate profiles.
+   */
+  "task.sendInput",
   "task.deliver",
   "task.requestReview",
   "task.accept",
@@ -344,6 +349,14 @@ export const CLIENT_METHODS = [
   "userAsk.get",
   "userAsk.reply",
   "userAsk.deny",
+  /**
+   * U2A task input (one-shot append) — machine-local; not chat.
+   * send is user-only; listPending/get/ack require workspaceId+taskPath (no global inbox).
+   * ack actor must match stored task role or service-verified session binding.
+   */
+  "taskInput.listPending",
+  "taskInput.get",
+  "taskInput.ack",
   /**
    * Operational retention (task-api §6) — user-only.
    * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.

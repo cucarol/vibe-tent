@@ -6,7 +6,7 @@
  *
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
- *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer" (default MOCK_ACP_PROMPT_TEXT)
+ *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer" or "## User Input" (default MOCK_ACP_PROMPT_TEXT)
  *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing session/prompt (default 0)
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
@@ -305,13 +305,16 @@ rl.on("line", (line) => {
       .join("");
     // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
     log.prompts.push(textParts.slice(0, 8000));
-    const isUserAnswer = textParts.includes("## User Answer");
+    // U2A follow-ups: UserAsk uses "## User Answer"; task.sendInput uses "## User Input".
+    // Both must use FOLLOWUP_TEXT and skip bootstrap delay so managed continue is honest.
+    const isUserFollowUp =
+      textParts.includes("## User Answer") || textParts.includes("## User Input");
     // Follow-up continuation uses a distinct report so delivery is exercised
     // even when the bootstrap prompt was empty / non-delivering.
-    const activePromptText = isUserAnswer ? followupText : promptText;
+    const activePromptText = isUserFollowUp ? followupText : promptText;
 
     const finishPrompt = () => {
-      if (promptMode === "error" && !isUserAnswer) {
+      if (promptMode === "error" && !isUserFollowUp) {
         write({
           jsonrpc: "2.0",
           id: msg.id,
@@ -322,9 +325,9 @@ rl.on("line", (line) => {
         return;
       }
 
-      if (promptMode === "interrupt" && !isUserAnswer) {
+      if (promptMode === "interrupt" && !isUserFollowUp) {
         // Never answer the bootstrap prompt — hang until SIGTERM.
-        // Follow-up User Answer prompts still complete (managed continue path).
+        // Follow-up User Answer / User Input prompts still complete (managed continue).
         flushLog();
         return;
       }
@@ -334,7 +337,7 @@ rl.on("line", (line) => {
         sessionUpdate: "agent_thought_chunk",
         content: { type: "text", text: "thinking..." },
       });
-      const modeForThis = isUserAnswer ? "ok" : promptMode;
+      const modeForThis = isUserFollowUp ? "ok" : promptMode;
       if (modeForThis !== "empty") {
         notifyUpdate({
           sessionUpdate: "agent_message_chunk",
@@ -348,7 +351,7 @@ rl.on("line", (line) => {
         status: "pending",
       });
 
-      if (requestPermission && !isUserAnswer) {
+      if (requestPermission && !isUserFollowUp) {
         for (let i = 0; i < permissionCount; i += 1) {
           const permId = nextServerId++;
           const suffix = permissionCount > 1 ? `_${i + 1}` : "";
@@ -390,7 +393,10 @@ rl.on("line", (line) => {
       }
     };
 
-    if (promptDelayMs > 0 && !isUserAnswer) {
+    // Bootstrap only: delay keeps task running so ask/sendInput can park first.
+    // Follow-ups complete immediately so prompt_complete can race markDelivered
+    // (managed inject pin must keep pending rows non-cancelable in that window).
+    if (promptDelayMs > 0 && !isUserFollowUp) {
       setTimeout(finishPrompt, promptDelayMs);
       return;
     }

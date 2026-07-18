@@ -343,6 +343,121 @@ export async function runTaskCommand(
           "Usage: tent task user-ask list|get|reply|deny …\n" + taskHelpText()
         );
       }
+      case "send-input":
+      case "sendInput": {
+        const taskPath = positionals[0];
+        if (!taskPath) {
+          return failUsage(
+            "Usage: tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]"
+          );
+        }
+        let text = flags.text;
+        if (text === "-") text = await readStdinText();
+        const contextRefs = parseRefsFlag(
+          flags.refs || flags["context-refs"] || flags.contextRefs
+        );
+        if (!(text?.trim() || (contextRefs && contextRefs.length > 0))) {
+          return failUsage(
+            "tent task send-input requires --text and/or --refs (stable entity ids)"
+          );
+        }
+        const result = await client.taskSendInput(workspaceId, taskPath, {
+          text,
+          contextRefs,
+          actor: flags.actor || "user",
+        });
+        return okPrint(result, json, (r) => {
+          const row = r as {
+            taskPath?: string;
+            state?: string;
+            input?: { id?: string; status?: string };
+            continued?: boolean;
+            continueError?: string;
+          };
+          return (
+            `✓ TaskInput sent via service RPC\n` +
+            `taskPath: ${row.taskPath ?? taskPath}\n` +
+            (row.state ? `state: ${row.state}\n` : "") +
+            (row.input?.id ? `inputId: ${row.input.id}\n` : "") +
+            (row.input?.status ? `inputStatus: ${row.input.status}\n` : "") +
+            (row.continued != null ? `continued: ${row.continued}\n` : "") +
+            (row.continueError ? `continueError: ${row.continueError}\n` : "")
+          );
+        });
+      }
+      case "task-input":
+      case "taskInput": {
+        // tent task task-input list|get|ack — always workspace-scoped via --workspace
+        const action = positionals[0];
+        if (!action || action === "list") {
+          const taskPathFilter =
+            flags.task ||
+            flags["task-path"] ||
+            flags.taskPath ||
+            positionals[1];
+          if (!taskPathFilter) {
+            return failUsage(
+              "Usage: tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.taskInputListPending(
+            workspaceId,
+            taskPathFilter
+          );
+          return okPrint(result, json, (r) => formatTaskInputList(r));
+        }
+        if (action === "get") {
+          const inputId = positionals[1];
+          const taskPathFilter =
+            flags.task || flags["task-path"] || flags.taskPath;
+          if (!inputId || !taskPathFilter) {
+            return failUsage(
+              "Usage: tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--json]"
+            );
+          }
+          const result = await client.taskInputGet(
+            workspaceId,
+            taskPathFilter,
+            inputId
+          );
+          return okPrint(result, json, (r) => formatTaskInputGet(r));
+        }
+        if (action === "ack") {
+          const inputId = positionals[1];
+          const taskPathFilter =
+            flags.task || flags["task-path"] || flags.taskPath;
+          if (!inputId || !taskPathFilter) {
+            return failUsage(
+              "Usage: tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]"
+            );
+          }
+          if (!flags.actor) {
+            return failUsage(
+              "tent task task-input ack requires --actor matching the task role or verified session id"
+            );
+          }
+          const result = await client.taskInputAck(
+            workspaceId,
+            taskPathFilter,
+            inputId,
+            flags.actor
+          );
+          return okPrint(result, json, (r) => {
+            const row = r as {
+              input?: { id?: string; status?: string; taskPath?: string };
+            };
+            return (
+              `✓ TaskInput acked via service RPC\n` +
+              (row.input?.id ? `inputId: ${row.input.id}\n` : "") +
+              (row.input?.status ? `status: ${row.input.status}\n` : "") +
+              (row.input?.taskPath ? `taskPath: ${row.input.taskPath}\n` : "")
+            );
+          });
+        }
+        return failUsage(
+          "Usage: tent task task-input list|get|ack …\n" + taskHelpText()
+        );
+      }
       case "help":
       case "--help":
       case "-h":
@@ -450,6 +565,20 @@ function parseChoicesFlag(
   return choices.length ? choices : undefined;
 }
 
+/** Parse `id,id` into U2A contextRefs (stable entity ids). */
+function parseRefsFlag(raw: string | undefined): string[] | undefined {
+  if (raw === undefined || !raw.trim()) return undefined;
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  for (const part of raw.split(",")) {
+    const id = part.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    refs.push(id);
+  }
+  return refs.length ? refs : undefined;
+}
+
 function formatUserAskList(result: unknown): string {
   const row = result as {
     asks?: Array<{
@@ -498,6 +627,62 @@ function formatUserAskGet(result: unknown): string {
     lines.push("choices:");
     for (const c of a.choices) lines.push(`  - ${c.id}=${c.label}`);
   }
+  return lines.join("\n") + "\n";
+}
+
+function formatTaskInputList(result: unknown): string {
+  const row = result as {
+    inputs?: Array<{
+      id?: string;
+      taskPath?: string;
+      status?: string;
+      text?: string;
+      contextRefs?: string[];
+    }>;
+  };
+  const inputs = row.inputs ?? [];
+  if (inputs.length === 0) return "inputs: (none)\n";
+  const lines = [`inputs: ${inputs.length}`, ""];
+  for (const i of inputs) {
+    const preview =
+      (i.text ?? "").slice(0, 60) ||
+      (i.contextRefs?.length ? `refs=${i.contextRefs.join(",")}` : "");
+    lines.push(
+      `- ${i.id ?? "?"}` +
+        `\ttask=${i.taskPath ?? "?"}` +
+        `\tstatus=${i.status ?? "?"}` +
+        (preview ? `\t${preview}` : "")
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+
+function formatTaskInputGet(result: unknown): string {
+  const row = result as {
+    input?: {
+      id?: string;
+      workspaceId?: string;
+      taskPath?: string;
+      status?: string;
+      text?: string;
+      contextRefs?: string[];
+      deliveredAt?: string;
+      consumedAt?: string;
+      cancelledAt?: string;
+    };
+  };
+  const i = row.input ?? {};
+  const lines = [
+    `id: ${i.id ?? "?"}`,
+    `workspaceId: ${i.workspaceId ?? "?"}`,
+    `taskPath: ${i.taskPath ?? "?"}`,
+    `status: ${i.status ?? "?"}`,
+  ];
+  if (i.text) lines.push(`text: ${i.text}`);
+  if (i.contextRefs?.length) lines.push(`contextRefs: ${i.contextRefs.join(", ")}`);
+  if (i.deliveredAt) lines.push(`deliveredAt: ${i.deliveredAt}`);
+  if (i.consumedAt) lines.push(`consumedAt: ${i.consumedAt}`);
+  if (i.cancelledAt) lines.push(`cancelledAt: ${i.cancelledAt}`);
   return lines.join("\n") + "\n";
 }
 
@@ -560,6 +745,8 @@ Commands:
   tent task cancel <taskPath> [--workspace <path>] [--json]
   tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
   tent task user-ask list|get <askId>|reply <askId>|deny <askId> […] [--workspace <path>] [--json]
+  tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
+  tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
 
 Service options:
   --data-dir <path>       Machine-local service data area (default: %APPDATA%/Tent)

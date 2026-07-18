@@ -118,6 +118,12 @@ import {
   type UserAskRecord,
   type UserAskStore,
 } from "./user-ask-store.js";
+import {
+  formatTaskInputPrompt,
+  makeTaskInputId,
+  type TaskInputRecord,
+  type TaskInputStore,
+} from "./task-input-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import {
   isClientMethod,
@@ -165,6 +171,11 @@ export interface HandlerContext {
   toolApprovals: ToolApprovalStore;
   /** Machine-local A2U business UserAsk rows (not chat; not tool permission). */
   userAsks: UserAskStore;
+  /**
+   * Machine-local U2A one-shot task inputs (user→agent append).
+   * Not chat; not UserAsk answer; scoped by workspaceId+taskPath.
+   */
+  taskInputs: TaskInputStore;
   /**
    * Machine-local encrypted credential vault (Windows DPAPI).
    * Client RPC: list/set/delete only — never get/resolve plaintext.
@@ -292,6 +303,8 @@ export async function dispatchMethod(
         return taskResumeRpc(ctx, p);
       case "task.askUser":
         return taskAskUserRpc(ctx, p);
+      case "task.sendInput":
+        return taskSendInputRpc(ctx, p);
       case "task.deliver":
         return taskDeliverRpc(ctx, p);
       case "task.requestReview":
@@ -346,6 +359,12 @@ export async function dispatchMethod(
         return userAskReplyRpc(ctx, p);
       case "userAsk.deny":
         return userAskDenyRpc(ctx, p);
+      case "taskInput.listPending":
+        return taskInputListPending(ctx, p);
+      case "taskInput.get":
+        return taskInputGet(ctx, p);
+      case "taskInput.ack":
+        return taskInputAckRpc(ctx, p);
       case "operationalRetention.preview":
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
@@ -2205,6 +2224,220 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
   return choices;
 }
 
+/**
+ * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
+ * Does not answer pending UserAsk; does not write chat history or mutate profiles.
+ * Managed: inject fixed-format ## User Input into the same session when live.
+ * External: poll taskInput.listPending / get + taskInput.ack (workspaceId+taskPath).
+ */
+async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const actorRaw = optionalString(p, "actor") ?? "user";
+  if (actorRaw !== "user") {
+    throw new RpcError(
+      -32001,
+      "task.sendInput is user-only; agent self-send is forbidden",
+      { actor: actorRaw }
+    );
+  }
+
+  const textRaw = optionalString(p, "text");
+  const text = textRaw?.trim() ?? "";
+  const contextRefs = parseContextRefs(p.contextRefs);
+  if (!text && contextRefs.length === 0) {
+    throw new RpcError(
+      -32602,
+      "task.sendInput requires non-empty text and/or contextRefs"
+    );
+  }
+
+  // Fail loud when a business UserAsk is still pending — reply path is userAsk.reply.
+  const pendingAsk = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
+  if (pendingAsk) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `Task has a pending UserAsk (${pendingAsk.id}); use userAsk.reply instead of task.sendInput`,
+      { askId: pendingAsk.id, workspaceId, taskPath }
+    );
+  }
+
+  const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (current.state !== "running" && current.state !== "waiting") {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `task.sendInput requires running or waiting task (state=${current.state})`,
+      { taskPath, state: current.state }
+    );
+  }
+
+  const now = new Date().toISOString();
+  const input = await ctx.taskInputs.add({
+    id: makeTaskInputId(),
+    workspaceId,
+    taskPath,
+    taskId: current.id || undefined,
+    sessionId: current.sessionId || undefined,
+    role: current.role || undefined,
+    ...(text ? { text } : {}),
+    ...(contextRefs.length > 0 ? { contextRefs } : {}),
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  ctx.events.emit(
+    "taskInput.pending",
+    workspaceId,
+    {
+      inputId: input.id,
+      taskPath: input.taskPath,
+      taskId: input.taskId,
+      sessionId: input.sessionId,
+      role: input.role,
+      text: input.text,
+      contextRefs: input.contextRefs,
+      createdAt: input.createdAt,
+    },
+    "self"
+  );
+
+  // Managed ACP: inject into same live session; mark delivered on success.
+  // External agents poll+ack; continue failure leaves status=pending for poll.
+  //
+  // Race: sendFollowUpPrompt awaits the full turn, so session.prompt_complete may
+  // auto-deliver and cancelSession/cancelTask while status is still pending and
+  // before markDelivered. Pin the id for the inject→mark window (pending-only
+  // cancel still applies to true unprocessed inputs).
+  ctx.taskInputs.beginManagedInject(input.id);
+  let continueResult: { continued: boolean; error?: string };
+  let finalInput = input;
+  try {
+    continueResult = await continueManagedAfterTaskInput(ctx, input);
+    if (continueResult.continued) {
+      try {
+        finalInput = await ctx.taskInputs.markDelivered(input.id, "service");
+        ctx.events.emit(
+          "taskInput.delivered",
+          workspaceId,
+          {
+            inputId: finalInput.id,
+            taskPath: finalInput.taskPath,
+            sessionId: finalInput.sessionId,
+            status: finalInput.status,
+          },
+          "service"
+        );
+      } catch (err) {
+        // Inject succeeded but durable mark failed — surface as continueError.
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          workspaceId,
+          taskPath,
+          task: projectTask(current),
+          state: current.state,
+          input: projectTaskInput(input),
+          continued: true,
+          continueError: `managed inject ok but markDelivered failed: ${message}`,
+        };
+      }
+    }
+  } finally {
+    ctx.taskInputs.endManagedInject(input.id);
+  }
+
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(current),
+    state: current.state,
+    input: projectTaskInput(finalInput),
+    continued: continueResult.continued,
+    continueError: continueResult.error,
+  };
+}
+
+function parseContextRefs(raw: unknown): string[] {
+  if (raw === undefined || raw === null) return [];
+  if (!Array.isArray(raw)) {
+    throw new RpcError(-32602, "task.sendInput contextRefs must be an array");
+  }
+  const refs: string[] = [];
+  const seen = new Set<string>();
+  for (const item of raw) {
+    if (typeof item !== "string" || !item.trim()) {
+      throw new RpcError(
+        -32602,
+        "task.sendInput contextRefs must be non-empty strings (stable entity ids)"
+      );
+    }
+    const id = item.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    refs.push(id);
+  }
+  return refs;
+}
+
+/**
+ * Managed ACP: feed fixed-format ## User Input into the same session.
+ * Prefer live sendFollowUpPrompt; else resumeSession when capable.
+ * External agents poll taskInput.* — no auto chat.
+ */
+async function continueManagedAfterTaskInput(
+  ctx: HandlerContext,
+  item: TaskInputRecord
+): Promise<{ continued: boolean; error?: string }> {
+  if (!item.sessionId) return { continued: false };
+  const prompt = formatTaskInputPrompt(item);
+  try {
+    try {
+      await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
+      return { continued: true };
+    } catch (liveErr) {
+      const liveMessage =
+        liveErr instanceof Error ? liveErr.message : String(liveErr);
+      if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
+        // Unexpected live error — still try resume if possible.
+      }
+    }
+
+    const probe = await ctx.runtime.probe(item.sessionId);
+    if (!probe.resumeCapable) {
+      return {
+        continued: false,
+        error:
+          "managed session not live and not resume-capable; external agent may poll taskInput.listPending / taskInput.get",
+      };
+    }
+    const rec = await ctx.runtime.registry.read(item.sessionId);
+    const cwd = rec?.runtimeWorkspace?.cwd;
+    await ctx.runtime.resumeSession({
+      sessionId: item.sessionId,
+      bootstrapPrompt: prompt,
+      ...(cwd ? { runtimeWorkspace: { cwd } } : {}),
+    });
+    return { continued: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    // Input already persisted pending — continue failure is diagnostic only.
+    ctx.events.emit(
+      "session.state",
+      item.workspaceId,
+      {
+        sessionId: item.sessionId,
+        taskPath: item.taskPath,
+        runtimeEvent: "taskInput.continue.failed",
+        error: message,
+        taskFailed: false,
+      },
+      "service"
+    );
+    return { continued: false, error: message };
+  }
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -2407,6 +2640,7 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
     const task = await taskInterrupt(mount.env, taskPath);
     emitTaskState(ctx, workspaceId, task, "task.interrupt");
     await cancelUserAsksForTask(ctx, workspaceId, taskPath, "task.interrupt");
+    await cancelTaskInputsForTask(ctx, workspaceId, taskPath, "task.interrupt");
     if (sessionId) {
       try {
         await ctx.toolApprovals.cancelSession(sessionId, "denied");
@@ -2415,6 +2649,16 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
       }
       try {
         await cancelUserAsksForSession(ctx, workspaceId, sessionId, "task.interrupt");
+      } catch {
+        // ignore
+      }
+      try {
+        await cancelTaskInputsForSession(
+          ctx,
+          workspaceId,
+          sessionId,
+          "task.interrupt"
+        );
       } catch {
         // ignore
       }
@@ -3444,6 +3688,255 @@ async function cancelUserAsksForSession(
   }
 }
 
+// ---- U2A task input (one-shot append; not chat; not UserAsk) ----
+
+/**
+ * Explicit workspaceId (no foreground fallback) + taskPath.
+ * taskInput list/get/ack must never behave like a machine-global inbox.
+ */
+function requireTaskInputScope(p: Record<string, unknown>): {
+  workspaceId: string;
+  taskPath: string;
+} {
+  const workspaceId = optionalString(p, "workspaceId");
+  if (!workspaceId) {
+    throw new RpcError(
+      -32602,
+      "taskInput.* requires explicit workspaceId (no global inbox / no foreground fallback)"
+    );
+  }
+  const taskPath = requireString(p, "taskPath");
+  return { workspaceId, taskPath };
+}
+
+/**
+ * External poll of pending one-shot inputs.
+ * Always requires workspaceId + taskPath — no machine-global inbox.
+ */
+async function taskInputListPending(ctx: HandlerContext, p: Record<string, unknown>) {
+  const { workspaceId, taskPath } = requireTaskInputScope(p);
+  // Touch mount so unknown workspace fails loud before store read.
+  ctx.host.require(workspaceId);
+  try {
+    const pending = await ctx.taskInputs.listPending(workspaceId, taskPath);
+    return { inputs: pending.map(projectTaskInput) };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message);
+  }
+}
+
+/**
+ * Scoped get: workspaceId + taskPath + inputId. Id-only lookup is rejected.
+ * Cross-workspace / wrong-task returns not found (no leak).
+ */
+async function taskInputGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const { workspaceId, taskPath } = requireTaskInputScope(p);
+  const inputId = requireString(p, "inputId");
+  ctx.host.require(workspaceId);
+  let item: TaskInputRecord | undefined;
+  try {
+    item = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message);
+  }
+  if (!item) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
+  return { input: projectTaskInput(item) };
+}
+
+/**
+ * External agent formal ack after observing one-shot input.
+ * Requires workspaceId+taskPath; actor must match stored task role or
+ * a service-verified live session bound to the same task (not an arbitrary string).
+ * pending|delivered → consumed. Fail-loud on missing/terminal/scope/actor mismatch.
+ */
+async function taskInputAckRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const { workspaceId, taskPath } = requireTaskInputScope(p);
+  const inputId = requireString(p, "inputId");
+  const actorRaw = optionalString(p, "actor");
+  if (!actorRaw?.trim()) {
+    throw new RpcError(
+      -32602,
+      "taskInput.ack requires actor matching the task role or a verified session binding"
+    );
+  }
+  const actor = actorRaw.trim();
+  ctx.host.require(workspaceId);
+
+  let existing: TaskInputRecord | undefined;
+  try {
+    existing = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message);
+  }
+  if (!existing) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
+
+  const allowed = await isTaskInputAckActorAllowed(ctx, existing, actor);
+  if (!allowed) {
+    throw new RpcError(
+      -32001,
+      "taskInput.ack actor must match the stored task role or a service-verified session binding",
+      {
+        inputId,
+        actor,
+        expectedRole: existing.role,
+        sessionId: existing.sessionId,
+        workspaceId,
+        taskPath,
+      }
+    );
+  }
+
+  let item: TaskInputRecord;
+  try {
+    item = await ctx.taskInputs.ack(inputId, workspaceId, taskPath, actor);
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/not found/i.test(message)) {
+      throw new RpcError(-32004, message);
+    }
+    if (/already /i.test(message)) {
+      throw new RpcError(RPC_LIFECYCLE, message, { inputId });
+    }
+    throw new RpcError(-32603, message);
+  }
+  ctx.events.emit(
+    "taskInput.consumed",
+    item.workspaceId,
+    {
+      inputId: item.id,
+      taskPath: item.taskPath,
+      sessionId: item.sessionId,
+      actor,
+      status: item.status,
+    },
+    "self"
+  );
+  return { input: projectTaskInput(item) };
+}
+
+/**
+ * Ack actor binding: stored task role, or live registry session whose
+ * sessionId + workspace + lastTaskId/path bind to this input's task.
+ * Caller-supplied arbitrary actor strings are insufficient.
+ */
+async function isTaskInputAckActorAllowed(
+  ctx: HandlerContext,
+  item: TaskInputRecord,
+  actor: string
+): Promise<boolean> {
+  if (item.role && actor === item.role) return true;
+
+  // Service-verified session binding: actor may be the bound sessionId when
+  // the registry row still points at the same workspace + task.
+  if (!item.sessionId) return false;
+  if (actor !== item.sessionId) return false;
+  try {
+    const rec = await ctx.runtime.registry.read(item.sessionId);
+    if (!rec) return false;
+    if (rec.workspace && rec.workspace !== item.workspaceId) return false;
+    if (rec.lastTaskId) {
+      if (
+        rec.lastTaskId === item.taskId ||
+        rec.lastTaskId === item.taskPath
+      ) {
+        return true;
+      }
+    }
+    // Fall back: session id match alone is not enough without task binding.
+    // When lastTaskId is absent, require envelope sessionId still matches.
+    const mount = ctx.host.get(item.workspaceId);
+    if (!mount) return false;
+    const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
+      () => null
+    );
+    return !!task && task.sessionId === item.sessionId;
+  } catch {
+    return false;
+  }
+}
+
+function projectTaskInput(item: TaskInputRecord) {
+  return {
+    id: item.id,
+    workspaceId: item.workspaceId,
+    taskPath: item.taskPath,
+    taskId: item.taskId,
+    sessionId: item.sessionId,
+    role: item.role,
+    text: item.text,
+    contextRefs: item.contextRefs,
+    status: item.status,
+    createdAt: item.createdAt,
+    updatedAt: item.updatedAt,
+    deliveredAt: item.deliveredAt,
+    consumedAt: item.consumedAt,
+    cancelledAt: item.cancelledAt,
+    resolvedBy: item.resolvedBy,
+  };
+}
+
+/** Best-effort: cancel only pending task inputs when task occupation ends. */
+async function cancelTaskInputsForTask(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  resolvedBy: string
+): Promise<void> {
+  try {
+    const cancelled = await ctx.taskInputs.cancelTask(
+      workspaceId,
+      taskPath,
+      resolvedBy
+    );
+    for (const input of cancelled) {
+      ctx.events.emit(
+        "taskInput.cancelled",
+        workspaceId,
+        {
+          inputId: input.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: input.taskPath,
+          sessionId: input.sessionId,
+        },
+        "service"
+      );
+    }
+  } catch {
+    // cleanup must not block interrupt/fail
+  }
+}
+
+async function cancelTaskInputsForSession(
+  ctx: HandlerContext,
+  workspaceId: string,
+  sessionId: string,
+  resolvedBy: string
+): Promise<void> {
+  try {
+    const cancelled = await ctx.taskInputs.cancelSession(sessionId, resolvedBy);
+    for (const input of cancelled) {
+      ctx.events.emit(
+        "taskInput.cancelled",
+        workspaceId || input.workspaceId,
+        {
+          inputId: input.id,
+          decision: "cancelled",
+          actor: resolvedBy,
+          taskPath: input.taskPath,
+          sessionId: input.sessionId,
+        },
+        "service"
+      );
+    }
+  } catch {
+    // cleanup must not block session teardown
+  }
+}
+
 // ---- operational retention (task-api §6; user-only) ----
 
 /**
@@ -3760,6 +4253,13 @@ async function projectRuntimeEventOnce(
       ev.sessionId,
       ev.type === "session.failed" ? "session.failed" : "session.exited"
     );
+    // Only pending U2A inputs; delivered remains delivered after cleanup.
+    await cancelTaskInputsForSession(
+      ctx,
+      workspaceId,
+      ev.sessionId,
+      ev.type === "session.failed" ? "session.failed" : "session.exited"
+    );
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
@@ -3873,6 +4373,7 @@ async function failTaskFromRuntime(
 
   // Stop managed process first when still live (idempotent).
   await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
+  await cancelTaskInputsForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
   if (input.sessionId) {
     try {
       await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
@@ -3881,6 +4382,16 @@ async function failTaskFromRuntime(
     }
     try {
       await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "task.fail"
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,
         input.sessionId,
@@ -4120,6 +4631,17 @@ async function stopManagedSessionAfterDelivery(
     }
     try {
       await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      // Only pending inputs cancel; managed-delivered rows stay delivered.
+      await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,
         input.sessionId,
