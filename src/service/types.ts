@@ -259,6 +259,12 @@ export const CLIENT_METHODS = [
   "docs.createNote",
   "docs.promote",
   "docs.fork",
+  /**
+   * User-only atomic concept rename (MutationBus).
+   * Keeps cx- immutable; renames folder + identity note; rewrites path links.
+   * Success emits exactly one concept.changed with oldPath/path.
+   */
+  "docs.rename",
   "docs.search",
   "docs.backlinks",
   /**

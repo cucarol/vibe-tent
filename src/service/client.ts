@@ -218,6 +218,17 @@ export class ServiceClient {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
   }
   /**
+   * User-only atomic concept rename (MutationBus).
+   * Resolve by id/path/boxId; pass newName only — cx- is immutable.
+   * Success emits exactly one concept.changed with oldPath/path.
+   */
+  docsRename(
+    workspaceId: string,
+    args: { id?: string; path?: string; boxId?: string; newName: string; actor?: string }
+  ) {
+    return this.call("docs.rename", { workspaceId, ...args });
+  }
+  /**
    * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.
    */
   docsImportAttachment(

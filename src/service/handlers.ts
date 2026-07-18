@@ -10,6 +10,7 @@ import {
 } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
+import { renameNode } from "../core/renameOps.js";
 import {
   loadTaskEnvelope,
   loadTaskEnvelopes,
@@ -243,6 +244,8 @@ export async function dispatchMethod(
         return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
+      case "docs.rename":
+        return docsRename(ctx, p);
       case "docs.search":
         return docsSearch(ctx, p);
       case "docs.backlinks":
@@ -1744,6 +1747,75 @@ async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
     );
     return { workspaceId, id: forkRootId, forkOf: id };
   });
+}
+
+/**
+ * User-only atomic concept rename.
+ * MutationBus; keeps cx- immutable; moves folder + identity note; rewrites path links.
+ * Success emits exactly one concept.changed (reason docs.rename) with oldPath/path.
+ */
+async function docsRename(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.rename");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const newName = requireString(p, "newName");
+  if ("id" in p && p.id !== undefined && p.id !== null && typeof p.id !== "string") {
+    throw new RpcError(-32602, "docs.rename id must be a string when set");
+  }
+  // Client cannot supply a replacement identity — only a new display/path stem.
+  if ("newId" in p) {
+    throw new RpcError(-32602, "docs.rename cannot change concept id; cx- is immutable");
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await renameNode(mount.env, concept.id, newName);
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        {
+          id: result.id,
+          path: result.path,
+          oldPath: result.oldPath,
+          name: result.name,
+          reason: "docs.rename",
+          pathMap: result.pathMap,
+        },
+        "self"
+      );
+      return {
+        workspaceId,
+        id: result.id,
+        cx: result.id,
+        path: result.path,
+        oldPath: result.oldPath,
+        name: result.name,
+        pathMap: result.pathMap,
+        rewrittenNotes: result.rewrittenNotes,
+      };
+    } catch (err) {
+      throw mapDocsRenameError(err);
+    }
+  });
+}
+
+function mapDocsRenameError(err: unknown): RpcError {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : "docs.rename failed";
+  if (/not found/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (
+    /already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+      message
+    )
+  ) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32000, message);
 }
 
 // ---- task.* ----

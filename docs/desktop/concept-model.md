@@ -434,7 +434,7 @@ Concept dual identity (`path` + `cx-`) is specified above. Other registries:
 | AgentProfile | profile `id` | `displayName` | Machine-local only |
 | Type / tag | registry string key | same | No separate id in batch 1 — not forced for uniformity |
 
-**Rename rule:** id is never edited; rename changes display label and/or path only. Node native rename remains a follow-up with atomic path+link rewrite (contract in `identity-rename.md` §4).
+**Rename rule:** id is never edited; rename changes display label and/or path only. Node native rename is Service `docs.rename` with atomic path+link rewrite and true note/tree rollback (contract in `identity-rename.md` §4).
 
 ## 13. Frozen decisions (B0)
 

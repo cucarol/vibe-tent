@@ -2274,6 +2274,154 @@ async function ensureIdentityFileName(fs8, newBoxPath, oldBoxPath) {
   if (await fs8.exists(copied)) await fs8.move(copied, expected);
 }
 
+// src/core/okf.ts
+async function syncOkfBundle(fs8) {
+  return withTentMutation(fs8, async () => syncOkfBundleUnlocked(fs8));
+}
+async function syncOkfBundleUnlocked(fs8) {
+  const tent = await loadTent(fs8);
+  const concepts = [...tent.byPath.values()];
+  const index = buildConceptIndex(concepts);
+  const generatedFiles = await writeIndexes(fs8, concepts);
+  const projection = await projectWikiLinks(fs8, concepts, index);
+  return { generatedFiles, ...projection };
+}
+function buildConceptIndex(boxes) {
+  const index = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const concept = toConcept(box);
+    addIndex(index, concept.boxId, concept);
+    addIndex(index, concept.id, concept);
+    addIndex(index, concept.path, concept);
+    addIndex(index, concept.notePath, concept);
+    addIndex(index, concept.name, concept);
+  }
+  return index;
+}
+function resolveConcept(index, target) {
+  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
+  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
+  if (matches?.length === 1) return matches[0];
+  const normalized = normalizeLookupKey(clean);
+  if (normalized.length >= 4) {
+    const all = index.get("__all__") ?? [];
+    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    if (fuzzy.length === 1) return fuzzy[0];
+  }
+  return matches?.length === 1 ? matches[0] : void 0;
+}
+function projectMarkdownLinks(body, fromNotePath, index) {
+  const unresolved = [];
+  let changed = false;
+  const next = body.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (full, rawTarget, rawLabel, offset) => {
+    if (offset > 0 && body[offset - 1] === "!") return full;
+    const target = rawTarget.trim();
+    const concept = resolveConcept(index, target);
+    if (!concept) {
+      unresolved.push(target);
+      return full;
+    }
+    const label = (rawLabel ?? concept.name).trim();
+    const href = relativeMarkdownPath(fromNotePath, concept.notePath);
+    changed = true;
+    return `[${label}](${markdownLinkDestination(href)})`;
+  });
+  return { body: next, unresolved, changed };
+}
+async function projectWikiLinks(fs8, boxes, index) {
+  const projectedFiles = [];
+  const unresolved = [];
+  for (const box of boxes) {
+    const notePath = boxNotePath(box.path);
+    const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(notePath));
+    const projected = projectMarkdownLinks(body, notePath, index);
+    if (projected.unresolved.length > 0) {
+      unresolved.push(...projected.unresolved.map((target) => ({ file: notePath, target })));
+    }
+    if (!projected.changed) continue;
+    await fs8.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
+    projectedFiles.push(notePath);
+  }
+  return { projectedFiles, unresolved };
+}
+async function writeIndexes(fs8, boxes) {
+  const generated = /* @__PURE__ */ new Set();
+  const byDir = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const dir = dirName(boxNotePath(box.path));
+    const list = byDir.get(dir) ?? [];
+    list.push(box);
+    byDir.set(dir, list);
+  }
+  const roots = boxes.filter((box) => !box.parent);
+  await fs8.writeFile(
+    "index.md",
+    serializeFrontmatter(
+      { type: "index", okf_version: "0.1" },
+      "# Index\n\n" + roots.map((box) => `- [${box.name}](${markdownLinkDestination(boxNotePath(box.path))})`).join("\n") + "\n"
+    )
+  );
+  generated.add("index.md");
+  for (const [dir, siblings] of byDir.entries()) {
+    if (!dir) continue;
+    const indexPath = join2(dir, "index.md");
+    await fs8.writeFile(
+      indexPath,
+      serializeFrontmatter(
+        { type: "index" },
+        "# Index\n\n" + siblings.map((box) => `- [${box.name}](${markdownLinkDestination(`${box.name}.md`)})`).join("\n") + "\n"
+      )
+    );
+    generated.add(indexPath);
+  }
+  await fs8.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
+  generated.add("log.md");
+  return [...generated].sort();
+}
+function toConcept(box) {
+  const notePath = boxNotePath(box.path);
+  const id = notePath.replace(/\.md$/i, "");
+  return {
+    id,
+    boxId: box.id,
+    path: box.path,
+    notePath,
+    name: box.name,
+    type: box.type
+  };
+}
+function addIndex(index, key, concept) {
+  const clean = key.trim();
+  if (!clean) return;
+  addRawIndex(index, clean, concept);
+  addRawIndex(index, normalizeLookupKey(clean), concept);
+  addRawIndex(index, "__all__", concept);
+}
+function addRawIndex(index, key, concept) {
+  if (!key) return;
+  const list = index.get(key) ?? [];
+  if (!list.some((item) => item.id === concept.id)) list.push(concept);
+  index.set(key, list);
+}
+function normalizeLookupKey(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+function relativeMarkdownPath(fromNotePath, toNotePath) {
+  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
+  const toParts = toNotePath.split("/").filter(Boolean);
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const up = fromParts.map(() => "..");
+  const rel = [...up, ...toParts].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+function markdownLinkDestination(destination) {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+}
+
 // src/core/ops.ts
 async function dispatch(env, claimId, role, promptOrOptions) {
   return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
@@ -2636,154 +2784,6 @@ function matchField(line, fields) {
 }
 function cleanValue(value) {
   return value.trim().replace(/^`|`$/g, "").trim();
-}
-
-// src/core/okf.ts
-async function syncOkfBundle(fs8) {
-  return withTentMutation(fs8, async () => syncOkfBundleUnlocked(fs8));
-}
-async function syncOkfBundleUnlocked(fs8) {
-  const tent = await loadTent(fs8);
-  const concepts = [...tent.byPath.values()];
-  const index = buildConceptIndex(concepts);
-  const generatedFiles = await writeIndexes(fs8, concepts);
-  const projection = await projectWikiLinks(fs8, concepts, index);
-  return { generatedFiles, ...projection };
-}
-function buildConceptIndex(boxes) {
-  const index = /* @__PURE__ */ new Map();
-  for (const box of boxes) {
-    const concept = toConcept(box);
-    addIndex(index, concept.boxId, concept);
-    addIndex(index, concept.id, concept);
-    addIndex(index, concept.path, concept);
-    addIndex(index, concept.notePath, concept);
-    addIndex(index, concept.name, concept);
-  }
-  return index;
-}
-function resolveConcept(index, target) {
-  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
-  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
-  if (matches?.length === 1) return matches[0];
-  const normalized = normalizeLookupKey(clean);
-  if (normalized.length >= 4) {
-    const all = index.get("__all__") ?? [];
-    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
-    if (fuzzy.length === 1) return fuzzy[0];
-  }
-  return matches?.length === 1 ? matches[0] : void 0;
-}
-function projectMarkdownLinks(body, fromNotePath, index) {
-  const unresolved = [];
-  let changed = false;
-  const next = body.replace(/\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g, (full, rawTarget, rawLabel, offset) => {
-    if (offset > 0 && body[offset - 1] === "!") return full;
-    const target = rawTarget.trim();
-    const concept = resolveConcept(index, target);
-    if (!concept) {
-      unresolved.push(target);
-      return full;
-    }
-    const label = (rawLabel ?? concept.name).trim();
-    const href = relativeMarkdownPath(fromNotePath, concept.notePath);
-    changed = true;
-    return `[${label}](${markdownLinkDestination(href)})`;
-  });
-  return { body: next, unresolved, changed };
-}
-async function projectWikiLinks(fs8, boxes, index) {
-  const projectedFiles = [];
-  const unresolved = [];
-  for (const box of boxes) {
-    const notePath = boxNotePath(box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await fs8.readFile(notePath));
-    const projected = projectMarkdownLinks(body, notePath, index);
-    if (projected.unresolved.length > 0) {
-      unresolved.push(...projected.unresolved.map((target) => ({ file: notePath, target })));
-    }
-    if (!projected.changed) continue;
-    await fs8.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
-    projectedFiles.push(notePath);
-  }
-  return { projectedFiles, unresolved };
-}
-async function writeIndexes(fs8, boxes) {
-  const generated = /* @__PURE__ */ new Set();
-  const byDir = /* @__PURE__ */ new Map();
-  for (const box of boxes) {
-    const dir = dirName(boxNotePath(box.path));
-    const list = byDir.get(dir) ?? [];
-    list.push(box);
-    byDir.set(dir, list);
-  }
-  const roots = boxes.filter((box) => !box.parent);
-  await fs8.writeFile(
-    "index.md",
-    serializeFrontmatter(
-      { type: "index", okf_version: "0.1" },
-      "# Index\n\n" + roots.map((box) => `- [${box.name}](${markdownLinkDestination(boxNotePath(box.path))})`).join("\n") + "\n"
-    )
-  );
-  generated.add("index.md");
-  for (const [dir, siblings] of byDir.entries()) {
-    if (!dir) continue;
-    const indexPath = join2(dir, "index.md");
-    await fs8.writeFile(
-      indexPath,
-      serializeFrontmatter(
-        { type: "index" },
-        "# Index\n\n" + siblings.map((box) => `- [${box.name}](${markdownLinkDestination(`${box.name}.md`)})`).join("\n") + "\n"
-      )
-    );
-    generated.add(indexPath);
-  }
-  await fs8.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
-  generated.add("log.md");
-  return [...generated].sort();
-}
-function toConcept(box) {
-  const notePath = boxNotePath(box.path);
-  const id = notePath.replace(/\.md$/i, "");
-  return {
-    id,
-    boxId: box.id,
-    path: box.path,
-    notePath,
-    name: box.name,
-    type: box.type
-  };
-}
-function addIndex(index, key, concept) {
-  const clean = key.trim();
-  if (!clean) return;
-  addRawIndex(index, clean, concept);
-  addRawIndex(index, normalizeLookupKey(clean), concept);
-  addRawIndex(index, "__all__", concept);
-}
-function addRawIndex(index, key, concept) {
-  if (!key) return;
-  const list = index.get(key) ?? [];
-  if (!list.some((item) => item.id === concept.id)) list.push(concept);
-  index.set(key, list);
-}
-function normalizeLookupKey(value) {
-  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
-}
-function relativeMarkdownPath(fromNotePath, toNotePath) {
-  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
-  const toParts = toNotePath.split("/").filter(Boolean);
-  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
-    fromParts.shift();
-    toParts.shift();
-  }
-  const up = fromParts.map(() => "..");
-  const rel = [...up, ...toParts].join("/");
-  return rel.startsWith(".") ? rel : `./${rel}`;
-}
-function markdownLinkDestination(destination) {
-  if (!/[\s<>()]/.test(destination)) return destination;
-  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
 
 // src/core/proposal.ts
@@ -4023,6 +4023,14 @@ var ServiceClient = class {
   }
   docsPromote(workspaceId, idOrPath, toType) {
     return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
+  }
+  /**
+   * User-only atomic concept rename (MutationBus).
+   * Resolve by id/path/boxId; pass newName only — cx- is immutable.
+   * Success emits exactly one concept.changed with oldPath/path.
+   */
+  docsRename(workspaceId, args) {
+    return this.call("docs.rename", { workspaceId, ...args });
   }
   /**
    * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.

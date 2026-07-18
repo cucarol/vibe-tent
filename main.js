@@ -43,8 +43,8 @@ function workspaceRootFromSystemRoot(systemRoot) {
   const parent = normalized.replace(/[\\/]+[^\\/]+$/, "");
   return parent || void 0;
 }
-function isOperationalPath(relativePath2) {
-  const path = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+function isOperationalPath(relativePath3) {
+  const path = relativePath3.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!path) return false;
   const top = path.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
@@ -1400,6 +1400,9 @@ var init_claim = __esm({
 });
 
 // src/core/task-model.ts
+function isActiveTaskState(state) {
+  return ACTIVE_TASK_STATES.has(state);
+}
 function stateToLegacyStatus(state) {
   return state === "queued" ? "pending" : "taken";
 }
@@ -1484,11 +1487,17 @@ function assertReviewAuthority(input) {
     `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
   );
 }
-var TaskLifecycleError;
+var ACTIVE_TASK_STATES, TaskLifecycleError;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
     "use strict";
     init_id();
+    ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+      "queued",
+      "running",
+      "waiting",
+      "delivered"
+    ]);
     TaskLifecycleError = class extends Error {
       constructor(code, message) {
         super(message);
@@ -2439,6 +2448,477 @@ var init_forkOps = __esm({
   }
 });
 
+// src/core/okf.ts
+function buildConceptIndex(boxes) {
+  const index = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const concept = toConcept(box);
+    addIndex(index, concept.boxId, concept);
+    addIndex(index, concept.id, concept);
+    addIndex(index, concept.path, concept);
+    addIndex(index, concept.notePath, concept);
+    addIndex(index, concept.name, concept);
+  }
+  return index;
+}
+function resolveConcept(index, target) {
+  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
+  const matches = index.get(clean) ?? index.get(`${clean}.md`) ?? index.get(normalizeLookupKey(clean));
+  if (matches?.length === 1) return matches[0];
+  const normalized = normalizeLookupKey(clean);
+  if (normalized.length >= 4) {
+    const all = index.get("__all__") ?? [];
+    const fuzzy = all.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    if (fuzzy.length === 1) return fuzzy[0];
+  }
+  return matches?.length === 1 ? matches[0] : void 0;
+}
+function toConcept(box) {
+  const notePath = boxNotePath(box.path);
+  const id = notePath.replace(/\.md$/i, "");
+  return {
+    id,
+    boxId: box.id,
+    path: box.path,
+    notePath,
+    name: box.name,
+    type: box.type
+  };
+}
+function addIndex(index, key, concept) {
+  const clean = key.trim();
+  if (!clean) return;
+  addRawIndex(index, clean, concept);
+  addRawIndex(index, normalizeLookupKey(clean), concept);
+  addRawIndex(index, "__all__", concept);
+}
+function addRawIndex(index, key, concept) {
+  if (!key) return;
+  const list = index.get(key) ?? [];
+  if (!list.some((item) => item.id === concept.id)) list.push(concept);
+  index.set(key, list);
+}
+function normalizeLookupKey(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+var init_okf = __esm({
+  "src/core/okf.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_tree();
+  }
+});
+
+// src/markdown/links.ts
+function normalizeTarget(raw, fromNotePath) {
+  let t = raw.trim().replace(/\\/g, "/");
+  if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
+  t = safePercentDecode(t);
+  t = (t.split("#")[0]?.split("?")[0] ?? t).trim();
+  if ((t.startsWith("./") || t.startsWith("../")) && fromNotePath) {
+    const base2 = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
+    for (const part of t.split("/")) {
+      if (part === "." || part === "") continue;
+      if (part === "..") base2.pop();
+      else base2.push(part);
+    }
+    t = base2.join("/");
+  }
+  return t.replace(/\.md$/i, "");
+}
+function safePercentDecode(value) {
+  try {
+    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+var init_links = __esm({
+  "src/markdown/links.ts"() {
+    "use strict";
+    init_okf();
+    init_paths();
+  }
+});
+
+// src/core/renameOps.ts
+async function renameNode(env, conceptIdOrPath, newNameRaw) {
+  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
+}
+async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
+  const newName = validateBoxName(newNameRaw);
+  const tent = await loadTent(env.fs);
+  const target = resolveRenameTarget(tent, conceptIdOrPath);
+  if (!isUsableBox(target)) {
+    throw new Error("Invalid or archived boxes cannot be renamed.");
+  }
+  if (isFrozen(target)) {
+    throw new Error(
+      "Claimed ranges cannot be renamed; stamp or force-release the owner first."
+    );
+  }
+  await assertRenameOccupationAllowed(env, tent, target);
+  const oldPath = target.path;
+  const oldName = target.name;
+  if (newName === oldName) {
+    return {
+      id: target.id,
+      oldPath,
+      path: oldPath,
+      name: oldName,
+      pathMap: { [oldPath]: oldPath },
+      rewrittenNotes: []
+    };
+  }
+  const parentPath = dirName(oldPath);
+  const newPath = join2(parentPath, newName);
+  assertNotOperationalPath(oldPath);
+  assertNotOperationalPath(newPath);
+  if (await env.fs.exists(newPath)) {
+    throw new Error(`Rename target already exists: ${newPath}.`);
+  }
+  const siblings = target.parent ? target.parent.children : tent.roots;
+  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
+    throw new Error(`A sibling concept already uses the name: ${newName}.`);
+  }
+  const subtree2 = collectSubtree2(target);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath2(oldPath, box.path);
+    const nextBoxPath = rel ? join2(newPath, rel) : newPath;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: target.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
+    }
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, rewriteOpts);
+    if (!rewritten.changed) continue;
+    const afterPath = pathMap.get(box.path) ?? box.path;
+    plannedWrites.push({
+      writePath: boxNotePath(afterPath),
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterPath);
+  }
+  await env.fs.move(oldPath, newPath);
+  let identityRenamed = false;
+  const completedWrites = [];
+  try {
+    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+  } catch (error) {
+    await rollbackRename(env.fs, {
+      oldPath,
+      newPath,
+      oldName,
+      identityRenamed,
+      completedWrites
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: target.id,
+    oldPath,
+    path: newPath,
+    name: newName,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackRename(fs, args) {
+  const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    const expectedNew = boxNotePath(newPath);
+    const legacyAfterMove = join2(newPath, `${oldName}.md`);
+    if ((identityRenamed || await fs.exists(expectedNew)) && await fs.exists(expectedNew) && !await fs.exists(legacyAfterMove)) {
+      await fs.move(expectedNew, legacyAfterMove);
+    }
+  } catch (err) {
+    restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    if (await fs.exists(newPath) && !await fs.exists(oldPath)) {
+      const expectedNew = boxNotePath(newPath);
+      const legacyAfterMove = join2(newPath, `${oldName}.md`);
+      if (!await fs.exists(legacyAfterMove) && await fs.exists(expectedNew)) {
+        try {
+          await fs.move(expectedNew, legacyAfterMove);
+        } catch {
+        }
+      }
+      await fs.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Rename failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveRenameTarget(tent, conceptIdOrPath) {
+  const key = conceptIdOrPath.trim().replace(/\\/g, "/");
+  const byId = tent.byId.get(key);
+  if (byId) return byId;
+  const byPath = tent.byPath.get(key);
+  if (byPath) return byPath;
+  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+}
+async function assertRenameOccupationAllowed(env, tent, concept) {
+  if (concept.fm.owner || concept.locked || hasOwnerInSubtree(concept)) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active claim/owner occupies this range; stamp or force-release first.`
+    );
+  }
+  const tasks = await loadTaskEnvelopes(env.fs);
+  for (const task of tasks) {
+    const active = isActiveTaskState(task.state) || task.status === "pending" || task.status === "taken";
+    if (!active) continue;
+    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
+      throw new Error(
+        `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
+      );
+    }
+    for (const claimId of task.claims) {
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
+        throw new Error(
+          `Cannot rename ${concept.name}: overlapping active task ${task.path} occupies this range.`
+        );
+      }
+    }
+  }
+}
+function hasOwnerInSubtree(box) {
+  if (box.fm.owner) return true;
+  return box.children.some(hasOwnerInSubtree);
+}
+function isAncestorPath(ancestor, child) {
+  if (!ancestor) return true;
+  return child === ancestor || child.startsWith(ancestor + "/");
+}
+function assertNotOperationalPath(path) {
+  if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
+  }
+  const top = path.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be renamed as concepts.");
+  }
+}
+function collectSubtree2(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree2(child, out);
+  return out;
+}
+function relativePath2(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName2(fs, newBoxPath, oldName) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs.exists(expected)) return false;
+  const legacy = join2(newBoxPath, `${oldName}.md`);
+  if (await fs.exists(legacy)) {
+    await fs.move(legacy, expected);
+    return true;
+  }
+  const entries = await fs.listDir(newBoxPath);
+  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join2(newBoxPath, e.name));
+  if (candidates.length === 1) {
+    await fs.move(candidates[0], expected);
+    return true;
+  }
+  throw new Error(`Identity note missing after rename: expected ${expected}.`);
+}
+function rewriteConceptLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
+  if (pathMap.size === 0) return { body, changed: false };
+  const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
+  let next = body;
+  let changed = false;
+  next = next.replace(/\[([^\]]*)\]\((<[^>\n]+>|[^)\n]+)\)/g, (full, label, destRaw) => {
+    const angled = destRaw.startsWith("<") && destRaw.endsWith(">");
+    const inner = angled ? destRaw.slice(1, -1) : destRaw;
+    const { url, titleTail } = splitMdUrlAndTitle(inner);
+    if (!url || isExternalOrAnchor(url)) return full;
+    const mapped = mapLinkTarget(url, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+    if (!mapped) return full;
+    changed = true;
+    const dest = angled ? `<${mapped}${titleTail}>` : `${mapped}${titleTail}`;
+    return `[${label}](${dest})`;
+  });
+  next = next.replace(
+    /(^|[^!])\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (full, prefix, rawTarget, rawLabel) => {
+      const target = rawTarget.trim();
+      if (!target) return full;
+      const { head, suffix } = splitWikiTarget(target);
+      if (!head || isExternalOrAnchor(head)) return full;
+      const nextHead = mapLinkTarget(head, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+      if (!nextHead || nextHead === head) return full;
+      changed = true;
+      const labelPart = rawLabel !== void 0 ? `|${rawLabel}` : "";
+      return `${prefix}[[${nextHead}${suffix}${labelPart}]]`;
+    }
+  );
+  return { body: next, changed };
+}
+function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, opts) {
+  const { pathPart, tail } = splitDestTail(raw);
+  if (!pathPart) return void 0;
+  if (isUnqualifiedName(pathPart)) {
+    return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
+  }
+  const normalized = normalizeTarget(pathPart, fromNotePath);
+  const newAbs = resolveMappedPath(normalized, pathMap, oldPaths);
+  if (!newAbs) return void 0;
+  const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
+  const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
+  const styled = restyleRelative(pathPart, fromNotePath, absTarget, sourceHadMd);
+  return styled + tail;
+}
+function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
+  if (!opts || oldName === newName) return void 0;
+  const bare = pathPart.replace(/\.md$/i, "");
+  const resolved = resolveConcept(opts.conceptIndex, bare);
+  if (!resolved || resolved.boxId !== opts.renameBoxId) return void 0;
+  const sourceHadMd = /\.md$/i.test(pathPart);
+  const nextBare = bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName) ? newName : newName;
+  return (sourceHadMd ? `${nextBare}.md` : nextBare) + tail;
+}
+function resolveMappedPath(normalized, pathMap, oldPaths) {
+  const clean = normalized.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (pathMap.has(clean)) return pathMap.get(clean);
+  const noMd = clean.replace(/\.md$/i, "");
+  if (pathMap.has(noMd)) return pathMap.get(noMd);
+  for (const oldPath of oldPaths) {
+    if (clean === oldPath || noMd === oldPath || clean === `${oldPath}.md`) {
+      return pathMap.get(oldPath);
+    }
+  }
+  return void 0;
+}
+function isUnqualifiedName(raw) {
+  const t = raw.trim().replace(/\\/g, "/");
+  if (!t || t.includes("/") || t.startsWith(".")) return false;
+  return true;
+}
+function normalizeLookupLoose(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+function splitMdUrlAndTitle(inner) {
+  const t = inner.trim();
+  const m = t.match(/^(\S+?)(\s+(".*"|'.*'|\(.*\)))\s*$/);
+  if (m) return { url: m[1], titleTail: m[2] ?? "" };
+  return { url: t, titleTail: "" };
+}
+function splitWikiTarget(raw) {
+  const t = raw.trim();
+  const caret = t.lastIndexOf("^");
+  if (caret > 0) {
+    const before = t.slice(0, caret);
+    const hash2 = before.indexOf("#");
+    if (hash2 >= 0) {
+      return { head: before.slice(0, hash2).trim(), suffix: before.slice(hash2) + t.slice(caret) };
+    }
+    return { head: before.trim(), suffix: t.slice(caret) };
+  }
+  const hash = t.indexOf("#");
+  if (hash >= 0) return { head: t.slice(0, hash).trim(), suffix: t.slice(hash) };
+  return { head: t, suffix: "" };
+}
+function splitDestTail(dest) {
+  const t = dest.trim();
+  const hash = t.indexOf("#");
+  const query = t.indexOf("?");
+  let cut = -1;
+  if (hash >= 0 && query >= 0) cut = Math.min(hash, query);
+  else if (hash >= 0) cut = hash;
+  else if (query >= 0) cut = query;
+  if (cut < 0) return { pathPart: t, tail: "" };
+  return { pathPart: t.slice(0, cut), tail: t.slice(cut) };
+}
+function isExternalOrAnchor(dest) {
+  const t = dest.trim();
+  if (!t || t.startsWith("#")) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(t);
+}
+function restyleRelative(originalPathPart, fromNotePath, absoluteNext, keepMd) {
+  const orig = originalPathPart.replace(/\\/g, "/");
+  if (orig.startsWith("./") || orig.startsWith("../")) {
+    const toNote = absoluteNext.endsWith(".md") ? absoluteNext : `${absoluteNext}.md`;
+    let rel = relativeMarkdownPath(fromNotePath, toNote);
+    if (!keepMd) rel = rel.replace(/\.md$/i, "");
+    return rel;
+  }
+  if (!keepMd && absoluteNext.endsWith(".md")) return absoluteNext.replace(/\.md$/i, "");
+  return absoluteNext;
+}
+function relativeMarkdownPath(fromNotePath, toNotePath) {
+  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
+  const toParts = toNotePath.split("/").filter(Boolean);
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const up = fromParts.map(() => "..");
+  const rel = [...up, ...toParts].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+var init_renameOps = __esm({
+  "src/core/renameOps.ts"() {
+    "use strict";
+    init_adapter();
+    init_claim();
+    init_frontmatter();
+    init_okf();
+    init_links();
+    init_paths();
+    init_scaffold();
+    init_task_model();
+    init_task();
+    init_tree();
+  }
+});
+
 // src/core/ops.ts
 var ops_exports = {};
 __export(ops_exports, {
@@ -2458,6 +2938,7 @@ __export(ops_exports, {
   patchBody: () => patchBody,
   patchBox: () => patchBox,
   placeBox: () => placeBox,
+  renameNode: () => renameNode,
   restoreBox: () => restoreBox,
   stamp: () => stamp,
   tagBox: () => tagBox,
@@ -2804,7 +3285,7 @@ async function deleteArchivedBox(env, boxId) {
     const tent = await loadTent(env.fs);
     const box = requireBoxById2(tent, boxId);
     if (box.fm.archived !== true) throw new Error("Box must be archived before permanent deletion.");
-    if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
+    if (hasOwnerInSubtree2(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
     const removedIds = collectSubtreeIds(box);
     await env.fs.remove(box.path);
     const order = await loadOrder(env.fs);
@@ -2856,9 +3337,9 @@ function assertNotTempPath(path) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
-function hasOwnerInSubtree(box) {
+function hasOwnerInSubtree2(box) {
   if (box.fm.owner) return true;
-  return box.children.some(hasOwnerInSubtree);
+  return box.children.some(hasOwnerInSubtree2);
 }
 function collectSubtreeIds(box, ids = /* @__PURE__ */ new Set()) {
   ids.add(box.id);
@@ -2960,6 +3441,7 @@ var init_ops = __esm({
     init_scaffold();
     init_task_lifecycle();
     init_forkOps();
+    init_renameOps();
   }
 });
 

@@ -8,7 +8,7 @@ Non-scope: moving `temp/<role>/`, Git branch/worktree renames, bulk historical t
 
 | Entity | Stable id | Mutable label | Path / operational key | Batch 1 action |
 | --- | --- | --- | --- | --- |
-| **Node / concept** | `cx-…` (legacy `bx-` only in migration window) | folder stem / optional `title` | OKF path (`Name/Name.md`) | Already has immutable id; **native rename not implemented** — contract below for next batch |
+| **Node / concept** | `cx-…` (legacy `bx-` only in migration window) | folder stem / optional `title` | OKF path (`Name/Name.md`) | Immutable id; **native rename via `docs.rename`** (atomic move + link rewrite + rollback) |
 | **AgentProfile** | profile `id` (machine-local) | `displayName` / `displayNameKey` | n/a (not tent-tree) | Already id-based; no change |
 | **Role** | **`rl-…` (new)** | **`displayName` (new)** | `name` → `temp/<name>/`, `task.role`, worktree labels | **Implement**: fill id + displayName; project both; compat resolve |
 | **Type** | registry key string | same string (UI) | `types.json` key; box `type` field | **No id** this batch — keys are semantic R/W vocabulary; rename would rewrite every box type string (separate batch if product needs it) |
@@ -82,20 +82,21 @@ Changing `name` would require:
 
 **Explicitly out of batch 1.** Callers that need a visible rename use `displayName` only.
 
-## 4. Node rename contract (next executable batch)
+## 4. Node rename contract (implemented)
 
-Native rename is still unsupported in product code. When implemented, service must:
+Native concept rename is available as user-only Service RPC **`docs.rename`** (MutationBus).
 
 1. **Identity:** keep frontmatter `id` (`cx-`) unchanged; never accept client id edits.
 2. **Atomic tree move:** rename folder and same-named identity note together (`Old/Old.md` → `New/New.md`); refuse if target exists.
 3. **Subtree:** move entire directory tree; child relative structure preserved; each child keeps its `cx-`.
-4. **Links:** rewrite internal Markdown / wiki links that targeted the old path (and optional title links) within the tent system root; do not invent a second id.
-5. **Order / attachments:** `order.json` keys that are paths update to new paths; attachment store keyed by `cx-` stays put.
+4. **Links:** rewrite internal Markdown / wiki links that targeted the old path within the tent system root. Unqualified wiki/name targets rewrite only when Tent link resolution uniquely targets the renamed node; ambiguous duplicate names are left unchanged. Do not invent a second id.
+5. **Order / attachments:** `order.json` is id-keyed (no path rewrite); attachment store keyed by `cx-` stays put.
 6. **Occupancy:** refuse rename when the box or descendants have active task occupation (same spirit as delete/fork guards), unless a later contract adds force.
-7. **Events:** emit `concept.changed` / path updates once; no dual `box.changed` channel.
-8. **UI:** primary label is path stem / title; `cx-` remains copy/diagnostics only.
+7. **Events:** emit exactly one `concept.changed` (`reason: docs.rename`) with `id`, `path`, `oldPath`; no dual `box.changed` channel.
+8. **Rollback:** snapshot every touched note's original path/content before writes; on any post-move write failure restore completed note writes in reverse order, reverse identity rename, and move the tree back.
+9. **UI:** primary label is path stem / title; `cx-` remains copy/diagnostics only.
 
-If any of (2–5) cannot ship atomically, keep rename rejected and leave this section as the acceptance checklist for the follow-up task.
+Core entry: `renameNode` in `src/core/renameOps.ts`. Client: `ServiceRpcClient.docsRename`.
 
 ## 5. Tests required (batch 1)
 

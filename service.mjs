@@ -277,8 +277,8 @@ function systemRootFromWorkspace(workspaceRoot) {
   const sep2 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
   return `${root}${sep2}${TENT_SYSTEM_DIR}`;
 }
-function isOperationalPath(relativePath2) {
-  const path18 = relativePath2.replace(/\\/g, "/").replace(/^\.\/+/, "");
+function isOperationalPath(relativePath3) {
+  const path18 = relativePath3.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!path18) return false;
   const top = path18.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
@@ -981,6 +981,9 @@ function occupiedBoxes(tent) {
 function collect(box, out) {
   if (box.fm.owner) out.push(box);
   for (const c of box.children) collect(c, out);
+}
+function isFrozen(box) {
+  return box.invalid || box.archived || box.locked;
 }
 
 // src/core/tags.ts
@@ -2377,1808 +2380,61 @@ async function ensureIdentityFileName(fs16, newBoxPath, oldBoxPath) {
   if (await fs16.exists(copied)) await fs16.move(copied, expected);
 }
 
-// src/core/ops.ts
-async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
-}
-async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
-  const tent = await loadTent(env.fs);
-  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
-  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
-  const userPrompt = options.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  let assigneeLabel;
-  if (assigneeKind === "agentProfile") {
-    const profileId = options.profileId?.trim() || "";
-    if (!profileId) {
-      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
-    }
-    if (role?.trim() && role.trim() !== profileId) {
-      throw new Error(
-        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
-      );
-    }
-    assigneeLabel = assertProfileId(profileId);
-  } else {
-    const roleName = role?.trim() || "";
-    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
-    assigneeLabel = assertRoleName(roleName);
+// src/core/okf.ts
+function buildConceptIndex(boxes) {
+  const index2 = /* @__PURE__ */ new Map();
+  for (const box of boxes) {
+    const concept = toConcept(box);
+    addIndex(index2, concept.boxId, concept);
+    addIndex(index2, concept.id, concept);
+    addIndex(index2, concept.path, concept);
+    addIndex(index2, concept.notePath, concept);
+    addIndex(index2, concept.name, concept);
   }
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
-  const createdRootExisted = await env.fs.exists(createdRoot);
-  if (claim.root) {
-    const occupied = occupiedBoxes(tent);
-    if (occupied.length > 0) {
-      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
-    }
-  } else {
-    if (!claim.box.coordination) {
-      throw new Error(
-        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
-      );
-    }
-    const existingOwner = ownerCovering(claim.box);
-    if (existingOwner) {
-      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
-    }
-    const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
-    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
-  }
-  try {
-    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
-    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
-    const manifest = buildManifest(tent, input);
-    const yaml = manifestToYaml(manifest);
-    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
-    let manifestPath;
-    let initPath;
-    if (assigneeKind === "agentProfile") {
-      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
-      await ensureDir3(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
-    } else {
-      manifestPath = join("temp", assigneeLabel, "manifest.yml");
-      await ensureDir3(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
-      const registry = await loadRolesRegistry(env.fs);
-      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
-      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
-    }
-    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
-    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: assigneeLabel,
-      claims: taskClaims,
-      manifestPath,
-      userPrompt,
-      workspace: options.workspace,
-      dispatchedBy: options.dispatchedBy,
-      asSub: options.asSub === true,
-      deliveryPolicy: options.deliveryPolicy,
-      assigneeKind,
-      id: taskId,
-      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
-    });
-    const relayPrompt = relayPromptForTask(
-      {
-        path: taskPath,
-        role: assigneeLabel,
-        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
-        manifest: manifestPath,
-        status: "pending",
-        state: "queued",
-        assigneeKind,
-        id: taskId
-      },
-      env.tentRoot || env.tentName
-    );
-    return {
-      manifestPath,
-      manifestYaml: yaml,
-      initPath,
-      taskPath,
-      relayPrompt,
-      assigneeKind,
-      assignee: assigneeLabel
-    };
-  } catch (error) {
-    if (!createdRootExisted && await env.fs.exists(createdRoot)) {
-      await env.fs.remove(createdRoot);
-    }
-    throw error;
-  }
+  return index2;
 }
-function assertProfileId(profileId) {
-  const id = profileId.trim();
-  if (!id) throw new Error("profileId cannot be empty.");
-  if (/[\/\\\r\n]/.test(id)) {
-    throw new Error("profileId cannot contain path separators or newlines.");
+function resolveConcept(index2, target) {
+  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
+  const matches = index2.get(clean) ?? index2.get(`${clean}.md`) ?? index2.get(normalizeLookupKey(clean));
+  if (matches?.length === 1) return matches[0];
+  const normalized = normalizeLookupKey(clean);
+  if (normalized.length >= 4) {
+    const all2 = index2.get("__all__") ?? [];
+    const fuzzy = all2.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
+    if (fuzzy.length === 1) return fuzzy[0];
   }
-  return id;
+  return matches?.length === 1 ? matches[0] : void 0;
 }
-function resolveDispatchClaim(tent, claimId, tentName) {
-  const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
-  }
-  const box = requireBoxById2(tent, id);
-  return { root: false, id: box.id, name: box.name, box };
-}
-async function createBox(env, input) {
-  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
-}
-async function createBoxUnlocked(env, input) {
-  assertNotTempPath(input.parentPath);
-  const name = validateBoxName(input.name);
-  const tent = await loadTent(env.fs);
-  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
-  if (input.parentPath) {
-    const parent2 = tent.byPath.get(input.parentPath);
-    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
-  }
-  const existing = new Set(tent.byId.keys());
-  const id = makeUniqueConceptId(existing, env.rand);
-  const path18 = join(input.parentPath, name);
-  assertNotTempPath(path18);
-  await ensureDir3(env.fs, path18);
-  const fm = { id, type: input.type };
-  const content3 = serializeFrontmatter(fm, `
-# ${name}
-`, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path18), content3);
-  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
-  const parentKey = parent ? parent.id : ROOT_KEY;
-  try {
-    const order = await loadOrder(env.fs);
-    const siblings = order[parentKey] ?? [];
-    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
-    await saveOrder(env.fs, order);
-  } catch (error) {
-    await env.fs.remove(path18);
-    throw error;
-  }
-  return id;
-}
-async function patchBox(env, boxPath, patch, loadedTent) {
-  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
-}
-async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
-  const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
-  if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
-  if (box.invalid) {
-    const keys = Object.keys(patch);
-    if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
-      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
-    }
-  }
-  if ("type" in patch) {
-    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
-    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
-  }
-  if ("status" in patch) {
-    if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
-    if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("Status must be todo, doing, or done.");
-    }
-  }
-  if ("tags" in patch) {
-    patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
-  }
-  const boxFile = boxNotePath(boxPath);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
-}
-async function patchBody(env, boxPath, newBody, loadedTent) {
-  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
-}
-async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
-  const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box || !isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
-  const boxFile = boxNotePath(boxPath);
-  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
-}
-async function ensureDir3(fs16, path18) {
-  if (path18 && !await fs16.exists(path18)) await fs16.mkdir(path18);
-}
-function normalizeTagPatch(value) {
-  if (value === void 0) return void 0;
-  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
-  const tags = [];
-  for (const item of value) {
-    if (typeof item !== "string") throw new Error("Tags must be a string array.");
-    const tag = normalizeTagName(item);
-    if (!tags.includes(tag)) tags.push(tag);
-  }
-  return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
-}
-function boxKeyOrder(existing) {
-  return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
-}
-function assertNotTempPath(path18) {
-  if (path18 === "temp" || path18.startsWith("temp/")) {
-    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
-  }
-}
-function assertRoleName(role) {
-  const name = role.trim();
-  if (!name) throw new Error("Role name cannot be empty.");
-  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
-  assertRoleNameAvailable(name);
-  return name;
-}
-function ownerCovering(box) {
-  if (box.fm.owner) return box;
-  let parent = box.parent;
-  while (parent) {
-    if (parent.fm.owner) return parent;
-    parent = parent.parent;
-  }
-  return void 0;
-}
-function pendingClaimCovering(tent, box, tasks) {
-  for (const task of tasks) {
-    const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
-    if (!active) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
-      }
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (claimed.id === box.id) {
-        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(claimed, box)) {
-        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(box, claimed)) {
-        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-    }
-  }
-  return void 0;
-}
-function roleManifestClaims(tent, role, current, tasks) {
-  const claims = /* @__PURE__ */ new Map();
-  for (const box of tent.byPath.values()) {
-    if (box.fm.owner === role) claims.set(box.id, box);
-  }
-  for (const task of tasks) {
-    if (taskAssigneeKind(task) !== "role") continue;
-    if (task.status !== "pending" || task.role !== role) continue;
-    for (const claimId of task.claims) {
-      const box = tent.byId.get(claimId);
-      if (box) claims.set(box.id, box);
-    }
-  }
-  claims.set(current.id, current);
-  return [...claims.values()];
-}
-function isAncestor(ancestor, child) {
-  let parent = child.parent;
-  while (parent) {
-    if (parent.id === ancestor.id) return true;
-    parent = parent.parent;
-  }
-  return false;
-}
-function requireBoxById2(tent, boxId) {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
-}
-async function withMutation2(fs16, action) {
-  return withTentMutation(fs16, action);
-}
-
-// src/core/concept.ts
-async function promoteConcept(env, conceptIdOrPath, toType) {
-  return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
-}
-async function promoteConceptUnlocked(env, conceptIdOrPath, toType) {
-  const tent = await loadTent(env.fs);
-  const concept = resolveConcept(tent, conceptIdOrPath);
-  if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
-  const target = toType.trim();
-  if (!target) throw new Error("Promote requires a non-empty target type.");
-  if (!typeHasCoordination(target, tent.typeRegistry)) {
-    throw new Error(`Target type must have coordination capability: ${target}.`);
-  }
-  if (concept.coordination && concept.type === target) {
-    return { id: concept.id, path: concept.path, fromType: concept.type, toType: target };
-  }
-  if (concept.coordination && concept.type !== target) {
-    await assertPromoteWriteAllowed(env, tent, concept);
-  }
-  const notePath = boxNotePath(concept.path);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-  const fromType = typeof data.type === "string" ? data.type : concept.type;
-  data.type = target;
-  if (data.status !== "todo" && data.status !== "doing" && data.status !== "done") {
-    data.status = "todo";
-  }
-  await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER));
-  return { id: concept.id, path: concept.path, fromType, toType: target };
-}
-async function assertPromoteWriteAllowed(env, tent, concept) {
-  if (concept.fm.owner || concept.locked) {
-    throw new Error(
-      `Cannot promote ${concept.name}: active claim/owner write-protects type changes; stamp or force-release first.`
-    );
-  }
-  const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot promote ${concept.name}: overlapping active task ${task.path} write-protects type changes.`
-        );
-      }
-    }
-  }
-}
-function isAncestorPath(ancestor, child) {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
-}
-function resolveConcept(tent, conceptIdOrPath) {
-  const key = conceptIdOrPath.trim();
-  const byId = tent.byId.get(key);
-  if (byId) return byId;
-  const byPath = tent.byPath.get(key.replace(/\\/g, "/"));
-  if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
-}
-
-// src/core/context-card.ts
-var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
-function buildContextCard(ref, options) {
-  const kind = ref.kind;
-  const id = ref.id.trim();
-  if (!id) throw new Error("ContextRef.id cannot be empty.");
-  if (!kind) throw new Error("ContextRef.kind is required.");
-  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options);
+function toConcept(box) {
+  const notePath = boxNotePath(box.path);
+  const id = notePath.replace(/\.md$/i, "");
   return {
-    contextRef: {
-      kind,
-      id,
-      path: ref.path,
-      fragment: ref.fragment
-    },
-    prompt,
-    label,
-    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
-  };
-}
-function formatContextCardPrompt(ref, hints) {
-  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
-  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
-  const workspaceRoot = opts.workspaceRoot?.trim() || "";
-  const lines = [
-    "Tent contextCard v1",
-    `contextRef: ${ref.kind}/${ref.id}`
-  ];
-  if (ref.path) lines.push(`path: ${ref.path}`);
-  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
-  if (systemRoot) {
-    lines.push(`systemRoot: ${systemRoot}`);
-    lines.push(`tentRoot: ${systemRoot}`);
-  }
-  if (ref.path) {
-    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
-    if (rel && !rel.startsWith(".tent/")) {
-      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
-    }
-  }
-  lines.push(
-    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
-  );
-  lines.push("Do not invent missing content; fetch by id before answering.");
-  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
-  return lines.join("\n");
-}
-function taskContextCard(taskId, opts) {
-  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
-}
-
-// src/markdown/attachments.ts
-import { createHash } from "node:crypto";
-import * as nodePath from "node:path";
-var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-function sanitizeAttachmentFileName(fileName) {
-  const source = fileName.normalize("NFKC");
-  if (!source.trim()) throw new Error("Attachment file name is required");
-  if (source.includes("/") || source.includes("\\") || source === "." || source === "..") {
-    throw new Error("Attachment file name must be a single path segment");
-  }
-  let clean = source.replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "");
-  if (!clean || clean === "." || clean === "..") clean = "file";
-  if (clean.length > 120) {
-    const ext2 = nodePath.posix.extname(clean).slice(0, 20);
-    const stem2 = clean.slice(0, Math.max(1, 120 - ext2.length));
-    clean = `${stem2}${ext2}`;
-  }
-  const ext = nodePath.posix.extname(clean);
-  const stem = ext ? clean.slice(0, -ext.length) : clean;
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) {
-    clean = `file-${clean}`;
-  }
-  return clean;
-}
-function decodeBase64Strict(b64) {
-  const compact = b64.replace(/\s+/g, "");
-  if (!compact) throw new Error("Invalid base64: empty payload");
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
-    throw new Error("Invalid base64: non-alphabet characters");
-  }
-  if (compact.length % 4 !== 0) {
-    throw new Error("Invalid base64: length must be a multiple of 4");
-  }
-  let buf;
-  try {
-    buf = Buffer.from(compact, "base64");
-  } catch {
-    throw new Error("Invalid base64: decode failed");
-  }
-  const reencoded = buf.toString("base64");
-  if (reencoded !== compact) {
-    throw new Error("Invalid base64: strict decode mismatch");
-  }
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-}
-function assertAttachmentSize(byteLength) {
-  if (byteLength < 0 || !Number.isFinite(byteLength)) {
-    throw new Error("Invalid attachment size");
-  }
-  if (byteLength > MAX_ATTACHMENT_BYTES) {
-    throw new Error(
-      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${byteLength} bytes)`
-    );
-  }
-}
-function contentId(bytes) {
-  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
-}
-function attachmentRelativePath(conceptId, safeName, bytes) {
-  const id = contentId(bytes);
-  const ext = nodePath.posix.extname(safeName);
-  const base = nodePath.posix.basename(safeName, ext) || "file";
-  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
-}
-function bytesEqual(a, b) {
-  if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-async function storeAttachmentBytes(fs16, conceptId, fileName, bytes, sourceNotePath) {
-  if (!conceptId.trim()) throw new Error("Concept id is required");
-  const safe = sanitizeAttachmentFileName(fileName);
-  assertAttachmentSize(bytes.byteLength);
-  const rel = attachmentRelativePath(conceptId, safe, bytes);
-  const normalized = rel.replace(/\\/g, "/");
-  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
-    throw new Error(`Attachment path rejected: ${rel}`);
-  }
-  if (await fs16.exists(rel)) {
-    const existing = await fs16.readBinary(rel);
-    if (!bytesEqual(existing, bytes)) {
-      throw new Error(`Attachment content-address collision at ${rel}`);
-    }
-    return attachmentResult(rel, safe, sourceNotePath);
-  }
-  await fs16.writeBinary(rel, bytes);
-  return attachmentResult(rel, safe, sourceNotePath);
-}
-function markdownAttachmentDestination(destination) {
-  if (!/[\s<>()]/.test(destination)) return destination;
-  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
-}
-function attachmentResult(relativePath2, label, sourceNotePath) {
-  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath2) : relativePath2;
-  return {
-    relativePath: relativePath2,
-    markdown: `![](${markdownAttachmentDestination(target)})`,
-    artifactRef: { kind: "path", target: relativePath2, label }
-  };
-}
-
-// src/core/proposal.ts
-async function submitProposal(fs16, clock, role, boxId, body) {
-  return withTentMutation(fs16, async () => submitProposalUnlocked(fs16, clock, role, boxId, body));
-}
-async function submitProposalUnlocked(fs16, clock, roleInput, boxId, body) {
-  const text3 = body.trim();
-  if (!text3) throw new Error("Proposal body cannot be empty.");
-  const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs16);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const path18 = proposalPath(role, box.id);
-  if (await fs16.exists(path18)) {
-    const current = await loadProposal(fs16, path18);
-    if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
-  }
-  const proposal = {
-    path: path18,
+    id,
     boxId: box.id,
-    role,
-    status: "pending",
-    createdAt: clock.now(),
-    body: text3
-  };
-  await ensureDir4(fs16, join("temp", role, "proposals"));
-  await writeProposal(fs16, proposal);
-  return proposal;
-}
-async function loadProposals(fs16) {
-  const proposals = [];
-  if (!await fs16.exists("temp")) return proposals;
-  for (const roleDir of await fs16.listDir("temp")) {
-    if (!roleDir.isDir) continue;
-    const dir = join("temp", roleDir.name, "proposals");
-    if (!await fs16.exists(dir)) continue;
-    for (const entry of await fs16.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path18 = join(dir, entry.name);
-      try {
-        proposals.push(await loadProposal(fs16, path18));
-      } catch {
-      }
-    }
-  }
-  return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
-}
-async function loadProposal(fs16, inputPath) {
-  const path18 = normalizeProposalPath(inputPath);
-  if (!await fs16.exists(path18)) throw new Error(`Proposal not found: ${path18}.`);
-  const { data, body } = parseFrontmatter(await fs16.readFile(path18));
-  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
-    throw new Error(`Invalid proposal format: ${path18}.`);
-  }
-  return {
-    path: path18,
-    boxId: data.box,
-    role: data.role,
-    status: data.status,
-    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
-    body: body.trim()
+    path: box.path,
+    notePath,
+    name: box.name,
+    type: box.type
   };
 }
-async function acceptProposal(fs16, inputPath) {
-  await withTentMutation(fs16, async () => {
-    const proposal = await loadProposal(fs16, inputPath);
-    if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
-    proposal.status = "accepted";
-    await writeProposal(fs16, proposal);
-  });
+function addIndex(index2, key, concept) {
+  const clean = key.trim();
+  if (!clean) return;
+  addRawIndex(index2, clean, concept);
+  addRawIndex(index2, normalizeLookupKey(clean), concept);
+  addRawIndex(index2, "__all__", concept);
 }
-async function rejectProposal(fs16, inputPath) {
-  await withTentMutation(fs16, async () => {
-    const proposal = await loadProposal(fs16, inputPath);
-    if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
-    proposal.status = "rejected";
-    await writeProposal(fs16, proposal);
-  });
+function addRawIndex(index2, key, concept) {
+  if (!key) return;
+  const list2 = index2.get(key) ?? [];
+  if (!list2.some((item) => item.id === concept.id)) list2.push(concept);
+  index2.set(key, list2);
 }
-function proposalPath(role, boxId) {
-  return join("temp", role, "proposals", `${boxId}.md`);
-}
-function normalizeProposalPath(input) {
-  const path18 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path18)) {
-    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
-  }
-  return path18;
-}
-async function writeProposal(fs16, proposal) {
-  const data = {
-    type: "proposal",
-    box: proposal.boxId,
-    role: proposal.role,
-    status: proposal.status,
-    createdAt: proposal.createdAt
-  };
-  await fs16.writeFile(
-    proposal.path,
-    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
-  );
-}
-async function ensureDir4(fs16, path18) {
-  if (!await fs16.exists(path18)) await fs16.mkdir(path18);
-}
-function normalizeRole(role) {
-  const normalized = role.trim();
-  if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
-  if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
-  return normalized;
+function normalizeLookupKey(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// src/core/retention.ts
-var DEFAULT_KEEP_TERMINAL_DAYS = 30;
-var MAX_KEEP_TERMINAL_DAYS = 3650;
-var MS_PER_DAY = 24 * 60 * 60 * 1e3;
-var TERMINAL_DELIVERY_STATUSES = /* @__PURE__ */ new Set([
-  "accepted",
-  "rejected"
-]);
-var RetentionError = class extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-    this.name = "RetentionError";
-  }
-};
-function normalizeKeepTerminalTasksDays(raw) {
-  if (raw === void 0 || raw === null) return DEFAULT_KEEP_TERMINAL_DAYS;
-  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
-    throw new RetentionError(
-      "INVALID_KEEP_DAYS",
-      "keepTerminalTasksDays must be a non-negative integer"
-    );
-  }
-  if (raw < 0) {
-    throw new RetentionError(
-      "INVALID_KEEP_DAYS",
-      "keepTerminalTasksDays must be a non-negative integer"
-    );
-  }
-  if (raw > MAX_KEEP_TERMINAL_DAYS) {
-    throw new RetentionError(
-      "INVALID_KEEP_DAYS",
-      `keepTerminalTasksDays must be \u2264 ${MAX_KEEP_TERMINAL_DAYS}`
-    );
-  }
-  return raw;
-}
-function isTerminalTaskState(state) {
-  return TERMINAL_TASK_STATES.has(state);
-}
-function isPurgeableDeliveryStatus(status) {
-  return TERMINAL_DELIVERY_STATUSES.has(status);
-}
-async function previewOperationalRetention(fs16, options = {}) {
-  const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
-  const nowMs = resolveNowMs(options.now);
-  const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
-  const cutoff = new Date(cutoffMs).toISOString();
-  const skipped = [];
-  const warnings = [];
-  const { tasks, skipped: taskSkipped } = await scanTasks(fs16);
-  skipped.push(...taskSkipped);
-  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs16);
-  skipped.push(...deliverySkipped);
-  for (const s of skipped) {
-    warnings.push(`skipped ${s.path}: ${s.reason}`);
-  }
-  const tasksById = /* @__PURE__ */ new Map();
-  const taskIdCounts = /* @__PURE__ */ new Map();
-  for (const t of tasks) {
-    if (t.id) {
-      tasksById.set(t.id, t);
-      taskIdCounts.set(t.id, (taskIdCounts.get(t.id) ?? 0) + 1);
-    }
-  }
-  const deliveriesByTaskId = /* @__PURE__ */ new Map();
-  for (const d of deliveries) {
-    const list2 = deliveriesByTaskId.get(d.taskId) ?? [];
-    list2.push(d);
-    deliveriesByTaskId.set(d.taskId, list2);
-  }
-  const candidates = [];
-  const claimedDeliveryPaths = /* @__PURE__ */ new Set();
-  for (const task of tasks) {
-    if (!isTerminalTaskState(task.state)) continue;
-    if (isActiveTaskState(task.state)) continue;
-    if (task.id && (taskIdCounts.get(task.id) ?? 0) > 1) {
-      const message = `duplicate task id ${task.id}; refusing ambiguous retention group`;
-      skipped.push({ path: task.path, reason: message });
-      warnings.push(`skipped ${task.path}: ${message}`);
-      continue;
-    }
-    const related = task.id ? deliveriesByTaskId.get(task.id) ?? [] : [];
-    const activityValues = [taskActivityMs(task), ...related.map(deliveryActivityMs)];
-    if (activityValues.some((value) => value === void 0)) {
-      if (keepTerminalTasksDays > 0) {
-        skipped.push({
-          path: task.path,
-          reason: "task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
-        });
-        warnings.push(
-          `skipped ${task.path}: task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
-        );
-        continue;
-      }
-    }
-    const activityMs = Math.max(...activityValues.map((value) => value ?? 0));
-    if (activityMs > cutoffMs) continue;
-    const protectedDeliveries = related.filter((d) => !isPurgeableDeliveryStatus(d.status));
-    if (protectedDeliveries.length > 0) {
-      warnings.push(
-        `task-group ${task.path} has ${protectedDeliveries.length} non-terminal delivery(ies); refusing group purge`
-      );
-      continue;
-    }
-    const ageDays = ageDaysFrom(activityMs, nowMs);
-    const deliveryPaths = related.map((d) => d.path);
-    for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
-    candidates.push({
-      kind: "task-group",
-      taskId: task.id,
-      taskPath: task.path,
-      taskState: task.state,
-      deliveryPaths,
-      ageDays,
-      reason: `terminal task state=${task.state} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
-    });
-  }
-  for (const d of deliveries) {
-    if (claimedDeliveryPaths.has(d.path)) continue;
-    if (!isPurgeableDeliveryStatus(d.status)) continue;
-    const parent = tasksById.get(d.taskId);
-    if (parent) {
-      continue;
-    }
-    const activity = deliveryActivityMs(d);
-    if (activity === void 0) {
-      if (keepTerminalTasksDays > 0) {
-        skipped.push({
-          path: d.path,
-          reason: "missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
-        });
-        warnings.push(
-          `skipped ${d.path}: missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
-        );
-        continue;
-      }
-    }
-    const activityMs = activity ?? 0;
-    if (activityMs > cutoffMs) continue;
-    const ageDays = ageDaysFrom(activityMs, nowMs);
-    candidates.push({
-      kind: "orphan-delivery",
-      taskId: d.taskId,
-      deliveryPaths: [d.path],
-      ageDays,
-      reason: `orphan non-ready delivery status=${d.status} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
-    });
-  }
-  candidates.sort((a, b) => {
-    const ap = a.taskPath || a.deliveryPaths[0] || "";
-    const bp = b.taskPath || b.deliveryPaths[0] || "";
-    return ap.localeCompare(bp);
-  });
-  let candidateDeliveryCount = 0;
-  let candidateTaskCount = 0;
-  for (const c of candidates) {
-    if (c.kind === "task-group") candidateTaskCount += 1;
-    candidateDeliveryCount += c.deliveryPaths.length;
-  }
-  return {
-    keepTerminalTasksDays,
-    cutoff,
-    candidates,
-    skipped,
-    warnings,
-    candidateTaskCount,
-    candidateDeliveryCount
-  };
-}
-async function purgeOperationalRetention(fs16, options = {}) {
-  return withTentMutation(fs16, async () => {
-    const preview = await previewOperationalRetention(fs16, options);
-    const purgedTaskPaths = [];
-    const purgedDeliveryPaths = [];
-    for (const c of preview.candidates) {
-      if (c.kind === "task-group" && c.taskPath) {
-        try {
-          const live = await loadTaskEnvelope(fs16, c.taskPath);
-          if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
-            preview.warnings.push(
-              `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
-            );
-            continue;
-          }
-        } catch (err) {
-          preview.warnings.push(
-            `refused purge of ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          continue;
-        }
-        let deliveryValidationFailed = false;
-        for (const dp of c.deliveryPaths) {
-          try {
-            const liveD = await loadDelivery(fs16, dp);
-            if (!isPurgeableDeliveryStatus(liveD.status)) {
-              preview.warnings.push(
-                `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
-              );
-              deliveryValidationFailed = true;
-              break;
-            }
-          } catch (err) {
-            preview.warnings.push(
-              `refused purge of task group ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
-            );
-            deliveryValidationFailed = true;
-            break;
-          }
-        }
-        if (deliveryValidationFailed) continue;
-        try {
-          if (await fs16.exists(c.taskPath)) {
-            await fs16.remove(c.taskPath);
-            purgedTaskPaths.push(c.taskPath);
-          }
-        } catch (err) {
-          preview.warnings.push(
-            `failed to purge task ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
-          );
-          continue;
-        }
-        for (const dp of c.deliveryPaths) {
-          try {
-            if (await fs16.exists(dp)) {
-              await fs16.remove(dp);
-              purgedDeliveryPaths.push(dp);
-            }
-          } catch (err) {
-            preview.warnings.push(
-              `failed to purge orphaned delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
-            );
-          }
-        }
-        continue;
-      }
-      if (c.kind === "orphan-delivery") {
-        for (const dp of c.deliveryPaths) {
-          try {
-            const liveD = await loadDelivery(fs16, dp);
-            if (!isPurgeableDeliveryStatus(liveD.status)) {
-              preview.warnings.push(
-                `refused purge of delivery ${dp}: status=${liveD.status}`
-              );
-              continue;
-            }
-            if (await fs16.exists(dp)) {
-              await fs16.remove(dp);
-              purgedDeliveryPaths.push(dp);
-            }
-          } catch (err) {
-            preview.warnings.push(
-              `failed to purge delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
-            );
-          }
-        }
-      }
-    }
-    const deletedCount = purgedTaskPaths.length + purgedDeliveryPaths.length;
-    return {
-      ...preview,
-      purged: {
-        taskPaths: purgedTaskPaths,
-        deliveryPaths: purgedDeliveryPaths
-      },
-      deletedCount
-    };
-  });
-}
-async function scanTasks(fs16) {
-  const tasks = [];
-  const skipped = [];
-  if (!await fs16.exists("temp")) return { tasks, skipped };
-  for (const roleEntry of await fs16.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    if (!isSafeRoleSegment(roleEntry.name)) {
-      skipped.push({
-        path: join("temp", roleEntry.name),
-        reason: "unsafe role directory name"
-      });
-      continue;
-    }
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs16.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
-          skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name"
-          });
-          continue;
-        }
-        await scanTaskDir(fs16, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
-      }
-      continue;
-    }
-    await scanTaskDir(fs16, join("temp", roleEntry.name, "tasks"), tasks, skipped);
-  }
-  return { tasks, skipped };
-}
-async function scanTaskDir(fs16, taskDir, tasks, skipped) {
-  if (!await fs16.exists(taskDir)) return;
-  for (const entry of await fs16.listDir(taskDir)) {
-    if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path18 = join(taskDir, entry.name);
-    try {
-      tasks.push(await loadTaskEnvelope(fs16, path18));
-    } catch (err) {
-      skipped.push({
-        path: path18,
-        reason: err instanceof Error ? err.message : String(err)
-      });
-    }
-  }
-}
-async function scanDeliveries(fs16) {
-  const deliveries = [];
-  const skipped = [];
-  if (!await fs16.exists("temp")) return { deliveries, skipped };
-  for (const roleEntry of await fs16.listDir("temp")) {
-    if (!roleEntry.isDir) continue;
-    if (!isSafeRoleSegment(roleEntry.name)) {
-      skipped.push({
-        path: join("temp", roleEntry.name),
-        reason: "unsafe role directory name"
-      });
-      continue;
-    }
-    if (roleEntry.name === "agent-profiles") {
-      const profilesRoot = join("temp", "agent-profiles");
-      for (const profileEntry of await fs16.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        if (!isSafeRoleSegment(profileEntry.name)) {
-          skipped.push({
-            path: join(profilesRoot, profileEntry.name),
-            reason: "unsafe profile directory name"
-          });
-          continue;
-        }
-        await scanDeliveryDir(
-          fs16,
-          join(profilesRoot, profileEntry.name, "deliveries"),
-          deliveries,
-          skipped
-        );
-      }
-      continue;
-    }
-    await scanDeliveryDir(fs16, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
-  }
-  return { deliveries, skipped };
-}
-async function scanDeliveryDir(fs16, dir, deliveries, skipped) {
-  if (!await fs16.exists(dir)) return;
-  for (const entry of await fs16.listDir(dir)) {
-    if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    const path18 = join(dir, entry.name);
-    try {
-      deliveries.push(await loadDelivery(fs16, path18));
-    } catch (err) {
-      skipped.push({
-        path: path18,
-        reason: err instanceof Error ? err.message : String(err)
-      });
-    }
-  }
-}
-function isSafeRoleSegment(name) {
-  if (!name || name === "." || name === "..") return false;
-  if (/[\\/]/.test(name)) return false;
-  if (name.includes("\0")) return false;
-  return true;
-}
-function taskActivityMs(task) {
-  return parseIsoMs(task.updatedAt) ?? parseIsoMs(task.createdAt);
-}
-function deliveryActivityMs(d) {
-  return parseIsoMs(d.updatedAt) ?? parseIsoMs(d.createdAt);
-}
-function parseIsoMs(value) {
-  if (!value) return void 0;
-  const ms = Date.parse(value);
-  if (!Number.isFinite(ms)) return void 0;
-  return ms;
-}
-function resolveNowMs(now) {
-  if (now === void 0) return Date.now();
-  if (now instanceof Date) {
-    const ms2 = now.getTime();
-    if (!Number.isFinite(ms2)) throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now Date");
-    return ms2;
-  }
-  const ms = Date.parse(now);
-  if (!Number.isFinite(ms)) {
-    throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now ISO timestamp");
-  }
-  return ms;
-}
-function ageDaysFrom(activityMs, nowMs) {
-  const delta = Math.max(0, nowMs - activityMs);
-  return Math.floor(delta / MS_PER_DAY);
-}
-
-// src/core/workspace-settings.ts
-var DEFAULT_DELIVERY_POLICY = "manual";
-var DEFAULT_SETTINGS = {
-  defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY
-};
-function isDeliveryPolicyValue(value) {
-  return value === "manual" || value === "bypass" || value === "agent-decide";
-}
-function normalizeWorkspaceSettings(value) {
-  if (!isRecord3(value)) {
-    return { ...DEFAULT_SETTINGS };
-  }
-  const out = { ...value };
-  if (!isDeliveryPolicyValue(out.defaultDeliveryPolicy)) {
-    out.defaultDeliveryPolicy = DEFAULT_DELIVERY_POLICY;
-  }
-  return out;
-}
-function defaultWorkspaceSettings() {
-  return { ...DEFAULT_SETTINGS };
-}
-async function loadWorkspaceSettings(fs16) {
-  if (!await fs16.exists(WORKSPACE_SETTINGS_PATH)) {
-    return defaultWorkspaceSettings();
-  }
-  try {
-    const parsed = JSON.parse(await fs16.readFile(WORKSPACE_SETTINGS_PATH));
-    return normalizeWorkspaceSettings(parsed);
-  } catch {
-    const backupPath = await backupCorruptRegistry(fs16, WORKSPACE_SETTINGS_PATH);
-    const reset = defaultWorkspaceSettings();
-    await writeSettingsUnlocked(fs16, reset);
-    warnRegistryRecovered(
-      WORKSPACE_SETTINGS_PATH,
-      backupPath,
-      "reset",
-      "IMPORTANT: workspace settings cannot be inferred; restore needed keys from the backup."
-    );
-    return reset;
-  }
-}
-async function updateWorkspaceSettings(fs16, patch) {
-  return withTentMutation(fs16, async () => {
-    if (!isRecord3(patch)) {
-      throw new WorkspaceSettingsError(
-        "INVALID_PATCH",
-        "workspace.settings.update patch must be an object"
-      );
-    }
-    const before = await loadWorkspaceSettings(fs16);
-    const nextRaw = { ...before };
-    for (const [key, value] of Object.entries(patch)) {
-      if (key === "defaultDeliveryPolicy") {
-        if (value === void 0) continue;
-        if (!isDeliveryPolicyValue(value)) {
-          throw new WorkspaceSettingsError(
-            "INVALID_DELIVERY_POLICY",
-            `Invalid defaultDeliveryPolicy: ${String(value)}`
-          );
-        }
-        nextRaw.defaultDeliveryPolicy = value;
-        continue;
-      }
-      if (value === void 0) continue;
-      nextRaw[key] = value;
-    }
-    const next = normalizeWorkspaceSettings(nextRaw);
-    const changed = !settingsEqual(before, next);
-    if (changed) {
-      await writeSettingsUnlocked(fs16, next);
-    }
-    return { settings: next, changed };
-  });
-}
-var WorkspaceSettingsError = class extends Error {
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-    this.name = "WorkspaceSettingsError";
-  }
-};
-async function writeSettingsUnlocked(fs16, settings) {
-  const known = ["defaultDeliveryPolicy"];
-  const ordered = {};
-  for (const key of known) {
-    if (key in settings) ordered[key] = settings[key];
-  }
-  const rest = Object.keys(settings).filter((k) => !known.includes(k)).sort((a, b) => a.localeCompare(b));
-  for (const key of rest) {
-    ordered[key] = settings[key];
-  }
-  await fs16.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
-}
-function settingsEqual(a, b) {
-  return stableStringify(a) === stableStringify(b);
-}
-function stableStringify(value) {
-  return JSON.stringify(sortKeysDeep(value));
-}
-function sortKeysDeep(value) {
-  if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (!isRecord3(value)) return value;
-  const out = {};
-  for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
-    out[key] = sortKeysDeep(value[key]);
-  }
-  return out;
-}
-function isRecord3(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/core/workspace.ts
-import * as nodePath2 from "node:path";
-import * as nodeFs from "node:fs/promises";
-import { spawn } from "node:child_process";
-async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
-  const root = nodePath2.resolve(workspace);
-  await assertGitWorkspace(root);
-  const full = await fullRef(root, sourceRef);
-  const ancestor = await findAncestorIntegration(root, full, targetBranch);
-  if (ancestor) return { integratedRef: full, reason: "ancestor" };
-  const prior = await findCherryPick(root, full, targetBranch);
-  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
-  return void 0;
-}
-async function readRoleBranchTip(workspace, branch) {
-  const root = nodePath2.resolve(workspace);
-  await assertGitWorkspace(root);
-  const name = branch.trim();
-  if (!name) throw new Error("Role branch name is required.");
-  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
-  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
-  return ref;
-}
-async function isGitWorkspace(workspace) {
-  try {
-    await assertGitWorkspace(nodePath2.resolve(workspace));
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function ensureRoleWorkspaceIfGit(workspace, role) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureRoleWorkspace(workspace, role);
-}
-async function ensureRoleWorkspace(workspace, role) {
-  const root = nodePath2.resolve(workspace);
-  await assertGitWorkspace(root);
-  const targetBranch = await resolveTargetBranch(root);
-  const roleSlug = safeComponent(role);
-  const branch = `tent-role/${roleSlug}`;
-  const worktree = nodePath2.join(
-    nodePath2.dirname(root),
-    `${nodePath2.basename(root)}-worktrees`,
-    roleSlug
-  );
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
-}
-async function ensureTaskWorkspaceIfGit(workspace, taskId) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureTaskWorkspace(workspace, taskId);
-}
-async function ensureTaskWorkspace(workspace, taskId) {
-  const root = nodePath2.resolve(workspace);
-  await assertGitWorkspace(root);
-  const id = taskId.trim();
-  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  const targetBranch = await resolveTargetBranch(root);
-  const taskSlug = safeComponent(id);
-  const branch = `tent-task/${taskSlug}`;
-  const worktree = nodePath2.join(
-    nodePath2.dirname(root),
-    `${nodePath2.basename(root)}-worktrees`,
-    `task-${taskSlug}`
-  );
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    return {
-      workspace: root,
-      worktree: await nodeFs.realpath(nodePath2.resolve(existing)),
-      branch,
-      targetBranch
-    };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  return {
-    workspace: root,
-    worktree: await nodeFs.realpath(worktree),
-    branch,
-    targetBranch
-  };
-}
-async function integrateWorkspaceCommits(contract, refs) {
-  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
-  if (commits.length === 0) return [];
-  const root = contract.workspace;
-  const target = contract.targetBranch;
-  const integrationCwd = await resolveIntegrationCwd(root, target);
-  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
-  if (current !== target) {
-    throw new Error(
-      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
-    );
-  }
-  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
-  if (dirty) {
-    throw new Error(
-      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
-    );
-  }
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-  const resolved = [];
-  for (const sourceRef of commits) {
-    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
-    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
-  }
-  const fastForwardRef = await completeFastForwardRef(
-    root,
-    originalRef,
-    resolved.map((item) => item.fullRef)
-  );
-  if (fastForwardRef) {
-    try {
-      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
-      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
-        sourceRef,
-        integratedRef,
-        alreadyIntegrated: false
-      }));
-    } catch (error) {
-      await rollbackIntegration(integrationCwd, originalRef, error);
-    }
-  }
-  const results = [];
-  try {
-    for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, target);
-      if (ancestor) {
-        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
-        continue;
-      }
-      const prior = await findCherryPick(root, sourceRef, target);
-      if (prior) {
-        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
-        continue;
-      }
-      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
-      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
-    }
-  } catch (error) {
-    await rollbackIntegration(integrationCwd, originalRef, error);
-  }
-  return results;
-}
-async function resolveIntegrationCwd(root, targetBranch) {
-  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
-  if (mainCurrent === targetBranch) {
-    return root;
-  }
-  const existing = await worktreeForBranch(root, targetBranch);
-  if (existing) {
-    const wt = await nodeFs.realpath(nodePath2.resolve(existing));
-    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
-    if (wtCurrent === targetBranch) return wt;
-    throw new Error(
-      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
-    );
-  }
-  throw new Error(
-    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
-  );
-}
-async function listRoleCommitsSince(contract, base) {
-  const since = base.trim();
-  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
-  const branchRef = `refs/heads/${contract.branch}`;
-  const fullBase = await fullRef(contract.workspace, since);
-  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
-    throw new Error(
-      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
-    );
-  }
-  const output = await git(contract.workspace, [
-    "log",
-    `${fullBase}..${branchRef}`,
-    "--format=%H%x09%h%x09%s"
-  ]);
-  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
-    return { ref, shortRef, subject: subjectParts.join("	") };
-  }).filter((item) => item.ref && item.shortRef);
-}
-async function listPendingRoleCommits(contract, base) {
-  const candidates = await listRoleCommitsSince(contract, base);
-  const pending = [];
-  for (const item of candidates) {
-    const integrated = await findIntegratedCommit(
-      contract.workspace,
-      item.ref,
-      contract.targetBranch
-    );
-    if (!integrated) pending.push(item);
-  }
-  return pending.reverse();
-}
-async function assertGitWorkspace(root) {
-  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
-  const [realTop, realRoot] = await Promise.all([
-    nodeFs.realpath(nodePath2.resolve(top)),
-    nodeFs.realpath(root)
-  ]);
-  if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`Workspace must be a Git root: ${root}.`);
-  }
-}
-function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
-  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
-  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
-  return top === root;
-}
-async function resolveTargetBranch(root) {
-  for (const name of ["main", "master"]) {
-    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
-  }
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (!current) throw new Error("Cannot identify the workspace main branch.");
-  return current;
-}
-async function worktreeForBranch(root, branch) {
-  const output = await git(root, ["worktree", "list", "--porcelain"]);
-  let currentPath = "";
-  for (const line of output.split(/\r?\n/)) {
-    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
-    if (line === `branch refs/heads/${branch}`) return currentPath;
-  }
-  return void 0;
-}
-async function findCherryPick(root, sourceRef, targetBranch) {
-  const full = await fullRef(root, sourceRef);
-  const needle = `(cherry picked from commit ${full})`;
-  const targetRef = `refs/heads/${targetBranch}`;
-  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
-  const parts = output.split("\0");
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    const body = parts[i + 1] ?? "";
-    if (body.includes(needle)) return parts[i].trim();
-  }
-  return void 0;
-}
-async function findAncestorIntegration(root, sourceRef, targetBranch) {
-  const targetRef = `refs/heads/${targetBranch}`;
-  const full = await fullRef(root, sourceRef);
-  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
-    return full;
-  }
-  return void 0;
-}
-async function completeFastForwardRef(root, targetRef, commits) {
-  const lastRef = commits.at(-1);
-  if (!lastRef || lastRef === targetRef) return void 0;
-  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
-  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
-  if (range.length !== commits.length) return void 0;
-  const supplied = new Set(commits);
-  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
-}
-async function rollbackIntegration(root, originalRef, cause) {
-  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-  try {
-    await git(root, ["reset", "--hard", originalRef]);
-  } catch (rollbackError) {
-    throw new Error(
-      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
-    );
-  }
-  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
-}
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function fullRef(root, ref) {
-  return (await git(root, ["rev-parse", ref])).trim();
-}
-function safeComponent(value) {
-  const source = value.trim();
-  const normalized = source.normalize("NFKC");
-  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
-  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
-  if (reserved) clean = `role-${clean}`;
-  if (!clean) return `role-${shortHash(source)}`;
-  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
-}
-function shortHash(value) {
-  let hash = 2166136261;
-  for (const char of value) {
-    hash ^= char.codePointAt(0) || 0;
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
-}
-async function pathExists(path18) {
-  try {
-    await nodeFs.access(path18);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function gitOk(cwd, args) {
-  try {
-    await git(cwd, args);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function git(cwd, args) {
-  return new Promise((resolve11, reject) => {
-    const child = spawn("git", args, { cwd, windowsHide: true });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (data) => out += data);
-    child.stderr.on("data", (data) => err += data);
-    child.on("close", (code) => {
-      if (code === 0) resolve11(out);
-      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
-    });
-    child.on("error", reject);
-  });
-}
-
-// src/runtime/types.ts
-var SESSION_ID_PREFIX = "ss-";
-var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
-function makeSessionId(rand = Math.random, len = 8) {
-  let s = "";
-  for (let i = 0; i < len; i++) {
-    s += SESSION_ALPHABET[Math.floor(rand() * SESSION_ALPHABET.length)];
-  }
-  return SESSION_ID_PREFIX + s;
-}
-function isSessionId(id) {
-  return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
-}
-
-// src/runtime/session-registry.ts
-import * as fs2 from "node:fs/promises";
-import * as path2 from "node:path";
-
-// src/machine-state.ts
-import * as fs from "node:fs/promises";
-import * as path from "node:path";
-function isNotFoundError(err) {
-  return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
-}
-function isRetryableRenameError(err) {
-  if (!err || typeof err !== "object" || !("code" in err)) return false;
-  const code = err.code;
-  return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
-}
-async function writeJsonAtomic(filePath, value) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
-  const body = JSON.stringify(value, null, 2) + "\n";
-  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
-  try {
-    await fs.writeFile(tmp, body, "utf8");
-    await renameReplace(tmp, filePath);
-  } catch (err) {
-    try {
-      await fs.unlink(tmp);
-    } catch {
-    }
-    throw err;
-  }
-}
-async function renameReplace(tmp, filePath) {
-  const attempts = process.platform === "win32" ? 8 : 1;
-  let lastErr;
-  for (let i = 0; i < attempts; i++) {
-    try {
-      await fs.rename(tmp, filePath);
-      return;
-    } catch (err) {
-      lastErr = err;
-      if (!isRetryableRenameError(err) || i === attempts - 1) break;
-      await new Promise((r) => setTimeout(r, 5 + i * 5));
-    }
-  }
-  throw lastErr;
-}
-async function backupCorruptMachineFile(filePath) {
-  const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
-  try {
-    await fs.rename(filePath, backupPath);
-    return backupPath;
-  } catch {
-    await fs.copyFile(filePath, backupPath);
-    try {
-      await fs.unlink(filePath);
-    } catch {
-    }
-    return backupPath;
-  }
-}
-function warnCorruptMachineState(filePath, backupPath, action, extra = "") {
-  console.error(
-    `WARNING: ${filePath} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
-  );
-}
-function corruptTimestamp() {
-  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
-}
-
-// src/runtime/session-registry.ts
-var SESSION_STATES = /* @__PURE__ */ new Set([
-  "starting",
-  "live",
-  "waiting-user",
-  "stopped",
-  "failed",
-  "external"
-]);
-var STOP_REASONS = /* @__PURE__ */ new Set(["user", "interrupt", "shutdown"]);
-var ASSIGNEE_KINDS = /* @__PURE__ */ new Set(["role", "agentProfile"]);
-function sessionsDir(dataDir) {
-  return path2.join(dataDir, "sessions");
-}
-function sessionFilePath(dataDir, sessionId) {
-  return path2.join(sessionsDir(dataDir), `${sessionId}.json`);
-}
-function assertSessionId(sessionId) {
-  if (!isSessionId(sessionId)) {
-    throw new Error(`Invalid session id: ${sessionId}`);
-  }
-}
-function isNonEmptyString(value) {
-  return typeof value === "string" && value.length > 0;
-}
-function isPlainObject(value) {
-  return !!value && typeof value === "object" && !Array.isArray(value);
-}
-function isSessionState(value) {
-  return typeof value === "string" && SESSION_STATES.has(value);
-}
-function parseSessionRecord(data, sessionId) {
-  if (!isPlainObject(data)) return null;
-  if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
-  if (!isNonEmptyString(data.profileId)) return null;
-  if (!isNonEmptyString(data.adapterId)) return null;
-  if (!isSessionState(data.state)) return null;
-  if (!isNonEmptyString(data.createdAt)) return null;
-  if (!isNonEmptyString(data.updatedAt)) return null;
-  if ("pid" in data && data.pid !== void 0) {
-    if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
-      return null;
-    }
-  }
-  if ("exitCode" in data && data.exitCode !== void 0) {
-    if (data.exitCode !== null && (typeof data.exitCode !== "number" || !Number.isInteger(data.exitCode))) {
-      return null;
-    }
-  }
-  for (const key of [
-    "roleName",
-    "resumeToken",
-    "workspace",
-    "lastTaskId",
-    "lastError"
-  ]) {
-    if (key in data && data[key] !== void 0 && typeof data[key] !== "string") {
-      return null;
-    }
-  }
-  if ("assigneeKind" in data && data.assigneeKind !== void 0) {
-    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
-      return null;
-    }
-  }
-  if ("stopReason" in data && data.stopReason !== void 0) {
-    if (typeof data.stopReason !== "string" || !STOP_REASONS.has(data.stopReason)) {
-      return null;
-    }
-  }
-  if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
-    if (!isPlainObject(data.runtimeWorkspace)) return null;
-    if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
-  }
-  if ("workspaceLane" in data && data.workspaceLane !== void 0) {
-    if (!isPlainObject(data.workspaceLane)) return null;
-    const lane = data.workspaceLane;
-    if (!isNonEmptyString(lane.workspace)) return null;
-    if (!isNonEmptyString(lane.worktree)) return null;
-    if (!isNonEmptyString(lane.branch)) return null;
-    if ("targetBranch" in lane && lane.targetBranch !== void 0 && typeof lane.targetBranch !== "string") {
-      return null;
-    }
-  }
-  if ("profileSnapshot" in data && data.profileSnapshot !== void 0) {
-    if (!isPlainObject(data.profileSnapshot)) return null;
-  }
-  return data;
-}
-var SessionRegistry = class {
-  constructor(dataDir) {
-    this.dataDir = dataDir;
-    /** Serialize disk mutations so stop + exit handlers cannot race rename. */
-    this.writeChain = Promise.resolve();
-  }
-  get dataRoot() {
-    return this.dataDir;
-  }
-  async ensureDir() {
-    await fs2.mkdir(sessionsDir(this.dataDir), { recursive: true });
-  }
-  enqueue(fn) {
-    const run = this.writeChain.then(fn, fn);
-    this.writeChain = run.then(
-      () => void 0,
-      () => void 0
-    );
-    return run;
-  }
-  async write(record) {
-    assertSessionId(record.id);
-    return this.enqueue(async () => {
-      await this.ensureDir();
-      const file = sessionFilePath(this.dataDir, record.id);
-      await writeJsonAtomic(file, record);
-    });
-  }
-  async read(sessionId) {
-    assertSessionId(sessionId);
-    await this.writeChain;
-    return this.readUnlocked(sessionId);
-  }
-  async update(sessionId, patch) {
-    return this.enqueue(async () => {
-      const current = await this.readUnlocked(sessionId);
-      if (!current) throw new Error(`Session not found: ${sessionId}`);
-      const next = {
-        ...current,
-        ...patch,
-        id: current.id,
-        createdAt: current.createdAt,
-        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
-      };
-      await this.ensureDir();
-      const file = sessionFilePath(this.dataDir, sessionId);
-      await writeJsonAtomic(file, next);
-      return next;
-    });
-  }
-  async setState(sessionId, state, extra = {}) {
-    return this.update(sessionId, { ...extra, state });
-  }
-  async list() {
-    await this.ensureDir();
-    const dir = sessionsDir(this.dataDir);
-    let names;
-    try {
-      names = await fs2.readdir(dir);
-    } catch (err) {
-      if (isNotFoundError(err)) return [];
-      throw err;
-    }
-    const out = [];
-    for (const name of names) {
-      if (!name.endsWith(".json")) continue;
-      if (name.includes(".corrupt-") || name.endsWith(".tmp")) continue;
-      const id = name.slice(0, -".json".length);
-      if (!isSessionId(id)) continue;
-      const rec = await this.read(id);
-      if (rec) out.push(rec);
-    }
-    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
-    return out;
-  }
-  async remove(sessionId) {
-    assertSessionId(sessionId);
-    return this.enqueue(async () => {
-      try {
-        await fs2.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
-      } catch {
-      }
-    });
-  }
-  /** Non-terminal states that should be probed after service restart. */
-  static isNonTerminal(state) {
-    return state === "starting" || state === "live" || state === "waiting-user";
-  }
-  async readUnlocked(sessionId) {
-    const file = sessionFilePath(this.dataDir, sessionId);
-    try {
-      const raw = await fs2.readFile(file, "utf8");
-      let data;
-      try {
-        data = JSON.parse(raw);
-      } catch {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      const rec = parseSessionRecord(data, sessionId);
-      if (!rec) {
-        await this.quarantineCorrupt(file);
-        return null;
-      }
-      return rec;
-    } catch (err) {
-      if (isNotFoundError(err)) return null;
-      throw err;
-    }
-  }
-  async quarantineCorrupt(file) {
-    try {
-      const backupPath = await backupCorruptMachineFile(file);
-      warnCorruptMachineState(file, backupPath, "ignored");
-    } catch {
-    }
-  }
-};
-
-// src/service/handlers.ts
-import * as nodeFs2 from "node:fs/promises";
-import * as nodePath3 from "node:path";
-
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -4215,7 +2471,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../Tent/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -6344,13 +4600,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../Tent/node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../Tent/node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -6384,7 +4640,7 @@ function push(list2, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -6424,7 +4680,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -6442,12 +4698,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../Tent/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -6479,7 +4735,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../Tent/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -6501,7 +4757,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../Tent/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -6551,7 +4807,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../Tent/node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -6733,7 +4989,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../Tent/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -6743,7 +4999,7 @@ function classifyCharacter(code) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../Tent/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -6757,7 +5013,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -6888,7 +5144,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -6989,7 +5245,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -7004,7 +5260,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -7062,7 +5318,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -7088,7 +5344,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -7153,7 +5409,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -7336,7 +5592,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -7400,7 +5656,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -7515,7 +5771,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -7708,7 +5964,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../Tent/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -7861,7 +6117,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -7932,7 +6188,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../Tent/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -8024,7 +6280,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../Tent/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -8085,7 +6341,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../Tent/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -8147,7 +6403,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../Tent/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -8166,7 +6422,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -8252,7 +6508,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -8273,7 +6529,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -8364,7 +6620,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -8431,7 +6687,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -8810,7 +7066,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -9116,7 +7372,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -9342,7 +7598,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -9373,7 +7629,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -9395,7 +7651,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -9410,7 +7666,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -9449,7 +7705,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -9579,7 +7835,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -9671,7 +7927,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../Tent/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -9709,7 +7965,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../Tent/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -9848,7 +8104,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../Tent/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -9923,7 +8179,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -10246,7 +8502,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../Tent/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -10272,14 +8528,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../Tent/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../Tent/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -10358,7 +8614,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../Tent/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -10376,7 +8632,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -10402,7 +8658,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -11111,23 +9367,6 @@ function defaultOnError(left, right) {
   }
 }
 
-// src/core/okf.ts
-function resolveConcept2(index2, target) {
-  const clean = target.trim().replace(/^\.\//, "").replace(/\.md$/i, "");
-  const matches = index2.get(clean) ?? index2.get(`${clean}.md`) ?? index2.get(normalizeLookupKey(clean));
-  if (matches?.length === 1) return matches[0];
-  const normalized = normalizeLookupKey(clean);
-  if (normalized.length >= 4) {
-    const all2 = index2.get("__all__") ?? [];
-    const fuzzy = all2.filter((concept) => normalizeLookupKey(concept.name).includes(normalized));
-    if (fuzzy.length === 1) return fuzzy[0];
-  }
-  return matches?.length === 1 ? matches[0] : void 0;
-}
-function normalizeLookupKey(value) {
-  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
-}
-
 // src/markdown/links.ts
 var EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 var ARTIFACT_SCHEME_RE = /^(https?:|mailto:|tent-artifact:)/i;
@@ -11168,7 +9407,7 @@ function resolveOutLink(index2, link2, fromNotePath) {
   if (!isConceptCandidate(target) && !isConceptCandidate(resolutionRaw)) {
     return { raw: link2.raw, kind: "unresolved", label: link2.label };
   }
-  const concept = resolveConcept2(index2, target) ?? resolveConcept2(index2, resolutionRaw);
+  const concept = resolveConcept(index2, target) ?? resolveConcept(index2, resolutionRaw);
   if (!concept) return { raw: link2.raw, kind: "unresolved", label: link2.label };
   return {
     raw: link2.raw,
@@ -11422,6 +9661,2168 @@ function add(index2, key, concept) {
   if (!all2.some((c) => c.id === concept.id)) all2.push(concept);
   index2.set("__all__", all2);
 }
+
+// src/core/renameOps.ts
+async function renameNode(env, conceptIdOrPath, newNameRaw) {
+  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
+}
+async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
+  const newName = validateBoxName(newNameRaw);
+  const tent = await loadTent(env.fs);
+  const target = resolveRenameTarget(tent, conceptIdOrPath);
+  if (!isUsableBox(target)) {
+    throw new Error("Invalid or archived boxes cannot be renamed.");
+  }
+  if (isFrozen(target)) {
+    throw new Error(
+      "Claimed ranges cannot be renamed; stamp or force-release the owner first."
+    );
+  }
+  await assertRenameOccupationAllowed(env, tent, target);
+  const oldPath = target.path;
+  const oldName = target.name;
+  if (newName === oldName) {
+    return {
+      id: target.id,
+      oldPath,
+      path: oldPath,
+      name: oldName,
+      pathMap: { [oldPath]: oldPath },
+      rewrittenNotes: []
+    };
+  }
+  const parentPath = dirName(oldPath);
+  const newPath = join(parentPath, newName);
+  assertNotOperationalPath(oldPath);
+  assertNotOperationalPath(newPath);
+  if (await env.fs.exists(newPath)) {
+    throw new Error(`Rename target already exists: ${newPath}.`);
+  }
+  const siblings = target.parent ? target.parent.children : tent.roots;
+  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
+    throw new Error(`A sibling concept already uses the name: ${newName}.`);
+  }
+  const subtree2 = collectSubtree2(target);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath2(oldPath, box.path);
+    const nextBoxPath = rel ? join(newPath, rel) : newPath;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: target.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
+    }
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, rewriteOpts);
+    if (!rewritten.changed) continue;
+    const afterPath = pathMap.get(box.path) ?? box.path;
+    plannedWrites.push({
+      writePath: boxNotePath(afterPath),
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterPath);
+  }
+  await env.fs.move(oldPath, newPath);
+  let identityRenamed = false;
+  const completedWrites = [];
+  try {
+    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+  } catch (error) {
+    await rollbackRename(env.fs, {
+      oldPath,
+      newPath,
+      oldName,
+      identityRenamed,
+      completedWrites
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: target.id,
+    oldPath,
+    path: newPath,
+    name: newName,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackRename(fs16, args) {
+  const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs16.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    const expectedNew = boxNotePath(newPath);
+    const legacyAfterMove = join(newPath, `${oldName}.md`);
+    if ((identityRenamed || await fs16.exists(expectedNew)) && await fs16.exists(expectedNew) && !await fs16.exists(legacyAfterMove)) {
+      await fs16.move(expectedNew, legacyAfterMove);
+    }
+  } catch (err) {
+    restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    if (await fs16.exists(newPath) && !await fs16.exists(oldPath)) {
+      const expectedNew = boxNotePath(newPath);
+      const legacyAfterMove = join(newPath, `${oldName}.md`);
+      if (!await fs16.exists(legacyAfterMove) && await fs16.exists(expectedNew)) {
+        try {
+          await fs16.move(expectedNew, legacyAfterMove);
+        } catch {
+        }
+      }
+      await fs16.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Rename failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveRenameTarget(tent, conceptIdOrPath) {
+  const key = conceptIdOrPath.trim().replace(/\\/g, "/");
+  const byId = tent.byId.get(key);
+  if (byId) return byId;
+  const byPath = tent.byPath.get(key);
+  if (byPath) return byPath;
+  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+}
+async function assertRenameOccupationAllowed(env, tent, concept) {
+  if (concept.fm.owner || concept.locked || hasOwnerInSubtree(concept)) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active claim/owner occupies this range; stamp or force-release first.`
+    );
+  }
+  const tasks = await loadTaskEnvelopes(env.fs);
+  for (const task of tasks) {
+    const active = isActiveTaskState(task.state) || task.status === "pending" || task.status === "taken";
+    if (!active) continue;
+    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
+      throw new Error(
+        `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
+      );
+    }
+    for (const claimId of task.claims) {
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
+        throw new Error(
+          `Cannot rename ${concept.name}: overlapping active task ${task.path} occupies this range.`
+        );
+      }
+    }
+  }
+}
+function hasOwnerInSubtree(box) {
+  if (box.fm.owner) return true;
+  return box.children.some(hasOwnerInSubtree);
+}
+function isAncestorPath(ancestor, child) {
+  if (!ancestor) return true;
+  return child === ancestor || child.startsWith(ancestor + "/");
+}
+function assertNotOperationalPath(path18) {
+  if (isOperationalPath(path18) || path18 === "temp" || path18.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
+  }
+  const top = path18.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be renamed as concepts.");
+  }
+}
+function collectSubtree2(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree2(child, out);
+  return out;
+}
+function relativePath2(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName2(fs16, newBoxPath, oldName) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs16.exists(expected)) return false;
+  const legacy = join(newBoxPath, `${oldName}.md`);
+  if (await fs16.exists(legacy)) {
+    await fs16.move(legacy, expected);
+    return true;
+  }
+  const entries = await fs16.listDir(newBoxPath);
+  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newBoxPath, e.name));
+  if (candidates.length === 1) {
+    await fs16.move(candidates[0], expected);
+    return true;
+  }
+  throw new Error(`Identity note missing after rename: expected ${expected}.`);
+}
+function rewriteConceptLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
+  if (pathMap.size === 0) return { body, changed: false };
+  const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
+  let next = body;
+  let changed = false;
+  next = next.replace(/\[([^\]]*)\]\((<[^>\n]+>|[^)\n]+)\)/g, (full, label, destRaw) => {
+    const angled = destRaw.startsWith("<") && destRaw.endsWith(">");
+    const inner = angled ? destRaw.slice(1, -1) : destRaw;
+    const { url, titleTail } = splitMdUrlAndTitle(inner);
+    if (!url || isExternalOrAnchor(url)) return full;
+    const mapped = mapLinkTarget(url, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+    if (!mapped) return full;
+    changed = true;
+    const dest = angled ? `<${mapped}${titleTail}>` : `${mapped}${titleTail}`;
+    return `[${label}](${dest})`;
+  });
+  next = next.replace(
+    /(^|[^!])\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (full, prefix, rawTarget, rawLabel) => {
+      const target = rawTarget.trim();
+      if (!target) return full;
+      const { head, suffix } = splitWikiTarget(target);
+      if (!head || isExternalOrAnchor(head)) return full;
+      const nextHead = mapLinkTarget(head, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+      if (!nextHead || nextHead === head) return full;
+      changed = true;
+      const labelPart = rawLabel !== void 0 ? `|${rawLabel}` : "";
+      return `${prefix}[[${nextHead}${suffix}${labelPart}]]`;
+    }
+  );
+  return { body: next, changed };
+}
+function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, opts) {
+  const { pathPart, tail } = splitDestTail(raw);
+  if (!pathPart) return void 0;
+  if (isUnqualifiedName(pathPart)) {
+    return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
+  }
+  const normalized = normalizeTarget(pathPart, fromNotePath);
+  const newAbs = resolveMappedPath(normalized, pathMap, oldPaths);
+  if (!newAbs) return void 0;
+  const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
+  const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
+  const styled = restyleRelative(pathPart, fromNotePath, absTarget, sourceHadMd);
+  return styled + tail;
+}
+function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
+  if (!opts || oldName === newName) return void 0;
+  const bare = pathPart.replace(/\.md$/i, "");
+  const resolved = resolveConcept(opts.conceptIndex, bare);
+  if (!resolved || resolved.boxId !== opts.renameBoxId) return void 0;
+  const sourceHadMd = /\.md$/i.test(pathPart);
+  const nextBare = bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName) ? newName : newName;
+  return (sourceHadMd ? `${nextBare}.md` : nextBare) + tail;
+}
+function resolveMappedPath(normalized, pathMap, oldPaths) {
+  const clean = normalized.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (pathMap.has(clean)) return pathMap.get(clean);
+  const noMd = clean.replace(/\.md$/i, "");
+  if (pathMap.has(noMd)) return pathMap.get(noMd);
+  for (const oldPath of oldPaths) {
+    if (clean === oldPath || noMd === oldPath || clean === `${oldPath}.md`) {
+      return pathMap.get(oldPath);
+    }
+  }
+  return void 0;
+}
+function isUnqualifiedName(raw) {
+  const t = raw.trim().replace(/\\/g, "/");
+  if (!t || t.includes("/") || t.startsWith(".")) return false;
+  return true;
+}
+function normalizeLookupLoose(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+function splitMdUrlAndTitle(inner) {
+  const t = inner.trim();
+  const m = t.match(/^(\S+?)(\s+(".*"|'.*'|\(.*\)))\s*$/);
+  if (m) return { url: m[1], titleTail: m[2] ?? "" };
+  return { url: t, titleTail: "" };
+}
+function splitWikiTarget(raw) {
+  const t = raw.trim();
+  const caret = t.lastIndexOf("^");
+  if (caret > 0) {
+    const before = t.slice(0, caret);
+    const hash2 = before.indexOf("#");
+    if (hash2 >= 0) {
+      return { head: before.slice(0, hash2).trim(), suffix: before.slice(hash2) + t.slice(caret) };
+    }
+    return { head: before.trim(), suffix: t.slice(caret) };
+  }
+  const hash = t.indexOf("#");
+  if (hash >= 0) return { head: t.slice(0, hash).trim(), suffix: t.slice(hash) };
+  return { head: t, suffix: "" };
+}
+function splitDestTail(dest) {
+  const t = dest.trim();
+  const hash = t.indexOf("#");
+  const query = t.indexOf("?");
+  let cut = -1;
+  if (hash >= 0 && query >= 0) cut = Math.min(hash, query);
+  else if (hash >= 0) cut = hash;
+  else if (query >= 0) cut = query;
+  if (cut < 0) return { pathPart: t, tail: "" };
+  return { pathPart: t.slice(0, cut), tail: t.slice(cut) };
+}
+function isExternalOrAnchor(dest) {
+  const t = dest.trim();
+  if (!t || t.startsWith("#")) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(t);
+}
+function restyleRelative(originalPathPart, fromNotePath, absoluteNext, keepMd) {
+  const orig = originalPathPart.replace(/\\/g, "/");
+  if (orig.startsWith("./") || orig.startsWith("../")) {
+    const toNote = absoluteNext.endsWith(".md") ? absoluteNext : `${absoluteNext}.md`;
+    let rel = relativeMarkdownPath(fromNotePath, toNote);
+    if (!keepMd) rel = rel.replace(/\.md$/i, "");
+    return rel;
+  }
+  if (!keepMd && absoluteNext.endsWith(".md")) return absoluteNext.replace(/\.md$/i, "");
+  return absoluteNext;
+}
+function relativeMarkdownPath(fromNotePath, toNotePath) {
+  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
+  const toParts = toNotePath.split("/").filter(Boolean);
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const up = fromParts.map(() => "..");
+  const rel = [...up, ...toParts].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+// src/core/ops.ts
+async function dispatch(env, claimId, role, promptOrOptions) {
+  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+}
+async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
+  const tent = await loadTent(env.fs);
+  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const userPrompt = options.userPrompt?.trim() || "";
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  let assigneeLabel;
+  if (assigneeKind === "agentProfile") {
+    const profileId = options.profileId?.trim() || "";
+    if (!profileId) {
+      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
+    }
+    if (role?.trim() && role.trim() !== profileId) {
+      throw new Error(
+        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
+      );
+    }
+    assigneeLabel = assertProfileId(profileId);
+  } else {
+    const roleName = role?.trim() || "";
+    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
+    assigneeLabel = assertRoleName(roleName);
+  }
+  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
+  const createdRootExisted = await env.fs.exists(createdRoot);
+  if (claim.root) {
+    const occupied = occupiedBoxes(tent);
+    if (occupied.length > 0) {
+      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
+    }
+  } else {
+    if (!claim.box.coordination) {
+      throw new Error(
+        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
+      );
+    }
+    const existingOwner = ownerCovering(claim.box);
+    if (existingOwner) {
+      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+    }
+    const claimable = canClaim(claim.box);
+    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
+  }
+  try {
+    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
+    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
+    const manifest = buildManifest(tent, input);
+    const yaml = manifestToYaml(manifest);
+    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
+    let manifestPath;
+    let initPath;
+    if (assigneeKind === "agentProfile") {
+      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+    } else {
+      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+      const registry = await loadRolesRegistry(env.fs);
+      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    }
+    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
+      role: assigneeLabel,
+      claims: taskClaims,
+      manifestPath,
+      userPrompt,
+      workspace: options.workspace,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub === true,
+      deliveryPolicy: options.deliveryPolicy,
+      assigneeKind,
+      id: taskId,
+      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
+    });
+    const relayPrompt = relayPromptForTask(
+      {
+        path: taskPath,
+        role: assigneeLabel,
+        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
+        manifest: manifestPath,
+        status: "pending",
+        state: "queued",
+        assigneeKind,
+        id: taskId
+      },
+      env.tentRoot || env.tentName
+    );
+    return {
+      manifestPath,
+      manifestYaml: yaml,
+      initPath,
+      taskPath,
+      relayPrompt,
+      assigneeKind,
+      assignee: assigneeLabel
+    };
+  } catch (error) {
+    if (!createdRootExisted && await env.fs.exists(createdRoot)) {
+      await env.fs.remove(createdRoot);
+    }
+    throw error;
+  }
+}
+function assertProfileId(profileId) {
+  const id = profileId.trim();
+  if (!id) throw new Error("profileId cannot be empty.");
+  if (/[\/\\\r\n]/.test(id)) {
+    throw new Error("profileId cannot contain path separators or newlines.");
+  }
+  return id;
+}
+function resolveDispatchClaim(tent, claimId, tentName) {
+  const id = claimId.trim();
+  if (id === "." || id === "root" || id === tentName) {
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
+  }
+  const box = requireBoxById2(tent, id);
+  return { root: false, id: box.id, name: box.name, box };
+}
+async function createBox(env, input) {
+  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
+}
+async function createBoxUnlocked(env, input) {
+  assertNotTempPath(input.parentPath);
+  const name = validateBoxName(input.name);
+  const tent = await loadTent(env.fs);
+  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
+  if (input.parentPath) {
+    const parent2 = tent.byPath.get(input.parentPath);
+    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
+  }
+  const existing = new Set(tent.byId.keys());
+  const id = makeUniqueConceptId(existing, env.rand);
+  const path18 = join(input.parentPath, name);
+  assertNotTempPath(path18);
+  await ensureDir3(env.fs, path18);
+  const fm = { id, type: input.type };
+  const content3 = serializeFrontmatter(fm, `
+# ${name}
+`, BOX_FRONTMATTER_KEY_ORDER);
+  await env.fs.writeFile(boxNotePath(path18), content3);
+  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
+  const parentKey = parent ? parent.id : ROOT_KEY;
+  try {
+    const order = await loadOrder(env.fs);
+    const siblings = order[parentKey] ?? [];
+    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await env.fs.remove(path18);
+    throw error;
+  }
+  return id;
+}
+async function patchBox(env, boxPath, patch, loadedTent) {
+  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
+}
+async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
+  const tent = loadedTent ?? await loadTent(env.fs);
+  const box = tent.byPath.get(boxPath);
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
+  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
+  if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
+  if (box.invalid) {
+    const keys = Object.keys(patch);
+    if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
+      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
+    }
+  }
+  if ("type" in patch) {
+    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
+    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
+  }
+  if ("status" in patch) {
+    if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
+    if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
+      throw new Error("Status must be todo, doing, or done.");
+    }
+  }
+  if ("tags" in patch) {
+    patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
+  }
+  const boxFile = boxNotePath(boxPath);
+  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+}
+async function patchBody(env, boxPath, newBody, loadedTent) {
+  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
+}
+async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
+  const tent = loadedTent ?? await loadTent(env.fs);
+  const box = tent.byPath.get(boxPath);
+  if (!box || !isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  const boxFile = boxNotePath(boxPath);
+  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
+}
+async function ensureDir3(fs16, path18) {
+  if (path18 && !await fs16.exists(path18)) await fs16.mkdir(path18);
+}
+function normalizeTagPatch(value) {
+  if (value === void 0) return void 0;
+  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
+  const tags = [];
+  for (const item of value) {
+    if (typeof item !== "string") throw new Error("Tags must be a string array.");
+    const tag = normalizeTagName(item);
+    if (!tags.includes(tag)) tags.push(tag);
+  }
+  return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
+}
+function boxKeyOrder(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+}
+function assertNotTempPath(path18) {
+  if (path18 === "temp" || path18.startsWith("temp/")) {
+    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
+  }
+}
+function assertRoleName(role) {
+  const name = role.trim();
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
+  assertRoleNameAvailable(name);
+  return name;
+}
+function ownerCovering(box) {
+  if (box.fm.owner) return box;
+  let parent = box.parent;
+  while (parent) {
+    if (parent.fm.owner) return parent;
+    parent = parent.parent;
+  }
+  return void 0;
+}
+function pendingClaimCovering(tent, box, tasks) {
+  for (const task of tasks) {
+    const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
+    if (!active) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
+      }
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (claimed.id === box.id) {
+        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(claimed, box)) {
+        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+      if (isAncestor(box, claimed)) {
+        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
+      }
+    }
+  }
+  return void 0;
+}
+function roleManifestClaims(tent, role, current, tasks) {
+  const claims = /* @__PURE__ */ new Map();
+  for (const box of tent.byPath.values()) {
+    if (box.fm.owner === role) claims.set(box.id, box);
+  }
+  for (const task of tasks) {
+    if (taskAssigneeKind(task) !== "role") continue;
+    if (task.status !== "pending" || task.role !== role) continue;
+    for (const claimId of task.claims) {
+      const box = tent.byId.get(claimId);
+      if (box) claims.set(box.id, box);
+    }
+  }
+  claims.set(current.id, current);
+  return [...claims.values()];
+}
+function isAncestor(ancestor, child) {
+  let parent = child.parent;
+  while (parent) {
+    if (parent.id === ancestor.id) return true;
+    parent = parent.parent;
+  }
+  return false;
+}
+function requireBoxById2(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
+async function withMutation2(fs16, action) {
+  return withTentMutation(fs16, action);
+}
+
+// src/core/concept.ts
+async function promoteConcept(env, conceptIdOrPath, toType) {
+  return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
+}
+async function promoteConceptUnlocked(env, conceptIdOrPath, toType) {
+  const tent = await loadTent(env.fs);
+  const concept = resolveConcept2(tent, conceptIdOrPath);
+  if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
+  const target = toType.trim();
+  if (!target) throw new Error("Promote requires a non-empty target type.");
+  if (!typeHasCoordination(target, tent.typeRegistry)) {
+    throw new Error(`Target type must have coordination capability: ${target}.`);
+  }
+  if (concept.coordination && concept.type === target) {
+    return { id: concept.id, path: concept.path, fromType: concept.type, toType: target };
+  }
+  if (concept.coordination && concept.type !== target) {
+    await assertPromoteWriteAllowed(env, tent, concept);
+  }
+  const notePath = boxNotePath(concept.path);
+  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
+  const fromType = typeof data.type === "string" ? data.type : concept.type;
+  data.type = target;
+  if (data.status !== "todo" && data.status !== "doing" && data.status !== "done") {
+    data.status = "todo";
+  }
+  await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER));
+  return { id: concept.id, path: concept.path, fromType, toType: target };
+}
+async function assertPromoteWriteAllowed(env, tent, concept) {
+  if (concept.fm.owner || concept.locked) {
+    throw new Error(
+      `Cannot promote ${concept.name}: active claim/owner write-protects type changes; stamp or force-release first.`
+    );
+  }
+  const tasks = await loadTaskEnvelopes(env.fs);
+  for (const task of tasks) {
+    if (task.status !== "pending" && task.status !== "taken") continue;
+    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
+      throw new Error(
+        `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`
+      );
+    }
+    for (const claimId of task.claims) {
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (isAncestorPath2(claimed.path, concept.path) || isAncestorPath2(concept.path, claimed.path)) {
+        throw new Error(
+          `Cannot promote ${concept.name}: overlapping active task ${task.path} write-protects type changes.`
+        );
+      }
+    }
+  }
+}
+function isAncestorPath2(ancestor, child) {
+  if (!ancestor) return true;
+  return child === ancestor || child.startsWith(ancestor + "/");
+}
+function resolveConcept2(tent, conceptIdOrPath) {
+  const key = conceptIdOrPath.trim();
+  const byId = tent.byId.get(key);
+  if (byId) return byId;
+  const byPath = tent.byPath.get(key.replace(/\\/g, "/"));
+  if (byPath) return byPath;
+  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+}
+
+// src/core/context-card.ts
+var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
+function buildContextCard(ref, options) {
+  const kind = ref.kind;
+  const id = ref.id.trim();
+  if (!id) throw new Error("ContextRef.id cannot be empty.");
+  if (!kind) throw new Error("ContextRef.kind is required.");
+  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
+  const prompt = formatContextCardPrompt(ref, options);
+  return {
+    contextRef: {
+      kind,
+      id,
+      path: ref.path,
+      fragment: ref.fragment
+    },
+    prompt,
+    label,
+    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
+  };
+}
+function formatContextCardPrompt(ref, hints) {
+  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
+  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
+  const workspaceRoot = opts.workspaceRoot?.trim() || "";
+  const lines = [
+    "Tent contextCard v1",
+    `contextRef: ${ref.kind}/${ref.id}`
+  ];
+  if (ref.path) lines.push(`path: ${ref.path}`);
+  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
+  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
+  if (systemRoot) {
+    lines.push(`systemRoot: ${systemRoot}`);
+    lines.push(`tentRoot: ${systemRoot}`);
+  }
+  if (ref.path) {
+    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (rel && !rel.startsWith(".tent/")) {
+      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
+    }
+  }
+  lines.push(
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
+  );
+  lines.push("Do not invent missing content; fetch by id before answering.");
+  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
+  return lines.join("\n");
+}
+function taskContextCard(taskId, opts) {
+  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
+}
+
+// src/markdown/attachments.ts
+import { createHash } from "node:crypto";
+import * as nodePath from "node:path";
+var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+function sanitizeAttachmentFileName(fileName) {
+  const source = fileName.normalize("NFKC");
+  if (!source.trim()) throw new Error("Attachment file name is required");
+  if (source.includes("/") || source.includes("\\") || source === "." || source === "..") {
+    throw new Error("Attachment file name must be a single path segment");
+  }
+  let clean = source.replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "");
+  if (!clean || clean === "." || clean === "..") clean = "file";
+  if (clean.length > 120) {
+    const ext2 = nodePath.posix.extname(clean).slice(0, 20);
+    const stem2 = clean.slice(0, Math.max(1, 120 - ext2.length));
+    clean = `${stem2}${ext2}`;
+  }
+  const ext = nodePath.posix.extname(clean);
+  const stem = ext ? clean.slice(0, -ext.length) : clean;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) {
+    clean = `file-${clean}`;
+  }
+  return clean;
+}
+function decodeBase64Strict(b64) {
+  const compact = b64.replace(/\s+/g, "");
+  if (!compact) throw new Error("Invalid base64: empty payload");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error("Invalid base64: non-alphabet characters");
+  }
+  if (compact.length % 4 !== 0) {
+    throw new Error("Invalid base64: length must be a multiple of 4");
+  }
+  let buf;
+  try {
+    buf = Buffer.from(compact, "base64");
+  } catch {
+    throw new Error("Invalid base64: decode failed");
+  }
+  const reencoded = buf.toString("base64");
+  if (reencoded !== compact) {
+    throw new Error("Invalid base64: strict decode mismatch");
+  }
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+function assertAttachmentSize(byteLength) {
+  if (byteLength < 0 || !Number.isFinite(byteLength)) {
+    throw new Error("Invalid attachment size");
+  }
+  if (byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${byteLength} bytes)`
+    );
+  }
+}
+function contentId(bytes) {
+  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
+}
+function attachmentRelativePath(conceptId, safeName, bytes) {
+  const id = contentId(bytes);
+  const ext = nodePath.posix.extname(safeName);
+  const base = nodePath.posix.basename(safeName, ext) || "file";
+  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
+}
+function bytesEqual(a, b) {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+async function storeAttachmentBytes(fs16, conceptId, fileName, bytes, sourceNotePath) {
+  if (!conceptId.trim()) throw new Error("Concept id is required");
+  const safe = sanitizeAttachmentFileName(fileName);
+  assertAttachmentSize(bytes.byteLength);
+  const rel = attachmentRelativePath(conceptId, safe, bytes);
+  const normalized = rel.replace(/\\/g, "/");
+  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
+    throw new Error(`Attachment path rejected: ${rel}`);
+  }
+  if (await fs16.exists(rel)) {
+    const existing = await fs16.readBinary(rel);
+    if (!bytesEqual(existing, bytes)) {
+      throw new Error(`Attachment content-address collision at ${rel}`);
+    }
+    return attachmentResult(rel, safe, sourceNotePath);
+  }
+  await fs16.writeBinary(rel, bytes);
+  return attachmentResult(rel, safe, sourceNotePath);
+}
+function markdownAttachmentDestination(destination) {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+}
+function attachmentResult(relativePath3, label, sourceNotePath) {
+  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath3) : relativePath3;
+  return {
+    relativePath: relativePath3,
+    markdown: `![](${markdownAttachmentDestination(target)})`,
+    artifactRef: { kind: "path", target: relativePath3, label }
+  };
+}
+
+// src/core/proposal.ts
+async function submitProposal(fs16, clock, role, boxId, body) {
+  return withTentMutation(fs16, async () => submitProposalUnlocked(fs16, clock, role, boxId, body));
+}
+async function submitProposalUnlocked(fs16, clock, roleInput, boxId, body) {
+  const text3 = body.trim();
+  if (!text3) throw new Error("Proposal body cannot be empty.");
+  const role = normalizeRole(roleInput);
+  const tent = await loadTent(fs16);
+  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  const path18 = proposalPath(role, box.id);
+  if (await fs16.exists(path18)) {
+    const current = await loadProposal(fs16, path18);
+    if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
+  }
+  const proposal = {
+    path: path18,
+    boxId: box.id,
+    role,
+    status: "pending",
+    createdAt: clock.now(),
+    body: text3
+  };
+  await ensureDir4(fs16, join("temp", role, "proposals"));
+  await writeProposal(fs16, proposal);
+  return proposal;
+}
+async function loadProposals(fs16) {
+  const proposals = [];
+  if (!await fs16.exists("temp")) return proposals;
+  for (const roleDir of await fs16.listDir("temp")) {
+    if (!roleDir.isDir) continue;
+    const dir = join("temp", roleDir.name, "proposals");
+    if (!await fs16.exists(dir)) continue;
+    for (const entry of await fs16.listDir(dir)) {
+      if (entry.isDir || !entry.name.endsWith(".md")) continue;
+      const path18 = join(dir, entry.name);
+      try {
+        proposals.push(await loadProposal(fs16, path18));
+      } catch {
+      }
+    }
+  }
+  return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
+}
+async function loadProposal(fs16, inputPath) {
+  const path18 = normalizeProposalPath(inputPath);
+  if (!await fs16.exists(path18)) throw new Error(`Proposal not found: ${path18}.`);
+  const { data, body } = parseFrontmatter(await fs16.readFile(path18));
+  if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
+    throw new Error(`Invalid proposal format: ${path18}.`);
+  }
+  return {
+    path: path18,
+    boxId: data.box,
+    role: data.role,
+    status: data.status,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    body: body.trim()
+  };
+}
+async function acceptProposal(fs16, inputPath) {
+  await withTentMutation(fs16, async () => {
+    const proposal = await loadProposal(fs16, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be accepted.");
+    proposal.status = "accepted";
+    await writeProposal(fs16, proposal);
+  });
+}
+async function rejectProposal(fs16, inputPath) {
+  await withTentMutation(fs16, async () => {
+    const proposal = await loadProposal(fs16, inputPath);
+    if (proposal.status !== "pending") throw new Error("Only pending proposals can be rejected.");
+    proposal.status = "rejected";
+    await writeProposal(fs16, proposal);
+  });
+}
+function proposalPath(role, boxId) {
+  return join("temp", role, "proposals", `${boxId}.md`);
+}
+function normalizeProposalPath(input) {
+  const path18 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/proposals\/[bc]x-[^/]+\.md$/.test(path18)) {
+    throw new Error("Proposal must point to temp/<role>/proposals/<boxId>.md.");
+  }
+  return path18;
+}
+async function writeProposal(fs16, proposal) {
+  const data = {
+    type: "proposal",
+    box: proposal.boxId,
+    role: proposal.role,
+    status: proposal.status,
+    createdAt: proposal.createdAt
+  };
+  await fs16.writeFile(
+    proposal.path,
+    serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
+  );
+}
+async function ensureDir4(fs16, path18) {
+  if (!await fs16.exists(path18)) await fs16.mkdir(path18);
+}
+function normalizeRole(role) {
+  const normalized = role.trim();
+  if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
+  if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
+  return normalized;
+}
+
+// src/core/retention.ts
+var DEFAULT_KEEP_TERMINAL_DAYS = 30;
+var MAX_KEEP_TERMINAL_DAYS = 3650;
+var MS_PER_DAY = 24 * 60 * 60 * 1e3;
+var TERMINAL_DELIVERY_STATUSES = /* @__PURE__ */ new Set([
+  "accepted",
+  "rejected"
+]);
+var RetentionError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "RetentionError";
+  }
+};
+function normalizeKeepTerminalTasksDays(raw) {
+  if (raw === void 0 || raw === null) return DEFAULT_KEEP_TERMINAL_DAYS;
+  if (typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      "keepTerminalTasksDays must be a non-negative integer"
+    );
+  }
+  if (raw < 0) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      "keepTerminalTasksDays must be a non-negative integer"
+    );
+  }
+  if (raw > MAX_KEEP_TERMINAL_DAYS) {
+    throw new RetentionError(
+      "INVALID_KEEP_DAYS",
+      `keepTerminalTasksDays must be \u2264 ${MAX_KEEP_TERMINAL_DAYS}`
+    );
+  }
+  return raw;
+}
+function isTerminalTaskState(state) {
+  return TERMINAL_TASK_STATES.has(state);
+}
+function isPurgeableDeliveryStatus(status) {
+  return TERMINAL_DELIVERY_STATUSES.has(status);
+}
+async function previewOperationalRetention(fs16, options = {}) {
+  const keepTerminalTasksDays = normalizeKeepTerminalTasksDays(options.keepTerminalTasksDays);
+  const nowMs = resolveNowMs(options.now);
+  const cutoffMs = nowMs - keepTerminalTasksDays * MS_PER_DAY;
+  const cutoff = new Date(cutoffMs).toISOString();
+  const skipped = [];
+  const warnings = [];
+  const { tasks, skipped: taskSkipped } = await scanTasks(fs16);
+  skipped.push(...taskSkipped);
+  const { deliveries, skipped: deliverySkipped } = await scanDeliveries(fs16);
+  skipped.push(...deliverySkipped);
+  for (const s of skipped) {
+    warnings.push(`skipped ${s.path}: ${s.reason}`);
+  }
+  const tasksById = /* @__PURE__ */ new Map();
+  const taskIdCounts = /* @__PURE__ */ new Map();
+  for (const t of tasks) {
+    if (t.id) {
+      tasksById.set(t.id, t);
+      taskIdCounts.set(t.id, (taskIdCounts.get(t.id) ?? 0) + 1);
+    }
+  }
+  const deliveriesByTaskId = /* @__PURE__ */ new Map();
+  for (const d of deliveries) {
+    const list2 = deliveriesByTaskId.get(d.taskId) ?? [];
+    list2.push(d);
+    deliveriesByTaskId.set(d.taskId, list2);
+  }
+  const candidates = [];
+  const claimedDeliveryPaths = /* @__PURE__ */ new Set();
+  for (const task of tasks) {
+    if (!isTerminalTaskState(task.state)) continue;
+    if (isActiveTaskState(task.state)) continue;
+    if (task.id && (taskIdCounts.get(task.id) ?? 0) > 1) {
+      const message = `duplicate task id ${task.id}; refusing ambiguous retention group`;
+      skipped.push({ path: task.path, reason: message });
+      warnings.push(`skipped ${task.path}: ${message}`);
+      continue;
+    }
+    const related = task.id ? deliveriesByTaskId.get(task.id) ?? [] : [];
+    const activityValues = [taskActivityMs(task), ...related.map(deliveryActivityMs)];
+    if (activityValues.some((value) => value === void 0)) {
+      if (keepTerminalTasksDays > 0) {
+        skipped.push({
+          path: task.path,
+          reason: "task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
+        });
+        warnings.push(
+          `skipped ${task.path}: task group has missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
+        );
+        continue;
+      }
+    }
+    const activityMs = Math.max(...activityValues.map((value) => value ?? 0));
+    if (activityMs > cutoffMs) continue;
+    const protectedDeliveries = related.filter((d) => !isPurgeableDeliveryStatus(d.status));
+    if (protectedDeliveries.length > 0) {
+      warnings.push(
+        `task-group ${task.path} has ${protectedDeliveries.length} non-terminal delivery(ies); refusing group purge`
+      );
+      continue;
+    }
+    const ageDays = ageDaysFrom(activityMs, nowMs);
+    const deliveryPaths = related.map((d) => d.path);
+    for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
+    candidates.push({
+      kind: "task-group",
+      taskId: task.id,
+      taskPath: task.path,
+      taskState: task.state,
+      deliveryPaths,
+      ageDays,
+      reason: `terminal task state=${task.state} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
+    });
+  }
+  for (const d of deliveries) {
+    if (claimedDeliveryPaths.has(d.path)) continue;
+    if (!isPurgeableDeliveryStatus(d.status)) continue;
+    const parent = tasksById.get(d.taskId);
+    if (parent) {
+      continue;
+    }
+    const activity = deliveryActivityMs(d);
+    if (activity === void 0) {
+      if (keepTerminalTasksDays > 0) {
+        skipped.push({
+          path: d.path,
+          reason: "missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0"
+        });
+        warnings.push(
+          `skipped ${d.path}: missing createdAt/updatedAt; not eligible while keepTerminalTasksDays > 0`
+        );
+        continue;
+      }
+    }
+    const activityMs = activity ?? 0;
+    if (activityMs > cutoffMs) continue;
+    const ageDays = ageDaysFrom(activityMs, nowMs);
+    candidates.push({
+      kind: "orphan-delivery",
+      taskId: d.taskId,
+      deliveryPaths: [d.path],
+      ageDays,
+      reason: `orphan non-ready delivery status=${d.status} ageDays=${ageDays} \u2265 keep=${keepTerminalTasksDays}`
+    });
+  }
+  candidates.sort((a, b) => {
+    const ap = a.taskPath || a.deliveryPaths[0] || "";
+    const bp = b.taskPath || b.deliveryPaths[0] || "";
+    return ap.localeCompare(bp);
+  });
+  let candidateDeliveryCount = 0;
+  let candidateTaskCount = 0;
+  for (const c of candidates) {
+    if (c.kind === "task-group") candidateTaskCount += 1;
+    candidateDeliveryCount += c.deliveryPaths.length;
+  }
+  return {
+    keepTerminalTasksDays,
+    cutoff,
+    candidates,
+    skipped,
+    warnings,
+    candidateTaskCount,
+    candidateDeliveryCount
+  };
+}
+async function purgeOperationalRetention(fs16, options = {}) {
+  return withTentMutation(fs16, async () => {
+    const preview = await previewOperationalRetention(fs16, options);
+    const purgedTaskPaths = [];
+    const purgedDeliveryPaths = [];
+    for (const c of preview.candidates) {
+      if (c.kind === "task-group" && c.taskPath) {
+        try {
+          const live = await loadTaskEnvelope(fs16, c.taskPath);
+          if (!isTerminalTaskState(live.state) || isActiveTaskState(live.state)) {
+            preview.warnings.push(
+              `refused purge of ${c.taskPath}: state is ${live.state} (not terminal)`
+            );
+            continue;
+          }
+        } catch (err) {
+          preview.warnings.push(
+            `refused purge of ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+        let deliveryValidationFailed = false;
+        for (const dp of c.deliveryPaths) {
+          try {
+            const liveD = await loadDelivery(fs16, dp);
+            if (!isPurgeableDeliveryStatus(liveD.status)) {
+              preview.warnings.push(
+                `refused purge of task group ${c.taskPath}: delivery ${dp} status=${liveD.status}`
+              );
+              deliveryValidationFailed = true;
+              break;
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `refused purge of task group ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+            );
+            deliveryValidationFailed = true;
+            break;
+          }
+        }
+        if (deliveryValidationFailed) continue;
+        try {
+          if (await fs16.exists(c.taskPath)) {
+            await fs16.remove(c.taskPath);
+            purgedTaskPaths.push(c.taskPath);
+          }
+        } catch (err) {
+          preview.warnings.push(
+            `failed to purge task ${c.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+          );
+          continue;
+        }
+        for (const dp of c.deliveryPaths) {
+          try {
+            if (await fs16.exists(dp)) {
+              await fs16.remove(dp);
+              purgedDeliveryPaths.push(dp);
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `failed to purge orphaned delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+        continue;
+      }
+      if (c.kind === "orphan-delivery") {
+        for (const dp of c.deliveryPaths) {
+          try {
+            const liveD = await loadDelivery(fs16, dp);
+            if (!isPurgeableDeliveryStatus(liveD.status)) {
+              preview.warnings.push(
+                `refused purge of delivery ${dp}: status=${liveD.status}`
+              );
+              continue;
+            }
+            if (await fs16.exists(dp)) {
+              await fs16.remove(dp);
+              purgedDeliveryPaths.push(dp);
+            }
+          } catch (err) {
+            preview.warnings.push(
+              `failed to purge delivery ${dp}: ${err instanceof Error ? err.message : String(err)}`
+            );
+          }
+        }
+      }
+    }
+    const deletedCount = purgedTaskPaths.length + purgedDeliveryPaths.length;
+    return {
+      ...preview,
+      purged: {
+        taskPaths: purgedTaskPaths,
+        deliveryPaths: purgedDeliveryPaths
+      },
+      deletedCount
+    };
+  });
+}
+async function scanTasks(fs16) {
+  const tasks = [];
+  const skipped = [];
+  if (!await fs16.exists("temp")) return { tasks, skipped };
+  for (const roleEntry of await fs16.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    if (!isSafeRoleSegment(roleEntry.name)) {
+      skipped.push({
+        path: join("temp", roleEntry.name),
+        reason: "unsafe role directory name"
+      });
+      continue;
+    }
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name"
+          });
+          continue;
+        }
+        await scanTaskDir(fs16, join(profilesRoot, profileEntry.name, "tasks"), tasks, skipped);
+      }
+      continue;
+    }
+    await scanTaskDir(fs16, join("temp", roleEntry.name, "tasks"), tasks, skipped);
+  }
+  return { tasks, skipped };
+}
+async function scanTaskDir(fs16, taskDir, tasks, skipped) {
+  if (!await fs16.exists(taskDir)) return;
+  for (const entry of await fs16.listDir(taskDir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path18 = join(taskDir, entry.name);
+    try {
+      tasks.push(await loadTaskEnvelope(fs16, path18));
+    } catch (err) {
+      skipped.push({
+        path: path18,
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+}
+async function scanDeliveries(fs16) {
+  const deliveries = [];
+  const skipped = [];
+  if (!await fs16.exists("temp")) return { deliveries, skipped };
+  for (const roleEntry of await fs16.listDir("temp")) {
+    if (!roleEntry.isDir) continue;
+    if (!isSafeRoleSegment(roleEntry.name)) {
+      skipped.push({
+        path: join("temp", roleEntry.name),
+        reason: "unsafe role directory name"
+      });
+      continue;
+    }
+    if (roleEntry.name === "agent-profiles") {
+      const profilesRoot = join("temp", "agent-profiles");
+      for (const profileEntry of await fs16.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        if (!isSafeRoleSegment(profileEntry.name)) {
+          skipped.push({
+            path: join(profilesRoot, profileEntry.name),
+            reason: "unsafe profile directory name"
+          });
+          continue;
+        }
+        await scanDeliveryDir(
+          fs16,
+          join(profilesRoot, profileEntry.name, "deliveries"),
+          deliveries,
+          skipped
+        );
+      }
+      continue;
+    }
+    await scanDeliveryDir(fs16, join("temp", roleEntry.name, "deliveries"), deliveries, skipped);
+  }
+  return { deliveries, skipped };
+}
+async function scanDeliveryDir(fs16, dir, deliveries, skipped) {
+  if (!await fs16.exists(dir)) return;
+  for (const entry of await fs16.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    const path18 = join(dir, entry.name);
+    try {
+      deliveries.push(await loadDelivery(fs16, path18));
+    } catch (err) {
+      skipped.push({
+        path: path18,
+        reason: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+}
+function isSafeRoleSegment(name) {
+  if (!name || name === "." || name === "..") return false;
+  if (/[\\/]/.test(name)) return false;
+  if (name.includes("\0")) return false;
+  return true;
+}
+function taskActivityMs(task) {
+  return parseIsoMs(task.updatedAt) ?? parseIsoMs(task.createdAt);
+}
+function deliveryActivityMs(d) {
+  return parseIsoMs(d.updatedAt) ?? parseIsoMs(d.createdAt);
+}
+function parseIsoMs(value) {
+  if (!value) return void 0;
+  const ms = Date.parse(value);
+  if (!Number.isFinite(ms)) return void 0;
+  return ms;
+}
+function resolveNowMs(now) {
+  if (now === void 0) return Date.now();
+  if (now instanceof Date) {
+    const ms2 = now.getTime();
+    if (!Number.isFinite(ms2)) throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now Date");
+    return ms2;
+  }
+  const ms = Date.parse(now);
+  if (!Number.isFinite(ms)) {
+    throw new RetentionError("INVALID_KEEP_DAYS", "Invalid now ISO timestamp");
+  }
+  return ms;
+}
+function ageDaysFrom(activityMs, nowMs) {
+  const delta = Math.max(0, nowMs - activityMs);
+  return Math.floor(delta / MS_PER_DAY);
+}
+
+// src/core/workspace-settings.ts
+var DEFAULT_DELIVERY_POLICY = "manual";
+var DEFAULT_SETTINGS = {
+  defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY
+};
+function isDeliveryPolicyValue(value) {
+  return value === "manual" || value === "bypass" || value === "agent-decide";
+}
+function normalizeWorkspaceSettings(value) {
+  if (!isRecord3(value)) {
+    return { ...DEFAULT_SETTINGS };
+  }
+  const out = { ...value };
+  if (!isDeliveryPolicyValue(out.defaultDeliveryPolicy)) {
+    out.defaultDeliveryPolicy = DEFAULT_DELIVERY_POLICY;
+  }
+  return out;
+}
+function defaultWorkspaceSettings() {
+  return { ...DEFAULT_SETTINGS };
+}
+async function loadWorkspaceSettings(fs16) {
+  if (!await fs16.exists(WORKSPACE_SETTINGS_PATH)) {
+    return defaultWorkspaceSettings();
+  }
+  try {
+    const parsed = JSON.parse(await fs16.readFile(WORKSPACE_SETTINGS_PATH));
+    return normalizeWorkspaceSettings(parsed);
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs16, WORKSPACE_SETTINGS_PATH);
+    const reset = defaultWorkspaceSettings();
+    await writeSettingsUnlocked(fs16, reset);
+    warnRegistryRecovered(
+      WORKSPACE_SETTINGS_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: workspace settings cannot be inferred; restore needed keys from the backup."
+    );
+    return reset;
+  }
+}
+async function updateWorkspaceSettings(fs16, patch) {
+  return withTentMutation(fs16, async () => {
+    if (!isRecord3(patch)) {
+      throw new WorkspaceSettingsError(
+        "INVALID_PATCH",
+        "workspace.settings.update patch must be an object"
+      );
+    }
+    const before = await loadWorkspaceSettings(fs16);
+    const nextRaw = { ...before };
+    for (const [key, value] of Object.entries(patch)) {
+      if (key === "defaultDeliveryPolicy") {
+        if (value === void 0) continue;
+        if (!isDeliveryPolicyValue(value)) {
+          throw new WorkspaceSettingsError(
+            "INVALID_DELIVERY_POLICY",
+            `Invalid defaultDeliveryPolicy: ${String(value)}`
+          );
+        }
+        nextRaw.defaultDeliveryPolicy = value;
+        continue;
+      }
+      if (value === void 0) continue;
+      nextRaw[key] = value;
+    }
+    const next = normalizeWorkspaceSettings(nextRaw);
+    const changed = !settingsEqual(before, next);
+    if (changed) {
+      await writeSettingsUnlocked(fs16, next);
+    }
+    return { settings: next, changed };
+  });
+}
+var WorkspaceSettingsError = class extends Error {
+  constructor(code, message) {
+    super(message);
+    this.code = code;
+    this.name = "WorkspaceSettingsError";
+  }
+};
+async function writeSettingsUnlocked(fs16, settings) {
+  const known = ["defaultDeliveryPolicy"];
+  const ordered = {};
+  for (const key of known) {
+    if (key in settings) ordered[key] = settings[key];
+  }
+  const rest = Object.keys(settings).filter((k) => !known.includes(k)).sort((a, b) => a.localeCompare(b));
+  for (const key of rest) {
+    ordered[key] = settings[key];
+  }
+  await fs16.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+}
+function settingsEqual(a, b) {
+  return stableStringify(a) === stableStringify(b);
+}
+function stableStringify(value) {
+  return JSON.stringify(sortKeysDeep(value));
+}
+function sortKeysDeep(value) {
+  if (Array.isArray(value)) return value.map(sortKeysDeep);
+  if (!isRecord3(value)) return value;
+  const out = {};
+  for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
+    out[key] = sortKeysDeep(value[key]);
+  }
+  return out;
+}
+function isRecord3(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+// src/core/workspace.ts
+import * as nodePath2 from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn } from "node:child_process";
+async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const full = await fullRef(root, sourceRef);
+  const ancestor = await findAncestorIntegration(root, full, targetBranch);
+  if (ancestor) return { integratedRef: full, reason: "ancestor" };
+  const prior = await findCherryPick(root, full, targetBranch);
+  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
+  return void 0;
+}
+async function readRoleBranchTip(workspace, branch) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
+async function isGitWorkspace(workspace) {
+  try {
+    await assertGitWorkspace(nodePath2.resolve(workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function ensureRoleWorkspaceIfGit(workspace, role) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureRoleWorkspace(workspace, role);
+}
+async function ensureRoleWorkspace(workspace, role) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath2.join(
+    nodePath2.dirname(root),
+    `${nodePath2.basename(root)}-worktrees`,
+    roleSlug
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+async function ensureTaskWorkspaceIfGit(workspace, taskId) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureTaskWorkspace(workspace, taskId);
+}
+async function ensureTaskWorkspace(workspace, taskId) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  const targetBranch = await resolveTargetBranch(root);
+  const taskSlug = safeComponent(id);
+  const branch = `tent-task/${taskSlug}`;
+  const worktree = nodePath2.join(
+    nodePath2.dirname(root),
+    `${nodePath2.basename(root)}-worktrees`,
+    `task-${taskSlug}`
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return {
+      workspace: root,
+      worktree: await nodeFs.realpath(nodePath2.resolve(existing)),
+      branch,
+      targetBranch
+    };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch
+  };
+}
+async function integrateWorkspaceCommits(contract, refs) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const target = contract.targetBranch;
+  const integrationCwd = await resolveIntegrationCwd(root, target);
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
+    );
+  }
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+  const resolved = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef)
+  );
+  if (fastForwardRef) {
+    try {
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false
+      }));
+    } catch (error) {
+      await rollbackIntegration(integrationCwd, originalRef, error);
+    }
+  }
+  const results = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef, target);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(integrationCwd, originalRef, error);
+  }
+  return results;
+}
+async function resolveIntegrationCwd(root, targetBranch) {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath2.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
+}
+async function listRoleCommitsSince(contract, base) {
+  const since = base.trim();
+  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
+  const branchRef = `refs/heads/${contract.branch}`;
+  const fullBase = await fullRef(contract.workspace, since);
+  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+    throw new Error(
+      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
+    );
+  }
+  const output = await git(contract.workspace, [
+    "log",
+    `${fullBase}..${branchRef}`,
+    "--format=%H%x09%h%x09%s"
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
+    return { ref, shortRef, subject: subjectParts.join("	") };
+  }).filter((item) => item.ref && item.shortRef);
+}
+async function listPendingRoleCommits(contract, base) {
+  const candidates = await listRoleCommitsSince(contract, base);
+  const pending = [];
+  for (const item of candidates) {
+    const integrated = await findIntegratedCommit(
+      contract.workspace,
+      item.ref,
+      contract.targetBranch
+    );
+    if (!integrated) pending.push(item);
+  }
+  return pending.reverse();
+}
+async function assertGitWorkspace(root) {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath2.resolve(top)),
+    nodeFs.realpath(root)
+  ]);
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
+    throw new Error(`Workspace must be a Git root: ${root}.`);
+  }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
+}
+async function resolveTargetBranch(root) {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
+  return current;
+}
+async function worktreeForBranch(root, branch) {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function findCherryPick(root, sourceRef, targetBranch) {
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+async function findAncestorIntegration(root, sourceRef, targetBranch) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
+  }
+  return void 0;
+}
+async function completeFastForwardRef(root, targetRef, commits) {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return void 0;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  if (range.length !== commits.length) return void 0;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
+}
+async function rollbackIntegration(root, originalRef, cause) {
+  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  try {
+    await git(root, ["reset", "--hard", originalRef]);
+  } catch (rollbackError) {
+    throw new Error(
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+    );
+  }
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function fullRef(root, ref) {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+function safeComponent(value) {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+async function pathExists(path18) {
+  try {
+    await nodeFs.access(path18);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk(cwd, args) {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git(cwd, args) {
+  return new Promise((resolve11, reject) => {
+    const child = spawn("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve11(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
+
+// src/runtime/types.ts
+var SESSION_ID_PREFIX = "ss-";
+var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+function makeSessionId(rand = Math.random, len = 8) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += SESSION_ALPHABET[Math.floor(rand() * SESSION_ALPHABET.length)];
+  }
+  return SESSION_ID_PREFIX + s;
+}
+function isSessionId(id) {
+  return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
+}
+
+// src/runtime/session-registry.ts
+import * as fs2 from "node:fs/promises";
+import * as path2 from "node:path";
+
+// src/machine-state.ts
+import * as fs from "node:fs/promises";
+import * as path from "node:path";
+function isNotFoundError(err) {
+  return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
+}
+function isRetryableRenameError(err) {
+  if (!err || typeof err !== "object" || !("code" in err)) return false;
+  const code = err.code;
+  return code === "EPERM" || code === "EBUSY" || code === "EACCES" || code === "EEXIST";
+}
+async function writeJsonAtomic(filePath, value) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const body = JSON.stringify(value, null, 2) + "\n";
+  const tmp = `${filePath}.${process.pid}.${Date.now()}.${Math.random().toString(16).slice(2)}.tmp`;
+  try {
+    await fs.writeFile(tmp, body, "utf8");
+    await renameReplace(tmp, filePath);
+  } catch (err) {
+    try {
+      await fs.unlink(tmp);
+    } catch {
+    }
+    throw err;
+  }
+}
+async function renameReplace(tmp, filePath) {
+  const attempts = process.platform === "win32" ? 8 : 1;
+  let lastErr;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      await fs.rename(tmp, filePath);
+      return;
+    } catch (err) {
+      lastErr = err;
+      if (!isRetryableRenameError(err) || i === attempts - 1) break;
+      await new Promise((r) => setTimeout(r, 5 + i * 5));
+    }
+  }
+  throw lastErr;
+}
+async function backupCorruptMachineFile(filePath) {
+  const backupPath = `${filePath}.corrupt-${corruptTimestamp()}`;
+  try {
+    await fs.rename(filePath, backupPath);
+    return backupPath;
+  } catch {
+    await fs.copyFile(filePath, backupPath);
+    try {
+      await fs.unlink(filePath);
+    } catch {
+    }
+    return backupPath;
+  }
+}
+function warnCorruptMachineState(filePath, backupPath, action, extra = "") {
+  console.error(
+    `WARNING: ${filePath} was corrupt; backed up to ${backupPath} and ${action}. Review it.${extra ? ` ${extra}` : ""}`
+  );
+}
+function corruptTimestamp() {
+  return (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
+}
+
+// src/runtime/session-registry.ts
+var SESSION_STATES = /* @__PURE__ */ new Set([
+  "starting",
+  "live",
+  "waiting-user",
+  "stopped",
+  "failed",
+  "external"
+]);
+var STOP_REASONS = /* @__PURE__ */ new Set(["user", "interrupt", "shutdown"]);
+var ASSIGNEE_KINDS = /* @__PURE__ */ new Set(["role", "agentProfile"]);
+function sessionsDir(dataDir) {
+  return path2.join(dataDir, "sessions");
+}
+function sessionFilePath(dataDir, sessionId) {
+  return path2.join(sessionsDir(dataDir), `${sessionId}.json`);
+}
+function assertSessionId(sessionId) {
+  if (!isSessionId(sessionId)) {
+    throw new Error(`Invalid session id: ${sessionId}`);
+  }
+}
+function isNonEmptyString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function isPlainObject(value) {
+  return !!value && typeof value === "object" && !Array.isArray(value);
+}
+function isSessionState(value) {
+  return typeof value === "string" && SESSION_STATES.has(value);
+}
+function parseSessionRecord(data, sessionId) {
+  if (!isPlainObject(data)) return null;
+  if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
+  if (!isNonEmptyString(data.profileId)) return null;
+  if (!isNonEmptyString(data.adapterId)) return null;
+  if (!isSessionState(data.state)) return null;
+  if (!isNonEmptyString(data.createdAt)) return null;
+  if (!isNonEmptyString(data.updatedAt)) return null;
+  if ("pid" in data && data.pid !== void 0) {
+    if (typeof data.pid !== "number" || !Number.isInteger(data.pid) || data.pid <= 0) {
+      return null;
+    }
+  }
+  if ("exitCode" in data && data.exitCode !== void 0) {
+    if (data.exitCode !== null && (typeof data.exitCode !== "number" || !Number.isInteger(data.exitCode))) {
+      return null;
+    }
+  }
+  for (const key of [
+    "roleName",
+    "resumeToken",
+    "workspace",
+    "lastTaskId",
+    "lastError"
+  ]) {
+    if (key in data && data[key] !== void 0 && typeof data[key] !== "string") {
+      return null;
+    }
+  }
+  if ("assigneeKind" in data && data.assigneeKind !== void 0) {
+    if (typeof data.assigneeKind !== "string" || !ASSIGNEE_KINDS.has(data.assigneeKind)) {
+      return null;
+    }
+  }
+  if ("stopReason" in data && data.stopReason !== void 0) {
+    if (typeof data.stopReason !== "string" || !STOP_REASONS.has(data.stopReason)) {
+      return null;
+    }
+  }
+  if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
+    if (!isPlainObject(data.runtimeWorkspace)) return null;
+    if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
+  }
+  if ("workspaceLane" in data && data.workspaceLane !== void 0) {
+    if (!isPlainObject(data.workspaceLane)) return null;
+    const lane = data.workspaceLane;
+    if (!isNonEmptyString(lane.workspace)) return null;
+    if (!isNonEmptyString(lane.worktree)) return null;
+    if (!isNonEmptyString(lane.branch)) return null;
+    if ("targetBranch" in lane && lane.targetBranch !== void 0 && typeof lane.targetBranch !== "string") {
+      return null;
+    }
+  }
+  if ("profileSnapshot" in data && data.profileSnapshot !== void 0) {
+    if (!isPlainObject(data.profileSnapshot)) return null;
+  }
+  return data;
+}
+var SessionRegistry = class {
+  constructor(dataDir) {
+    this.dataDir = dataDir;
+    /** Serialize disk mutations so stop + exit handlers cannot race rename. */
+    this.writeChain = Promise.resolve();
+  }
+  get dataRoot() {
+    return this.dataDir;
+  }
+  async ensureDir() {
+    await fs2.mkdir(sessionsDir(this.dataDir), { recursive: true });
+  }
+  enqueue(fn) {
+    const run = this.writeChain.then(fn, fn);
+    this.writeChain = run.then(
+      () => void 0,
+      () => void 0
+    );
+    return run;
+  }
+  async write(record) {
+    assertSessionId(record.id);
+    return this.enqueue(async () => {
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, record.id);
+      await writeJsonAtomic(file, record);
+    });
+  }
+  async read(sessionId) {
+    assertSessionId(sessionId);
+    await this.writeChain;
+    return this.readUnlocked(sessionId);
+  }
+  async update(sessionId, patch) {
+    return this.enqueue(async () => {
+      const current = await this.readUnlocked(sessionId);
+      if (!current) throw new Error(`Session not found: ${sessionId}`);
+      const next = {
+        ...current,
+        ...patch,
+        id: current.id,
+        createdAt: current.createdAt,
+        updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+      };
+      await this.ensureDir();
+      const file = sessionFilePath(this.dataDir, sessionId);
+      await writeJsonAtomic(file, next);
+      return next;
+    });
+  }
+  async setState(sessionId, state, extra = {}) {
+    return this.update(sessionId, { ...extra, state });
+  }
+  async list() {
+    await this.ensureDir();
+    const dir = sessionsDir(this.dataDir);
+    let names;
+    try {
+      names = await fs2.readdir(dir);
+    } catch (err) {
+      if (isNotFoundError(err)) return [];
+      throw err;
+    }
+    const out = [];
+    for (const name of names) {
+      if (!name.endsWith(".json")) continue;
+      if (name.includes(".corrupt-") || name.endsWith(".tmp")) continue;
+      const id = name.slice(0, -".json".length);
+      if (!isSessionId(id)) continue;
+      const rec = await this.read(id);
+      if (rec) out.push(rec);
+    }
+    out.sort((a, b) => a.createdAt.localeCompare(b.createdAt));
+    return out;
+  }
+  async remove(sessionId) {
+    assertSessionId(sessionId);
+    return this.enqueue(async () => {
+      try {
+        await fs2.rm(sessionFilePath(this.dataDir, sessionId), { force: true });
+      } catch {
+      }
+    });
+  }
+  /** Non-terminal states that should be probed after service restart. */
+  static isNonTerminal(state) {
+    return state === "starting" || state === "live" || state === "waiting-user";
+  }
+  async readUnlocked(sessionId) {
+    const file = sessionFilePath(this.dataDir, sessionId);
+    try {
+      const raw = await fs2.readFile(file, "utf8");
+      let data;
+      try {
+        data = JSON.parse(raw);
+      } catch {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      const rec = parseSessionRecord(data, sessionId);
+      if (!rec) {
+        await this.quarantineCorrupt(file);
+        return null;
+      }
+      return rec;
+    } catch (err) {
+      if (isNotFoundError(err)) return null;
+      throw err;
+    }
+  }
+  async quarantineCorrupt(file) {
+    try {
+      const backupPath = await backupCorruptMachineFile(file);
+      warnCorruptMachineState(file, backupPath, "ignored");
+    } catch {
+    }
+  }
+};
+
+// src/service/handlers.ts
+import * as nodeFs2 from "node:fs/promises";
+import * as nodePath3 from "node:path";
 
 // src/service/etag.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -12019,6 +12420,12 @@ var CLIENT_METHODS = [
   "docs.createNote",
   "docs.promote",
   "docs.fork",
+  /**
+   * User-only atomic concept rename (MutationBus).
+   * Keeps cx- immutable; renames folder + identity note; rewrites path links.
+   * Success emits exactly one concept.changed with oldPath/path.
+   */
+  "docs.rename",
   "docs.search",
   "docs.backlinks",
   /**
@@ -15587,6 +15994,8 @@ async function dispatchMethod(ctx, method, params) {
         return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
+      case "docs.rename":
+        return docsRename(ctx, p);
       case "docs.search":
         return docsSearch(ctx, p);
       case "docs.backlinks":
@@ -16780,6 +17189,64 @@ async function docsFork(ctx, p) {
     );
     return { workspaceId, id: forkRootId, forkOf: id };
   });
+}
+async function docsRename(ctx, p) {
+  requireUserActor(p, "docs.rename");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const newName = requireString(p, "newName");
+  if ("id" in p && p.id !== void 0 && p.id !== null && typeof p.id !== "string") {
+    throw new RpcError(-32602, "docs.rename id must be a string when set");
+  }
+  if ("newId" in p) {
+    throw new RpcError(-32602, "docs.rename cannot change concept id; cx- is immutable");
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept3(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await renameNode(mount.env, concept.id, newName);
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        {
+          id: result.id,
+          path: result.path,
+          oldPath: result.oldPath,
+          name: result.name,
+          reason: "docs.rename",
+          pathMap: result.pathMap
+        },
+        "self"
+      );
+      return {
+        workspaceId,
+        id: result.id,
+        cx: result.id,
+        path: result.path,
+        oldPath: result.oldPath,
+        name: result.name,
+        pathMap: result.pathMap,
+        rewrittenNotes: result.rewrittenNotes
+      };
+    } catch (err) {
+      throw mapDocsRenameError(err);
+    }
+  });
+}
+function mapDocsRenameError(err) {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : "docs.rename failed";
+  if (/not found/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (/already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+    message
+  )) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32e3, message);
 }
 async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -19184,14 +19651,14 @@ function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);
       if (!claimed) continue;
-      if (isAncestorPath2(claimed.path, conceptPath) || isAncestorPath2(conceptPath, claimed.path)) {
+      if (isAncestorPath3(claimed.path, conceptPath) || isAncestorPath3(conceptPath, claimed.path)) {
         return true;
       }
     }
   }
   return false;
 }
-function isAncestorPath2(ancestor, child) {
+function isAncestorPath3(ancestor, child) {
   if (!ancestor) return true;
   return child === ancestor || child.startsWith(ancestor + "/");
 }
