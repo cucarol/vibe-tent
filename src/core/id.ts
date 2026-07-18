@@ -2,8 +2,7 @@
 // 注意:核心层不能用 Math.random 直接埋进确定性逻辑,但建 concept/role 是真实副作用动作,
 // 这里接受一个随机源参数,默认用平台随机。插件/CLI 传入各自的实现。
 // 旧 roles.json 无 id 时用 name 的确定性哈希补齐,保证同名多次加载得到同一 rl-。
-
-import { createHash } from "node:crypto";
+// 确定性哈希刻意不用 node:crypto，保持 core 可在无 Node crypto 的环境复用。
 
 export type RandomSource = () => number;
 
@@ -17,6 +16,33 @@ export const ROLE_ID_PREFIX = "rl-";
 
 /** @deprecated 仅迁移窗口识别旧 handle；新写入只用 cx-。 */
 export const LEGACY_BOX_ID_PREFIX = "bx-";
+
+/**
+ * Platform-neutral deterministic digest (FNV-1a lanes + mix).
+ * Used only for legacy role id projection — not cryptographic.
+ */
+export function deterministicDigest(input: string, byteLen = 32): Uint8Array {
+  const out = new Uint8Array(byteLen);
+  for (let offset = 0; offset < byteLen; offset += 4) {
+    // Distinct lane salt so short inputs still expand across the buffer.
+    let h = (0x811c9dc5 ^ Math.imul(offset + 1, 0x9e3779b9)) >>> 0;
+    const salted = `${offset}\0${input}`;
+    for (let i = 0; i < salted.length; i++) {
+      h ^= salted.charCodeAt(i);
+      h = Math.imul(h, 0x01000193) >>> 0;
+    }
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b) >>> 0;
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35) >>> 0;
+    h ^= h >>> 16;
+    out[offset] = h & 0xff;
+    if (offset + 1 < byteLen) out[offset + 1] = (h >>> 8) & 0xff;
+    if (offset + 2 < byteLen) out[offset + 2] = (h >>> 16) & 0xff;
+    if (offset + 3 < byteLen) out[offset + 3] = (h >>> 24) & 0xff;
+  }
+  return out;
+}
 
 function encodeAlphabetBytes(bytes: Uint8Array, len: number): string {
   let s = "";
@@ -69,19 +95,21 @@ export function makeUniqueRoleId(existing: Set<string>, rand: RandomSource = Mat
 
 /**
  * 旧 roles.json 无 id 时的确定性补齐：同一 name 始终得到同一 rl-（碰撞时加长）。
- * 仅用于迁移/加载；新 create 必须用 makeUniqueRoleId。
+ * 仅用于迁移/加载内存投影；新 create 必须用 makeUniqueRoleId。
+ * 不依赖 node:crypto。
  */
 export function deterministicRoleIdFromName(name: string, existing: Set<string> = new Set()): string {
   const key = name.trim();
-  const digest = createHash("sha256").update(`tent.role.id.v1:${key}`).digest();
+  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
   for (let len = 6; len <= 16; len++) {
     const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
     if (!existing.has(id)) return id;
   }
-  // 极端兜底：带 name 后缀再哈希，避免与已占用 id 冲突。
-  const fallback = createHash("sha256")
-    .update(`tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`)
-    .digest();
+  // 极端兜底：带已占用 id 集合再哈希，避免与已占用 id 冲突。
+  const fallback = deterministicDigest(
+    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
+    32
+  );
   return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
 }
 

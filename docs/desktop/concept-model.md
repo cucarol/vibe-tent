@@ -430,7 +430,7 @@ Concept dual identity (`path` + `cx-`) is specified above. Other registries:
 
 | Entity | Immutable id | Mutable label | Notes |
 | --- | --- | --- | --- |
-| Role | `rl-…` | `displayName` | Operational `name` still keys temp/tasks until a later migration; see `identity-rename.md` |
+| Role | `rl-…` | `displayName` (presentation only; never a resolver) | Resolve by `roleId` or operational `name`; see `identity-rename.md` |
 | AgentProfile | profile `id` | `displayName` | Machine-local only |
 | Type / tag | registry string key | same | No separate id in batch 1 — not forced for uniformity |
 

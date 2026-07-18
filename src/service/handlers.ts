@@ -3684,7 +3684,7 @@ async function resolveStartSessionA2APolicy(
 ): Promise<A2APolicy> {
   if (input.callerKind === "user") return "allow";
   const registry = await loadRolesRegistry(fs);
-  // Compat: taskRole may be operational name, displayName, or future roleId.
+  // Compat: taskRole may be operational name or roleId (never displayName).
   const role = resolveRole(registry.roles, input.taskRole);
   if (input.requireRegisteredRole && !role) {
     throw new RpcError(

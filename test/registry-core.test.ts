@@ -433,15 +433,13 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
   assert.equal(cleared[0]!.cli, undefined);
 });
 
-test("role 注册表: 旧数据无 id 时确定性补齐并写回；displayName 可改；id/name 不可改", async () => {
+test("role 注册表: 旧数据无 id 时内存确定性补齐；load 不写盘；displayName 可改；id/name 不可改", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-id-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir(".tent");
   // Legacy disk shape: name only
-  await fsa.writeFile(
-    "roles.json",
-    JSON.stringify({ roles: [{ name: "planner", prompt: "plan" }] }, null, 2) + "\n"
-  );
+  const legacyDisk = JSON.stringify({ roles: [{ name: "planner", prompt: "plan" }] }, null, 2) + "\n";
+  await fsa.writeFile("roles.json", legacyDisk);
 
   const expectedId = deterministicRoleIdFromName("planner");
   const loaded = await loadRolesRegistry(fsa);
@@ -450,27 +448,32 @@ test("role 注册表: 旧数据无 id 时确定性补齐并写回；displayName 
   assert.equal(loaded.roles[0]!.displayName, "planner");
   assert.ok(isRoleId(loaded.roles[0]!.id));
 
-  // Persisted on first load
-  const disk1 = JSON.parse(await fsa.readFile("roles.json")) as {
-    roles: Array<{ id: string; name: string; displayName: string }>;
-  };
-  assert.equal(disk1.roles[0]!.id, expectedId);
-  assert.equal(disk1.roles[0]!.displayName, "planner");
+  // Plain load must not persist backfill
+  assert.equal(await fsa.readFile("roles.json"), legacyDisk);
 
-  // Stable across reloads
+  // Stable across reloads (still in-memory only until mutation)
   const loaded2 = await loadRolesRegistry(fsa);
   assert.equal(loaded2.roles[0]!.id, expectedId);
+  assert.equal(await fsa.readFile("roles.json"), legacyDisk);
 
-  // Compat resolve: id / name / displayName
+  // Compat resolve: id / operational name only — never displayName
   assert.equal(resolveRole(loaded2.roles, expectedId)?.name, "planner");
   assert.equal(resolveRole(loaded2.roles, "planner")?.id, expectedId);
 
+  // Explicit mutation persists filled identity fields
   await updateRole(fsa, expectedId, { displayName: "规划者" });
   const renamed = await loadRolesRegistry(fsa);
   assert.equal(renamed.roles[0]!.id, expectedId);
   assert.equal(renamed.roles[0]!.name, "planner");
   assert.equal(renamed.roles[0]!.displayName, "规划者");
-  assert.equal(resolveRole(renamed.roles, "规划者")?.id, expectedId);
+  // displayName is not a resolver key
+  assert.equal(resolveRole(renamed.roles, "规划者"), undefined);
+
+  const diskAfterMutation = JSON.parse(await fsa.readFile("roles.json")) as {
+    roles: Array<{ id: string; name: string; displayName: string }>;
+  };
+  assert.equal(diskAfterMutation.roles[0]!.id, expectedId);
+  assert.equal(diskAfterMutation.roles[0]!.displayName, "规划者");
 
   await assert.rejects(
     () => updateRole(fsa, "planner", { name: "planner-v2" }),
@@ -493,6 +496,83 @@ test("role 注册表: 旧数据无 id 时确定性补齐并写回；displayName 
   const normalized = normalizeRoleDefinition({ name: "x" });
   assert.equal(normalized.id, deterministicRoleIdFromName("x"));
   assert.equal(normalized.displayName, "x");
+});
+
+test("role 注册表: 重复 displayName 无歧义；displayName 永不解析身份", async () => {
+  const roles = [
+    normalizeRoleDefinition({
+      id: "rl-aaaaaa",
+      name: "alpha",
+      displayName: "Shared Label",
+    }),
+    normalizeRoleDefinition({
+      id: "rl-bbbbbb",
+      name: "beta",
+      displayName: "Shared Label",
+    }),
+  ];
+
+  assert.equal(resolveRole(roles, "rl-aaaaaa")?.name, "alpha");
+  assert.equal(resolveRole(roles, "rl-bbbbbb")?.name, "beta");
+  assert.equal(resolveRole(roles, "alpha")?.id, "rl-aaaaaa");
+  assert.equal(resolveRole(roles, "beta")?.id, "rl-bbbbbb");
+  // Same presentation label on two roles must not resolve either
+  assert.equal(resolveRole(roles, "Shared Label"), undefined);
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-dup-dn-"));
+  const fsa = new NodeFs(dir);
+  await createRole(fsa, {
+    id: "rl-cccccc",
+    name: "gamma",
+    displayName: "Twin",
+  });
+  await createRole(fsa, {
+    id: "rl-dddddd",
+    name: "delta",
+    displayName: "Twin",
+  });
+  const loaded = await loadRolesRegistry(fsa);
+  assert.equal(loaded.roles.filter((r) => r.displayName === "Twin").length, 2);
+  assert.equal(resolveRole(loaded.roles, "Twin"), undefined);
+  assert.equal(resolveRole(loaded.roles, "gamma")?.displayName, "Twin");
+  assert.equal(resolveRole(loaded.roles, "delta")?.displayName, "Twin");
+});
+
+test("role 注册表: plain loadRolesRegistry 对缺 id 的 legacy 行不写盘", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-nowrite-"));
+  const fsa = new NodeFs(dir);
+  await fsa.mkdir(".tent");
+  const legacy =
+    JSON.stringify(
+      {
+        roles: [
+          { name: "a", prompt: "A" },
+          { name: "b", displayName: "Bee" },
+        ],
+      },
+      null,
+      2
+    ) + "\n";
+  await fsa.writeFile("roles.json", legacy);
+
+  let writeCount = 0;
+  const originalWrite = fsa.writeFile.bind(fsa);
+  fsa.writeFile = async (p, content) => {
+    writeCount += 1;
+    return originalWrite(p, content);
+  };
+
+  try {
+    const loaded = await loadRolesRegistry(fsa);
+    assert.equal(loaded.roles.length, 2);
+    assert.equal(loaded.roles[0]!.id, deterministicRoleIdFromName("a"));
+    assert.equal(loaded.roles[1]!.id, deterministicRoleIdFromName("b"));
+    assert.equal(loaded.roles[1]!.displayName, "Bee");
+    assert.equal(writeCount, 0, "loadRolesRegistry must not write during ordinary read");
+  } finally {
+    fsa.writeFile = originalWrite;
+  }
+  assert.equal(await fsa.readFile("roles.json"), legacy);
 });
 
 test("corrupt tags registry is backed up and rebuilt from box frontmatter before writes", async () => {

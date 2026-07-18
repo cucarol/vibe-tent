@@ -34,18 +34,19 @@ type RoleDefinition = {
 
 ### Load / migrate
 
-- Missing `id` → **deterministic** `rl-` from `name` (`sha256("tent.role.id.v1:" + name)` encoded with the shared id alphabet). Same name always gets the same id across loads.
+- Missing `id` → **deterministic** `rl-` from `name` via platform-neutral digest of `tent.role.id.v1:` + name, encoded with the shared id alphabet (no `node:crypto`). Same name always gets the same id across loads.
 - Missing `displayName` → `name`.
-- First successful load **writes back** filled fields so disk and memory agree.
+- Ordinary **`loadRolesRegistry` projects legacy ids in memory only** — it does **not** write the registry. Persist filled fields only through an explicit mutation (`createRole` / `updateRole` / `deleteRole` / service registry CRUD), which rewrites the full normalized registry.
 - New `createRole` assigns a **random** collision-checked `rl-` (not derived from name).
 
 ### Resolve (compat)
 
 `resolveRole(roles, ref)` order:
 
-1. exact `id`
-2. exact operational `name`
-3. exact `displayName`
+1. exact `id` (`rl-…`)
+2. exact operational `name` (legacy task/session/envelope refs)
+
+**Never resolve by `displayName`.** Display labels are presentation only; duplicates are allowed and must not create ambiguous identity.
 
 Task envelopes, sessions, and historical refs may still carry **name** strings. Do **not** rewrite historical task files in this batch. New internal service logic should prefer `roleId` when both are available.
 
@@ -67,8 +68,8 @@ UI must show **displayName**, not raw `rl-` ids, in primary chrome.
 | Op | Identity |
 | --- | --- |
 | create | client supplies `name` (+ optional `displayName`); server assigns `id` |
-| update | resolve by `name` or `roleId`; may change `displayName` / metadata; **cannot** change `id` or operational `name` |
-| delete | confirmation = operational `name` **or** `id`; blocks active role task / managed session |
+| update | resolve by `roleId` or operational `name` only; may change `displayName` / metadata; **cannot** change `id` or operational `name` |
+| delete | resolve by `roleId` or operational `name` only; confirmation = operational `name` **or** `id`; blocks active role task / managed session |
 
 ## 3. Deferred: operational name / temp / git
 
@@ -99,10 +100,12 @@ If any of (2–5) cannot ship atomically, keep rename rejected and leave this se
 ## 5. Tests required (batch 1)
 
 - roles.json round-trip with `id` + `displayName`
-- legacy rows without `id` get deterministic fill and persist
+- legacy rows without `id` get deterministic **in-memory** fill; plain load performs **no write**
+- create/update mutation persists filled ids when the registry is explicitly mutated
 - create gets random `rl-`; id immutable on update
 - displayName rename; operational name rename rejected
-- `resolveRole` accepts id / name / displayName
+- `resolveRole` accepts id / name only — **not** displayName
+- two roles may share the same `displayName` without ambiguous resolution
 - registry projection includes `roleId` + `displayName`
 - task/session authority still resolves historical **name** refs
 

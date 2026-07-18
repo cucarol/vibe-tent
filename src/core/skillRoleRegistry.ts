@@ -18,10 +18,10 @@ export type RoleA2APolicy = "allow" | "ask" | "deny";
  *
  * Identity model (batch 1):
  * - `id` (`rl-…`) is immutable after create / migration fill.
- * - `displayName` is the mutable human label (projection + UI).
+ * - `displayName` is mutable **presentation only** — never used as a resolver key.
  * - `name` remains the operational path / envelope key (temp/<name>/, task.role,
  *   git lane labels). This batch does **not** rename name or move temp/worktrees;
- *   resolveRole accepts id | name | displayName for compat.
+ *   resolveRole accepts id | operational name only (legacy compat).
  */
 export interface RoleDefinition {
   /**
@@ -88,21 +88,17 @@ const DEFAULT_ROLES_REGISTRY: LoadedRolesRegistry = {
 
 /**
  * 正常路径只读扁平 roles.json；嵌套 `.tent/roles.json` 由一次性迁移搬迁。
- * 旧行缺 id/displayName 时确定性补齐并写回磁盘（不移动 temp / 不改 name）。
+ * 旧行缺 id/displayName 时在**内存**确定性投影；普通 read **不写盘**。
+ * 持久化只发生在 create/update/delete 等显式 mutation（写回完整规范化 registry）。
  */
 export async function loadRolesRegistry(fs: FsAdapter): Promise<LoadedRolesRegistry> {
-  const { registry, migrated, recovered } = await readRolesRegistryState(fs);
-  if (migrated && !recovered) {
-    // Persist backfill outside mutation callers so ids stabilize on first read.
-    await writeJson(fs, ROLES_REGISTRY_PATH, serializeRolesRegistry(registry));
-  }
+  const { registry } = await readRolesRegistryState(fs);
   return registry;
 }
 
-/** Load without persisting migration (for use inside withTentMutation writers). */
+/** Same as loadRolesRegistry — kept for mutation call sites (no silent write). */
 async function loadRolesRegistryForMutation(fs: FsAdapter): Promise<LoadedRolesRegistry> {
-  const { registry } = await readRolesRegistryState(fs);
-  return registry;
+  return loadRolesRegistry(fs);
 }
 
 async function readRolesRegistryState(fs: FsAdapter): Promise<{
@@ -166,7 +162,7 @@ export function assertRoleNameAvailable(name: string): void {
 }
 
 /**
- * Update role fields. `ref` is roleId, operational name, or displayName (compat).
+ * Update role fields. `ref` is roleId or operational name (never displayName).
  * Cannot change `id`. This batch also refuses operational `name` renames (temp/git
  * paths stay put); only `displayName` and metadata may change for identity surface.
  */
@@ -220,8 +216,8 @@ export async function updateRole(
 }
 
 /**
- * Delete by roleId, operational name, or displayName. Confirmation must equal
- * the operational `name` (historical contract) or the stable `id`.
+ * Delete by roleId or operational name (never displayName). Confirmation must
+ * equal the operational `name` (historical contract) or the stable `id`.
  */
 export async function deleteRole(fs: FsAdapter, ref: string, confirmation: string): Promise<void> {
   await withTentMutation(fs, async () => {
@@ -240,8 +236,10 @@ export async function deleteRole(fs: FsAdapter, ref: string, confirmation: strin
 }
 
 /**
- * Resolve a role reference from task/session/UI: prefer `rl-` id, then operational
- * name, then displayName. First exact match wins (id > name > displayName).
+ * Resolve a role reference from task/session/UI.
+ * Order: exact `rl-` id, then operational `name`.
+ * `displayName` is presentation only and is **never** a resolver key
+ * (duplicate display names must be harmless).
  */
 export function resolveRole(
   roles: readonly RoleDefinition[],
@@ -251,9 +249,7 @@ export function resolveRole(
   if (!key) return undefined;
   const byId = roles.find((role) => role.id === key);
   if (byId) return byId;
-  const byName = roles.find((role) => role.name === key);
-  if (byName) return byName;
-  return roles.find((role) => (role.displayName || role.name) === key);
+  return roles.find((role) => role.name === key);
 }
 
 export function findRoleIndex(roles: readonly RoleDefinition[], ref: string): number {
@@ -261,9 +257,7 @@ export function findRoleIndex(roles: readonly RoleDefinition[], ref: string): nu
   if (!key) return -1;
   let idx = roles.findIndex((role) => role.id === key);
   if (idx !== -1) return idx;
-  idx = roles.findIndex((role) => role.name === key);
-  if (idx !== -1) return idx;
-  return roles.findIndex((role) => (role.displayName || role.name) === key);
+  return roles.findIndex((role) => role.name === key);
 }
 
 function normalizeRolesRegistryWithMigration(value: unknown): {

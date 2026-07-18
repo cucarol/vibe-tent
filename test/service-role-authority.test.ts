@@ -105,13 +105,14 @@ test("registry.roles projection returns allowedProfiles + roleId/displayName", a
     assert.equal(exec!.displayName, "executor");
     assert.equal(exec!.allowedProfiles, undefined);
 
-    // Legacy roles.json without id was backfilled on disk
+    // Legacy roles.json without id stays legacy on disk after plain projection read
     const disk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
-    ) as { roles: Array<{ id: string; name: string; displayName: string }> };
+    ) as { roles: Array<{ id?: string; name: string; displayName?: string }> };
     const diskOrch = disk.roles.find((r) => r.name === "orchestrator");
-    assert.ok(diskOrch?.id.startsWith("rl-"));
-    assert.equal(diskOrch!.displayName, "orchestrator");
+    assert.ok(diskOrch);
+    assert.equal(diskOrch!.id, undefined, "projection/list must not persist backfill");
+    assert.equal(diskOrch!.displayName, undefined);
   });
 });
 

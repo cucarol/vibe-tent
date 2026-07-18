@@ -224,9 +224,10 @@ type A2APolicy = "allow" | "ask" | "deny";
 
 /**
  * Project role registry row (`.tent/roles.json`).
- * `id` (`rl-…`) is immutable; `displayName` is the mutable UI label;
- * `name` remains the operational path key (`temp/<name>/`, task.role) until a
- * later temp/git migration batch. See `docs/desktop/identity-rename.md`.
+ * `id` (`rl-…`) is immutable; `displayName` is mutable presentation only
+ * (never a resolver key); `name` remains the operational path key
+ * (`temp/<name>/`, task.role) until a later temp/git migration batch.
+ * See `docs/desktop/identity-rename.md`.
  */
 type RoleDefinition = {
   id: string;
