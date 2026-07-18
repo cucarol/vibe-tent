@@ -806,8 +806,7 @@ function buildManifest(tent, input) {
     ...input.branch ? { branch: input.branch } : {},
     ...input.targetBranch ? { targetBranch: input.targetBranch } : {},
     readable: dedupe(readable),
-    writable: dedupe(writable),
-    preloaded: buildPreloaded(tent)
+    writable: dedupe(writable)
   };
 }
 function manifestToYaml(m) {
@@ -823,8 +822,6 @@ function manifestToYaml(m) {
   for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
   lines.push(`writable:`);
   for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
-  lines.push(`preloaded:`);
-  for (const p of m.preloaded) lines.push(`  - ${p}`);
   return lines.join("\n") + "\n";
 }
 function entryLine(e) {
@@ -843,40 +840,6 @@ function oneLineNote(box) {
 }
 function allBoxes(tent) {
   return [...tent.byPath.values()];
-}
-function buildPreloaded(tent) {
-  const order = treeOrder(tent);
-  const entries = allBoxes(tent).filter((box) => isUsableBox(box) && box.readable.value).sort((a, b) => {
-    const stable = preloadStabilityRank(a) - preloadStabilityRank(b);
-    if (stable !== 0) return stable;
-    const type = preloadTypeRank(a) - preloadTypeRank(b);
-    if (type !== 0) return type;
-    return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
-  }).map((box) => `${box.path} body`);
-  return ["RULES.md", ...entries];
-}
-function preloadStabilityRank(box) {
-  const status = box.fm.status || "todo";
-  if (box.writable.value || box.fm.owner || status === "doing") return 1;
-  return 0;
-}
-function preloadTypeRank(box) {
-  const base = splitType(box.type).base;
-  if (base === "goal") return 0;
-  if (base === "prompt") return 1;
-  if (base === "artifact" || base === "output") return 2;
-  if (base === "note") return 3;
-  return 4;
-}
-function treeOrder(tent) {
-  const order = /* @__PURE__ */ new Map();
-  let n = 0;
-  const visit = (box) => {
-    order.set(box.id, n++);
-    for (const child of box.children) visit(child);
-  };
-  for (const root of tent.roots) visit(root);
-  return order;
 }
 function subtree(box) {
   const out = [box];
@@ -1363,27 +1326,41 @@ function resolveTaskPromptRoots(roots) {
   const workspaceRoot = base === ".tent" ? normalized.replace(/[\\/]+[^\\/]+$/, "") || systemRoot : systemRoot;
   return { workspaceRoot, systemRoot };
 }
-function formatTaskPathHints(task, roots) {
+function formatTaskPointers(task) {
   const kind = taskAssigneeKind(task);
-  const taskFile = join(".tent", task.path);
   const lines = [
-    `workspaceRoot: ${roots.workspaceRoot}`,
-    `systemRoot: ${roots.systemRoot}`,
-    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
-    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} \u2014 never <workspaceRoot>/temp.`,
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`
   ];
+  if (task.claims?.length) {
+    lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.deliveryPolicy) {
+    lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
+  }
   if (kind === "role") {
     const initCli = join("temp", task.role, "init.md");
     const initFile = join(".tent", "temp", task.role, "init.md");
+    lines.push(`role: ${task.role}`);
     lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   } else {
+    lines.push(`assigneeKind: agentProfile`);
+    lines.push(`profileId: ${task.role}`);
     lines.push(
       `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
     );
   }
   return lines.join("\n");
+}
+function formatExternalPathBlock(task, roots) {
+  const taskFile = join(".tent", task.path);
+  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
+  return [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} \u2014 never <workspaceRoot>/temp.`
+  ].join("\n");
 }
 function relayPromptForTask(task, roots) {
   const resolved = resolveTaskPromptRoots(roots);
@@ -1392,7 +1369,8 @@ function relayPromptForTask(task, roots) {
 ` : `A Tent task has been dispatched to role ${task.role}.
 `;
   const initStep = kind === "agentProfile" ? `4. Read the task envelope and task-scoped manifest pointers above; do not look for a role init file.` : `4. If this is a new session for this role, complete role init first (read the init file above).`;
-  return assigneeLine + `${formatTaskPathHints(task, resolved)}
+  return assigneeLine + `${formatExternalPathBlock(task, resolved)}
+${formatTaskPointers(task)}
 1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).
 2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
@@ -1405,18 +1383,15 @@ function extractTaskUserPrompt(task) {
   if (match) return match[1].trim();
   return body;
 }
-function sessionBootstrapPromptForTask(task, roots) {
-  const resolved = resolveTaskPromptRoots(roots);
+function sessionBootstrapPromptForTask(task, _roots) {
   const userPrompt = extractTaskUserPrompt(task);
   const kind = taskAssigneeKind(task);
   const readyLine = kind === "agentProfile" ? `A Tent managed ACP session is ready for agentProfile ${task.role}.
 ` : `A Tent managed ACP session is ready for role ${task.role}.
 `;
-  return readyLine + `${formatTaskPathHints(task, resolved)}
+  return readyLine + `${formatTaskPointers(task)}
 Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).
-Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).
-Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.
+Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (manual review stays pending; no auto-accept).
 ` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
 ` : "") + (userPrompt ? `
 ## User Prompt
@@ -2697,9 +2672,8 @@ function formatContextCardPrompt(ref, hints) {
     }
   }
   lines.push(
-    "CLI: run tent from workspaceRoot; taskPath/docs paths are relative to systemRoot (.tent)."
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
   );
-  lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
   lines.push("Do not invent missing content; fetch by id before answering.");
   lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
   return lines.join("\n");
@@ -17336,21 +17310,10 @@ function buildSessionBootstrapPrompt(task, roots) {
     workspaceRoot: roots.workspaceRoot,
     systemRoot
   });
-  const aux = [];
-  if (kind === "agentProfile") {
-    aux.push(`assigneeKind: agentProfile`);
-    aux.push(`profileId: ${task.role}`);
-  } else if (task.role) {
-    aux.push(`role: ${task.role}`);
-  }
-  if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
-  if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
-  if (task.manifest) aux.push(`manifest: ${task.manifest}`);
   return `${card.prompt}
 
 --- Tent managed session bootstrap ---
-` + (aux.length ? `${aux.join("\n")}
-` : "") + `${sessionSteps}
+${sessionSteps}
 `;
 }
 function projectTask(task) {

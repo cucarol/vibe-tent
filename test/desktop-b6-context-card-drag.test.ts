@@ -95,9 +95,9 @@ test("contextCardToDragText payload is full v1 pointer prompt (no snapshot body)
   assert.match(text, /path: inbox\/goal/);
   assert.match(text, /systemRoot: C:\\\\tents\\\\demo/);
   assert.match(text, /tentRoot: C:\\\\tents\\\\demo/);
-  assert.match(text, /Read this entity via Tent Task API/);
   assert.match(text, /Do not invent missing content/);
   assert.match(text, /Do not resolve operational files as <workspaceRoot>\/temp/);
+  assert.doesNotMatch(text, /docs API|CLI aliases/i);
   // Must not smuggle full document bodies / fallback snapshots
   assert.doesNotMatch(text, /snapshot|full body|BEGIN CONTENT|```/i);
 

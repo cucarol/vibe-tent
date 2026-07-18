@@ -3992,6 +3992,8 @@ function projectStartSessionResult(
 
 /**
  * Build managed ACP bootstrap: Context Card pointer + near-field user prompt.
+ * Path tutorial appears once on the Context Card. Dynamic task fields live in
+ * sessionBootstrapPromptForTask only (no aux-block re-list of claims/manifest).
  * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
  * Distinct from relayPromptForTask (external manual path still claim+deliver).
  */
@@ -4011,20 +4013,9 @@ function buildSessionBootstrapPrompt(
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
   });
-  const aux: string[] = [];
-  if (kind === "agentProfile") {
-    aux.push(`assigneeKind: agentProfile`);
-    aux.push(`profileId: ${task.role}`);
-  } else if (task.role) {
-    aux.push(`role: ${task.role}`);
-  }
-  if (task.claims?.length) aux.push(`claims: ${task.claims.join(", ")}`);
-  if (task.deliveryPolicy) aux.push(`deliveryPolicy: ${task.deliveryPolicy}`);
-  if (task.manifest) aux.push(`manifest: ${task.manifest}`);
   return (
     `${card.prompt}\n\n` +
     `--- Tent managed session bootstrap ---\n` +
-    (aux.length ? `${aux.join("\n")}\n` : "") +
     `${sessionSteps}\n`
   );
 }

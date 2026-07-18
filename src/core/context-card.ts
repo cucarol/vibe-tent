@@ -88,9 +88,10 @@ export function buildContextCard(
  * Stable English prompt text. Clients may wrap with UI chrome but should not
  * rewrite the instruction body (prompt-cache friendly).
  *
+ * This is the single path-contract tutorial for managed ACP bootstrap.
  * Path contract (in-workspace Tent):
  * - CLI cwd = workspaceRoot
- * - CLI taskPath / docs paths are relative to systemRoot (`.tent`)
+ * - CLI taskPath is relative to systemRoot (`.tent`)
  * - Direct file reads from workspace use `.tent/<path>` or absolute systemRoot
  */
 export function formatContextCardPrompt(
@@ -121,9 +122,8 @@ export function formatContextCardPrompt(
     }
   }
   lines.push(
-    "CLI: run tent from workspaceRoot; taskPath/docs paths are relative to systemRoot (.tent)."
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
   );
-  lines.push("Read this entity via Tent Task API / docs API (or CLI aliases).");
   lines.push("Do not invent missing content; fetch by id before answering.");
   lines.push("Do not resolve operational files as <workspaceRoot>/temp — use .tent/temp.");
   return lines.join("\n");

@@ -167,8 +167,8 @@ real Git lanes and a durable registry dispatcher (not `user`, not the assignee),
 sub dispatch fails before envelope creation without them. User/peer dispatch
 does not require a Git workspace. Missing `asSub` reads as peer (`false`).
 
-Manifest fields include `claims`, `readable`, `writable`, `preloaded`, and the
-workspace lane. Dynamic claim/task data never enters role init.
+Manifest fields include `claims`, `readable`, `writable`, and the workspace
+lane. Dynamic claim/task data never enters role init.
 
 `temp/<role>/manifest.yml` is a snapshot from dispatch time. Changing a box's
 `readable`, `writable`, or `type` after dispatch does not affect already issued

@@ -346,6 +346,7 @@ test("contextCard: stable prompt template + parse round-trip", () => {
   assert.match(card.prompt, /tentRoot: \/tents\/demo/);
   assert.match(card.prompt, /fileRead: \.tent\/goal\/demo/);
   assert.match(card.prompt, /Do not resolve operational files as <workspaceRoot>\/temp/);
+  assert.doesNotMatch(card.prompt, /docs API|CLI aliases/i);
   const parsed = parseContextCardText(card.prompt);
   assert.deepEqual(parsed, {
     kind: "box",

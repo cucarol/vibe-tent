@@ -163,17 +163,13 @@ test("manifest:可读集=全帐 readable,可写集=认领子树 writable + temp 
   const yaml = manifestToYaml(m);
   assert.ok(yaml.includes("tent: wqb"));
   assert.ok(yaml.includes("role: executor"));
-  assert.equal(m.preloaded[0], "RULES.md", "RULES 固定在预灌前缀");
-  assert.ok(
-    m.preloaded.indexOf("prompt/表达式任务书 body") <
-      m.preloaded.indexOf("prompt/表达式任务书/草稿 body"),
-    "稳定任务书排在易变 scratch 前",
-  );
+  assert.ok(yaml.includes("readable:"));
+  assert.ok(yaml.includes("writable:"));
+  assert.equal(yaml.includes("preloaded:"), false, "preloaded 字段已删除");
   assert.deepEqual(
-    buildManifest(tent, { tentName: "wqb", role: "executor", claimBoxes: [claim] })
-      .preloaded,
-    m.preloaded,
-    "同一框多次 dispatch 预灌顺序稳定",
+    Object.keys(m).sort(),
+    ["claims", "readable", "role", "tent", "writable"].sort(),
+    "manifest 仅保留 claims/readable/writable 与身份字段",
   );
 });
 
@@ -219,8 +215,10 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
   assert.match(result.relayPrompt, /task-/);
   assert.doesNotMatch(result.relayPrompt, /```yaml/);
   assert.doesNotMatch(result.relayPrompt, /\ntent: wqb\nrole: analyst/);
-  assert.equal(result.manifestYaml.includes("preloaded:"), true);
+  assert.equal(result.manifestYaml.includes("preloaded:"), false);
   assert.match(result.manifestYaml, /claims: \[bx-p1\]/);
+  assert.match(result.manifestYaml, /readable:/);
+  assert.match(result.manifestYaml, /writable:/);
   let claimed = (await loadTent(env.fs)).byId.get("bx-p1")!;
   assert.equal(claimed.fm.owner, undefined);
   assert.equal(claimed.fm.status, undefined, "dispatch 不占用,只留下 pending envelope");
@@ -339,14 +337,21 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   );
   assert.match(bootstrap, /already claimed/i);
   assert.match(bootstrap, /managed ACP session/i);
-  assert.match(bootstrap, /skip Local Service claim\/get\/deliver CLI/i);
-  assert.match(bootstrap, /submit delivery automatically/i);
+  assert.match(bootstrap, /delivered automatically/i);
+  assert.match(bootstrap, /Task envelope:/);
+  assert.match(bootstrap, /Manifest:/);
+  assert.match(bootstrap, /claims:/);
+  assert.match(bootstrap, /deliveryPolicy:/);
   assert.match(bootstrap, /## User Prompt/);
+  // Path tutorial is owned by Context Card, not repeated in session body.
+  assert.doesNotMatch(bootstrap, /workspaceRoot:|systemRoot:/);
+  assert.doesNotMatch(bootstrap, /File reads:|run tent from workspaceRoot/);
   // Near-field user prompt must be present; no CLI get/deliver command instructions.
   const userPrompt = extractTaskUserPrompt(tasks[1]);
   if (userPrompt) assert.match(bootstrap, new RegExp(userPrompt.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")));
   assert.doesNotMatch(bootstrap, /tent task claim|task-ack|tent report\b/);
   assert.doesNotMatch(bootstrap, /tent task get |tent task deliver /);
+  assert.doesNotMatch(bootstrap, /docs API|CLI aliases/i);
 });
 
 test("task-ack missing envelope reports a clean error", async () => {

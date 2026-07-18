@@ -232,27 +232,49 @@ export function resolveTaskPromptRoots(
   return { workspaceRoot, systemRoot };
 }
 
-function formatTaskPathHints(task: TaskEnvelope, roots: TaskPromptRoots): string {
+/**
+ * Dynamic task pointers only — no workspaceRoot/CLI/file-read tutorial.
+ * Path contract lives once on Context Card (managed) or in external relay path block.
+ */
+function formatTaskPointers(task: TaskEnvelope): string {
   const kind = taskAssigneeKind(task);
-  const taskFile = join(".tent", task.path);
   const lines = [
-    `workspaceRoot: ${roots.workspaceRoot}`,
-    `systemRoot: ${roots.systemRoot}`,
-    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
-    `File reads: use ${taskFile} (workspace-relative) or ${roots.systemRoot.replace(/[\\/]+$/, "")}/${task.path} — never <workspaceRoot>/temp.`,
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
   ];
+  if (task.claims?.length) {
+    lines.push(`claims: ${task.claims.join(", ")}`);
+  }
+  if (task.deliveryPolicy) {
+    lines.push(`deliveryPolicy: ${task.deliveryPolicy}`);
+  }
   if (kind === "role") {
     const initCli = join("temp", task.role, "init.md");
     const initFile = join(".tent", "temp", task.role, "init.md");
+    lines.push(`role: ${task.role}`);
     lines.push(`Role init file: ${initFile} (CLI path remains ${initCli}).`);
   } else {
+    lines.push(`assigneeKind: agentProfile`);
+    lines.push(`profileId: ${task.role}`);
     lines.push(
       `Assignee: agentProfile ${task.role} (one-shot; no durable role init / tent-role lane).`
     );
   }
   return lines.join("\n");
+}
+
+/**
+ * Path roots for external relay only (managed bootstrap uses Context Card once).
+ */
+function formatExternalPathBlock(task: TaskEnvelope, roots: TaskPromptRoots): string {
+  const taskFile = join(".tent", task.path);
+  const systemRoot = roots.systemRoot.replace(/[\\/]+$/, "");
+  return [
+    `workspaceRoot: ${roots.workspaceRoot}`,
+    `systemRoot: ${roots.systemRoot}`,
+    `CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent), e.g. ${task.path}.`,
+    `File reads: use ${taskFile} (workspace-relative) or ${systemRoot}/${task.path} — never <workspaceRoot>/temp.`,
+  ].join("\n");
 }
 
 /**
@@ -275,7 +297,8 @@ export function relayPromptForTask(
       : `4. If this is a new session for this role, complete role init first (read the init file above).`;
   return (
     assigneeLine +
-    `${formatTaskPathHints(task, resolved)}\n` +
+    `${formatExternalPathBlock(task, resolved)}\n` +
+    `${formatTaskPointers(task)}\n` +
     `1. Run \`tent task claim ${task.path}\` to take this task (Local Service RPC).\n` +
     `2. Inspect with \`tent task get ${task.path}\` (or read the envelope file), then open the claimed boxes; the box notes contain the task definition.\n` +
     `3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).\n` +
@@ -297,15 +320,18 @@ export function extractTaskUserPrompt(task: TaskEnvelope): string {
 }
 
 /**
- * Managed ACP startSession bootstrap (service already claimed).
- * Pointers + near-field user prompt only — no claim/get/deliver CLI steps.
+ * Managed ACP startSession bootstrap body (service already claimed).
+ * Dynamic task pointers + near-field user prompt only.
+ * Path tutorial is owned by Context Card; no claim/get/deliver CLI steps.
  * Final assistant response is captured by Local Service and auto-delivered.
+ *
+ * `roots` is accepted for call-site compatibility but not repeated here —
+ * managed bootstrap prefixes Context Card (which carries workspaceRoot/systemRoot).
  */
 export function sessionBootstrapPromptForTask(
   task: TaskEnvelope,
-  roots: string | TaskPromptRoots
+  _roots?: string | TaskPromptRoots
 ): string {
-  const resolved = resolveTaskPromptRoots(roots);
   const userPrompt = extractTaskUserPrompt(task);
   const kind = taskAssigneeKind(task);
   const readyLine =
@@ -314,11 +340,9 @@ export function sessionBootstrapPromptForTask(
       : `A Tent managed ACP session is ready for role ${task.role}.\n`;
   return (
     readyLine +
-    `${formatTaskPathHints(task, resolved)}\n` +
+    `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: skip Local Service claim/get/deliver CLI steps (tool permissions may deny them).\n` +
-    `Your final assistant reply is the report: Local Service will capture it and submit delivery automatically (manual review stays pending; no auto-accept).\n` +
-    `Context Card / path pointers above identify the task; optional deeper reads only if tools are allowed.\n` +
+    `Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (manual review stays pending; no auto-accept).\n` +
     (kind === "agentProfile"
       ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
       : "") +

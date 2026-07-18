@@ -32,8 +32,7 @@ Desktop / 共置 agent 使用 **in-workspace** 布局：
 - 一个 role 是一个长期 session，并复用一个 workspace `worktree + branch`。一个 role 可以处理多个 box。
 - 一个 box 是一个文件夹加同名 Markdown 身份笔记。`bx-` id 随移动保持稳定。层级表达服务关系。
 - box = 任务本体；envelope = 机器投递状态载体。一句话版：内容住 box，状态住 envelope。
-- `manifest.yml` 解析 claim、readable、writable。它是 honor contract，不是安全沙箱。若任务指令和 manifest 边界冲突，停止并询问 user。
-- `manifest.yml` 的 `preloaded` 字段只是应加载内容的清单，不是正文已经进入模型上下文的证明。role 必须实际读取所需文件，不能仅凭清单名称声称已知内容。
+- `manifest.yml` 解析 claim、readable、writable。它是 honor contract，不是安全沙箱。若任务指令和 manifest 边界冲突，停止并询问 user。role 必须实际读取所需文件，不能仅凭 manifest 条目名称声称已知内容。
 - 交付与验收走 **Local Service** 的 `tent task deliver` / Desktop accept；聊天里的总结是给人看的，不是第二写路径。
 
 ## Role Init

@@ -83,5 +83,4 @@ export interface Manifest {
   targetBranch?: string;
   readable: ManifestEntry[];
   writable: ManifestEntry[];
-  preloaded: string[];
 }

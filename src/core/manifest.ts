@@ -6,7 +6,6 @@
 
 import { Box, Manifest, ManifestEntry } from "./types.js";
 import { isUsableBox, LoadedTent, join } from "./tree.js";
-import { splitType } from "./typeRegistry.js";
 
 export interface DispatchInput {
   tentName: string;
@@ -63,7 +62,6 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
     ...(input.targetBranch ? { targetBranch: input.targetBranch } : {}),
     readable: dedupe(readable),
     writable: dedupe(writable),
-    preloaded: buildPreloaded(tent),
   };
 }
 
@@ -81,8 +79,6 @@ export function manifestToYaml(m: Manifest): string {
   for (const e of m.readable) lines.push(`  - ${entryLine(e)}`);
   lines.push(`writable:`);
   for (const e of m.writable) lines.push(`  - ${entryLine(e)}`);
-  lines.push(`preloaded:`);
-  for (const p of m.preloaded) lines.push(`  - ${p}`);
   return lines.join("\n") + "\n";
 }
 
@@ -106,47 +102,6 @@ function oneLineNote(box: Box): string {
 
 function allBoxes(tent: LoadedTent): Box[] {
   return [...tent.byPath.values()];
-}
-
-function buildPreloaded(tent: LoadedTent): string[] {
-  const order = treeOrder(tent);
-  const entries = allBoxes(tent)
-    .filter((box) => isUsableBox(box) && box.readable.value)
-    .sort((a, b) => {
-      const stable = preloadStabilityRank(a) - preloadStabilityRank(b);
-      if (stable !== 0) return stable;
-      const type = preloadTypeRank(a) - preloadTypeRank(b);
-      if (type !== 0) return type;
-      return (order.get(a.id) ?? Number.MAX_SAFE_INTEGER) - (order.get(b.id) ?? Number.MAX_SAFE_INTEGER) || a.id.localeCompare(b.id);
-    })
-    .map((box) => `${box.path} body`);
-  return ["RULES.md", ...entries];
-}
-
-function preloadStabilityRank(box: Box): number {
-  const status = box.fm.status || "todo";
-  if (box.writable.value || box.fm.owner || status === "doing") return 1;
-  return 0;
-}
-
-function preloadTypeRank(box: Box): number {
-  const base = splitType(box.type).base;
-  if (base === "goal") return 0;
-  if (base === "prompt") return 1;
-  if (base === "artifact" || base === "output") return 2;
-  if (base === "note") return 3;
-  return 4;
-}
-
-function treeOrder(tent: LoadedTent): Map<string, number> {
-  const order = new Map<string, number>();
-  let n = 0;
-  const visit = (box: Box) => {
-    order.set(box.id, n++);
-    for (const child of box.children) visit(child);
-  };
-  for (const root of tent.roots) visit(root);
-  return order;
 }
 
 function subtree(box: Box): Box[] {

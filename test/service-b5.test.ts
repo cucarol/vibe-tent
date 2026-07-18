@@ -914,12 +914,19 @@ test("B5: startSession bootstrap is managed (Context Card + user prompt); relay 
     assert.match(bootstrap!, /managed ACP session|managed session bootstrap/i);
     assert.match(bootstrap!, /## User Prompt/);
     assert.match(bootstrap!, /bootstrap path semantics/);
-    assert.match(bootstrap!, /submit delivery automatically|auto/i);
-    assert.match(bootstrap!, /skip Local Service claim\/get\/deliver CLI/i);
+    assert.match(bootstrap!, /delivered automatically|auto/i);
+    assert.match(bootstrap!, /Task envelope:/);
+    assert.match(bootstrap!, /Manifest:/);
+    assert.match(bootstrap!, /claims:/);
+    assert.match(bootstrap!, /deliveryPolicy:/);
+    // Path tutorial once (Context Card), not re-taught in managed session body.
+    const pathTutorialHits = bootstrap!.match(/run tent from workspaceRoot/gi) || [];
+    assert.equal(pathTutorialHits.length, 1, "path tutorial should appear once in managed bootstrap");
     // Must not instruct claim/get/deliver CLI commands (managed path auto-delivers final reply).
     assert.doesNotMatch(bootstrap!, /tent task claim|task-ack|tent report\b/);
     assert.doesNotMatch(bootstrap!, /tent task get |tent task deliver /);
     assert.doesNotMatch(bootstrap!, /Run `tent task claim/);
+    assert.doesNotMatch(bootstrap!, /docs API|CLI aliases/i);
   });
 });
 
@@ -983,10 +990,15 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
       const log = JSON.parse(logRaw) as { prompts: string[] };
       assert.ok(log.prompts.some((p) => p.includes(userPrompt)));
       assert.ok(log.prompts.some((p) => /contextCard|Tent contextCard/i.test(p)));
-      assert.ok(log.prompts.some((p) => /skip Local Service claim\/get\/deliver CLI/i.test(p)));
+      assert.ok(log.prompts.some((p) => /already claimed/i.test(p)));
+      assert.ok(log.prompts.some((p) => /delivered automatically/i.test(p)));
       assert.ok(
         log.prompts.every((p) => !/tent task deliver /.test(p)),
         "managed bootstrap must not instruct tent task deliver"
+      );
+      assert.ok(
+        log.prompts.every((p) => !/docs API|CLI aliases/i.test(p)),
+        "managed bootstrap must not advertise non-existent docs CLI aliases"
       );
 
       // Duplicate completion must not create a second delivery.
