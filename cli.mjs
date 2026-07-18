@@ -1431,6 +1431,9 @@ function makeTaskId(rand = Math.random, len = 8) {
 function isTaskId(id) {
   return id.startsWith("tk-") && id.length > 3;
 }
+function isDeliveryId(id) {
+  return id.startsWith("dl-") && id.length > 3;
+}
 var TaskLifecycleError = class extends Error {
   constructor(code, message) {
     super(message);
@@ -1769,108 +1772,140 @@ async function ensureDir(fs8, path8) {
   if (!await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 
-// src/core/report.ts
-async function submitReport(fs8, clock, boxId, body, commits) {
-  return withTentMutation(fs8, async () => submitReportUnlocked(fs8, clock, boxId, body, commits));
-}
-async function submitReportUnlocked(fs8, clock, boxId, body, commits) {
-  const text = body.trim();
-  if (!text) throw new Error("Report body cannot be empty.");
-  const tent = await loadTent(fs8);
-  if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  const role = box.fm.owner;
-  if (!role) throw new Error("Only claimed boxes with a direct owner can submit reports.");
-  const path8 = reportPath(role, box.id);
-  if (await fs8.exists(path8)) {
-    const current = await loadReport(fs8, path8);
-    if (current.status === "ready") throw new Error("A report is already pending triage; the user must confirm or reject it first.");
-  }
-  const report = {
-    path: path8,
-    boxId: box.id,
-    role,
-    status: "ready",
-    commits: uniqueCommits(commits),
-    timestamp: clock.now(),
-    body: text
-  };
-  await ensureDir2(fs8, join2("temp", role, "reports"));
-  await writeReport(fs8, report);
-  return report;
-}
-async function loadReports(fs8) {
-  const reports = [];
-  if (!await fs8.exists("temp")) return reports;
-  for (const roleDir of await fs8.listDir("temp")) {
-    if (!roleDir.isDir) continue;
-    const dir = join2("temp", roleDir.name, "reports");
-    if (!await fs8.exists(dir)) continue;
-    for (const entry2 of await fs8.listDir(dir)) {
-      if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
-      const path8 = join2(dir, entry2.name);
-      try {
-        reports.push(await loadReport(fs8, path8));
-      } catch {
-      }
-    }
-  }
-  return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-}
-async function loadReport(fs8, inputPath) {
-  const path8 = normalizeReportPath(inputPath);
-  if (!await fs8.exists(path8)) throw new Error(`Report not found: ${path8}.`);
+// src/core/delivery.ts
+async function loadDelivery(fs8, inputPath) {
+  const path8 = normalizeDeliveryPath(inputPath);
+  if (!await fs8.exists(path8)) throw new Error(`Delivery not found: ${path8}.`);
   const { data, body } = parseFrontmatter(await fs8.readFile(path8));
-  if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`Invalid report format: ${path8}.`);
+  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+    throw new Error(`Invalid delivery format: ${path8}.`);
   }
+  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
+    throw new Error(`Invalid delivery format: ${path8}.`);
+  }
+  const status = parseDeliveryStatus(data.status);
+  const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
+  const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
   return {
     path: path8,
-    boxId: data.box,
+    id: data.id,
+    taskId: data.taskId,
+    boxId: data.boxId,
     role: data.role,
-    status: data.status,
-    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((item) => typeof item === "string")) : [],
-    timestamp: typeof data.ts === "string" ? data.ts : void 0,
-    review: typeof data.review === "string" ? data.review : void 0,
-    body: body.trim()
+    status,
+    summary: body.trim(),
+    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    checks: parseJsonArrayField(data.checksJson, parseChecks),
+    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
+    integrationMode: parseIntegrationMode(data.integrationMode),
+    review: reviewBy && reviewDecision ? {
+      by: reviewBy,
+      decision: reviewDecision,
+      note: typeof data.reviewNote === "string" ? data.reviewNote : void 0
+    } : void 0,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function removeReportsForBox(fs8, boxId) {
-  for (const report of await loadReports(fs8)) {
-    if (report.boxId === boxId && await fs8.exists(report.path)) await fs8.remove(report.path);
+async function loadDeliveries(fs8, filter) {
+  const out = [];
+  if (!await fs8.exists(TEMP_DIR)) return out;
+  for (const entry2 of await fs8.listDir(TEMP_DIR)) {
+    if (!entry2.isDir) continue;
+    if (entry2.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join2(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs8.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs8.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectDeliveryFiles(
+          fs8,
+          join2(profilesRoot, profileEntry.name, "deliveries"),
+          filter,
+          out
+        );
+      }
+      continue;
+    }
+    await collectDeliveryFiles(fs8, join2(TEMP_DIR, entry2.name, "deliveries"), filter, out);
+  }
+  return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+async function collectDeliveryFiles(fs8, dir, filter, out) {
+  if (!await fs8.exists(dir)) return;
+  for (const entry2 of await fs8.listDir(dir)) {
+    if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
+    try {
+      const d = await loadDelivery(fs8, join2(dir, entry2.name));
+      if (filter?.taskId && d.taskId !== filter.taskId) continue;
+      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      out.push(d);
+    } catch {
+    }
   }
 }
-function reportPath(role, boxId) {
-  return join2("temp", role, "reports", `${boxId}.md`);
+async function removeNonAcceptedDeliveriesForBox(fs8, boxId) {
+  for (const delivery of await loadDeliveries(fs8, { boxId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs8.exists(delivery.path)) await fs8.remove(delivery.path);
+  }
 }
-function normalizeReportPath(input) {
+function normalizeDeliveryPath(input) {
   const path8 = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path8)) {
-    throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path8) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path8)) {
+    throw new Error(
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+    );
   }
   return path8;
 }
-async function writeReport(fs8, report) {
-  const data = {
-    type: "report",
-    box: report.boxId,
-    role: report.role,
-    status: report.status,
-    commits: report.commits,
-    ts: report.timestamp,
-    review: report.review
-  };
-  await fs8.writeFile(
-    report.path,
-    serializeFrontmatter(data, report.body + "\n", ["type", "box", "role", "status", "commits", "ts", "review"])
-  );
+function parseDeliveryStatus(value) {
+  if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
+  throw new Error(`Invalid delivery status: ${String(value)}`);
 }
-async function ensureDir2(fs8, path8) {
-  if (!await fs8.exists(path8)) await fs8.mkdir(path8);
+function parseIntegrationMode(value) {
+  if (value === void 0 || value === null || value === "null") return null;
+  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
+    return value;
+  }
+  return null;
+}
+function parseJsonArrayField(value, parse) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    return parse(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+function parseChecks(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.name !== "string" || typeof o.command !== "string" || typeof o.exitCode !== "number") continue;
+    out.push({ name: o.name, command: o.command, exitCode: o.exitCode });
+  }
+  return out;
+}
+function parseArtifactRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
+    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
+    out.push({
+      kind: o.kind,
+      target: o.target,
+      label: typeof o.label === "string" ? o.label : void 0
+    });
+  }
+  return out;
 }
 function uniqueCommits(commits) {
-  return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
+  return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
 }
 
 // src/core/scaffold.ts
@@ -2185,11 +2220,11 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     let initPath;
     if (assigneeKind === "agentProfile") {
       manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
-      await ensureDir3(env.fs, dirName(manifestPath));
+      await ensureDir2(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
       manifestPath = join2("temp", assigneeLabel, "manifest.yml");
-      await ensureDir3(env.fs, dirName(manifestPath));
+      await ensureDir2(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
       const registry = await loadRolesRegistry(env.fs);
       const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
@@ -2271,22 +2306,6 @@ async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
-async function acceptReport(env, reportPath2, options = {}) {
-  await withMutation2(env.fs, async () => {
-    const report = await loadReport(env.fs, reportPath2);
-    if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById2(tent, report.boxId);
-    if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
-    const commits = options.commits ?? report.commits;
-    if (commits.length > 0) {
-      if (!options.integrate) throw new Error("Report contains commits; workspace integration is required.");
-      await options.integrate(commits);
-    }
-    await setOwner(env.fs, box, void 0, "done", options.acceptedBy ?? "user");
-    await env.fs.remove(report.path);
-  });
-}
 async function grantReadable(env, boxId) {
   await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
@@ -2302,7 +2321,7 @@ async function cleanTemp(env, role) {
     if (await env.fs.exists(target)) {
       await env.fs.remove(target);
     }
-    if (!roleName) await ensureDir3(env.fs, "temp");
+    if (!roleName) await ensureDir2(env.fs, "temp");
   });
 }
 async function forceRelease(env, boxId) {
@@ -2311,7 +2330,7 @@ async function forceRelease(env, boxId) {
     const box = requireBoxById2(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
-    await removeReportsForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
   });
 }
 async function tagBox(env, boxId, name) {
@@ -2342,7 +2361,7 @@ async function createBoxUnlocked(env, input) {
   const id = makeUniqueConceptId(existing, env.rand);
   const path8 = join2(input.parentPath, name);
   assertNotTempPath(path8);
-  await ensureDir3(env.fs, path8);
+  await ensureDir2(env.fs, path8);
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `
 # ${name}
@@ -2377,7 +2396,7 @@ async function patchFrontmatter2(fs8, box, patch) {
   }
   await fs8.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
-async function ensureDir3(fs8, path8) {
+async function ensureDir2(fs8, path8) {
   if (path8 && !await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function boxKeyOrder2(existing) {
@@ -2677,7 +2696,7 @@ async function submitProposalUnlocked(fs8, clock, roleInput, boxId, body) {
     createdAt: clock.now(),
     body: text
   };
-  await ensureDir4(fs8, join2("temp", role, "proposals"));
+  await ensureDir3(fs8, join2("temp", role, "proposals"));
   await writeProposal(fs8, proposal);
   return proposal;
 }
@@ -2738,7 +2757,7 @@ async function writeProposal(fs8, proposal) {
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir4(fs8, path8) {
+async function ensureDir3(fs8, path8) {
   if (!await fs8.exists(path8)) await fs8.mkdir(path8);
 }
 function normalizeRole(role) {
@@ -4639,7 +4658,6 @@ var LEGACY_MUTATION_COMMANDS = /* @__PURE__ */ new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
-  "report",
   "complete",
   "stamp",
   "grant-readable",
@@ -4776,7 +4794,7 @@ async function main() {
   if (!tentCommands.has(cmd)) {
     return fail(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new migrate import task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new migrate import task role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
   const env = await makeEnv();
@@ -4901,19 +4919,6 @@ ${r.relayPrompt}`);
       console.log(JSON.stringify(registry, null, 2));
       break;
     }
-    case "report": {
-      const { positionals, flags } = parseFlags(args);
-      const [boxId, bodySource] = positionals;
-      if (!boxId || !bodySource) {
-        return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
-      }
-      if (positionals.length > 2) return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
-      const body = bodySource === "-" ? await readStdin() : await readBodyFile(bodySource);
-      const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
-      const report = await submitReport(env.fs, env.clock, boxId, body, commits);
-      console.log(`\u2713 Report ready for review: ${report.path}`);
-      break;
-    }
     case "propose": {
       const { positionals } = parseFlags(args);
       const [boxId, bodySource] = positionals;
@@ -4937,18 +4942,12 @@ ${r.relayPrompt}`);
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
-      const reports = (await loadReports(env.fs)).filter((report) => report.boxId === boxId);
-      const readyReport = reports.find((report) => report.status === "ready");
-      const rejectedReport = reports.find((report) => report.status === "rejected");
-      if (!readyReport && rejectedReport) {
-        return fail(`Report for ${boxId} was rejected; submit a revised report before completing`);
-      }
       const hasExplicitCommits = Object.prototype.hasOwnProperty.call(flags, "commits");
       const explicitRefs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       if (hasExplicitCommits && explicitRefs.length === 0) {
         return fail("--commits requires at least one commit ref");
       }
-      const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
+      const refs = hasExplicitCommits ? explicitRefs : [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines = [];
       const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
@@ -4965,15 +4964,7 @@ ${r.relayPrompt}`);
           (item) => `${item.sourceRef} \u2192 ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
         );
       };
-      if (readyReport) {
-        await acceptReport(env, readyReport.path, {
-          commits: refs,
-          integrate: refs.length > 0 ? integrate : void 0,
-          acceptedBy
-        });
-      } else {
-        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0, acceptedBy);
-      }
+      await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : void 0, acceptedBy);
       for (const line of integrationLines) console.log(line);
       console.log(`\u2713 Completed ${boxId}`);
       break;
@@ -5259,8 +5250,7 @@ Legacy direct-core mutations (external / non-.tent system root only \u2014 migra
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
-  report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId> [options]         Confirm completion and release owner.
+  complete <boxId> [options]         Confirm completion and release owner (no Delivery).
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
   grant-readable <boxId>             Mark a box readable.

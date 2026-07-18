@@ -14,9 +14,10 @@ import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
 import { buildInbox, InboxItem } from "../core/inbox.js";
-import { loadReports, rejectReport, type DeliveryReport } from "../core/report.js";
+import { loadDeliveries, type DeliveryRecord } from "../core/delivery.js";
 import { acceptProposal, loadProposals, rejectProposal, type Proposal } from "../core/proposal.js";
 import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
+import { taskAccept, taskReject } from "../core/task-lifecycle.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
 import { parseOutputPointer } from "../core/output.js";
 import {
@@ -65,7 +66,6 @@ import {
   patchBox,
   patchBody,
   adoptCopiedSubtree,
-  acceptReport,
   stamp,
 } from "../core/ops.js";
 
@@ -80,7 +80,7 @@ export class TentView extends ItemView {
   private tentName = "";
   private selectedId: string | null = null;
   private tent: LoadedTent | null = null;
-  private reports: DeliveryReport[] = [];
+  private deliveries: DeliveryRecord[] = [];
   private proposals: Proposal[] = [];
   private tasks: TaskEnvelope[] = [];
   private inbox: InboxItem[] = [];
@@ -105,7 +105,7 @@ export class TentView extends ItemView {
   private pendingDelete: string | null = null;
   private roles: RoleDefinition[] = [];
   private registryTags: string[] = [];
-  // 每个 box 的 pending proposal 数；report / 待投递 task 在 boxTriageCount 合并。
+  // 每个 box 的 pending proposal 数；Delivery / 待投递 task 在 boxTriageCount 合并。
   private pendingByTarget: Map<string, number> = new Map();
   private loadError: string | null = null;
   private refreshTimer: number | null = null;
@@ -216,7 +216,7 @@ export class TentView extends ItemView {
         const fs = this.env().fs;
         await this.adoptNativeCopies();
         this.tent = await loadTent(fs);
-        this.reports = await loadReports(fs);
+        this.deliveries = await loadDeliveries(fs);
         this.proposals = await loadProposals(fs);
         this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(this.tent);
@@ -225,7 +225,7 @@ export class TentView extends ItemView {
         this.loadError = null;
       } catch (e) {
         this.tent = null;
-        this.reports = [];
+        this.deliveries = [];
         this.proposals = [];
         this.tasks = [];
         this.inbox = [];
@@ -238,7 +238,7 @@ export class TentView extends ItemView {
     const statusCounts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchItems.length,
       pendingProposals: this.pendingProposals().length,
-      readyReports: this.reports.filter((report) => report.status === "ready").length,
+      readyReports: this.readyDeliveries().length,
     });
     this.plugin.updateStatus({
       triage: statusCounts.triage,
@@ -1292,7 +1292,7 @@ export class TentView extends ItemView {
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
       pendingProposals: this.pendingProposalsForBox(box.id).length,
-      readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length,
+      readyReports: this.readyDeliveriesForBox(box.id).length,
     });
     const mkTab = (key: "note" | "dispatch" | "triage", label: string, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
@@ -1323,17 +1323,38 @@ export class TentView extends ItemView {
 
   private boxTriageCount(box: Box): number {
     const proposals = this.pendingProposalsForBox(box.id).length;
-    const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
+    const deliveries = this.readyDeliveriesForBox(box.id).length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
-    return proposals + reports + dispatches;
+    return proposals + deliveries + dispatches;
   }
 
-  // 待裁 tab:pending proposal + 完成待确认(中断释放 / 确认完成)
+  private readyDeliveries(): DeliveryRecord[] {
+    return this.deliveries.filter((d) => d.status === "ready");
+  }
+
+  private readyDeliveriesForBox(boxId: string): DeliveryRecord[] {
+    return this.readyDeliveries().filter((d) => d.boxId === boxId);
+  }
+
+  private rejectedDeliveryForBox(boxId: string): DeliveryRecord | undefined {
+    return this.deliveries.find((d) => d.boxId === boxId && d.status === "rejected");
+  }
+
+  private taskForDelivery(delivery: DeliveryRecord): TaskEnvelope | undefined {
+    return this.tasks.find(
+      (t) =>
+        t.id === delivery.taskId ||
+        t.path === delivery.taskId ||
+        t.activeDeliveryId === delivery.id
+    );
+  }
+
+  // 待裁 tab:pending proposal + Delivery 完成待确认(中断释放 / 确认完成)
   private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
     const proposals = this.pendingProposalsForBox(box.id);
     const owner = box.fm.owner;
-    const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
-    const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
+    const delivery = this.readyDeliveriesForBox(box.id)[0];
+    const rejectedDelivery = this.rejectedDeliveryForBox(box.id);
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -1346,7 +1367,7 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposals.length === 0 && !owner && !report) {
+    if (proposals.length === 0 && !owner && !delivery) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
     }
@@ -1392,25 +1413,26 @@ export class TentView extends ItemView {
       }
     }
 
-    if (report) {
+    if (delivery) {
       body.createDiv({ cls: "tent-triage-sec", text: "待确认交付" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
-      const first = report.body.split("\n").map((line) => line.trim()).find(Boolean) || "(无说明)";
+      const first =
+        delivery.summary.split("\n").map((line) => line.trim()).find(Boolean) || "(无说明)";
       main.createDiv({ cls: "tent-triage-name", text: first });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: `${report.role} · ${report.commits.length === 0 ? "无代码提交" : `${report.commits.length} 个代码提交`}`,
+        text: `${delivery.role} · ${delivery.commits.length === 0 ? "无代码提交" : `${delivery.commits.length} 个代码提交`}`,
       });
       const acts = item.createDiv({ cls: "tent-triage-acts" });
       const open = acts.createEl("button", { text: "打开" });
       open.setAttr("type", "button");
-      open.onclick = () => this.openVaultFile(report.path);
+      open.onclick = () => this.openVaultFile(delivery.path);
       const reject = acts.createEl("button", { text: "驳回" });
       reject.setAttr("type", "button");
       reject.onclick = async () => {
         try {
-          await rejectReport(this.env().fs, report.path);
+          await this.rejectReadyDelivery(delivery);
           await this.refresh();
           new Notice("已驳回，owner 保留，等待 agent 重新交付");
         } catch (e) {
@@ -1421,14 +1443,14 @@ export class TentView extends ItemView {
       done.setAttr("type", "button");
       const statuslessChildren = statuslessDirectChildren(box);
 
-      if (report.commits.length > 0) {
+      if (delivery.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
-        pick.createDiv({ cls: "tent-commit-note", text: "读取 report commits…" });
-        this.loadRoleCommits(report.role).then((commits) => {
+        pick.createDiv({ cls: "tent-commit-note", text: "读取 delivery commits…" });
+        this.loadRoleCommits(delivery.role).then((commits) => {
           pick.empty();
           pick.createDiv({ cls: "tent-commit-head", text: "确认后将全部合入:" });
           const byRef = new Map((commits || []).map((commit) => [commit.ref, commit]));
-          for (const ref of report.commits) {
+          for (const ref of delivery.commits) {
             const commit = byRef.get(ref);
             const row = pick.createDiv({ cls: "tent-commit-row" });
             row.createSpan({ cls: "tent-commit-sha", text: commit?.shortRef || ref.slice(0, 8) });
@@ -1436,7 +1458,7 @@ export class TentView extends ItemView {
           }
         }).catch(() => {
           pick.empty();
-          for (const ref of report.commits) {
+          for (const ref of delivery.commits) {
             const row = pick.createDiv({ cls: "tent-commit-row" });
             row.createSpan({ cls: "tent-commit-sha", text: ref.slice(0, 8) });
             row.createSpan({ cls: "tent-commit-sub", text: ref });
@@ -1447,24 +1469,20 @@ export class TentView extends ItemView {
       const accept = async (children: Box[], controls: HTMLButtonElement[] = [done]) => {
         for (const control of controls) control.setAttr("disabled", "true");
         try {
-          await acceptReport(
-            this.env(),
-            report.path,
-            {
-              integrate: async (refs) => {
-                const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
-                if (!wp) throw new Error("帐内没有 workspace 指针");
-                const contract = await ensureRoleWorkspace(wp, report.role);
-                await integrateWorkspaceCommits(contract, refs);
-              },
-            }
-          );
+          await this.acceptReadyDelivery(delivery, {
+            integrate: async (refs) => {
+              const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
+              if (!wp) throw new Error("帐内没有 workspace 指针");
+              const contract = await ensureRoleWorkspace(wp, delivery.role);
+              await integrateWorkspaceCommits(contract, refs);
+            },
+          });
           for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
           const childMessage = children.length > 0 ? `，并盖章 ${children.length} 个子级` : "";
-          new Notice((report.commits.length
-            ? `已确认(合入 ${report.commits.length} commit + 清 owner)`
+          new Notice((delivery.commits.length
+            ? `已确认(合入 ${delivery.commits.length} commit + 清 owner)`
             : "已确认(done + 清 owner)") + childMessage);
         } catch (e) {
           for (const control of controls) control.removeAttribute("disabled");
@@ -1513,10 +1531,42 @@ export class TentView extends ItemView {
       main.createDiv({ cls: "tent-triage-name", text: `${owner} 正在处理此框` });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: rejectedReport ? "上一份交付已驳回，等待重新交付" : "report 到达后可在此确认交付",
+        text: rejectedDelivery
+          ? "上一份交付已驳回，等待重新交付"
+          : "Delivery 到达后可在此确认交付",
       });
     }
 
+  }
+
+  /** Offline plugin accept via task lifecycle (same semantics as task.accept). */
+  private async acceptReadyDelivery(
+    delivery: DeliveryRecord,
+    options: {
+      integrate?: (commits: string[]) => Promise<void>;
+      actor?: string;
+    } = {}
+  ): Promise<void> {
+    const task = this.taskForDelivery(delivery);
+    if (!task?.path) {
+      throw new Error("No task envelope for this delivery; accept via Desktop Service / tent task accept.");
+    }
+    await taskAccept(this.env(), task.path, {
+      actor: options.actor ?? "user",
+      integrate: options.integrate,
+    });
+  }
+
+  /** Offline plugin reject via task lifecycle (resume running for resubmission). */
+  private async rejectReadyDelivery(delivery: DeliveryRecord, note?: string): Promise<void> {
+    const task = this.taskForDelivery(delivery);
+    if (!task?.path) {
+      throw new Error("No task envelope for this delivery; reject via Desktop Service / tent task reject.");
+    }
+    await taskReject(this.env(), task.path, {
+      actor: "user",
+      note: note?.trim() || "User rejected; waiting for resubmission.",
+    });
   }
   private pendingProposals(): Proposal[] {
     return this.proposals.filter((proposal) => proposal.status === "pending");

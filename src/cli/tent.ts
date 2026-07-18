@@ -9,7 +9,7 @@
 //   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
 //   tent skill-install [--target all|claude|shared-agents] [--force]
 //   tent tree | status | roles | find | tags       // 只读
-//   tent dispatch / task-ack / report / …          // external root migration window only
+//   tent dispatch / task-ack / complete / …        // external root migration window only
 
 import * as path from "node:path";
 import * as fs from "node:fs/promises";
@@ -26,7 +26,6 @@ import {
   dispatch,
   stamp,
   completeClaim,
-  acceptReport,
   grantReadable,
   cleanTemp,
   cancelPendingTask,
@@ -46,7 +45,6 @@ import { syncOkfBundle } from "../core/okf.js";
 import { normalizeRegistry, splitType, type TypeRegistry } from "../core/typeRegistry.js";
 import { ensureRoleInit } from "../core/task.js";
 import { loadRolesRegistry, normalizeRoleDefinition, type RoleDefinition, type RolesRegistry } from "../core/skillRoleRegistry.js";
-import { loadReports, submitReport } from "../core/report.js";
 import { submitProposal } from "../core/proposal.js";
 import { findTentSystemRoot, NOT_INSIDE_TENT_MESSAGE, renderTentStatus } from "../core/status.js";
 import { withTentMutation } from "../core/adapter.js";
@@ -67,12 +65,12 @@ import { runProposalSubmit } from "./proposal-rpc.js";
  * On in-workspace system root (`<workspace>/.tent`) these fail-loud — use tent task * / Desktop Service.
  * External / flat collab roots keep them for the migration window (no env escape hatch).
  * `propose` is service-routed on in-workspace (not in this set).
+ * Formal delivery is Delivery-only (`tent task deliver`); no legacy report command.
  */
 const LEGACY_MUTATION_COMMANDS = new Set([
   "dispatch",
   "task-ack",
   "task-cancel",
-  "report",
   "complete",
   "stamp",
   "grant-readable",
@@ -235,7 +233,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task role-init roles dispatch task-ack task-cancel report propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -364,21 +362,6 @@ async function main() {
       console.log(JSON.stringify(registry, null, 2));
       break;
     }
-    case "report": {
-      const { positionals, flags } = parseFlags(args);
-      const [boxId, bodySource] = positionals;
-      if (!boxId || !bodySource) {
-        return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
-      }
-      if (positionals.length > 2) return fail("Usage: tent report <boxId> <bodyFile|-> [--commits <sha,sha>]");
-      const body = bodySource === "-"
-        ? await readStdin()
-        : await readBodyFile(bodySource);
-      const commits = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
-      const report = await submitReport(env.fs, env.clock, boxId, body, commits);
-      console.log(`✓ Report ready for review: ${report.path}`);
-      break;
-    }
     case "propose": {
       const { positionals } = parseFlags(args);
       const [boxId, bodySource] = positionals;
@@ -396,6 +379,7 @@ async function main() {
       break;
     }
     case "complete": {
+      // External-root stamp path only. Formal Delivery review uses tent task deliver/accept.
       const { positionals, flags } = parseFlags(args);
       const boxId = positionals[0];
       if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
@@ -404,18 +388,12 @@ async function main() {
       const box = tent.byId.get(boxId);
       if (!box) return fail(`Box not found: ${boxId}`);
       const owner = ownerFor(box);
-      const reports = (await loadReports(env.fs)).filter((report) => report.boxId === boxId);
-      const readyReport = reports.find((report) => report.status === "ready");
-      const rejectedReport = reports.find((report) => report.status === "rejected");
-      if (!readyReport && rejectedReport) {
-        return fail(`Report for ${boxId} was rejected; submit a revised report before completing`);
-      }
       const hasExplicitCommits = Object.prototype.hasOwnProperty.call(flags, "commits");
       const explicitRefs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
       if (hasExplicitCommits && explicitRefs.length === 0) {
         return fail("--commits requires at least one commit ref");
       }
-      const refs = hasExplicitCommits ? explicitRefs : readyReport?.commits ?? [];
+      const refs = hasExplicitCommits ? explicitRefs : [];
       if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
       let integrationLines: string[] = [];
       const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
@@ -432,15 +410,7 @@ async function main() {
           (item) => `${item.sourceRef} → ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
         );
       };
-      if (readyReport) {
-        await acceptReport(env, readyReport.path, {
-          commits: refs,
-          integrate: refs.length > 0 ? integrate : undefined,
-          acceptedBy,
-        });
-      } else {
-        await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined, acceptedBy);
-      }
+      await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined, acceptedBy);
       for (const line of integrationLines) console.log(line);
       console.log(`✓ Completed ${boxId}`);
       break;
@@ -741,8 +711,7 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
-  report <boxId> <file|->            Submit a delivery report for triage.
-  complete <boxId> [options]         Confirm completion and release owner.
+  complete <boxId> [options]         Confirm completion and release owner (no Delivery).
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
   grant-readable <boxId>             Mark a box readable.

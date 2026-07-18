@@ -1,9 +1,15 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import * as fs from "node:fs/promises";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
-import { loadReport, loadReports, rejectReport, submitReport } from "../src/core/report.js";
+import { createDelivery, loadDeliveries, loadDelivery } from "../src/core/delivery.js";
+import { dispatch } from "../src/core/ops.js";
+import {
+  taskAccept,
+  taskClaim,
+  taskDeliver,
+  taskReject,
+} from "../src/core/task-lifecycle.js";
 import { acceptProposal, loadProposal, loadProposals, rejectProposal, submitProposal } from "../src/core/proposal.js";
 import { makeTent } from "./helpers.js";
 
@@ -17,38 +23,63 @@ test("buildInbox:认领中由 inbox 聚合,不计入待裁", async () => {
   assert.equal(pendingCount(inbox), 0, "认领中不计入待裁");
 });
 
-test("report:驳回保留 owner,重新交付后整份确认并清理临时文件", async () => {
+test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 记录", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
-  const clock = { now: () => "2026-07-01T00:00:00.000Z" };
-  const env = { fs: fsa, clock, tentName: "wqb" };
-  const { acceptReport } = await import("../src/core/ops.js");
+  const env = {
+    fs: fsa,
+    clock: { now: () => "2026-07-01T00:00:00.000Z" },
+    tentName: "wqb",
+    tentRoot: dir,
+  };
 
-  const first = await submitReport(fsa, clock, "bx-g2", "完成第一版", ["aaa", "bbb", "aaa"]);
-  assert.equal(first.path, "temp/executor/reports/bx-g2.md");
-  assert.deepEqual(first.commits, ["aaa", "bbb"]);
-  assert.equal((await loadReports(fsa))[0].status, "ready");
+  // bx-g2 already has owner=executor; free a sibling-free claim box for lifecycle.
+  const result = await dispatch(env as any, "bx-p1", "executor", {
+    userPrompt: "Implement delivery single-track",
+  });
+  await taskClaim(env as any, result.taskPath);
 
-  await rejectReport(fsa, first.path, "需要补测试");
-  assert.equal((await loadReports(fsa))[0].review, "需要补测试");
-  assert.equal((await loadTent(fsa)).byId.get("bx-g2")!.fm.owner, "executor");
+  const first = await taskDeliver(env as any, result.taskPath, {
+    summary: "完成第一版",
+    commits: ["aaa", "bbb", "aaa"],
+  });
+  assert.match(first.delivery.path, /^temp\/executor\/deliveries\/dl-/);
+  assert.deepEqual(first.delivery.commits, ["aaa", "bbb"]);
+  assert.equal(first.delivery.status, "ready");
+  assert.equal((await loadDeliveries(fsa, { boxId: "bx-p1" }))[0].status, "ready");
 
-  const revised = await submitReport(fsa, clock, "bx-g2", "已补测试", ["ccc"]);
-  assert.equal(revised.status, "ready");
+  const rejected = await taskReject(env as any, result.taskPath, {
+    actor: "user",
+    note: "需要补测试",
+  });
+  assert.equal(rejected.delivery.status, "rejected");
+  assert.equal(rejected.delivery.review?.note, "需要补测试");
+  assert.equal(rejected.task.state, "running");
+  assert.equal((await loadTent(fsa)).byId.get("bx-p1")!.fm.owner, "executor");
+
+  const revised = await taskDeliver(env as any, result.taskPath, {
+    summary: "已补测试",
+    commits: ["ccc"],
+  });
+  assert.equal(revised.delivery.status, "ready");
   let integrated: string[] = [];
-  await acceptReport(env as any, revised.path, {
+  const accepted = await taskAccept(env as any, result.taskPath, {
+    actor: "user",
     integrate: async (commits) => {
       integrated = commits;
     },
   });
   assert.deepEqual(integrated, ["ccc"]);
-  const box = (await loadTent(fsa)).byId.get("bx-g2")!;
+  assert.equal(accepted.delivery.status, "accepted");
+  const box = (await loadTent(fsa)).byId.get("bx-p1")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, "done");
-  assert.equal(await fsa.exists(revised.path), false);
+  // Accepted delivery remains as operational history (not deleted like legacy report).
+  assert.equal(await fsa.exists(accepted.delivery.path), true);
+  assert.equal((await loadDelivery(fsa, accepted.delivery.path)).status, "accepted");
 });
 
-test("report:纯数字 commit ref 保持字符串且兼容旧文件", async () => {
+test("delivery:纯数字 commit ref 保持字符串", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const clock = { now: () => "2026-07-03T08:35:00.000Z" };
@@ -58,20 +89,16 @@ test("report:纯数字 commit ref 保持字符串且兼容旧文件", async () =
     "1234567890123456789012345678901234567890",
   ];
 
-  const report = await submitReport(fsa, clock, "bx-g2", "数字 ref", refs);
-  const raw = await fsa.readFile(report.path);
+  const delivery = await createDelivery(fsa, clock, {
+    taskId: "tk-test-numeric",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "数字 ref",
+    commits: refs,
+  });
+  const raw = await fsa.readFile(delivery.path);
   assert.match(raw, /commits: \["2297910", "0001234", "1234567890123456789012345678901234567890"\]/);
-  assert.deepEqual((await loadReport(fsa, report.path)).commits, refs);
-
-  await fsa.writeFile(
-    report.path,
-    "---\ntype: report\nbox: bx-g2\nrole: executor\nstatus: ready\n" +
-      "commits: [08a83cd, 2297910, 0001234, 1234567890123456789012345678901234567890]\n---\n旧 report\n",
-  );
-  assert.deepEqual(
-    (await loadReport(fsa, report.path)).commits,
-    ["08a83cd", ...refs],
-  );
+  assert.deepEqual((await loadDelivery(fsa, delivery.path)).commits, refs);
 });
 
 test("proposal:投递后 pending 进待裁,确认和驳回后离开待裁但保留文件", async () => {

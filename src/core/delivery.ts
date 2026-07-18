@@ -227,6 +227,20 @@ export async function updateDelivery(
   });
 }
 
+/**
+ * Drop non-accepted deliveries for a box (ready / rejected / draft).
+ * Accepted deliveries stay as operational history for retention.
+ */
+export async function removeNonAcceptedDeliveriesForBox(
+  fs: FsAdapter,
+  boxId: string
+): Promise<void> {
+  for (const delivery of await loadDeliveries(fs, { boxId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs.exists(delivery.path)) await fs.remove(delivery.path);
+  }
+}
+
 export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Promise<void> {
   const data: Record<string, unknown> = {
     type: "delivery",

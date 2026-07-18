@@ -1206,91 +1206,6 @@ var init_claim = __esm({
   }
 });
 
-// src/core/report.ts
-async function loadReports(fs) {
-  const reports = [];
-  if (!await fs.exists("temp")) return reports;
-  for (const roleDir of await fs.listDir("temp")) {
-    if (!roleDir.isDir) continue;
-    const dir = join2("temp", roleDir.name, "reports");
-    if (!await fs.exists(dir)) continue;
-    for (const entry of await fs.listDir(dir)) {
-      if (entry.isDir || !entry.name.endsWith(".md")) continue;
-      const path = join2(dir, entry.name);
-      try {
-        reports.push(await loadReport(fs, path));
-      } catch {
-      }
-    }
-  }
-  return reports.sort((a, b) => (b.timestamp || "").localeCompare(a.timestamp || ""));
-}
-async function loadReport(fs, inputPath) {
-  const path = normalizeReportPath(inputPath);
-  if (!await fs.exists(path)) throw new Error(`Report not found: ${path}.`);
-  const { data, body } = parseFrontmatter(await fs.readFile(path));
-  if (data.type !== "report" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "ready" && data.status !== "rejected") {
-    throw new Error(`Invalid report format: ${path}.`);
-  }
-  return {
-    path,
-    boxId: data.box,
-    role: data.role,
-    status: data.status,
-    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((item) => typeof item === "string")) : [],
-    timestamp: typeof data.ts === "string" ? data.ts : void 0,
-    review: typeof data.review === "string" ? data.review : void 0,
-    body: body.trim()
-  };
-}
-async function rejectReport(fs, inputPath, review) {
-  await withTentMutation(fs, async () => {
-    const report = await loadReport(fs, inputPath);
-    if (report.status !== "ready") throw new Error("Only ready reports can be rejected.");
-    report.status = "rejected";
-    report.review = review?.trim() || "User rejected; waiting for resubmission.";
-    await writeReport(fs, report);
-  });
-}
-async function removeReportsForBox(fs, boxId) {
-  for (const report of await loadReports(fs)) {
-    if (report.boxId === boxId && await fs.exists(report.path)) await fs.remove(report.path);
-  }
-}
-function normalizeReportPath(input) {
-  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/reports\/[bc]x-[^/]+\.md$/.test(path)) {
-    throw new Error("Report must point to temp/<role>/reports/<boxId>.md.");
-  }
-  return path;
-}
-async function writeReport(fs, report) {
-  const data = {
-    type: "report",
-    box: report.boxId,
-    role: report.role,
-    status: report.status,
-    commits: report.commits,
-    ts: report.timestamp,
-    review: report.review
-  };
-  await fs.writeFile(
-    report.path,
-    serializeFrontmatter(data, report.body + "\n", ["type", "box", "role", "status", "commits", "ts", "review"])
-  );
-}
-function uniqueCommits(commits) {
-  return [...new Set(commits.map((item) => item.trim()).filter(Boolean))];
-}
-var init_report = __esm({
-  "src/core/report.ts"() {
-    "use strict";
-    init_adapter();
-    init_frontmatter();
-    init_tree();
-  }
-});
-
 // src/core/id.ts
 function makeConceptId(rand = Math.random, len = 6) {
   let s = "";
@@ -1328,6 +1243,9 @@ function makeTaskId(rand = Math.random, len = 8) {
 }
 function isTaskId(id) {
   return id.startsWith("tk-") && id.length > 3;
+}
+function isDeliveryId(id) {
+  return id.startsWith("dl-") && id.length > 3;
 }
 function assertTransition(from, event, to) {
   const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
@@ -1372,6 +1290,31 @@ function allowedTransitions(from) {
       return [];
   }
 }
+function assertReviewAuthority(input) {
+  const actor = input.actor.trim();
+  const submitter = input.submitterRole.trim();
+  const action = input.action ?? "accept";
+  if (!actor) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires a non-empty actor.`
+    );
+  }
+  if (actor === submitter) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.${action} actor must not equal delivery submitter (${submitter}).`
+    );
+  }
+  if (input.asSub !== true) return;
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (actor === "user") return;
+  if (dispatcher && actor === dispatcher) return;
+  throw new TaskLifecycleError(
+    "REVIEW_FORBIDDEN",
+    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
+  );
+}
 var TaskLifecycleError;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
@@ -1384,6 +1327,190 @@ var init_task_model = __esm({
         this.name = "TaskLifecycleError";
       }
     };
+  }
+});
+
+// src/core/delivery.ts
+async function loadDelivery(fs, inputPath) {
+  const path = normalizeDeliveryPath(inputPath);
+  if (!await fs.exists(path)) throw new Error(`Delivery not found: ${path}.`);
+  const { data, body } = parseFrontmatter(await fs.readFile(path));
+  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+    throw new Error(`Invalid delivery format: ${path}.`);
+  }
+  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
+    throw new Error(`Invalid delivery format: ${path}.`);
+  }
+  const status = parseDeliveryStatus(data.status);
+  const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
+  const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  return {
+    path,
+    id: data.id,
+    taskId: data.taskId,
+    boxId: data.boxId,
+    role: data.role,
+    status,
+    summary: body.trim(),
+    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    checks: parseJsonArrayField(data.checksJson, parseChecks),
+    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
+    integrationMode: parseIntegrationMode(data.integrationMode),
+    review: reviewBy && reviewDecision ? {
+      by: reviewBy,
+      decision: reviewDecision,
+      note: typeof data.reviewNote === "string" ? data.reviewNote : void 0
+    } : void 0,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
+  };
+}
+async function loadDeliveries(fs, filter) {
+  const out = [];
+  if (!await fs.exists(TEMP_DIR)) return out;
+  for (const entry of await fs.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join2(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectDeliveryFiles(
+          fs,
+          join2(profilesRoot, profileEntry.name, "deliveries"),
+          filter,
+          out
+        );
+      }
+      continue;
+    }
+    await collectDeliveryFiles(fs, join2(TEMP_DIR, entry.name, "deliveries"), filter, out);
+  }
+  return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+async function collectDeliveryFiles(fs, dir, filter, out) {
+  if (!await fs.exists(dir)) return;
+  for (const entry of await fs.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    try {
+      const d = await loadDelivery(fs, join2(dir, entry.name));
+      if (filter?.taskId && d.taskId !== filter.taskId) continue;
+      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      out.push(d);
+    } catch {
+    }
+  }
+}
+async function removeNonAcceptedDeliveriesForBox(fs, boxId) {
+  for (const delivery of await loadDeliveries(fs, { boxId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs.exists(delivery.path)) await fs.remove(delivery.path);
+  }
+}
+async function writeDelivery(fs, record) {
+  const data = {
+    type: "delivery",
+    id: record.id,
+    taskId: record.taskId,
+    boxId: record.boxId,
+    role: record.role,
+    status: record.status,
+    commits: record.commits,
+    checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
+    artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
+    integrationMode: record.integrationMode,
+    reviewBy: record.review?.by,
+    reviewDecision: record.review?.decision,
+    reviewNote: record.review?.note,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+  await fs.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+}
+function normalizeDeliveryPath(input) {
+  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)) {
+    throw new Error(
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+    );
+  }
+  return path;
+}
+function parseDeliveryStatus(value) {
+  if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
+  throw new Error(`Invalid delivery status: ${String(value)}`);
+}
+function parseIntegrationMode(value) {
+  if (value === void 0 || value === null || value === "null") return null;
+  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
+    return value;
+  }
+  return null;
+}
+function parseJsonArrayField(value, parse) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    return parse(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+function parseChecks(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.name !== "string" || typeof o.command !== "string" || typeof o.exitCode !== "number") continue;
+    out.push({ name: o.name, command: o.command, exitCode: o.exitCode });
+  }
+  return out;
+}
+function parseArtifactRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
+    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
+    out.push({
+      kind: o.kind,
+      target: o.target,
+      label: typeof o.label === "string" ? o.label : void 0
+    });
+  }
+  return out;
+}
+function uniqueCommits(commits) {
+  return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+var KEY_ORDER;
+var init_delivery = __esm({
+  "src/core/delivery.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_paths();
+    init_tree();
+    init_task_model();
+    KEY_ORDER = [
+      "type",
+      "id",
+      "taskId",
+      "boxId",
+      "role",
+      "status",
+      "commits",
+      "checksJson",
+      "artifactRefsJson",
+      "integrationMode",
+      "reviewBy",
+      "reviewDecision",
+      "reviewNote",
+      "createdAt",
+      "updatedAt"
+    ];
   }
 });
 
@@ -1419,6 +1546,9 @@ async function collectTaskFiles(fs, taskDir, tasks) {
 }
 function taskAssigneeKind(task) {
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+}
+function taskAsSub(task) {
+  return task.asSub === true;
 }
 async function loadTaskEnvelope(fs, path) {
   if (!await fs.exists(path)) throw new Error(`Task envelope not found: ${path}.`);
@@ -1683,6 +1813,193 @@ var init_task = __esm({
   }
 });
 
+// src/core/task-lifecycle.ts
+async function taskClaim(env, taskPath, options = {}) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "running" && task.status === "taken") {
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return task;
+    }
+    assertTransition(task.state, "claim", "running");
+    const tent = await loadTent(env.fs);
+    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
+    const previous = claimedBoxes.map((box) => ({
+      box,
+      owner: box.fm.owner,
+      status: box.fm.status,
+      acceptedBy: box.fm.acceptedBy
+    }));
+    for (const box of claimedBoxes) {
+      if (!box.coordination) {
+        throw new Error(
+          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
+        );
+      }
+      const claimable = canClaim(box);
+      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    try {
+      for (const box of claimedBoxes) {
+        await projectAssignee(env.fs, box, task.role, "doing");
+      }
+      await ackTaskEnvelope(env.fs, taskPath);
+      if (options.sessionId) {
+        return patchTaskEnvelope(env.fs, taskPath, {
+          sessionId: options.sessionId,
+          updatedAt: env.clock.now()
+        });
+      }
+      return loadTaskEnvelope(env.fs, taskPath);
+    } catch (error) {
+      for (const item of previous) {
+        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
+      }
+      throw error;
+    }
+  });
+}
+async function taskAccept(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "accept", "accepted");
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "accept"
+    });
+    const commits = options.commits ?? delivery.commits;
+    if (commits.length > 0) {
+      if (!options.integrate) throw new Error("Delivery contains commits; workspace integration is required.");
+      await options.integrate(commits);
+    }
+    delivery.status = "accepted";
+    delivery.integrationMode = "manual-accept";
+    delivery.review = { by: options.actor, decision: "accept" };
+    delivery.updatedAt = env.clock.now();
+    await writeDelivery(env.fs, delivery);
+    const tent = await loadTent(env.fs);
+    const box = requireBoxById(tent, delivery.boxId);
+    await projectAssignee(env.fs, box, void 0, "done", options.actor);
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: "accepted",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+    return { task: next, delivery };
+  });
+}
+async function taskReject(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    const resume = options.resume !== false;
+    const event = resume ? "reject-resume" : "reject-terminal";
+    const to = resume ? "running" : "rejected";
+    assertTransition(task.state, event, to);
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "reject"
+    });
+    delivery.status = "rejected";
+    delivery.review = {
+      by: options.actor,
+      decision: "reject",
+      note: options.note?.trim() || "Rejected; waiting for resubmission."
+    };
+    delivery.updatedAt = env.clock.now();
+    await writeDelivery(env.fs, delivery);
+    if (!resume) {
+      const tent = await loadTent(env.fs);
+      const box = requireBoxById(tent, delivery.boxId);
+      await projectAssignee(env.fs, box, void 0, "todo");
+    }
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: to,
+      // Keep activeDeliveryId for history; new deliver checks ready-only.
+      updatedAt: env.clock.now()
+    });
+    return { task: next, delivery };
+  });
+}
+async function requireActiveReadyDelivery(fs, task) {
+  if (task.activeDeliveryId) {
+    const byId = (await loadDeliveries(fs, { taskId: task.id || task.path })).find(
+      (d) => d.id === task.activeDeliveryId
+    );
+    if (byId && byId.status === "ready") return byId;
+    if (byId) {
+    }
+  }
+  const ready = (await loadDeliveries(fs, { taskId: task.id || task.path })).find((d) => d.status === "ready");
+  if (!ready) {
+    throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
+  }
+  return ready;
+}
+async function projectAssignee(fs, box, owner, status, acceptedBy) {
+  const patch = { owner: owner ?? void 0 };
+  if (owner) patch.acceptedBy = void 0;
+  else if (acceptedBy) patch.acceptedBy = acceptedBy;
+  if (status) patch.status = status;
+  await patchFrontmatter(fs, box, patch);
+}
+async function restoreProjection(fs, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs, box, {
+    owner: owner ?? void 0,
+    status: status ?? void 0,
+    acceptedBy: acceptedBy ?? void 0
+  });
+}
+async function patchFrontmatter(fs, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  const order = [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+  await fs.writeFile(boxFile, serializeFrontmatter(data, body, order));
+}
+function requireBoxById(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
+async function withMutation(fs, action) {
+  return withTentMutation(fs, action);
+}
+var init_task_lifecycle = __esm({
+  "src/core/task-lifecycle.ts"() {
+    "use strict";
+    init_adapter();
+    init_claim();
+    init_delivery();
+    init_frontmatter();
+    init_tree();
+    init_task();
+    init_paths();
+    init_task_model();
+  }
+});
+
 // src/core/manifest.ts
 function buildManifest(tent, input) {
   const { role } = input;
@@ -1799,122 +2116,6 @@ var init_scaffold = __esm({
     init_tree();
     init_id();
     init_paths();
-  }
-});
-
-// src/core/delivery.ts
-var init_delivery = __esm({
-  "src/core/delivery.ts"() {
-    "use strict";
-    init_adapter();
-    init_frontmatter();
-    init_paths();
-    init_tree();
-    init_task_model();
-  }
-});
-
-// src/core/task-lifecycle.ts
-async function taskClaim(env, taskPath, options = {}) {
-  return withMutation(env.fs, async () => {
-    const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.state === "running" && task.status === "taken") {
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now()
-        });
-      }
-      return task;
-    }
-    assertTransition(task.state, "claim", "running");
-    const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy
-    }));
-    for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
-      const claimable = canClaim(box);
-      if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
-    }
-    try {
-      for (const box of claimedBoxes) {
-        await projectAssignee(env.fs, box, task.role, "doing");
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now()
-        });
-      }
-      return loadTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
-    }
-  });
-}
-async function projectAssignee(fs, box, owner, status, acceptedBy) {
-  const patch = { owner: owner ?? void 0 };
-  if (owner) patch.acceptedBy = void 0;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs, box, patch);
-}
-async function restoreProjection(fs, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs, box, {
-    owner: owner ?? void 0,
-    status: status ?? void 0,
-    acceptedBy: acceptedBy ?? void 0
-  });
-}
-async function patchFrontmatter(fs, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  const order = [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
-  await fs.writeFile(boxFile, serializeFrontmatter(data, body, order));
-}
-function requireBoxById(tent, boxId) {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
-}
-async function withMutation(fs, action) {
-  return withTentMutation(fs, action);
-}
-var init_task_lifecycle = __esm({
-  "src/core/task-lifecycle.ts"() {
-    "use strict";
-    init_adapter();
-    init_claim();
-    init_delivery();
-    init_frontmatter();
-    init_report();
-    init_tree();
-    init_task();
-    init_paths();
-    init_task_model();
   }
 });
 
@@ -2072,7 +2273,6 @@ var init_forkOps = __esm({
 // src/core/ops.ts
 var ops_exports = {};
 __export(ops_exports, {
-  acceptReport: () => acceptReport,
   adoptCopiedSubtree: () => adoptCopiedSubtree,
   archiveBox: () => archiveBox,
   cancelPendingTask: () => cancelPendingTask,
@@ -2241,22 +2441,6 @@ async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
-async function acceptReport(env, reportPath, options = {}) {
-  await withMutation2(env.fs, async () => {
-    const report = await loadReport(env.fs, reportPath);
-    if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById2(tent, report.boxId);
-    if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
-    const commits = options.commits ?? report.commits;
-    if (commits.length > 0) {
-      if (!options.integrate) throw new Error("Report contains commits; workspace integration is required.");
-      await options.integrate(commits);
-    }
-    await setOwner(env.fs, box, void 0, "done", options.acceptedBy ?? "user");
-    await env.fs.remove(report.path);
-  });
-}
 async function grantReadable(env, boxId) {
   await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
@@ -2281,7 +2465,7 @@ async function forceRelease(env, boxId) {
     const box = requireBoxById2(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, void 0, "todo");
-    await removeReportsForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
   });
 }
 async function tagBox(env, boxId, name) {
@@ -2603,7 +2787,7 @@ var init_ops = __esm({
     init_task();
     init_task_model();
     init_paths();
-    init_report();
+    init_delivery();
     init_scaffold();
     init_task_lifecycle();
     init_forkOps();
@@ -2782,7 +2966,7 @@ async function buildInbox(tent) {
 }
 
 // src/plugin/view.ts
-init_report();
+init_delivery();
 
 // src/core/proposal.ts
 init_adapter();
@@ -2861,6 +3045,7 @@ async function writeProposal(fs, proposal) {
 
 // src/plugin/view.ts
 init_task();
+init_task_lifecycle();
 
 // src/core/canvas.ts
 init_tree();
@@ -4181,7 +4366,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.tentName = "";
     this.selectedId = null;
     this.tent = null;
-    this.reports = [];
+    this.deliveries = [];
     this.proposals = [];
     this.tasks = [];
     this.inbox = [];
@@ -4206,7 +4391,7 @@ var TentView = class extends import_obsidian4.ItemView {
     this.pendingDelete = null;
     this.roles = [];
     this.registryTags = [];
-    // 每个 box 的 pending proposal 数；report / 待投递 task 在 boxTriageCount 合并。
+    // 每个 box 的 pending proposal 数；Delivery / 待投递 task 在 boxTriageCount 合并。
     this.pendingByTarget = /* @__PURE__ */ new Map();
     this.loadError = null;
     this.refreshTimer = null;
@@ -4294,7 +4479,7 @@ var TentView = class extends import_obsidian4.ItemView {
         const fs = this.env().fs;
         await this.adoptNativeCopies();
         this.tent = await loadTent(fs);
-        this.reports = await loadReports(fs);
+        this.deliveries = await loadDeliveries(fs);
         this.proposals = await loadProposals(fs);
         this.tasks = await loadTaskEnvelopes(fs);
         this.inbox = await buildInbox(this.tent);
@@ -4303,7 +4488,7 @@ var TentView = class extends import_obsidian4.ItemView {
         this.loadError = null;
       } catch (e) {
         this.tent = null;
-        this.reports = [];
+        this.deliveries = [];
         this.proposals = [];
         this.tasks = [];
         this.inbox = [];
@@ -4316,7 +4501,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const statusCounts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchItems.length,
       pendingProposals: this.pendingProposals().length,
-      readyReports: this.reports.filter((report) => report.status === "ready").length
+      readyReports: this.readyDeliveries().length
     });
     this.plugin.updateStatus({
       triage: statusCounts.triage,
@@ -5213,7 +5398,7 @@ var TentView = class extends import_obsidian4.ItemView {
     const counts = bottomTabCounts({
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
       pendingProposals: this.pendingProposalsForBox(box.id).length,
-      readyReports: this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length
+      readyReports: this.readyDeliveriesForBox(box.id).length
     });
     const mkTab = (key, label, count = 0) => {
       const t = tabs.createDiv({ cls: "tent-bottom-tab" + (this.bottomTab === key ? " is-active" : "") });
@@ -5242,16 +5427,30 @@ var TentView = class extends import_obsidian4.ItemView {
   }
   boxTriageCount(box) {
     const proposals = this.pendingProposalsForBox(box.id).length;
-    const reports = this.reports.filter((report) => report.boxId === box.id && report.status === "ready").length;
+    const deliveries = this.readyDeliveriesForBox(box.id).length;
     const dispatches = this.pendingDispatchByBox.get(box.id)?.length ?? 0;
-    return proposals + reports + dispatches;
+    return proposals + deliveries + dispatches;
   }
-  // 待裁 tab:pending proposal + 完成待确认(中断释放 / 确认完成)
+  readyDeliveries() {
+    return this.deliveries.filter((d) => d.status === "ready");
+  }
+  readyDeliveriesForBox(boxId) {
+    return this.readyDeliveries().filter((d) => d.boxId === boxId);
+  }
+  rejectedDeliveryForBox(boxId) {
+    return this.deliveries.find((d) => d.boxId === boxId && d.status === "rejected");
+  }
+  taskForDelivery(delivery) {
+    return this.tasks.find(
+      (t) => t.id === delivery.taskId || t.path === delivery.taskId || t.activeDeliveryId === delivery.id
+    );
+  }
+  // 待裁 tab:pending proposal + Delivery 完成待确认(中断释放 / 确认完成)
   drawTriageInline(body, actSlot, box) {
     const proposals = this.pendingProposalsForBox(box.id);
     const owner = box.fm.owner;
-    const report = this.reports.find((item) => item.boxId === box.id && item.status === "ready");
-    const rejectedReport = this.reports.find((item) => item.boxId === box.id && item.status === "rejected");
+    const delivery = this.readyDeliveriesForBox(box.id)[0];
+    const rejectedDelivery = this.rejectedDeliveryForBox(box.id);
     if (owner) {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
@@ -5264,7 +5463,7 @@ var TentView = class extends import_obsidian4.ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposals.length === 0 && !owner && !report) {
+    if (proposals.length === 0 && !owner && !delivery) {
       body.createDiv({ cls: "tent-bottom-empty", text: "\u65E0\u5F85\u5904\u7406" });
       return;
     }
@@ -5308,25 +5507,25 @@ var TentView = class extends import_obsidian4.ItemView {
         };
       }
     }
-    if (report) {
+    if (delivery) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5F85\u786E\u8BA4\u4EA4\u4ED8" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
-      const first = report.body.split("\n").map((line) => line.trim()).find(Boolean) || "(\u65E0\u8BF4\u660E)";
+      const first = delivery.summary.split("\n").map((line) => line.trim()).find(Boolean) || "(\u65E0\u8BF4\u660E)";
       main.createDiv({ cls: "tent-triage-name", text: first });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: `${report.role} \xB7 ${report.commits.length === 0 ? "\u65E0\u4EE3\u7801\u63D0\u4EA4" : `${report.commits.length} \u4E2A\u4EE3\u7801\u63D0\u4EA4`}`
+        text: `${delivery.role} \xB7 ${delivery.commits.length === 0 ? "\u65E0\u4EE3\u7801\u63D0\u4EA4" : `${delivery.commits.length} \u4E2A\u4EE3\u7801\u63D0\u4EA4`}`
       });
       const acts = item.createDiv({ cls: "tent-triage-acts" });
       const open2 = acts.createEl("button", { text: "\u6253\u5F00" });
       open2.setAttr("type", "button");
-      open2.onclick = () => this.openVaultFile(report.path);
+      open2.onclick = () => this.openVaultFile(delivery.path);
       const reject = acts.createEl("button", { text: "\u9A73\u56DE" });
       reject.setAttr("type", "button");
       reject.onclick = async () => {
         try {
-          await rejectReport(this.env().fs, report.path);
+          await this.rejectReadyDelivery(delivery);
           await this.refresh();
           new import_obsidian4.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
         } catch (e) {
@@ -5336,14 +5535,14 @@ var TentView = class extends import_obsidian4.ItemView {
       const done = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
       done.setAttr("type", "button");
       const statuslessChildren = statuslessDirectChildren(box);
-      if (report.commits.length > 0) {
+      if (delivery.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
-        pick.createDiv({ cls: "tent-commit-note", text: "\u8BFB\u53D6 report commits\u2026" });
-        this.loadRoleCommits(report.role).then((commits) => {
+        pick.createDiv({ cls: "tent-commit-note", text: "\u8BFB\u53D6 delivery commits\u2026" });
+        this.loadRoleCommits(delivery.role).then((commits) => {
           pick.empty();
           pick.createDiv({ cls: "tent-commit-head", text: "\u786E\u8BA4\u540E\u5C06\u5168\u90E8\u5408\u5165:" });
           const byRef = new Map((commits || []).map((commit) => [commit.ref, commit]));
-          for (const ref of report.commits) {
+          for (const ref of delivery.commits) {
             const commit = byRef.get(ref);
             const row = pick.createDiv({ cls: "tent-commit-row" });
             row.createSpan({ cls: "tent-commit-sha", text: commit?.shortRef || ref.slice(0, 8) });
@@ -5351,7 +5550,7 @@ var TentView = class extends import_obsidian4.ItemView {
           }
         }).catch(() => {
           pick.empty();
-          for (const ref of report.commits) {
+          for (const ref of delivery.commits) {
             const row = pick.createDiv({ cls: "tent-commit-row" });
             row.createSpan({ cls: "tent-commit-sha", text: ref.slice(0, 8) });
             row.createSpan({ cls: "tent-commit-sub", text: ref });
@@ -5361,23 +5560,19 @@ var TentView = class extends import_obsidian4.ItemView {
       const accept = async (children, controls = [done]) => {
         for (const control of controls) control.setAttr("disabled", "true");
         try {
-          await acceptReport(
-            this.env(),
-            report.path,
-            {
-              integrate: async (refs) => {
-                const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
-                if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace \u6307\u9488");
-                const contract = await ensureRoleWorkspace(wp, report.role);
-                await integrateWorkspaceCommits(contract, refs);
-              }
+          await this.acceptReadyDelivery(delivery, {
+            integrate: async (refs) => {
+              const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
+              if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace \u6307\u9488");
+              const contract = await ensureRoleWorkspace(wp, delivery.role);
+              await integrateWorkspaceCommits(contract, refs);
             }
-          );
+          });
           for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
           const childMessage = children.length > 0 ? `\uFF0C\u5E76\u76D6\u7AE0 ${children.length} \u4E2A\u5B50\u7EA7` : "";
-          new import_obsidian4.Notice((report.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${report.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)") + childMessage);
+          new import_obsidian4.Notice((delivery.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${delivery.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)") + childMessage);
         } catch (e) {
           for (const control of controls) control.removeAttribute("disabled");
           new import_obsidian4.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
@@ -5424,9 +5619,31 @@ var TentView = class extends import_obsidian4.ItemView {
       main.createDiv({ cls: "tent-triage-name", text: `${owner} \u6B63\u5728\u5904\u7406\u6B64\u6846` });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: rejectedReport ? "\u4E0A\u4E00\u4EFD\u4EA4\u4ED8\u5DF2\u9A73\u56DE\uFF0C\u7B49\u5F85\u91CD\u65B0\u4EA4\u4ED8" : "report \u5230\u8FBE\u540E\u53EF\u5728\u6B64\u786E\u8BA4\u4EA4\u4ED8"
+        text: rejectedDelivery ? "\u4E0A\u4E00\u4EFD\u4EA4\u4ED8\u5DF2\u9A73\u56DE\uFF0C\u7B49\u5F85\u91CD\u65B0\u4EA4\u4ED8" : "Delivery \u5230\u8FBE\u540E\u53EF\u5728\u6B64\u786E\u8BA4\u4EA4\u4ED8"
       });
     }
+  }
+  /** Offline plugin accept via task lifecycle (same semantics as task.accept). */
+  async acceptReadyDelivery(delivery, options = {}) {
+    const task = this.taskForDelivery(delivery);
+    if (!task?.path) {
+      throw new Error("No task envelope for this delivery; accept via Desktop Service / tent task accept.");
+    }
+    await taskAccept(this.env(), task.path, {
+      actor: options.actor ?? "user",
+      integrate: options.integrate
+    });
+  }
+  /** Offline plugin reject via task lifecycle (resume running for resubmission). */
+  async rejectReadyDelivery(delivery, note) {
+    const task = this.taskForDelivery(delivery);
+    if (!task?.path) {
+      throw new Error("No task envelope for this delivery; reject via Desktop Service / tent task reject.");
+    }
+    await taskReject(this.env(), task.path, {
+      actor: "user",
+      note: note?.trim() || "User rejected; waiting for resubmission."
+    });
   }
   pendingProposals() {
     return this.proposals.filter((proposal) => proposal.status === "pending");

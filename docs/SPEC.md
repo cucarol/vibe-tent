@@ -198,30 +198,32 @@ Whether to reuse an existing session is controlled by the user, not Tent.
 
 ## 5. Completion And Interruption
 
-An agent's report is still its chat response. To make that delivery reviewable
-in the Obsidian UI, the agent also submits the same text and its commit refs to
-the deterministic temporary path `temp/<role>/reports/<boxId>.md`. A report has
-no id and is not permanent history.
+An agent's chat response is still human-readable progress. Formal delivery is a
+**Delivery** record (`dl-`) written under `temp/<role>/deliveries/<dl-id>.md`
+(or `temp/agent-profiles/<profile>/deliveries/…` for profile tasks). The body
+of that file is `Delivery.summary` — the same report text the user reviews —
+with commits, checks, artifactRefs, and review metadata in frontmatter.
 
-Only user confirmation completes delivery.
+Only user confirmation (`task.accept`) completes delivery under the default
+manual policy. Agents submit via `task.deliver` / `tent task deliver`.
 
-**Complete**
+**Accept (task.accept)**
 
-1. if `--require-check <command>` is supplied, run it in the integration
-   workspace before any workspace or Tent mutation;
-2. integrate every commit bound to the ready report into the workspace target
+1. optional workspace checks and commit integration run before Tent mutation
+   when the ready Delivery lists commits;
+2. integrate every commit bound to the ready Delivery into the workspace target
    branch (normally `main`): fast-forward when the selected commits are exactly
    the complete `target..last` interval, otherwise use conflict-aware
    cherry-pick;
 3. if integration succeeds, set the accepted box to `done`, clear its direct
-   owner, record `acceptedBy`, then remove the temporary report;
-4. if the required check or integration fails, leave workspace state and Tent
-   owner/status/report state unchanged.
+   owner / assignee projection, record review on the Delivery, leave the
+   accepted Delivery file for operational history/retention;
+4. if integration fails, leave workspace state and Tent owner/status/Delivery
+   state unchanged.
 
-A report can be rejected by manually setting the temporary report `status` to
-`rejected` (or by UI affordances that do the same). This performs no workspace
-integration, keeps the owner and `doing` state, and lets the agent replace it
-with a revised delivery.
+A Delivery can be rejected (`task.reject`). This performs no workspace
+integration, keeps occupation / `doing` (resume path), marks the Delivery
+`rejected`, and lets the agent deliver again.
 
 The workspace target branch must be checked out and clean. A cherry-pick batch
 is atomic: Tent records the original target tip and resets the workspace to it
@@ -233,7 +235,7 @@ same `-x` cherry-pick is idempotent.
 - performs no workspace integration;
 - sets the directly owned box to `todo`;
 - clears its owner;
-- removes any temporary report for that box;
+- removes non-accepted Delivery records for that box;
 - preserves the role branch/worktree and all workspace changes.
 
 Completion and interruption are distinct core actions even if a UI groups them
@@ -308,10 +310,10 @@ Run from a Tent root:
 ```text
 tent role-init <role>
 tent roles
+tent task list|get|claim|deliver|accept|reject|…
 tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
 tent task-ack <taskPath>
 tent task-cancel <taskPath>
-tent report <boxId> <bodyFile|-> [--commits <sha,sha>]
 tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
 tent stamp <boxId> [--by <role>]
 tent status
@@ -324,22 +326,23 @@ tent skill-install [--target all|claude|shared-agents] [--force]  # default: all
 tent tree
 ```
 
-`stamp` is completion without workspace commits. `complete` is the normal
-workspace-aware acceptance path. When a ready report exists, `complete`
-defaults to that report's commit list; an explicit `--commits` list overrides
-it. A successful `complete` consumes the ready report after integration and
-state mutation succeed. With no report and no explicit commits, `complete`
-remains equivalent to the zero-integration `stamp` path. A rejected report must
-be replaced before `complete` may proceed.
+Formal delivery is **Delivery-only** via `tent task deliver` / `task.deliver`.
+There is no legacy `tent report` path. `stamp` / `complete` remain external-root
+helpers for zero-Delivery completion (owner release / done) during migration;
+Desktop and in-workspace mutates use Local Service `task.*` only. When a ready
+Delivery exists, `task.accept` uses that Delivery's commit list; an explicit
+`--commits` list may override. Accepted Deliveries remain as operational history
+(subject to retention). Rejected Deliveries stay until the agent delivers again
+or interrupt/force-release drops non-accepted records.
 
 `status` is a read-only status view for quick orientation: Tent root, workspace,
 pending proposals, pending task envelopes, and active claims.
 
-`--require-check` is a user-supplied mechanical gate. It runs in the resolved
-workspace before cherry-pick, owner clearing, report deletion, or any other
-mutation. A non-zero exit or missing command aborts completion. `--by <role>`
-records the accepting role in `acceptedBy`; without it, acceptance is recorded
-as `user`.
+`--require-check` is a user-supplied mechanical gate on external-root `complete`.
+It runs in the resolved workspace before cherry-pick, owner clearing, or any
+other mutation. A non-zero exit or missing command aborts completion.
+`--by <role>` records the accepting role in `acceptedBy`; without it, acceptance
+is recorded as `user`.
 
 ## 10. UI Contract
 

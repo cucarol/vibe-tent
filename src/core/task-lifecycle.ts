@@ -7,12 +7,12 @@ import { canClaim } from "./claim.js";
 import {
   createDeliveryUnlocked,
   loadDeliveries,
+  removeNonAcceptedDeliveriesForBox,
   writeDelivery,
   type DeliveryRecord,
 } from "./delivery.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import type { OpsEnv } from "./ops-context.js";
-import { removeReportsForBox } from "./report.js";
 import { boxNotePath, loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
 import {
@@ -365,7 +365,7 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
       const box = tent.byId.get(claimId);
       if (!box) continue;
       await projectAssignee(env.fs, box, undefined, "todo");
-      await removeReportsForBox(env.fs, box.id);
+      await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
     }
 
     return patchTaskEnvelope(env.fs, taskPath, {
@@ -417,7 +417,7 @@ async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promis
     const box = tent.byId.get(claimId);
     if (!box) continue;
     await projectAssignee(env.fs, box, undefined, "todo");
-    await removeReportsForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
   }
 }
 

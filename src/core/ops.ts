@@ -30,7 +30,7 @@ import {
   agentProfileTasksDir,
   agentProfileTempRoot,
 } from "./paths.js";
-import { loadReport, removeReportsForBox } from "./report.js";
+import { removeNonAcceptedDeliveriesForBox } from "./delivery.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
 import { taskClaim } from "./task-lifecycle.js";
@@ -288,34 +288,6 @@ export async function completeClaim(
   });
 }
 
-/** 采纳一份完整 report：全部 commits 成功合入后才完成并清理临时 report。 */
-export interface AcceptReportOptions {
-  commits?: string[];
-  integrate?: (commits: string[]) => Promise<void>;
-  acceptedBy?: string;
-}
-
-export async function acceptReport(
-  env: OpsEnv,
-  reportPath: string,
-  options: AcceptReportOptions = {}
-): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const report = await loadReport(env.fs, reportPath);
-    if (report.status !== "ready") throw new Error("Only ready reports can be confirmed.");
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, report.boxId);
-    if (box.fm.owner !== report.role) throw new Error("Report role does not match the current owner.");
-    const commits = options.commits ?? report.commits;
-    if (commits.length > 0) {
-      if (!options.integrate) throw new Error("Report contains commits; workspace integration is required.");
-      await options.integrate(commits);
-    }
-    await setOwner(env.fs, box, undefined, "done", options.acceptedBy ?? "user");
-    await env.fs.remove(report.path);
-  });
-}
-
 /** 翻可读:批准 asset 请求时顺手把目标框 readable 改 true(无需二段落地)。 */
 export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
@@ -347,7 +319,7 @@ export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
     const box = requireBoxById(tent, boxId);
     if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
     await setOwner(env.fs, box, undefined, "todo");
-    await removeReportsForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
   });
 }
 

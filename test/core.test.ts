@@ -9,7 +9,7 @@ import { canClaim, isFrozen } from "../src/core/claim.js";
 import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
-import { submitReport } from "../src/core/report.js";
+import { createDelivery } from "../src/core/delivery.js";
 import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
 
@@ -479,7 +479,7 @@ test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", asyn
   assert.ok(prompt.children.some((child) => child.id === "bx-g1"));
 });
 
-test("中断认领:清 owner、回到 todo 并清理临时 report", async () => {
+test("中断认领:清 owner、回到 todo 并清理非 accepted delivery", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -487,14 +487,21 @@ test("中断认领:清 owner、回到 todo 并清理临时 report", async () => 
     clock: { now: () => "t" },
     tentName: "wqb",
   };
-  const report = await submitReport(fsa, env.clock, "bx-g2", "未完成的交付", []);
+  const delivery = await createDelivery(fsa, env.clock, {
+    taskId: "tk-force-release",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "未完成的交付",
+    commits: [],
+    status: "ready",
+  });
   const { forceRelease } = await import("../src/core/ops.js");
   await forceRelease(env as any, "bx-g2");
   const tent = await loadTent(fsa);
   const box = tent.byId.get("bx-g2")!;
   assert.equal(box.fm.owner, undefined);
   assert.equal(box.fm.status, "todo");
-  assert.equal(await fsa.exists(report.path), false);
+  assert.equal(await fsa.exists(delivery.path), false);
 });
 
 test("orphan box:同名 md 缺 id 时进入 invalid 态且不进 byId", async () => {
@@ -715,7 +722,7 @@ test("永久删除:node 必须先归档,删除父级会删除整棵子树", asyn
   assert.equal(tent.byId.has("bx-p2"), false);
 });
 
-test("CLI rejects unexpected positional args and missing report body cleanly", async () => {
+test("CLI rejects unexpected positional args and unknown legacy report command cleanly", async () => {
   const dir = await makeTent();
 
   let result = await cli(dir, "new-box", "Extra", "goal", "parent", "ignored");
@@ -728,8 +735,7 @@ test("CLI rejects unexpected positional args and missing report body cleanly", a
 
   result = await cli(dir, "report", "bx-p1", path.join(dir, "missing-report.txt"));
   assert.notEqual(result.code, 0);
-  assert.match(result.stderr, /Body file not found:/);
-  assert.doesNotMatch(result.stderr, /ENOENT/);
+  assert.match(result.stderr, /Unknown command: report/);
 });
 
 test("原生复制收编:重复 id 先失效,再整树重发 id 并清 owner/status", async () => {

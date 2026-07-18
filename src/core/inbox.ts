@@ -1,6 +1,6 @@
 import type { LoadedTent } from "./tree.js";
 
-/** 收件箱条目:当前认领。report 由 temp/<role>/reports 独立聚合。 */
+/** 收件箱条目:当前认领。Delivery 由 temp/<role>/deliveries 独立聚合。 */
 export type InboxItem =
   | { state: "stale"; role: string; boxPath: string; boxId: string };
 

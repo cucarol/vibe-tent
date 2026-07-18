@@ -53,9 +53,9 @@ core 是 Tent（帐） 的地基：一套纯文件约定，加上操作它的 `t
 - **box（框）** —— 每份带 frontmatter 的 markdown 即一个 box：`bx-` id 随移动保持稳定，父子层级表达归属，正文是任务本体。`tent new-box <name> <type> [parentId]` 建框，`tent fork <boxId>` 复制整棵子树。
 - **type / status / tags / 权限** —— `type`（`goal` / `prompt` / `output`）决定语义与默认读写，`status`（todo / doing / done）表进度，`tags` 做横向检索，每个 box 另有 R/W 权限。type 存在 `.tent/types.json`，可自定义名称、默认 R/W 与描述。
 - **派活与认领** —— Desktop / 外部 agent 优先走 **Local Service RPC**：`tent task list|get|claim|deliver`（attach 当前 workspace 的同一 service；CLI 退出不杀 service）。窗口关掉后仍可 claim/deliver，Desktop 看到同一状态。详见 [`docs/desktop/cli-service.md`](docs/desktop/cli-service.md)。
-- **Legacy CLI** —— `tent dispatch` / `tent task-ack` / `tent report` / `tent complete` 仍可直写 core（兼容与离线测试）；**不要**与 Desktop 共置时当第二写路径。新架构协作生命周期以 service 为唯一 mutation entry。
+- **Legacy CLI** —— `tent dispatch` / `tent task-ack` / `tent complete` 等仍可在 external root 直写 core（迁移窗口 / 离线测试）；**不要**与 Desktop 共置时当第二写路径。正式交付只有 Delivery 单轨（`task.deliver`），无 `tent report`。
 - **执行与隔离** —— dispatch 会从 in-workspace tent 解析并创建 `worktree + branch`，每个 role 一条独立车道。真实代码、commit、branch 都发生在 workspace，Tent 侧只存协作状态。
-- **交付与裁决** —— agent 用 `tent task deliver <taskPath> --summary …`（RPC）提交 delivery；你在 Desktop 或 `tent task accept/reject` 裁决。全程你是唯一决策者。
+- **交付与裁决** —— agent 用 `tent task deliver <taskPath> --summary …`（RPC）提交 Delivery（`summary` 即给 user 读的 report 正文）；你在 Desktop 或 `tent task accept/reject` 裁决。全程你是唯一决策者。
 
 ### skill
 
@@ -66,7 +66,7 @@ agent 侧有两个 skill，覆盖「创建」和「进入」两件事。
 
 ### Obsidian UI
 
-可选的可视化层，把上面这套 core 摊在面板里操作：左侧是整棵 box 树，右侧是选中 box 的详情面板，含三个 tab——**笔记**（box 正文）、**派活**（把框交给某个 role）、**待裁**（逐个确认或驳回 report / proposal）。
+可选的可视化层，把上面这套 core 摊在面板里操作：左侧是整棵 box 树，右侧是选中 box 的详情面板，含三个 tab——**笔记**（box 正文）、**派活**（把框交给某个 role）、**待裁**（逐个确认或驳回 Delivery / proposal）。
 
 https://github.com/user-attachments/assets/092cec70-e68d-4298-a2fc-c5d58921a14d
 

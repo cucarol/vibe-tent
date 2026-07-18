@@ -105,7 +105,6 @@ const LEGACY_MUTATION_COMMANDS = [
   "dispatch",
   "task-ack",
   "task-cancel",
-  "report",
   "complete",
   "stamp",
   "grant-readable",
@@ -172,7 +171,6 @@ test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still 
     dispatch: ["cx-missing", "reviewer", "prompt"],
     "task-ack": ["temp/reviewer/tasks/x.md"],
     "task-cancel": ["temp/reviewer/tasks/x.md"],
-    report: ["cx-missing", "-"],
     complete: ["cx-missing"],
     stamp: ["cx-missing"],
     "grant-readable": ["cx-missing"],
@@ -439,27 +437,7 @@ test("external tent clean-temp:rejects traversal role names and preserves root s
   }
 });
 
-test("external tent complete:report without commits is consumed on accept", async () => {
-  // Workspace Git integrate paths live under Service / core unit tests once in-workspace
-  // legacy CLI is sealed; external root still exercises report+complete mutation wiring.
-  const fixture = await makeCompletionFixture();
-  const body = path.join(path.dirname(fixture.tent), "report.md");
-  await fs.writeFile(body, "Implemented the requested delivery.\n", "utf8");
-  await runCli(fixture.tent, "report", fixture.boxId, body);
-
-  await runCli(fixture.tent, "complete", fixture.boxId);
-
-  assert.equal(
-    await exists(externalPath(fixture.tent, "temp", "reviewer", "reports", `${fixture.boxId}.md`)),
-    false,
-  );
-  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
-  assert.equal(completed.status, "done");
-  assert.equal(completed.owner, undefined);
-  assert.equal(completed.acceptedBy, "user");
-});
-
-test("external tent complete:without a report remains a zero-integration stamp path", async () => {
+test("external tent complete:without a Delivery remains a zero-integration stamp path", async () => {
   const fixture = await makeCompletionFixture();
 
   await runCli(fixture.tent, "complete", fixture.boxId);
@@ -802,8 +780,8 @@ async function makeCompletionFixture(): Promise<{
   boxId: string;
   boxNote: string;
 }> {
-  // External system root: legacy complete/stamp/report still direct-write during migration window.
-  // Git integrate + role worktree paths are covered by service/core tests, not in-workspace legacy CLI.
+  // External system root: legacy complete/stamp still direct-write during migration window.
+  // Formal Delivery is task.deliver only; Git integrate paths are covered by service/core tests.
   const tent = await makeExternalTent();
   const deliveryId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
   const dispatched = await runCli(tent, "dispatch", deliveryId, "reviewer", "Implement the delivery.");

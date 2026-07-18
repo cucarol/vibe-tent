@@ -103,7 +103,7 @@ tent propose <boxId> <file|->
 
 ## 协议（service task lifecycle）
 
-Desktop 共置与 Local Service 路径使用 **`tent task *`**（经 Service RPC）。不要把 legacy `task-ack` / `report` 当主流程。
+Desktop 共置与 Local Service 路径使用 **`tent task *`**（经 Service RPC）。不要把 legacy `task-ack` / `complete` 当主流程；正式交付只有 `task.deliver` / Delivery。
 
 1. 确认 **CLI 工作目录是 workspace root**，且存在 `.tent/RULES.md` 与 `.tent/`。否则停止并告诉 user。
 2. 进入或恢复会话时可运行 `tent status` 快速定向：看待裁提案、待 claim / running task、认领态，以及 workspace / system 两个路径。
@@ -153,8 +153,8 @@ dispatch 只写入 envelope，不会唤醒目标 agent；由 user 或已授权�
 
 ## Legacy（仅离线 / 非 Desktop 共置）
 
-直写 core 的 `tent dispatch` / `tent task-ack` / `tent report` / `tent complete` 仍可用于离线测试与旧文档兼容。
+直写 core 的 `tent dispatch` / `tent task-ack` / `tent complete` 仍可用于离线测试与 external root 迁移窗口。**没有** legacy `tent report`：正式交付记录只有 Delivery（`task.deliver`）。
 
 - **不要**在 Desktop 共置、Local Service 已挂载时作为第二写路径使用。
 - 新架构协作生命周期以 service 为唯一 mutation entry：`tent task claim|get|deliver|…`。
-- 若你的本机 skill 仍主推 `task-ack` / `tent report` 作为默认接活/收尾，请用仓库内 `tent skill-install --force` 覆盖安装本 bundled 版本（同步到 `~/.claude/skills` 与共享 `~/.agents/skills`）。
+- 若你的本机 skill 仍主推 `task-ack` 或已删除的 `tent report` 作为默认接活/收尾，请用仓库内 `tent skill-install --force` 覆盖安装本 bundled 版本（同步到 `~/.claude/skills` 与共享 `~/.agents/skills`）。

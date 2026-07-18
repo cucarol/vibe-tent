@@ -259,14 +259,14 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | `tent dispatch` | `task.dispatch` |
 | `tent task-ack` | `task.claim` |
 | `tent task-cancel` | `task.cancel` |
-| `tent report` | `task.deliver` |
-| `tent complete` / `tent stamp` | `task.accept` |
+| *(removed)* `tent report` | `task.deliver` only — no dual track |
+| `tent complete` / `tent stamp` | external-root stamp helpers; review path is `task.accept` |
 | `tent force-release` | `task.interrupt` |
 | `tent fork` | `docs.fork` |
 | `tent propose` | `proposal.submit` |
 | `tent status` | aggregate query |
 
-Aliases may remain for dogfood; SPEC and skills use canonical names.
+Formal delivery is Delivery-only. SPEC and skills use canonical `task.*` names.
 
 ### 3.4 Decoupling from runtime
 
@@ -545,13 +545,13 @@ One-shot cutover; no long-lived dual aliases.
 | `bx-*` | `cx-*` |
 | `box.fm.owner` | active task `assignee` projection (synthesize running task or idle first) |
 | envelope `pending` / `taken` | task `queued` / `running` |
-| `temp/.../reports/<boxId>.md` | `delivery` (`dl-`) on the task |
+| `temp/.../reports/<boxId>.md` + `DeliveryReport` | **removed** — only `delivery` (`dl-`) on the task |
 | `force-release` | `interrupt` |
-| `complete` / `stamp` | `accept` |
+| `complete` / `stamp` | external stamp helpers; review path is `accept` |
 | honor-only A2A spawn | service **`A2APolicy`** `allow|ask|deny` gate |
 | “workspace pointer” product term | **WorkspaceLane** on task; tent lives in-workspace at `.tent/` |
 
-Active claims, pending tasks, and ready reports must migrate or block cutover. Other temp may be discarded after dry-run inventory.
+Active claims, pending tasks, and ready deliveries must migrate or block cutover. Other temp may be discarded after dry-run inventory.
 
 ---
 
