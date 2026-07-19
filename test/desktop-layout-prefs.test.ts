@@ -199,22 +199,22 @@ test("styles.css defines paper-edit semantic color tokens", async () => {
     "utf8"
   );
   for (const token of [
-    "--color-app: #f2f0eb",
-    "--color-sidebar: #f7f5f0",
-    "--color-document: #fffdfc",
-    "--color-surface: #ffffff",
-    "--color-text: #252320",
-    "--color-muted: #76716a",
-    "--color-border: #dedad2",
-    "--color-hover: #eeeae2",
-    "--color-selected: #e7e0d5",
-    "--color-accent: #b4472a",
-    "--color-accent-soft: #f5e5de",
-    "--color-focus: #c86443",
-    "--color-success: #44745a",
-    "--color-warning: #a56a22",
-    "--color-danger: #a33f3f",
-    "--color-running: #52749a",
+    "--color-app: #f4f1ea",
+    "--color-sidebar: #f7f4ed",
+    "--color-document: #fffcf7",
+    "--color-surface: #fffcf7",
+    "--color-text: #1c1914",
+    "--color-muted: #6f685c",
+    "--color-border: #e4ddd0",
+    "--color-hover: #eee8dc",
+    "--color-selected: #e8e0d2",
+    "--color-accent: #9a3412",
+    "--color-accent-soft: #f3e6dc",
+    "--color-focus: #b45309",
+    "--color-success: #3d6b52",
+    "--color-warning: #a16207",
+    "--color-danger: #9f3a3a",
+    "--color-running: #4a678a",
   ]) {
     assert.ok(css.toLowerCase().includes(token.toLowerCase()), `missing token ${token}`);
   }

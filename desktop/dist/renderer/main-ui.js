@@ -425,10 +425,10 @@ var LAYOUT_STORAGE_KEY = "tent.desktop.mainLayout.v1";
 var LAYOUT_BOUNDS = {
   leftMin: 220,
   leftMax: 420,
-  leftDefault: 280,
+  leftDefault: 256,
   rightMin: 280,
   rightMax: 520,
-  rightDefault: 340,
+  rightDefault: 312,
   centerMin: 480,
   /** Visual + hit area for each splitter */
   splitterWidth: 8,
@@ -654,6 +654,15 @@ async function copyContextCardText(text, options = {}) {
 }
 
 // src/desktop/renderer/main-ui.ts
+var ICO = {
+  search: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.2 10.2 13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  plus: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  more: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>',
+  chevronLeft: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevronRight: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modeSource: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5 2.75 8l2.5 3.5M10.75 4.5 13.25 8l-2.5 3.5M9.1 3.5 6.9 12.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modePreview: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+};
 var localTabs = /* @__PURE__ */ new Map();
 var activeCx = null;
 var tree = [];
@@ -1167,11 +1176,12 @@ function renderToolbar() {
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
   const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
+  const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
   el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${tab.mode === "preview" ? "\xB6" : "{ }"}</button>
+    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${modeIco}</button>
     ${tab.dirty ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
     <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">\u22EF</button>
+      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">${ICO.more}</button>
       <div class="menu" data-doc-menu role="menu" hidden>
         <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? ' aria-current="true"' : ""}>\u6E90\u7801</button>
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
@@ -1446,13 +1456,16 @@ function renderTasks() {
     const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
     const rejectDraft = rejectDrafts.get(t.path) || "";
     const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
-    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
-    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
-            <div class="reject-inline">
+    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
+    const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
+              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
+              <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">\u9A73\u56DE</button>
+            </div>
+            <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
+              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
             </div>` : "";
-    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
+    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
         <div class="task-head">
           <strong>${who}</strong>
@@ -1483,6 +1496,22 @@ function renderTasks() {
   });
   el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
+  });
+  el.tasks.querySelectorAll("[data-reject-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const path = btn.getAttribute("data-reject-toggle");
+      const item = btn.closest(".task-item");
+      const panel = item?.querySelector("[data-reject-panel]");
+      if (!(panel instanceof HTMLElement)) return;
+      const open = panel.hasAttribute("hidden");
+      if (open) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        const reason = panel.querySelector("[data-reject-reason]");
+        if (reason instanceof HTMLInputElement) reason.focus();
+      }
+    });
   });
   el.tasks.querySelectorAll("[data-reject-reason]").forEach((input) => {
     input.addEventListener("input", () => {

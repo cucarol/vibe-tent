@@ -9,10 +9,10 @@ export const LAYOUT_STORAGE_KEY = "tent.desktop.mainLayout.v1";
 export const LAYOUT_BOUNDS = {
   leftMin: 220,
   leftMax: 420,
-  leftDefault: 280,
+  leftDefault: 256,
   rightMin: 280,
   rightMax: 520,
-  rightDefault: 340,
+  rightDefault: 312,
   centerMin: 480,
   /** Visual + hit area for each splitter */
   splitterWidth: 8,

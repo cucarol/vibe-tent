@@ -42,6 +42,24 @@ import {
 } from "../workbench/layout-prefs.js";
 import { bindContextCardDrag } from "./context-card-drag.js";
 
+/** Shared 16×16 stroke icons — no char glyphs, no icon pack. */
+const ICO = {
+  search:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.2 10.2 13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  plus:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  more:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>',
+  chevronLeft:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevronRight:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modeSource:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5 2.75 8l2.5 3.5M10.75 4.5 13.25 8l-2.5 3.5M9.1 3.5 6.9 12.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modePreview:
+    '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+} as const;
+
 type ConceptNode = {
   id: string;
   path: string;
@@ -736,18 +754,17 @@ function renderToolbar(): void {
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   const modeLabel = tab.mode === "preview" ? "预览" : "源码";
   const modeTitle = tab.mode === "preview" ? "切换到源码" : "切换到预览";
-  // 克制工具组：模式图标 + dirty 时保存 + ⋯；干净状态不提示「已保存」
+  // 克制工具组：模式图标 + dirty 时保存 + 更多；干净状态不提示「已保存」
+  const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
   el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${
-      tab.mode === "preview" ? "¶" : "{ }"
-    }</button>
+    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${modeIco}</button>
     ${
       tab.dirty
         ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="保存">保存</button>`
         : ""
     }
     <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">⋯</button>
+      <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">${ICO.more}</button>
       <div class="menu" data-doc-menu role="menu" hidden>
         <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? " aria-current=\"true\"" : ""}>源码</button>
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? " aria-current=\"true\"" : ""}>预览</button>
@@ -1081,18 +1098,21 @@ function renderTasks(): void {
             } title="启动 agent">启动</button>`
           : "";
         const interruptBtn = t.canInterrupt
-          ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="中断">中断</button>`
+          ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="中断">中断</button>`
           : "";
         const reviewActions = t.canAcceptOrReject
-          ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认</button>
-            <div class="reject-inline">
+          ? `<div class="task-primary-row">
+              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认</button>
+              <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">驳回</button>
+            </div>
+            <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">驳回</button>
+              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">确认驳回</button>
             </div>`
           : "";
         const actions =
           startBtn || interruptBtn || reviewActions
-            ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>`
+            ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>`
             : "";
 
         return `<li class="task-item" data-task="${escapeHtml(t.path)}">
@@ -1132,6 +1152,22 @@ function renderTasks(): void {
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")!));
+  });
+  el.tasks.querySelectorAll<HTMLElement>("[data-reject-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const path = btn.getAttribute("data-reject-toggle")!;
+      const item = btn.closest(".task-item");
+      const panel = item?.querySelector("[data-reject-panel]");
+      if (!(panel instanceof HTMLElement)) return;
+      const open = panel.hasAttribute("hidden");
+      if (open) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        const reason = panel.querySelector("[data-reject-reason]");
+        if (reason instanceof HTMLInputElement) reason.focus();
+      }
+    });
   });
   el.tasks.querySelectorAll<HTMLInputElement>("[data-reject-reason]").forEach((input) => {
     input.addEventListener("input", () => {

@@ -26,10 +26,16 @@
           <select id="workspace-select" class="field field-compact" title="前台工作区"></select>
         </div>
         <div class="pane-actions">
-          <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-label="搜索" aria-controls="search-drawer" aria-expanded="false">⌕</button>
-          <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-label="新建" aria-controls="create-drawer" aria-expanded="false">＋</button>
+          <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-label="搜索" aria-controls="search-drawer" aria-expanded="false">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.2 10.2 13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-label="新建" aria-controls="create-drawer" aria-expanded="false">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>
+          </button>
           <div class="menu-wrap">
-            <button type="button" id="btn-rail-more" class="icon-btn" title="更多" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" aria-controls="rail-overflow">⋯</button>
+            <button type="button" id="btn-rail-more" class="icon-btn" title="更多" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" aria-controls="rail-overflow">
+              <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>
+            </button>
             <div id="rail-overflow" class="menu" role="menu" hidden>
               <button type="button" id="btn-open-ws" class="menu-item" role="menuitem">打开工作区…</button>
               <button type="button" id="btn-refresh" class="menu-item" role="menuitem">刷新</button>
@@ -40,7 +46,9 @@
             </div>
           </div>
         </div>
-        <button type="button" id="btn-collapse-left" class="icon-btn collapse-edge" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
+        <button type="button" id="btn-collapse-left" class="icon-btn collapse-edge" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </header>
 
       <div id="search-drawer" class="drawer" hidden>
@@ -76,8 +84,12 @@
     <main class="pane stage main-panel" id="main-panel" aria-label="Document">
       <header class="pane-head stage-head">
         <div class="main-rail-toggles" id="rail-toggles">
-          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">›</button>
-          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">‹</button>
+          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
+          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">
+            <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+          </button>
         </div>
         <div id="tabs" class="tabs"></div>
         <div id="toolbar" class="toolbar doc-actions"></div>
@@ -99,14 +111,16 @@
       tabindex="0"
     ></div>
 
-    <!-- 右：检视 -->
+    <!-- 右：检视 — 平面连续，无外层大圆角卡 -->
     <aside class="pane sheet side-panel" id="side-panel" aria-label="检视">
       <header class="pane-head sheet-head">
         <div class="pane-head-main">
           <h2 class="pane-title sheet-title">检视</h2>
           <span id="task-count" class="count-badge" hidden>0</span>
         </div>
-        <button type="button" id="btn-collapse-right" class="icon-btn collapse-edge" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">›</button>
+        <button type="button" id="btn-collapse-right" class="icon-btn collapse-edge" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">
+          <svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>
+        </button>
       </header>
 
       <div class="sheet-body">
