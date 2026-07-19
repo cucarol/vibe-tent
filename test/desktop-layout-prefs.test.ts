@@ -178,13 +178,17 @@ test("index.html exposes resizable three-pane chrome landmarks", async () => {
   assert.match(html, /id="btn-collapse-right"/);
   assert.match(html, /id="btn-expand-left"/);
   assert.match(html, /id="btn-expand-right"/);
-  // Editorial chrome: no full-width topbar; brand + inspector sheet landmarks.
+  // Hierarchy chrome: no full-width topbar; overflow keeps secondary actions.
   assert.doesNotMatch(html, /class="topbar"|id="topbar"/);
-  assert.match(html, /纸研 · Editorial|rail-brand/);
-  assert.match(html, /sheet-title|检视/);
+  assert.match(html, /品牌|brand|帷幄/);
+  assert.match(html, /Nodes|Inspector|Document/);
   assert.match(html, /id="a2u-host"/);
   assert.match(html, /id="workspace-select"/);
   assert.match(html, /id="btn-open-ws"/);
+  assert.match(html, /id="rail-overflow"/);
+  assert.match(html, /id="search-drawer"/);
+  assert.match(html, /id="create-drawer"/);
+  assert.match(html, /id="sec-pending"/);
 });
 
 test("styles.css defines paper-edit semantic color tokens", async () => {

@@ -8,46 +8,62 @@
   <link rel="stylesheet" href="./styles.css" />
 </head>
 <body>
+  <!--
+    一级对象只有三栏：Nodes / Document / Inspector。
+    真实 element id 与 RPC handlers 保留；次级入口收进 overflow / 折叠 section。
+  -->
   <div class="layout" id="main-layout">
-    <!-- 左栏：纸研 Node Explorer — 品牌 + 弱化工具 + 安静树 -->
-    <aside class="rail tree-panel" id="tree-panel" aria-label="Node Explorer">
-      <header class="rail-brand">
-        <div class="brand-block">
-          <h1 class="brand">帷幄</h1>
-          <p class="brand-sub">纸研 · Editorial</p>
+    <!-- 左：Nodes -->
+    <aside class="pane rail tree-panel" id="tree-panel" aria-label="Nodes">
+      <header class="pane-head">
+        <div class="pane-head-main">
+          <div class="brand-line">
+            <span class="brand">帷幄</span>
+            <span class="brand-sub">纸研</span>
+            <span id="health-pill" class="status-dot off" title="Local Service 状态" aria-label="服务离线"></span>
+          </div>
+          <label class="sr-only" for="workspace-select">前台工作区</label>
+          <select id="workspace-select" class="field field-compact" title="前台工作区"></select>
         </div>
-        <div class="rail-brand-meta">
-          <span id="health-pill" class="pill off" title="Local Service 状态">服务离线</span>
-          <button type="button" id="btn-collapse-left" class="icon-btn" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
-        </div>
+        <button type="button" id="btn-collapse-left" class="icon-btn" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
       </header>
 
-      <div class="rail-workspace">
-        <label class="sr-only" for="workspace-select">前台工作区</label>
-        <select id="workspace-select" title="前台工作区"></select>
-        <div class="rail-workspace-actions">
-          <button type="button" id="btn-open-ws" class="ghost-btn" title="打开工作区">打开</button>
-          <button type="button" id="btn-refresh" class="ghost-btn" title="刷新">刷新</button>
-          <button type="button" id="btn-card" class="ghost-btn" title="发出上下文卡">发卡</button>
-          <button type="button" id="btn-float" class="ghost-btn" title="浮动控件">浮动</button>
+      <div class="pane-subhead">
+        <h2 class="pane-title">Nodes</h2>
+        <div class="pane-actions">
+          <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-label="搜索" aria-controls="search-drawer" aria-expanded="false">⌕</button>
+          <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-label="新建" aria-controls="create-drawer" aria-expanded="false">＋</button>
+          <div class="menu-wrap">
+            <button type="button" id="btn-rail-more" class="icon-btn" title="更多" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" aria-controls="rail-overflow">⋯</button>
+            <div id="rail-overflow" class="menu" role="menu" hidden>
+              <button type="button" id="btn-open-ws" class="menu-item" role="menuitem">打开工作区…</button>
+              <button type="button" id="btn-refresh" class="menu-item" role="menuitem">刷新</button>
+              <button type="button" id="btn-card" class="menu-item" role="menuitem">发出上下文卡</button>
+              <button type="button" id="btn-float" class="menu-item" role="menuitem">浮动控件</button>
+              <div class="menu-sep" role="separator"></div>
+              <button type="button" id="btn-new-note" class="menu-item" role="menuitem">新建笔记</button>
+            </div>
+          </div>
         </div>
       </div>
 
-      <div class="rail-tools">
-        <div class="create-row">
-          <select id="create-type" title="可协调一级类型" aria-label="协作框类型"></select>
-          <button type="button" id="btn-new-box" class="ghost-btn" title="一键新建协作框">新建</button>
-          <button type="button" id="btn-new-note" class="ghost-btn" title="新建普通笔记">笔记</button>
-        </div>
-        <div class="search-row">
-          <input id="search-input" placeholder="搜索标题 / 正文" />
-          <button type="button" id="btn-search" class="ghost-btn">搜索</button>
+      <div id="search-drawer" class="drawer" hidden>
+        <div class="drawer-row">
+          <input id="search-input" class="field" placeholder="搜索标题 / 正文" />
+          <button type="button" id="btn-search" class="btn btn-secondary">搜索</button>
         </div>
         <ul id="search-hits" class="card-list search-hits"></ul>
       </div>
 
+      <div id="create-drawer" class="drawer" hidden>
+        <div class="drawer-row">
+          <select id="create-type" class="field" title="可协调一级类型" aria-label="协作框类型"></select>
+          <button type="button" id="btn-new-box" class="btn btn-primary" title="一键新建协作框">新建框</button>
+        </div>
+      </div>
+
       <ul id="tree" class="tree" aria-label="概念树"></ul>
-      <p id="status-line" class="status-line rail-status" aria-live="polite"></p>
+      <p id="status-line" class="status-line" aria-live="polite"></p>
     </aside>
 
     <div
@@ -60,23 +76,20 @@
       tabindex="0"
     ></div>
 
-    <!-- 中栏：文稿台 / 阅读柱 -->
-    <main class="stage main-panel" id="main-panel" aria-label="文档编辑区">
-      <div class="stage-chrome">
+    <!-- 中：Document -->
+    <main class="pane stage main-panel" id="main-panel" aria-label="Document">
+      <header class="pane-head stage-head">
         <div class="main-rail-toggles" id="rail-toggles">
-          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">› 概念树</button>
-          <span class="spacer"></span>
-          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">检视 ‹</button>
+          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">›</button>
+          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">‹</button>
         </div>
-        <div class="stage-top">
-          <div id="tabs" class="tabs"></div>
-          <div id="toolbar" class="toolbar stage-tools"></div>
-        </div>
-      </div>
+        <div id="tabs" class="tabs"></div>
+        <div id="toolbar" class="toolbar doc-actions"></div>
+      </header>
       <div id="editor-host" class="editor-wrap paper">
         <div class="empty empty-cta">
           <p class="empty-title">打开工作区，再选一个概念</p>
-          <p class="empty-hint">左侧可切换或打开带有帐（.tent）的工作区；选中节点后在此阅读与编辑。</p>
+          <p class="empty-hint">使用左栏 Nodes 与更多菜单打开带有帐（.tent）的工作区。</p>
         </div>
       </div>
     </main>
@@ -91,41 +104,54 @@
       tabindex="0"
     ></div>
 
-    <!-- 右栏：检视册 / 纸页 — 分节，非同质卡片堆 -->
-    <aside class="sheet side-panel" id="side-panel" aria-label="检视与待处理">
-      <header class="sheet-head">
-        <h2 class="sheet-title">检视</h2>
+    <!-- 右：Inspector -->
+    <aside class="pane sheet side-panel" id="side-panel" aria-label="Inspector">
+      <header class="pane-head sheet-head">
+        <div class="pane-head-main">
+          <h2 class="pane-title sheet-title">Inspector</h2>
+          <span id="task-count" class="count-badge" hidden>0</span>
+        </div>
         <button type="button" id="btn-collapse-right" class="icon-btn" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">›</button>
       </header>
+
       <div class="sheet-body">
-        <section class="insp-block" aria-labelledby="insp-meta">
-          <h3 id="insp-meta" class="insp-heading">属性</h3>
-          <div id="meta" class="meta muted">未选择</div>
-        </section>
+        <div id="meta" class="meta node-summary muted">未选择</div>
 
-        <section class="insp-block" aria-labelledby="insp-dispatch">
-          <h3 id="insp-dispatch" class="insp-heading">派活</h3>
-          <div id="dispatch-panel" class="dispatch-panel">
-            <div class="muted dispatch-empty">选中协作框后可派活</div>
+        <!-- 二级 section：默认只展开与当前上下文最相关的一项（由 main-ui 控制 open） -->
+        <details class="insp-section" id="sec-pending" open>
+          <summary class="insp-summary">
+            <span>待处理</span>
+            <span class="insp-hint">任务 / 待裁 / A2U</span>
+          </summary>
+          <div class="insp-body">
+            <div id="a2u-host" class="collab-slot" hidden aria-label="A2U 待处理"></div>
+            <div id="u2a-host" class="collab-slot" hidden aria-label="U2A 追加输入"></div>
+            <div id="session-host" class="collab-slot" hidden aria-label="会话状态"></div>
+            <ul id="tasks" class="task-list"></ul>
           </div>
-        </section>
+        </details>
 
-        <section class="insp-block" aria-labelledby="insp-tasks">
-          <div class="insp-head-row">
-            <h3 id="insp-tasks" class="insp-heading">任务 / 待裁</h3>
-            <span id="task-count" class="count-pill" hidden>0</span>
+        <details class="insp-section" id="sec-dispatch">
+          <summary class="insp-summary">
+            <span>派活</span>
+            <span class="insp-hint">协作框</span>
+          </summary>
+          <div class="insp-body">
+            <div id="dispatch-panel" class="dispatch-panel">
+              <div class="muted dispatch-empty">选中协作框后可派活</div>
+            </div>
           </div>
-          <!-- A2U / U2A / session 容器位：后续主界面优先；本批不造后端模型 -->
-          <div id="a2u-host" class="collab-slot" hidden aria-label="A2U 待处理"></div>
-          <div id="u2a-host" class="collab-slot" hidden aria-label="U2A 追加输入"></div>
-          <div id="session-host" class="collab-slot" hidden aria-label="会话状态"></div>
-          <ul id="tasks" class="task-list"></ul>
-        </section>
+        </details>
 
-        <section class="insp-block" aria-labelledby="insp-cards">
-          <h3 id="insp-cards" class="insp-heading">最近上下文卡 · 拖出</h3>
-          <ul id="cards" class="card-list" aria-label="上下文卡列表，可拖到外部输入框"></ul>
-        </section>
+        <details class="insp-section" id="sec-cards">
+          <summary class="insp-summary">
+            <span>上下文卡</span>
+            <span class="insp-hint">拖出</span>
+          </summary>
+          <div class="insp-body">
+            <ul id="cards" class="card-list" aria-label="上下文卡列表，可拖到外部输入框"></ul>
+          </div>
+        </details>
       </div>
     </aside>
   </div>

@@ -699,7 +699,16 @@ var el = {
   searchInput: document.getElementById("search-input"),
   searchHits: document.getElementById("search-hits"),
   createType: document.getElementById("create-type"),
-  btnNewBox: document.getElementById("btn-new-box")
+  btnNewBox: document.getElementById("btn-new-box"),
+  searchDrawer: document.getElementById("search-drawer"),
+  createDrawer: document.getElementById("create-drawer"),
+  railOverflow: document.getElementById("rail-overflow"),
+  btnToggleSearch: document.getElementById("btn-toggle-search"),
+  btnToggleCreate: document.getElementById("btn-toggle-create"),
+  btnRailMore: document.getElementById("btn-rail-more"),
+  secPending: document.getElementById("sec-pending"),
+  secDispatch: document.getElementById("sec-dispatch"),
+  secCards: document.getElementById("sec-cards")
 };
 function layoutViewportWidth() {
   return el.layout?.clientWidth || window.innerWidth || 1200;
@@ -806,6 +815,71 @@ function bindSplitter(side, node) {
   });
   node.addEventListener("dblclick", () => onToggleSide(side));
 }
+function setDrawerOpen(drawer, toggle, open) {
+  if (!drawer) return;
+  drawer.hidden = !open;
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+function setMenuOpen(open) {
+  if (!el.railOverflow) return;
+  el.railOverflow.hidden = !open;
+  el.btnRailMore?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+function closeChromePopovers() {
+  setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+  setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+  setMenuOpen(false);
+}
+function bindChromeMenus() {
+  el.btnToggleSearch?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.searchDrawer?.hidden;
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+    setMenuOpen(false);
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, open);
+    if (open) el.searchInput?.focus();
+  });
+  el.btnToggleCreate?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.createDrawer?.hidden;
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+    setMenuOpen(false);
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, open);
+  });
+  el.btnRailMore?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.railOverflow?.hidden;
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+    setMenuOpen(open);
+  });
+  el.railOverflow?.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (t?.closest(".menu-item")) setMenuOpen(false);
+  });
+  document.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!t) return;
+    if (el.railOverflow?.contains(t) || el.btnRailMore?.contains(t)) return;
+    if (el.searchDrawer?.contains(t) || el.btnToggleSearch?.contains(t)) return;
+    if (el.createDrawer?.contains(t) || el.btnToggleCreate?.contains(t)) return;
+    closeChromePopovers();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeChromePopovers();
+  });
+}
+function syncInspectorSections() {
+  const hasTasks = taskReview.length > 0;
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const canDispatch = !!(tab && tab.coordination);
+  if (!el.secPending || !el.secDispatch || !el.secCards) return;
+  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
+  if (anyOpen) return;
+  if (hasTasks) el.secPending.open = true;
+  else if (canDispatch) el.secDispatch.open = true;
+  else el.secPending.open = true;
+}
 function bindLayoutChrome() {
   el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
   el.btnCollapseRight?.addEventListener("click", () => onToggleSide("right"));
@@ -823,6 +897,7 @@ function bindLayoutChrome() {
 }
 async function boot() {
   bindLayoutChrome();
+  bindChromeMenus();
   document.getElementById("btn-open-ws").addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh").addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note").addEventListener("click", () => void onCreateNote());
@@ -857,8 +932,9 @@ async function refresh() {
 function applyShell(s) {
   state = s;
   const ok = s.health.status === "ok";
-  el.health.className = `pill ${ok ? "ok" : "off"}`;
-  el.health.textContent = ok ? "\u5728\u7EBF" : "\u79BB\u7EBF";
+  el.health.className = `status-dot ${ok ? "ok" : "off"}`;
+  el.health.textContent = "";
+  el.health.setAttribute("aria-label", ok ? "\u670D\u52A1\u5728\u7EBF" : "\u670D\u52A1\u79BB\u7EBF");
   el.health.title = ok ? `Local Service \u6B63\u5E38 \xB7 pid ${s.health.pid ?? "?"} \xB7 ${s.health.version ?? ""}` : "Local Service \u79BB\u7EBF";
   el.wsSelect.innerHTML = "";
   for (const w of s.workspaces) {
@@ -995,16 +1071,13 @@ function renderTree() {
 }
 function renderNodes(nodes) {
   return nodes.map((n) => {
-    const badge = n.coordination ? `<span class="badge box">${escapeHtml(n.status || "\u6846")}</span>` : `<span class="badge note">\u7B14\u8BB0</span>`;
+    const status = n.coordination && n.status ? `<span class="badge box">${escapeHtml(n.status)}</span>` : n.coordination ? `<span class="badge box">\u6846</span>` : "";
     const active = n.id === activeCx ? " active" : "";
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)}">
+        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">
-            <span class="type">${escapeHtml(n.type)}</span>
-            ${badge}
-          </span>
+          <span class="tree-meta">${status}</span>
         </div>
         ${kids}
       </li>`;
@@ -1056,6 +1129,7 @@ function renderAll() {
   renderMeta();
   renderDispatchPanel();
   renderTree();
+  syncInspectorSections();
 }
 function renderTabs() {
   const tabs = [...localTabs.values()];
@@ -1078,15 +1152,35 @@ function renderToolbar() {
   }
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   el.toolbar.innerHTML = `
-    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
-    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
-    <button type="button" data-act="save" class="primary">\u4FDD\u5B58</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347</button>` : ""}
-    <button type="button" data-act="card">\u53D1\u5361</button>
-    <span class="doc-id" title="${escapeHtml(tab.cx)}">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"}</span>
+    <div class="segmented" role="group" aria-label="\u7F16\u8F91\u6A21\u5F0F">
+      <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
+      <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
+    </div>
+    <div class="save-state">
+      <span class="state-label${tab.dirty ? " is-dirty" : ""}" title="${escapeHtml(tab.cx)}">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"}</span>
+      <button type="button" data-act="save" class="btn btn-primary"${tab.dirty ? "" : " disabled"}>\u4FDD\u5B58</button>
+    </div>
+    <div class="menu-wrap">
+      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">\u22EF</button>
+      <div class="menu" data-doc-menu role="menu" hidden>
+        <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
+        ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
+      </div>
+    </div>
   `;
+  const moreBtn = el.toolbar.querySelector("[data-doc-more]");
+  const moreMenu = el.toolbar.querySelector("[data-doc-menu]");
+  moreBtn?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (!moreMenu) return;
+    moreMenu.hidden = !moreMenu.hidden;
+    moreBtn.setAttribute("aria-expanded", moreMenu.hidden ? "false" : "true");
+  });
   el.toolbar.querySelectorAll("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")));
+    btn.addEventListener("click", () => {
+      if (moreMenu) moreMenu.hidden = true;
+      void onToolbar(btn.getAttribute("data-act"));
+    });
   });
 }
 async function onToolbar(act) {
@@ -1180,9 +1274,11 @@ function splitBody(raw) {
 function renderMeta() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
+    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9 Node</span>`;
+    el.meta.classList.add("muted");
     return;
   }
+  el.meta.classList.remove("muted");
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <dl>
@@ -1222,7 +1318,7 @@ function renderDispatchPanel() {
         <textarea id="dispatch-prompt" rows="3" placeholder="\u5199\u7ED9\u76EE\u6807 role \u7684\u4EFB\u52A1\u8BF4\u660E\u2026">${escapeHtml(dispatchPrompt)}</textarea>
       </div>
       <div class="row dispatch-actions">
-        <button type="button" class="primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
+        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
         ${validation.ok ? "" : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`}
       </div>
     </div>
@@ -1294,6 +1390,11 @@ function renderTasks() {
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
+  if (taskReview.length > 0 && el.secPending && !el.secPending.open) {
+    if (el.secDispatch) el.secDispatch.open = false;
+    if (el.secCards) el.secCards.open = false;
+    el.secPending.open = true;
+  }
   if (!taskReview.length) {
     el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
     return;
@@ -1312,12 +1413,12 @@ function renderTasks() {
     const stateLabel = taskStateLabel(t.state, t.status);
     const sessBit = t.sessionState ? ` \xB7 \u4F1A\u8BDD${escapeHtml(sessionStateLabel(t.sessionState))}` : "";
     const rejectDraft = rejectDrafts.get(t.path) || "";
-    const startBtn = t.canStartAgent ? `<button type="button" class="primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u901A\u8FC7 ACP \u542F\u52A8 agent\uFF08callerKind=user\uFF09">\u542F\u52A8 agent</button>` : "";
-    const interruptBtn = t.canInterrupt ? `<button type="button" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD agent \u4F1A\u8BDD">\u4E2D\u65AD</button>` : "";
-    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
+    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u901A\u8FC7 ACP \u542F\u52A8 agent\uFF08callerKind=user\uFF09">\u542F\u52A8 agent</button>` : "";
+    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD agent \u4F1A\u8BDD">\u4E2D\u65AD</button>` : "";
+    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
             <div class="reject-inline">
-              <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
+              <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
+              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
             </div>` : "";
     const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
     const claimNames = (t.claims || []).filter((c) => c !== "root");

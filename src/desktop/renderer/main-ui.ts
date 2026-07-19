@@ -169,6 +169,15 @@ const el = {
   searchHits: document.getElementById("search-hits")!,
   createType: document.getElementById("create-type") as HTMLSelectElement,
   btnNewBox: document.getElementById("btn-new-box") as HTMLButtonElement,
+  searchDrawer: document.getElementById("search-drawer"),
+  createDrawer: document.getElementById("create-drawer"),
+  railOverflow: document.getElementById("rail-overflow"),
+  btnToggleSearch: document.getElementById("btn-toggle-search") as HTMLButtonElement | null,
+  btnToggleCreate: document.getElementById("btn-toggle-create") as HTMLButtonElement | null,
+  btnRailMore: document.getElementById("btn-rail-more") as HTMLButtonElement | null,
+  secPending: document.getElementById("sec-pending") as HTMLDetailsElement | null,
+  secDispatch: document.getElementById("sec-dispatch") as HTMLDetailsElement | null,
+  secCards: document.getElementById("sec-cards") as HTMLDetailsElement | null,
 };
 
 function layoutViewportWidth(): number {
@@ -300,6 +309,83 @@ function bindSplitter(side: "left" | "right", node: HTMLElement | null): void {
   node.addEventListener("dblclick", () => onToggleSide(side));
 }
 
+function setDrawerOpen(
+  drawer: HTMLElement | null,
+  toggle: HTMLButtonElement | null,
+  open: boolean
+): void {
+  if (!drawer) return;
+  drawer.hidden = !open;
+  if (toggle) toggle.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function setMenuOpen(open: boolean): void {
+  if (!el.railOverflow) return;
+  el.railOverflow.hidden = !open;
+  el.btnRailMore?.setAttribute("aria-expanded", open ? "true" : "false");
+}
+
+function closeChromePopovers(): void {
+  setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+  setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+  setMenuOpen(false);
+}
+
+function bindChromeMenus(): void {
+  el.btnToggleSearch?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.searchDrawer?.hidden;
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+    setMenuOpen(false);
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, open);
+    if (open) el.searchInput?.focus();
+  });
+  el.btnToggleCreate?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.createDrawer?.hidden;
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+    setMenuOpen(false);
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, open);
+  });
+  el.btnRailMore?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    const open = !!el.railOverflow?.hidden;
+    setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
+    setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
+    setMenuOpen(open);
+  });
+  el.railOverflow?.addEventListener("click", (ev) => {
+    // Keep menu open only until an item is chosen.
+    const t = ev.target as HTMLElement | null;
+    if (t?.closest(".menu-item")) setMenuOpen(false);
+  });
+  document.addEventListener("click", (ev) => {
+    const t = ev.target as Node | null;
+    if (!t) return;
+    if (el.railOverflow?.contains(t) || el.btnRailMore?.contains(t)) return;
+    if (el.searchDrawer?.contains(t) || el.btnToggleSearch?.contains(t)) return;
+    if (el.createDrawer?.contains(t) || el.btnToggleCreate?.contains(t)) return;
+    closeChromePopovers();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeChromePopovers();
+  });
+}
+
+/** Inspector: only one secondary section open; prefer pending when tasks exist. */
+function syncInspectorSections(): void {
+  const hasTasks = taskReview.length > 0;
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const canDispatch = !!(tab && tab.coordination);
+  if (!el.secPending || !el.secDispatch || !el.secCards) return;
+  // User may toggle details; only auto-pick when nothing is open.
+  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
+  if (anyOpen) return;
+  if (hasTasks) el.secPending.open = true;
+  else if (canDispatch) el.secDispatch.open = true;
+  else el.secPending.open = true;
+}
+
 function bindLayoutChrome(): void {
   el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
   el.btnCollapseRight?.addEventListener("click", () => onToggleSide("right"));
@@ -319,6 +405,7 @@ function bindLayoutChrome(): void {
 
 async function boot(): Promise<void> {
   bindLayoutChrome();
+  bindChromeMenus();
   document.getElementById("btn-open-ws")!.addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh")!.addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note")!.addEventListener("click", () => void onCreateNote());
@@ -356,8 +443,9 @@ async function refresh(): Promise<void> {
 function applyShell(s: ShellState): void {
   state = s;
   const ok = s.health.status === "ok";
-  el.health.className = `pill ${ok ? "ok" : "off"}`;
-  el.health.textContent = ok ? "在线" : "离线";
+  el.health.className = `status-dot ${ok ? "ok" : "off"}`;
+  el.health.textContent = "";
+  el.health.setAttribute("aria-label", ok ? "服务在线" : "服务离线");
   el.health.title = ok
     ? `Local Service 正常 · pid ${s.health.pid ?? "?"} · ${s.health.version ?? ""}`
     : "Local Service 离线";
@@ -525,19 +613,18 @@ function renderTree(): void {
 function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
-      const badge = n.coordination
-        ? `<span class="badge box">${escapeHtml(n.status || "框")}</span>`
-        : `<span class="badge note">笔记</span>`;
+      // displayName 主显示；type 等宽弱化；status 中性 badge，不抢 accent
+      const status = n.coordination && n.status
+        ? `<span class="badge box">${escapeHtml(n.status)}</span>`
+        : n.coordination
+          ? `<span class="badge box">框</span>`
+          : "";
       const active = n.id === activeCx ? " active" : "";
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
-      // displayName 主显示；type 等宽弱化；不把 cx- id 铺在树上
       return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)}">
+        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">
-            <span class="type">${escapeHtml(n.type)}</span>
-            ${badge}
-          </span>
+          <span class="tree-meta">${status}</span>
         </div>
         ${kids}
       </li>`;
@@ -606,6 +693,7 @@ function renderAll(): void {
   renderMeta();
   renderDispatchPanel();
   renderTree();
+  syncInspectorSections();
 }
 
 function renderTabs(): void {
@@ -631,21 +719,43 @@ function renderToolbar(): void {
     return;
   }
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
-  // 工具进中栏右上角小型按钮；技术 id 等宽弱化
+  // 常驻：模式 segmented + 保存状态/动作；发卡/提升进 overflow
   el.toolbar.innerHTML = `
-    <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
-    <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
-    <button type="button" data-act="save" class="primary">保存</button>
-    ${
-      !tab.coordination
-        ? `<button type="button" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升</button>`
-        : ""
-    }
-    <button type="button" data-act="card">发卡</button>
-    <span class="doc-id" title="${escapeHtml(tab.cx)}">${tab.dirty ? "未保存" : "已保存"}</span>
+    <div class="segmented" role="group" aria-label="编辑模式">
+      <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
+      <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
+    </div>
+    <div class="save-state">
+      <span class="state-label${tab.dirty ? " is-dirty" : ""}" title="${escapeHtml(tab.cx)}">${
+        tab.dirty ? "未保存" : "已保存"
+      }</span>
+      <button type="button" data-act="save" class="btn btn-primary"${tab.dirty ? "" : " disabled"}>保存</button>
+    </div>
+    <div class="menu-wrap">
+      <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">⋯</button>
+      <div class="menu" data-doc-menu role="menu" hidden>
+        <button type="button" class="menu-item" role="menuitem" data-act="card">发出上下文卡</button>
+        ${
+          !tab.coordination
+            ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升为协作框</button>`
+            : ""
+        }
+      </div>
+    </div>
   `;
+  const moreBtn = el.toolbar.querySelector<HTMLButtonElement>("[data-doc-more]");
+  const moreMenu = el.toolbar.querySelector<HTMLElement>("[data-doc-menu]");
+  moreBtn?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (!moreMenu) return;
+    moreMenu.hidden = !moreMenu.hidden;
+    moreBtn.setAttribute("aria-expanded", moreMenu.hidden ? "false" : "true");
+  });
   el.toolbar.querySelectorAll<HTMLElement>("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")!));
+    btn.addEventListener("click", () => {
+      if (moreMenu) moreMenu.hidden = true;
+      void onToolbar(btn.getAttribute("data-act")!);
+    });
   });
 }
 
@@ -745,9 +855,11 @@ function splitBody(raw: string): string {
 function renderMeta(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">未选择</span>`;
+    el.meta.innerHTML = `<span class="muted">未选择 Node</span>`;
+    el.meta.classList.add("muted");
     return;
   }
+  el.meta.classList.remove("muted");
   // 身份以 displayName 为主；cx- 等宽弱化
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
@@ -798,7 +910,7 @@ function renderDispatchPanel(): void {
         <textarea id="dispatch-prompt" rows="3" placeholder="写给目标 role 的任务说明…">${escapeHtml(dispatchPrompt)}</textarea>
       </div>
       <div class="row dispatch-actions">
-        <button type="button" class="primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>派活</button>
+        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>派活</button>
         ${
           validation.ok
             ? ""
@@ -879,6 +991,12 @@ function renderTasks(): void {
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
+  // Prefer opening pending when tasks arrive (first paint / refresh).
+  if (taskReview.length > 0 && el.secPending && !el.secPending.open) {
+    if (el.secDispatch) el.secDispatch.open = false;
+    if (el.secCards) el.secCards.open = false;
+    el.secPending.open = true;
+  }
   if (!taskReview.length) {
     el.tasks.innerHTML = `<li class="muted">暂无任务</li>`;
     return;
@@ -923,18 +1041,18 @@ function renderTasks(): void {
         const rejectDraft = rejectDrafts.get(t.path) || "";
 
         const startBtn = t.canStartAgent
-          ? `<button type="button" class="primary" data-start="${escapeHtml(t.path)}"${
+          ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${
               profiles.length && selectedProfileId ? "" : " disabled"
             } title="通过 ACP 启动 agent（callerKind=user）">启动 agent</button>`
           : "";
         const interruptBtn = t.canInterrupt
-          ? `<button type="button" data-interrupt="${escapeHtml(t.path)}" title="中断 agent 会话">中断</button>`
+          ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="中断 agent 会话">中断</button>`
           : "";
         const reviewActions = t.canAcceptOrReject
-          ? `<button type="button" class="primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
+          ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
             <div class="reject-inline">
-              <input type="text" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" data-reject="${escapeHtml(t.path)}">驳回</button>
+              <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
+              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">驳回</button>
             </div>`
           : "";
         const actions =
