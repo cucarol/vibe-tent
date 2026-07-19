@@ -372,18 +372,18 @@ function bindChromeMenus(): void {
   });
 }
 
-/** Inspector: only one secondary section open; prefer pending when tasks exist. */
+/** Inspector: empty sections stay collapsed; only open what needs attention. */
 function syncInspectorSections(): void {
   const hasTasks = taskReview.length > 0;
   const tab = activeCx ? localTabs.get(activeCx) : null;
   const canDispatch = !!(tab && tab.coordination);
   if (!el.secPending || !el.secDispatch || !el.secCards) return;
-  // User may toggle details; only auto-pick when nothing is open.
+  // 不与用户折叠状态抢权；仅在全部收起时按需默认打开一项
   const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
   if (anyOpen) return;
   if (hasTasks) el.secPending.open = true;
   else if (canDispatch) el.secDispatch.open = true;
-  else el.secPending.open = true;
+  // 否则保持全收起，不展开空说明
 }
 
 function bindLayoutChrome(): void {
@@ -454,12 +454,17 @@ function applyShell(s: ShellState): void {
   for (const w of s.workspaces) {
     const opt = document.createElement("option");
     opt.value = w.workspaceId;
-    opt.textContent = `${w.tentName} — ${w.workspaceRoot}`;
+    // 常态只显示 displayName；完整路径仅 title/tooltip
+    const label = (w.tentName || "").trim() || "工作区";
+    opt.textContent = label;
+    opt.title = w.workspaceRoot || w.workspaceId;
     if (w.foreground || w.workspaceId === s.foregroundWorkspaceId) opt.selected = true;
     el.wsSelect.appendChild(opt);
   }
   workspaceId = s.foregroundWorkspaceId;
-  el.status.textContent = s.statusMessage || s.workspace?.statusMessage || "";
+  // 状态线仅作 aria-live 错误/动作反馈，不展示常驻说明
+  const live = s.statusMessage || s.workspace?.statusMessage || "";
+  if (live) el.status.textContent = live;
 
   if (s.workspace?.tree?.length) {
     tree = s.workspace.tree;
@@ -610,21 +615,31 @@ function renderTree(): void {
   });
 }
 
+function nodeStatusMark(status?: string): string {
+  // 仅对进行中 / 待处理显示极弱标记；完成与普通节点默认无状态字
+  if (!status) return "";
+  const s = status.toLowerCase();
+  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
+  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  // 其它协调状态：细点，不显示英文胶囊
+  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+}
+
 function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
-      // displayName 主显示；type 等宽弱化；status 中性 badge，不抢 accent
-      const status = n.coordination && n.status
-        ? `<span class="badge box">${escapeHtml(n.status)}</span>`
-        : n.coordination
-          ? `<span class="badge box">框</span>`
-          : "";
+      const mark = n.coordination ? nodeStatusMark(n.status) : "";
       const active = n.id === activeCx ? " active" : "";
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
       return `<li>
         <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${status}</span>
+          <span class="tree-meta">${mark}</span>
         </div>
         ${kids}
       </li>`;
@@ -719,21 +734,24 @@ function renderToolbar(): void {
     return;
   }
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
-  // 常驻：模式 segmented + 保存状态/动作；发卡/提升进 overflow
+  const modeLabel = tab.mode === "preview" ? "预览" : "源码";
+  const modeTitle = tab.mode === "preview" ? "切换到源码" : "切换到预览";
+  // 克制工具组：模式图标 + dirty 时保存 + ⋯；干净状态不提示「已保存」
   el.toolbar.innerHTML = `
-    <div class="segmented" role="group" aria-label="编辑模式">
-      <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
-      <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
-    </div>
-    <div class="save-state">
-      <span class="state-label${tab.dirty ? " is-dirty" : ""}" title="${escapeHtml(tab.cx)}">${
-        tab.dirty ? "未保存" : "已保存"
-      }</span>
-      <button type="button" data-act="save" class="btn btn-primary"${tab.dirty ? "" : " disabled"}>保存</button>
-    </div>
+    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${
+      tab.mode === "preview" ? "¶" : "{ }"
+    }</button>
+    ${
+      tab.dirty
+        ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="保存">保存</button>`
+        : ""
+    }
     <div class="menu-wrap">
       <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">⋯</button>
       <div class="menu" data-doc-menu role="menu" hidden>
+        <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? " aria-current=\"true\"" : ""}>源码</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? " aria-current=\"true\"" : ""}>预览</button>
+        <div class="menu-sep" role="separator"></div>
         <button type="button" class="menu-item" role="menuitem" data-act="card">发出上下文卡</button>
         ${
           !tab.coordination
@@ -762,6 +780,11 @@ function renderToolbar(): void {
 async function onToolbar(act: string): Promise<void> {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) return;
+  if (act === "toggle-mode") {
+    tab.mode = tab.mode === "source" ? "preview" : "source";
+    renderAll();
+    return;
+  }
   if (act === "source" || act === "preview") {
     tab.mode = act;
     renderAll();
@@ -809,7 +832,8 @@ async function saveTab(tab: TabView): Promise<void> {
     })) as { etag: string };
     tab.etag = result.etag;
     tab.dirty = false;
-    el.status.textContent = "已保存。";
+    // 干净状态不提示「已保存」
+    el.status.textContent = "";
     await reloadTree();
     renderAll();
   } catch (err) {
@@ -820,8 +844,7 @@ async function saveTab(tab: TabView): Promise<void> {
 function renderEditor(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.editor.innerHTML =
-      '<div class="empty">打开带有帐（.tent）的工作区，再选一个概念。</div>';
+    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">打开工作区</p></div>';
     return;
   }
   if (tab.mode === "preview") {
@@ -855,19 +878,26 @@ function splitBody(raw: string): string {
 function renderMeta(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">未选择 Node</span>`;
+    el.meta.innerHTML = `<span class="muted">未选择</span>`;
     el.meta.classList.add("muted");
     return;
   }
   el.meta.classList.remove("muted");
-  // 身份以 displayName 为主；cx- 等宽弱化
+  // 标题 + 最多一行关键属性；类型/路径/id 收进详情折叠
+  const oneLine = tab.coordination
+    ? `${escapeHtml(tab.type)} · 协作`
+    : escapeHtml(tab.type);
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
-    <dl>
-      <dt>类型</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " · 协作" : ""}</dd>
-      <dt>路径</dt><dd>${escapeHtml(tab.path)}</dd>
-      <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    </dl>`;
+    <div class="meta-line muted">${oneLine}</div>
+    <details class="meta-details">
+      <summary>详情</summary>
+      <dl>
+        <dt>类型</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " · 协作" : ""}</dd>
+        <dt>路径</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
+        <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+      </dl>
+    </details>`;
 }
 
 function renderDispatchPanel(): void {
@@ -991,14 +1021,18 @@ function renderTasks(): void {
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
-  // Prefer opening pending when tasks arrive (first paint / refresh).
-  if (taskReview.length > 0 && el.secPending && !el.secPending.open) {
-    if (el.secDispatch) el.secDispatch.open = false;
-    if (el.secCards) el.secCards.open = false;
-    el.secPending.open = true;
+  // 有任务时确保待处理展开；空则收起
+  if (el.secPending) {
+    if (taskReview.length > 0) {
+      el.secPending.open = true;
+      if (el.secDispatch) el.secDispatch.open = false;
+      if (el.secCards) el.secCards.open = false;
+    } else if (!el.secDispatch?.open && !el.secCards?.open) {
+      el.secPending.open = false;
+    }
   }
   if (!taskReview.length) {
-    el.tasks.innerHTML = `<li class="muted">暂无任务</li>`;
+    el.tasks.innerHTML = "";
     return;
   }
 
@@ -1010,14 +1044,13 @@ function renderTasks(): void {
               `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
           )
           .join("")
-      : `<option value="">（无可用 profile）</option>`;
+      : `<option value="">（无 profile）</option>`;
 
-  // Shared compact profile picker once above the list when any startable task exists.
   const anyStartable = taskReview.some((t) => t.canStartAgent);
   const profileBar = anyStartable
     ? `<li class="task-profile-bar">
-        <label for="agent-profile">agent profile</label>
-        <select id="agent-profile" title="machine-local profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
+        <label class="sr-only" for="agent-profile">profile</label>
+        <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
       </li>`
     : "";
 
@@ -1025,31 +1058,33 @@ function renderTasks(): void {
     profileBar +
     taskReview
       .map((t) => {
-        const commits =
-          t.commits.length > 0
-            ? `<div class="muted">commits：${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>`
-            : "";
-        const summary = t.deliverySummary
-          ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>`
-          : t.prompt
-            ? `<div class="muted">prompt：${escapeHtml(t.prompt)}</div>`
-            : "";
-        const stateLabel = taskStateLabel(t.state, t.status);
-        const sessBit = t.sessionState
-          ? ` · 会话${escapeHtml(sessionStateLabel(t.sessionState))}`
+        // 谁 / 在做什么 / 一句摘要 / 动作；id/path/状态字收进详情
+        const who = escapeHtml(t.role);
+        // 主行不裸露 cx-/rl-/tk- 等技术 id
+        const claims = (t.claims || []).filter(
+          (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
+        );
+        const claimBit = claims.length
+          ? `<span class="task-claims muted">${claims.map((c) => escapeHtml(c)).join(" · ")}</span>`
           : "";
+        const blurbRaw = t.deliverySummary || t.prompt || "";
+        const blurb = blurbRaw
+          ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "…" : blurbRaw)}</div>`
+          : "";
+        const stateLabel = taskStateLabel(t.state, t.status);
+        const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
         const rejectDraft = rejectDrafts.get(t.path) || "";
 
         const startBtn = t.canStartAgent
           ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${
               profiles.length && selectedProfileId ? "" : " disabled"
-            } title="通过 ACP 启动 agent（callerKind=user）">启动 agent</button>`
+            } title="启动 agent">启动</button>`
           : "";
         const interruptBtn = t.canInterrupt
-          ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="中断 agent 会话">中断</button>`
+          ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="中断">中断</button>`
           : "";
         const reviewActions = t.canAcceptOrReject
-          ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认交付</button>
+          ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认</button>
             <div class="reject-inline">
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
               <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">驳回</button>
@@ -1060,18 +1095,25 @@ function renderTasks(): void {
             ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>`
             : "";
 
-        const claimNames = (t.claims || []).filter((c) => c !== "root");
-        const claimLabel = claimNames.length
-          ? claimNames.map((c) => escapeHtml(c)).join(", ")
-          : "—";
         return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div class="task-kind">${escapeHtml(stateLabel)}${sessBit}</div>
-        <div><strong>${escapeHtml(t.role)}</strong></div>
-        <div class="muted">认领 ${claimLabel}</div>
-        <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-        ${summary}
-        ${commits}
+        <div class="task-head">
+          <strong>${who}</strong>
+          ${claimBit}
+        </div>
+        ${blurb}
         ${actions}
+        <details class="task-details">
+          <summary>详情</summary>
+          <div class="task-detail-body muted">
+            <div>${escapeHtml(stateLabel)}${sessLabel ? ` · ${escapeHtml(sessLabel)}` : ""}</div>
+            <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
+            ${
+              t.commits.length > 0
+                ? `<div>${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>`
+                : ""
+            }
+          </div>
+        </details>
       </li>`;
       })
       .join("");
@@ -1192,15 +1234,13 @@ async function loadCards(): Promise<void> {
   const snap = await window.tentDesktop.getFloatingStatus();
   const cards = snap.recentCards || [];
   if (!cards.length) {
-    el.cards.innerHTML = `<li class="muted">暂无 — 选中框后发出</li>`;
+    el.cards.innerHTML = "";
     return;
   }
   el.cards.innerHTML = cards
     .map(
-      (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}">
+      (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}" title="${escapeHtml(c.kind)}/${escapeHtml(c.refId)}">
         <div><strong>${escapeHtml(c.label)}</strong></div>
-        <div class="muted">${escapeHtml(c.kind)}/${escapeHtml(c.refId)}</div>
-        <div class="card-hint muted">拖出 · 单击复制</div>
       </li>`
     )
     .join("");
@@ -1211,7 +1251,7 @@ async function loadCards(): Promise<void> {
     // HTML5 text/plain only — no clipboard IPC on dragstart.
     bindContextCardDrag(node, card.text, {
       onCopied: () => {
-        el.status.textContent = "上下文卡已复制（辅助）；拖出不依赖剪贴板。";
+        el.status.textContent = "已复制";
       },
       onCopyError: (err) => setError(err),
     });

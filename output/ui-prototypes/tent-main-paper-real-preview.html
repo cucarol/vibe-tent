@@ -3,9 +3,9 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
-  <title>纸研 · 真实 renderer 预览 v2（hierarchy）</title>
+  <title>纸研 · 真实 renderer 预览 v3（silence）</title>
   <!--
-    Self-contained visual review for hierarchy/component-system pass.
+    Self-contained visual review for silence pass (round 4).
     CSS inlined from desktop/dist/renderer/styles.css (real built renderer).
     DOM mirrors src/desktop/renderer/index.html landmarks; content is populated mock.
   -->
@@ -306,18 +306,19 @@ button.primary:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.4em;
+  min-width: 1.1em;
   width: auto;
   max-width: 3em;
-  height: 20px;
-  padding: 0 6px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-accent);
-  background: var(--color-accent-soft);
+  background: transparent;
   flex: 0 0 auto;
   align-self: center;
+  line-height: 1;
 }
 
 .count-badge[hidden] {
@@ -371,26 +372,14 @@ button.primary:hover {
   gap: 2px;
 }
 
-.pane-subhead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  height: 36px;
-  min-height: 36px;
-  padding: 0 var(--space-3);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
-  flex: none;
-}
-
 .pane-title {
   margin: 0;
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
 }
 
 .pane-actions {
@@ -400,9 +389,33 @@ button.primary:hover {
   flex: none;
 }
 
+.collapse-edge {
+  opacity: 0.45;
+  flex: none;
+}
+
+.collapse-edge:hover,
+.collapse-edge:focus-visible {
+  opacity: 1;
+}
+
+.tree-panel .pane-head {
+  gap: var(--space-1);
+}
+
+.tree-panel .pane-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tree-panel .pane-actions {
+  margin-left: auto;
+}
+
 /* 左栏 */
 .tree-panel,
 .rail {
+  position: relative;
   flex: 0 0 var(--layout-left-width);
   width: var(--layout-left-width);
   max-width: var(--layout-left-width);
@@ -427,9 +440,11 @@ button.primary:hover {
 
 .brand-sub {
   font-family: var(--font-ui);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--color-muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--color-faint);
+  opacity: 0.55;
+  font-weight: 400;
 }
 
 /* 中栏 */
@@ -489,10 +504,10 @@ button.primary:hover {
 
 .sheet-title {
   font-family: var(--font-ui);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
   font-weight: 600;
 }
 
@@ -709,7 +724,28 @@ body.is-resizing * {
   padding: 0;
 }
 
-/* status badge：中性，不抢 accent 红 */
+/* 树状态：极弱小点，不做英文胶囊 */
+.status-mark {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-faint);
+  opacity: 0.55;
+  flex: none;
+}
+
+.status-mark.is-doing {
+  background: var(--color-running);
+  opacity: 0.85;
+}
+
+.status-mark.is-todo {
+  background: var(--color-accent);
+  opacity: 0.75;
+}
+
+/* 兼容旧 badge class */
 .badge {
   font-size: 10px;
   padding: 1px 6px;
@@ -734,17 +770,19 @@ body.is-resizing * {
   border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
 }
 
-.status-line {
-  flex: none;
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  color: var(--color-muted);
-  font-size: 11px;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
-  min-height: 0;
+/* 状态线：aria-live 反馈，不占首屏说明位 */
+.status-line,
+.status-line.sr-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+  border: 0;
+  flex: none;
 }
 
 /* Tabs：active 可用 pill，其余安静 */
@@ -786,12 +824,12 @@ body.is-resizing * {
   font-weight: 600;
 }
 
-/* 中栏工具：≤2 常驻同权动作 */
+/* 中栏工具：模式图标 + dirty 保存 + ⋯ */
 .doc-actions,
 .toolbar {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   flex: none;
   min-width: 0;
   padding: 0;
@@ -799,6 +837,26 @@ body.is-resizing * {
   background: transparent;
 }
 
+.mode-quiet {
+  font-size: 11px;
+  color: var(--color-faint);
+  margin-right: var(--space-1);
+  user-select: none;
+}
+
+.mode-toggle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.btn-quiet-save {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 var(--space-3) !important;
+  font-size: 12px !important;
+}
+
+/* 兼容旧 segmented / save-state */
 .segmented {
   display: inline-flex;
   height: var(--size-control);
@@ -951,14 +1009,11 @@ textarea.editor:focus {
   font-size: 18px;
   font-weight: 600;
   color: var(--color-text);
-  margin: 0 0 var(--space-2);
+  margin: 0;
 }
 
 .empty-cta .empty-hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-muted);
-  max-width: 28rem;
+  display: none;
 }
 
 /* Inspector：摘要一级 + 折叠二级 */
@@ -975,8 +1030,35 @@ textarea.editor:focus {
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
-  margin-bottom: var(--space-2);
+  margin-bottom: 2px;
   line-height: 1.35;
+}
+
+.meta-line {
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: var(--space-1);
+}
+
+.meta-details {
+  margin-top: var(--space-1);
+}
+
+.meta-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-faint);
+  user-select: none;
+  padding: 2px 0;
+}
+
+.meta-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.meta-details[open] > summary {
+  margin-bottom: var(--space-1);
 }
 
 .meta dl {
@@ -1025,14 +1107,14 @@ textarea.editor:focus {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 36px;
+  min-height: 32px;
   padding: var(--space-2) 0;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
   user-select: none;
 }
 
@@ -1053,13 +1135,7 @@ textarea.editor:focus {
 }
 
 .insp-hint {
-  font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--color-faint);
-  font-size: 11px;
-  margin-left: auto;
-  margin-right: var(--space-2);
+  display: none;
 }
 
 .insp-body {
@@ -1160,12 +1236,50 @@ textarea.editor:focus {
   border-color: var(--color-focus) !important;
 }
 
+.task-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.task-claims {
+  font-size: 11px;
+}
+
 .task-summary {
   margin-top: var(--space-1);
   font-size: var(--font-ui-smaller);
   color: var(--color-text);
   line-height: 1.4;
   word-break: break-word;
+}
+
+.task-details {
+  margin-top: var(--space-1);
+}
+
+.task-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-faint);
+  user-select: none;
+}
+
+.task-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-detail-body {
+  margin-top: var(--space-1);
+  font-size: 11px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-all;
 }
 
 .task-actions {
@@ -1437,14 +1551,14 @@ body.float {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.4em;
-  height: 20px;
-  padding: 0 6px;
+  min-width: 1.1em;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-accent);
-  background: var(--color-accent-soft);
+  background: transparent;
 }
 
 @media (max-width: 900px) {
@@ -1464,7 +1578,7 @@ body.float {
     margin: var(--space-1) var(--space-1) var(--space-1) 0;
   }
 
-  .doc-actions .state-label {
+  .mode-quiet {
     display: none;
   }
 }
@@ -1486,251 +1600,211 @@ body.float {
   </style>
 </head>
 <body>
-  <div class="layout" id="main-layout" style="--layout-left-width: 260px; --layout-right-width: 340px;">
+  <div class="layout" id="main-layout" style="--layout-left-width: 280px; --layout-right-width: 340px;">
     <aside class="pane rail tree-panel" id="tree-panel" aria-label="Nodes">
       <header class="pane-head">
         <div class="pane-head-main">
           <div class="brand-line">
             <span class="brand">帷幄</span>
-            <span class="brand-sub">纸研</span>
+            <span class="brand-sub" aria-hidden="true">纸研</span>
             <span id="health-pill" class="status-dot ok" title="Local Service 正常" aria-label="服务在线"></span>
           </div>
           <label class="sr-only" for="workspace-select">前台工作区</label>
-          <select id="workspace-select" class="field field-compact" title="前台工作区">
-            <option selected>Tent — C:\\cucarol\\_code\\Tent</option>
-            <option>Harness — C:\\cucarol\\_code\\Harness</option>
+          <select id="workspace-select" class="field field-compact" title="C:\\cucarol\\_code\\Tent">
+            <option selected>Tent</option>
+            <option>样例账</option>
           </select>
         </div>
-        <button type="button" id="btn-collapse-left" class="icon-btn" title="收起左侧栏">‹</button>
-      </header>
-
-      <div class="pane-subhead">
-        <h2 class="pane-title">Nodes</h2>
         <div class="pane-actions">
-          <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-expanded="false">⌕</button>
-          <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-expanded="false">＋</button>
+          <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-label="搜索">⌕</button>
+          <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-label="新建">＋</button>
           <div class="menu-wrap">
-            <button type="button" id="btn-rail-more" class="icon-btn" title="更多" aria-expanded="false" aria-controls="rail-overflow">⋯</button>
+            <button type="button" id="btn-rail-more" class="icon-btn" title="更多" aria-label="更多操作" aria-haspopup="menu" aria-expanded="false" aria-controls="rail-overflow">⋯</button>
             <div id="rail-overflow" class="menu" role="menu" hidden>
-              <button type="button" id="btn-open-ws" class="menu-item" role="menuitem">打开工作区…</button>
-              <button type="button" id="btn-refresh" class="menu-item" role="menuitem">刷新</button>
-              <button type="button" id="btn-card" class="menu-item" role="menuitem">发出上下文卡</button>
-              <button type="button" id="btn-float" class="menu-item" role="menuitem">浮动控件</button>
+              <button type="button" class="menu-item" role="menuitem">打开工作区…</button>
+              <button type="button" class="menu-item" role="menuitem">刷新</button>
+              <button type="button" class="menu-item" role="menuitem">发出上下文卡</button>
+              <button type="button" class="menu-item" role="menuitem">浮动控件</button>
               <div class="menu-sep" role="separator"></div>
-              <button type="button" id="btn-new-note" class="menu-item" role="menuitem">新建笔记</button>
+              <button type="button" class="menu-item" role="menuitem">新建笔记</button>
             </div>
           </div>
         </div>
-      </div>
+        <button type="button" id="btn-collapse-left" class="icon-btn collapse-edge" title="收起左侧栏" aria-label="收起左侧栏">‹</button>
+      </header>
 
       <div id="search-drawer" class="drawer" hidden>
         <div class="drawer-row">
-          <input id="search-input" class="field" placeholder="搜索标题 / 正文" />
-          <button type="button" id="btn-search" class="btn btn-secondary">搜索</button>
+          <input id="search-input" class="field" placeholder="搜索" />
+          <button type="button" class="btn btn-secondary">搜索</button>
         </div>
         <ul id="search-hits" class="card-list search-hits"></ul>
       </div>
 
       <div id="create-drawer" class="drawer" hidden>
         <div class="drawer-row">
-          <select id="create-type" class="field">
-            <option selected>prompt</option>
-            <option>goal</option>
-            <option>output</option>
-          </select>
-          <button type="button" id="btn-new-box" class="btn btn-primary">新建框</button>
+          <select class="field"><option>goal</option><option>task</option></select>
+          <button type="button" class="btn btn-primary">新建</button>
         </div>
       </div>
 
       <ul id="tree" class="tree" aria-label="概念树">
         <li>
-          <div class="tree-node" data-open="cx-b0ywp8" title="cx-b0ywp8 · goal">
-            <span class="tree-name">开源发布</span>
-            <span class="tree-meta"><span class="badge box">doing</span></span>
+          <div class="tree-node active" data-open="cx-mryfq6" title="cx-mryfq6 · goal">
+            <span class="tree-name">纸研主界面视觉纠偏</span>
+            <span class="tree-meta"><span class="status-mark is-doing" title="doing" aria-hidden="true"></span></span>
           </div>
           <ul>
             <li>
-              <div class="tree-node" data-open="cx-3kzvpw" title="cx-3kzvpw · prompt">
-                <span class="tree-name">Grok ACP 工具审批闭环</span>
-                <span class="tree-meta"><span class="badge box">todo</span></span>
+              <div class="tree-node" title="cx-a1 · note">
+                <span class="tree-name">阅读柱与留白</span>
+                <span class="tree-meta"></span>
               </div>
             </li>
             <li>
-              <div class="tree-node" data-open="cx-xy385s" title="cx-xy385s · prompt">
-                <span class="tree-name">Feature</span>
+              <div class="tree-node" title="cx-a2 · note">
+                <span class="tree-name">检视册分节</span>
                 <span class="tree-meta"></span>
               </div>
             </li>
           </ul>
         </li>
         <li>
-          <div class="tree-node active" data-open="cx-352t7n" title="cx-352t7n · prompt">
-            <span class="tree-name">六种真正不同的基础设计语言</span>
-            <span class="tree-meta"><span class="badge box">doing</span></span>
+          <div class="tree-node" title="cx-352t7n · goal">
+            <span class="tree-name">协作闭环与派活</span>
+            <span class="tree-meta"><span class="status-mark is-todo" title="todo" aria-hidden="true"></span></span>
           </div>
-          <ul>
-            <li>
-              <div class="tree-node" data-open="cx-8n0rav" title="cx-8n0rav · prompt">
-                <span class="tree-name">默认浅色主题与可缩放三栏落地</span>
-                <span class="tree-meta"><span class="badge box">done</span></span>
-              </div>
-              <ul>
-                <li>
-                  <div class="tree-node" data-open="cx-mryfq6" title="cx-mryfq6 · prompt">
-                    <span class="tree-name">纸研真实界面视觉纠偏</span>
-                    <span class="tree-meta"><span class="badge box">doing</span></span>
-                  </div>
-                </li>
-              </ul>
-            </li>
-            <li>
-              <div class="tree-node" data-open="cx-nav01" title="cx-nav01 · prompt">
-                <span class="tree-name">Node 导航与多 Tab</span>
-                <span class="tree-meta"></span>
-              </div>
-            </li>
-            <li>
-              <div class="tree-node" data-open="cx-insp1" title="cx-insp1 · prompt">
-                <span class="tree-name">Inspector 与待处理交互</span>
-                <span class="tree-meta"><span class="badge box">todo</span></span>
-              </div>
-            </li>
-          </ul>
         </li>
         <li>
-          <div class="tree-node" data-open="cx-wfrd06" title="cx-wfrd06 · goal">
-            <span class="tree-name">Tent 独立桌面应用</span>
-            <span class="tree-meta"><span class="badge box">doing</span></span>
+          <div class="tree-node" title="cx-note1 · note">
+            <span class="tree-name">会话状态预留</span>
+            <span class="tree-meta"></span>
           </div>
-          <ul>
-            <li>
-              <div class="tree-node" data-open="cx-2349wd" title="cx-2349wd · prompt">
-                <span class="tree-name">独立应用 UI 与交互</span>
-                <span class="tree-meta"><span class="badge box">doing</span></span>
-              </div>
-            </li>
-          </ul>
+        </li>
+        <li>
+          <div class="tree-node" title="cx-done1 · goal">
+            <span class="tree-name">色卡与 layout-prefs</span>
+            <span class="tree-meta"></span>
+          </div>
         </li>
       </ul>
-      <p id="status-line" class="status-line">已加载 128 个概念 · preview mock</p>
+      <p id="status-line" class="status-line sr-live" aria-live="polite"></p>
     </aside>
 
-    <div class="splitter" id="splitter-left" role="separator" aria-orientation="vertical"></div>
+    <div class="splitter" id="splitter-left" role="separator" aria-orientation="vertical" tabindex="0"></div>
 
     <main class="pane stage main-panel" id="main-panel" aria-label="Document">
       <header class="pane-head stage-head">
         <div class="main-rail-toggles" id="rail-toggles">
-          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏">›</button>
-          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏">‹</button>
+          <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">›</button>
+          <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">‹</button>
         </div>
         <div id="tabs" class="tabs">
-          <button type="button" class="tab">开源发布</button>
-          <button type="button" class="tab active">六种真正不同的基础设计语言</button>
-          <button type="button" class="tab">纸研真实界面视觉纠偏 ·</button>
-          <button type="button" class="tab">Node 导航与多 Tab</button>
+          <button type="button" class="tab active">纸研主界面视觉纠偏</button>
+          <button type="button" class="tab">协作闭环与派活</button>
         </div>
         <div id="toolbar" class="toolbar doc-actions">
-          <div class="segmented" role="group" aria-label="编辑模式">
-            <button type="button">源码</button>
-            <button type="button" class="active">预览</button>
-          </div>
-          <div class="save-state">
-            <span class="state-label" title="cx-352t7n">已保存</span>
-            <button type="button" class="btn btn-primary" disabled>保存</button>
-          </div>
+          <button type="button" class="icon-btn mode-toggle" title="切换到源码（预览）" aria-label="切换到源码（预览）">¶</button>
           <div class="menu-wrap">
-            <button type="button" class="icon-btn" title="更多">⋯</button>
+            <button type="button" class="icon-btn" title="更多" aria-label="文档更多操作">⋯</button>
           </div>
         </div>
       </header>
       <div id="editor-host" class="editor-wrap paper">
         <div class="preview">
-          <h1>六种真正不同的基础设计语言</h1>
-          <p>主界面不是聊天页，也不是 IDE。它是 <strong>文档中心</strong>：浏览 Node、阅读/轻编辑 Markdown，并在当前上下文处理 agent 协作交互。</p>
-          <h2>一级对象</h2>
-          <ol>
-            <li><strong>Nodes</strong> — 左栏：树、搜索、新建、收起。</li>
-            <li><strong>Document</strong> — 中栏：多 Tab 与阅读柱。</li>
-            <li><strong>Inspector</strong> — 右栏：摘要与可折叠二级 section。</li>
-          </ol>
-          <h2>组件语法</h2>
-          <p>28px icon、32px field/action、6px radius、1px <code>#DEDAD2</code> 边线。Accent <code>#B4472A</code> 仅用于选中 Node、主操作、待处理数字与 focus。</p>
-          <p>本预览内联真实 built styles（hierarchy pass），DOM 对齐 index.html 地标。</p>
+<h1>纸研主界面视觉纠偏</h1>
+<p>本周把主界面从「工具栏 + 三张卡」收成阅读台：树、文稿、检视三栏全高并列，层级靠留白与纸面明度。</p>
+<h2>已确认</h2>
+<ul><li>语义色卡与左右栏缩放/收起偏好继续沿用</li><li>Service / RPC 与 tree、tab、editor、dispatch、task 行为不变</li><li>窄窗约 900px 时右栏可自动收起，宽屏恢复</li></ul>
+<h2>下一步</h2>
+<p>对照参考稿做首屏静默验收：遮住正文后，不应再出现教学文案、完整路径或英文状态胶囊。</p>
         </div>
       </div>
     </main>
 
-    <div class="splitter" id="splitter-right" role="separator" aria-orientation="vertical"></div>
+    <div class="splitter" id="splitter-right" role="separator" aria-orientation="vertical" tabindex="0"></div>
 
-    <aside class="pane sheet side-panel" id="side-panel" aria-label="Inspector">
+    <aside class="pane sheet side-panel" id="side-panel" aria-label="检视">
       <header class="pane-head sheet-head">
         <div class="pane-head-main">
-          <h2 class="pane-title sheet-title">Inspector</h2>
+          <h2 class="pane-title sheet-title">检视</h2>
           <span id="task-count" class="count-badge">2</span>
         </div>
-        <button type="button" id="btn-collapse-right" class="icon-btn" title="收起右侧栏">›</button>
+        <button type="button" id="btn-collapse-right" class="icon-btn collapse-edge" title="收起右侧栏" aria-label="收起右侧栏">›</button>
       </header>
+
       <div class="sheet-body">
         <div id="meta" class="meta node-summary">
-          <div class="meta-name">六种真正不同的基础设计语言</div>
-          <dl>
-            <dt>类型</dt><dd>prompt · 协作</dd>
-            <dt>路径</dt><dd>Tent Main UI / 六种真正不同的基础设计语言</dd>
-            <dt>标识</dt><dd><code>cx-352t7n</code></dd>
-          </dl>
+          <div class="meta-name">纸研主界面视觉纠偏</div>
+          <div class="meta-line muted">goal · 协作</div>
+          <details class="meta-details">
+            <summary>详情</summary>
+            <dl>
+              <dt>类型</dt><dd>goal · 协作</dd>
+              <dt>路径</dt><dd title="concepts/paper-edit.md">concepts/paper-edit.md</dd>
+              <dt>标识</dt><dd><code>cx-mryfq6</code></dd>
+            </dl>
+          </details>
         </div>
 
         <details class="insp-section" id="sec-pending" open>
-          <summary class="insp-summary">
-            <span>待处理</span>
-            <span class="insp-hint">任务 / 待裁 / A2U</span>
-          </summary>
+          <summary class="insp-summary"><span>待处理</span></summary>
           <div class="insp-body">
             <div id="a2u-host" class="collab-slot" hidden></div>
             <div id="u2a-host" class="collab-slot" hidden></div>
             <div id="session-host" class="collab-slot" hidden></div>
             <ul id="tasks" class="task-list">
               <li class="task-item">
-                <div class="task-kind">待裁交付 · 会话 idle</div>
-                <div><strong>UI实现Grok</strong></div>
-                <div class="muted">认领 纸研真实界面视觉纠偏</div>
-                <div class="faint">temp/UI实现Grok/tasks/task-demo-1.md</div>
-                <div class="task-summary">summary: 视觉纠偏交付，等待确认。</div>
-                <div class="task-actions row">
-                  <button type="button" class="btn btn-primary">确认交付</button>
-                  <button type="button" class="btn btn-secondary">驳回</button>
+                <div class="task-head">
+                  <strong>UI实现Grok</strong>
                 </div>
+                <div class="task-summary">第四轮静默化：去掉说明性文案，保留三栏骨架与真实控件。</div>
+                <div class="task-actions row">
+                  <button type="button" class="btn btn-primary">确认</button>
+                  <div class="reject-inline">
+                    <input type="text" class="field" placeholder="驳回原因" />
+                    <button type="button" class="btn btn-secondary">驳回</button>
+                  </div>
+                </div>
+                <details class="task-details">
+                  <summary>详情</summary>
+                  <div class="task-detail-body muted">
+                    <div>待裁交付</div>
+                    <div class="faint">.tent/temp/UI实现Grok/tasks/task-….md</div>
+                  </div>
+                </details>
               </li>
               <li class="task-item">
-                <div class="task-kind">运行中</div>
-                <div><strong>UI二宝</strong></div>
-                <div class="muted">认领 主界面三栏 UI 重构</div>
-                <div class="task-actions row">
-                  <button type="button" class="btn btn-secondary">中断</button>
+                <div class="task-head">
+                  <strong>UI二宝</strong>
                 </div>
+                <div class="task-summary">对照 prototype 做并排视觉检查，确认遮住正文后无教学文案。</div>
+                <details class="task-details">
+                  <summary>详情</summary>
+                  <div class="task-detail-body muted">
+                    <div>进行中</div>
+                  </div>
+                </details>
               </li>
             </ul>
           </div>
         </details>
 
         <details class="insp-section" id="sec-dispatch">
-          <summary class="insp-summary">
-            <span>派活</span>
-            <span class="insp-hint">协作框</span>
-          </summary>
+          <summary class="insp-summary"><span>派活</span></summary>
           <div class="insp-body">
             <div id="dispatch-panel" class="dispatch-panel">
               <div class="dispatch-form">
                 <div class="field-row">
-                  <label>目标 role</label>
-                  <select class="field"><option>UI实现Grok</option><option>UI二宝</option></select>
+                  <label for="dispatch-role">目标 role</label>
+                  <select id="dispatch-role"><option>UI实现Grok</option><option>UI二宝</option></select>
                 </div>
                 <div class="field-row">
-                  <label>user prompt</label>
-                  <textarea rows="3">把纸研层级与组件语法落到真实 renderer。</textarea>
+                  <label for="dispatch-prompt">user prompt</label>
+                  <textarea id="dispatch-prompt" rows="3" placeholder="写给目标 role 的任务说明…"></textarea>
                 </div>
                 <div class="row dispatch-actions">
-                  <button type="button" class="btn btn-primary">派活</button>
+                  <button type="button" class="btn btn-primary" id="btn-dispatch">派活</button>
                 </div>
               </div>
             </div>
@@ -1738,21 +1812,11 @@ body.float {
         </details>
 
         <details class="insp-section" id="sec-cards">
-          <summary class="insp-summary">
-            <span>上下文卡</span>
-            <span class="insp-hint">拖出</span>
-          </summary>
+          <summary class="insp-summary"><span>上下文卡</span></summary>
           <div class="insp-body">
-            <ul id="cards" class="card-list">
-              <li class="card-item">
-                <div><strong>纸研真实界面视觉纠偏</strong></div>
-                <div class="muted">box/cx-mryfq6</div>
-                <div class="card-hint muted">拖出 · 单击复制</div>
-              </li>
-              <li class="card-item">
-                <div><strong>六种真正不同的基础设计语言</strong></div>
-                <div class="muted">box/cx-352t7n</div>
-                <div class="card-hint muted">拖出 · 单击复制</div>
+            <ul id="cards" class="card-list" aria-label="上下文卡列表">
+              <li class="card-item" title="box/cx-mryfq6">
+                <div><strong>纸研主界面视觉纠偏</strong></div>
               </li>
             </ul>
           </div>
@@ -1773,7 +1837,6 @@ body.float {
       var btnCR = document.getElementById("btn-collapse-right");
       var btnEL = document.getElementById("btn-expand-left");
       var btnER = document.getElementById("btn-expand-right");
-
       function syncExpand() {
         if (btnEL) btnEL.hidden = !layout.classList.contains("is-left-collapsed");
         if (btnER) btnER.hidden = !layout.classList.contains("is-right-collapsed");
@@ -1788,37 +1851,23 @@ body.float {
       }
       btnSearch && btnSearch.addEventListener("click", function (e) {
         e.stopPropagation();
-        var open = searchDrawer.hidden;
-        closePop();
-        searchDrawer.hidden = !open;
+        var open = searchDrawer.hidden; closePop(); searchDrawer.hidden = !open;
         btnSearch.setAttribute("aria-expanded", open ? "true" : "false");
       });
       btnCreate && btnCreate.addEventListener("click", function (e) {
         e.stopPropagation();
-        var open = createDrawer.hidden;
-        closePop();
-        createDrawer.hidden = !open;
+        var open = createDrawer.hidden; closePop(); createDrawer.hidden = !open;
         btnCreate.setAttribute("aria-expanded", open ? "true" : "false");
       });
       btnMore && btnMore.addEventListener("click", function (e) {
         e.stopPropagation();
-        var open = overflow.hidden;
-        closePop();
-        overflow.hidden = !open;
+        var open = overflow.hidden; closePop(); overflow.hidden = !open;
         btnMore.setAttribute("aria-expanded", open ? "true" : "false");
       });
-      btnCL && btnCL.addEventListener("click", function () {
-        layout.classList.add("is-left-collapsed"); syncExpand();
-      });
-      btnCR && btnCR.addEventListener("click", function () {
-        layout.classList.add("is-right-collapsed"); syncExpand();
-      });
-      btnEL && btnEL.addEventListener("click", function () {
-        layout.classList.remove("is-left-collapsed"); syncExpand();
-      });
-      btnER && btnER.addEventListener("click", function () {
-        layout.classList.remove("is-right-collapsed"); syncExpand();
-      });
+      btnCL && btnCL.addEventListener("click", function () { layout.classList.add("is-left-collapsed"); syncExpand(); });
+      btnCR && btnCR.addEventListener("click", function () { layout.classList.add("is-right-collapsed"); syncExpand(); });
+      btnEL && btnEL.addEventListener("click", function () { layout.classList.remove("is-left-collapsed"); syncExpand(); });
+      btnER && btnER.addEventListener("click", function () { layout.classList.remove("is-right-collapsed"); syncExpand(); });
       document.addEventListener("click", closePop);
       syncExpand();
     })();

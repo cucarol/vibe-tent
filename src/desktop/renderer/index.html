@@ -19,17 +19,12 @@
         <div class="pane-head-main">
           <div class="brand-line">
             <span class="brand">帷幄</span>
-            <span class="brand-sub">纸研</span>
+            <span class="brand-sub" aria-hidden="true">纸研</span>
             <span id="health-pill" class="status-dot off" title="Local Service 状态" aria-label="服务离线"></span>
           </div>
           <label class="sr-only" for="workspace-select">前台工作区</label>
           <select id="workspace-select" class="field field-compact" title="前台工作区"></select>
         </div>
-        <button type="button" id="btn-collapse-left" class="icon-btn" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
-      </header>
-
-      <div class="pane-subhead">
-        <h2 class="pane-title">Nodes</h2>
         <div class="pane-actions">
           <button type="button" id="btn-toggle-search" class="icon-btn" title="搜索" aria-label="搜索" aria-controls="search-drawer" aria-expanded="false">⌕</button>
           <button type="button" id="btn-toggle-create" class="icon-btn" title="新建" aria-label="新建" aria-controls="create-drawer" aria-expanded="false">＋</button>
@@ -45,11 +40,12 @@
             </div>
           </div>
         </div>
-      </div>
+        <button type="button" id="btn-collapse-left" class="icon-btn collapse-edge" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
+      </header>
 
       <div id="search-drawer" class="drawer" hidden>
         <div class="drawer-row">
-          <input id="search-input" class="field" placeholder="搜索标题 / 正文" />
+          <input id="search-input" class="field" placeholder="搜索" />
           <button type="button" id="btn-search" class="btn btn-secondary">搜索</button>
         </div>
         <ul id="search-hits" class="card-list search-hits"></ul>
@@ -58,12 +54,12 @@
       <div id="create-drawer" class="drawer" hidden>
         <div class="drawer-row">
           <select id="create-type" class="field" title="可协调一级类型" aria-label="协作框类型"></select>
-          <button type="button" id="btn-new-box" class="btn btn-primary" title="一键新建协作框">新建框</button>
+          <button type="button" id="btn-new-box" class="btn btn-primary" title="新建协作框">新建</button>
         </div>
       </div>
 
       <ul id="tree" class="tree" aria-label="概念树"></ul>
-      <p id="status-line" class="status-line" aria-live="polite"></p>
+      <p id="status-line" class="status-line sr-live" aria-live="polite"></p>
     </aside>
 
     <div
@@ -88,8 +84,7 @@
       </header>
       <div id="editor-host" class="editor-wrap paper">
         <div class="empty empty-cta">
-          <p class="empty-title">打开工作区，再选一个概念</p>
-          <p class="empty-hint">使用左栏 Nodes 与更多菜单打开带有帐（.tent）的工作区。</p>
+          <p class="empty-title">打开工作区</p>
         </div>
       </div>
     </main>
@@ -104,24 +99,22 @@
       tabindex="0"
     ></div>
 
-    <!-- 右：Inspector -->
-    <aside class="pane sheet side-panel" id="side-panel" aria-label="Inspector">
+    <!-- 右：检视 -->
+    <aside class="pane sheet side-panel" id="side-panel" aria-label="检视">
       <header class="pane-head sheet-head">
         <div class="pane-head-main">
-          <h2 class="pane-title sheet-title">Inspector</h2>
+          <h2 class="pane-title sheet-title">检视</h2>
           <span id="task-count" class="count-badge" hidden>0</span>
         </div>
-        <button type="button" id="btn-collapse-right" class="icon-btn" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">›</button>
+        <button type="button" id="btn-collapse-right" class="icon-btn collapse-edge" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">›</button>
       </header>
 
       <div class="sheet-body">
         <div id="meta" class="meta node-summary muted">未选择</div>
 
-        <!-- 二级 section：默认只展开与当前上下文最相关的一项（由 main-ui 控制 open） -->
-        <details class="insp-section" id="sec-pending" open>
+        <details class="insp-section" id="sec-pending">
           <summary class="insp-summary">
             <span>待处理</span>
-            <span class="insp-hint">任务 / 待裁 / A2U</span>
           </summary>
           <div class="insp-body">
             <div id="a2u-host" class="collab-slot" hidden aria-label="A2U 待处理"></div>
@@ -134,7 +127,6 @@
         <details class="insp-section" id="sec-dispatch">
           <summary class="insp-summary">
             <span>派活</span>
-            <span class="insp-hint">协作框</span>
           </summary>
           <div class="insp-body">
             <div id="dispatch-panel" class="dispatch-panel">
@@ -146,10 +138,9 @@
         <details class="insp-section" id="sec-cards">
           <summary class="insp-summary">
             <span>上下文卡</span>
-            <span class="insp-hint">拖出</span>
           </summary>
           <div class="insp-body">
-            <ul id="cards" class="card-list" aria-label="上下文卡列表，可拖到外部输入框"></ul>
+            <ul id="cards" class="card-list" aria-label="上下文卡列表"></ul>
           </div>
         </details>
       </div>

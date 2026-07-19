@@ -294,18 +294,19 @@ button.primary:hover {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.4em;
+  min-width: 1.1em;
   width: auto;
   max-width: 3em;
-  height: 20px;
-  padding: 0 6px;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-accent);
-  background: var(--color-accent-soft);
+  background: transparent;
   flex: 0 0 auto;
   align-self: center;
+  line-height: 1;
 }
 
 .count-badge[hidden] {
@@ -359,26 +360,14 @@ button.primary:hover {
   gap: 2px;
 }
 
-.pane-subhead {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: var(--space-2);
-  height: 36px;
-  min-height: 36px;
-  padding: 0 var(--space-3);
-  border-bottom: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
-  flex: none;
-}
-
 .pane-title {
   margin: 0;
   font-family: var(--font-ui);
-  font-size: 11px;
+  font-size: 13px;
   font-weight: 600;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
 }
 
 .pane-actions {
@@ -388,9 +377,33 @@ button.primary:hover {
   flex: none;
 }
 
+.collapse-edge {
+  opacity: 0.45;
+  flex: none;
+}
+
+.collapse-edge:hover,
+.collapse-edge:focus-visible {
+  opacity: 1;
+}
+
+.tree-panel .pane-head {
+  gap: var(--space-1);
+}
+
+.tree-panel .pane-head-main {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.tree-panel .pane-actions {
+  margin-left: auto;
+}
+
 /* 左栏 */
 .tree-panel,
 .rail {
+  position: relative;
   flex: 0 0 var(--layout-left-width);
   width: var(--layout-left-width);
   max-width: var(--layout-left-width);
@@ -415,9 +428,11 @@ button.primary:hover {
 
 .brand-sub {
   font-family: var(--font-ui);
-  font-size: 11px;
-  letter-spacing: 0.08em;
-  color: var(--color-muted);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--color-faint);
+  opacity: 0.55;
+  font-weight: 400;
 }
 
 /* 中栏 */
@@ -477,10 +492,10 @@ button.primary:hover {
 
 .sheet-title {
   font-family: var(--font-ui);
-  font-size: 11px;
-  letter-spacing: 0.1em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  font-size: 13px;
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
   font-weight: 600;
 }
 
@@ -697,7 +712,28 @@ body.is-resizing * {
   padding: 0;
 }
 
-/* status badge：中性，不抢 accent 红 */
+/* 树状态：极弱小点，不做英文胶囊 */
+.status-mark {
+  display: inline-block;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--color-faint);
+  opacity: 0.55;
+  flex: none;
+}
+
+.status-mark.is-doing {
+  background: var(--color-running);
+  opacity: 0.85;
+}
+
+.status-mark.is-todo {
+  background: var(--color-accent);
+  opacity: 0.75;
+}
+
+/* 兼容旧 badge class */
 .badge {
   font-size: 10px;
   padding: 1px 6px;
@@ -722,17 +758,19 @@ body.is-resizing * {
   border-color: color-mix(in srgb, var(--color-border) 80%, transparent);
 }
 
-.status-line {
-  flex: none;
-  margin: 0;
-  padding: var(--space-2) var(--space-3);
-  color: var(--color-muted);
-  font-size: 11px;
-  border-top: 1px solid color-mix(in srgb, var(--color-border) 55%, transparent);
-  min-height: 0;
+/* 状态线：aria-live 反馈，不占首屏说明位 */
+.status-line,
+.status-line.sr-live {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
   overflow: hidden;
-  text-overflow: ellipsis;
+  clip: rect(0, 0, 0, 0);
   white-space: nowrap;
+  border: 0;
+  flex: none;
 }
 
 /* Tabs：active 可用 pill，其余安静 */
@@ -774,12 +812,12 @@ body.is-resizing * {
   font-weight: 600;
 }
 
-/* 中栏工具：≤2 常驻同权动作 */
+/* 中栏工具：模式图标 + dirty 保存 + ⋯ */
 .doc-actions,
 .toolbar {
   display: flex;
   align-items: center;
-  gap: var(--space-2);
+  gap: var(--space-1);
   flex: none;
   min-width: 0;
   padding: 0;
@@ -787,6 +825,26 @@ body.is-resizing * {
   background: transparent;
 }
 
+.mode-quiet {
+  font-size: 11px;
+  color: var(--color-faint);
+  margin-right: var(--space-1);
+  user-select: none;
+}
+
+.mode-toggle {
+  font-family: var(--font-mono);
+  font-size: 11px;
+}
+
+.btn-quiet-save {
+  height: 28px !important;
+  min-height: 28px !important;
+  padding: 0 var(--space-3) !important;
+  font-size: 12px !important;
+}
+
+/* 兼容旧 segmented / save-state */
 .segmented {
   display: inline-flex;
   height: var(--size-control);
@@ -939,14 +997,11 @@ textarea.editor:focus {
   font-size: 18px;
   font-weight: 600;
   color: var(--color-text);
-  margin: 0 0 var(--space-2);
+  margin: 0;
 }
 
 .empty-cta .empty-hint {
-  margin: 0;
-  font-size: 13px;
-  color: var(--color-muted);
-  max-width: 28rem;
+  display: none;
 }
 
 /* Inspector：摘要一级 + 折叠二级 */
@@ -963,8 +1018,35 @@ textarea.editor:focus {
   font-size: 14px;
   font-weight: 600;
   color: var(--color-text);
-  margin-bottom: var(--space-2);
+  margin-bottom: 2px;
   line-height: 1.35;
+}
+
+.meta-line {
+  font-size: 12px;
+  line-height: 1.4;
+  margin-bottom: var(--space-1);
+}
+
+.meta-details {
+  margin-top: var(--space-1);
+}
+
+.meta-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-faint);
+  user-select: none;
+  padding: 2px 0;
+}
+
+.meta-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.meta-details[open] > summary {
+  margin-bottom: var(--space-1);
 }
 
 .meta dl {
@@ -1013,14 +1095,14 @@ textarea.editor:focus {
   align-items: center;
   justify-content: space-between;
   gap: var(--space-2);
-  min-height: 36px;
+  min-height: 32px;
   padding: var(--space-2) 0;
   cursor: pointer;
-  font-size: 11px;
+  font-size: 12px;
   font-weight: 600;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: var(--color-muted);
+  letter-spacing: 0.02em;
+  text-transform: none;
+  color: var(--color-text);
   user-select: none;
 }
 
@@ -1041,13 +1123,7 @@ textarea.editor:focus {
 }
 
 .insp-hint {
-  font-weight: 500;
-  letter-spacing: 0;
-  text-transform: none;
-  color: var(--color-faint);
-  font-size: 11px;
-  margin-left: auto;
-  margin-right: var(--space-2);
+  display: none;
 }
 
 .insp-body {
@@ -1148,12 +1224,50 @@ textarea.editor:focus {
   border-color: var(--color-focus) !important;
 }
 
+.task-head {
+  display: flex;
+  align-items: baseline;
+  gap: var(--space-2);
+  flex-wrap: wrap;
+  min-width: 0;
+}
+
+.task-claims {
+  font-size: 11px;
+}
+
 .task-summary {
   margin-top: var(--space-1);
   font-size: var(--font-ui-smaller);
   color: var(--color-text);
   line-height: 1.4;
   word-break: break-word;
+}
+
+.task-details {
+  margin-top: var(--space-1);
+}
+
+.task-details > summary {
+  list-style: none;
+  cursor: pointer;
+  font-size: 11px;
+  color: var(--color-faint);
+  user-select: none;
+}
+
+.task-details > summary::-webkit-details-marker {
+  display: none;
+}
+
+.task-detail-body {
+  margin-top: var(--space-1);
+  font-size: 11px;
+  line-height: 1.45;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  word-break: break-all;
 }
 
 .task-actions {
@@ -1425,14 +1539,14 @@ body.float {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  min-width: 1.4em;
-  height: 20px;
-  padding: 0 6px;
+  min-width: 1.1em;
+  height: 16px;
+  padding: 0 4px;
   border-radius: 999px;
   font-size: 11px;
-  font-weight: 700;
+  font-weight: 600;
   color: var(--color-accent);
-  background: var(--color-accent-soft);
+  background: transparent;
 }
 
 @media (max-width: 900px) {
@@ -1452,7 +1566,7 @@ body.float {
     margin: var(--space-1) var(--space-1) var(--space-1) 0;
   }
 
-  .doc-actions .state-label {
+  .mode-quiet {
     display: none;
   }
 }

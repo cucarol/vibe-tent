@@ -878,7 +878,6 @@ function syncInspectorSections() {
   if (anyOpen) return;
   if (hasTasks) el.secPending.open = true;
   else if (canDispatch) el.secDispatch.open = true;
-  else el.secPending.open = true;
 }
 function bindLayoutChrome() {
   el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
@@ -940,12 +939,15 @@ function applyShell(s) {
   for (const w of s.workspaces) {
     const opt = document.createElement("option");
     opt.value = w.workspaceId;
-    opt.textContent = `${w.tentName} \u2014 ${w.workspaceRoot}`;
+    const label = (w.tentName || "").trim() || "\u5DE5\u4F5C\u533A";
+    opt.textContent = label;
+    opt.title = w.workspaceRoot || w.workspaceId;
     if (w.foreground || w.workspaceId === s.foregroundWorkspaceId) opt.selected = true;
     el.wsSelect.appendChild(opt);
   }
   workspaceId = s.foregroundWorkspaceId;
-  el.status.textContent = s.statusMessage || s.workspace?.statusMessage || "";
+  const live = s.statusMessage || s.workspace?.statusMessage || "";
+  if (live) el.status.textContent = live;
   if (s.workspace?.tree?.length) {
     tree = s.workspace.tree;
     renderTree();
@@ -1069,15 +1071,27 @@ function renderTree() {
     node.addEventListener("click", () => void openConcept(node.getAttribute("data-open")));
   });
 }
+function nodeStatusMark(status) {
+  if (!status) return "";
+  const s = status.toLowerCase();
+  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
+  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+}
 function renderNodes(nodes) {
   return nodes.map((n) => {
-    const status = n.coordination && n.status ? `<span class="badge box">${escapeHtml(n.status)}</span>` : n.coordination ? `<span class="badge box">\u6846</span>` : "";
+    const mark = n.coordination ? nodeStatusMark(n.status) : "";
     const active = n.id === activeCx ? " active" : "";
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
         <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${status}</span>
+          <span class="tree-meta">${mark}</span>
         </div>
         ${kids}
       </li>`;
@@ -1151,18 +1165,17 @@ function renderToolbar() {
     return;
   }
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
+  const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
+  const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
   el.toolbar.innerHTML = `
-    <div class="segmented" role="group" aria-label="\u7F16\u8F91\u6A21\u5F0F">
-      <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
-      <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
-    </div>
-    <div class="save-state">
-      <span class="state-label${tab.dirty ? " is-dirty" : ""}" title="${escapeHtml(tab.cx)}">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"}</span>
-      <button type="button" data-act="save" class="btn btn-primary"${tab.dirty ? "" : " disabled"}>\u4FDD\u5B58</button>
-    </div>
+    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${tab.mode === "preview" ? "\xB6" : "{ }"}</button>
+    ${tab.dirty ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
     <div class="menu-wrap">
       <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">\u22EF</button>
       <div class="menu" data-doc-menu role="menu" hidden>
+        <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? ' aria-current="true"' : ""}>\u6E90\u7801</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
+        <div class="menu-sep" role="separator"></div>
         <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
         ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
       </div>
@@ -1186,6 +1199,11 @@ function renderToolbar() {
 async function onToolbar(act) {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) return;
+  if (act === "toggle-mode") {
+    tab.mode = tab.mode === "source" ? "preview" : "source";
+    renderAll();
+    return;
+  }
   if (act === "source" || act === "preview") {
     tab.mode = act;
     renderAll();
@@ -1232,7 +1250,7 @@ async function saveTab(tab) {
     });
     tab.etag = result.etag;
     tab.dirty = false;
-    el.status.textContent = "\u5DF2\u4FDD\u5B58\u3002";
+    el.status.textContent = "";
     await reloadTree();
     renderAll();
   } catch (err) {
@@ -1242,7 +1260,7 @@ async function saveTab(tab) {
 function renderEditor() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.editor.innerHTML = '<div class="empty">\u6253\u5F00\u5E26\u6709\u5E10\uFF08.tent\uFF09\u7684\u5DE5\u4F5C\u533A\uFF0C\u518D\u9009\u4E00\u4E2A\u6982\u5FF5\u3002</div>';
+    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>';
     return;
   }
   if (tab.mode === "preview") {
@@ -1274,18 +1292,23 @@ function splitBody(raw) {
 function renderMeta() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9 Node</span>`;
+    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
     el.meta.classList.add("muted");
     return;
   }
   el.meta.classList.remove("muted");
+  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C` : escapeHtml(tab.type);
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
-    <dl>
-      <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
-      <dt>\u8DEF\u5F84</dt><dd>${escapeHtml(tab.path)}</dd>
-      <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    </dl>`;
+    <div class="meta-line muted">${oneLine}</div>
+    <details class="meta-details">
+      <summary>\u8BE6\u60C5</summary>
+      <dl>
+        <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
+        <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
+        <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+      </dl>
+    </details>`;
 }
 function renderDispatchPanel() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -1390,47 +1413,61 @@ function renderTasks() {
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
-  if (taskReview.length > 0 && el.secPending && !el.secPending.open) {
-    if (el.secDispatch) el.secDispatch.open = false;
-    if (el.secCards) el.secCards.open = false;
-    el.secPending.open = true;
+  if (el.secPending) {
+    if (taskReview.length > 0) {
+      el.secPending.open = true;
+      if (el.secDispatch) el.secDispatch.open = false;
+      if (el.secCards) el.secCards.open = false;
+    } else if (!el.secDispatch?.open && !el.secCards?.open) {
+      el.secPending.open = false;
+    }
   }
   if (!taskReview.length) {
-    el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
+    el.tasks.innerHTML = "";
     return;
   }
   const profileOpts = profiles.length > 0 ? profiles.map(
     (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
-  ).join("") : `<option value="">\uFF08\u65E0\u53EF\u7528 profile\uFF09</option>`;
+  ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
   const anyStartable = taskReview.some((t) => t.canStartAgent);
   const profileBar = anyStartable ? `<li class="task-profile-bar">
-        <label for="agent-profile">agent profile</label>
-        <select id="agent-profile" title="machine-local profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
+        <label class="sr-only" for="agent-profile">profile</label>
+        <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
       </li>` : "";
   el.tasks.innerHTML = profileBar + taskReview.map((t) => {
-    const commits = t.commits.length > 0 ? `<div class="muted">commits\uFF1A${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : "";
-    const summary = t.deliverySummary ? `<div class="task-summary">${escapeHtml(t.deliverySummary)}</div>` : t.prompt ? `<div class="muted">prompt\uFF1A${escapeHtml(t.prompt)}</div>` : "";
+    const who = escapeHtml(t.role);
+    const claims = (t.claims || []).filter(
+      (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
+    );
+    const claimBit = claims.length ? `<span class="task-claims muted">${claims.map((c) => escapeHtml(c)).join(" \xB7 ")}</span>` : "";
+    const blurbRaw = t.deliverySummary || t.prompt || "";
+    const blurb = blurbRaw ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "\u2026" : blurbRaw)}</div>` : "";
     const stateLabel = taskStateLabel(t.state, t.status);
-    const sessBit = t.sessionState ? ` \xB7 \u4F1A\u8BDD${escapeHtml(sessionStateLabel(t.sessionState))}` : "";
+    const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
     const rejectDraft = rejectDrafts.get(t.path) || "";
-    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u901A\u8FC7 ACP \u542F\u52A8 agent\uFF08callerKind=user\uFF09">\u542F\u52A8 agent</button>` : "";
-    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD agent \u4F1A\u8BDD">\u4E2D\u65AD</button>` : "";
-    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4\u4EA4\u4ED8</button>
+    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
+    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-secondary" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
+    const reviewActions = t.canAcceptOrReject ? `<button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
             <div class="reject-inline">
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
               <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
             </div>` : "";
     const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
-    const claimNames = (t.claims || []).filter((c) => c !== "root");
-    const claimLabel = claimNames.length ? claimNames.map((c) => escapeHtml(c)).join(", ") : "\u2014";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div class="task-kind">${escapeHtml(stateLabel)}${sessBit}</div>
-        <div><strong>${escapeHtml(t.role)}</strong></div>
-        <div class="muted">\u8BA4\u9886 ${claimLabel}</div>
-        <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-        ${summary}
-        ${commits}
+        <div class="task-head">
+          <strong>${who}</strong>
+          ${claimBit}
+        </div>
+        ${blurb}
         ${actions}
+        <details class="task-details">
+          <summary>\u8BE6\u60C5</summary>
+          <div class="task-detail-body muted">
+            <div>${escapeHtml(stateLabel)}${sessLabel ? ` \xB7 ${escapeHtml(sessLabel)}` : ""}</div>
+            <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
+            ${t.commits.length > 0 ? `<div>${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : ""}
+          </div>
+        </details>
       </li>`;
   }).join("");
   const profileSel = document.getElementById("agent-profile");
@@ -1534,14 +1571,12 @@ async function loadCards() {
   const snap = await window.tentDesktop.getFloatingStatus();
   const cards = snap.recentCards || [];
   if (!cards.length) {
-    el.cards.innerHTML = `<li class="muted">\u6682\u65E0 \u2014 \u9009\u4E2D\u6846\u540E\u53D1\u51FA</li>`;
+    el.cards.innerHTML = "";
     return;
   }
   el.cards.innerHTML = cards.map(
-    (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}">
+    (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}" title="${escapeHtml(c.kind)}/${escapeHtml(c.refId)}">
         <div><strong>${escapeHtml(c.label)}</strong></div>
-        <div class="muted">${escapeHtml(c.kind)}/${escapeHtml(c.refId)}</div>
-        <div class="card-hint muted">\u62D6\u51FA \xB7 \u5355\u51FB\u590D\u5236</div>
       </li>`
   ).join("");
   el.cards.querySelectorAll("[data-card-idx]").forEach((node) => {
@@ -1550,7 +1585,7 @@ async function loadCards() {
     if (!card?.text) return;
     bindContextCardDrag(node, card.text, {
       onCopied: () => {
-        el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u590D\u5236\uFF08\u8F85\u52A9\uFF09\uFF1B\u62D6\u51FA\u4E0D\u4F9D\u8D56\u526A\u8D34\u677F\u3002";
+        el.status.textContent = "\u5DF2\u590D\u5236";
       },
       onCopyError: (err) => setError(err)
     });
