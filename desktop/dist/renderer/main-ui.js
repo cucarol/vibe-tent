@@ -420,6 +420,202 @@ function suggestBoxName(typeName, now = Date.now()) {
   return `${safe}-${now.toString(36).slice(-4)}`;
 }
 
+// src/desktop/workbench/layout-prefs.ts
+var LAYOUT_STORAGE_KEY = "tent.desktop.mainLayout.v1";
+var LAYOUT_BOUNDS = {
+  leftMin: 220,
+  leftMax: 420,
+  leftDefault: 280,
+  rightMin: 280,
+  rightMax: 520,
+  rightDefault: 340,
+  centerMin: 480,
+  /** Visual + hit area for each splitter */
+  splitterWidth: 8,
+  /** Horizontal chrome around the three columns (layout padding) */
+  layoutPadX: 20,
+  resizeStep: 12
+};
+function defaultLayoutPrefs() {
+  return {
+    leftWidth: LAYOUT_BOUNDS.leftDefault,
+    rightWidth: LAYOUT_BOUNDS.rightDefault,
+    leftCollapsed: false,
+    rightCollapsed: false
+  };
+}
+function clampWidth(value, min, max) {
+  if (!Number.isFinite(value)) return min;
+  return Math.min(max, Math.max(min, Math.round(value)));
+}
+function normalizeLayoutPrefs(input) {
+  const base = defaultLayoutPrefs();
+  if (!input || typeof input !== "object") return base;
+  return {
+    leftWidth: clampWidth(
+      typeof input.leftWidth === "number" ? input.leftWidth : base.leftWidth,
+      LAYOUT_BOUNDS.leftMin,
+      LAYOUT_BOUNDS.leftMax
+    ),
+    rightWidth: clampWidth(
+      typeof input.rightWidth === "number" ? input.rightWidth : base.rightWidth,
+      LAYOUT_BOUNDS.rightMin,
+      LAYOUT_BOUNDS.rightMax
+    ),
+    leftCollapsed: input.leftCollapsed === true,
+    rightCollapsed: input.rightCollapsed === true
+  };
+}
+function loadLayoutPrefs(storage) {
+  if (!storage) return defaultLayoutPrefs();
+  try {
+    const raw = storage.getItem(LAYOUT_STORAGE_KEY);
+    if (!raw) return defaultLayoutPrefs();
+    return normalizeLayoutPrefs(JSON.parse(raw));
+  } catch {
+    return defaultLayoutPrefs();
+  }
+}
+function saveLayoutPrefs(storage, prefs) {
+  if (!storage) return;
+  try {
+    const normalized = normalizeLayoutPrefs(prefs);
+    storage.setItem(LAYOUT_STORAGE_KEY, JSON.stringify(normalized));
+  } catch {
+  }
+}
+function fixedChromeWidth(leftCollapsed, rightCollapsed) {
+  let w = LAYOUT_BOUNDS.layoutPadX;
+  if (!leftCollapsed) w += LAYOUT_BOUNDS.splitterWidth;
+  if (!rightCollapsed) w += LAYOUT_BOUNDS.splitterWidth;
+  return w;
+}
+function centerWidthFor(available, leftCollapsed, rightCollapsed, leftWidth, rightWidth) {
+  const chrome = fixedChromeWidth(leftCollapsed, rightCollapsed);
+  const sides = (leftCollapsed ? 0 : leftWidth) + (rightCollapsed ? 0 : rightWidth);
+  return available - chrome - sides;
+}
+function computeEffectiveLayout(prefs, viewportWidth) {
+  const normalized = normalizeLayoutPrefs(prefs);
+  let leftCollapsed = normalized.leftCollapsed;
+  let rightCollapsed = normalized.rightCollapsed;
+  let leftWidth = normalized.leftWidth;
+  let rightWidth = normalized.rightWidth;
+  let autoCollapsedRight = false;
+  const available = Math.max(0, Math.round(viewportWidth));
+  if (!leftCollapsed && !rightCollapsed && centerWidthFor(available, false, false, leftWidth, rightWidth) < LAYOUT_BOUNDS.centerMin) {
+    rightCollapsed = true;
+    autoCollapsedRight = true;
+  }
+  if (!leftCollapsed && rightCollapsed) {
+    const roomForLeft = available - fixedChromeWidth(false, true) - LAYOUT_BOUNDS.centerMin;
+    if (roomForLeft < leftWidth) {
+      leftWidth = clampWidth(roomForLeft, LAYOUT_BOUNDS.leftMin, LAYOUT_BOUNDS.leftMax);
+    }
+  } else if (leftCollapsed && !rightCollapsed) {
+    const roomForRight = available - fixedChromeWidth(true, false) - LAYOUT_BOUNDS.centerMin;
+    if (roomForRight < rightWidth) {
+      if (roomForRight < LAYOUT_BOUNDS.rightMin) {
+        rightCollapsed = true;
+        autoCollapsedRight = true;
+      } else {
+        rightWidth = clampWidth(roomForRight, LAYOUT_BOUNDS.rightMin, LAYOUT_BOUNDS.rightMax);
+      }
+    }
+  } else if (!leftCollapsed && !rightCollapsed) {
+    const roomForLeft = available - fixedChromeWidth(false, false) - rightWidth - LAYOUT_BOUNDS.centerMin;
+    if (roomForLeft < leftWidth) {
+      leftWidth = clampWidth(roomForLeft, LAYOUT_BOUNDS.leftMin, LAYOUT_BOUNDS.leftMax);
+      if (centerWidthFor(available, false, false, leftWidth, rightWidth) < LAYOUT_BOUNDS.centerMin) {
+        rightCollapsed = true;
+        autoCollapsedRight = true;
+        const roomLeftOnly = available - fixedChromeWidth(false, true) - LAYOUT_BOUNDS.centerMin;
+        leftWidth = clampWidth(
+          Math.min(normalized.leftWidth, roomLeftOnly),
+          LAYOUT_BOUNDS.leftMin,
+          LAYOUT_BOUNDS.leftMax
+        );
+      }
+    }
+  }
+  const centerWidth = Math.max(
+    0,
+    centerWidthFor(available, leftCollapsed, rightCollapsed, leftWidth, rightWidth)
+  );
+  return {
+    leftWidth,
+    rightWidth,
+    leftCollapsed,
+    rightCollapsed,
+    centerWidth,
+    autoCollapsedRight
+  };
+}
+function capSideForCenter(sideWidth, sideMin, sideMax, maxForCenter) {
+  if (!Number.isFinite(maxForCenter)) {
+    return clampWidth(sideWidth, sideMin, sideMax);
+  }
+  if (maxForCenter < sideMin) {
+    return sideMin;
+  }
+  return clampWidth(Math.min(sideWidth, maxForCenter), sideMin, sideMax);
+}
+function resizeSide(prefs, side, nextWidth, viewportWidth) {
+  const normalized = normalizeLayoutPrefs(prefs);
+  if (side === "left") {
+    let leftWidth = clampWidth(nextWidth, LAYOUT_BOUNDS.leftMin, LAYOUT_BOUNDS.leftMax);
+    if (!normalized.rightCollapsed) {
+      const maxLeft = viewportWidth - fixedChromeWidth(false, false) - normalized.rightWidth - LAYOUT_BOUNDS.centerMin;
+      leftWidth = capSideForCenter(
+        leftWidth,
+        LAYOUT_BOUNDS.leftMin,
+        LAYOUT_BOUNDS.leftMax,
+        maxLeft
+      );
+    } else {
+      const maxLeft = viewportWidth - fixedChromeWidth(false, true) - LAYOUT_BOUNDS.centerMin;
+      leftWidth = capSideForCenter(
+        leftWidth,
+        LAYOUT_BOUNDS.leftMin,
+        LAYOUT_BOUNDS.leftMax,
+        maxLeft
+      );
+    }
+    return { ...normalized, leftWidth, leftCollapsed: false };
+  }
+  let rightWidth = clampWidth(nextWidth, LAYOUT_BOUNDS.rightMin, LAYOUT_BOUNDS.rightMax);
+  if (!normalized.leftCollapsed) {
+    const maxRight = viewportWidth - fixedChromeWidth(false, false) - normalized.leftWidth - LAYOUT_BOUNDS.centerMin;
+    rightWidth = capSideForCenter(
+      rightWidth,
+      LAYOUT_BOUNDS.rightMin,
+      LAYOUT_BOUNDS.rightMax,
+      maxRight
+    );
+  } else {
+    const maxRight = viewportWidth - fixedChromeWidth(true, false) - LAYOUT_BOUNDS.centerMin;
+    rightWidth = capSideForCenter(
+      rightWidth,
+      LAYOUT_BOUNDS.rightMin,
+      LAYOUT_BOUNDS.rightMax,
+      maxRight
+    );
+  }
+  return { ...normalized, rightWidth, rightCollapsed: false };
+}
+function toggleCollapsed(prefs, side) {
+  const normalized = normalizeLayoutPrefs(prefs);
+  if (side === "left") {
+    return { ...normalized, leftCollapsed: !normalized.leftCollapsed };
+  }
+  return { ...normalized, rightCollapsed: !normalized.rightCollapsed };
+}
+function stepResize(prefs, side, direction, viewportWidth, step = LAYOUT_BOUNDS.resizeStep) {
+  const normalized = normalizeLayoutPrefs(prefs);
+  const current = side === "left" ? normalized.leftWidth : normalized.rightWidth;
+  return resizeSide(prefs, side, current + direction * step, viewportWidth);
+}
+
 // src/desktop/renderer/context-card-drag.ts
 function applyContextCardDragStart(dataTransfer, text) {
   if (!dataTransfer) return;
@@ -474,10 +670,24 @@ var createTypePick = "";
 var dispatchRole = "";
 var dispatchPrompt = "";
 var rejectDrafts = /* @__PURE__ */ new Map();
+var layoutPrefs = loadLayoutPrefs(
+  typeof localStorage !== "undefined" ? localStorage : null
+);
+var resizeSession = null;
 var el = {
   health: document.getElementById("health-pill"),
   wsSelect: document.getElementById("workspace-select"),
   status: document.getElementById("status-line"),
+  layout: document.getElementById("main-layout"),
+  treePanel: document.getElementById("tree-panel"),
+  sidePanel: document.getElementById("side-panel"),
+  splitterLeft: document.getElementById("splitter-left"),
+  splitterRight: document.getElementById("splitter-right"),
+  btnCollapseLeft: document.getElementById("btn-collapse-left"),
+  btnCollapseRight: document.getElementById("btn-collapse-right"),
+  btnExpandLeft: document.getElementById("btn-expand-left"),
+  btnExpandRight: document.getElementById("btn-expand-right"),
+  taskCount: document.getElementById("task-count"),
   tree: document.getElementById("tree"),
   tabs: document.getElementById("tabs"),
   toolbar: document.getElementById("toolbar"),
@@ -491,7 +701,128 @@ var el = {
   createType: document.getElementById("create-type"),
   btnNewBox: document.getElementById("btn-new-box")
 };
+function layoutViewportWidth() {
+  return el.layout?.clientWidth || window.innerWidth || 1200;
+}
+function persistLayout() {
+  saveLayoutPrefs(typeof localStorage !== "undefined" ? localStorage : null, layoutPrefs);
+}
+function applyLayoutChrome() {
+  if (!el.layout) return;
+  const effective = computeEffectiveLayout(layoutPrefs, layoutViewportWidth());
+  el.layout.style.setProperty("--layout-left-width", `${effective.leftWidth}px`);
+  el.layout.style.setProperty("--layout-right-width", `${effective.rightWidth}px`);
+  el.layout.classList.toggle("is-left-collapsed", effective.leftCollapsed);
+  el.layout.classList.toggle("is-right-collapsed", effective.rightCollapsed);
+  if (el.btnExpandLeft) {
+    el.btnExpandLeft.hidden = !layoutPrefs.leftCollapsed;
+  }
+  if (el.btnExpandRight) {
+    el.btnExpandRight.hidden = !layoutPrefs.rightCollapsed;
+  }
+  if (el.btnCollapseLeft) {
+    el.btnCollapseLeft.hidden = layoutPrefs.leftCollapsed;
+    el.btnCollapseLeft.setAttribute("aria-expanded", layoutPrefs.leftCollapsed ? "false" : "true");
+  }
+  if (el.btnCollapseRight) {
+    el.btnCollapseRight.hidden = layoutPrefs.rightCollapsed;
+    el.btnCollapseRight.setAttribute("aria-expanded", layoutPrefs.rightCollapsed ? "false" : "true");
+  }
+  if (el.splitterLeft) {
+    el.splitterLeft.setAttribute("aria-valuemin", String(LAYOUT_BOUNDS.leftMin));
+    el.splitterLeft.setAttribute("aria-valuemax", String(LAYOUT_BOUNDS.leftMax));
+    el.splitterLeft.setAttribute("aria-valuenow", String(effective.leftWidth));
+    el.splitterLeft.tabIndex = effective.leftCollapsed ? -1 : 0;
+  }
+  if (el.splitterRight) {
+    el.splitterRight.setAttribute("aria-valuemin", String(LAYOUT_BOUNDS.rightMin));
+    el.splitterRight.setAttribute("aria-valuemax", String(LAYOUT_BOUNDS.rightMax));
+    el.splitterRight.setAttribute("aria-valuenow", String(effective.rightWidth));
+    el.splitterRight.tabIndex = effective.rightCollapsed ? -1 : 0;
+  }
+}
+function setLayoutPrefs(next, persist = true) {
+  layoutPrefs = next;
+  applyLayoutChrome();
+  if (persist) persistLayout();
+}
+function onToggleSide(side) {
+  setLayoutPrefs(toggleCollapsed(layoutPrefs, side));
+}
+function beginResize(side, clientX) {
+  const width = side === "left" ? layoutPrefs.leftWidth : layoutPrefs.rightWidth;
+  resizeSession = { side, startX: clientX, startWidth: width };
+  document.body.classList.add("is-resizing");
+  const splitter = side === "left" ? el.splitterLeft : el.splitterRight;
+  splitter?.classList.add("is-active");
+}
+function onResizePointerMove(clientX) {
+  if (!resizeSession) return;
+  const delta = clientX - resizeSession.startX;
+  const nextWidth = resizeSession.side === "left" ? resizeSession.startWidth + delta : resizeSession.startWidth - delta;
+  setLayoutPrefs(resizeSide(layoutPrefs, resizeSession.side, nextWidth, layoutViewportWidth()), false);
+}
+function endResize() {
+  if (!resizeSession) return;
+  resizeSession = null;
+  document.body.classList.remove("is-resizing");
+  el.splitterLeft?.classList.remove("is-active");
+  el.splitterRight?.classList.remove("is-active");
+  persistLayout();
+  applyLayoutChrome();
+}
+function bindSplitter(side, node) {
+  if (!node) return;
+  node.addEventListener("pointerdown", (ev) => {
+    if (ev.button !== 0) return;
+    ev.preventDefault();
+    node.setPointerCapture?.(ev.pointerId);
+    beginResize(side, ev.clientX);
+  });
+  node.addEventListener("pointermove", (ev) => {
+    if (!resizeSession || resizeSession.side !== side) return;
+    onResizePointerMove(ev.clientX);
+  });
+  node.addEventListener("pointerup", () => endResize());
+  node.addEventListener("pointercancel", () => endResize());
+  node.addEventListener("lostpointercapture", () => endResize());
+  node.addEventListener("keydown", (ev) => {
+    if (ev.key === "ArrowLeft" || ev.key === "ArrowRight") {
+      ev.preventDefault();
+      const dir = side === "left" ? ev.key === "ArrowRight" ? 1 : -1 : ev.key === "ArrowLeft" ? 1 : -1;
+      setLayoutPrefs(stepResize(layoutPrefs, side, dir, layoutViewportWidth()));
+    } else if (ev.key === "Home") {
+      ev.preventDefault();
+      const min = side === "left" ? LAYOUT_BOUNDS.leftMin : LAYOUT_BOUNDS.rightMin;
+      setLayoutPrefs(resizeSide(layoutPrefs, side, min, layoutViewportWidth()));
+    } else if (ev.key === "End") {
+      ev.preventDefault();
+      const max = side === "left" ? LAYOUT_BOUNDS.leftMax : LAYOUT_BOUNDS.rightMax;
+      setLayoutPrefs(resizeSide(layoutPrefs, side, max, layoutViewportWidth()));
+    } else if (ev.key === "Enter" || ev.key === " ") {
+      ev.preventDefault();
+      onToggleSide(side);
+    }
+  });
+  node.addEventListener("dblclick", () => onToggleSide(side));
+}
+function bindLayoutChrome() {
+  el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
+  el.btnCollapseRight?.addEventListener("click", () => onToggleSide("right"));
+  el.btnExpandLeft?.addEventListener("click", () => {
+    if (layoutPrefs.leftCollapsed) onToggleSide("left");
+  });
+  el.btnExpandRight?.addEventListener("click", () => {
+    if (layoutPrefs.rightCollapsed) onToggleSide("right");
+  });
+  bindSplitter("left", el.splitterLeft);
+  bindSplitter("right", el.splitterRight);
+  window.addEventListener("resize", () => applyLayoutChrome());
+  window.addEventListener("pointerup", () => endResize());
+  applyLayoutChrome();
+}
 async function boot() {
+  bindLayoutChrome();
   document.getElementById("btn-open-ws").addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh").addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note").addEventListener("click", () => void onCreateNote());
@@ -954,6 +1285,11 @@ async function onDispatch() {
   }
 }
 function renderTasks() {
+  if (el.taskCount) {
+    const n = taskReview.length;
+    el.taskCount.hidden = n === 0;
+    el.taskCount.textContent = String(n);
+  }
   if (!taskReview.length) {
     el.tasks.innerHTML = `<li class="muted">\u6682\u65E0\u4EFB\u52A1</li>`;
     return;

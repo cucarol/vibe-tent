@@ -9,7 +9,7 @@
 </head>
 <body>
   <header class="topbar" id="topbar">
-    <strong>帷幄</strong>
+    <strong class="brand">帷幄</strong>
     <span id="health-pill" class="pill off">服务离线</span>
     <select id="workspace-select" title="前台工作区"></select>
     <button type="button" id="btn-open-ws">打开工作区…</button>
@@ -19,11 +19,12 @@
     <button type="button" id="btn-float">浮动控件</button>
     <span id="status-line" class="status-line"></span>
   </header>
-  <div class="layout">
-    <aside class="panel tree-panel">
+  <div class="layout" id="main-layout">
+    <aside class="panel tree-panel" id="tree-panel" aria-label="Node Explorer">
       <div class="panel-head">
         <span>概念树</span>
         <div class="row tree-actions">
+          <button type="button" id="btn-collapse-left" class="icon-btn" title="收起左侧栏" aria-label="收起左侧栏" aria-controls="tree-panel">‹</button>
           <button type="button" id="btn-new-note" title="新建普通笔记">笔记</button>
         </div>
       </div>
@@ -35,24 +36,57 @@
         <input id="search-input" placeholder="搜索标题 / 正文" />
         <button type="button" id="btn-search">搜索</button>
       </div>
-      <ul id="search-hits" class="card-list" style="padding: 0 10px"></ul>
+      <ul id="search-hits" class="card-list search-hits"></ul>
       <ul id="tree" class="tree" aria-label="概念树"></ul>
     </aside>
-    <main class="panel main-panel">
+
+    <div
+      class="splitter"
+      id="splitter-left"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整左侧栏宽度"
+      aria-controls="tree-panel"
+      tabindex="0"
+    ></div>
+
+    <main class="panel main-panel" id="main-panel" aria-label="文档编辑区">
+      <div class="main-rail-toggles" id="rail-toggles">
+        <button type="button" id="btn-expand-left" class="icon-btn rail-toggle" hidden title="展开左侧栏" aria-label="展开左侧栏">› 概念树</button>
+        <span class="spacer"></span>
+        <button type="button" id="btn-expand-right" class="icon-btn rail-toggle" hidden title="展开右侧栏" aria-label="展开右侧栏">属性 ‹</button>
+      </div>
       <div id="tabs" class="tabs"></div>
       <div id="toolbar" class="toolbar"></div>
       <div id="editor-host" class="editor-wrap">
         <div class="empty">打开带有帐（.tent）的工作区，再选一个概念。</div>
       </div>
     </main>
-    <aside class="panel side-panel">
-      <div class="panel-head">属性</div>
+
+    <div
+      class="splitter"
+      id="splitter-right"
+      role="separator"
+      aria-orientation="vertical"
+      aria-label="调整右侧栏宽度"
+      aria-controls="side-panel"
+      tabindex="0"
+    ></div>
+
+    <aside class="panel side-panel" id="side-panel" aria-label="Inspector 与待处理">
+      <div class="panel-head">
+        <span>属性</span>
+        <button type="button" id="btn-collapse-right" class="icon-btn" title="收起右侧栏" aria-label="收起右侧栏" aria-controls="side-panel">›</button>
+      </div>
       <div id="meta" class="meta muted">未选择</div>
       <div class="panel-head">派活</div>
       <div id="dispatch-panel" class="dispatch-panel">
         <div class="muted dispatch-empty">选中协作框后可派活</div>
       </div>
-      <div class="panel-head">任务 / 待裁</div>
+      <div class="panel-head">
+        <span>任务 / 待裁</span>
+        <span id="task-count" class="count-pill" hidden>0</span>
+      </div>
       <ul id="tasks" class="task-list"></ul>
       <div class="panel-head">最近上下文卡 · 拖出</div>
       <ul id="cards" class="card-list" aria-label="上下文卡列表，可拖到外部输入框"></ul>
