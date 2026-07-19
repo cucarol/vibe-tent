@@ -858,7 +858,8 @@ function applyShell(s) {
   state = s;
   const ok = s.health.status === "ok";
   el.health.className = `pill ${ok ? "ok" : "off"}`;
-  el.health.textContent = ok ? `\u670D\u52A1\u6B63\u5E38 \xB7 pid ${s.health.pid ?? "?"} \xB7 ${s.health.version ?? ""}` : "\u670D\u52A1\u79BB\u7EBF";
+  el.health.textContent = ok ? "\u5728\u7EBF" : "\u79BB\u7EBF";
+  el.health.title = ok ? `Local Service \u6B63\u5E38 \xB7 pid ${s.health.pid ?? "?"} \xB7 ${s.health.version ?? ""}` : "Local Service \u79BB\u7EBF";
   el.wsSelect.innerHTML = "";
   for (const w of s.workspaces) {
     const opt = document.createElement("option");
@@ -998,10 +999,12 @@ function renderNodes(nodes) {
     const active = n.id === activeCx ? " active" : "";
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}">
-          <span>${escapeHtml(n.name)}</span>
-          <span class="type">${escapeHtml(n.type)}</span>
-          ${badge}
+        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)}">
+          <span class="tree-name">${escapeHtml(n.name)}</span>
+          <span class="tree-meta">
+            <span class="type">${escapeHtml(n.type)}</span>
+            ${badge}
+          </span>
         </div>
         ${kids}
       </li>`;
@@ -1078,9 +1081,9 @@ function renderToolbar() {
     <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">\u6E90\u7801</button>
     <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">\u9884\u89C8</button>
     <button type="button" data-act="save" class="primary">\u4FDD\u5B58</button>
-    ${!tab.coordination ? `<button type="button" data-act="promote">\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}</button>` : ""}
-    <button type="button" data-act="card">\u4E0A\u4E0B\u6587\u5361</button>
-    <span class="muted">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"} \xB7 ${escapeHtml(tab.cx)}</span>
+    ${!tab.coordination ? `<button type="button" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347</button>` : ""}
+    <button type="button" data-act="card">\u53D1\u5361</button>
+    <span class="doc-id" title="${escapeHtml(tab.cx)}">${tab.dirty ? "\u672A\u4FDD\u5B58" : "\u5DF2\u4FDD\u5B58"}</span>
   `;
   el.toolbar.querySelectorAll("[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")));
@@ -1180,12 +1183,13 @@ function renderMeta() {
     el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
     return;
   }
-  el.meta.innerHTML = `<dl>
-    <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    <dt>\u8DEF\u5F84</dt><dd>${escapeHtml(tab.path)}</dd>
-    <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}</dd>
-    <dt>\u534F\u4F5C\u6846</dt><dd>${tab.coordination ? "\u662F" : "\u5426"}</dd>
-  </dl>`;
+  el.meta.innerHTML = `
+    <div class="meta-name">${escapeHtml(tab.name)}</div>
+    <dl>
+      <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
+      <dt>\u8DEF\u5F84</dt><dd>${escapeHtml(tab.path)}</dd>
+      <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+    </dl>`;
 }
 function renderDispatchPanel() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -1316,10 +1320,13 @@ function renderTasks() {
               <button type="button" data-reject="${escapeHtml(t.path)}">\u9A73\u56DE</button>
             </div>` : "";
     const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
+    const claimNames = (t.claims || []).filter((c) => c !== "root");
+    const claimLabel = claimNames.length ? claimNames.map((c) => escapeHtml(c)).join(", ") : "\u2014";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div><strong>${escapeHtml(stateLabel)}</strong>${sessBit} \xB7 ${escapeHtml(t.role)}</div>
-        <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">\u8BA4\u9886\uFF1A${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "\u2014")}</div>
+        <div class="task-kind">${escapeHtml(stateLabel)}${sessBit}</div>
+        <div><strong>${escapeHtml(t.role)}</strong></div>
+        <div class="muted">\u8BA4\u9886 ${claimLabel}</div>
+        <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
         ${summary}
         ${commits}
         ${actions}

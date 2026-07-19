@@ -357,9 +357,10 @@ function applyShell(s: ShellState): void {
   state = s;
   const ok = s.health.status === "ok";
   el.health.className = `pill ${ok ? "ok" : "off"}`;
-  el.health.textContent = ok
-    ? `服务正常 · pid ${s.health.pid ?? "?"} · ${s.health.version ?? ""}`
-    : "服务离线";
+  el.health.textContent = ok ? "在线" : "离线";
+  el.health.title = ok
+    ? `Local Service 正常 · pid ${s.health.pid ?? "?"} · ${s.health.version ?? ""}`
+    : "Local Service 离线";
 
   el.wsSelect.innerHTML = "";
   for (const w of s.workspaces) {
@@ -529,11 +530,14 @@ function renderNodes(nodes: ConceptNode[]): string {
         : `<span class="badge note">笔记</span>`;
       const active = n.id === activeCx ? " active" : "";
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
+      // displayName 主显示；type 等宽弱化；不把 cx- id 铺在树上
       return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}">
-          <span>${escapeHtml(n.name)}</span>
-          <span class="type">${escapeHtml(n.type)}</span>
-          ${badge}
+        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)}">
+          <span class="tree-name">${escapeHtml(n.name)}</span>
+          <span class="tree-meta">
+            <span class="type">${escapeHtml(n.type)}</span>
+            ${badge}
+          </span>
         </div>
         ${kids}
       </li>`;
@@ -627,17 +631,18 @@ function renderToolbar(): void {
     return;
   }
   const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
+  // 工具进中栏右上角小型按钮；技术 id 等宽弱化
   el.toolbar.innerHTML = `
     <button type="button" data-act="source" class="${tab.mode === "source" ? "active" : ""}">源码</button>
     <button type="button" data-act="preview" class="${tab.mode === "preview" ? "active" : ""}">预览</button>
     <button type="button" data-act="save" class="primary">保存</button>
     ${
       !tab.coordination
-        ? `<button type="button" data-act="promote">提升为 ${escapeHtml(promoteTarget)}</button>`
+        ? `<button type="button" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升</button>`
         : ""
     }
-    <button type="button" data-act="card">上下文卡</button>
-    <span class="muted">${tab.dirty ? "未保存" : "已保存"} · ${escapeHtml(tab.cx)}</span>
+    <button type="button" data-act="card">发卡</button>
+    <span class="doc-id" title="${escapeHtml(tab.cx)}">${tab.dirty ? "未保存" : "已保存"}</span>
   `;
   el.toolbar.querySelectorAll<HTMLElement>("[data-act]").forEach((btn) => {
     btn.addEventListener("click", () => void onToolbar(btn.getAttribute("data-act")!));
@@ -743,12 +748,14 @@ function renderMeta(): void {
     el.meta.innerHTML = `<span class="muted">未选择</span>`;
     return;
   }
-  el.meta.innerHTML = `<dl>
-    <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-    <dt>路径</dt><dd>${escapeHtml(tab.path)}</dd>
-    <dt>类型</dt><dd>${escapeHtml(tab.type)}</dd>
-    <dt>协作框</dt><dd>${tab.coordination ? "是" : "否"}</dd>
-  </dl>`;
+  // 身份以 displayName 为主；cx- 等宽弱化
+  el.meta.innerHTML = `
+    <div class="meta-name">${escapeHtml(tab.name)}</div>
+    <dl>
+      <dt>类型</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " · 协作" : ""}</dd>
+      <dt>路径</dt><dd>${escapeHtml(tab.path)}</dd>
+      <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+    </dl>`;
 }
 
 function renderDispatchPanel(): void {
@@ -935,10 +942,15 @@ function renderTasks(): void {
             ? `<div class="task-actions row">${startBtn}${interruptBtn}${reviewActions}</div>`
             : "";
 
+        const claimNames = (t.claims || []).filter((c) => c !== "root");
+        const claimLabel = claimNames.length
+          ? claimNames.map((c) => escapeHtml(c)).join(", ")
+          : "—";
         return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div><strong>${escapeHtml(stateLabel)}</strong>${sessBit} · ${escapeHtml(t.role)}</div>
-        <div class="muted">${escapeHtml(t.path)}</div>
-        <div class="muted">认领：${escapeHtml((t.claims || []).filter((c) => c !== "root").join(", ") || "—")}</div>
+        <div class="task-kind">${escapeHtml(stateLabel)}${sessBit}</div>
+        <div><strong>${escapeHtml(t.role)}</strong></div>
+        <div class="muted">认领 ${claimLabel}</div>
+        <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
         ${summary}
         ${commits}
         ${actions}
