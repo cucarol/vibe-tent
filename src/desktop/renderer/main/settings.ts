@@ -712,6 +712,8 @@ async function onRoleCreate(): Promise<void> {
     el.status.textContent = built.reason;
     return;
   }
+  const createBtn = document.getElementById("btn-role-create") as HTMLButtonElement | null;
+  if (createBtn) createBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("registry.role.create", {
       workspaceId,
@@ -724,6 +726,7 @@ async function onRoleCreate(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (createBtn) createBtn.disabled = false;
   }
 }
 
@@ -755,6 +758,8 @@ async function onRoleSave(): Promise<void> {
     el.status.textContent = built.reason;
     return;
   }
+  const saveBtn = document.getElementById("btn-role-save") as HTMLButtonElement | null;
+  if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("registry.role.update", {
       workspaceId,
@@ -766,6 +771,7 @@ async function onRoleSave(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
 
@@ -803,6 +809,8 @@ async function onProfileCreate(): Promise<void> {
     el.status.textContent = built.reason;
     return;
   }
+  const createBtn = document.getElementById("btn-prof-create") as HTMLButtonElement | null;
+  if (createBtn) createBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.create", built.payload);
     el.status.textContent = `已创建 profile ${draft.id.trim()}`;
@@ -810,6 +818,7 @@ async function onProfileCreate(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (createBtn) createBtn.disabled = false;
   }
 }
 
@@ -843,6 +852,8 @@ async function onProfileSave(): Promise<void> {
     el.status.textContent = "skills / mcpServers 须为合法 JSON";
     return;
   }
+  const saveBtn = document.getElementById("btn-prof-save") as HTMLButtonElement | null;
+  if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
     el.status.textContent = "Profile 已保存（MCP/Skills 下次 session 生效）";
@@ -850,6 +861,7 @@ async function onProfileSave(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
 
@@ -876,6 +888,8 @@ async function onCredSet(): Promise<void> {
     el.status.textContent = built.reason;
     return;
   }
+  const setBtn = document.getElementById("btn-cred-set") as HTMLButtonElement | null;
+  if (setBtn) setBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("credential.set", built.payload);
     // Clear secret from DOM immediately — never re-display.
@@ -885,6 +899,7 @@ async function onCredSet(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (setBtn) setBtn.disabled = false;
   }
 }
 
@@ -935,6 +950,8 @@ async function onRetentionPurge(): Promise<void> {
   const daysRaw = (document.getElementById("retention-days") as HTMLInputElement | null)?.value;
   const days = daysRaw !== undefined && daysRaw !== "" ? Number(daysRaw) : 30;
   if (!window.confirm(`清理超过 ${days} 天的终端任务/交付？此操作不可撤销。`)) return;
+  const purgeBtn = document.getElementById("btn-retention-purge") as HTMLButtonElement | null;
+  if (purgeBtn) purgeBtn.disabled = true;
   try {
     const result = (await window.tentDesktop.rpc("operationalRetention.purge", {
       workspaceId,
@@ -946,6 +963,7 @@ async function onRetentionPurge(): Promise<void> {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (purgeBtn) purgeBtn.disabled = false;
   }
 }
 

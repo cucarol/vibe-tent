@@ -10,6 +10,21 @@ import type {
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
 
+/** Task states still shown in Activity / Inspector action lists (includes failed for retry/cancel). */
+export const ACTIONABLE_TASK_STATES = [
+  "queued",
+  "pending",
+  "running",
+  "taken",
+  "waiting",
+  "delivered",
+  "failed",
+] as const;
+
+export function isActionableTaskState(state: string): boolean {
+  return (ACTIONABLE_TASK_STATES as readonly string[]).includes(state);
+}
+
 export type CoordinationTypeOption = {
   name: string;
   description?: string;

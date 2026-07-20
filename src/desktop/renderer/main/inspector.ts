@@ -51,13 +51,14 @@ export function renderMeta(): void {
   const oneLine = tab.coordination
     ? `${escapeHtml(tab.type)} · 协作 · ${modeLabel}`
     : `${escapeHtml(tab.type)} · ${modeLabel}`;
+  const renameDisabled = tab.nodeMode === "archived";
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
     <div class="meta-controls">
       <label class="sr-only" for="node-display-name">名称</label>
-      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
-      <button type="button" id="btn-rename-node" class="btn btn-secondary">重命名</button>
+      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
+      <button type="button" id="btn-rename-node" class="btn btn-secondary"${renameDisabled ? " disabled" : ""} title="${renameDisabled ? "封存节点不可重命名" : "重命名"}">重命名</button>
     </div>
     <div class="meta-controls">
       <label for="node-mode">访问</label>

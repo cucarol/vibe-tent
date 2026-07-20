@@ -30,7 +30,7 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
     id: "graph.bulk",
     methods: ["graph.snapshot", "docs.graph"],
     need: "Workspace-wide node/edge projection for a full graph canvas.",
-    fallback: "Local projection: docs.list tree + docs.backlinks (and optional docs.get body links) for the selected node only.",
+    fallback: "Local projection: docs.list tree + docs.backlinks + docs.readForEdit body out-links for the selected node only.",
   },
   {
     id: "session.logs-reload",

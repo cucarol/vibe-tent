@@ -5,6 +5,18 @@ var __export = (target, all2) => {
 };
 
 // src/desktop/workbench/collaboration-ui.ts
+var ACTIONABLE_TASK_STATES = [
+  "queued",
+  "pending",
+  "running",
+  "taken",
+  "waiting",
+  "delivered",
+  "failed"
+];
+function isActionableTaskState(state2) {
+  return ACTIONABLE_TASK_STATES.includes(state2);
+}
 function pickDefaultCoordinationType(types) {
   const names = listCoordinationTypeNames(types);
   if (names.includes("goal")) return "goal";
@@ -5500,10 +5512,67 @@ async function copyContextCardText(text3, options = {}) {
 }
 
 // src/desktop/renderer/main/elements.ts
+var statusLine = document.getElementById("status-line");
+function ensureToastHost() {
+  let host8 = document.getElementById("app-toast");
+  if (host8) return host8;
+  host8 = document.createElement("div");
+  host8.id = "app-toast";
+  host8.className = "app-toast";
+  host8.setAttribute("role", "status");
+  host8.setAttribute("aria-live", "polite");
+  host8.hidden = true;
+  (document.getElementById("app-root") || document.body).appendChild(host8);
+  return host8;
+}
+var toastTimer = null;
+var suppressStatusToast = false;
+function showToast(message, kind = "info") {
+  const host8 = ensureToastHost();
+  host8.textContent = message;
+  host8.hidden = !message;
+  host8.dataset.kind = kind;
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+  if (!message) return;
+  toastTimer = setTimeout(
+    () => {
+      host8.hidden = true;
+      host8.textContent = "";
+      toastTimer = null;
+    },
+    kind === "error" ? 8e3 : 4e3
+  );
+}
+function clearToast() {
+  if (toastTimer) clearTimeout(toastTimer);
+  toastTimer = null;
+  const host8 = document.getElementById("app-toast");
+  if (host8) {
+    host8.hidden = true;
+    host8.textContent = "";
+  }
+}
+function secondarySurfaceVisible() {
+  const root = document.getElementById("app-root");
+  const surface = root?.dataset.surface;
+  return !!surface && surface !== "workbench";
+}
+var statusProxy = new Proxy(statusLine, {
+  set(target, prop, value, receiver) {
+    const ok = Reflect.set(target, prop, value, receiver);
+    if (prop === "textContent" && !suppressStatusToast) {
+      const text3 = typeof value === "string" ? value : String(value ?? "");
+      if (text3 && secondarySurfaceVisible()) showToast(text3, "info");
+      else if (!text3) clearToast();
+    }
+    return ok;
+  }
+});
 var el = {
   health: document.getElementById("health-pill"),
   wsSelect: document.getElementById("workspace-select"),
-  status: document.getElementById("status-line"),
+  status: statusProxy,
   appRoot: document.getElementById("app-root"),
   layout: document.getElementById("main-layout"),
   secondaryHost: document.getElementById("secondary-host"),
@@ -5552,8 +5621,14 @@ function syncActivityBadge(count) {
 }
 function setError(err) {
   const msg = err instanceof Error ? err.message : String(err);
-  el.status.textContent = msg;
-  el.status.title = msg;
+  suppressStatusToast = true;
+  try {
+    statusLine.textContent = msg;
+    statusLine.title = msg;
+  } finally {
+    suppressStatusToast = false;
+  }
+  showToast(msg, "error");
 }
 
 // src/desktop/renderer/main/state.ts
@@ -5623,9 +5698,7 @@ function findConcept(nodes, id) {
 }
 function actionableTasks() {
   return taskReview.filter(
-    (task) => ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
-      String(task.state || task.status || "")
-    )
+    (task) => isActionableTaskState(String(task.state || task.status || ""))
   );
 }
 function pendingInteractionCount() {
@@ -5769,13 +5842,14 @@ function renderMeta() {
   el.meta.classList.remove("muted");
   const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
   const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
+  const renameDisabled = tab.nodeMode === "archived";
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
     <div class="meta-controls">
       <label class="sr-only" for="node-display-name">\u540D\u79F0</label>
-      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
-      <button type="button" id="btn-rename-node" class="btn btn-secondary">\u91CD\u547D\u540D</button>
+      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
+      <button type="button" id="btn-rename-node" class="btn btn-secondary"${renameDisabled ? " disabled" : ""} title="${renameDisabled ? "\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u91CD\u547D\u540D" : "\u91CD\u547D\u540D"}">\u91CD\u547D\u540D</button>
     </div>
     <div class="meta-controls">
       <label for="node-mode">\u8BBF\u95EE</label>
@@ -7353,12 +7427,12 @@ async function loadSelection(cx) {
     backlinksError = err instanceof Error ? err.message : String(err);
   }
   try {
-    const got = await window.tentDesktop.rpc("docs.get", {
+    const edit = await window.tentDesktop.rpc("docs.readForEdit", {
       workspaceId,
       id: cx
     });
     if (gen !== loadGen) return;
-    const body = got.concept?.body ?? got.concept?.bodyPreview ?? "";
+    const body = edit.body ?? "";
     if (body) {
       outLinks = extractOutLinks(body).map((l) => ({
         raw: l.raw,
@@ -7587,7 +7661,8 @@ function renderActivity() {
         </div>
       </article>`;
   }).join("");
-  const pendingBlock = pendingN + reviewTasks.length === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
+  const pendingTotal = pendingN + reviewTasks.length;
+  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
   const profileOpts = profiles.length > 0 ? profiles.map(
     (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
   ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
@@ -7614,7 +7689,7 @@ function renderActivity() {
   hostEl.innerHTML = `
     <div class="activity-layout">
       <section class="activity-col">
-        <div class="surface-section-head">\u5F85\u6211\u5904\u7406 <span class="count-badge"${pendingN + reviewTasks.length ? "" : " hidden"}>${pendingN + reviewTasks.length}</span></div>
+        <div class="surface-section-head">\u5F85\u6211\u5904\u7406 <span class="count-badge"${pendingTotal ? "" : " hidden"}>${pendingTotal}</span></div>
         <div class="activity-stack">${pendingBlock}</div>
       </section>
       <section class="activity-col">
@@ -7974,7 +8049,7 @@ var DESKTOP_CONTRACT_GAPS = [
     id: "graph.bulk",
     methods: ["graph.snapshot", "docs.graph"],
     need: "Workspace-wide node/edge projection for a full graph canvas.",
-    fallback: "Local projection: docs.list tree + docs.backlinks (and optional docs.get body links) for the selected node only."
+    fallback: "Local projection: docs.list tree + docs.backlinks + docs.readForEdit body out-links for the selected node only."
   },
   {
     id: "session.logs-reload",
@@ -8556,6 +8631,8 @@ async function onRoleCreate() {
     el.status.textContent = built.reason;
     return;
   }
+  const createBtn = document.getElementById("btn-role-create");
+  if (createBtn) createBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("registry.role.create", {
       workspaceId,
@@ -8568,6 +8645,7 @@ async function onRoleCreate() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (createBtn) createBtn.disabled = false;
   }
 }
 async function onRoleSave() {
@@ -8593,6 +8671,8 @@ async function onRoleSave() {
     el.status.textContent = built.reason;
     return;
   }
+  const saveBtn = document.getElementById("btn-role-save");
+  if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("registry.role.update", {
       workspaceId,
@@ -8604,6 +8684,7 @@ async function onRoleSave() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
 async function onRoleDelete(name) {
@@ -8639,6 +8720,8 @@ async function onProfileCreate() {
     el.status.textContent = built.reason;
     return;
   }
+  const createBtn = document.getElementById("btn-prof-create");
+  if (createBtn) createBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.create", built.payload);
     el.status.textContent = `\u5DF2\u521B\u5EFA profile ${draft.id.trim()}`;
@@ -8646,6 +8729,7 @@ async function onProfileCreate() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (createBtn) createBtn.disabled = false;
   }
 }
 async function onProfileSave() {
@@ -8676,6 +8760,8 @@ async function onProfileSave() {
     el.status.textContent = "skills / mcpServers \u987B\u4E3A\u5408\u6CD5 JSON";
     return;
   }
+  const saveBtn = document.getElementById("btn-prof-save");
+  if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
     el.status.textContent = "Profile \u5DF2\u4FDD\u5B58\uFF08MCP/Skills \u4E0B\u6B21 session \u751F\u6548\uFF09";
@@ -8683,6 +8769,7 @@ async function onProfileSave() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (saveBtn) saveBtn.disabled = false;
   }
 }
 async function onProfileDelete(id) {
@@ -8707,6 +8794,8 @@ async function onCredSet() {
     el.status.textContent = built.reason;
     return;
   }
+  const setBtn = document.getElementById("btn-cred-set");
+  if (setBtn) setBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("credential.set", built.payload);
     if (secretEl) secretEl.value = "";
@@ -8715,6 +8804,7 @@ async function onCredSet() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (setBtn) setBtn.disabled = false;
   }
 }
 async function onCredDelete(id) {
@@ -8759,6 +8849,8 @@ async function onRetentionPurge() {
   const daysRaw = document.getElementById("retention-days")?.value;
   const days = daysRaw !== void 0 && daysRaw !== "" ? Number(daysRaw) : 30;
   if (!window.confirm(`\u6E05\u7406\u8D85\u8FC7 ${days} \u5929\u7684\u7EC8\u7AEF\u4EFB\u52A1/\u4EA4\u4ED8\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`)) return;
+  const purgeBtn = document.getElementById("btn-retention-purge");
+  if (purgeBtn) purgeBtn.disabled = true;
   try {
     const result = await window.tentDesktop.rpc("operationalRetention.purge", {
       workspaceId,
@@ -8770,6 +8862,7 @@ async function onRetentionPurge() {
     renderSettings();
   } catch (err) {
     setError(err);
+    if (purgeBtn) purgeBtn.disabled = false;
   }
 }
 

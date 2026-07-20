@@ -53,6 +53,11 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
     }
   }
   assert.equal(findContractGap("graph.bulk")?.fallback.includes("docs.backlinks"), true);
+  assert.equal(
+    findContractGap("graph.bulk")?.fallback.includes("docs.readForEdit"),
+    true,
+    "graph out-links use full body via docs.readForEdit, not truncated docs.get bodyPreview"
+  );
 });
 
 test("flattenGraphNodes preserves tree order and depth", () => {

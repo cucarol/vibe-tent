@@ -96,14 +96,15 @@ async function loadSelection(cx: string | null): Promise<void> {
     backlinksError = err instanceof Error ? err.message : String(err);
   }
 
-  // Outgoing links: docs.get body + extractOutLinks (no bulk graph).
+  // Outgoing links: full body via docs.readForEdit (docs.get only exposes bodyPreview ≤500).
+  // No bulk graph RPC — see contract-gaps graph.bulk.
   try {
-    const got = (await window.tentDesktop.rpc("docs.get", {
+    const edit = (await window.tentDesktop.rpc("docs.readForEdit", {
       workspaceId,
       id: cx,
-    })) as { concept?: { body?: string; bodyPreview?: string } };
+    })) as { body?: string };
     if (gen !== loadGen) return;
-    const body = got.concept?.body ?? got.concept?.bodyPreview ?? "";
+    const body = edit.body ?? "";
     if (body) {
       outLinks = extractOutLinks(body).map((l) => ({
         raw: l.raw,

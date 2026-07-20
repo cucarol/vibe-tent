@@ -12,6 +12,7 @@ import type {
 } from "../../../service/types.js";
 import {
   buildTaskReviewItems,
+  isActionableTaskState,
   listCoordinationTypeOptions,
   listProfileOptions,
   listRoleOptions,
@@ -143,11 +144,10 @@ export function findConcept(nodes: ConceptNode[], id: string): ConceptNode | und
   return undefined;
 }
 
+/** Non-terminal tasks the user can still act on (start / interrupt / cancel / review). */
 export function actionableTasks(): TaskReviewItem[] {
   return taskReview.filter((task) =>
-    ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
-      String(task.state || task.status || "")
-    )
+    isActionableTaskState(String(task.state || task.status || ""))
   );
 }
 

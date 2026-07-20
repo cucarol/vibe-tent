@@ -141,8 +141,9 @@ export function renderActivity(): void {
     })
     .join("");
 
+  const pendingTotal = pendingN + reviewTasks.length;
   const pendingBlock =
-    pendingN + reviewTasks.length === 0
+    pendingTotal === 0
       ? `<p class="muted">暂无待处理</p>`
       : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
 
@@ -196,7 +197,7 @@ export function renderActivity(): void {
   hostEl.innerHTML = `
     <div class="activity-layout">
       <section class="activity-col">
-        <div class="surface-section-head">待我处理 <span class="count-badge"${pendingN + reviewTasks.length ? "" : " hidden"}>${pendingN + reviewTasks.length}</span></div>
+        <div class="surface-section-head">待我处理 <span class="count-badge"${pendingTotal ? "" : " hidden"}>${pendingTotal}</span></div>
         <div class="activity-stack">${pendingBlock}</div>
       </section>
       <section class="activity-col">
