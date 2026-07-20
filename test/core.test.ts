@@ -747,6 +747,17 @@ test("CLI rejects unexpected positional args and unknown legacy report command c
   result = await cli(dir, "report", "bx-p1", path.join(dir, "missing-report.txt"));
   assert.notEqual(result.code, 0);
   assert.match(result.stderr, /Unknown command: report/);
+  assert.doesNotMatch(result.stderr, /\breport <boxId>/);
+});
+
+test("CLI help is Delivery-only (no legacy tent report migration track)", async () => {
+  const dir = await makeTent();
+  const help = await cli(dir, "task", "--help");
+  // task help may exit 0 or print usage; accept either channel
+  const text = `${help.stdout}\n${help.stderr}`;
+  assert.match(text, /task deliver|tent task deliver/i);
+  assert.doesNotMatch(text, /task-ack \/ report \/ complete/);
+  assert.doesNotMatch(text, /\breport <boxId>/);
 });
 
 test("原生复制收编:重复 id 先失效,再整树重发 id 并清 owner/status", async () => {

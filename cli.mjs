@@ -5166,7 +5166,8 @@ Service options:
 
 Legacy CLI direct core write is blocked on in-workspace <workspace>/.tent
 (fail-loud; use tent task * / Desktop Service). External tent roots keep
-dispatch / task-ack / report / complete / stamp \u2026 for the migration window only.
+dispatch / task-ack / complete / stamp \u2026 for the migration window only.
+Formal delivery is Delivery-only via tent task deliver (no tent report).
 Derived role-init remains available because it regenerates bootstrap context only.
 `;
 }

@@ -2,8 +2,13 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
-import { createDelivery, loadDeliveries, loadDelivery } from "../src/core/delivery.js";
-import { dispatch } from "../src/core/ops.js";
+import {
+  createDelivery,
+  loadDeliveries,
+  loadDelivery,
+  removeNonAcceptedDeliveriesForBox,
+} from "../src/core/delivery.js";
+import { dispatch, forceRelease } from "../src/core/ops.js";
 import {
   taskAccept,
   taskClaim,
@@ -77,6 +82,84 @@ test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 
   // Accepted delivery remains as operational history (not deleted like legacy report).
   assert.equal(await fsa.exists(accepted.delivery.path), true);
   assert.equal((await loadDelivery(fsa, accepted.delivery.path)).status, "accepted");
+  // Formal report body is Delivery.summary only — no temp/<role>/reports dual track.
+  assert.equal(accepted.delivery.summary, "已补测试");
+  assert.equal(await fsa.exists("temp/executor/reports/bx-p1.md"), false);
+  assert.match(accepted.delivery.path, /\/deliveries\//);
+});
+
+test("delivery:单轨写入 deliveries，不创建 legacy reports 路径", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const env = {
+    fs: fsa,
+    clock: { now: () => "2026-07-01T01:00:00.000Z" },
+    tentName: "wqb",
+    tentRoot: dir,
+  };
+  const result = await dispatch(env as any, "bx-p1", "executor", {
+    userPrompt: "Delivery-only formal record",
+  });
+  await taskClaim(env as any, result.taskPath);
+  const delivered = await taskDeliver(env as any, result.taskPath, {
+    summary: "User-facing report body via Delivery.summary",
+    commits: ["deadbeef"],
+    checks: [{ name: "typecheck", command: "npm run typecheck", exitCode: 0 }],
+    artifactRefs: [{ kind: "path", target: "dist/out.js" }],
+  });
+  assert.equal(delivered.delivery.summary, "User-facing report body via Delivery.summary");
+  assert.deepEqual(delivered.delivery.commits, ["deadbeef"]);
+  assert.equal(delivered.delivery.checks[0]?.name, "typecheck");
+  assert.equal(delivered.delivery.artifactRefs[0]?.target, "dist/out.js");
+  assert.match(delivered.delivery.path, /^temp\/executor\/deliveries\/dl-/);
+  assert.equal(await fsa.exists("temp/executor/reports"), false);
+  assert.equal(await fsa.exists(`temp/executor/reports/bx-p1.md`), false);
+  const raw = await fsa.readFile(delivered.delivery.path);
+  assert.match(raw, /^---\n/);
+  assert.match(raw, /type: delivery/);
+  assert.match(raw, /User-facing report body via Delivery\.summary/);
+});
+
+test("delivery:force-release 删除非 accepted，保留 accepted 历史", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const clock = { now: () => "2026-07-01T02:00:00.000Z" };
+  const ready = await createDelivery(fsa, clock, {
+    taskId: "tk-ready",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "ready to drop",
+    status: "ready",
+  });
+  const accepted = await createDelivery(fsa, clock, {
+    taskId: "tk-accepted",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "keep history",
+    status: "accepted",
+  });
+  await removeNonAcceptedDeliveriesForBox(fsa, "bx-g2");
+  assert.equal(await fsa.exists(ready.path), false);
+  assert.equal(await fsa.exists(accepted.path), true);
+  assert.equal((await loadDelivery(fsa, accepted.path)).status, "accepted");
+
+  // Re-create ready and ensure forceRelease uses the same cleanup.
+  const ready2 = await createDelivery(fsa, clock, {
+    taskId: "tk-ready-2",
+    boxId: "bx-g2",
+    role: "executor",
+    summary: "ready again",
+    status: "ready",
+  });
+  await forceRelease(
+    { fs: fsa, clock, tentName: "wqb", tentRoot: dir } as any,
+    "bx-g2"
+  );
+  assert.equal(await fsa.exists(ready2.path), false);
+  assert.equal(await fsa.exists(accepted.path), true);
+  const box = (await loadTent(fsa)).byId.get("bx-g2")!;
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, "todo");
 });
 
 test("delivery:纯数字 commit ref 保持字符串", async () => {

@@ -99,6 +99,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
   assert.match(spec, /A cherry-pick batch\s+is atomic/);
   assert.match(spec, /fast-forward when the selected commits are exactly/);
+  assert.match(spec, /## 6\. Proposal, Delivery, And Fork/);
+  assert.match(spec, /Formal delivery is \*\*Delivery-only\*\*/);
+  assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
+  assert.doesNotMatch(spec, /## 6\. Proposal, Report, And Fork/);
   assert.doesNotMatch(spec, /handoff/i);
   assert.match(roleSkill, /内容住 box，状态住 envelope/);
   assert.match(roleSkill, /编排者手册/);

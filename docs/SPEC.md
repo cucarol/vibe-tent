@@ -241,7 +241,7 @@ same `-x` cherry-pick is idempotent.
 Completion and interruption are distinct core actions even if a UI groups them
 under one release control.
 
-## 6. Proposal, Report, And Fork
+## 6. Proposal, Delivery, And Fork
 
 Proposal:
 
@@ -252,12 +252,15 @@ Proposal:
 - only pending proposals enter triage;
 - accepted and rejected proposal files remain on disk so the submitting agent can read the result.
 
-Report:
+Delivery:
 
-- agent-to-user delivery text plus an all-or-nothing commit list;
-- deterministic temporary path, no id and no archive;
-- the lifecycle is `ready -> rejected -> ready` until user confirmation removes it;
-- only a ready report enables completion in the UI.
+- formal agent-to-user delivery record (`dl-`) under
+  `temp/<role>/deliveries/<dl-id>.md` (or profile deliveries dir);
+- body is `Delivery.summary` (user-facing report text) plus commits, checks,
+  artifactRefs, and review metadata in frontmatter;
+- lifecycle is `ready -> rejected -> ready` until `task.accept` marks it
+  `accepted` (accepted files remain for operational history/retention);
+- only a ready Delivery enables completion under the default manual policy.
 
 Fork:
 
@@ -350,7 +353,7 @@ The UI renders core state and invokes core actions:
 
 - property edits and drag/drop update files immediately;
 - native copy is adopted as fork;
-- report text stays in the conversation layer;
+- chat progress stays conversational; formal report body is `Delivery.summary`;
 - proposals are temporary prompt deliveries resolved by confirmation or rejection;
 - completion presents the selected commit-integration step and releases the owner only after integration;
 - interruption releases owner without integration;
