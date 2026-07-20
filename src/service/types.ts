@@ -237,10 +237,46 @@ export type AgentProfileProjection = {
 };
 
 /**
+ * Repository verification level for a product ACP adapter.
+ * Authoritative values come only from service provider-catalog registry —
+ * clients must not hardcode adapter → level maps.
+ */
+export const PROVIDER_VERIFICATION_LEVELS = [
+  "adapter-implemented",
+  "mock-tested",
+  "live-e2e",
+] as const;
+
+export type ProviderVerificationLevel =
+  (typeof PROVIDER_VERIFICATION_LEVELS)[number];
+
+/**
+ * One product provider verification fact (provider.catalog).
+ * Never includes secrets, env values, credentials, or profile config.
+ */
+export type ProviderCatalogEntry = {
+  adapterId: string;
+  verificationLevel: ProviderVerificationLevel;
+  /**
+   * Provider-native session resume claim when adapter capabilities agree.
+   * Derived from adapter.capabilities().canResume on the product registry.
+   */
+  canResume?: boolean;
+  /** Optional short non-secret note for UI; only when authoritative and useful. */
+  notes?: string;
+};
+
+/** Result of provider.catalog — static product facts, not machine-local profiles. */
+export type ProviderCatalogProjection = {
+  providers: ProviderCatalogEntry[];
+};
+
+/**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * B5 adds full task lifecycle + session projections + a2a resolve.
  * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
  * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
+ * Provider verification: provider.catalog (read-only product facts; no secrets).
  * Credential vault: credential.list/set/delete (no get plaintext).
  * Machine-local skills: skill.list/install (bundled only; no workspaceId).
  */
@@ -309,6 +345,14 @@ export const CLIENT_METHODS = [
   "profile.create",
   "profile.update",
   "profile.delete",
+  /**
+   * Read-only product provider verification catalog.
+   * Params: none (machine-global product facts; not workspace-scoped).
+   * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
+   * (+ optional canResume/notes). Never secrets, env values, or credentials.
+   * Distinct from profile.* (machine-local launch config).
+   */
+  "provider.catalog",
   /** Machine-local credential vault (user-only; never returns secret plaintext). */
   "credential.list",
   "credential.set",

@@ -4166,6 +4166,14 @@ var ServiceClient = class {
   profileDelete(id) {
     return this.call("profile.delete", { id });
   }
+  /**
+   * Read-only product provider verification catalog.
+   * Returns adapterId + verificationLevel (+ optional canResume/notes).
+   * Distinct from profile.list (machine-local launch config). Never secrets.
+   */
+  providerCatalog() {
+    return this.call("provider.catalog", {});
+  }
   // ---- convenience: machine-local credentials (never returns secret) ----
   credentialList() {
     return this.call("credential.list", {});

@@ -1367,6 +1367,8 @@ test("B5: client method table covers task lifecycle and excludes runtime port", 
     "registry.role.create",
     "registry.role.update",
     "registry.role.delete",
+    "provider.catalog",
+    "box.projection",
   ]) {
     assert.ok((CLIENT_METHODS as readonly string[]).includes(m), m);
   }

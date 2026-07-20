@@ -1,6 +1,10 @@
 // Typed ServiceClient for Desktop / CLI attach (task.* + docs.* only).
 
-import type { BoxProjection, EventEnvelope } from "./types.js";
+import type {
+  BoxProjection,
+  EventEnvelope,
+  ProviderCatalogProjection,
+} from "./types.js";
 import { AUTH_TOKEN_HEADER } from "./auth.js";
 
 export interface ServiceClientOptions {
@@ -375,6 +379,15 @@ export class ServiceClient {
   }
   profileDelete(id: string) {
     return this.call("profile.delete", { id });
+  }
+
+  /**
+   * Read-only product provider verification catalog.
+   * Returns adapterId + verificationLevel (+ optional canResume/notes).
+   * Distinct from profile.list (machine-local launch config). Never secrets.
+   */
+  providerCatalog() {
+    return this.call<ProviderCatalogProjection>("provider.catalog", {});
   }
 
   // ---- convenience: machine-local credentials (never returns secret) ----

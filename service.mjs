@@ -13046,6 +13046,11 @@ function formatTaskInputPrompt(input) {
 }
 
 // src/service/types.ts
+var PROVIDER_VERIFICATION_LEVELS = [
+  "adapter-implemented",
+  "mock-tested",
+  "live-e2e"
+];
 var CLIENT_METHODS = [
   "service.health",
   "service.subscribe",
@@ -13111,6 +13116,14 @@ var CLIENT_METHODS = [
   "profile.create",
   "profile.update",
   "profile.delete",
+  /**
+   * Read-only product provider verification catalog.
+   * Params: none (machine-global product facts; not workspace-scoped).
+   * Result: { providers: ProviderCatalogEntry[] } — adapterId + verificationLevel
+   * (+ optional canResume/notes). Never secrets, env values, or credentials.
+   * Distinct from profile.* (machine-local launch config).
+   */
+  "provider.catalog",
   /** Machine-local credential vault (user-only; never returns secret plaintext). */
   "credential.list",
   "credential.set",
@@ -16441,6 +16454,53 @@ function projectAgentProfiles(profiles, opts) {
   });
 }
 
+// src/service/provider-catalog.ts
+var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
+  "grok-acp": "live-e2e",
+  "codex-acp": "mock-tested",
+  "claude-acp": "mock-tested",
+  "antigravity-acp": "mock-tested",
+  "opencode-acp": "mock-tested",
+  "copilot-acp": "mock-tested"
+};
+var LEVEL_SET = new Set(PROVIDER_VERIFICATION_LEVELS);
+function defaultProductAcpAdapters() {
+  return [
+    createGrokAcpAdapter(),
+    createCodexAcpAdapter(),
+    createClaudeAcpAdapter(),
+    createAntigravityAcpAdapter(),
+    createOpenCodeAcpAdapter(),
+    createCopilotAcpAdapter()
+  ];
+}
+function projectProviderCatalog() {
+  const byId = new Map(
+    defaultProductAcpAdapters().map((adapter) => [adapter.id, adapter])
+  );
+  const providers = [];
+  for (const adapterId of PRODUCT_ACP_ADAPTER_IDS) {
+    const adapter = byId.get(adapterId);
+    if (!adapter) {
+      throw new Error(
+        `provider catalog missing product adapter instance for adapterId: ${adapterId}`
+      );
+    }
+    const verificationLevel = PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER[adapterId];
+    if (!verificationLevel) {
+      throw new Error(
+        `provider catalog missing verification level for product adapterId: ${adapterId}`
+      );
+    }
+    providers.push({
+      adapterId,
+      verificationLevel,
+      canResume: adapter.capabilities().canResume === true
+    });
+  }
+  return { providers };
+}
+
 // src/service/rpc-error.ts
 var RpcError = class extends Error {
   constructor(code, message, data) {
@@ -16707,6 +16767,8 @@ async function dispatchMethod(ctx, method, params) {
         return profileUpdate(ctx, p);
       case "profile.delete":
         return profileDelete(ctx, p);
+      case "provider.catalog":
+        return providerCatalogRpc();
       case "credential.list":
         return credentialList(ctx);
       case "credential.set":
@@ -17725,6 +17787,9 @@ async function profileCredentialExistsOpts(ctx, profile) {
   const ref = typeof profile.acp?.credentialRef === "string" && profile.acp.credentialRef.trim() ? profile.acp.credentialRef.trim() : void 0;
   if (!ref) return void 0;
   return { credentialExists: await ctx.credentials.has(ref) };
+}
+function providerCatalogRpc() {
+  return projectProviderCatalog();
 }
 async function credentialList(ctx) {
   const credentials = await ctx.credentials.list();

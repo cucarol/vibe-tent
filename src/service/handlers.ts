@@ -148,6 +148,7 @@ import {
   type ConceptProjection,
   type DeliveryProjection,
   type ProposalProjection,
+  type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
   type SessionProjection,
   type TaskProjection,
@@ -157,6 +158,7 @@ import {
   projectAgentProfile,
   projectAgentProfiles,
 } from "./profiles.js";
+import { projectProviderCatalog } from "./provider-catalog.js";
 import type { AgentProfileCatalog } from "./profile-catalog.js";
 import { RpcError, type JsonRpcError } from "./rpc-error.js";
 import {
@@ -301,6 +303,8 @@ export async function dispatchMethod(
         return profileUpdate(ctx, p);
       case "profile.delete":
         return profileDelete(ctx, p);
+      case "provider.catalog":
+        return providerCatalogRpc();
       case "credential.list":
         return credentialList(ctx);
       case "credential.set":
@@ -1610,6 +1614,14 @@ async function profileCredentialExistsOpts(
       : undefined;
   if (!ref) return undefined;
   return { credentialExists: await ctx.credentials.has(ref) };
+}
+
+/**
+ * Read-only product provider verification catalog (provider.catalog).
+ * Machine-global product facts — no workspaceId, no secrets, no profile config.
+ */
+function providerCatalogRpc(): ProviderCatalogProjection {
+  return projectProviderCatalog();
 }
 
 /**
