@@ -229,6 +229,20 @@ export class ServiceClient {
     return this.call("docs.rename", { workspaceId, ...args });
   }
   /**
+   * Set Node mode (editable | read-only | archived). Sole mode mutation client surface.
+   */
+  docsSetMode(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      mode: "editable" | "read-only" | "archived";
+    }
+  ) {
+    return this.call("docs.setMode", { workspaceId, ...args });
+  }
+  /**
    * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.
    */
   docsImportAttachment(

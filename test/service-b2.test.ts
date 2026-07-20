@@ -568,8 +568,103 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
   });
 });
 
+test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const created = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "mode-note",
+      type: "prompt",
+    });
+    assert.ok(!created.error, JSON.stringify(created.error));
+    const id = (created.result as { id: string }).id;
+
+    const got0 = await rpc(svc, "docs.get", { workspaceId, id });
+    const c0 = (got0.result as { concept: { mode: string; archived: boolean } }).concept;
+    assert.equal(c0.mode, "editable");
+    assert.equal(c0.archived, false);
+
+    // Ordinary body write under editable
+    const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const { etag, body, raw } = edit.result as { etag: string; body: string; raw: string };
+    const okWrite = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      body: body + "\nok\n",
+      baseEtag: etag,
+    });
+    assert.ok(!okWrite.error, JSON.stringify(okWrite.error));
+
+    // frontmatter cannot set mode
+    const badMode = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      frontmatter: { mode: "read-only" },
+    });
+    assert.ok(badMode.error);
+    assert.equal(badMode.error!.code, -32010);
+    assert.match(badMode.error!.message, /reserved|mode/i);
+
+    const setRo = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "read-only" });
+    assert.ok(!setRo.error, JSON.stringify(setRo.error));
+    assert.equal((setRo.result as { mode: string }).mode, "read-only");
+
+    const blocked = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      body: "blocked\n",
+    });
+    assert.ok(blocked.error);
+    assert.equal(blocked.error!.code, -32010);
+    assert.match(blocked.error!.message, /read-only/i);
+
+    // raw cannot change mode
+    const edit2 = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const raw2 = (edit2.result as { raw: string }).raw;
+    const tampered = raw2.replace(/mode: read-only/, "mode: editable");
+    const rawBad = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      raw: tampered.includes("mode:")
+        ? tampered
+        : raw2.replace(/^---\n/, "---\nmode: editable\n"),
+      baseEtag: (edit2.result as { etag: string }).etag,
+    });
+    assert.ok(rawBad.error);
+    assert.equal(rawBad.error!.code, -32010);
+
+    const setArch = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "archived" });
+    assert.ok(!setArch.error, JSON.stringify(setArch.error));
+    assert.equal((setArch.result as { mode: string; archived: boolean }).mode, "archived");
+    assert.equal((setArch.result as { archived: boolean }).archived, true);
+
+    const blockedArch = await rpc(svc, "docs.write", { workspaceId, id, body: "x\n" });
+    assert.ok(blockedArch.error);
+    assert.match(blockedArch.error!.message, /archived/i);
+
+    const restored = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "editable" });
+    assert.ok(!restored.error, JSON.stringify(restored.error));
+    assert.equal((restored.result as { mode: string }).mode, "editable");
+
+    // editable body write works again
+    const edit3 = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    const again = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      body: (edit3.result as { body: string }).body + "\nagain\n",
+      baseEtag: (edit3.result as { etag: string }).etag,
+    });
+    assert.ok(!again.error, JSON.stringify(again.error));
+    void raw;
+  });
+});
+
 test("AgentRuntimePort.* rejected; not in client method table", async () => {
   assert.ok(!CLIENT_METHODS.some((m) => m.startsWith("AgentRuntime")));
+  assert.ok(CLIENT_METHODS.includes("docs.setMode"));
   await withService(async (svc) => {
     const res = await rpc(svc, "AgentRuntimePort.startSession", { cwd: "." });
     assert.ok(res.error);

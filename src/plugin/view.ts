@@ -1161,7 +1161,7 @@ export class TentView extends ItemView {
   private findExplicitArchiveRoot(box: Box): Box | null {
     let cur: Box | null = box;
     while (cur) {
-      if (cur.fm.archived === true) return cur;
+      if (cur.fm.mode === "archived") return cur;
       cur = cur.parent;
     }
     return null;

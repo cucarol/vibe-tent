@@ -300,6 +300,7 @@ function toProjection(box: Box, withChildren: boolean): ConceptProjection {
     status: box.fm.status,
     assignee: typeof box.fm.owner === "string" ? box.fm.owner : undefined,
     title,
+    mode: box.mode,
     archived: box.archived,
     invalid: box.invalid,
     bodyPreview: (box.body || "").slice(0, 160).replace(/\s+/g, " ").trim(),

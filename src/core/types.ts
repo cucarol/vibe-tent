@@ -4,12 +4,19 @@ export type BoxType = string;
 
 export type Status = "todo" | "doing" | "done";
 
+/**
+ * Node lifecycle mode (document semantics; not Task state).
+ * Absent on disk ≡ editable. Only archived inherits down the subtree.
+ */
+export type NodeMode = "editable" | "read-only" | "archived";
+
 /** concept 身份文件 frontmatter。type 必填。id 为 cx- handle（迁移前可有 bx-）。 */
 export interface BoxFrontmatter {
   id: string;
   type: BoxType;
   tags?: string[];
-  archived?: boolean;
+  /** Explicit mode only; omit for editable default. */
+  mode?: NodeMode;
   readable?: boolean;
   writable?: boolean;
   /** @deprecated 投影为 task assignee；迁移后新写入优先用 Task API。 */
@@ -20,7 +27,7 @@ export interface BoxFrontmatter {
 }
 
 /** 某条轴(readable/writable)解析后的终值 + 它从哪来。 */
-export type AxisSource = "self" | "type" | "archived" | "invalid";
+export type AxisSource = "self" | "type" | "mode" | "archived" | "invalid";
 
 export interface ResolvedAxis {
   value: boolean;
@@ -37,7 +44,15 @@ export interface Box {
   tags: string[];
   /** 解析后的 type.coordination（来自注册表 capability，非名称硬编码）。 */
   coordination: boolean;
-  /** 自身或祖先 archived=true。归档子树强制 R/W=false。 */
+  /**
+   * Effective node mode after inheritance.
+   * archived cascades from archive root; read-only/editable are node-local.
+   */
+  mode: NodeMode;
+  /**
+   * Convenience: effective mode === "archived" (self root or ancestor archive).
+   * Forced R/W=false; exits normal collaboration.
+   */
   archived: boolean;
   /** 自身或祖先引用了不存在的 type。失效子树退出正常流程。 */
   invalid: boolean;

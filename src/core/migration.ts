@@ -241,6 +241,29 @@ export async function migrateLegacySchema(
       }
     }
 
+    // One-shot: explicit archive roots archived:true → mode:archived; strip legacy key.
+    // No permanent dual-read/write of archived + mode after cutover.
+    if (data.archived === true) {
+      if (data.mode !== "archived") {
+        data.mode = "archived";
+        report.registryChanges.push(
+          dryRun
+            ? `would migrate archived→mode at ${box.path}`
+            : `migrated archived→mode at ${box.path}`
+        );
+      }
+      delete data.archived;
+      dirty = true;
+    } else if ("archived" in data) {
+      delete data.archived;
+      dirty = true;
+      report.registryChanges.push(
+        dryRun
+          ? `would strip legacy archived key at ${box.path}`
+          : `stripped legacy archived key at ${box.path}`
+      );
+    }
+
     if (dirty && !dryRun) {
       await fs.writeFile(
         notePath,

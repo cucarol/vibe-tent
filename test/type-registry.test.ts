@@ -326,6 +326,7 @@ test("R1 patchBox 上锁:保留字段与空 type 不能绕过专用 API", async 
   for (const patch of [
     { id: "changed" },
     { owner: "planner" },
+    { mode: "archived" },
     { archived: true },
   ]) {
     await assert.rejects(

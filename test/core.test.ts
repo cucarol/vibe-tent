@@ -670,15 +670,25 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
     tentName: "x",
   };
   const { archiveBox, restoreBox, tagBox } = await import("../src/core/ops.js");
+  const { parseFrontmatter } = await import("../src/core/frontmatter.js");
+  const { boxNotePath } = await import("../src/core/tree.js");
 
   await archiveBox(env as any, "bx-p1");
   let tent = await loadTent(fsa);
   const root = tent.byId.get("bx-p1")!;
   const child = tent.byId.get("bx-p2")!;
+  assert.equal(root.mode, "archived");
   assert.equal(root.archived, true);
+  assert.equal(child.mode, "archived");
   assert.equal(child.archived, true);
   assert.equal(child.readable.value, false);
   assert.equal(child.writable.value, false);
+  // Disk: archive root has mode:archived, not legacy archived:true; child has no mode write.
+  const rootFm = parseFrontmatter(await fsa.readFile(boxNotePath(root.path))).data;
+  assert.equal(rootFm.mode, "archived");
+  assert.equal("archived" in rootFm, false);
+  const childFm = parseFrontmatter(await fsa.readFile(boxNotePath(child.path))).data;
+  assert.equal("mode" in childFm, false);
   assert.equal(canClaim(root).ok, false);
   const manifest = buildManifest(tent, {
     tentName: "x",
@@ -695,6 +705,7 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
 
   await restoreBox(env as any, "bx-p1");
   tent = await loadTent(fsa);
+  assert.equal(tent.byId.get("bx-p1")!.mode, "editable");
   assert.equal(tent.byId.get("bx-p1")!.archived, false);
   assert.equal(
     tent.byId.get("bx-p2")!.writable.value,

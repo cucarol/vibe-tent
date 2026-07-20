@@ -48,6 +48,9 @@ export type MountedWorkspaceInfo = {
   foreground: boolean;
 };
 
+/** Node lifecycle mode on the wire (document semantics; not Task state). */
+export type NodeMode = "editable" | "read-only" | "archived";
+
 export type ConceptProjection = {
   id: string;
   path: string;
@@ -57,6 +60,9 @@ export type ConceptProjection = {
   coordination: boolean;
   status?: string;
   assignee?: string;
+  /** Effective mode after inheritance (archived cascades). */
+  mode: NodeMode;
+  /** Convenience: mode === "archived". */
   archived: boolean;
   invalid: boolean;
   bodyPreview?: string;
@@ -265,6 +271,11 @@ export const CLIENT_METHODS = [
    * Success emits exactly one concept.changed with oldPath/path.
    */
   "docs.rename",
+  /**
+   * Set Node mode (editable | read-only | archived). Sole mode mutation RPC.
+   * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
+   */
+  "docs.setMode",
   "docs.search",
   "docs.backlinks",
   /**
@@ -373,6 +384,14 @@ export function isClientMethod(method: string): method is ClientMethod {
 
 /** Collaboration projection fields protected while a box has an active task. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
+
+/** Fields that raw/docs.write may never set; use dedicated APIs (setMode / task.*). */
+export const RESERVED_DOCS_WRITE_FIELDS = [
+  "id",
+  "mode",
+  "archived",
+  ...PROTECTED_COLLAB_FIELDS,
+] as const;
 
 /** JSON-RPC auth failure. */
 export const RPC_UNAUTHORIZED = -32001;

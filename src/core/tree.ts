@@ -1,12 +1,14 @@
-// 加载帐 → concept 树 → 解析 readable/writable / coordination。
+// 加载帐 → concept 树 → 解析 readable/writable / coordination / mode。
 // 每条轴:本框显式声明 > 当前 type 默认。
-// 普通 R/W 不看父/祖先;archive/invalid 是单独的子树强制机制。
+// 普通 R/W 不看父/祖先;mode archived 与 invalid 是单独的子树强制机制。
+// type R/W 是 agent/manifest 语义轴，不是 Core 文件 ACL。
 // operational pipeline（temp/ 等）永不进入 concept 索引。
 
 import { FsAdapter } from "./adapter.js";
 import {
   Box,
   BoxFrontmatter,
+  NodeMode,
   ResolvedAxis,
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
@@ -140,6 +142,7 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     type: fm.type,
     tags,
     coordination: false, // filled in resolveSubtree
+    mode: "editable",
     archived: false,
     invalid: !!parseError,
     path,
@@ -173,6 +176,8 @@ function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter;
     id: typeof data.id === "string" ? data.id : "",
     type: rawType,
   } as BoxFrontmatter;
+  // Legacy archived is one-shot migrated off disk; never dual-read as truth after load.
+  delete (fm as Record<string, unknown>).archived;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -180,7 +185,21 @@ function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter;
   else delete fm.readable;
   if (typeof data.writable === "boolean") fm.writable = data.writable;
   else delete fm.writable;
+  const mode = parseNodeMode(data.mode);
+  if (mode && mode !== "editable") fm.mode = mode;
+  else delete fm.mode;
   return { fm, tags };
+}
+
+/** Parse persisted mode; invalid/absent → undefined (editable default). */
+export function parseNodeMode(value: unknown): NodeMode | undefined {
+  if (value === "editable" || value === "read-only" || value === "archived") return value;
+  return undefined;
+}
+
+/** Explicit archive root on disk (mode: archived only; no legacy dual-read). */
+export function isExplicitArchiveRoot(box: Pick<Box, "fm">): boolean {
+  return box.fm.mode === "archived";
 }
 
 function normalizeTags(value: unknown): string[] {
@@ -229,7 +248,13 @@ function resolveSubtree(
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
-  box.archived = inheritedArchived || box.fm.archived === true;
+  // archived cascades; read-only/editable are node-local (default editable).
+  const localMode = parseNodeMode(box.fm.mode) ?? "editable";
+  box.archived = inheritedArchived || localMode === "archived";
+  box.mode = box.archived ? "archived" : localMode;
+  // Keep fm.mode only for explicit non-default roots (and explicit archive roots).
+  if (localMode === "editable") delete box.fm.mode;
+  else box.fm.mode = localMode;
   box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
     delete box.fm.status;
@@ -281,14 +306,32 @@ function applyAncestorLock(box: Box, owner: string): void {
 }
 
 function resolveAxis(box: Box, axis: "readable" | "writable", registry: TypeRegistry): ResolvedAxis {
+  // 1) invalid → force both axes false
   if (box.invalid) return { value: false, source: "invalid" };
-  if (box.archived) return { value: false, source: "archived" };
+  // 2) archived mode (self or inherited) → force both axes false
+  if (box.mode === "archived" || box.archived) return { value: false, source: "archived" };
 
+  // 3) readable always from self > type under editable/read-only
+  if (axis === "readable") {
+    return resolveDeclaredOrType(box, "readable", registry);
+  }
+
+  // 4) read-only forces writable false; readable already handled above
+  if (box.mode === "read-only") return { value: false, source: "mode" };
+
+  // 5) editable → writable from self > type (honor; not a Core ACL)
+  return resolveDeclaredOrType(box, "writable", registry);
+}
+
+function resolveDeclaredOrType(
+  box: Box,
+  axis: "readable" | "writable",
+  registry: TypeRegistry
+): ResolvedAxis {
   const declared = box.fm[axis];
   if (typeof declared === "boolean") {
     return { value: declared, source: "self" };
   }
-
   // 复合 type "base-modifier":modifier 覆盖 base。
   const fallback = resolveTypeAxis(box.type, axis, registry);
   return { value: typeof fallback === "boolean" ? fallback : false, source: "type" };
@@ -307,8 +350,28 @@ function invalidTypeReference(
   return undefined;
 }
 
+/** Normal collaboration exit: invalid or archived-mode (read-only remains usable for claim/context). */
 export function isUsableBox(box: Box): boolean {
   return !box.invalid && !box.archived;
+}
+
+/**
+ * Core/Service content & structure mutation gate.
+ * Hard deny only for invalid, archived-mode, or explicit read-only — never for type/self writable=false.
+ */
+export function assertContentMutable(box: Box, action = "modified"): void {
+  if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
+  if (box.archived || box.mode === "archived") {
+    throw new Error(`Archived boxes cannot be ${action}.`);
+  }
+  if (box.mode === "read-only") {
+    throw new Error(`Read-only boxes cannot be ${action}.`);
+  }
+}
+
+/** True when Core/Service may mutate content/structure (mode + invalid only). */
+export function isContentMutable(box: Box): boolean {
+  return !box.invalid && box.mode === "editable" && !box.archived;
 }
 
 function indexSubtree(

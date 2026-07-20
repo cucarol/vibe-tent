@@ -14,7 +14,7 @@ import * as http from "node:http";
 
 // src/core/frontmatter.ts
 var FENCE = "---";
-var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
 function parseFrontmatter(raw) {
   const text3 = raw.replace(/\r\n/g, "\n");
   if (!text3.startsWith(FENCE + "\n")) {
@@ -614,6 +614,7 @@ async function loadBox(fs17, path19, parent, registry) {
     tags,
     coordination: false,
     // filled in resolveSubtree
+    mode: "editable",
     archived: false,
     invalid: !!parseError,
     path: path19,
@@ -645,6 +646,7 @@ function normalizeIdentity(data) {
     id: typeof data.id === "string" ? data.id : "",
     type: rawType
   };
+  delete fm.archived;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -652,7 +654,17 @@ function normalizeIdentity(data) {
   else delete fm.readable;
   if (typeof data.writable === "boolean") fm.writable = data.writable;
   else delete fm.writable;
+  const mode = parseNodeMode(data.mode);
+  if (mode && mode !== "editable") fm.mode = mode;
+  else delete fm.mode;
   return { fm, tags };
+}
+function parseNodeMode(value) {
+  if (value === "editable" || value === "read-only" || value === "archived") return value;
+  return void 0;
+}
+function isExplicitArchiveRoot(box) {
+  return box.fm.mode === "archived";
 }
 function normalizeTags(value) {
   if (!Array.isArray(value)) return [];
@@ -684,7 +696,11 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
-  box.archived = inheritedArchived || box.fm.archived === true;
+  const localMode = parseNodeMode(box.fm.mode) ?? "editable";
+  box.archived = inheritedArchived || localMode === "archived";
+  box.mode = box.archived ? "archived" : localMode;
+  if (localMode === "editable") delete box.fm.mode;
+  else box.fm.mode = localMode;
   box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
     delete box.fm.status;
@@ -729,7 +745,14 @@ function applyAncestorLock(box, owner) {
 }
 function resolveAxis(box, axis, registry) {
   if (box.invalid) return { value: false, source: "invalid" };
-  if (box.archived) return { value: false, source: "archived" };
+  if (box.mode === "archived" || box.archived) return { value: false, source: "archived" };
+  if (axis === "readable") {
+    return resolveDeclaredOrType(box, "readable", registry);
+  }
+  if (box.mode === "read-only") return { value: false, source: "mode" };
+  return resolveDeclaredOrType(box, "writable", registry);
+}
+function resolveDeclaredOrType(box, axis, registry) {
   const declared = box.fm[axis];
   if (typeof declared === "boolean") {
     return { value: declared, source: "self" };
@@ -748,6 +771,18 @@ function invalidTypeReference(box, registry) {
 }
 function isUsableBox(box) {
   return !box.invalid && !box.archived;
+}
+function assertContentMutable(box, action = "modified") {
+  if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
+  if (box.archived || box.mode === "archived") {
+    throw new Error(`Archived boxes cannot be ${action}.`);
+  }
+  if (box.mode === "read-only") {
+    throw new Error(`Read-only boxes cannot be ${action}.`);
+  }
+}
+function isContentMutable(box) {
+  return !box.invalid && box.mode === "editable" && !box.archived;
 }
 function indexSubtree(box, byId, byPath, duplicateIds) {
   if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
@@ -2304,6 +2339,7 @@ async function forkNodeUnlocked(env, boxId) {
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  assertContentMutable(source, "forked");
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
   await copyTree(env.fs, source.path, forkPath);
@@ -9673,6 +9709,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   if (!isUsableBox(target)) {
     throw new Error("Invalid or archived boxes cannot be renamed.");
   }
+  assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
     throw new Error(
       "Claimed ranges cannot be renamed; stamp or force-release the owner first."
@@ -10164,6 +10201,7 @@ async function createBoxUnlocked(env, input) {
   if (input.parentPath) {
     const parent2 = tent.byPath.get(input.parentPath);
     if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parent2, "used as create parent");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
@@ -10195,9 +10233,14 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
+  const reserved = ["id", "owner", "mode", "archived"].filter((key) => key in patch);
   if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
-  if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
+  if (box.archived || box.mode === "archived") {
+    throw new Error("Archived boxes can only be restored or permanently deleted.");
+  }
+  if (box.mode === "read-only") {
+    throw new Error("Read-only boxes cannot be patched; use docs.setMode / setNodeMode first.");
+  }
   if (box.invalid) {
     const keys = Object.keys(patch);
     if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
@@ -10231,10 +10274,67 @@ async function patchBody(env, boxPath, newBody, loadedTent) {
 async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
-  if (!box || !isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  assertContentMutable(box, "body-edited");
   const boxFile = boxNotePath(boxPath);
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
+}
+async function setNodeMode(env, boxId, mode) {
+  await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
+}
+async function setNodeModeUnlocked(env, boxId, mode) {
+  const next = parseNodeMode(mode);
+  if (!next) throw new Error('mode must be "editable", "read-only", or "archived".');
+  const tent = await loadTent(env.fs);
+  const box = requireBoxById2(tent, boxId);
+  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
+  if (box.archived && !isExplicitArchiveRoot(box)) {
+    if (next === "archived") {
+      throw new Error("Invalid or already archived boxes cannot be archived.");
+    }
+    throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
+  }
+  const current = isExplicitArchiveRoot(box) ? "archived" : box.mode === "read-only" ? "read-only" : "editable";
+  if (current === next) {
+    if (next === "editable") {
+      await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
+    } else if (next === "read-only") {
+      await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
+    } else {
+      await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+    }
+    return;
+  }
+  if (next === "archived" || current !== "archived") {
+    if (isFrozen(box)) {
+      throw new Error(
+        next === "archived" ? "Claimed ranges cannot be archived; stamp or force-release the owner first." : "Claimed ranges cannot change mode; stamp or force-release the owner first."
+      );
+    }
+  }
+  if (next === "archived") {
+    await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+    return;
+  }
+  if (next === "read-only") {
+    if (current === "archived") {
+      throw new Error("Archived roots must be restored to editable before setting read-only.");
+    }
+    await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
+    return;
+  }
+  await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
+}
+async function patchFrontmatter2(fs17, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs17.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  await fs17.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 async function ensureDir3(fs17, path19) {
   if (path19 && !await fs17.exists(path19)) await fs17.mkdir(path19);
@@ -10344,6 +10444,7 @@ async function promoteConceptUnlocked(env, conceptIdOrPath, toType) {
   const tent = await loadTent(env.fs);
   const concept = resolveConcept2(tent, conceptIdOrPath);
   if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
+  assertContentMutable(concept, "promoted");
   const target = toType.trim();
   if (!target) throw new Error("Promote requires a non-empty target type.");
   if (!typeHasCoordination(target, tent.typeRegistry)) {
@@ -12859,6 +12960,11 @@ var CLIENT_METHODS = [
    * Success emits exactly one concept.changed with oldPath/path.
    */
   "docs.rename",
+  /**
+   * Set Node mode (editable | read-only | archived). Sole mode mutation RPC.
+   * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
+   */
+  "docs.setMode",
   "docs.search",
   "docs.backlinks",
   /**
@@ -12962,6 +13068,12 @@ function isClientMethod(method) {
   return CLIENT_METHODS.includes(method);
 }
 var PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"];
+var RESERVED_DOCS_WRITE_FIELDS = [
+  "id",
+  "mode",
+  "archived",
+  ...PROTECTED_COLLAB_FIELDS
+];
 var RPC_UNAUTHORIZED = -32001;
 var RPC_A2A_DENIED = -32020;
 var RPC_A2A_ASK = -32021;
@@ -16442,6 +16554,8 @@ async function dispatchMethod(ctx, method, params) {
         return docsFork(ctx, p);
       case "docs.rename":
         return docsRename(ctx, p);
+      case "docs.setMode":
+        return docsSetMode(ctx, p);
       case "docs.search":
         return docsSearch(ctx, p);
       case "docs.backlinks":
@@ -16811,6 +16925,7 @@ async function docsWrite(ctx, p) {
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
     const concept = resolveConcept3(tent, p);
+    assertDocsModeMutable(concept, "docs.write");
     const notePath = boxNotePath(concept.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
@@ -16824,6 +16939,7 @@ async function docsWrite(ctx, p) {
     if (rawInput !== void 0) {
       const diskParsed = parseFrontmatter(diskRaw);
       const nextParsed = parseFrontmatter(rawInput);
+      assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
       const tasks = await loadTaskEnvelopes(mount.env.fs);
       const changed = {};
       for (const field of PROTECTED_COLLAB_FIELDS) {
@@ -16838,6 +16954,7 @@ async function docsWrite(ctx, p) {
       await mount.env.fs.writeFile(notePath, rawInput);
     } else {
       if (frontmatter) {
+        assertReservedDocsWriteFields(frontmatter);
         assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
       }
       ctx.host.markSelfWrite(workspaceId);
@@ -16867,6 +16984,50 @@ async function docsWrite(ctx, p) {
       etag: contentEtag(afterRaw),
       body: after.body,
       raw: afterRaw
+    };
+  });
+}
+async function docsSetMode(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const modeRaw = requireString(p, "mode");
+  if (modeRaw !== "editable" && modeRaw !== "read-only" && modeRaw !== "archived") {
+    throw new RpcError(-32602, 'docs.setMode mode must be "editable", "read-only", or "archived"');
+  }
+  const mode = modeRaw;
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept3(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await setNodeMode(mount.env, concept.id, mode);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "docs.setMode failed";
+      if (/not found/i.test(message)) throw new RpcError(-32004, message);
+      if (/mode must be|Invalid boxes|archive root|already archived|Claimed ranges|restored to editable/i.test(
+        message
+      )) {
+        throw new RpcError(-32602, message);
+      }
+      throw new RpcError(-32e3, message);
+    }
+    const after = await loadTent(mount.env.fs);
+    const updated = after.byId.get(concept.id);
+    if (!updated) throw new RpcError(-32004, `Concept not found after setMode: ${concept.id}`);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: updated.id,
+      cx: updated.id,
+      path: updated.path,
+      mode: updated.mode,
+      archived: updated.archived,
+      concept: projectConcept(updated, false, false)
     };
   });
 }
@@ -17578,6 +17739,7 @@ async function docsImportAttachment(ctx, p) {
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
     const concept = resolveConcept3(tent, p);
+    assertDocsModeMutable(concept, "docs.importAttachment");
     ctx.host.markSelfWrite(workspaceId);
     try {
       const result = await storeAttachmentBytes(
@@ -20292,6 +20454,7 @@ function projectConcept(box, includeBody, withChildren) {
     coordination: box.coordination,
     status: box.fm.status,
     assignee: typeof box.fm.owner === "string" ? box.fm.owner : void 0,
+    mode: box.mode,
     archived: box.archived,
     invalid: box.invalid
   };
@@ -20570,6 +20733,51 @@ function assertDocsWriteAllowed(tent, conceptId, frontmatter, tasks) {
     -32010,
     `docs.write cannot change collaboration projection fields while box has an active task: ${protectedHit.join(", ")}. Use task.* transitions.`,
     { fields: protectedHit, conceptId }
+  );
+}
+function assertDocsModeMutable(concept, op) {
+  if (isContentMutable(concept)) return;
+  if (concept.invalid) {
+    throw new RpcError(-32010, `${op} rejected: concept is invalid`, {
+      conceptId: concept.id,
+      mode: concept.mode
+    });
+  }
+  if (concept.mode === "archived" || concept.archived) {
+    throw new RpcError(-32010, `${op} rejected: concept is archived`, {
+      conceptId: concept.id,
+      mode: concept.mode
+    });
+  }
+  if (concept.mode === "read-only") {
+    throw new RpcError(-32010, `${op} rejected: concept is read-only`, {
+      conceptId: concept.id,
+      mode: concept.mode
+    });
+  }
+  throw new RpcError(-32010, `${op} rejected: concept is not mutable`, {
+    conceptId: concept.id,
+    mode: concept.mode
+  });
+}
+function assertReservedDocsWriteFields(frontmatter) {
+  const hard = ["id", "mode", "archived"].filter((k) => k in frontmatter);
+  if (hard.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    { fields: hard }
+  );
+}
+function assertRawDocsWriteReserved(disk, next) {
+  const hard = ["id", "mode", "archived"].filter(
+    (field) => String(next[field] ?? "") !== String(disk[field] ?? "")
+  );
+  if (hard.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    { fields: hard }
   );
 }
 function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {

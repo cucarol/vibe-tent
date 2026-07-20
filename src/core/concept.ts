@@ -5,7 +5,7 @@ import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } fro
 import type { OpsEnv } from "./ops-context.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { typeHasCoordination } from "./typeRegistry.js";
-import { boxNotePath, isUsableBox, loadTent, type LoadedTent } from "./tree.js";
+import { assertContentMutable, boxNotePath, isUsableBox, loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
 
 export interface PromoteResult {
@@ -37,6 +37,7 @@ async function promoteConceptUnlocked(
   const tent = await loadTent(env.fs);
   const concept = resolveConcept(tent, conceptIdOrPath);
   if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
+  assertContentMutable(concept, "promoted");
   const target = toType.trim();
   if (!target) throw new Error("Promote requires a non-empty target type.");
   if (!typeHasCoordination(target, tent.typeRegistry)) {

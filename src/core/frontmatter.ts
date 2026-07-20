@@ -9,7 +9,7 @@ export interface ParsedFrontmatter {
 }
 
 const FENCE = "---";
-export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
 
 export function parseFrontmatter(raw: string): ParsedFrontmatter {
   const text = raw.replace(/\r\n/g, "\n");

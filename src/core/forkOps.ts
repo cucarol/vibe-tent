@@ -4,7 +4,7 @@ import { makeUniqueConceptId } from "./id.js";
 import { loadOrder, ROOT_KEY, saveOrder } from "./order.js";
 import type { OpsEnv } from "./ops-context.js";
 import { type Box } from "./types.js";
-import { baseName, boxNotePath, dirName, isUsableBox, join, loadTent } from "./tree.js";
+import { assertContentMutable, baseName, boxNotePath, dirName, isUsableBox, join, loadTent } from "./tree.js";
 
 export async function forkNode(env: OpsEnv, boxId: string): Promise<string> {
   return withTentMutation(env.fs, async () => forkNodeUnlocked(env, boxId));
@@ -16,6 +16,7 @@ async function forkNodeUnlocked(env: OpsEnv, boxId: string): Promise<string> {
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  assertContentMutable(source, "forked");
 
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);

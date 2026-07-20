@@ -287,11 +287,18 @@ function idOrPathParams(cxOrPath: string): Record<string, string> {
 }
 
 function normalizeProjection(c: ConceptProjection): ConceptProjection {
+  const mode =
+    c.mode === "read-only" || c.mode === "archived" || c.mode === "editable"
+      ? c.mode
+      : c.archived
+        ? "archived"
+        : "editable";
   return {
     ...c,
     children: (c.children ?? []).map(normalizeProjection),
     tags: c.tags ?? [],
-    archived: !!c.archived,
+    mode,
+    archived: mode === "archived" || !!c.archived,
     invalid: !!c.invalid,
   };
 }

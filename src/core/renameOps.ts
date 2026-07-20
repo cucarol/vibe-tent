@@ -15,6 +15,7 @@ import type { Box } from "./types.js";
 import {
   boxNotePath,
   dirName,
+  assertContentMutable,
   isUsableBox,
   join,
   loadTent,
@@ -70,6 +71,7 @@ async function renameNodeUnlocked(
   if (!isUsableBox(target)) {
     throw new Error("Invalid or archived boxes cannot be renamed.");
   }
+  assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
     throw new Error(
       "Claimed ranges cannot be renamed; stamp or force-release the owner first."

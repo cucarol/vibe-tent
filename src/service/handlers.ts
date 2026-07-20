@@ -7,7 +7,10 @@ import {
   dispatch,
   patchBody,
   patchBox,
+  setNodeMode,
 } from "../core/ops.js";
+import { isContentMutable } from "../core/tree.js";
+import type { NodeMode } from "../core/types.js";
 import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
@@ -129,6 +132,7 @@ import type { CredentialStore } from "./credential-store.js";
 import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
+  RESERVED_DOCS_WRITE_FIELDS,
   RPC_A2A_ASK,
   RPC_A2A_DENIED,
   RPC_LIFECYCLE,
@@ -258,6 +262,8 @@ export async function dispatchMethod(
         return docsFork(ctx, p);
       case "docs.rename":
         return docsRename(ctx, p);
+      case "docs.setMode":
+        return docsSetMode(ctx, p);
       case "docs.search":
         return docsSearch(ctx, p);
       case "docs.backlinks":
@@ -766,6 +772,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
     const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.write");
     const notePath = boxNotePath(concept.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
@@ -780,6 +787,8 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     if (rawInput !== undefined) {
       const diskParsed = parseFrontmatter(diskRaw);
       const nextParsed = parseFrontmatter(rawInput);
+      // Reserved identity/mode fields: raw path cannot set or change them.
+      assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
       const tasks = await loadTaskEnvelopes(mount.env.fs);
       // Only reject when protected collab projection fields actually change.
       const changed: Record<string, unknown> = {};
@@ -795,6 +804,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       await mount.env.fs.writeFile(notePath, rawInput);
     } else {
       if (frontmatter) {
+        assertReservedDocsWriteFields(frontmatter);
         assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
       }
 
@@ -826,6 +836,58 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       etag: contentEtag(afterRaw),
       body: after.body,
       raw: afterRaw,
+    };
+  });
+}
+
+/**
+ * Sole Service surface for Node mode transitions.
+ * Core setNodeMode enforces freeze/archive-root rules.
+ */
+async function docsSetMode(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const modeRaw = requireString(p, "mode");
+  if (modeRaw !== "editable" && modeRaw !== "read-only" && modeRaw !== "archived") {
+    throw new RpcError(-32602, 'docs.setMode mode must be "editable", "read-only", or "archived"');
+  }
+  const mode = modeRaw as NodeMode;
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await setNodeMode(mount.env, concept.id, mode);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "docs.setMode failed";
+      if (/not found/i.test(message)) throw new RpcError(-32004, message);
+      if (
+        /mode must be|Invalid boxes|archive root|already archived|Claimed ranges|restored to editable/i.test(
+          message
+        )
+      ) {
+        throw new RpcError(-32602, message);
+      }
+      throw new RpcError(-32000, message);
+    }
+    const after = await loadTent(mount.env.fs);
+    const updated = after.byId.get(concept.id);
+    if (!updated) throw new RpcError(-32004, `Concept not found after setMode: ${concept.id}`);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: updated.id, path: updated.path, reason: "docs.setMode", mode: updated.mode },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: updated.id,
+      cx: updated.id,
+      path: updated.path,
+      mode: updated.mode,
+      archived: updated.archived,
+      concept: projectConcept(updated, false, false),
     };
   });
 }
@@ -1698,6 +1760,7 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
     const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.importAttachment");
     ctx.host.markSelfWrite(workspaceId);
     try {
       const result = await storeAttachmentBytes(
@@ -5349,6 +5412,7 @@ function projectConcept(
     coordination: box.coordination,
     status: box.fm.status,
     assignee: typeof box.fm.owner === "string" ? box.fm.owner : undefined,
+    mode: box.mode,
     archived: box.archived,
     invalid: box.invalid,
   };
@@ -5758,6 +5822,66 @@ function assertDocsWriteAllowed(
     -32010,
     `docs.write cannot change collaboration projection fields while box has an active task: ${protectedHit.join(", ")}. Use task.* transitions.`,
     { fields: protectedHit, conceptId }
+  );
+}
+
+/** Hard gate: only explicit mode (+ invalid) blocks content writes — not type/self writable. */
+function assertDocsModeMutable(
+  concept: import("../core/types.js").Box,
+  op: string
+): void {
+  if (isContentMutable(concept)) return;
+  if (concept.invalid) {
+    throw new RpcError(-32010, `${op} rejected: concept is invalid`, {
+      conceptId: concept.id,
+      mode: concept.mode,
+    });
+  }
+  if (concept.mode === "archived" || concept.archived) {
+    throw new RpcError(-32010, `${op} rejected: concept is archived`, {
+      conceptId: concept.id,
+      mode: concept.mode,
+    });
+  }
+  if (concept.mode === "read-only") {
+    throw new RpcError(-32010, `${op} rejected: concept is read-only`, {
+      conceptId: concept.id,
+      mode: concept.mode,
+    });
+  }
+  throw new RpcError(-32010, `${op} rejected: concept is not mutable`, {
+    conceptId: concept.id,
+    mode: concept.mode,
+  });
+}
+
+/** Structured frontmatter path: id/mode/archived never via docs.write (use docs.setMode). */
+function assertReservedDocsWriteFields(frontmatter: Record<string, unknown>): void {
+  const hard = (["id", "mode", "archived"] as const).filter((k) => k in frontmatter);
+  if (hard.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    { fields: hard }
+  );
+}
+
+/**
+ * Raw write may keep existing reserved values but must not introduce or change
+ * id/mode/archived. Collaboration fields still use the active-task guard.
+ */
+function assertRawDocsWriteReserved(
+  disk: Record<string, unknown>,
+  next: Record<string, unknown>
+): void {
+  const hard = (["id", "mode", "archived"] as const).filter(
+    (field) => String(next[field] ?? "") !== String(disk[field] ?? "")
+  );
+  if (hard.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    { fields: hard }
   );
 }
 

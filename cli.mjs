@@ -278,7 +278,7 @@ async function existsPath(target) {
 
 // src/core/frontmatter.ts
 var FENCE = "---";
-var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags"];
+var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
 function parseFrontmatter(raw) {
   const text = raw.replace(/\r\n/g, "\n");
   if (!text.startsWith(FENCE + "\n")) {
@@ -882,6 +882,7 @@ async function loadBox(fs8, path8, parent, registry) {
     tags,
     coordination: false,
     // filled in resolveSubtree
+    mode: "editable",
     archived: false,
     invalid: !!parseError,
     path: path8,
@@ -913,6 +914,7 @@ function normalizeIdentity(data) {
     id: typeof data.id === "string" ? data.id : "",
     type: rawType
   };
+  delete fm.archived;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -920,7 +922,14 @@ function normalizeIdentity(data) {
   else delete fm.readable;
   if (typeof data.writable === "boolean") fm.writable = data.writable;
   else delete fm.writable;
+  const mode = parseNodeMode(data.mode);
+  if (mode && mode !== "editable") fm.mode = mode;
+  else delete fm.mode;
   return { fm, tags };
+}
+function parseNodeMode(value) {
+  if (value === "editable" || value === "read-only" || value === "archived") return value;
+  return void 0;
 }
 function normalizeTags(value) {
   if (!Array.isArray(value)) return [];
@@ -952,7 +961,11 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalid = !!invalid;
   box.invalidRootId = invalid?.rootId;
   box.invalidReason = invalid?.reason;
-  box.archived = inheritedArchived || box.fm.archived === true;
+  const localMode = parseNodeMode(box.fm.mode) ?? "editable";
+  box.archived = inheritedArchived || localMode === "archived";
+  box.mode = box.archived ? "archived" : localMode;
+  if (localMode === "editable") delete box.fm.mode;
+  else box.fm.mode = localMode;
   box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
     delete box.fm.status;
@@ -997,7 +1010,14 @@ function applyAncestorLock(box, owner) {
 }
 function resolveAxis(box, axis, registry) {
   if (box.invalid) return { value: false, source: "invalid" };
-  if (box.archived) return { value: false, source: "archived" };
+  if (box.mode === "archived" || box.archived) return { value: false, source: "archived" };
+  if (axis === "readable") {
+    return resolveDeclaredOrType(box, "readable", registry);
+  }
+  if (box.mode === "read-only") return { value: false, source: "mode" };
+  return resolveDeclaredOrType(box, "writable", registry);
+}
+function resolveDeclaredOrType(box, axis, registry) {
   const declared = box.fm[axis];
   if (typeof declared === "boolean") {
     return { value: declared, source: "self" };
@@ -1016,6 +1036,15 @@ function invalidTypeReference(box, registry) {
 }
 function isUsableBox(box) {
   return !box.invalid && !box.archived;
+}
+function assertContentMutable(box, action = "modified") {
+  if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
+  if (box.archived || box.mode === "archived") {
+    throw new Error(`Archived boxes cannot be ${action}.`);
+  }
+  if (box.mode === "read-only") {
+    throw new Error(`Read-only boxes cannot be ${action}.`);
+  }
 }
 function indexSubtree(box, byId, byPath, duplicateIds) {
   if (box.id && !duplicateIds.has(box.id)) byId.set(box.id, box);
@@ -1291,6 +1320,7 @@ async function addTag(fs8, boxId, name) {
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
+    assertContentMutable(box, "tagged");
     await addRegistryTagUnlocked(fs8, tag);
     const tags = uniqueSorted([...box.tags, tag]);
     await writeBoxTags(fs8, box, tags);
@@ -1304,6 +1334,7 @@ async function removeTag(fs8, boxId, name) {
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
+    assertContentMutable(box, "tagged");
     await writeBoxTags(fs8, box, box.tags.filter((item) => item !== tag));
   });
 }
@@ -2198,6 +2229,7 @@ async function forkNodeUnlocked(env, boxId) {
   const source = tent.byId.get(boxId);
   if (!source) throw new Error(`Box not found: ${boxId}.`);
   if (!isUsableBox(source)) throw new Error("Invalid or archived boxes cannot be forked.");
+  assertContentMutable(source, "forked");
   const parentPath = dirName(source.path);
   const forkPath = await uniqueSiblingPath(env.fs, parentPath, `${source.name} (fork)`);
   await copyTree(env.fs, source.path, forkPath);
@@ -2574,6 +2606,7 @@ async function grantReadable(env, boxId) {
     const tent = await loadTent(env.fs);
     const box = requireBoxById2(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
+    assertContentMutable(box, "made readable");
     await patchFrontmatter2(env.fs, box, { readable: true });
   });
 }
@@ -2619,6 +2652,7 @@ async function createBoxUnlocked(env, input) {
   if (input.parentPath) {
     const parent2 = tent.byPath.get(input.parentPath);
     if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parent2, "used as create parent");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
@@ -3392,6 +3426,22 @@ async function migrateLegacySchema(fs8, options = {}) {
         dirty = true;
       }
     }
+    if (data.archived === true) {
+      if (data.mode !== "archived") {
+        data.mode = "archived";
+        report.registryChanges.push(
+          dryRun ? `would migrate archived\u2192mode at ${box.path}` : `migrated archived\u2192mode at ${box.path}`
+        );
+      }
+      delete data.archived;
+      dirty = true;
+    } else if ("archived" in data) {
+      delete data.archived;
+      dirty = true;
+      report.registryChanges.push(
+        dryRun ? `would strip legacy archived key at ${box.path}` : `stripped legacy archived key at ${box.path}`
+      );
+    }
     if (dirty && !dryRun) {
       await fs8.writeFile(
         notePath,
@@ -4031,6 +4081,12 @@ var ServiceClient = class {
    */
   docsRename(workspaceId, args) {
     return this.call("docs.rename", { workspaceId, ...args });
+  }
+  /**
+   * Set Node mode (editable | read-only | archived). Sole mode mutation client surface.
+   */
+  docsSetMode(workspaceId, args) {
+    return this.call("docs.setMode", { workspaceId, ...args });
   }
   /**
    * Import attachment bytes for a concept. Wire payload is base64; disk stores original bytes.

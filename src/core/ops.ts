@@ -6,9 +6,9 @@ import { buildManifest, manifestToYaml, DispatchInput } from "./manifest.js";
 import { makeUniqueConceptId } from "./id.js";
 import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
-import { Box, BoxType } from "./types.js";
+import { Box, BoxType, NodeMode } from "./types.js";
 import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
-import { isUsableBox } from "./tree.js";
+import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
 import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
@@ -295,6 +295,7 @@ export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
+    assertContentMutable(box, "made readable");
     await patchFrontmatter(env.fs, box, { readable: true });
   });
 }
@@ -363,6 +364,7 @@ async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<strin
   if (input.parentPath) {
     const parent = tent.byPath.get(input.parentPath);
     if (!parent || !isUsableBox(parent)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parent, "used as create parent");
   }
   const existing = new Set(tent.byId.keys());
   const id = makeUniqueConceptId(existing, env.rand);
@@ -414,12 +416,14 @@ async function placeBoxUnlocked(
   const moved = before.byPath.get(fromPath);
   if (!moved) throw new Error(`Box not found: ${fromPath}.`);
   if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  assertContentMutable(moved, "moved");
   if (isFrozen(moved)) throw new Error("Claimed ranges cannot be moved; stamp or force-release the owner first.");
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
 
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
   if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
+  if (parentBox) assertContentMutable(parentBox, "used as move parent");
   if (parentBox && isFrozen(parentBox)) throw new Error("Cannot move into a claimed range; stamp or force-release the owner first.");
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
     throw new Error("Cannot move a box into its own subtree.");
@@ -484,9 +488,14 @@ async function patchBoxUnlocked(
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "archived"].filter((key) => key in patch);
+  const reserved = ["id", "owner", "mode", "archived"].filter((key) => key in patch);
   if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
-  if (box.archived) throw new Error("Archived boxes can only be restored or permanently deleted.");
+  if (box.archived || box.mode === "archived") {
+    throw new Error("Archived boxes can only be restored or permanently deleted.");
+  }
+  if (box.mode === "read-only") {
+    throw new Error("Read-only boxes cannot be patched; use docs.setMode / setNodeMode first.");
+  }
   if (box.invalid) {
     const keys = Object.keys(patch);
     if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
@@ -533,28 +542,96 @@ async function patchBodyUnlocked(
 ): Promise<void> {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
-  if (!box || !isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  assertContentMutable(box, "body-edited");
   const boxFile = boxNotePath(boxPath);
   const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
 }
 
+/**
+ * Set Node mode: editable | read-only | archived.
+ * Dedicated mutation path — ordinary patch/docs.write cannot set mode.
+ * editable/read-only are node-local; archived cascades like the prior archive root.
+ */
+export async function setNodeMode(env: OpsEnv, boxId: string, mode: NodeMode): Promise<void> {
+  await withMutation(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
+}
+
+async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode): Promise<void> {
+  const next = parseNodeMode(mode);
+  if (!next) throw new Error('mode must be "editable", "read-only", or "archived".');
+  const tent = await loadTent(env.fs);
+  const box = requireBoxById(tent, boxId);
+
+  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
+
+  // Descendants of an archive root stay archived until the root is restored.
+  if (box.archived && !isExplicitArchiveRoot(box)) {
+    if (next === "archived") {
+      throw new Error("Invalid or already archived boxes cannot be archived.");
+    }
+    throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
+  }
+
+  const current: NodeMode = isExplicitArchiveRoot(box)
+    ? "archived"
+    : box.mode === "read-only"
+      ? "read-only"
+      : "editable";
+  if (current === next) {
+    // Idempotent: ensure disk shape for archived/read-only; editable clears keys.
+    if (next === "editable") {
+      await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
+    } else if (next === "read-only") {
+      await patchFrontmatter(env.fs, box, { mode: "read-only", archived: undefined });
+    } else {
+      await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
+    }
+    return;
+  }
+
+  // archived root may restore to editable without frozen check (same as restoreBox today).
+  // Other mode transitions still respect freeze (claimed ranges).
+  if (next === "archived" || current !== "archived") {
+    if (isFrozen(box)) {
+      throw new Error(
+        next === "archived"
+          ? "Claimed ranges cannot be archived; stamp or force-release the owner first."
+          : "Claimed ranges cannot change mode; stamp or force-release the owner first."
+      );
+    }
+  }
+
+  if (next === "archived") {
+    await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
+    return;
+  }
+  if (next === "read-only") {
+    // archive root → read-only is not supported; restore to editable first.
+    if (current === "archived") {
+      throw new Error("Archived roots must be restored to editable before setting read-only.");
+    }
+    await patchFrontmatter(env.fs, box, { mode: "read-only", archived: undefined });
+    return;
+  }
+  // editable (including archive restore)
+  await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
+}
+
 export async function archiveBox(env: OpsEnv, boxId: string): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    if (!isUsableBox(box)) throw new Error("Invalid or already archived boxes cannot be archived.");
-    if (isFrozen(box)) throw new Error("Claimed ranges cannot be archived; stamp or force-release the owner first.");
-    await patchFrontmatter(env.fs, box, { archived: true });
-  });
+  await setNodeMode(env, boxId, "archived");
 }
 
 export async function restoreBox(env: OpsEnv, boxId: string): Promise<void> {
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
-    if (box.fm.archived !== true) throw new Error("Only an explicit archive root can restore the subtree.");
-    await patchFrontmatter(env.fs, box, { archived: undefined });
+    if (!isExplicitArchiveRoot(box)) {
+      throw new Error("Only an explicit archive root can restore the subtree.");
+    }
+    await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
   });
 }
 
@@ -562,7 +639,7 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
-    if (box.fm.archived !== true) throw new Error("Box must be archived before permanent deletion.");
+    if (!isExplicitArchiveRoot(box)) throw new Error("Box must be archived before permanent deletion.");
     if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
 
     const removedIds = collectSubtreeIds(box);
