@@ -80,6 +80,13 @@ import {
   type WorkspaceSettings,
 } from "../core/workspace-settings.js";
 import {
+  loadWorkspaceAgents,
+  writeWorkspaceAgents,
+  WorkspaceAgentsError,
+  WORKSPACE_AGENTS_FILENAME,
+  type WorkspaceAgentsFile,
+} from "../core/workspace-agents.js";
+import {
   TaskLifecycleError,
   isActiveTaskState,
   type A2APolicy,
@@ -246,6 +253,10 @@ export async function dispatchMethod(
         return workspaceSettingsRpc(ctx, p);
       case "workspace.settings.update":
         return workspaceSettingsUpdateRpc(ctx, p);
+      case "workspace.agents":
+        return workspaceAgentsRpc(ctx, p);
+      case "workspace.agents.write":
+        return workspaceAgentsWriteRpc(ctx, p);
       case "docs.list":
         return docsList(ctx, p);
       case "docs.get":
@@ -710,6 +721,94 @@ function emitWorkspaceSettingsUpdated(
     },
     "self"
   );
+}
+
+// ---- workspace.agents (canonical workspace-root AGENTS.md) ----
+
+/**
+ * Read projection of workspace-root AGENTS.md.
+ * Missing file → content "" + exists=false (not an error). Includes etag for edit.
+ */
+async function workspaceAgentsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const file = await loadWorkspaceAgents(mount.workspaceRoot);
+  return projectWorkspaceAgents(workspaceId, file);
+}
+
+/**
+ * User-only AGENTS.md write through MutationBus.
+ * Optional baseEtag matches docs.write conflict semantics (-32009).
+ * Emits exactly one workspace.agents.updated when content actually changes.
+ */
+async function workspaceAgentsWriteRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "workspace.agents.write");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  if (typeof p.content !== "string") {
+    throw new RpcError(-32602, "workspace.agents.write requires string content");
+  }
+  const content = p.content;
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const before = await loadWorkspaceAgents(mount.workspaceRoot);
+    const currentEtag = contentEtag(before.content);
+    if (baseEtag && baseEtag !== currentEtag) {
+      throw new RpcError(-32009, "etag conflict", {
+        currentEtag,
+        baseEtag,
+        path: WORKSPACE_AGENTS_FILENAME,
+      });
+    }
+
+    ctx.host.markSelfWrite(workspaceId);
+    let result: { file: WorkspaceAgentsFile; changed: boolean };
+    try {
+      result = await writeWorkspaceAgents(mount.workspaceRoot, content);
+    } catch (err) {
+      if (
+        err instanceof WorkspaceAgentsError ||
+        (err instanceof Error && err.name === "WorkspaceAgentsError")
+      ) {
+        const code =
+          err instanceof WorkspaceAgentsError
+            ? err.code
+            : ((err as { code?: string }).code ?? "INVALID_CONTENT");
+        throw new RpcError(-32602, err.message, { code });
+      }
+      throw err;
+    }
+
+    const projection = projectWorkspaceAgents(workspaceId, result.file);
+    if (result.changed) {
+      ctx.events.emit(
+        "workspace.agents.updated",
+        workspaceId,
+        {
+          path: projection.path,
+          content: projection.content,
+          exists: projection.exists,
+          etag: projection.etag,
+        },
+        "self"
+      );
+    }
+    return {
+      ...projection,
+      changed: result.changed,
+    };
+  });
+}
+
+function projectWorkspaceAgents(workspaceId: string, file: WorkspaceAgentsFile) {
+  return {
+    workspaceId,
+    path: file.path,
+    content: file.content,
+    exists: file.exists,
+    etag: contentEtag(file.content),
+  };
 }
 
 async function docsList(ctx: HandlerContext, p: Record<string, unknown>) {

@@ -192,6 +192,32 @@ export class ServiceClient {
     });
   }
 
+  /**
+   * Read canonical workspace-root AGENTS.md projection.
+   * Missing file → content "" and exists=false (not an error). Includes etag for edit.
+   */
+  workspaceAgents(workspaceId: string) {
+    return this.call("workspace.agents", { workspaceId });
+  }
+
+  /**
+   * User-only write of workspace-root AGENTS.md (MutationBus, atomic).
+   * Optional baseEtag rejects stale writes with -32009. Emits workspace.agents.updated
+   * only when content actually changes; no-op emits none.
+   * `actor` defaults to "user"; non-user is rejected by the service.
+   */
+  workspaceAgentsWrite(
+    workspaceId: string,
+    args: { content: string; baseEtag?: string; actor?: string }
+  ) {
+    return this.call("workspace.agents.write", {
+      workspaceId,
+      content: args.content,
+      ...(args.baseEtag !== undefined ? { baseEtag: args.baseEtag } : {}),
+      actor: args.actor ?? "user",
+    });
+  }
+
   // ---- convenience: docs ----
   docsList(workspaceId: string, includeBody = false) {
     return this.call("docs.list", { workspaceId, includeBody });

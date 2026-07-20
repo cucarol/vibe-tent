@@ -258,6 +258,14 @@ export const CLIENT_METHODS = [
    */
   "workspace.settings",
   "workspace.settings.update",
+  /**
+   * Canonical workspace-root AGENTS.md (not under .tent).
+   * Fixed filename only — no arbitrary path. Missing file projects empty content + exists=false.
+   * write is user-only MutationBus with optional baseEtag conflict protection (docs style).
+   * Successful actual mutation emits exactly one workspace.agents.updated; no-op emits none.
+   */
+  "workspace.agents",
+  "workspace.agents.write",
   "docs.list",
   "docs.get",
   "docs.readForEdit",
