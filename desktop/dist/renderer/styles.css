@@ -375,6 +375,18 @@ button.primary:hover {
   border-bottom: 1px solid transparent;
   flex: none;
   box-sizing: border-box;
+  -webkit-app-region: drag;
+}
+
+/* Interactive chrome must remain clickable inside the frameless drag region. */
+.pane-head button,
+.pane-head select,
+.pane-head input,
+.pane-head textarea,
+.pane-head summary,
+.pane-head .tabs,
+.pane-head .menu-wrap {
+  -webkit-app-region: no-drag;
 }
 
 .pane-head-main {
@@ -537,6 +549,13 @@ button.primary:hover {
   border-bottom: 1px solid transparent;
   background: transparent;
   padding: 0 var(--space-4);
+}
+
+@media (min-width: 901px) {
+  /* Reserve the Windows title-bar overlay controls without adding another row. */
+  .sheet-head {
+    padding-right: 148px;
+  }
 }
 
 .sheet-head .pane-head-main {

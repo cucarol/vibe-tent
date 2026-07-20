@@ -25,7 +25,21 @@ export function createMainWindow(
     minHeight: 560,
     show: false,
     title: "帷幄 · Tent",
-    backgroundColor: "#e8e4d7",
+    backgroundColor: "#f4f1ea",
+    ...(process.platform === "win32"
+      ? {
+          // Let the renderer's pane headers double as the draggable title bar.
+          // Native window controls remain available in the top-right overlay;
+          // the application menu can still be revealed temporarily with Alt.
+          titleBarStyle: "hidden" as const,
+          titleBarOverlay: {
+            color: "#f4f1ea",
+            symbolColor: "#1c1914",
+            height: 56,
+          },
+          autoHideMenuBar: true,
+        }
+      : {}),
     webPreferences: {
       preload: paths.preload,
       contextIsolation: true,
@@ -35,6 +49,7 @@ export function createMainWindow(
     },
   };
   const win = new BrowserWindow(opts);
+  if (process.platform === "win32") win.setMenuBarVisibility(false);
   void win.loadFile(paths.mainHtml);
   if (isDev) {
     // Optional: open DevTools when TENT_DESKTOP_DEVTOOLS=1
