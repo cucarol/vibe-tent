@@ -1,158 +1,3 @@
-// src/markdown/render.ts
-function escapeHtml(text) {
-  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
-}
-function renderMarkdownToHtml(body, options) {
-  const lines = body.replace(/\r\n/g, "\n").split("\n");
-  const html = [];
-  let i = 0;
-  let inCode = false;
-  let codeLang = "";
-  let codeBuf = [];
-  let listType = null;
-  const closeList = () => {
-    if (listType) {
-      html.push(`</${listType}>`);
-      listType = null;
-    }
-  };
-  while (i < lines.length) {
-    const line = lines[i];
-    if (line.startsWith("```")) {
-      if (!inCode) {
-        closeList();
-        inCode = true;
-        codeLang = line.slice(3).trim();
-        codeBuf = [];
-      } else {
-        html.push(
-          `<pre class="md-code"${codeLang ? ` data-lang="${escapeHtml(codeLang)}"` : ""}><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`
-        );
-        inCode = false;
-        codeLang = "";
-        codeBuf = [];
-      }
-      i++;
-      continue;
-    }
-    if (inCode) {
-      codeBuf.push(line);
-      i++;
-      continue;
-    }
-    if (!line.trim()) {
-      closeList();
-      i++;
-      continue;
-    }
-    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
-    if (heading) {
-      closeList();
-      const level = heading[1].length;
-      html.push(`<h${level}>${inline(heading[2], options)}</h${level}>`);
-      i++;
-      continue;
-    }
-    const ul = /^[-*+]\s+(.*)$/.exec(line);
-    if (ul) {
-      if (listType !== "ul") {
-        closeList();
-        listType = "ul";
-        html.push("<ul>");
-      }
-      html.push(`<li>${inline(ul[1], options)}</li>`);
-      i++;
-      continue;
-    }
-    const ol = /^(\d+)\.\s+(.*)$/.exec(line);
-    if (ol) {
-      if (listType !== "ol") {
-        closeList();
-        listType = "ol";
-        html.push("<ol>");
-      }
-      html.push(`<li>${inline(ol[2], options)}</li>`);
-      i++;
-      continue;
-    }
-    closeList();
-    html.push(`<p>${inline(line, options)}</p>`);
-    i++;
-  }
-  closeList();
-  if (inCode) {
-    html.push(`<pre class="md-code"><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
-  }
-  if (options?.artifactRefs?.length) {
-    html.push(`<aside class="artifact-chips" aria-label="Artifact references">`);
-    for (const ref of options.artifactRefs) {
-      const label = escapeHtml(ref.label || ref.target);
-      html.push(
-        `<span class="artifact-chip" data-kind="${escapeHtml(ref.kind)}" data-target="${escapeHtml(ref.target)}" title="Open externally">${label}</span>`
-      );
-    }
-    html.push(`</aside>`);
-  }
-  return html.join("\n");
-}
-function inline(text, options) {
-  let s = escapeHtml(text);
-  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, src) => {
-    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`;
-  });
-  s = applyLinksFromOriginal(text, options);
-  return s;
-}
-function applyLinksFromOriginal(text, options) {
-  const parts = [];
-  let cursor = 0;
-  const re = /(!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\])|(!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\))/g;
-  let m;
-  while (m = re.exec(text)) {
-    if (m.index > cursor) {
-      parts.push({ kind: "text", value: text.slice(cursor, m.index) });
-    }
-    const full = m[0];
-    if (full.startsWith("![[") || full.startsWith("![") && !full.startsWith("![[")) {
-      if (full.startsWith("![")) {
-        const alt = m[5] ?? "";
-        const src = m[6] ?? "";
-        parts.push({
-          kind: "html",
-          value: `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`
-        });
-      } else {
-        parts.push({ kind: "text", value: full });
-      }
-    } else if (full.startsWith("[[")) {
-      const raw = (m[2] ?? "").trim();
-      const label = (m[3] ?? raw).trim();
-      const href = options?.resolveWikiHref?.(raw) ?? `#cx:${encodeURIComponent(raw)}`;
-      parts.push({
-        kind: "html",
-        value: `<a class="wiki-link" href="${escapeHtml(href)}" data-wiki="${escapeHtml(raw)}">${escapeHtml(label)}</a>`
-      });
-    } else {
-      const label = m[5] ?? "";
-      const href = m[6] ?? "";
-      parts.push({
-        kind: "html",
-        value: `<a href="${escapeHtml(href)}">${escapeHtml(label || href)}</a>`
-      });
-    }
-    cursor = m.index + full.length;
-  }
-  if (cursor < text.length) parts.push({ kind: "text", value: text.slice(cursor) });
-  return parts.map((p) => {
-    if (p.kind === "html") return p.value;
-    let t = escapeHtml(p.value);
-    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
-    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
-    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
-    return t;
-  }).join("");
-}
-
 // src/desktop/workbench/collaboration-ui.ts
 function pickDefaultCoordinationType(types) {
   const names = listCoordinationTypeNames(types);
@@ -420,6 +265,1199 @@ function suggestBoxName(typeName, now = Date.now()) {
   return `${safe}-${now.toString(36).slice(-4)}`;
 }
 
+// src/markdown/render.ts
+function escapeHtml(text) {
+  return text.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
+}
+function renderMarkdownToHtml(body, options) {
+  const lines = body.replace(/\r\n/g, "\n").split("\n");
+  const html = [];
+  let i = 0;
+  let inCode = false;
+  let codeLang = "";
+  let codeBuf = [];
+  let listType = null;
+  const closeList = () => {
+    if (listType) {
+      html.push(`</${listType}>`);
+      listType = null;
+    }
+  };
+  while (i < lines.length) {
+    const line = lines[i];
+    if (line.startsWith("```")) {
+      if (!inCode) {
+        closeList();
+        inCode = true;
+        codeLang = line.slice(3).trim();
+        codeBuf = [];
+      } else {
+        html.push(
+          `<pre class="md-code"${codeLang ? ` data-lang="${escapeHtml(codeLang)}"` : ""}><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`
+        );
+        inCode = false;
+        codeLang = "";
+        codeBuf = [];
+      }
+      i++;
+      continue;
+    }
+    if (inCode) {
+      codeBuf.push(line);
+      i++;
+      continue;
+    }
+    if (!line.trim()) {
+      closeList();
+      i++;
+      continue;
+    }
+    const heading = /^(#{1,6})\s+(.*)$/.exec(line);
+    if (heading) {
+      closeList();
+      const level = heading[1].length;
+      html.push(`<h${level}>${inline(heading[2], options)}</h${level}>`);
+      i++;
+      continue;
+    }
+    const ul = /^[-*+]\s+(.*)$/.exec(line);
+    if (ul) {
+      if (listType !== "ul") {
+        closeList();
+        listType = "ul";
+        html.push("<ul>");
+      }
+      html.push(`<li>${inline(ul[1], options)}</li>`);
+      i++;
+      continue;
+    }
+    const ol = /^(\d+)\.\s+(.*)$/.exec(line);
+    if (ol) {
+      if (listType !== "ol") {
+        closeList();
+        listType = "ol";
+        html.push("<ol>");
+      }
+      html.push(`<li>${inline(ol[2], options)}</li>`);
+      i++;
+      continue;
+    }
+    closeList();
+    html.push(`<p>${inline(line, options)}</p>`);
+    i++;
+  }
+  closeList();
+  if (inCode) {
+    html.push(`<pre class="md-code"><code>${escapeHtml(codeBuf.join("\n"))}</code></pre>`);
+  }
+  if (options?.artifactRefs?.length) {
+    html.push(`<aside class="artifact-chips" aria-label="Artifact references">`);
+    for (const ref of options.artifactRefs) {
+      const label = escapeHtml(ref.label || ref.target);
+      html.push(
+        `<span class="artifact-chip" data-kind="${escapeHtml(ref.kind)}" data-target="${escapeHtml(ref.target)}" title="Open externally">${label}</span>`
+      );
+    }
+    html.push(`</aside>`);
+  }
+  return html.join("\n");
+}
+function inline(text, options) {
+  let s = escapeHtml(text);
+  s = s.replace(/!\[([^\]]*)\]\(([^)\s]+)\)/g, (_m, alt, src) => {
+    return `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`;
+  });
+  s = applyLinksFromOriginal(text, options);
+  return s;
+}
+function applyLinksFromOriginal(text, options) {
+  const parts = [];
+  let cursor = 0;
+  const re = /(!?\[\[([^\]|]+)(?:\|([^\]]+))?\]\])|(!?\[([^\]]*)\]\(([^)\s]+)(?:\s+"[^"]*")?\))/g;
+  let m;
+  while (m = re.exec(text)) {
+    if (m.index > cursor) {
+      parts.push({ kind: "text", value: text.slice(cursor, m.index) });
+    }
+    const full = m[0];
+    if (full.startsWith("![[") || full.startsWith("![") && !full.startsWith("![[")) {
+      if (full.startsWith("![")) {
+        const alt = m[5] ?? "";
+        const src = m[6] ?? "";
+        parts.push({
+          kind: "html",
+          value: `<img src="${escapeHtml(src)}" alt="${escapeHtml(alt)}" />`
+        });
+      } else {
+        parts.push({ kind: "text", value: full });
+      }
+    } else if (full.startsWith("[[")) {
+      const raw = (m[2] ?? "").trim();
+      const label = (m[3] ?? raw).trim();
+      const href = options?.resolveWikiHref?.(raw) ?? `#cx:${encodeURIComponent(raw)}`;
+      parts.push({
+        kind: "html",
+        value: `<a class="wiki-link" href="${escapeHtml(href)}" data-wiki="${escapeHtml(raw)}">${escapeHtml(label)}</a>`
+      });
+    } else {
+      const label = m[5] ?? "";
+      const href = m[6] ?? "";
+      parts.push({
+        kind: "html",
+        value: `<a href="${escapeHtml(href)}">${escapeHtml(label || href)}</a>`
+      });
+    }
+    cursor = m.index + full.length;
+  }
+  if (cursor < text.length) parts.push({ kind: "text", value: text.slice(cursor) });
+  return parts.map((p) => {
+    if (p.kind === "html") return p.value;
+    let t = escapeHtml(p.value);
+    t = t.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>");
+    t = t.replace(/\*([^*]+)\*/g, "<em>$1</em>");
+    t = t.replace(/`([^`]+)`/g, "<code>$1</code>");
+    return t;
+  }).join("");
+}
+
+// src/desktop/renderer/context-card-drag.ts
+function applyContextCardDragStart(dataTransfer, text) {
+  if (!dataTransfer) return;
+  dataTransfer.clearData();
+  dataTransfer.setData("text/plain", text);
+  dataTransfer.effectAllowed = "copy";
+}
+function bindContextCardDrag(node, text, options = {}) {
+  node.draggable = true;
+  node.setAttribute("title", "\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846 \xB7 \u5355\u51FB\u590D\u5236");
+  node.addEventListener("dragstart", (ev) => {
+    applyContextCardDragStart(ev.dataTransfer, text);
+    node.classList.add("is-dragging");
+  });
+  node.addEventListener("dragend", () => {
+    node.classList.remove("is-dragging");
+  });
+  node.addEventListener("click", () => {
+    void copyContextCardText(text, options);
+  });
+}
+async function copyContextCardText(text, options = {}) {
+  const write = options.writeClipboard ?? (async (value) => {
+    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return;
+    }
+    throw new Error("Clipboard API unavailable");
+  });
+  try {
+    await write(text);
+    options.onCopied?.(text);
+  } catch (err) {
+    options.onCopyError?.(err);
+  }
+}
+
+// src/desktop/renderer/main/elements.ts
+var el = {
+  health: document.getElementById("health-pill"),
+  wsSelect: document.getElementById("workspace-select"),
+  status: document.getElementById("status-line"),
+  layout: document.getElementById("main-layout"),
+  treePanel: document.getElementById("tree-panel"),
+  sidePanel: document.getElementById("side-panel"),
+  splitterLeft: document.getElementById("splitter-left"),
+  splitterRight: document.getElementById("splitter-right"),
+  btnCollapseLeft: document.getElementById("btn-collapse-left"),
+  btnCollapseRight: document.getElementById("btn-collapse-right"),
+  btnExpandLeft: document.getElementById("btn-expand-left"),
+  btnExpandRight: document.getElementById("btn-expand-right"),
+  taskCount: document.getElementById("task-count"),
+  tree: document.getElementById("tree"),
+  tabs: document.getElementById("tabs"),
+  toolbar: document.getElementById("toolbar"),
+  editor: document.getElementById("editor-host"),
+  meta: document.getElementById("meta"),
+  dispatch: document.getElementById("dispatch-panel"),
+  tasks: document.getElementById("tasks"),
+  cards: document.getElementById("cards"),
+  a2u: document.getElementById("a2u-host"),
+  u2a: document.getElementById("u2a-host"),
+  session: document.getElementById("session-host"),
+  searchInput: document.getElementById("search-input"),
+  searchHits: document.getElementById("search-hits"),
+  createType: document.getElementById("create-type"),
+  btnNewBox: document.getElementById("btn-new-box"),
+  searchDrawer: document.getElementById("search-drawer"),
+  createDrawer: document.getElementById("create-drawer"),
+  railOverflow: document.getElementById("rail-overflow"),
+  btnToggleSearch: document.getElementById("btn-toggle-search"),
+  btnToggleCreate: document.getElementById("btn-toggle-create"),
+  btnRailMore: document.getElementById("btn-rail-more"),
+  secPending: document.getElementById("sec-pending"),
+  secDispatch: document.getElementById("sec-dispatch"),
+  secCards: document.getElementById("sec-cards")
+};
+function setError(err) {
+  const msg = err instanceof Error ? err.message : String(err);
+  el.status.textContent = msg;
+  el.status.title = msg;
+}
+
+// src/desktop/renderer/main/state.ts
+var localTabs = /* @__PURE__ */ new Map();
+var activeCx = null;
+var tree = [];
+var state = null;
+var workspaceId = null;
+var coordinationTypes = [];
+var roles = [];
+var taskReview = [];
+var deliveries = [];
+var sessions = [];
+var userAsks = [];
+var a2aApprovals = [];
+var toolApprovals = [];
+var profiles = [];
+var selectedProfileId = null;
+var createTypePick = "";
+var dispatchRole = "";
+var dispatchPrompt = "";
+var rejectDrafts = /* @__PURE__ */ new Map();
+function setActiveCx(cx) {
+  activeCx = cx;
+}
+function setTree(nodes) {
+  tree = nodes;
+}
+function setState(s) {
+  state = s;
+}
+function setWorkspaceId(id) {
+  workspaceId = id;
+}
+function setCoordinationTypes(list) {
+  coordinationTypes = list;
+}
+function setRoles(list) {
+  roles = list;
+}
+function setTaskReview(list) {
+  taskReview = list;
+}
+function setProfiles(list) {
+  profiles = list;
+}
+function setSelectedProfileId(id) {
+  selectedProfileId = id;
+}
+function setCreateTypePick(value) {
+  createTypePick = value;
+}
+function setDispatchRole(value) {
+  dispatchRole = value;
+}
+function setDispatchPrompt(value) {
+  dispatchPrompt = value;
+}
+function findConcept(nodes, id) {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const child = findConcept(node.children || [], id);
+    if (child) return child;
+  }
+  return void 0;
+}
+function actionableTasks() {
+  return taskReview.filter(
+    (task) => ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
+      String(task.state || task.status || "")
+    )
+  );
+}
+function pendingInteractionCount() {
+  return userAsks.length + a2aApprovals.length + toolApprovals.length;
+}
+function tasksForActiveNode(states) {
+  if (!activeCx) return [];
+  return actionableTasks().filter((task) => {
+    const st = String(task.state || task.status || "");
+    return task.claims.includes(activeCx) && (!states || states.includes(st));
+  });
+}
+function reconstruct(fm, body) {
+  const lines = ["---"];
+  for (const [k, v] of Object.entries(fm || {})) {
+    lines.push(`${k}: ${JSON.stringify(v)}`);
+  }
+  lines.push("---");
+  lines.push(body.endsWith("\n") || body === "" ? body : body + "\n");
+  return lines.join("\n");
+}
+function splitBody(raw) {
+  const text = raw.replace(/\r\n/g, "\n");
+  if (!text.startsWith("---\n")) return raw;
+  const end = text.indexOf("\n---", 4);
+  if (end === -1) return raw;
+  const after = text.indexOf("\n", end + 1);
+  return after === -1 ? "" : text.slice(after + 1);
+}
+var host = null;
+function bindStateHost(h) {
+  host = h;
+}
+async function reloadTree() {
+  if (!workspaceId) return;
+  const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
+  tree = result.concepts || [];
+  for (const [id, tab] of localTabs) {
+    const concept = findConcept(tree, id);
+    if (concept?.mode) tab.nodeMode = concept.mode;
+  }
+  host?.renderTree();
+}
+async function reloadRegistry() {
+  if (!workspaceId) return;
+  try {
+    const [typesResult, rolesResult] = await Promise.all([
+      window.tentDesktop.rpc("registry.types", { workspaceId }),
+      window.tentDesktop.rpc("registry.roles", { workspaceId })
+    ]);
+    coordinationTypes = listCoordinationTypeOptions(typesResult.types || []);
+    roles = listRoleOptions(rolesResult.roles || []);
+    if (!createTypePick || !coordinationTypes.some((t) => t.name === createTypePick)) {
+      createTypePick = pickDefaultCoordinationType(coordinationTypes) || "";
+    }
+    if (!dispatchRole || !roles.some((r) => r.name === dispatchRole)) {
+      dispatchRole = roles[0]?.name || "";
+    }
+    host?.renderCreateTypeSelect();
+    host?.renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function reloadTasks() {
+  if (!workspaceId) return;
+  try {
+    const [taskResult, deliveryResult, sessionResult] = await Promise.all([
+      window.tentDesktop.rpc("task.list", { workspaceId }),
+      window.tentDesktop.rpc("delivery.list", { workspaceId }),
+      window.tentDesktop.rpc("session.list", { workspaceId })
+    ]);
+    deliveries = deliveryResult.deliveries || [];
+    sessions = sessionResult.sessions || [];
+    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
+    host?.renderTasks();
+    host?.renderTaskInput();
+    host?.renderSessions();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function reloadPendingInteractions() {
+  if (!workspaceId) return;
+  try {
+    const [askResult, a2aResult, toolResult] = await Promise.all([
+      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
+      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
+      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId })
+    ]);
+    userAsks = askResult.asks || [];
+    a2aApprovals = a2aResult.approvals || [];
+    toolApprovals = toolResult.approvals || [];
+    host?.renderPendingInteractions();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function reloadProfiles() {
+  try {
+    const result = await window.tentDesktop.rpc("profile.list", {});
+    profiles = listProfileOptions(result.profiles || []);
+    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
+      selectedProfileId = pickDefaultProfileId(profiles);
+    }
+    host?.renderTasks();
+  } catch (err) {
+    profiles = [];
+    selectedProfileId = null;
+    setError(err);
+  }
+}
+
+// src/desktop/renderer/main/inspector.ts
+var host2 = null;
+function bindInspectorHost(h) {
+  host2 = h;
+}
+function syncInspectorSections() {
+  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount() > 0;
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const canDispatch = !!(tab && tab.coordination);
+  if (!el.secPending || !el.secDispatch || !el.secCards) return;
+  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
+  if (anyOpen) return;
+  if (hasTasks) el.secPending.open = true;
+  else if (canDispatch) el.secDispatch.open = true;
+}
+function renderMeta() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
+    el.meta.classList.add("muted");
+    return;
+  }
+  el.meta.classList.remove("muted");
+  const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
+  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
+  el.meta.innerHTML = `
+    <div class="meta-name">${escapeHtml(tab.name)}</div>
+    <div class="meta-line muted">${oneLine}</div>
+    <div class="meta-controls">
+      <label class="sr-only" for="node-display-name">\u540D\u79F0</label>
+      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
+      <button type="button" id="btn-rename-node" class="btn btn-secondary">\u91CD\u547D\u540D</button>
+    </div>
+    <div class="meta-controls">
+      <label for="node-mode">\u8BBF\u95EE</label>
+      <select id="node-mode" class="field field-compact">
+        <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>\u5F00\u653E</option>
+        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>\u4EC5\u53EF\u8BFB</option>
+        <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>\u5C01\u5B58</option>
+      </select>
+      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">\u5E94\u7528</button>
+    </div>
+    <details class="meta-details">
+      <summary>\u8BE6\u60C5</summary>
+      <dl>
+        <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
+        <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
+        <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+      </dl>
+    </details>`;
+  document.getElementById("btn-rename-node")?.addEventListener("click", () => void onRenameNode());
+  document.getElementById("btn-apply-node-mode")?.addEventListener("click", () => void onSetNodeMode());
+}
+async function onRenameNode() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const input = document.getElementById("node-display-name");
+  const newName = input?.value.trim() || "";
+  if (!tab || !workspaceId || !newName || newName === tab.name) return;
+  try {
+    const result = await window.tentDesktop.rpc("docs.rename", {
+      workspaceId,
+      id: tab.cx,
+      newName,
+      actor: "user"
+    });
+    tab.name = result.name;
+    tab.path = result.path;
+    el.status.textContent = `\u5DF2\u91CD\u547D\u540D\u4E3A\u300C${result.name}\u300D`;
+    await reloadTree();
+    host2?.renderAll();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onSetNodeMode() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const select = document.getElementById("node-mode");
+  const mode = select?.value;
+  if (!tab || !workspaceId || !mode || mode === tab.nodeMode) return;
+  if (tab.dirty) {
+    el.status.textContent = "\u8BF7\u5148\u4FDD\u5B58\u6216\u64A4\u9500\u5F53\u524D\u4FEE\u6539\uFF0C\u518D\u5207\u6362 Node \u8BBF\u95EE\u6A21\u5F0F\u3002";
+    return;
+  }
+  if (mode === "archived" && !window.confirm(`\u5C01\u5B58\u300C${tab.name}\u300D\u53CA\u5176\u5B50\u6811\uFF1F`)) return;
+  try {
+    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
+    tab.nodeMode = mode;
+    el.status.textContent = mode === "archived" ? `\u5DF2\u5C01\u5B58\u300C${tab.name}\u300D` : "\u8BBF\u95EE\u6A21\u5F0F\u5DF2\u66F4\u65B0";
+    if (mode === "archived") {
+      localTabs.delete(tab.cx);
+      const remainingTabs = [...localTabs.keys()];
+      setActiveCx(remainingTabs[remainingTabs.length - 1] || null);
+    }
+    await reloadTree();
+    host2?.renderAll();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+// src/desktop/renderer/main/collaboration.ts
+function renderPendingInteractions() {
+  const hasPending = pendingInteractionCount() > 0;
+  el.a2u.hidden = !hasPending;
+  if (!hasPending) {
+    el.a2u.innerHTML = "";
+    renderTasks();
+    return;
+  }
+  const asks = userAsks.map((ask) => {
+    const choices = (ask.choices || []).map(
+      (choice) => `<label class="choice-row">
+      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
+      <span>${escapeHtml(choice.label)}</span></label>`
+    ).join("");
+    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}">
+      <div class="interaction-kicker">AGENT QUESTION \xB7 ${escapeHtml(ask.role || "Agent")}</div>
+      <div class="interaction-title">${escapeHtml(ask.question)}</div>
+      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
+      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
+      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
+    </article>`;
+  }).join("");
+  const a2a = a2aApprovals.map(
+    (item) => `<article class="interaction-item">
+    <div class="interaction-kicker">A2A APPROVAL</div>
+    <div class="interaction-title">${escapeHtml(item.role)} \u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
+    <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
+    <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
+    <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
+  </article>`
+  ).join("");
+  const tools = toolApprovals.map((item) => {
+    const summary = (item.options || []).map((option) => option.name || option.kind || option.optionId).filter(Boolean).join(" \xB7 ");
+    return `<article class="interaction-item">
+      <div class="interaction-kicker">TOOL PERMISSION</div><div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
+      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 ${escapeHtml(item.sessionId)}</div>
+      ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-tool-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
+      <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
+    </article>`;
+  }).join("");
+  el.a2u.innerHTML = asks + a2a + tools;
+  el.a2u.querySelectorAll("[data-ask-reply]").forEach(
+    (button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")))
+  );
+  el.a2u.querySelectorAll("[data-task-stop]").forEach(
+    (button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop")))
+  );
+  el.a2u.querySelectorAll("[data-a2a-allow]").forEach(
+    (button) => button.addEventListener(
+      "click",
+      () => void onResolveA2A(button.getAttribute("data-a2a-allow"), "approve")
+    )
+  );
+  el.a2u.querySelectorAll("[data-a2a-deny]").forEach(
+    (button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-deny"), "deny"))
+  );
+  el.a2u.querySelectorAll("[data-tool-allow]").forEach(
+    (button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-allow"), true))
+  );
+  el.a2u.querySelectorAll("[data-tool-deny]").forEach(
+    (button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-deny"), false))
+  );
+  renderTasks();
+  syncInspectorSections();
+}
+async function onReplyUserAsk(askId) {
+  const item = el.a2u.querySelector(`[data-ask-item="${CSS.escape(askId)}"]`);
+  const answer = item?.querySelector("[data-ask-answer]")?.value.trim() || "";
+  const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
+  if (!answer && !choiceId) {
+    el.status.textContent = "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002";
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("userAsk.reply", {
+      askId,
+      actor: "user",
+      ...answer ? { answer } : {},
+      ...choiceId ? { choiceId } : {}
+    });
+    el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onResolveA2A(approvalId, decision) {
+  try {
+    await window.tentDesktop.rpc("a2a.resolve", { approvalId, decision, actor: "user" });
+    el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onResolveTool(approvalId, allow) {
+  try {
+    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", {
+      approvalId,
+      actor: "user"
+    });
+    el.status.textContent = allow ? "\u5DF2\u5141\u8BB8\u672C\u6B21\u5DE5\u5177\u8C03\u7528\u3002" : "\u5DF2\u62D2\u7EDD\u5DE5\u5177\u8C03\u7528\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+function renderTaskInput() {
+  const candidates = tasksForActiveNode(["running", "taken", "waiting"]);
+  el.u2a.hidden = candidates.length === 0;
+  if (!candidates.length) {
+    el.u2a.innerHTML = "";
+    return;
+  }
+  const options = candidates.map(
+    (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} \xB7 ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`
+  ).join("");
+  el.u2a.innerHTML = `<article class="interaction-item u2a-item"><div class="interaction-kicker">\u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
+    ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
+    <textarea id="u2a-text" class="line-input" rows="2" placeholder="\u53D1\u9001\u4E00\u6B21\u6027\u8865\u5145\u6307\u4EE4"></textarea>
+    <div class="interaction-actions"><button type="button" id="btn-send-task-input" class="btn btn-secondary">\u53D1\u9001</button></div></article>`;
+  document.getElementById("btn-send-task-input")?.addEventListener("click", async () => {
+    const text = document.getElementById("u2a-text")?.value.trim() || "";
+    const taskPath = document.getElementById("u2a-task")?.value || candidates[0].path;
+    if (!text) {
+      el.status.textContent = "\u8BF7\u586B\u5199\u8865\u5145\u6307\u4EE4\u3002";
+      return;
+    }
+    try {
+      await window.tentDesktop.rpc("task.sendInput", {
+        workspaceId,
+        taskPath,
+        text,
+        actor: "user"
+      });
+      el.status.textContent = "\u8865\u5145\u6307\u4EE4\u5DF2\u53D1\u9001\u3002";
+      await reloadTasks();
+    } catch (err) {
+      setError(err);
+    }
+  });
+}
+function renderSessions() {
+  const relatedTasks = tasksForActiveNode();
+  const taskIds = new Set(relatedTasks.map((task) => task.id).filter(Boolean));
+  const sessionIds = new Set(relatedTasks.map((task) => task.sessionId).filter(Boolean));
+  const related = sessions.filter(
+    (session) => sessionIds.has(session.sessionId) || !!session.lastTaskId && taskIds.has(session.lastTaskId)
+  );
+  el.session.hidden = related.length === 0;
+  el.session.innerHTML = related.map(
+    (session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
+    <span>${escapeHtml(session.roleName || session.profileId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`
+  ).join("");
+}
+function renderTasks() {
+  const visibleTasks = actionableTasks();
+  if (el.taskCount) {
+    const n = visibleTasks.length + pendingInteractionCount();
+    el.taskCount.hidden = n === 0;
+    el.taskCount.textContent = String(n);
+  }
+  if (el.secPending) {
+    if (visibleTasks.length > 0 || pendingInteractionCount() > 0) {
+      el.secPending.open = true;
+      if (el.secDispatch) el.secDispatch.open = false;
+      if (el.secCards) el.secCards.open = false;
+    } else if (!el.secDispatch?.open && !el.secCards?.open) {
+      el.secPending.open = false;
+    }
+  }
+  if (!visibleTasks.length) {
+    el.tasks.innerHTML = "";
+    return;
+  }
+  const profileOpts = profiles.length > 0 ? profiles.map(
+    (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
+  ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
+  const anyStartable = visibleTasks.some((t) => t.canStartAgent);
+  const profileBar = anyStartable ? `<li class="task-profile-bar">
+        <label class="sr-only" for="agent-profile">profile</label>
+        <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
+      </li>` : "";
+  el.tasks.innerHTML = profileBar + visibleTasks.map((t) => {
+    const who = escapeHtml(t.role);
+    const claims = (t.claims || []).filter(
+      (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
+    );
+    const claimBit = claims.length ? `<span class="task-claims muted">${claims.map((c) => escapeHtml(c)).join(" \xB7 ")}</span>` : "";
+    const blurbRaw = t.deliverySummary || t.prompt || "";
+    const blurb = blurbRaw ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "\u2026" : blurbRaw)}</div>` : "";
+    const stateLabel = taskStateLabel(t.state, t.status);
+    const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
+    const rejectDraft = rejectDrafts.get(t.path) || "";
+    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
+    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
+    const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
+              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
+              <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">\u9A73\u56DE</button>
+            </div>
+            <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
+              <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
+              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
+            </div>` : "";
+    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
+    return `<li class="task-item" data-task="${escapeHtml(t.path)}">
+        <div class="task-head">
+          <strong>${who}</strong>
+          ${claimBit}
+        </div>
+        ${blurb}
+        ${actions}
+        <details class="task-details">
+          <summary>\u8BE6\u60C5</summary>
+          <div class="task-detail-body muted">
+            <div>${escapeHtml(stateLabel)}${sessLabel ? ` \xB7 ${escapeHtml(sessLabel)}` : ""}</div>
+            <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
+            ${t.commits.length > 0 ? `<div>${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : ""}
+          </div>
+        </details>
+      </li>`;
+  }).join("");
+  const profileSel = document.getElementById("agent-profile");
+  profileSel?.addEventListener("change", () => {
+    setSelectedProfileId(profileSel.value || null);
+    renderTasks();
+  });
+  el.tasks.querySelectorAll("[data-start]").forEach((btn) => {
+    btn.addEventListener("click", () => void onStartAgent(btn.getAttribute("data-start")));
+  });
+  el.tasks.querySelectorAll("[data-interrupt]").forEach((btn) => {
+    btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")));
+  });
+  el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
+    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
+  });
+  el.tasks.querySelectorAll("[data-reject-toggle]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      const path = btn.getAttribute("data-reject-toggle");
+      const item = btn.closest(".task-item");
+      const panel = item?.querySelector("[data-reject-panel]");
+      if (!(panel instanceof HTMLElement)) return;
+      const open = panel.hasAttribute("hidden");
+      if (open) panel.removeAttribute("hidden");
+      else panel.setAttribute("hidden", "");
+      btn.setAttribute("aria-expanded", open ? "true" : "false");
+      if (open) {
+        const reason = panel.querySelector("[data-reject-reason]");
+        if (reason instanceof HTMLInputElement) reason.focus();
+      }
+    });
+  });
+  el.tasks.querySelectorAll("[data-reject-reason]").forEach((input) => {
+    input.addEventListener("input", () => {
+      rejectDrafts.set(input.getAttribute("data-reject-reason"), input.value);
+    });
+  });
+  el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
+    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
+  });
+}
+async function onStartAgent(taskPath) {
+  if (!workspaceId) return;
+  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("task.startSession", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      profileId: built.payload.profileId,
+      callerKind: built.payload.callerKind
+    });
+    const sid = result.session?.sessionId;
+    const st = result.session?.state || result.task?.state || "";
+    el.status.textContent = sid ? `\u5DF2\u542F\u52A8 agent \xB7 ${sid}${st ? `\uFF08${sessionStateLabel(st) || st}\uFF09` : ""}` : `\u5DF2\u542F\u52A8 agent \xB7 ${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+    await reloadTasks().catch(() => void 0);
+  }
+}
+async function onInterrupt(taskPath) {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("task.interrupt", {
+      workspaceId,
+      taskPath
+    });
+    el.status.textContent = `\u5DF2\u4E2D\u65AD\uFF1A${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onAccept(taskPath) {
+  if (!workspaceId) return;
+  const payload = buildAcceptPayload(taskPath, "user");
+  try {
+    await window.tentDesktop.rpc("task.accept", {
+      workspaceId,
+      taskPath: payload.taskPath,
+      actor: payload.actor
+    });
+    el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onReject(taskPath) {
+  if (!workspaceId) return;
+  const reason = rejectDrafts.get(taskPath) || "";
+  const built = buildRejectPayload(taskPath, reason, "user");
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("task.reject", {
+      workspaceId,
+      taskPath: built.payload.taskPath,
+      actor: built.payload.actor,
+      note: built.payload.note,
+      resume: built.payload.resume
+    });
+    el.status.textContent = `\u5DF2\u9A73\u56DE\uFF1A${taskPath}`;
+    rejectDrafts.delete(taskPath);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function loadCards() {
+  const snap = await window.tentDesktop.getFloatingStatus();
+  const cards = snap.recentCards || [];
+  if (!cards.length) {
+    el.cards.innerHTML = "";
+    return;
+  }
+  el.cards.innerHTML = cards.map(
+    (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}" title="${escapeHtml(c.kind)}/${escapeHtml(c.refId)}">
+        <div><strong>${escapeHtml(c.label)}</strong></div>
+      </li>`
+  ).join("");
+  el.cards.querySelectorAll("[data-card-idx]").forEach((node) => {
+    const idx = Number(node.getAttribute("data-card-idx"));
+    const card = cards[idx];
+    if (!card?.text) return;
+    bindContextCardDrag(node, card.text, {
+      onCopied: () => {
+        el.status.textContent = "\u5DF2\u590D\u5236";
+      },
+      onCopyError: (err) => setError(err)
+    });
+  });
+}
+async function onEmitCard() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.status.textContent = "\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u6982\u5FF5\u3002";
+    return;
+  }
+  await window.tentDesktop.pushContextCard({
+    kind: "box",
+    id: tab.cx,
+    path: tab.path,
+    label: tab.name
+  });
+  await loadCards();
+  el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u5DE6\u952E\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846\uFF08text/plain\uFF09\u3002";
+}
+
+// src/desktop/renderer/main/icons.ts
+var ICO = {
+  search: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.2 10.2 13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  plus: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  more: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>',
+  chevronLeft: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  chevronRight: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modeSource: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5 2.75 8l2.5 3.5M10.75 4.5 13.25 8l-2.5 3.5M9.1 3.5 6.9 12.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
+  modePreview: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+};
+
+// src/desktop/renderer/main/document.ts
+var host3 = null;
+function bindDocumentHost(h) {
+  host3 = h;
+}
+async function openConcept(cx) {
+  if (!workspaceId) return;
+  const edit = await window.tentDesktop.rpc("docs.readForEdit", {
+    workspaceId,
+    id: cx
+  });
+  const existing = localTabs.get(edit.id);
+  if (existing?.dirty) {
+    setActiveCx(edit.id);
+    host3?.renderAll();
+    el.status.textContent = "\u5F53\u524D\u6807\u7B7E\u6709\u672A\u4FDD\u5B58\u66F4\u6539\u3002";
+    return;
+  }
+  const tab = {
+    cx: edit.id,
+    path: edit.path,
+    name: edit.name || edit.path.split("/").pop() || edit.path,
+    type: edit.type || String(edit.frontmatter?.type || "note"),
+    coordination: !!edit.coordination,
+    etag: edit.etag,
+    buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
+    dirty: false,
+    mode: existing?.mode ?? "source",
+    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
+    frontmatter: edit.frontmatter || {},
+    artifactRefs: edit.artifactRefs
+  };
+  localTabs.set(tab.cx, tab);
+  setActiveCx(tab.cx);
+  host3?.renderAll();
+}
+function renderTabs() {
+  const tabs = [...localTabs.values()];
+  el.tabs.innerHTML = tabs.map((t) => {
+    const active = t.cx === activeCx ? " active" : "";
+    return `<button type="button" class="tab${active}" data-tab="${escapeHtml(t.cx)}">${escapeHtml(t.name)}${t.dirty ? " \xB7" : ""}</button>`;
+  }).join("");
+  el.tabs.querySelectorAll("[data-tab]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      setActiveCx(btn.getAttribute("data-tab"));
+      host3?.renderAll();
+    });
+  });
+}
+function renderToolbar() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.toolbar.innerHTML = "";
+    return;
+  }
+  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
+  const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
+  const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
+  const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
+  el.toolbar.innerHTML = `
+    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${modeIco}</button>
+    ${tab.dirty && tab.nodeMode === "editable" ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
+    <div class="menu-wrap">
+      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">${ICO.more}</button>
+      <div class="menu" data-doc-menu role="menu" hidden>
+        <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? ' aria-current="true"' : ""}>\u6E90\u7801</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
+        <div class="menu-sep" role="separator"></div>
+        <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
+        ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
+      </div>
+    </div>
+  `;
+  const moreBtn = el.toolbar.querySelector("[data-doc-more]");
+  const moreMenu = el.toolbar.querySelector("[data-doc-menu]");
+  moreBtn?.addEventListener("click", (ev) => {
+    ev.stopPropagation();
+    if (!moreMenu) return;
+    moreMenu.hidden = !moreMenu.hidden;
+    moreBtn.setAttribute("aria-expanded", moreMenu.hidden ? "false" : "true");
+  });
+  el.toolbar.querySelectorAll("[data-act]").forEach((btn) => {
+    btn.addEventListener("click", () => {
+      if (moreMenu) moreMenu.hidden = true;
+      void onToolbar(btn.getAttribute("data-act"));
+    });
+  });
+}
+async function onToolbar(act) {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) return;
+  if (act === "toggle-mode") {
+    tab.mode = tab.mode === "source" ? "preview" : "source";
+    host3?.renderAll();
+    return;
+  }
+  if (act === "source" || act === "preview") {
+    tab.mode = act;
+    host3?.renderAll();
+    return;
+  }
+  if (act === "save") {
+    await saveTab(tab);
+    return;
+  }
+  if (act === "promote") {
+    if (tab.dirty) await saveTab(tab);
+    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
+    try {
+      await window.tentDesktop.rpc("docs.promote", {
+        workspaceId,
+        id: tab.cx,
+        toType
+      });
+      el.status.textContent = `\u5DF2\u63D0\u5347\u4E3A ${toType}`;
+      await openConcept(tab.cx);
+      await reloadTree();
+    } catch (err) {
+      setError(err);
+    }
+    return;
+  }
+  if (act === "card") {
+    await window.tentDesktop.pushContextCard({
+      kind: "box",
+      id: tab.cx,
+      path: tab.path,
+      label: tab.name
+    });
+    await host3?.loadCards();
+  }
+}
+async function saveTab(tab) {
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "\u5F53\u524D Node \u4E0D\u662F\u5F00\u653E\u6A21\u5F0F\uFF0C\u4E0D\u80FD\u4FDD\u5B58\u6B63\u6587\u3002";
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("docs.write", {
+      workspaceId,
+      id: tab.cx,
+      baseEtag: tab.etag,
+      raw: tab.buffer
+    });
+    tab.etag = result.etag;
+    tab.dirty = false;
+    el.status.textContent = "";
+    await reloadTree();
+    host3?.renderAll();
+  } catch (err) {
+    setError(err);
+  }
+}
+function renderEditor() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>';
+    return;
+  }
+  if (tab.mode === "preview") {
+    const body = splitBody(tab.buffer);
+    el.editor.innerHTML = `<div class="preview">${renderMarkdownToHtml(body, {
+      resolveWikiHref: (raw) => `#open=${encodeURIComponent(raw)}`,
+      artifactRefs: tab.artifactRefs
+    })}</div>`;
+    return;
+  }
+  el.editor.innerHTML = `<textarea class="editor" id="buffer" spellcheck="false"></textarea>`;
+  const ta = document.getElementById("buffer");
+  ta.value = tab.buffer;
+  ta.readOnly = tab.nodeMode !== "editable";
+  ta.setAttribute("aria-readonly", ta.readOnly ? "true" : "false");
+  ta.addEventListener("input", () => {
+    tab.buffer = ta.value;
+    tab.dirty = true;
+    host3?.renderTabs();
+    host3?.renderToolbar();
+  });
+}
+
+// src/desktop/renderer/main/dispatch.ts
+var host4 = null;
+function bindDispatchHost(h) {
+  host4 = h;
+}
+function renderDispatchPanel() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u9009\u4E2D\u534F\u4F5C\u6846\u540E\u53EF\u6D3E\u6D3B</div>`;
+    return;
+  }
+  if (!tab.coordination) {
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u300C${escapeHtml(tab.name)}\u300D\u4E0D\u53EF\u534F\u8C03\uFF08\u666E\u901A\u7B14\u8BB0\uFF09\u3002\u8BF7\u65B0\u5EFA\u534F\u4F5C\u6846\u6216\u63D0\u5347\u7C7B\u578B\u3002</div>`;
+    return;
+  }
+  const roleOpts = roles.length > 0 ? roles.map(
+    (r) => `<option value="${escapeHtml(r.name)}"${r.name === dispatchRole ? " selected" : ""}>${escapeHtml(r.name)}</option>`
+  ).join("") : `<option value="">\uFF08\u65E0 role\uFF09</option>`;
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles
+  });
+  el.dispatch.innerHTML = `
+    <div class="dispatch-form">
+      <div class="field-row">
+        <label for="dispatch-role">\u76EE\u6807 role</label>
+        <select id="dispatch-role"${roles.length ? "" : " disabled"}>${roleOpts}</select>
+      </div>
+      <div class="field-row">
+        <label for="dispatch-prompt">user prompt</label>
+        <textarea id="dispatch-prompt" rows="3" placeholder="\u5199\u7ED9\u76EE\u6807 role \u7684\u4EFB\u52A1\u8BF4\u660E\u2026">${escapeHtml(dispatchPrompt)}</textarea>
+      </div>
+      <div class="row dispatch-actions">
+        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
+        ${validation.ok ? "" : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`}
+      </div>
+    </div>
+  `;
+  const roleSel = document.getElementById("dispatch-role");
+  const promptTa = document.getElementById("dispatch-prompt");
+  const btn = document.getElementById("btn-dispatch");
+  roleSel?.addEventListener("change", () => {
+    setDispatchRole(roleSel.value);
+    host4?.renderDispatchPanel();
+  });
+  promptTa?.addEventListener("input", () => {
+    const nextPrompt = promptTa.value;
+    setDispatchPrompt(nextPrompt);
+    if (btn) {
+      const v = validateDispatchForm({
+        boxId: tab.cx,
+        coordination: tab.coordination,
+        role: roleSel?.value || dispatchRole,
+        prompt: nextPrompt,
+        roles
+      });
+      btn.disabled = !v.ok;
+      const hint = el.dispatch.querySelector(".dispatch-actions .faint");
+      if (hint) hint.textContent = v.ok ? "" : v.reason || "";
+      else if (!v.ok) {
+        const span = document.createElement("span");
+        span.className = "faint";
+        span.textContent = v.reason || "";
+        el.dispatch.querySelector(".dispatch-actions")?.appendChild(span);
+      }
+    }
+  });
+  btn?.addEventListener("click", () => void onDispatch());
+}
+async function onDispatch() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab || !workspaceId) return;
+  const validation = validateDispatchForm({
+    boxId: tab.cx,
+    coordination: tab.coordination,
+    role: dispatchRole,
+    prompt: dispatchPrompt,
+    roles
+  });
+  if (!validation.ok || !validation.payload) {
+    el.status.textContent = validation.reason || "\u65E0\u6CD5\u6D3E\u6D3B";
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("task.dispatch", {
+      workspaceId,
+      boxId: validation.payload.boxId,
+      role: validation.payload.role,
+      prompt: validation.payload.prompt,
+      dispatchedBy: validation.payload.dispatchedBy,
+      deliveryPolicy: "manual"
+    });
+    el.status.textContent = `\u5DF2\u6D3E\u6D3B \u2192 ${result.taskPath}\uFF08${result.state}\uFF09`;
+    setDispatchPrompt("");
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+    host4?.renderDispatchPanel();
+  } catch (err) {
+    setError(err);
+  }
+}
+
 // src/desktop/workbench/layout-prefs.ts
 var LAYOUT_STORAGE_KEY = "tent.desktop.mainLayout.v1";
 var LAYOUT_BOUNDS = {
@@ -616,115 +1654,11 @@ function stepResize(prefs, side, direction, viewportWidth, step = LAYOUT_BOUNDS.
   return resizeSide(prefs, side, current + direction * step, viewportWidth);
 }
 
-// src/desktop/renderer/context-card-drag.ts
-function applyContextCardDragStart(dataTransfer, text) {
-  if (!dataTransfer) return;
-  dataTransfer.clearData();
-  dataTransfer.setData("text/plain", text);
-  dataTransfer.effectAllowed = "copy";
-}
-function bindContextCardDrag(node, text, options = {}) {
-  node.draggable = true;
-  node.setAttribute("title", "\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846 \xB7 \u5355\u51FB\u590D\u5236");
-  node.addEventListener("dragstart", (ev) => {
-    applyContextCardDragStart(ev.dataTransfer, text);
-    node.classList.add("is-dragging");
-  });
-  node.addEventListener("dragend", () => {
-    node.classList.remove("is-dragging");
-  });
-  node.addEventListener("click", () => {
-    void copyContextCardText(text, options);
-  });
-}
-async function copyContextCardText(text, options = {}) {
-  const write = options.writeClipboard ?? (async (value) => {
-    if (typeof navigator !== "undefined" && navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(value);
-      return;
-    }
-    throw new Error("Clipboard API unavailable");
-  });
-  try {
-    await write(text);
-    options.onCopied?.(text);
-  } catch (err) {
-    options.onCopyError?.(err);
-  }
-}
-
-// src/desktop/renderer/main-ui.ts
-var ICO = {
-  search: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="7" cy="7" r="4.25" fill="none" stroke="currentColor" stroke-width="1.4"/><path d="M10.2 10.2 13.5 13.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  plus: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M8 3.25v9.5M3.25 8h9.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
-  more: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><circle cx="4" cy="8" r="1.15" fill="currentColor"/><circle cx="8" cy="8" r="1.15" fill="currentColor"/><circle cx="12" cy="8" r="1.15" fill="currentColor"/></svg>',
-  chevronLeft: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  chevronRight: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  modeSource: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5 2.75 8l2.5 3.5M10.75 4.5 13.25 8l-2.5 3.5M9.1 3.5 6.9 12.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  modePreview: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
-};
-var localTabs = /* @__PURE__ */ new Map();
-var activeCx = null;
-var tree = [];
-var state = null;
-var workspaceId = null;
-var coordinationTypes = [];
-var roles = [];
-var taskReview = [];
-var deliveries = [];
-var sessions = [];
-var userAsks = [];
-var a2aApprovals = [];
-var toolApprovals = [];
-var profiles = [];
-var selectedProfileId = null;
-var createTypePick = "";
-var dispatchRole = "";
-var dispatchPrompt = "";
-var rejectDrafts = /* @__PURE__ */ new Map();
+// src/desktop/renderer/main/layout.ts
 var layoutPrefs = loadLayoutPrefs(
   typeof localStorage !== "undefined" ? localStorage : null
 );
 var resizeSession = null;
-var el = {
-  health: document.getElementById("health-pill"),
-  wsSelect: document.getElementById("workspace-select"),
-  status: document.getElementById("status-line"),
-  layout: document.getElementById("main-layout"),
-  treePanel: document.getElementById("tree-panel"),
-  sidePanel: document.getElementById("side-panel"),
-  splitterLeft: document.getElementById("splitter-left"),
-  splitterRight: document.getElementById("splitter-right"),
-  btnCollapseLeft: document.getElementById("btn-collapse-left"),
-  btnCollapseRight: document.getElementById("btn-collapse-right"),
-  btnExpandLeft: document.getElementById("btn-expand-left"),
-  btnExpandRight: document.getElementById("btn-expand-right"),
-  taskCount: document.getElementById("task-count"),
-  tree: document.getElementById("tree"),
-  tabs: document.getElementById("tabs"),
-  toolbar: document.getElementById("toolbar"),
-  editor: document.getElementById("editor-host"),
-  meta: document.getElementById("meta"),
-  dispatch: document.getElementById("dispatch-panel"),
-  tasks: document.getElementById("tasks"),
-  cards: document.getElementById("cards"),
-  a2u: document.getElementById("a2u-host"),
-  u2a: document.getElementById("u2a-host"),
-  session: document.getElementById("session-host"),
-  searchInput: document.getElementById("search-input"),
-  searchHits: document.getElementById("search-hits"),
-  createType: document.getElementById("create-type"),
-  btnNewBox: document.getElementById("btn-new-box"),
-  searchDrawer: document.getElementById("search-drawer"),
-  createDrawer: document.getElementById("create-drawer"),
-  railOverflow: document.getElementById("rail-overflow"),
-  btnToggleSearch: document.getElementById("btn-toggle-search"),
-  btnToggleCreate: document.getElementById("btn-toggle-create"),
-  btnRailMore: document.getElementById("btn-rail-more"),
-  secPending: document.getElementById("sec-pending"),
-  secDispatch: document.getElementById("sec-dispatch"),
-  secCards: document.getElementById("sec-cards")
-};
 function layoutViewportWidth() {
   return el.layout?.clientWidth || window.innerWidth || 1200;
 }
@@ -884,26 +1818,6 @@ function bindChromeMenus() {
     if (ev.key === "Escape") closeChromePopovers();
   });
 }
-function syncInspectorSections() {
-  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount() > 0;
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  const canDispatch = !!(tab && tab.coordination);
-  if (!el.secPending || !el.secDispatch || !el.secCards) return;
-  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
-  if (anyOpen) return;
-  if (hasTasks) el.secPending.open = true;
-  else if (canDispatch) el.secDispatch.open = true;
-}
-function actionableTasks() {
-  return taskReview.filter(
-    (task) => ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
-      String(task.state || task.status || "")
-    )
-  );
-}
-function pendingInteractionCount() {
-  return userAsks.length + a2aApprovals.length + toolApprovals.length;
-}
 function bindLayoutChrome() {
   el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
   el.btnCollapseRight?.addEventListener("click", () => onToggleSide("right"));
@@ -919,6 +1833,160 @@ function bindLayoutChrome() {
   window.addEventListener("pointerup", () => endResize());
   applyLayoutChrome();
 }
+
+// src/desktop/renderer/main/tree.ts
+var host5 = null;
+function bindTreeHost(h) {
+  host5 = h;
+}
+function renderCreateTypeSelect() {
+  const selected = createTypePick || pickDefaultCoordinationType(coordinationTypes) || "";
+  setCreateTypePick(selected);
+  if (!coordinationTypes.length) {
+    el.createType.innerHTML = `<option value="">\u65E0\u53EF\u534F\u8C03\u7C7B\u578B</option>`;
+    el.createType.disabled = true;
+    el.btnNewBox.disabled = true;
+    el.btnNewBox.title = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709 coordination=true \u7684\u4E00\u7EA7\u7C7B\u578B";
+    return;
+  }
+  el.createType.disabled = false;
+  el.btnNewBox.disabled = false;
+  el.btnNewBox.title = "\u4F7F\u7528\u6240\u9009\u53EF\u534F\u8C03\u7C7B\u578B\u65B0\u5EFA\u534F\u4F5C\u6846";
+  el.createType.innerHTML = coordinationTypes.map(
+    (t) => `<option value="${escapeHtml(t.name)}"${t.name === selected ? " selected" : ""}>${escapeHtml(t.name)}</option>`
+  ).join("");
+}
+function renderTree() {
+  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
+  el.tree.querySelectorAll("[data-open]").forEach((node) => {
+    node.addEventListener("click", () => void host5?.openConcept(node.getAttribute("data-open")));
+  });
+}
+function nodeStatusMark(status) {
+  if (!status) return "";
+  const s = status.toLowerCase();
+  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
+  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  }
+  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+}
+function renderNodes(nodes) {
+  return nodes.map((n) => {
+    const mark = n.coordination ? nodeStatusMark(n.status) : "";
+    const active = n.id === activeCx ? " active" : "";
+    const archived = n.mode === "archived" ? " is-archived" : "";
+    const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
+    return `<li>
+        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
+          <span class="tree-name">${escapeHtml(n.name)}</span>
+          <span class="tree-meta">${mark}</span>
+        </div>
+        ${kids}
+      </li>`;
+  }).join("");
+}
+async function onCreateNote() {
+  if (!workspaceId) {
+    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
+    return;
+  }
+  const name = `note-${Date.now().toString(36).slice(-4)}`;
+  try {
+    const created = await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: "note"
+    });
+    await reloadTree();
+    await host5?.openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onCreateCoordBox() {
+  if (!workspaceId) {
+    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
+    return;
+  }
+  const typeName = createTypePick || pickDefaultCoordinationType(coordinationTypes);
+  if (!typeName) {
+    el.status.textContent = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709\u53EF\u534F\u8C03\u7684\u4E00\u7EA7\u7C7B\u578B\u3002";
+    return;
+  }
+  const name = suggestBoxName(typeName);
+  try {
+    const created = await window.tentDesktop.rpc("docs.createNote", {
+      workspaceId,
+      name,
+      type: typeName
+    });
+    el.status.textContent = `\u5DF2\u65B0\u5EFA\u534F\u4F5C\u6846\u300C${name}\u300D\uFF08${created.type || typeName}\uFF09`;
+    await reloadTree();
+    await host5?.openConcept(created.id);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onSearch() {
+  if (!workspaceId) return;
+  const q = el.searchInput.value.trim();
+  if (!q) {
+    el.searchHits.innerHTML = "";
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("docs.search", {
+      workspaceId,
+      query: q
+    });
+    const hits = result.hits || [];
+    el.searchHits.innerHTML = hits.map(
+      (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
+           <div class="muted">${escapeHtml(h.match)} \xB7 ${escapeHtml(h.snippet)}</div></li>`
+    ).join("");
+    el.searchHits.querySelectorAll("[data-open]").forEach((n) => {
+      n.addEventListener("click", () => void host5?.openConcept(n.getAttribute("data-open")));
+    });
+  } catch (err) {
+    setError(err);
+  }
+}
+
+// src/desktop/renderer/main-ui.ts
+function renderAll() {
+  renderTabs();
+  renderToolbar();
+  renderEditor();
+  renderMeta();
+  renderDispatchPanel();
+  renderPendingInteractions();
+  renderTaskInput();
+  renderSessions();
+  renderTree();
+  syncInspectorSections();
+}
+bindStateHost({
+  renderTree,
+  renderCreateTypeSelect,
+  renderDispatchPanel,
+  renderTasks,
+  renderTaskInput,
+  renderSessions,
+  renderPendingInteractions
+});
+bindTreeHost({ openConcept });
+bindDocumentHost({
+  renderAll,
+  renderTabs,
+  renderToolbar,
+  loadCards
+});
+bindInspectorHost({ renderAll });
+bindDispatchHost({ renderDispatchPanel });
 async function boot() {
   bindLayoutChrome();
   bindChromeMenus();
@@ -927,7 +1995,7 @@ async function boot() {
   document.getElementById("btn-new-note").addEventListener("click", () => void onCreateNote());
   el.btnNewBox.addEventListener("click", () => void onCreateCoordBox());
   el.createType.addEventListener("change", () => {
-    createTypePick = el.createType.value;
+    setCreateTypePick(el.createType.value);
   });
   document.getElementById("btn-search").addEventListener("click", () => void onSearch());
   document.getElementById("btn-card").addEventListener("click", () => void onEmitCard());
@@ -963,7 +2031,7 @@ async function refresh() {
   }
 }
 function applyShell(s) {
-  state = s;
+  setState(s);
   const ok = s.health.status === "ok";
   el.health.className = `status-dot ${ok ? "ok" : "off"}`;
   el.health.textContent = "";
@@ -979,902 +2047,53 @@ function applyShell(s) {
     if (w.foreground || w.workspaceId === s.foregroundWorkspaceId) opt.selected = true;
     el.wsSelect.appendChild(opt);
   }
-  workspaceId = s.foregroundWorkspaceId;
+  setWorkspaceId(s.foregroundWorkspaceId);
   const live = s.statusMessage || s.workspace?.statusMessage || "";
   if (live) el.status.textContent = live;
   if (s.workspace?.tree?.length) {
-    tree = s.workspace.tree;
+    setTree(s.workspace.tree);
     renderTree();
   }
   if (s.coordinationTypes?.length) {
-    coordinationTypes = s.coordinationTypes;
+    setCoordinationTypes(s.coordinationTypes);
     renderCreateTypeSelect();
   }
   if (s.roles) {
-    roles = s.roles;
+    setRoles(s.roles);
   }
   if (s.profiles?.length) {
-    profiles = s.profiles;
+    setProfiles(s.profiles);
   }
   if (s.selectedProfileId !== void 0) {
-    selectedProfileId = s.selectedProfileId;
+    setSelectedProfileId(s.selectedProfileId);
   }
   if (s.taskReview?.length) {
-    taskReview = s.taskReview;
+    setTaskReview(s.taskReview);
   } else if (s.tasks?.length) {
-    taskReview = buildTaskReviewItems(
-      s.tasks.map((t) => ({
-        path: t.path,
-        id: t.id,
-        role: t.role,
-        claims: t.claims || [],
-        status: t.status === "taken" ? "taken" : "pending",
-        state: t.state || t.status,
-        prompt: t.prompt,
-        activeDeliveryId: t.activeDeliveryId,
-        sessionId: t.sessionId,
-        manifest: ""
-      })),
-      deliveries,
-      sessions
+    setTaskReview(
+      buildTaskReviewItems(
+        s.tasks.map((t) => ({
+          path: t.path,
+          id: t.id,
+          role: t.role,
+          claims: t.claims || [],
+          status: t.status === "taken" ? "taken" : "pending",
+          state: t.state || t.status,
+          prompt: t.prompt,
+          activeDeliveryId: t.activeDeliveryId,
+          sessionId: t.sessionId,
+          manifest: ""
+        })),
+        deliveries,
+        sessions
+      )
     );
   } else {
-    taskReview = [];
+    setTaskReview([]);
   }
   renderTasks();
   renderDispatchPanel();
   void loadCards();
-}
-async function reloadTree() {
-  if (!workspaceId) return;
-  const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
-  tree = result.concepts || [];
-  for (const [id, tab] of localTabs) {
-    const concept = findConcept(tree, id);
-    if (concept?.mode) tab.nodeMode = concept.mode;
-  }
-  renderTree();
-}
-async function reloadRegistry() {
-  if (!workspaceId) return;
-  try {
-    const [typesResult, rolesResult] = await Promise.all([
-      window.tentDesktop.rpc("registry.types", { workspaceId }),
-      window.tentDesktop.rpc("registry.roles", { workspaceId })
-    ]);
-    coordinationTypes = listCoordinationTypeOptions(typesResult.types || []);
-    roles = listRoleOptions(rolesResult.roles || []);
-    if (!createTypePick || !coordinationTypes.some((t) => t.name === createTypePick)) {
-      createTypePick = pickDefaultCoordinationType(coordinationTypes) || "";
-    }
-    if (!dispatchRole || !roles.some((r) => r.name === dispatchRole)) {
-      dispatchRole = roles[0]?.name || "";
-    }
-    renderCreateTypeSelect();
-    renderDispatchPanel();
-  } catch (err) {
-    setError(err);
-  }
-}
-async function reloadTasks() {
-  if (!workspaceId) return;
-  try {
-    const [taskResult, deliveryResult, sessionResult] = await Promise.all([
-      window.tentDesktop.rpc("task.list", { workspaceId }),
-      window.tentDesktop.rpc("delivery.list", { workspaceId }),
-      window.tentDesktop.rpc("session.list", { workspaceId })
-    ]);
-    deliveries = deliveryResult.deliveries || [];
-    sessions = sessionResult.sessions || [];
-    taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
-    renderTasks();
-    renderTaskInput();
-    renderSessions();
-  } catch (err) {
-    setError(err);
-  }
-}
-async function reloadPendingInteractions() {
-  if (!workspaceId) return;
-  try {
-    const [askResult, a2aResult, toolResult] = await Promise.all([
-      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
-      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
-      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId })
-    ]);
-    userAsks = askResult.asks || [];
-    a2aApprovals = a2aResult.approvals || [];
-    toolApprovals = toolResult.approvals || [];
-    renderPendingInteractions();
-  } catch (err) {
-    setError(err);
-  }
-}
-async function reloadProfiles() {
-  try {
-    const result = await window.tentDesktop.rpc("profile.list", {});
-    profiles = listProfileOptions(result.profiles || []);
-    if (!selectedProfileId || !profiles.some((p) => p.id === selectedProfileId)) {
-      selectedProfileId = pickDefaultProfileId(profiles);
-    }
-    renderTasks();
-  } catch (err) {
-    profiles = [];
-    selectedProfileId = null;
-    setError(err);
-  }
-}
-function renderCreateTypeSelect() {
-  const prev = createTypePick || pickDefaultCoordinationType(coordinationTypes) || "";
-  createTypePick = prev;
-  if (!coordinationTypes.length) {
-    el.createType.innerHTML = `<option value="">\u65E0\u53EF\u534F\u8C03\u7C7B\u578B</option>`;
-    el.createType.disabled = true;
-    el.btnNewBox.disabled = true;
-    el.btnNewBox.title = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709 coordination=true \u7684\u4E00\u7EA7\u7C7B\u578B";
-    return;
-  }
-  el.createType.disabled = false;
-  el.btnNewBox.disabled = false;
-  el.btnNewBox.title = "\u4F7F\u7528\u6240\u9009\u53EF\u534F\u8C03\u7C7B\u578B\u65B0\u5EFA\u534F\u4F5C\u6846";
-  el.createType.innerHTML = coordinationTypes.map(
-    (t) => `<option value="${escapeHtml(t.name)}"${t.name === createTypePick ? " selected" : ""}>${escapeHtml(t.name)}</option>`
-  ).join("");
-}
-function renderTree() {
-  el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
-  el.tree.querySelectorAll("[data-open]").forEach((node) => {
-    node.addEventListener("click", () => void openConcept(node.getAttribute("data-open")));
-  });
-}
-function nodeStatusMark(status) {
-  if (!status) return "";
-  const s = status.toLowerCase();
-  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
-  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
-    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
-  }
-  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
-    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
-  }
-  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
-}
-function renderNodes(nodes) {
-  return nodes.map((n) => {
-    const mark = n.coordination ? nodeStatusMark(n.status) : "";
-    const active = n.id === activeCx ? " active" : "";
-    const archived = n.mode === "archived" ? " is-archived" : "";
-    const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
-    return `<li>
-        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
-          <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${mark}</span>
-        </div>
-        ${kids}
-      </li>`;
-  }).join("");
-}
-function findConcept(nodes, id) {
-  for (const node of nodes) {
-    if (node.id === id) return node;
-    const child = findConcept(node.children || [], id);
-    if (child) return child;
-  }
-  return void 0;
-}
-async function openConcept(cx) {
-  if (!workspaceId) return;
-  const edit = await window.tentDesktop.rpc("docs.readForEdit", {
-    workspaceId,
-    id: cx
-  });
-  const existing = localTabs.get(edit.id);
-  if (existing?.dirty) {
-    activeCx = edit.id;
-    renderAll();
-    el.status.textContent = "\u5F53\u524D\u6807\u7B7E\u6709\u672A\u4FDD\u5B58\u66F4\u6539\u3002";
-    return;
-  }
-  const tab = {
-    cx: edit.id,
-    path: edit.path,
-    name: edit.name || edit.path.split("/").pop() || edit.path,
-    type: edit.type || String(edit.frontmatter?.type || "note"),
-    coordination: !!edit.coordination,
-    etag: edit.etag,
-    buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
-    dirty: false,
-    mode: existing?.mode ?? "source",
-    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
-    frontmatter: edit.frontmatter || {},
-    artifactRefs: edit.artifactRefs
-  };
-  localTabs.set(tab.cx, tab);
-  activeCx = tab.cx;
-  renderAll();
-}
-function reconstruct(fm, body) {
-  const lines = ["---"];
-  for (const [k, v] of Object.entries(fm || {})) {
-    lines.push(`${k}: ${JSON.stringify(v)}`);
-  }
-  lines.push("---");
-  lines.push(body.endsWith("\n") || body === "" ? body : body + "\n");
-  return lines.join("\n");
-}
-function renderAll() {
-  renderTabs();
-  renderToolbar();
-  renderEditor();
-  renderMeta();
-  renderDispatchPanel();
-  renderPendingInteractions();
-  renderTaskInput();
-  renderSessions();
-  renderTree();
-  syncInspectorSections();
-}
-function renderTabs() {
-  const tabs = [...localTabs.values()];
-  el.tabs.innerHTML = tabs.map((t) => {
-    const active = t.cx === activeCx ? " active" : "";
-    return `<button type="button" class="tab${active}" data-tab="${escapeHtml(t.cx)}">${escapeHtml(t.name)}${t.dirty ? " \xB7" : ""}</button>`;
-  }).join("");
-  el.tabs.querySelectorAll("[data-tab]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      activeCx = btn.getAttribute("data-tab");
-      renderAll();
-    });
-  });
-}
-function renderToolbar() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) {
-    el.toolbar.innerHTML = "";
-    return;
-  }
-  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
-  const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
-  const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
-  const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
-  el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${modeIco}</button>
-    ${tab.dirty && tab.nodeMode === "editable" ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
-    <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">${ICO.more}</button>
-      <div class="menu" data-doc-menu role="menu" hidden>
-        <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? ' aria-current="true"' : ""}>\u6E90\u7801</button>
-        <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
-        <div class="menu-sep" role="separator"></div>
-        <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
-        ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
-      </div>
-    </div>
-  `;
-  const moreBtn = el.toolbar.querySelector("[data-doc-more]");
-  const moreMenu = el.toolbar.querySelector("[data-doc-menu]");
-  moreBtn?.addEventListener("click", (ev) => {
-    ev.stopPropagation();
-    if (!moreMenu) return;
-    moreMenu.hidden = !moreMenu.hidden;
-    moreBtn.setAttribute("aria-expanded", moreMenu.hidden ? "false" : "true");
-  });
-  el.toolbar.querySelectorAll("[data-act]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      if (moreMenu) moreMenu.hidden = true;
-      void onToolbar(btn.getAttribute("data-act"));
-    });
-  });
-}
-async function onToolbar(act) {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) return;
-  if (act === "toggle-mode") {
-    tab.mode = tab.mode === "source" ? "preview" : "source";
-    renderAll();
-    return;
-  }
-  if (act === "source" || act === "preview") {
-    tab.mode = act;
-    renderAll();
-    return;
-  }
-  if (act === "save") {
-    await saveTab(tab);
-    return;
-  }
-  if (act === "promote") {
-    if (tab.dirty) await saveTab(tab);
-    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
-    try {
-      await window.tentDesktop.rpc("docs.promote", {
-        workspaceId,
-        id: tab.cx,
-        toType
-      });
-      el.status.textContent = `\u5DF2\u63D0\u5347\u4E3A ${toType}`;
-      await openConcept(tab.cx);
-      await reloadTree();
-    } catch (err) {
-      setError(err);
-    }
-    return;
-  }
-  if (act === "card") {
-    await window.tentDesktop.pushContextCard({
-      kind: "box",
-      id: tab.cx,
-      path: tab.path,
-      label: tab.name
-    });
-    await loadCards();
-  }
-}
-async function saveTab(tab) {
-  if (tab.nodeMode !== "editable") {
-    el.status.textContent = "\u5F53\u524D Node \u4E0D\u662F\u5F00\u653E\u6A21\u5F0F\uFF0C\u4E0D\u80FD\u4FDD\u5B58\u6B63\u6587\u3002";
-    return;
-  }
-  try {
-    const result = await window.tentDesktop.rpc("docs.write", {
-      workspaceId,
-      id: tab.cx,
-      baseEtag: tab.etag,
-      raw: tab.buffer
-    });
-    tab.etag = result.etag;
-    tab.dirty = false;
-    el.status.textContent = "";
-    await reloadTree();
-    renderAll();
-  } catch (err) {
-    setError(err);
-  }
-}
-function renderEditor() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) {
-    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>';
-    return;
-  }
-  if (tab.mode === "preview") {
-    const body = splitBody(tab.buffer);
-    el.editor.innerHTML = `<div class="preview">${renderMarkdownToHtml(body, {
-      resolveWikiHref: (raw) => `#open=${encodeURIComponent(raw)}`,
-      artifactRefs: tab.artifactRefs
-    })}</div>`;
-    return;
-  }
-  el.editor.innerHTML = `<textarea class="editor" id="buffer" spellcheck="false"></textarea>`;
-  const ta = document.getElementById("buffer");
-  ta.value = tab.buffer;
-  ta.readOnly = tab.nodeMode !== "editable";
-  ta.setAttribute("aria-readonly", ta.readOnly ? "true" : "false");
-  ta.addEventListener("input", () => {
-    tab.buffer = ta.value;
-    tab.dirty = true;
-    renderTabs();
-    renderToolbar();
-  });
-}
-function splitBody(raw) {
-  const text = raw.replace(/\r\n/g, "\n");
-  if (!text.startsWith("---\n")) return raw;
-  const end = text.indexOf("\n---", 4);
-  if (end === -1) return raw;
-  const after = text.indexOf("\n", end + 1);
-  return after === -1 ? "" : text.slice(after + 1);
-}
-function renderMeta() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) {
-    el.meta.innerHTML = `<span class="muted">\u672A\u9009\u62E9</span>`;
-    el.meta.classList.add("muted");
-    return;
-  }
-  el.meta.classList.remove("muted");
-  const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
-  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
-  el.meta.innerHTML = `
-    <div class="meta-name">${escapeHtml(tab.name)}</div>
-    <div class="meta-line muted">${oneLine}</div>
-    <div class="meta-controls">
-      <label class="sr-only" for="node-display-name">\u540D\u79F0</label>
-      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
-      <button type="button" id="btn-rename-node" class="btn btn-secondary">\u91CD\u547D\u540D</button>
-    </div>
-    <div class="meta-controls">
-      <label for="node-mode">\u8BBF\u95EE</label>
-      <select id="node-mode" class="field field-compact">
-        <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>\u5F00\u653E</option>
-        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>\u4EC5\u53EF\u8BFB</option>
-        <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>\u5C01\u5B58</option>
-      </select>
-      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">\u5E94\u7528</button>
-    </div>
-    <details class="meta-details">
-      <summary>\u8BE6\u60C5</summary>
-      <dl>
-        <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
-        <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
-        <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
-      </dl>
-    </details>`;
-  document.getElementById("btn-rename-node")?.addEventListener("click", () => void onRenameNode());
-  document.getElementById("btn-apply-node-mode")?.addEventListener("click", () => void onSetNodeMode());
-}
-async function onRenameNode() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  const input = document.getElementById("node-display-name");
-  const newName = input?.value.trim() || "";
-  if (!tab || !workspaceId || !newName || newName === tab.name) return;
-  try {
-    const result = await window.tentDesktop.rpc("docs.rename", {
-      workspaceId,
-      id: tab.cx,
-      newName,
-      actor: "user"
-    });
-    tab.name = result.name;
-    tab.path = result.path;
-    el.status.textContent = `\u5DF2\u91CD\u547D\u540D\u4E3A\u300C${result.name}\u300D`;
-    await reloadTree();
-    renderAll();
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onSetNodeMode() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  const select = document.getElementById("node-mode");
-  const mode = select?.value;
-  if (!tab || !workspaceId || !mode || mode === tab.nodeMode) return;
-  if (tab.dirty) {
-    el.status.textContent = "\u8BF7\u5148\u4FDD\u5B58\u6216\u64A4\u9500\u5F53\u524D\u4FEE\u6539\uFF0C\u518D\u5207\u6362 Node \u8BBF\u95EE\u6A21\u5F0F\u3002";
-    return;
-  }
-  if (mode === "archived" && !window.confirm(`\u5C01\u5B58\u300C${tab.name}\u300D\u53CA\u5176\u5B50\u6811\uFF1F`)) return;
-  try {
-    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
-    tab.nodeMode = mode;
-    el.status.textContent = mode === "archived" ? `\u5DF2\u5C01\u5B58\u300C${tab.name}\u300D` : "\u8BBF\u95EE\u6A21\u5F0F\u5DF2\u66F4\u65B0";
-    if (mode === "archived") {
-      localTabs.delete(tab.cx);
-      const remainingTabs = [...localTabs.keys()];
-      activeCx = remainingTabs[remainingTabs.length - 1] || null;
-    }
-    await reloadTree();
-    renderAll();
-  } catch (err) {
-    setError(err);
-  }
-}
-function renderDispatchPanel() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u9009\u4E2D\u534F\u4F5C\u6846\u540E\u53EF\u6D3E\u6D3B</div>`;
-    return;
-  }
-  if (!tab.coordination) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u300C${escapeHtml(tab.name)}\u300D\u4E0D\u53EF\u534F\u8C03\uFF08\u666E\u901A\u7B14\u8BB0\uFF09\u3002\u8BF7\u65B0\u5EFA\u534F\u4F5C\u6846\u6216\u63D0\u5347\u7C7B\u578B\u3002</div>`;
-    return;
-  }
-  const roleOpts = roles.length > 0 ? roles.map(
-    (r) => `<option value="${escapeHtml(r.name)}"${r.name === dispatchRole ? " selected" : ""}>${escapeHtml(r.name)}</option>`
-  ).join("") : `<option value="">\uFF08\u65E0 role\uFF09</option>`;
-  const validation = validateDispatchForm({
-    boxId: tab.cx,
-    coordination: tab.coordination,
-    role: dispatchRole,
-    prompt: dispatchPrompt,
-    roles
-  });
-  el.dispatch.innerHTML = `
-    <div class="dispatch-form">
-      <div class="field-row">
-        <label for="dispatch-role">\u76EE\u6807 role</label>
-        <select id="dispatch-role"${roles.length ? "" : " disabled"}>${roleOpts}</select>
-      </div>
-      <div class="field-row">
-        <label for="dispatch-prompt">user prompt</label>
-        <textarea id="dispatch-prompt" rows="3" placeholder="\u5199\u7ED9\u76EE\u6807 role \u7684\u4EFB\u52A1\u8BF4\u660E\u2026">${escapeHtml(dispatchPrompt)}</textarea>
-      </div>
-      <div class="row dispatch-actions">
-        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
-        ${validation.ok ? "" : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`}
-      </div>
-    </div>
-  `;
-  const roleSel = document.getElementById("dispatch-role");
-  const promptTa = document.getElementById("dispatch-prompt");
-  const btn = document.getElementById("btn-dispatch");
-  roleSel?.addEventListener("change", () => {
-    dispatchRole = roleSel.value;
-    renderDispatchPanel();
-  });
-  promptTa?.addEventListener("input", () => {
-    dispatchPrompt = promptTa.value;
-    if (btn) {
-      const v = validateDispatchForm({
-        boxId: tab.cx,
-        coordination: tab.coordination,
-        role: dispatchRole,
-        prompt: dispatchPrompt,
-        roles
-      });
-      btn.disabled = !v.ok;
-      const hint = el.dispatch.querySelector(".dispatch-actions .faint");
-      if (hint) hint.textContent = v.ok ? "" : v.reason || "";
-      else if (!v.ok) {
-        const span = document.createElement("span");
-        span.className = "faint";
-        span.textContent = v.reason || "";
-        el.dispatch.querySelector(".dispatch-actions")?.appendChild(span);
-      }
-    }
-  });
-  btn?.addEventListener("click", () => void onDispatch());
-}
-async function onDispatch() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab || !workspaceId) return;
-  const validation = validateDispatchForm({
-    boxId: tab.cx,
-    coordination: tab.coordination,
-    role: dispatchRole,
-    prompt: dispatchPrompt,
-    roles
-  });
-  if (!validation.ok || !validation.payload) {
-    el.status.textContent = validation.reason || "\u65E0\u6CD5\u6D3E\u6D3B";
-    return;
-  }
-  try {
-    const result = await window.tentDesktop.rpc("task.dispatch", {
-      workspaceId,
-      boxId: validation.payload.boxId,
-      role: validation.payload.role,
-      prompt: validation.payload.prompt,
-      dispatchedBy: validation.payload.dispatchedBy,
-      deliveryPolicy: "manual"
-    });
-    el.status.textContent = `\u5DF2\u6D3E\u6D3B \u2192 ${result.taskPath}\uFF08${result.state}\uFF09`;
-    dispatchPrompt = "";
-    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
-    renderDispatchPanel();
-  } catch (err) {
-    setError(err);
-  }
-}
-function renderPendingInteractions() {
-  const hasPending = pendingInteractionCount() > 0;
-  el.a2u.hidden = !hasPending;
-  if (!hasPending) {
-    el.a2u.innerHTML = "";
-    renderTasks();
-    return;
-  }
-  const asks = userAsks.map((ask) => {
-    const choices = (ask.choices || []).map((choice) => `<label class="choice-row">
-      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
-      <span>${escapeHtml(choice.label)}</span></label>`).join("");
-    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}">
-      <div class="interaction-kicker">AGENT QUESTION \xB7 ${escapeHtml(ask.role || "Agent")}</div>
-      <div class="interaction-title">${escapeHtml(ask.question)}</div>
-      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
-      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
-      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
-    </article>`;
-  }).join("");
-  const a2a = a2aApprovals.map((item) => `<article class="interaction-item">
-    <div class="interaction-kicker">A2A APPROVAL</div>
-    <div class="interaction-title">${escapeHtml(item.role)} \u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
-    <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
-    <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
-    <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
-  </article>`).join("");
-  const tools = toolApprovals.map((item) => {
-    const summary = (item.options || []).map((option) => option.name || option.kind || option.optionId).filter(Boolean).join(" \xB7 ");
-    return `<article class="interaction-item">
-      <div class="interaction-kicker">TOOL PERMISSION</div><div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
-      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 ${escapeHtml(item.sessionId)}</div>
-      ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
-      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-tool-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
-      <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
-    </article>`;
-  }).join("");
-  el.a2u.innerHTML = asks + a2a + tools;
-  el.a2u.querySelectorAll("[data-ask-reply]").forEach((button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply"))));
-  el.a2u.querySelectorAll("[data-task-stop]").forEach((button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop"))));
-  el.a2u.querySelectorAll("[data-a2a-allow]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-allow"), "approve")));
-  el.a2u.querySelectorAll("[data-a2a-deny]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-deny"), "deny")));
-  el.a2u.querySelectorAll("[data-tool-allow]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-allow"), true)));
-  el.a2u.querySelectorAll("[data-tool-deny]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-deny"), false)));
-  renderTasks();
-  syncInspectorSections();
-}
-async function onReplyUserAsk(askId) {
-  const item = el.a2u.querySelector(`[data-ask-item="${CSS.escape(askId)}"]`);
-  const answer = item?.querySelector("[data-ask-answer]")?.value.trim() || "";
-  const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
-  if (!answer && !choiceId) {
-    el.status.textContent = "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002";
-    return;
-  }
-  try {
-    await window.tentDesktop.rpc("userAsk.reply", { askId, actor: "user", ...answer ? { answer } : {}, ...choiceId ? { choiceId } : {} });
-    el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
-    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onResolveA2A(approvalId, decision) {
-  try {
-    await window.tentDesktop.rpc("a2a.resolve", { approvalId, decision, actor: "user" });
-    el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
-    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onResolveTool(approvalId, allow) {
-  try {
-    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", { approvalId, actor: "user" });
-    el.status.textContent = allow ? "\u5DF2\u5141\u8BB8\u672C\u6B21\u5DE5\u5177\u8C03\u7528\u3002" : "\u5DF2\u62D2\u7EDD\u5DE5\u5177\u8C03\u7528\u3002";
-    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-function tasksForActiveNode(states) {
-  if (!activeCx) return [];
-  return actionableTasks().filter((task) => {
-    const state2 = String(task.state || task.status || "");
-    return task.claims.includes(activeCx) && (!states || states.includes(state2));
-  });
-}
-function renderTaskInput() {
-  const candidates = tasksForActiveNode(["running", "taken", "waiting"]);
-  el.u2a.hidden = candidates.length === 0;
-  if (!candidates.length) {
-    el.u2a.innerHTML = "";
-    return;
-  }
-  const options = candidates.map((task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} \xB7 ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`).join("");
-  el.u2a.innerHTML = `<article class="interaction-item u2a-item"><div class="interaction-kicker">\u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
-    ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
-    <textarea id="u2a-text" class="line-input" rows="2" placeholder="\u53D1\u9001\u4E00\u6B21\u6027\u8865\u5145\u6307\u4EE4"></textarea>
-    <div class="interaction-actions"><button type="button" id="btn-send-task-input" class="btn btn-secondary">\u53D1\u9001</button></div></article>`;
-  document.getElementById("btn-send-task-input")?.addEventListener("click", async () => {
-    const text = document.getElementById("u2a-text")?.value.trim() || "";
-    const taskPath = document.getElementById("u2a-task")?.value || candidates[0].path;
-    if (!text) {
-      el.status.textContent = "\u8BF7\u586B\u5199\u8865\u5145\u6307\u4EE4\u3002";
-      return;
-    }
-    try {
-      await window.tentDesktop.rpc("task.sendInput", { workspaceId, taskPath, text, actor: "user" });
-      el.status.textContent = "\u8865\u5145\u6307\u4EE4\u5DF2\u53D1\u9001\u3002";
-      await reloadTasks();
-    } catch (err) {
-      setError(err);
-    }
-  });
-}
-function renderSessions() {
-  const relatedTasks = tasksForActiveNode();
-  const taskIds = new Set(relatedTasks.map((task) => task.id).filter(Boolean));
-  const sessionIds = new Set(relatedTasks.map((task) => task.sessionId).filter(Boolean));
-  const related = sessions.filter((session) => sessionIds.has(session.sessionId) || !!session.lastTaskId && taskIds.has(session.lastTaskId));
-  el.session.hidden = related.length === 0;
-  el.session.innerHTML = related.map((session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
-    <span>${escapeHtml(session.roleName || session.profileId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`).join("");
-}
-function renderTasks() {
-  const visibleTasks = actionableTasks();
-  if (el.taskCount) {
-    const n = visibleTasks.length + pendingInteractionCount();
-    el.taskCount.hidden = n === 0;
-    el.taskCount.textContent = String(n);
-  }
-  if (el.secPending) {
-    if (visibleTasks.length > 0 || pendingInteractionCount() > 0) {
-      el.secPending.open = true;
-      if (el.secDispatch) el.secDispatch.open = false;
-      if (el.secCards) el.secCards.open = false;
-    } else if (!el.secDispatch?.open && !el.secCards?.open) {
-      el.secPending.open = false;
-    }
-  }
-  if (!visibleTasks.length) {
-    el.tasks.innerHTML = "";
-    return;
-  }
-  const profileOpts = profiles.length > 0 ? profiles.map(
-    (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
-  ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
-  const anyStartable = visibleTasks.some((t) => t.canStartAgent);
-  const profileBar = anyStartable ? `<li class="task-profile-bar">
-        <label class="sr-only" for="agent-profile">profile</label>
-        <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
-      </li>` : "";
-  el.tasks.innerHTML = profileBar + visibleTasks.map((t) => {
-    const who = escapeHtml(t.role);
-    const claims = (t.claims || []).filter(
-      (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
-    );
-    const claimBit = claims.length ? `<span class="task-claims muted">${claims.map((c) => escapeHtml(c)).join(" \xB7 ")}</span>` : "";
-    const blurbRaw = t.deliverySummary || t.prompt || "";
-    const blurb = blurbRaw ? `<div class="task-summary">${escapeHtml(blurbRaw.length > 120 ? blurbRaw.slice(0, 117) + "\u2026" : blurbRaw)}</div>` : "";
-    const stateLabel = taskStateLabel(t.state, t.status);
-    const sessLabel = t.sessionState ? sessionStateLabel(t.sessionState) : "";
-    const rejectDraft = rejectDrafts.get(t.path) || "";
-    const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
-    const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
-    const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
-              <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
-              <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">\u9A73\u56DE</button>
-            </div>
-            <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
-              <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
-            </div>` : "";
-    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
-    return `<li class="task-item" data-task="${escapeHtml(t.path)}">
-        <div class="task-head">
-          <strong>${who}</strong>
-          ${claimBit}
-        </div>
-        ${blurb}
-        ${actions}
-        <details class="task-details">
-          <summary>\u8BE6\u60C5</summary>
-          <div class="task-detail-body muted">
-            <div>${escapeHtml(stateLabel)}${sessLabel ? ` \xB7 ${escapeHtml(sessLabel)}` : ""}</div>
-            <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
-            ${t.commits.length > 0 ? `<div>${escapeHtml(t.commits.map((c) => c.slice(0, 8)).join(", "))}</div>` : ""}
-          </div>
-        </details>
-      </li>`;
-  }).join("");
-  const profileSel = document.getElementById("agent-profile");
-  profileSel?.addEventListener("change", () => {
-    selectedProfileId = profileSel.value || null;
-    renderTasks();
-  });
-  el.tasks.querySelectorAll("[data-start]").forEach((btn) => {
-    btn.addEventListener("click", () => void onStartAgent(btn.getAttribute("data-start")));
-  });
-  el.tasks.querySelectorAll("[data-interrupt]").forEach((btn) => {
-    btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")));
-  });
-  el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
-    btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
-  });
-  el.tasks.querySelectorAll("[data-reject-toggle]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      const path = btn.getAttribute("data-reject-toggle");
-      const item = btn.closest(".task-item");
-      const panel = item?.querySelector("[data-reject-panel]");
-      if (!(panel instanceof HTMLElement)) return;
-      const open = panel.hasAttribute("hidden");
-      if (open) panel.removeAttribute("hidden");
-      else panel.setAttribute("hidden", "");
-      btn.setAttribute("aria-expanded", open ? "true" : "false");
-      if (open) {
-        const reason = panel.querySelector("[data-reject-reason]");
-        if (reason instanceof HTMLInputElement) reason.focus();
-      }
-    });
-  });
-  el.tasks.querySelectorAll("[data-reject-reason]").forEach((input) => {
-    input.addEventListener("input", () => {
-      rejectDrafts.set(input.getAttribute("data-reject-reason"), input.value);
-    });
-  });
-  el.tasks.querySelectorAll("[data-reject]").forEach((btn) => {
-    btn.addEventListener("click", () => void onReject(btn.getAttribute("data-reject")));
-  });
-}
-async function onStartAgent(taskPath) {
-  if (!workspaceId) return;
-  const built = buildStartSessionPayload(taskPath, selectedProfileId || "");
-  if (!built.ok) {
-    el.status.textContent = built.reason;
-    return;
-  }
-  try {
-    const result = await window.tentDesktop.rpc("task.startSession", {
-      workspaceId,
-      taskPath: built.payload.taskPath,
-      profileId: built.payload.profileId,
-      callerKind: built.payload.callerKind
-    });
-    const sid = result.session?.sessionId;
-    const st = result.session?.state || result.task?.state || "";
-    el.status.textContent = sid ? `\u5DF2\u542F\u52A8 agent \xB7 ${sid}${st ? `\uFF08${sessionStateLabel(st) || st}\uFF09` : ""}` : `\u5DF2\u542F\u52A8 agent \xB7 ${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
-  } catch (err) {
-    setError(err);
-    await reloadTasks().catch(() => void 0);
-  }
-}
-async function onInterrupt(taskPath) {
-  if (!workspaceId) return;
-  try {
-    await window.tentDesktop.rpc("task.interrupt", {
-      workspaceId,
-      taskPath
-    });
-    el.status.textContent = `\u5DF2\u4E2D\u65AD\uFF1A${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onAccept(taskPath) {
-  if (!workspaceId) return;
-  const payload = buildAcceptPayload(taskPath, "user");
-  try {
-    await window.tentDesktop.rpc("task.accept", {
-      workspaceId,
-      taskPath: payload.taskPath,
-      actor: payload.actor
-    });
-    el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onReject(taskPath) {
-  if (!workspaceId) return;
-  const reason = rejectDrafts.get(taskPath) || "";
-  const built = buildRejectPayload(taskPath, reason, "user");
-  if (!built.ok) {
-    el.status.textContent = built.reason;
-    return;
-  }
-  try {
-    await window.tentDesktop.rpc("task.reject", {
-      workspaceId,
-      taskPath: built.payload.taskPath,
-      actor: built.payload.actor,
-      note: built.payload.note,
-      resume: built.payload.resume
-    });
-    el.status.textContent = `\u5DF2\u9A73\u56DE\uFF1A${taskPath}`;
-    rejectDrafts.delete(taskPath);
-    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function loadCards() {
-  const snap = await window.tentDesktop.getFloatingStatus();
-  const cards = snap.recentCards || [];
-  if (!cards.length) {
-    el.cards.innerHTML = "";
-    return;
-  }
-  el.cards.innerHTML = cards.map(
-    (c, i) => `<li class="card-item" draggable="true" data-card-idx="${i}" title="${escapeHtml(c.kind)}/${escapeHtml(c.refId)}">
-        <div><strong>${escapeHtml(c.label)}</strong></div>
-      </li>`
-  ).join("");
-  el.cards.querySelectorAll("[data-card-idx]").forEach((node) => {
-    const idx = Number(node.getAttribute("data-card-idx"));
-    const card = cards[idx];
-    if (!card?.text) return;
-    bindContextCardDrag(node, card.text, {
-      onCopied: () => {
-        el.status.textContent = "\u5DF2\u590D\u5236";
-      },
-      onCopyError: (err) => setError(err)
-    });
-  });
 }
 async function onOpenWorkspace() {
   const folder = await window.tentDesktop.pickWorkspaceFolder();
@@ -1885,92 +2104,6 @@ async function onOpenWorkspace() {
   } catch (err) {
     setError(err);
   }
-}
-async function onCreateNote() {
-  if (!workspaceId) {
-    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
-    return;
-  }
-  const name = `note-${Date.now().toString(36).slice(-4)}`;
-  try {
-    const created = await window.tentDesktop.rpc("docs.createNote", {
-      workspaceId,
-      name,
-      type: "note"
-    });
-    await reloadTree();
-    await openConcept(created.id);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onCreateCoordBox() {
-  if (!workspaceId) {
-    el.status.textContent = "\u8BF7\u5148\u6302\u8F7D\u5DE5\u4F5C\u533A\u3002";
-    return;
-  }
-  const typeName = createTypePick || pickDefaultCoordinationType(coordinationTypes);
-  if (!typeName) {
-    el.status.textContent = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709\u53EF\u534F\u8C03\u7684\u4E00\u7EA7\u7C7B\u578B\u3002";
-    return;
-  }
-  const name = suggestBoxName(typeName);
-  try {
-    const created = await window.tentDesktop.rpc("docs.createNote", {
-      workspaceId,
-      name,
-      type: typeName
-    });
-    el.status.textContent = `\u5DF2\u65B0\u5EFA\u534F\u4F5C\u6846\u300C${name}\u300D\uFF08${created.type || typeName}\uFF09`;
-    await reloadTree();
-    await openConcept(created.id);
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onSearch() {
-  if (!workspaceId) return;
-  const q = el.searchInput.value.trim();
-  if (!q) {
-    el.searchHits.innerHTML = "";
-    return;
-  }
-  try {
-    const result = await window.tentDesktop.rpc("docs.search", {
-      workspaceId,
-      query: q
-    });
-    const hits = result.hits || [];
-    el.searchHits.innerHTML = hits.map(
-      (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}"><strong>${escapeHtml(h.name)}</strong>
-           <div class="muted">${escapeHtml(h.match)} \xB7 ${escapeHtml(h.snippet)}</div></li>`
-    ).join("");
-    el.searchHits.querySelectorAll("[data-open]").forEach((n) => {
-      n.addEventListener("click", () => void openConcept(n.getAttribute("data-open")));
-    });
-  } catch (err) {
-    setError(err);
-  }
-}
-async function onEmitCard() {
-  const tab = activeCx ? localTabs.get(activeCx) : null;
-  if (!tab) {
-    el.status.textContent = "\u8BF7\u5148\u6253\u5F00\u4E00\u4E2A\u6982\u5FF5\u3002";
-    return;
-  }
-  await window.tentDesktop.pushContextCard({
-    kind: "box",
-    id: tab.cx,
-    path: tab.path,
-    label: tab.name
-  });
-  await loadCards();
-  el.status.textContent = "\u4E0A\u4E0B\u6587\u5361\u5DF2\u5C31\u7EEA \u2014 \u5DE6\u952E\u62D6\u5230\u5916\u90E8\u8F93\u5165\u6846\uFF08text/plain\uFF09\u3002";
-}
-function setError(err) {
-  const msg = err instanceof Error ? err.message : String(err);
-  el.status.textContent = msg;
-  el.status.title = msg;
 }
 void boot();
 //# sourceMappingURL=main-ui.js.map

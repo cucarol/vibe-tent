@@ -200,6 +200,7 @@ test("desktop sources: no clipboard startDrag IPC bridge remains", async () => {
     "types.ts",
     "renderer/api-types.ts",
     "renderer/main-ui.ts",
+    "renderer/main/collaboration.ts",
     "renderer/float-ui.ts",
     "renderer/context-card-drag.ts",
   ];
@@ -218,11 +219,12 @@ test("desktop sources: no clipboard startDrag IPC bridge remains", async () => {
   }
 
   // Renderer drag handlers must set text/plain via helper, not call any startDrag
-  const mainUi = await fs.readFile(path.join(root, "renderer/main-ui.ts"), "utf8");
+  // Context-card list lives in collaboration inspector (main-ui is shell only).
+  const collabUi = await fs.readFile(path.join(root, "renderer/main/collaboration.ts"), "utf8");
   const floatUi = await fs.readFile(path.join(root, "renderer/float-ui.ts"), "utf8");
-  assert.match(mainUi, /bindContextCardDrag/);
+  assert.match(collabUi, /bindContextCardDrag/);
   assert.match(floatUi, /bindContextCardDrag/);
-  assert.doesNotMatch(mainUi, /startDrag/);
+  assert.doesNotMatch(collabUi, /startDrag/);
   assert.doesNotMatch(floatUi, /startDrag/);
 });
 

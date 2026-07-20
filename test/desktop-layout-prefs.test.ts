@@ -194,10 +194,18 @@ test("index.html exposes resizable three-pane chrome landmarks", async () => {
 test("styles.css defines paper-edit semantic color tokens", async () => {
   const fs = await import("node:fs/promises");
   const path = await import("node:path");
-  const css = await fs.readFile(
-    path.join(process.cwd(), "src/desktop/renderer/styles.css"),
-    "utf8"
+  const root = path.join(process.cwd(), "src/desktop/renderer");
+  const entry = await fs.readFile(path.join(root, "styles.css"), "utf8");
+  // Layered entry imports tokens/primitives/layout/tree/document/inspector parts.
+  for (const part of ["tokens", "primitives", "layout", "tree", "document", "inspector"]) {
+    assert.match(entry, new RegExp(`@import\\s+"\\./styles/${part}\\.css"`));
+  }
+  const parts = await Promise.all(
+    ["tokens", "primitives", "layout", "tree", "document", "inspector"].map((name) =>
+      fs.readFile(path.join(root, "styles", `${name}.css`), "utf8")
+    )
   );
+  const css = parts.join("\n");
   for (const token of [
     "--color-app: #f4f1ea",
     "--color-sidebar: #f7f4ed",

@@ -1,0 +1,160 @@
+/* primitives — extracted from main styles.css; pure structure, no visual redesign */
+/* —— 图标：统一 16 viewBox stroke —— */
+.ico {
+  width: 16px;
+  height: 16px;
+  display: block;
+  flex: none;
+  pointer-events: none;
+}
+
+.icon-btn {
+  width: var(--size-icon);
+  height: var(--size-icon);
+  min-width: var(--size-icon);
+  padding: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border-radius: var(--radius);
+  background: transparent;
+  color: var(--color-muted);
+  border: 1px solid transparent;
+  line-height: 1;
+  flex: none;
+}
+
+.icon-btn:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.icon-btn[aria-expanded="true"] {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+
+.field {
+  height: var(--size-control);
+  min-height: var(--size-control);
+  padding: 0 var(--space-2);
+  font-size: var(--font-ui-small);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius);
+  background: var(--color-document);
+  color: var(--color-text);
+  min-width: 0;
+}
+
+.field-compact {
+  height: 28px;
+  min-height: 28px;
+  font-size: var(--font-ui-smaller);
+  color: var(--color-muted);
+  background: transparent;
+  border-color: transparent;
+  padding: 0 var(--space-1);
+  max-width: 100%;
+}
+
+.field-compact:hover,
+.field-compact:focus {
+  border-color: var(--color-border);
+  color: var(--color-text);
+  background: color-mix(in srgb, var(--color-document) 70%, transparent);
+}
+
+.btn {
+  height: var(--size-control);
+  min-height: var(--size-control);
+  padding: 0 var(--space-3);
+  font-size: var(--font-ui-small);
+  font-weight: 600;
+  border-radius: var(--radius);
+  border: 1px solid var(--color-border);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  white-space: nowrap;
+  flex: none;
+}
+
+.btn-secondary {
+  background: var(--color-surface);
+  color: var(--color-text);
+}
+
+.btn-secondary:hover {
+  background: var(--color-hover);
+}
+
+.btn-ghost {
+  background: transparent;
+  border-color: transparent;
+  color: var(--color-muted);
+  font-weight: 500;
+}
+
+.btn-ghost:hover {
+  background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.btn-primary,
+button.primary,
+button.active.primary {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+.btn-primary:hover,
+button.primary:hover {
+  background: var(--color-focus);
+  border-color: var(--color-focus);
+}
+
+/* 微型状态语法 */
+.status-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  display: inline-block;
+  flex: none;
+  border: none;
+  background: var(--color-faint);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-border) 80%, transparent);
+}
+
+.status-dot.ok {
+  background: var(--color-success);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-success) 28%, transparent);
+}
+
+.status-dot.off {
+  background: var(--color-danger);
+  box-shadow: 0 0 0 1.5px color-mix(in srgb, var(--color-danger) 28%, transparent);
+}
+
+.count-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 1em;
+  height: auto;
+  padding: 0;
+  border-radius: 0;
+  font-size: var(--font-ui-small);
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--color-accent);
+  background: transparent;
+  flex: 0 0 auto;
+  align-self: center;
+  line-height: 1;
+}
+
+.count-badge[hidden] {
+  display: none !important;
+}
+

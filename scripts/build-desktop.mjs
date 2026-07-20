@@ -19,6 +19,14 @@ async function copyRendererStatic() {
   for (const name of ["index.html", "float.html", "styles.css"]) {
     await fs.copyFile(path.join(srcDir, name), path.join(outRoot, "renderer", name));
   }
+  // Layered CSS parts referenced by styles.css @import (file:// / asar relative).
+  const stylesSrc = path.join(srcDir, "styles");
+  const stylesOut = path.join(outRoot, "renderer", "styles");
+  await fs.mkdir(stylesOut, { recursive: true });
+  for (const name of await fs.readdir(stylesSrc)) {
+    if (!name.endsWith(".css")) continue;
+    await fs.copyFile(path.join(stylesSrc, name), path.join(stylesOut, name));
+  }
 }
 
 async function build() {
