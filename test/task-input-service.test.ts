@@ -34,6 +34,8 @@ function mockAcpProfile(
     followupText?: string;
     promptDelayMs?: number;
     keepAlive?: boolean;
+    /** Hang bootstrap (no auto-deliver); U2A follow-ups still complete. */
+    hangBootstrap?: boolean;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -51,7 +53,8 @@ function mockAcpProfile(
       ...(opts.promptDelayMs != null
         ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) }
         : {}),
-      MOCK_ACP_PROMPT_MODE: "ok",
+      // interrupt hangs bootstrap; follow-ups (User Input / Review Feedback) still ok.
+      MOCK_ACP_PROMPT_MODE: opts.hangBootstrap ? "interrupt" : "ok",
       CPA_GROK_API_KEY: "test-key-not-real",
     },
     acp: {
@@ -593,5 +596,486 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
     assert.ok(followUp, "follow-up prompt must contain ## User Input");
     assert.match(followUp!, /Use the tighter plan/);
     assert.match(followUp!, new RegExp(created.id));
+  });
+});
+
+test("reject-resume: review note is U2A ## Review Feedback on restored managed session", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "FIRST_DELIVERY_REPORT",
+      followupText: "REWORK_AFTER_REVIEW_FEEDBACK",
+      // Bootstrap completes quickly; follow-up is the review inject.
+      promptDelayMs: 200,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "reject-review-item",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Work that will be rejected with review note",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+
+    // First managed delivery (bootstrap).
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "first managed delivery");
+
+    const exactNote = "  please fix the edge case and re-run tests  ";
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: exactNote,
+    })) as {
+      state: string;
+      session?: { sessionId: string };
+      input?: {
+        id: string;
+        kind?: string;
+        status: string;
+        text?: string;
+        taskPath: string;
+      };
+      continued?: boolean;
+      continueError?: string;
+    };
+
+    assert.equal(rejected.state, "running");
+    assert.ok(rejected.session?.sessionId, "reject-resume must restore a session");
+    assert.ok(rejected.input, "reject-resume must create a TaskInput for review note");
+    assert.equal(rejected.input!.kind, "review-feedback");
+    assert.equal(rejected.input!.text, exactNote, "review note must be preserved exactly");
+    assert.equal(rejected.input!.taskPath, taskPath);
+    assert.equal(
+      rejected.continued,
+      true,
+      `review feedback must inject into restored session; continueError=${rejected.continueError ?? "none"}`
+    );
+    assert.equal(
+      rejected.input!.status,
+      "delivered",
+      "managed inject of review feedback must mark delivered"
+    );
+
+    // Follow-up after review should re-deliver.
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "rework delivery after review feedback");
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    assert.ok(Array.isArray(log.prompts));
+    const reviewPrompt = log.prompts!.find((p) => p.includes("## Review Feedback"));
+    assert.ok(reviewPrompt, "restored session must receive ## Review Feedback");
+    assert.ok(
+      reviewPrompt!.includes(`text: ${exactNote}`),
+      "prompt must include exact review note"
+    );
+    assert.doesNotMatch(
+      reviewPrompt!,
+      /--- Tent reject-resume rework ---/,
+      "review note must not use the old bootstrap rework channel"
+    );
+    // First bootstrap should not embed the review note as a second channel.
+    const firstBootstrap = log.prompts![0] ?? "";
+    assert.ok(
+      !firstBootstrap.includes(exactNote.trim()) ||
+        firstBootstrap.includes("## Review Feedback"),
+      "review note is U2A-only after restore"
+    );
+  });
+});
+
+test("reject-resume external (no session): review feedback stays pending for poll/ack", async () => {
+  const ws = await makeWorkspace();
+  await withService([], async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "external-reject",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "External role rework",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    await client.taskClaim(workspaceId, taskPath);
+    await client.taskDeliver(workspaceId, taskPath, {
+      summary: "first attempt",
+    });
+
+    const exactNote = "external: tighten summary wording";
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: exactNote,
+    })) as {
+      state: string;
+      input?: { id: string; kind?: string; status: string; text?: string };
+      continued?: boolean;
+      session?: unknown;
+    };
+
+    assert.equal(rejected.state, "running");
+    assert.equal(rejected.continued, false);
+    assert.ok(!rejected.session, "external path has no managed session restore");
+    assert.ok(rejected.input);
+    assert.equal(rejected.input!.kind, "review-feedback");
+    assert.equal(rejected.input!.status, "pending");
+    assert.equal(rejected.input!.text, exactNote);
+
+    const pending = (await client.taskInputListPending(workspaceId, taskPath)) as {
+      inputs: { id: string; kind?: string; text?: string; status: string }[];
+    };
+    assert.equal(pending.inputs.length, 1);
+    assert.equal(pending.inputs[0]!.id, rejected.input!.id);
+    assert.equal(pending.inputs[0]!.kind, "review-feedback");
+    assert.equal(pending.inputs[0]!.text, exactNote);
+
+    const acked = (await client.taskInputAck(
+      workspaceId,
+      taskPath,
+      rejected.input!.id,
+      "executor"
+    )) as { input: { status: string } };
+    assert.equal(acked.input.status, "consumed");
+  });
+});
+
+test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-fifo-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "BOOTSTRAP_HOLD",
+      followupText: "FOLLOWUP_OK",
+      // Long enough that overlapping turns would interleave if not serialized.
+      promptDelayMs: 400,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "fifo-item",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "FIFO serialization",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+
+    await pollUntil(async () => {
+      const sessions = (await client.sessionList(workspaceId)) as {
+        sessions: { sessionId: string; alive: boolean }[];
+      };
+      return sessions.sessions.find(
+        (s) => s.sessionId === started.session.sessionId && s.alive
+      );
+    }, 15_000, "session alive");
+
+    await client.taskWait(workspaceId, taskPath, "user-input", "hold for fifo");
+    await pollUntil(async () => {
+      try {
+        const logRaw = await fs.readFile(logPath, "utf8");
+        const log = JSON.parse(logRaw) as { prompts?: string[] };
+        const t = (await client.taskGet(workspaceId, taskPath)) as {
+          task: { state: string };
+        };
+        return log.prompts && log.prompts.length >= 1 && t.task.state === "waiting"
+          ? log
+          : null;
+      } catch {
+        return null;
+      }
+    }, 15_000, "bootstrap done while waiting");
+
+    await client.taskResume(workspaceId, taskPath);
+
+    const p1 = client.taskSendInput(workspaceId, taskPath, { text: "FIRST_U2A" });
+    // Start second while first is still in-flight.
+    await new Promise((r) => setTimeout(r, 30));
+    const p2 = client.taskSendInput(workspaceId, taskPath, { text: "SECOND_U2A" });
+    const [r1, r2] = (await Promise.all([p1, p2])) as [
+      { input: { id: string; status: string; text?: string }; continued?: boolean },
+      { input: { id: string; status: string; text?: string }; continued?: boolean },
+    ];
+
+    assert.equal(r1.continued, true);
+    assert.equal(r2.continued, true);
+    assert.equal(r1.input.status, "delivered");
+    assert.equal(r2.input.status, "delivered");
+    assert.equal(r1.input.text, "FIRST_U2A");
+    assert.equal(r2.input.text, "SECOND_U2A");
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    const u2a = (log.prompts ?? []).filter((p) => p.includes("## User Input"));
+    assert.equal(u2a.length, 2, `expected 2 User Input prompts, got ${u2a.length}`);
+    assert.match(u2a[0]!, /FIRST_U2A/);
+    assert.match(u2a[1]!, /SECOND_U2A/);
+    // Order: first send's text before second's in the ACP prompt log.
+    const iFirst = log.prompts!.findIndex((p) => p.includes("FIRST_U2A"));
+    const iSecond = log.prompts!.findIndex((p) => p.includes("SECOND_U2A"));
+    assert.ok(iFirst >= 0 && iSecond > iFirst, "FIFO order must be preserved");
+  });
+});
+
+test("managed U2A: different tasks remain concurrent (not process-wide serial)", async () => {
+  const ws = await makeWorkspace();
+  const logA = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-conc-a-")),
+    "a.json"
+  );
+  const logB = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-conc-b-")),
+    "b.json"
+  );
+  // Two profiles + two roles so each task has its own managed session (role lane).
+  const profiles = [
+    mockAcpProfile("mock-ti-a", {
+      logPath: logA,
+      promptText: "BOOT_A",
+      followupText: "DONE_A",
+      promptDelayMs: 900,
+      keepAlive: true,
+    }),
+    mockAcpProfile("mock-ti-b", {
+      logPath: logB,
+      promptText: "BOOT_B",
+      followupText: "DONE_B",
+      promptDelayMs: 900,
+      keepAlive: true,
+    }),
+  ];
+
+  const rolesPath = path.join(ws, ".tent", "roles.json");
+  await fs.writeFile(
+    rolesPath,
+    JSON.stringify(
+      {
+        roles: [
+          {
+            name: "role-a",
+            prompt: "do work a",
+            a2aPolicy: "allow",
+            allowedProfiles: ["mock-ti-a"],
+          },
+          {
+            name: "role-b",
+            prompt: "do work b",
+            a2aPolicy: "allow",
+            allowedProfiles: ["mock-ti-b"],
+          },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+
+    async function parkTask(
+      name: string,
+      role: string,
+      profileId: string,
+      logFile: string
+    ): Promise<string> {
+      const created = (await client.docsCreateNote(workspaceId, {
+        name,
+        type: "prompt",
+      })) as { id: string };
+      const dispatched = (await client.taskDispatch(workspaceId, {
+        boxId: created.id,
+        role,
+        prompt: `concurrent ${name}`,
+        deliveryPolicy: "manual",
+      })) as { taskPath: string };
+      const taskPath = dispatched.taskPath;
+      await client.taskStartSession(workspaceId, {
+        taskPath,
+        profileId,
+        callerKind: "user",
+      });
+      // Park before bootstrap prompt_complete can deliver (delay=900ms).
+      await client.taskWait(workspaceId, taskPath, "user-input", "hold");
+      await pollUntil(async () => {
+        try {
+          const logRaw = await fs.readFile(logFile, "utf8");
+          const log = JSON.parse(logRaw) as { prompts?: string[] };
+          const t = (await client.taskGet(workspaceId, taskPath)) as {
+            task: { state: string };
+          };
+          return log.prompts &&
+            log.prompts.length >= 1 &&
+            t.task.state === "waiting"
+            ? t
+            : null;
+        } catch {
+          return null;
+        }
+      }, 15_000, `${name} bootstrap finished while waiting`);
+      // Stay waiting so peer setup cannot race auto-deliver.
+      return taskPath;
+    }
+
+    const taskA = await parkTask("conc-a", "role-a", "mock-ti-a", logA);
+    const taskB = await parkTask("conc-b", "role-b", "mock-ti-b", logB);
+
+    // sendInput allows waiting; inject while both are still waiting so no
+    // resume→bootstrap race. Bootstrap already completed → follow-up works.
+    const t0 = Date.now();
+    const [ra, rb] = (await Promise.all([
+      client.taskSendInput(workspaceId, taskA, { text: "INPUT_A" }),
+      client.taskSendInput(workspaceId, taskB, { text: "INPUT_B" }),
+    ])) as [
+      { continued?: boolean; input: { status: string }; continueError?: string },
+      { continued?: boolean; input: { status: string }; continueError?: string },
+    ];
+    const elapsed = Date.now() - t0;
+
+    assert.equal(
+      ra.continued,
+      true,
+      `A continueError=${ra.continueError ?? "none"}`
+    );
+    assert.equal(
+      rb.continued,
+      true,
+      `B continueError=${rb.continueError ?? "none"}`
+    );
+    assert.equal(ra.input.status, "delivered");
+    assert.equal(rb.input.status, "delivered");
+    // Follow-up delay 900ms; process-wide serial ≈ 1800ms+. Concurrent ~900–1400ms.
+    assert.ok(
+      elapsed < 1_600,
+      `unrelated tasks must not be process-wide serialized; elapsed=${elapsed}ms`
+    );
+  });
+});
+
+test("managed U2A: failed inject leaves item pending and does not orphan later queue items", async () => {
+  const ws = await makeWorkspace();
+  await withService([], async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "fail-queue",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "queue failure semantics",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    await client.taskClaim(workspaceId, taskPath);
+
+    // Bind a dead session id so managed continue fails (not live, not resume-capable).
+    const mount = svc.ctx.host.require(workspaceId);
+    const { patchTaskEnvelope } = await import("../src/core/task.js");
+    await patchTaskEnvelope(mount.env.fs, taskPath, {
+      sessionId: "ss-dead-not-in-registry",
+      updatedAt: new Date().toISOString(),
+    });
+
+    const first = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "WILL_FAIL_INJECT",
+    })) as {
+      input: { id: string; status: string };
+      continued?: boolean;
+      continueError?: string;
+    };
+    assert.equal(first.continued, false);
+    assert.equal(first.input.status, "pending", "failed inject must not cancel/drop item");
+    assert.ok(first.continueError, "failure must surface continueError");
+
+    const second = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "STILL_QUEUED_AFTER_FAIL",
+    })) as {
+      input: { id: string; status: string };
+      continued?: boolean;
+    };
+    // Also fails inject (same dead session) but must still be accepted + pending —
+    // failure of first must not orphan/drop the later queue item.
+    assert.equal(second.input.status, "pending");
+    assert.notEqual(second.input.id, first.input.id);
+
+    const pending = (await client.taskInputListPending(workspaceId, taskPath)) as {
+      inputs: { id: string; text?: string }[];
+    };
+    assert.equal(pending.inputs.length, 2);
+    const texts = pending.inputs.map((i) => i.text).sort();
+    assert.deepEqual(texts, ["STILL_QUEUED_AFTER_FAIL", "WILL_FAIL_INJECT"].sort());
+
+    // Lifecycle interrupt still cancels only pending (both items).
+    await client.taskInterrupt(workspaceId, taskPath);
+    const after = (await client.taskInputListPending(workspaceId, taskPath)) as {
+      inputs: unknown[];
+    };
+    assert.equal(after.inputs.length, 0);
+
+    const got1 = (await client.taskInputGet(
+      workspaceId,
+      taskPath,
+      first.input.id
+    )) as { input: { status: string } };
+    assert.equal(got1.input.status, "cancelled");
   });
 });

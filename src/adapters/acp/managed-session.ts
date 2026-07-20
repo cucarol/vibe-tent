@@ -226,10 +226,13 @@ export async function startManagedAcpSession(
   input: StartManagedAcpSessionInput
 ): Promise<AcpManagedSession> {
   const { plan, emit, client } = input;
+  // Explicit empty bootstrapPrompt means: go live without a first session/prompt
+  // (reject-resume restores the process, then injects U2A ## Review Feedback).
+  // Omitted/undefined still falls back to default bootstrap for normal startSession.
   const bootstrap =
-    plan.bootstrapPrompt?.trim() ||
-    input.defaultBootstrapPrompt?.trim() ||
-    DEFAULT_BOOTSTRAP;
+    plan.bootstrapPrompt !== undefined
+      ? plan.bootstrapPrompt.trim()
+      : input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
 
   // Handshake must succeed before startSession returns live (fail-loud), and a
   // failed initialize/auth/session-new must not leave an orphan bridge process.
@@ -240,7 +243,9 @@ export async function startManagedAcpSession(
     throw err;
   }
 
-  const promptDone = runManagedBootstrapPrompt(plan, emit, client, bootstrap);
+  const promptDone = bootstrap
+    ? runManagedBootstrapPrompt(plan, emit, client, bootstrap)
+    : Promise.resolve();
   return new AcpManagedSession(plan.sessionId, client, promptDone, emit);
 }
 

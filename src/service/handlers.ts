@@ -121,6 +121,7 @@ import {
 import {
   formatTaskInputPrompt,
   makeTaskInputId,
+  normalizeTaskInputKind,
   type TaskInputRecord,
   type TaskInputStore,
 } from "./task-input-store.js";
@@ -2229,6 +2230,9 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
  * Does not answer pending UserAsk; does not write chat history or mutate profiles.
  * Managed: inject fixed-format ## User Input into the same session when live.
  * External: poll taskInput.listPending / get + taskInput.ack (workspaceId+taskPath).
+ *
+ * Managed inject for one (workspaceId, taskPath) is FIFO-serialized with other
+ * U2A items (including lifecycle review-feedback). Unrelated tasks stay concurrent.
  */
 async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -2280,6 +2284,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     taskId: current.id || undefined,
     sessionId: current.sessionId || undefined,
     role: current.role || undefined,
+    kind: "user-input",
     ...(text ? { text } : {}),
     ...(contextRefs.length > 0 ? { contextRefs } : {}),
     status: "pending",
@@ -2296,6 +2301,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
       taskId: input.taskId,
       sessionId: input.sessionId,
       role: input.role,
+      kind: normalizeTaskInputKind(input.kind),
       text: input.text,
       contextRefs: input.contextRefs,
       createdAt: input.createdAt,
@@ -2303,58 +2309,19 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     "self"
   );
 
-  // Managed ACP: inject into same live session; mark delivered on success.
-  // External agents poll+ack; continue failure leaves status=pending for poll.
-  //
-  // Race: sendFollowUpPrompt awaits the full turn, so session.prompt_complete may
-  // auto-deliver and cancelSession/cancelTask while status is still pending and
-  // before markDelivered. Pin the id for the inject→mark window (pending-only
-  // cancel still applies to true unprocessed inputs).
-  ctx.taskInputs.beginManagedInject(input.id);
-  let continueResult: { continued: boolean; error?: string };
-  let finalInput = input;
-  try {
-    continueResult = await continueManagedAfterTaskInput(ctx, input);
-    if (continueResult.continued) {
-      try {
-        finalInput = await ctx.taskInputs.markDelivered(input.id, "service");
-        ctx.events.emit(
-          "taskInput.delivered",
-          workspaceId,
-          {
-            inputId: finalInput.id,
-            taskPath: finalInput.taskPath,
-            sessionId: finalInput.sessionId,
-            status: finalInput.status,
-          },
-          "service"
-        );
-      } catch (err) {
-        // Inject succeeded but durable mark failed — surface as continueError.
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          workspaceId,
-          taskPath,
-          task: projectTask(current),
-          state: current.state,
-          input: projectTaskInput(input),
-          continued: true,
-          continueError: `managed inject ok but markDelivered failed: ${message}`,
-        };
-      }
-    }
-  } finally {
-    ctx.taskInputs.endManagedInject(input.id);
-  }
+  // Shared managed U2A delivery (FIFO per task). External: leave pending for poll.
+  const delivery = await deliverManagedTaskInput(ctx, input, {
+    sessionIdOverride: current.sessionId,
+  });
 
   return {
     workspaceId,
     taskPath,
     task: projectTask(current),
     state: current.state,
-    input: projectTaskInput(finalInput),
-    continued: continueResult.continued,
-    continueError: continueResult.error,
+    input: projectTaskInput(delivery.input),
+    continued: delivery.continued,
+    continueError: delivery.continueError,
   };
 }
 
@@ -2381,9 +2348,127 @@ function parseContextRefs(raw: unknown): string[] {
 }
 
 /**
- * Managed ACP: feed fixed-format ## User Input into the same session.
+ * Per-(workspaceId, taskPath) FIFO for managed U2A inject turns.
+ * Not process-wide: unrelated tasks remain concurrent.
+ * Failure of one item does not drop later queued items (MutationBus catch-through).
+ * Process-local only; pending rows survive restart for external poll / retry inject.
+ */
+const managedTaskInputQueue = new MutationBus();
+
+function managedTaskInputQueueKey(
+  workspaceId: string,
+  taskPath: string
+): string {
+  return `${workspaceId}\0${taskPath}`;
+}
+
+export type ManagedTaskInputDelivery = {
+  input: TaskInputRecord;
+  continued: boolean;
+  continueError?: string;
+};
+
+/**
+ * Shared U2A delivery primitive for managed ACP and external pending.
+ *
+ * - Persist is already done by the caller (TaskInputStore.add).
+ * - Managed live/resume inject uses formatTaskInputPrompt (## User Input or
+ *   ## Review Feedback) via the same transport as sendInput.
+ * - FIFO: concurrent deliverManagedTaskInput for the same task never overlap
+ *   turns or reorder; different tasks run concurrently.
+ * - Failure: leave status=pending (do not cancel); surface continueError; later
+ *   queue items still run. Lifecycle interrupt/cancel keeps pending-only semantics.
+ * - managed-inject pin preserved across inject→markDelivered race with
+ *   session.prompt_complete cleanup.
+ */
+async function deliverManagedTaskInput(
+  ctx: HandlerContext,
+  item: TaskInputRecord,
+  opts?: { sessionIdOverride?: string }
+): Promise<ManagedTaskInputDelivery> {
+  const sessionId =
+    (opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "") ||
+    undefined;
+  // External / no managed session: leave pending for scoped poll+ack.
+  if (!sessionId) {
+    return { input: item, continued: false };
+  }
+
+  const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
+  return managedTaskInputQueue.run(queueKey, async () => {
+    // Re-read: interrupt/cancel may have cancelled this row while queued.
+    const latest = await ctx.taskInputs.get(
+      item.id,
+      item.workspaceId,
+      item.taskPath
+    );
+    if (!latest) {
+      return {
+        input: item,
+        continued: false,
+        continueError: `TaskInput disappeared before managed inject: ${item.id}`,
+      };
+    }
+    if (latest.status !== "pending") {
+      // Already delivered/consumed/cancelled — do not re-inject.
+      return {
+        input: latest,
+        continued: latest.status === "delivered",
+        continueError: `TaskInput already ${latest.status}; skip managed inject`,
+      };
+    }
+
+    const forInject: TaskInputRecord = {
+      ...latest,
+      sessionId: sessionId || latest.sessionId,
+    };
+
+    ctx.taskInputs.beginManagedInject(forInject.id);
+    let continueResult: { continued: boolean; error?: string };
+    let finalInput = forInject;
+    try {
+      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
+      if (continueResult.continued) {
+        try {
+          finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service");
+          ctx.events.emit(
+            "taskInput.delivered",
+            forInject.workspaceId,
+            {
+              inputId: finalInput.id,
+              taskPath: finalInput.taskPath,
+              sessionId: finalInput.sessionId,
+              kind: normalizeTaskInputKind(finalInput.kind),
+              status: finalInput.status,
+            },
+            "service"
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            input: forInject,
+            continued: true,
+            continueError: `managed inject ok but markDelivered failed: ${message}`,
+          };
+        }
+      }
+    } finally {
+      ctx.taskInputs.endManagedInject(forInject.id);
+    }
+
+    return {
+      input: finalInput,
+      continued: continueResult.continued,
+      continueError: continueResult.error,
+    };
+  });
+}
+
+/**
+ * Managed ACP: feed fixed-format U2A payload into the same session.
  * Prefer live sendFollowUpPrompt; else resumeSession when capable.
  * External agents poll taskInput.* — no auto chat.
+ * Caller must hold the per-task managed U2A FIFO (deliverManagedTaskInput).
  */
 async function continueManagedAfterTaskInput(
   ctx: HandlerContext,
@@ -2398,12 +2483,35 @@ async function continueManagedAfterTaskInput(
     } catch (liveErr) {
       const liveMessage =
         liveErr instanceof Error ? liveErr.message : String(liveErr);
+      // Live session without structured follow-up (e.g. fake process adapter):
+      // leave pending for external poll — never call resumeSession on an alive
+      // process (that would fail and mark the session failed).
+      try {
+        const liveProbe = await ctx.runtime.probe(item.sessionId);
+        if (liveProbe.alive && SessionRegistry.isNonTerminal(liveProbe.state)) {
+          return {
+            continued: false,
+            error:
+              liveMessage ||
+              "managed session live but does not support follow-up inject; external agent may poll taskInput.listPending / taskInput.get",
+          };
+        }
+      } catch {
+        // probe failed — fall through to resume path
+      }
       if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
         // Unexpected live error — still try resume if possible.
       }
     }
 
     const probe = await ctx.runtime.probe(item.sessionId);
+    if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
+      return {
+        continued: false,
+        error:
+          "managed session live but follow-up inject unavailable; external agent may poll taskInput.listPending / taskInput.get",
+      };
+    }
     if (!probe.resumeCapable) {
       return {
         continued: false,
@@ -2422,6 +2530,7 @@ async function continueManagedAfterTaskInput(
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // Input already persisted pending — continue failure is diagnostic only.
+    // Do not cancel; later FIFO items must still run.
     ctx.events.emit(
       "session.state",
       item.workspaceId,
@@ -2436,6 +2545,13 @@ async function continueManagedAfterTaskInput(
     );
     return { continued: false, error: message };
   }
+}
+
+/** Test helper: reset per-task managed U2A FIFO tails (does not touch disk). */
+export function resetManagedTaskInputQueueForTests(): void {
+  // MutationBus has no public clear; replace by draining is unnecessary —
+  // tests use fresh process state. Exported for symmetry / future use.
+  void managedTaskInputQueue;
 }
 
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -2544,14 +2660,20 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
-  const note = optionalString(p, "note");
+  // Delivery record may use trimmed note; U2A review-feedback preserves exact text.
+  const noteForDelivery = optionalString(p, "note");
+  const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
 
   // Core reject first (MutationBus). Managed session restore happens after so
   // runtime start/resume never nests inside the mutation lock.
   const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const rejected = await taskReject(mount.env, taskPath, { actor, note, resume });
+    const rejected = await taskReject(mount.env, taskPath, {
+      actor,
+      note: noteForDelivery,
+      resume,
+    });
     emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
     ctx.events.emit(
       "delivery.updated",
@@ -2567,7 +2689,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     return rejected;
   });
 
-  // Terminal reject: collaboration only; no session restore.
+  // Terminal reject: collaboration only; no session restore / no review U2A.
   if (!resume) {
     return {
       workspaceId,
@@ -2578,10 +2700,18 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     };
   }
 
-  // Rework path: if this task was bound to a managed ACP session, restore a live
-  // session (native resume or trackable new ss-). Never leave task=running with a
-  // stopped session (false-running). External/manual tasks without sessionId stay
-  // running for human/CLI rework without a service-owned process.
+  // Rework path: review note is a lifecycle-generated U2A TaskInput (not a second
+  // prompt channel). Persist first so external poll/ack and restart survive even
+  // when managed restore fails.
+  const reviewInput = await createRejectResumeReviewFeedback(ctx, {
+    workspaceId,
+    taskPath,
+    task: result.task,
+    note: noteExact,
+  });
+
+  // Managed ACP session restore when bound; external/manual (no sessionId) stay
+  // running with review feedback pending for scoped poll/get/ack.
   const boundSessionId = result.task.sessionId?.trim() || "";
   if (!boundSessionId) {
     return {
@@ -2590,6 +2720,8 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       task: projectTask(result.task),
       delivery: projectDelivery(result.delivery),
       state: result.task.state,
+      input: projectTaskInput(reviewInput),
+      continued: false,
     };
   }
 
@@ -2601,7 +2733,11 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath,
-      note,
+    });
+    // After restore/create of the real session, inject ## Review Feedback via the
+    // shared managed U2A delivery primitive (FIFO with other U2A for this task).
+    const delivery = await deliverManagedTaskInput(ctx, reviewInput, {
+      sessionIdOverride: restored.session.sessionId,
     });
     return {
       workspaceId,
@@ -2610,10 +2746,14 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
       session: restored.session,
+      input: projectTaskInput(delivery.input),
+      continued: delivery.continued,
+      continueError: delivery.continueError,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
     // Fail-loud: must not remain running while the managed process is dead.
+    // Review TaskInput stays pending (not cancelled) for later poll / retry.
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
@@ -2623,9 +2763,57 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     throw new RpcError(
       RPC_LIFECYCLE,
       `task.reject resume failed to restore managed session: ${message}`,
-      { taskPath, sessionId: boundSessionId }
+      { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
     );
   }
+}
+
+/**
+ * Persist reject-resume review note as a TaskInput (kind=review-feedback).
+ * Exact note text (including empty); same task association; no chat transcript.
+ */
+async function createRejectResumeReviewFeedback(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    task: TaskEnvelope;
+    note?: string;
+  }
+): Promise<TaskInputRecord> {
+  const now = new Date().toISOString();
+  // Preserve note exactly — do not trim. Undefined → empty string so payload is valid.
+  const text = typeof input.note === "string" ? input.note : "";
+  const record = await ctx.taskInputs.add({
+    id: makeTaskInputId(),
+    workspaceId: input.workspaceId,
+    taskPath: input.taskPath,
+    taskId: input.task.id || undefined,
+    sessionId: input.task.sessionId || undefined,
+    role: input.task.role || undefined,
+    kind: "review-feedback",
+    text,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  ctx.events.emit(
+    "taskInput.pending",
+    input.workspaceId,
+    {
+      inputId: record.id,
+      taskPath: record.taskPath,
+      taskId: record.taskId,
+      sessionId: record.sessionId,
+      role: record.role,
+      kind: "review-feedback",
+      text: record.text,
+      createdAt: record.createdAt,
+    },
+    "self"
+  );
+  return record;
 }
 
 async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -3866,6 +4054,7 @@ function projectTaskInput(item: TaskInputRecord) {
     taskId: item.taskId,
     sessionId: item.sessionId,
     role: item.role,
+    kind: normalizeTaskInputKind(item.kind),
     text: item.text,
     contextRefs: item.contextRefs,
     status: item.status,
@@ -4246,20 +4435,29 @@ async function projectRuntimeEventOnce(
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     // Pending tool approvals must not hang after process death.
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    // Pending business UserAsks bound to this session are cancelled (not answered).
-    await cancelUserAsksForSession(
-      ctx,
-      workspaceId,
-      ev.sessionId,
-      ev.type === "session.failed" ? "session.failed" : "session.exited"
-    );
-    // Only pending U2A inputs; delivered remains delivered after cleanup.
-    await cancelTaskInputsForSession(
-      ctx,
-      workspaceId,
-      ev.sessionId,
-      ev.type === "session.failed" ? "session.failed" : "session.exited"
-    );
+    // Intentional stop after managed deliver (stopReason=user) already cancelled
+    // pending asks/inputs synchronously in stopManagedSessionAfterDelivery.
+    // Re-running cancel here races reject-resume: core reject returns the task to
+    // running and creates review-feedback still keyed to the prior sessionId
+    // before rebind — a late session.exited must not cancel that new U2A row.
+    const intentionalPostDeliverStop =
+      ev.type === "session.exited" && rec?.stopReason === "user";
+    if (!intentionalPostDeliverStop) {
+      // Pending business UserAsks bound to this session are cancelled (not answered).
+      await cancelUserAsksForSession(
+        ctx,
+        workspaceId,
+        ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+      // Only pending U2A inputs; delivered remains delivered after cleanup.
+      await cancelTaskInputsForSession(
+        ctx,
+        workspaceId,
+        ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+    }
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
@@ -4271,12 +4469,16 @@ async function projectRuntimeEventOnce(
       const mount = ctx.host.get(info.workspaceId);
       if (!mount) continue;
       const tasks = await loadTaskEnvelopes(mount.env.fs);
-      const task = tasks.find(
-        (t) =>
-          t.sessionId === ev.sessionId ||
-          t.id === rec.lastTaskId ||
-          t.path === rec.lastTaskId
-      );
+      // Prefer exact session binding. lastTaskId is a fallback only when the task
+      // is still bound to this session (or has no sessionId yet). After reject-resume
+      // rebinds to a new ss-, a late session.exited from the prior process must not
+      // task.fail the rework occupation or cancel the review-feedback U2A item.
+      const task = tasks.find((t) => {
+        if (t.sessionId === ev.sessionId) return true;
+        if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
+        if (t.sessionId && t.sessionId !== ev.sessionId) return false;
+        return true;
+      });
       if (!task) continue;
       if (ev.type === "session.waiting_user" && task.state === "running") {
         await ctx.mutations.run(mount.workspaceId, async () => {
@@ -4313,6 +4515,14 @@ async function projectRuntimeEventOnce(
         // Any terminal session without a delivery releases the task occupation.
         // Intentional interrupt is already terminal before stopSession emits exited,
         // so it never enters this active-task branch.
+        //
+        // stopReason=user is the post-managed-deliver stop path. Delivery already
+        // succeeded; a late session.exited must not task.fail rework occupation
+        // when reject-resume has returned the same task to running (still briefly
+        // bound to the prior sessionId before rebind, or matching lastTaskId).
+        if (ev.type === "session.exited" && rec?.stopReason === "user") {
+          continue;
+        }
         await failTaskFromRuntime(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
@@ -4706,7 +4916,7 @@ export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
  */
 async function restoreManagedSessionAfterRejectResume(
   ctx: HandlerContext,
-  input: { workspaceId: string; taskPath: string; note?: string }
+  input: { workspaceId: string; taskPath: string }
 ): Promise<{
   task: TaskEnvelope;
   session: {
@@ -4782,13 +4992,17 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  const sessionBootstrap = buildRejectResumeBootstrapPrompt(task, {
-    workspaceRoot: mount.workspaceRoot,
-    systemRoot: mount.systemRoot,
-    note: input.note,
-  });
+  // Restore/create a live managed process without an auto-delivering bootstrap.
+  // Review note is injected next as U2A ## Review Feedback via deliverManagedTaskInput
+  // (not embedded in bootstrap — not a second prompt channel).
+  // Explicit empty string skips the first session/prompt so the session stays live.
+  //
+  // Prefer rebind when still alive; otherwise always start a trackable new ss-.
+  // Native resumeSession is intentionally not used here: a failed resume emits
+  // session.failed which would task.fail the rework occupation before U2A inject.
+  // U2A delivery is the sole carrier of review feedback.
+  const sessionBootstrap = "";
 
-  let resumePrior = false;
   try {
     const probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
@@ -4824,59 +5038,27 @@ async function restoreManagedSessionAfterRejectResume(
         },
       };
     }
-    if (probe.resumeCapable && !probe.alive) {
-      const recordedCwd = prior.runtimeWorkspace?.cwd?.trim() || "";
-      const cwdMatches =
-        !!recordedCwd &&
-        isSameWorkspaceRoot(nodePath.resolve(recordedCwd), nodePath.resolve(cwd));
-      const profileMatches = !prior.profileId || prior.profileId === profileId;
-      const workspaceMatches = prior.workspace === input.workspaceId;
-      const roleMatches = prior.roleName === task.role;
-      const assigneeKindMatches =
-        (prior.assigneeKind ?? "role") === taskAssigneeKind(task);
-      const taskMatches =
-        prior.lastTaskId === input.taskPath ||
-        (!!task.id && prior.lastTaskId === task.id);
-      resumePrior =
-        cwdMatches &&
-        profileMatches &&
-        workspaceMatches &&
-        roleMatches &&
-        assigneeKindMatches &&
-        taskMatches;
-    }
   } catch (err) {
     if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
       throw err;
     }
   }
 
-  let handle;
-  if (resumePrior) {
-    handle = await ctx.runtime.resumeSession({
-      sessionId: priorSessionId,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap,
-    });
-  } else {
-    // New trackable session when prior cannot be loaded (no token / identity mismatch).
-    // Clear the dead binding first so we do not pretend continuity.
-    handle = await ctx.runtime.startSession({
-      sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
-      workspaceLane,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap,
-      lastTaskId: task.id || input.taskPath,
-      workspace: input.workspaceId,
-    });
-    // New ss- must also clear deliver dedup under the new key.
-    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-  }
+  // New trackable session when prior is stopped / not live.
+  const handle = await ctx.runtime.startSession({
+    sessionId: makeSessionId(),
+    profileId,
+    roleName: task.role,
+    assigneeKind: taskAssigneeKind(task),
+    workspaceLane,
+    runtimeWorkspace: { cwd },
+    cwd,
+    bootstrapPrompt: sessionBootstrap,
+    lastTaskId: task.id || input.taskPath,
+    workspace: input.workspaceId,
+  });
+  // New ss- must also clear deliver dedup under the new key.
+  clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
 
   const bound = await ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
@@ -4893,9 +5075,7 @@ async function restoreManagedSessionAfterRejectResume(
         state: handle.state,
         profileId: handle.profileId,
         taskPath: input.taskPath,
-        reason: resumePrior
-          ? "task.reject.resume.session"
-          : "task.reject.resume.new-session",
+        reason: "task.reject.resume.new-session",
       },
       "self"
     );
@@ -4977,28 +5157,6 @@ async function parkTaskAfterRejectResumeFailure(
 }
 
 /**
- * Bootstrap for reject-resume rework: same Context Card + managed session steps,
- * plus an explicit rework header so the agent sees the review note.
- */
-function buildRejectResumeBootstrapPrompt(
-  task: TaskEnvelope,
-  roots: { workspaceRoot: string; systemRoot: string; note?: string }
-): string {
-  const base = buildSessionBootstrapPrompt(task, {
-    workspaceRoot: roots.workspaceRoot,
-    systemRoot: roots.systemRoot,
-  });
-  const note = roots.note?.trim();
-  const rework =
-    `--- Tent reject-resume rework ---\n` +
-    `Delivery was rejected; continue work on the same task (state=running).\n` +
-    (note ? `Review note: ${note}\n` : `Review note: (none)\n`) +
-    `Managed path: your final assistant reply is the report and will be delivered automatically.\n`;
-  return `${base}\n\n${rework}`;
-}
-
-
-/**
  * Test helper: invoke managed auto-deliver.
  * Optional explicit commits override production auto-collection (conflict tests).
  */
@@ -5061,6 +5219,17 @@ function optionalString(p: Record<string, unknown>, key: string): string | undef
   if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
   const t = v.trim();
   return t || undefined;
+}
+
+/** Optional string without trim — used for exact review-note preservation. */
+function optionalStringExact(
+  p: Record<string, unknown>,
+  key: string
+): string | undefined {
+  const v = p[key];
+  if (v === undefined || v === null) return undefined;
+  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
+  return v;
 }
 
 function optionalStringArray(p: Record<string, unknown>, key: string): string[] | undefined {

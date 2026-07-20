@@ -28,6 +28,15 @@ export type TaskInputStatus =
   | "consumed"
   | "cancelled";
 
+/**
+ * user-input      — task.sendInput one-shot append (## User Input)
+ * review-feedback — lifecycle-generated task.reject --resume note (## Review Feedback)
+ *
+ * Both reuse the same persistence, delivery, state, and external poll/ack path.
+ * Not chat; not a second prompt channel.
+ */
+export type TaskInputKind = "user-input" | "review-feedback";
+
 export interface TaskInputRecord {
   id: string;
   workspaceId: string;
@@ -35,7 +44,12 @@ export interface TaskInputRecord {
   taskId?: string;
   sessionId?: string;
   role?: string;
-  /** Optional free-text one-shot append. */
+  /**
+   * Payload kind. Omitted / user-input = sendInput; review-feedback = reject-resume.
+   * Defaults to user-input when missing (legacy rows + restart).
+   */
+  kind?: TaskInputKind;
+  /** Optional free-text one-shot append, or exact review note for review-feedback. */
   text?: string;
   /** Optional stable entity ids (concept/box/task pointers) — not free text. */
   contextRefs?: string[];
@@ -66,6 +80,18 @@ const TASK_INPUT_STATUSES = new Set<TaskInputStatus>([
   "cancelled",
 ]);
 
+const TASK_INPUT_KINDS = new Set<TaskInputKind>([
+  "user-input",
+  "review-feedback",
+]);
+
+export function normalizeTaskInputKind(
+  kind: TaskInputKind | string | undefined | null
+): TaskInputKind {
+  if (kind === "review-feedback") return "review-feedback";
+  return "user-input";
+}
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -92,6 +118,7 @@ function parseInput(value: unknown): TaskInputRecord | null {
     taskId,
     sessionId,
     role,
+    kind,
     text,
     contextRefs,
     status,
@@ -126,6 +153,13 @@ function parseInput(value: unknown): TaskInputRecord | null {
   ) {
     return null;
   }
+  let parsedKind: TaskInputKind | undefined;
+  if (kind !== undefined) {
+    if (typeof kind !== "string" || !TASK_INPUT_KINDS.has(kind as TaskInputKind)) {
+      return null;
+    }
+    parsedKind = kind as TaskInputKind;
+  }
   let parsedRefs: string[] | undefined;
   if (contextRefs !== undefined) {
     if (!Array.isArray(contextRefs)) return null;
@@ -135,10 +169,21 @@ function parseInput(value: unknown): TaskInputRecord | null {
       parsedRefs.push(r.trim());
     }
   }
-  // At least one of text / contextRefs must be present for a valid record.
-  const hasText = typeof text === "string" && text.trim().length > 0;
+  const resolvedKind = normalizeTaskInputKind(parsedKind);
+  // user-input: at least one of text / contextRefs.
+  // review-feedback: text may be empty (exact empty note); kind alone is enough.
+  const hasText =
+    typeof text === "string" &&
+    (resolvedKind === "review-feedback" || text.trim().length > 0);
   const hasRefs = (parsedRefs?.length ?? 0) > 0;
-  if (!hasText && !hasRefs) return null;
+  if (resolvedKind === "user-input" && !hasText && !hasRefs) return null;
+  if (
+    resolvedKind === "review-feedback" &&
+    text !== undefined &&
+    typeof text !== "string"
+  ) {
+    return null;
+  }
 
   return {
     id,
@@ -147,7 +192,14 @@ function parseInput(value: unknown): TaskInputRecord | null {
     ...(taskId !== undefined ? { taskId } : {}),
     ...(sessionId !== undefined ? { sessionId } : {}),
     ...(role !== undefined ? { role } : {}),
-    ...(hasText ? { text: (text as string).trim() } : {}),
+    ...(parsedKind !== undefined ? { kind: parsedKind } : {}),
+    // review-feedback: preserve note exactly (no trim); user-input trims.
+    ...(typeof text === "string"
+      ? {
+          text:
+            resolvedKind === "review-feedback" ? text : text.trim(),
+        }
+      : {}),
     ...(parsedRefs !== undefined && parsedRefs.length > 0
       ? { contextRefs: parsedRefs }
       : {}),
@@ -525,10 +577,31 @@ export function makeTaskInputId(rand: () => number = Math.random): string {
 }
 
 /**
- * Fixed-format one-shot user append for managed ACP follow-up session/prompt.
+ * Fixed-format U2A payload for managed ACP follow-up session/prompt.
+ * user-input → ## User Input; review-feedback → ## Review Feedback.
  * Not a chat transcript — a single structured input block.
  */
 export function formatTaskInputPrompt(input: TaskInputRecord): string {
+  const kind = normalizeTaskInputKind(input.kind);
+  if (kind === "review-feedback") {
+    const lines = [
+      "## Review Feedback",
+      `inputId: ${input.id}`,
+      `taskPath: ${input.taskPath}`,
+      `kind: review-feedback`,
+    ];
+    // Preserve the review note exactly (including empty / whitespace-only).
+    lines.push(
+      `text: ${typeof input.text === "string" ? input.text : ""}`
+    );
+    if (input.createdAt) lines.push(`createdAt: ${input.createdAt}`);
+    lines.push(
+      "",
+      "Lifecycle-generated review feedback for the same task after reject-resume. Not chat history. Do not invent prior messages. Final report still goes through Delivery only."
+    );
+    return lines.join("\n");
+  }
+
   const lines = [
     "## User Input",
     `inputId: ${input.id}`,

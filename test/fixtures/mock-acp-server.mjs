@@ -6,7 +6,7 @@
  *
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
- *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer" or "## User Input" (default MOCK_ACP_PROMPT_TEXT)
+ *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer", "## User Input", or "## Review Feedback" (default MOCK_ACP_PROMPT_TEXT)
  *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing session/prompt (default 0)
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
@@ -305,10 +305,12 @@ rl.on("line", (line) => {
       .join("");
     // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
     log.prompts.push(textParts.slice(0, 8000));
-    // U2A follow-ups: UserAsk uses "## User Answer"; task.sendInput uses "## User Input".
-    // Both must use FOLLOWUP_TEXT and skip bootstrap delay so managed continue is honest.
+    // U2A follow-ups: UserAsk "## User Answer"; sendInput "## User Input";
+    // reject-resume review "## Review Feedback". All use FOLLOWUP_TEXT.
     const isUserFollowUp =
-      textParts.includes("## User Answer") || textParts.includes("## User Input");
+      textParts.includes("## User Answer") ||
+      textParts.includes("## User Input") ||
+      textParts.includes("## Review Feedback");
     // Follow-up continuation uses a distinct report so delivery is exercised
     // even when the bootstrap prompt was empty / non-delivering.
     const activePromptText = isUserFollowUp ? followupText : promptText;

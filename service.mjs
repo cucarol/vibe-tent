@@ -12413,6 +12413,14 @@ var TASK_INPUT_STATUSES = /* @__PURE__ */ new Set([
   "consumed",
   "cancelled"
 ]);
+var TASK_INPUT_KINDS = /* @__PURE__ */ new Set([
+  "user-input",
+  "review-feedback"
+]);
+function normalizeTaskInputKind(kind) {
+  if (kind === "review-feedback") return "review-feedback";
+  return "user-input";
+}
 function isRecord6(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
@@ -12434,6 +12442,7 @@ function parseInput(value) {
     taskId,
     sessionId,
     role,
+    kind,
     text: text3,
     contextRefs,
     status,
@@ -12447,6 +12456,13 @@ function parseInput(value) {
   if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate3(deliveredAt) || consumedAt !== void 0 && !isValidDate3(consumedAt) || cancelledAt !== void 0 && !isValidDate3(cancelledAt)) {
     return null;
   }
+  let parsedKind;
+  if (kind !== void 0) {
+    if (typeof kind !== "string" || !TASK_INPUT_KINDS.has(kind)) {
+      return null;
+    }
+    parsedKind = kind;
+  }
   let parsedRefs;
   if (contextRefs !== void 0) {
     if (!Array.isArray(contextRefs)) return null;
@@ -12456,9 +12472,13 @@ function parseInput(value) {
       parsedRefs.push(r.trim());
     }
   }
-  const hasText = typeof text3 === "string" && text3.trim().length > 0;
+  const resolvedKind = normalizeTaskInputKind(parsedKind);
+  const hasText = typeof text3 === "string" && (resolvedKind === "review-feedback" || text3.trim().length > 0);
   const hasRefs = (parsedRefs?.length ?? 0) > 0;
-  if (!hasText && !hasRefs) return null;
+  if (resolvedKind === "user-input" && !hasText && !hasRefs) return null;
+  if (resolvedKind === "review-feedback" && text3 !== void 0 && typeof text3 !== "string") {
+    return null;
+  }
   return {
     id,
     workspaceId,
@@ -12466,7 +12486,11 @@ function parseInput(value) {
     ...taskId !== void 0 ? { taskId } : {},
     ...sessionId !== void 0 ? { sessionId } : {},
     ...role !== void 0 ? { role } : {},
-    ...hasText ? { text: text3.trim() } : {},
+    ...parsedKind !== void 0 ? { kind: parsedKind } : {},
+    // review-feedback: preserve note exactly (no trim); user-input trims.
+    ...typeof text3 === "string" ? {
+      text: resolvedKind === "review-feedback" ? text3 : text3.trim()
+    } : {},
     ...parsedRefs !== void 0 && parsedRefs.length > 0 ? { contextRefs: parsedRefs } : {},
     status,
     createdAt,
@@ -12772,6 +12796,24 @@ function makeTaskInputId(rand = Math.random) {
   return s;
 }
 function formatTaskInputPrompt(input) {
+  const kind = normalizeTaskInputKind(input.kind);
+  if (kind === "review-feedback") {
+    const lines2 = [
+      "## Review Feedback",
+      `inputId: ${input.id}`,
+      `taskPath: ${input.taskPath}`,
+      `kind: review-feedback`
+    ];
+    lines2.push(
+      `text: ${typeof input.text === "string" ? input.text : ""}`
+    );
+    if (input.createdAt) lines2.push(`createdAt: ${input.createdAt}`);
+    lines2.push(
+      "",
+      "Lifecycle-generated review feedback for the same task after reject-resume. Not chat history. Do not invent prior messages. Final report still goes through Delivery only."
+    );
+    return lines2.join("\n");
+  }
   const lines = [
     "## User Input",
     `inputId: ${input.id}`,
@@ -14353,14 +14395,14 @@ function runManagedBootstrapPrompt(plan, emit2, client, bootstrap) {
 }
 async function startManagedAcpSession(input) {
   const { plan, emit: emit2, client } = input;
-  const bootstrap = plan.bootstrapPrompt?.trim() || input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
+  const bootstrap = plan.bootstrapPrompt !== void 0 ? plan.bootstrapPrompt.trim() : input.defaultBootstrapPrompt?.trim() || DEFAULT_BOOTSTRAP;
   try {
     await client.connect({ mode: "new" });
   } catch (err) {
     await stopAcpClientQuiet(client);
     throw err;
   }
-  const promptDone = runManagedBootstrapPrompt(plan, emit2, client, bootstrap);
+  const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
   return new AcpManagedSession(plan.sessionId, client, promptDone, emit2);
 }
 async function resumeManagedAcpSession(input) {
@@ -18031,6 +18073,7 @@ async function taskSendInputRpc(ctx, p) {
     taskId: current.id || void 0,
     sessionId: current.sessionId || void 0,
     role: current.role || void 0,
+    kind: "user-input",
     ...text3 ? { text: text3 } : {},
     ...contextRefs.length > 0 ? { contextRefs } : {},
     status: "pending",
@@ -18046,55 +18089,24 @@ async function taskSendInputRpc(ctx, p) {
       taskId: input.taskId,
       sessionId: input.sessionId,
       role: input.role,
+      kind: normalizeTaskInputKind(input.kind),
       text: input.text,
       contextRefs: input.contextRefs,
       createdAt: input.createdAt
     },
     "self"
   );
-  ctx.taskInputs.beginManagedInject(input.id);
-  let continueResult;
-  let finalInput = input;
-  try {
-    continueResult = await continueManagedAfterTaskInput(ctx, input);
-    if (continueResult.continued) {
-      try {
-        finalInput = await ctx.taskInputs.markDelivered(input.id, "service");
-        ctx.events.emit(
-          "taskInput.delivered",
-          workspaceId,
-          {
-            inputId: finalInput.id,
-            taskPath: finalInput.taskPath,
-            sessionId: finalInput.sessionId,
-            status: finalInput.status
-          },
-          "service"
-        );
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        return {
-          workspaceId,
-          taskPath,
-          task: projectTask(current),
-          state: current.state,
-          input: projectTaskInput(input),
-          continued: true,
-          continueError: `managed inject ok but markDelivered failed: ${message}`
-        };
-      }
-    }
-  } finally {
-    ctx.taskInputs.endManagedInject(input.id);
-  }
+  const delivery = await deliverManagedTaskInput(ctx, input, {
+    sessionIdOverride: current.sessionId
+  });
   return {
     workspaceId,
     taskPath,
     task: projectTask(current),
     state: current.state,
-    input: projectTaskInput(finalInput),
-    continued: continueResult.continued,
-    continueError: continueResult.error
+    input: projectTaskInput(delivery.input),
+    continued: delivery.continued,
+    continueError: delivery.continueError
   };
 }
 function parseContextRefs(raw) {
@@ -18118,6 +18130,79 @@ function parseContextRefs(raw) {
   }
   return refs;
 }
+var managedTaskInputQueue = new MutationBus();
+function managedTaskInputQueueKey(workspaceId, taskPath) {
+  return `${workspaceId}\0${taskPath}`;
+}
+async function deliverManagedTaskInput(ctx, item, opts) {
+  const sessionId = opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "" || void 0;
+  if (!sessionId) {
+    return { input: item, continued: false };
+  }
+  const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
+  return managedTaskInputQueue.run(queueKey, async () => {
+    const latest = await ctx.taskInputs.get(
+      item.id,
+      item.workspaceId,
+      item.taskPath
+    );
+    if (!latest) {
+      return {
+        input: item,
+        continued: false,
+        continueError: `TaskInput disappeared before managed inject: ${item.id}`
+      };
+    }
+    if (latest.status !== "pending") {
+      return {
+        input: latest,
+        continued: latest.status === "delivered",
+        continueError: `TaskInput already ${latest.status}; skip managed inject`
+      };
+    }
+    const forInject = {
+      ...latest,
+      sessionId: sessionId || latest.sessionId
+    };
+    ctx.taskInputs.beginManagedInject(forInject.id);
+    let continueResult;
+    let finalInput = forInject;
+    try {
+      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
+      if (continueResult.continued) {
+        try {
+          finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service");
+          ctx.events.emit(
+            "taskInput.delivered",
+            forInject.workspaceId,
+            {
+              inputId: finalInput.id,
+              taskPath: finalInput.taskPath,
+              sessionId: finalInput.sessionId,
+              kind: normalizeTaskInputKind(finalInput.kind),
+              status: finalInput.status
+            },
+            "service"
+          );
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          return {
+            input: forInject,
+            continued: true,
+            continueError: `managed inject ok but markDelivered failed: ${message}`
+          };
+        }
+      }
+    } finally {
+      ctx.taskInputs.endManagedInject(forInject.id);
+    }
+    return {
+      input: finalInput,
+      continued: continueResult.continued,
+      continueError: continueResult.error
+    };
+  });
+}
 async function continueManagedAfterTaskInput(ctx, item) {
   if (!item.sessionId) return { continued: false };
   const prompt = formatTaskInputPrompt(item);
@@ -18127,10 +18212,26 @@ async function continueManagedAfterTaskInput(ctx, item) {
       return { continued: true };
     } catch (liveErr) {
       const liveMessage = liveErr instanceof Error ? liveErr.message : String(liveErr);
+      try {
+        const liveProbe = await ctx.runtime.probe(item.sessionId);
+        if (liveProbe.alive && SessionRegistry.isNonTerminal(liveProbe.state)) {
+          return {
+            continued: false,
+            error: liveMessage || "managed session live but does not support follow-up inject; external agent may poll taskInput.listPending / taskInput.get"
+          };
+        }
+      } catch {
+      }
       if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
       }
     }
     const probe = await ctx.runtime.probe(item.sessionId);
+    if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
+      return {
+        continued: false,
+        error: "managed session live but follow-up inject unavailable; external agent may poll taskInput.listPending / taskInput.get"
+      };
+    }
     if (!probe.resumeCapable) {
       return {
         continued: false,
@@ -18259,11 +18360,16 @@ async function taskRejectRpc(ctx, p) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
-  const note = optionalString(p, "note");
+  const noteForDelivery = optionalString(p, "note");
+  const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
   const result = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
-    const rejected = await taskReject(mount.env, taskPath, { actor, note, resume });
+    const rejected = await taskReject(mount.env, taskPath, {
+      actor,
+      note: noteForDelivery,
+      resume
+    });
     emitTaskState(ctx, workspaceId, rejected.task, "task.reject");
     ctx.events.emit(
       "delivery.updated",
@@ -18287,6 +18393,12 @@ async function taskRejectRpc(ctx, p) {
       state: result.task.state
     };
   }
+  const reviewInput = await createRejectResumeReviewFeedback(ctx, {
+    workspaceId,
+    taskPath,
+    task: result.task,
+    note: noteExact
+  });
   const boundSessionId = result.task.sessionId?.trim() || "";
   if (!boundSessionId) {
     return {
@@ -18294,15 +18406,19 @@ async function taskRejectRpc(ctx, p) {
       taskPath,
       task: projectTask(result.task),
       delivery: projectDelivery(result.delivery),
-      state: result.task.state
+      state: result.task.state,
+      input: projectTaskInput(reviewInput),
+      continued: false
     };
   }
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
-      taskPath,
-      note
+      taskPath
+    });
+    const delivery = await deliverManagedTaskInput(ctx, reviewInput, {
+      sessionIdOverride: restored.session.sessionId
     });
     return {
       workspaceId,
@@ -18310,7 +18426,10 @@ async function taskRejectRpc(ctx, p) {
       task: projectTask(restored.task),
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
-      session: restored.session
+      session: restored.session,
+      input: projectTaskInput(delivery.input),
+      continued: delivery.continued,
+      continueError: delivery.continueError
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
@@ -18323,9 +18442,42 @@ async function taskRejectRpc(ctx, p) {
     throw new RpcError(
       RPC_LIFECYCLE,
       `task.reject resume failed to restore managed session: ${message}`,
-      { taskPath, sessionId: boundSessionId }
+      { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
     );
   }
+}
+async function createRejectResumeReviewFeedback(ctx, input) {
+  const now = (/* @__PURE__ */ new Date()).toISOString();
+  const text3 = typeof input.note === "string" ? input.note : "";
+  const record = await ctx.taskInputs.add({
+    id: makeTaskInputId(),
+    workspaceId: input.workspaceId,
+    taskPath: input.taskPath,
+    taskId: input.task.id || void 0,
+    sessionId: input.task.sessionId || void 0,
+    role: input.task.role || void 0,
+    kind: "review-feedback",
+    text: text3,
+    status: "pending",
+    createdAt: now,
+    updatedAt: now
+  });
+  ctx.events.emit(
+    "taskInput.pending",
+    input.workspaceId,
+    {
+      inputId: record.id,
+      taskPath: record.taskPath,
+      taskId: record.taskId,
+      sessionId: record.sessionId,
+      role: record.role,
+      kind: "review-feedback",
+      text: record.text,
+      createdAt: record.createdAt
+    },
+    "self"
+  );
+  return record;
 }
 async function taskInterruptRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -19290,6 +19442,7 @@ function projectTaskInput(item) {
     taskId: item.taskId,
     sessionId: item.sessionId,
     role: item.role,
+    kind: normalizeTaskInputKind(item.kind),
     text: item.text,
     contextRefs: item.contextRefs,
     status: item.status,
@@ -19527,18 +19680,21 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
     }
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    await cancelUserAsksForSession(
-      ctx,
-      workspaceId,
-      ev.sessionId,
-      ev.type === "session.failed" ? "session.failed" : "session.exited"
-    );
-    await cancelTaskInputsForSession(
-      ctx,
-      workspaceId,
-      ev.sessionId,
-      ev.type === "session.failed" ? "session.failed" : "session.exited"
-    );
+    const intentionalPostDeliverStop = ev.type === "session.exited" && rec?.stopReason === "user";
+    if (!intentionalPostDeliverStop) {
+      await cancelUserAsksForSession(
+        ctx,
+        workspaceId,
+        ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+      await cancelTaskInputsForSession(
+        ctx,
+        workspaceId,
+        ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+    }
   }
   if (rec?.lastTaskId) {
     const mountInfos = ctx.host.list();
@@ -19547,9 +19703,12 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
       const mount = ctx.host.get(info.workspaceId);
       if (!mount) continue;
       const tasks = await loadTaskEnvelopes(mount.env.fs);
-      const task = tasks.find(
-        (t) => t.sessionId === ev.sessionId || t.id === rec.lastTaskId || t.path === rec.lastTaskId
-      );
+      const task = tasks.find((t) => {
+        if (t.sessionId === ev.sessionId) return true;
+        if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
+        if (t.sessionId && t.sessionId !== ev.sessionId) return false;
+        return true;
+      });
       if (!task) continue;
       if (ev.type === "session.waiting_user" && task.state === "running") {
         await ctx.mutations.run(mount.workspaceId, async () => {
@@ -19573,6 +19732,9 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
           });
         }
       } else if ((ev.type === "session.failed" || ev.type === "session.exited") && (task.state === "running" || task.state === "waiting")) {
+        if (ev.type === "session.exited" && rec?.stopReason === "user") {
+          continue;
+        }
         await failTaskFromRuntime(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
@@ -19885,12 +20047,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       }
     }
   }
-  const sessionBootstrap = buildRejectResumeBootstrapPrompt(task, {
-    workspaceRoot: mount.workspaceRoot,
-    systemRoot: mount.systemRoot,
-    note: input.note
-  });
-  let resumePrior = false;
+  const sessionBootstrap = "";
   try {
     const probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
@@ -19925,44 +20082,24 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
         }
       };
     }
-    if (probe.resumeCapable && !probe.alive) {
-      const recordedCwd = prior.runtimeWorkspace?.cwd?.trim() || "";
-      const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath3.resolve(recordedCwd), nodePath3.resolve(cwd));
-      const profileMatches = !prior.profileId || prior.profileId === profileId;
-      const workspaceMatches = prior.workspace === input.workspaceId;
-      const roleMatches = prior.roleName === task.role;
-      const assigneeKindMatches = (prior.assigneeKind ?? "role") === taskAssigneeKind(task);
-      const taskMatches = prior.lastTaskId === input.taskPath || !!task.id && prior.lastTaskId === task.id;
-      resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && taskMatches;
-    }
   } catch (err) {
     if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
       throw err;
     }
   }
-  let handle;
-  if (resumePrior) {
-    handle = await ctx.runtime.resumeSession({
-      sessionId: priorSessionId,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap
-    });
-  } else {
-    handle = await ctx.runtime.startSession({
-      sessionId: makeSessionId(),
-      profileId,
-      roleName: task.role,
-      assigneeKind: taskAssigneeKind(task),
-      workspaceLane,
-      runtimeWorkspace: { cwd },
-      cwd,
-      bootstrapPrompt: sessionBootstrap,
-      lastTaskId: task.id || input.taskPath,
-      workspace: input.workspaceId
-    });
-    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-  }
+  const handle = await ctx.runtime.startSession({
+    sessionId: makeSessionId(),
+    profileId,
+    roleName: task.role,
+    assigneeKind: taskAssigneeKind(task),
+    workspaceLane,
+    runtimeWorkspace: { cwd },
+    cwd,
+    bootstrapPrompt: sessionBootstrap,
+    lastTaskId: task.id || input.taskPath,
+    workspace: input.workspaceId
+  });
+  clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
   const bound = await ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
     const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
@@ -19978,7 +20115,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
         state: handle.state,
         profileId: handle.profileId,
         taskPath: input.taskPath,
-        reason: resumePrior ? "task.reject.resume.session" : "task.reject.resume.new-session"
+        reason: "task.reject.resume.new-session"
       },
       "self"
     );
@@ -20040,22 +20177,6 @@ async function parkTaskAfterRejectResumeFailure(ctx, input) {
     );
   });
 }
-function buildRejectResumeBootstrapPrompt(task, roots) {
-  const base = buildSessionBootstrapPrompt(task, {
-    workspaceRoot: roots.workspaceRoot,
-    systemRoot: roots.systemRoot
-  });
-  const note = roots.note?.trim();
-  const rework = `--- Tent reject-resume rework ---
-Delivery was rejected; continue work on the same task (state=running).
-` + (note ? `Review note: ${note}
-` : `Review note: (none)
-`) + `Managed path: your final assistant reply is the report and will be delivered automatically.
-`;
-  return `${base}
-
-${rework}`;
-}
 function emitTaskState(ctx, workspaceId, task, reason) {
   ctx.events.emit(
     "task.state",
@@ -20092,6 +20213,12 @@ function optionalString(p, key) {
   if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
   const t = v.trim();
   return t || void 0;
+}
+function optionalStringExact(p, key) {
+  const v = p[key];
+  if (v === void 0 || v === null) return void 0;
+  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
+  return v;
 }
 function optionalStringArray(p, key) {
   const v = p[key];

@@ -11,6 +11,7 @@ import {
   TaskInputStore,
   formatTaskInputPrompt,
   makeTaskInputId,
+  normalizeTaskInputKind,
   type TaskInputRecord,
 } from "../src/service/task-input-store.js";
 
@@ -122,6 +123,55 @@ test("task input store: managed-inject pin blocks cancel until markDelivered (ra
   const prompt = formatTaskInputPrompt(final!);
   assert.match(prompt, /## User Input/);
   assert.match(prompt, /Use the tighter plan/);
+});
+
+test("task input store: review-feedback preserves exact note and formats ## Review Feedback", async () => {
+  const dataDir = await tempDir("tent-ti-review-");
+  const store = new TaskInputStore(dataDir);
+  const id = makeTaskInputId(() => 0.11);
+  const workspaceId = "ws-review";
+  const taskPath = "temp/r/tasks/review.md";
+  // Exact note including leading/trailing whitespace — must not be trimmed.
+  const exactNote = "  please fix tests\nline2  ";
+
+  await store.add({
+    id,
+    workspaceId,
+    taskPath,
+    sessionId: "ss-review",
+    kind: "review-feedback",
+    text: exactNote,
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+
+  const got = await store.get(id, workspaceId, taskPath);
+  assert.equal(got?.kind, "review-feedback");
+  assert.equal(got?.text, exactNote);
+  assert.equal(normalizeTaskInputKind(got?.kind), "review-feedback");
+
+  const prompt = formatTaskInputPrompt(got!);
+  assert.match(prompt, /## Review Feedback/);
+  assert.match(prompt, /kind: review-feedback/);
+  assert.ok(prompt.includes(`text: ${exactNote}`));
+  assert.doesNotMatch(prompt, /## User Input/);
+
+  // Empty review note is still valid.
+  const emptyId = makeTaskInputId(() => 0.91);
+  await store.add({
+    id: emptyId,
+    workspaceId,
+    taskPath: "temp/r/tasks/empty-note.md",
+    kind: "review-feedback",
+    text: "",
+    status: "pending",
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  });
+  const empty = await store.get(emptyId, workspaceId, "temp/r/tasks/empty-note.md");
+  assert.equal(empty?.text, "");
+  assert.match(formatTaskInputPrompt(empty!), /text: \n|text: $/m);
 });
 
 test("task input store: unpinned pending still cancels (lifecycle interrupt)", async () => {
