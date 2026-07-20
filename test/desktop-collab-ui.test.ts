@@ -205,6 +205,8 @@ test("accept/reject payload builders and task review model", () => {
   assert.equal(items[1].canAcceptOrReject, false);
   assert.equal(items[1].canStartAgent, true);
   assert.equal(items[0].canStartAgent, false);
+  assert.equal(items[0].canCancel, false);
+  assert.equal(items[1].canCancel, true);
   assert.match(items[0].summaryLine, /待确认交付/);
 });
 

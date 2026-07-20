@@ -379,6 +379,24 @@
   resize: vertical;
 }
 
+.settings-role-prompt {
+  width: 100%;
+  min-height: 72px;
+  font-family: var(--font-mono);
+  font-size: var(--font-ui-smaller);
+  line-height: 1.45;
+  padding: var(--space-2) var(--space-3);
+  resize: vertical;
+}
+
+.settings-list-item.is-editing {
+  background: color-mix(in srgb, var(--color-selected) 55%, transparent);
+  margin: 0 calc(var(--space-2) * -1);
+  padding-left: var(--space-2);
+  padding-right: var(--space-2);
+  border-radius: var(--radius);
+}
+
 .settings-list {
   list-style: none;
   margin: 0;

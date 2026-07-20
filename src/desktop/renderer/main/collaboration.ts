@@ -18,6 +18,7 @@ import {
   localTabs,
   pendingInteractionCount,
   profiles,
+  proposals,
   rejectDrafts,
   reloadPendingInteractions,
   reloadTasks,
@@ -54,6 +55,7 @@ export function renderPendingInteractions(): void {
       ${choices ? `<div class="choice-list">${choices}</div>` : ""}
       <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="补充说明（可选）"></textarea>
       <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">回复</button>
+      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">拒绝提问</button>
       <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">中断任务</button></div>
     </article>`;
     })
@@ -84,16 +86,50 @@ export function renderPendingInteractions(): void {
     </article>`;
     })
     .join("");
-  el.a2u.innerHTML = asks + a2a + tools;
+  const proposalItems = proposals
+    .map((p) => {
+      const body = (p.body || "").trim();
+      const preview = body.length > 160 ? body.slice(0, 157) + "…" : body;
+      return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}">
+      <div class="interaction-kicker">PROPOSAL · ${escapeHtml(p.role || "Agent")}</div>
+      <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
+      <div class="muted interaction-note">${escapeHtml(p.boxId || "")} · ${escapeHtml(p.path)}</div>
+      <div class="interaction-actions">
+        <button type="button" class="btn btn-primary" data-proposal-accept="${escapeHtml(p.path)}">采纳</button>
+        <button type="button" class="btn btn-ghost" data-proposal-reject="${escapeHtml(p.path)}">驳回</button>
+      </div>
+    </article>`;
+    })
+    .join("");
+  el.a2u.innerHTML = asks + a2a + tools + proposalItems;
   el.a2u
     .querySelectorAll<HTMLElement>("[data-ask-reply]")
     .forEach((button) =>
       button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")!))
     );
   el.a2u
+    .querySelectorAll<HTMLElement>("[data-ask-deny]")
+    .forEach((button) =>
+      button.addEventListener("click", () => void onDenyUserAsk(button.getAttribute("data-ask-deny")!))
+    );
+  el.a2u
     .querySelectorAll<HTMLElement>("[data-task-stop]")
     .forEach((button) =>
       button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop")!))
+    );
+  el.a2u
+    .querySelectorAll<HTMLElement>("[data-proposal-accept]")
+    .forEach((button) =>
+      button.addEventListener("click", () =>
+        void onResolveProposal(button.getAttribute("data-proposal-accept")!, "accept")
+      )
+    );
+  el.a2u
+    .querySelectorAll<HTMLElement>("[data-proposal-reject]")
+    .forEach((button) =>
+      button.addEventListener("click", () =>
+        void onResolveProposal(button.getAttribute("data-proposal-reject")!, "reject")
+      )
     );
   el.a2u
     .querySelectorAll<HTMLElement>("[data-a2a-allow]")
@@ -137,6 +173,32 @@ async function onReplyUserAsk(askId: string): Promise<void> {
       ...(choiceId ? { choiceId } : {}),
     });
     el.status.textContent = "已回复 Agent。";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onDenyUserAsk(askId: string): Promise<void> {
+  try {
+    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    el.status.textContent = "已拒绝 Agent 提问。";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onResolveProposal(path: string, decision: "accept" | "reject"): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("proposal.resolve", {
+      workspaceId,
+      path,
+      decision,
+      actor: "user",
+    });
+    el.status.textContent = decision === "accept" ? "已采纳提案。" : "已驳回提案。";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);
@@ -292,6 +354,9 @@ export function renderTasks(): void {
         const interruptBtn = t.canInterrupt
           ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="中断">中断</button>`
           : "";
+        const cancelBtn = t.canCancel
+          ? `<button type="button" class="btn btn-ghost" data-cancel="${escapeHtml(t.path)}" title="取消任务">取消</button>`
+          : "";
         const reviewActions = t.canAcceptOrReject
           ? `<div class="task-primary-row">
               <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">确认</button>
@@ -303,8 +368,8 @@ export function renderTasks(): void {
             </div>`
           : "";
         const actions =
-          startBtn || interruptBtn || reviewActions
-            ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>`
+          startBtn || interruptBtn || cancelBtn || reviewActions
+            ? `<div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}${reviewActions}</div>`
             : "";
 
         return `<li class="task-item" data-task="${escapeHtml(t.path)}">
@@ -341,6 +406,9 @@ export function renderTasks(): void {
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-interrupt]").forEach((btn) => {
     btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")!));
+  });
+  el.tasks.querySelectorAll<HTMLElement>("[data-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => void onCancelTask(btn.getAttribute("data-cancel")!));
   });
   el.tasks.querySelectorAll<HTMLElement>("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")!));
@@ -412,6 +480,21 @@ async function onInterrupt(taskPath: string): Promise<void> {
       taskPath,
     });
     el.status.textContent = `已中断：${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onCancelTask(taskPath: string): Promise<void> {
+  if (!workspaceId) return;
+  if (!window.confirm("取消该任务？未交付的进度将终止。")) return;
+  try {
+    await window.tentDesktop.rpc("task.cancel", {
+      workspaceId,
+      taskPath,
+    });
+    el.status.textContent = `已取消：${taskPath}`;
     await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);

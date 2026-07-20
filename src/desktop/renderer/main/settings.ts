@@ -12,11 +12,13 @@ import type { CredentialProjection } from "../../../service/credential-store.js"
 import type { BundledSkillListEntry } from "../../../machine/skills.js";
 import {
   DELIVERY_POLICY_OPTIONS,
+  formatAllowedProfilesText,
   mapProviderCatalogRows,
   retentionSummaryLine,
   validateCredentialSet,
   validateProfileCreate,
   validateRoleCreate,
+  validateRoleUpdate,
   type DeliveryPolicy,
   type ProviderRow,
 } from "../../workbench/settings-model.js";
@@ -67,6 +69,8 @@ let loadError: string | null = null;
 let loading = false;
 /** Profile editor: skills/mcp JSON drafts (next session). */
 let profileEditId: string | null = null;
+/** Role editor: operational name of the role being edited. */
+let roleEditName: string | null = null;
 
 export function getSettingsSection(): SettingsSection {
   return section;
@@ -279,35 +283,84 @@ function renderRoles(): string {
           .map((r) => {
             const label = r.displayName && r.displayName !== r.name ? `${r.displayName} · ${r.name}` : r.name;
             const pol = r.a2aPolicy || "deny";
-            return `<li class="settings-list-item">
+            const profilesBit =
+              r.allowedProfiles && r.allowedProfiles.length
+                ? ` · profiles ${r.allowedProfiles.length}`
+                : "";
+            const editing = roleEditName === r.name;
+            return `<li class="settings-list-item${editing ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}</span>
+                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(profilesBit)}</span>
+                ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
+                ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-role-edit="${escapeHtml(r.name)}" title="编辑">编辑</button>
                 <button type="button" class="btn btn-ghost" data-role-delete="${escapeHtml(r.name)}" title="删除">删除</button>
               </div>
             </li>`;
           })
           .join("")}</ul>`;
 
-  return `
-    <div class="settings-block">
-      <div class="surface-section-head">角色</div>
-      ${list}
-    </div>
-    <div class="settings-block">
+  const editing = roleEditName ? fullRoles.find((r) => r.name === roleEditName) : null;
+  const editor = editing
+    ? renderRoleEditor(editing)
+    : `<div class="settings-block">
       <div class="surface-section-head">新建</div>
       <div class="settings-form">
-        <input id="role-name" class="field" placeholder="name（运营键）" />
+        <input id="role-name" class="field" placeholder="name（运营键，创建后不可改）" autocomplete="off" />
         <input id="role-display" class="field" placeholder="显示名（可选）" />
-        <input id="role-prompt" class="field" placeholder="prompt（可选）" />
+        <input id="role-description" class="field" placeholder="描述（可选）" />
+        <textarea id="role-prompt" class="field settings-role-prompt" rows="3" placeholder="prompt（可选）"></textarea>
+        <input id="role-color" class="field" placeholder="颜色 token（可选，如 gray）" />
         <select id="role-a2a" class="field">
           <option value="deny">a2a: deny</option>
           <option value="ask">a2a: ask</option>
           <option value="allow">a2a: allow</option>
         </select>
         <button type="button" id="btn-role-create" class="btn btn-primary">创建</button>
+      </div>
+    </div>`;
+
+  return `
+    <div class="settings-block">
+      <div class="surface-section-head">角色</div>
+      <p class="muted">运营键 name 不可改；显示名 / prompt / a2a / 白名单经 registry.role.update。</p>
+      ${list}
+    </div>
+    ${editor}`;
+}
+
+function renderRoleEditor(role: RoleRegistryEntryProjection): string {
+  const pol = role.a2aPolicy || "deny";
+  const profilesText = formatAllowedProfilesText(role.allowedProfiles);
+  return `
+    <div class="settings-block">
+      <div class="surface-section-head">编辑角色 · ${escapeHtml(role.name)}
+        <button type="button" id="btn-role-edit-close" class="btn btn-ghost">关闭</button>
+      </div>
+      <p class="muted">id <code>${escapeHtml(role.roleId || "—")}</code> · 运营键 <code>${escapeHtml(role.name)}</code>（不可改名）</p>
+      <div class="settings-form">
+        <label class="settings-label" for="role-edit-display">显示名</label>
+        <input id="role-edit-display" class="field" value="${escapeHtml(role.displayName || "")}" placeholder="留空则回退到运营键" />
+        <label class="settings-label" for="role-edit-description">描述</label>
+        <input id="role-edit-description" class="field" value="${escapeHtml(role.description || "")}" />
+        <label class="settings-label" for="role-edit-prompt">prompt</label>
+        <textarea id="role-edit-prompt" class="field settings-role-prompt" rows="5">${escapeHtml(role.prompt || "")}</textarea>
+        <label class="settings-label" for="role-edit-color">颜色</label>
+        <input id="role-edit-color" class="field" value="${escapeHtml(role.color || "")}" placeholder="gray / blue …" />
+        <label class="settings-label" for="role-edit-a2a">a2aPolicy</label>
+        <select id="role-edit-a2a" class="field">
+          <option value="deny"${pol === "deny" ? " selected" : ""}>deny</option>
+          <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
+          <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
+        </select>
+        <label class="settings-label" for="role-edit-profiles">allowedProfiles（逗号分隔 profile id；空=清空）</label>
+        <input id="role-edit-profiles" class="field" value="${escapeHtml(profilesText)}" placeholder="例如 grok-acp-default" />
+        <div class="settings-row">
+          <button type="button" id="btn-role-save" class="btn btn-primary">保存</button>
+        </div>
       </div>
     </div>`;
 }
@@ -544,6 +597,17 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
   }
   if (s === "roles") {
     document.getElementById("btn-role-create")?.addEventListener("click", () => void onRoleCreate());
+    document.getElementById("btn-role-save")?.addEventListener("click", () => void onRoleSave());
+    document.getElementById("btn-role-edit-close")?.addEventListener("click", () => {
+      roleEditName = null;
+      renderSettings();
+    });
+    root.querySelectorAll<HTMLElement>("[data-role-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        roleEditName = btn.getAttribute("data-role-edit");
+        renderSettings();
+      });
+    });
     root.querySelectorAll<HTMLElement>("[data-role-delete]").forEach((btn) => {
       btn.addEventListener("click", () => void onRoleDelete(btn.getAttribute("data-role-delete")!));
     });
@@ -632,13 +696,18 @@ async function onRoleCreate(): Promise<void> {
   const name = (document.getElementById("role-name") as HTMLInputElement | null)?.value || "";
   const displayName =
     (document.getElementById("role-display") as HTMLInputElement | null)?.value || "";
-  const prompt = (document.getElementById("role-prompt") as HTMLInputElement | null)?.value || "";
+  const description =
+    (document.getElementById("role-description") as HTMLInputElement | null)?.value || "";
+  const prompt =
+    (document.getElementById("role-prompt") as HTMLTextAreaElement | HTMLInputElement | null)
+      ?.value || "";
+  const color = (document.getElementById("role-color") as HTMLInputElement | null)?.value || "";
   const a2aPolicy = (document.getElementById("role-a2a") as HTMLSelectElement | null)?.value as
     | "allow"
     | "ask"
     | "deny"
     | undefined;
-  const built = validateRoleCreate({ name, displayName, prompt, a2aPolicy });
+  const built = validateRoleCreate({ name, displayName, description, prompt, color, a2aPolicy });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -649,6 +718,49 @@ async function onRoleCreate(): Promise<void> {
       ...built.payload,
     });
     el.status.textContent = `已创建角色 ${name.trim()}`;
+    roleEditName = name.trim();
+    await loadRolesFull();
+    await reloadRegistry();
+    renderSettings();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onRoleSave(): Promise<void> {
+  if (!workspaceId || !roleEditName) return;
+  const role = fullRoles.find((r) => r.name === roleEditName);
+  const displayName =
+    (document.getElementById("role-edit-display") as HTMLInputElement | null)?.value || "";
+  const description =
+    (document.getElementById("role-edit-description") as HTMLInputElement | null)?.value || "";
+  const prompt =
+    (document.getElementById("role-edit-prompt") as HTMLTextAreaElement | null)?.value || "";
+  const color = (document.getElementById("role-edit-color") as HTMLInputElement | null)?.value || "";
+  const a2aPolicy = (document.getElementById("role-edit-a2a") as HTMLSelectElement | null)
+    ?.value as "allow" | "ask" | "deny" | undefined;
+  const allowedProfilesText =
+    (document.getElementById("role-edit-profiles") as HTMLInputElement | null)?.value || "";
+  const built = validateRoleUpdate({
+    name: roleEditName,
+    roleId: role?.roleId,
+    displayName,
+    description,
+    prompt,
+    color,
+    a2aPolicy,
+    allowedProfilesText,
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("registry.role.update", {
+      workspaceId,
+      ...built.payload,
+    });
+    el.status.textContent = `已更新角色 ${roleEditName}`;
     await loadRolesFull();
     await reloadRegistry();
     renderSettings();
@@ -659,7 +771,7 @@ async function onRoleCreate(): Promise<void> {
 
 async function onRoleDelete(name: string): Promise<void> {
   if (!workspaceId) return;
-  if (!window.confirm(`删除角色「${name}」？`)) return;
+  if (!window.confirm(`删除角色「${name}」？确认须等于运营键。`)) return;
   try {
     await window.tentDesktop.rpc("registry.role.delete", {
       workspaceId,
@@ -667,6 +779,7 @@ async function onRoleDelete(name: string): Promise<void> {
       confirmation: name,
       actor: "user",
     });
+    if (roleEditName === name) roleEditName = null;
     el.status.textContent = `已删除角色 ${name}`;
     await loadRolesFull();
     await reloadRegistry();

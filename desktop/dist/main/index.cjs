@@ -1444,6 +1444,14 @@ function canInterruptTask(taskState, session, opts) {
   const s = taskState || "";
   return s === "running" || s === "waiting" || s === "taken";
 }
+function canCancelTask(taskState, session) {
+  const s = taskState || "";
+  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted" || s === "cancelled" || s === "canceled") {
+    return false;
+  }
+  if (session && session.alive) return false;
+  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
+}
 function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
   const byId = /* @__PURE__ */ new Map();
   const byTaskId = /* @__PURE__ */ new Map();
@@ -1507,6 +1515,7 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
       canInterrupt: canInterruptTask(state, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId)
       }),
+      canCancel: canCancelTask(state, session),
       summaryLine
     };
   });

@@ -19,7 +19,22 @@ export type RoleFormDraft = {
   displayName?: string;
   prompt?: string;
   description?: string;
+  color?: string;
   a2aPolicy?: "allow" | "ask" | "deny";
+};
+
+/** Edit draft for registry.role.update — operational name is identity, not patchable. */
+export type RoleUpdateDraft = {
+  /** Operational name (required for RPC name field). */
+  name: string;
+  roleId?: string;
+  displayName?: string;
+  prompt?: string;
+  description?: string;
+  color?: string;
+  a2aPolicy?: "allow" | "ask" | "deny";
+  /** Comma/space-separated profile ids; empty clears whitelist. */
+  allowedProfilesText?: string;
 };
 
 export type ProfileFormDraft = {
@@ -82,8 +97,70 @@ export function validateRoleCreate(draft: RoleFormDraft):
   if (draft.displayName?.trim()) payload.displayName = draft.displayName.trim();
   if (draft.prompt?.trim()) payload.prompt = draft.prompt.trim();
   if (draft.description?.trim()) payload.description = draft.description.trim();
+  if (draft.color?.trim()) payload.color = draft.color.trim();
   if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
   return { ok: true, payload };
+}
+
+/**
+ * Build registry.role.update payload (top-level fields + actor).
+ * Empty optional strings clear the field (null) so Service can wipe prior values.
+ * Operational name is never renamed — only displayName is the mutable label.
+ */
+export function validateRoleUpdate(draft: RoleUpdateDraft):
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; reason: string } {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "角色运营键不能为空" };
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(name)) {
+    return { ok: false, reason: "角色运营键无效" };
+  }
+  const payload: Record<string, unknown> = {
+    name,
+    actor: "user",
+  };
+  if (draft.roleId?.trim()) payload.roleId = draft.roleId.trim();
+
+  // Always send displayName so UI can clear custom labels (null → server resets).
+  const dn = (draft.displayName ?? "").trim();
+  payload.displayName = dn || null;
+
+  const prompt = (draft.prompt ?? "").trim();
+  payload.prompt = prompt || null;
+
+  const description = (draft.description ?? "").trim();
+  payload.description = description || null;
+
+  const color = (draft.color ?? "").trim();
+  payload.color = color || null;
+
+  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
+
+  if (draft.allowedProfilesText !== undefined) {
+    const ids = parseAllowedProfilesText(draft.allowedProfilesText);
+    payload.allowedProfiles = ids;
+  }
+
+  return { ok: true, payload };
+}
+
+/** Split profile id whitelist from free text (comma / whitespace). */
+export function parseAllowedProfilesText(text: string): string[] {
+  const raw = (text || "").trim();
+  if (!raw) return [];
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const part of raw.split(/[\s,;]+/)) {
+    const id = part.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+
+export function formatAllowedProfilesText(ids: string[] | undefined | null): string {
+  return (ids || []).join(", ");
 }
 
 export function validateProfileCreate(draft: ProfileFormDraft):

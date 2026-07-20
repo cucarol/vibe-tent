@@ -24,11 +24,14 @@ import {
   verificationLevelLabel,
 } from "../src/desktop/workbench/graph-model.js";
 import {
+  formatAllowedProfilesText,
   mapProviderCatalogRows,
+  parseAllowedProfilesText,
   retentionSummaryLine,
   validateCredentialSet,
   validateProfileCreate,
   validateRoleCreate,
+  validateRoleUpdate,
 } from "../src/desktop/workbench/settings-model.js";
 
 test("contract gaps list missing desktop methods without inventing RPCs", () => {
@@ -116,6 +119,29 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(role.payload.actor, "user");
   }
 
+  assert.equal(validateRoleUpdate({ name: "" }).ok, false);
+  const roleUp = validateRoleUpdate({
+    name: "executor",
+    roleId: "rl-abc",
+    displayName: "执行者",
+    prompt: "",
+    description: "d",
+    a2aPolicy: "allow",
+    allowedProfilesText: "grok-acp-default, other",
+  });
+  assert.equal(roleUp.ok, true);
+  if (roleUp.ok) {
+    assert.equal(roleUp.payload.name, "executor");
+    assert.equal(roleUp.payload.roleId, "rl-abc");
+    assert.equal(roleUp.payload.displayName, "执行者");
+    assert.equal(roleUp.payload.prompt, null);
+    assert.equal(roleUp.payload.a2aPolicy, "allow");
+    assert.deepEqual(roleUp.payload.allowedProfiles, ["grok-acp-default", "other"]);
+    assert.equal(roleUp.payload.actor, "user");
+  }
+  assert.deepEqual(parseAllowedProfilesText(" a, b  b "), ["a", "b"]);
+  assert.equal(formatAllowedProfilesText(["x", "y"]), "x, y");
+
   assert.equal(validateProfileCreate({ id: "Bad", adapterId: "grok-acp" }).ok, false);
   const prof = validateProfileCreate({
     id: "my-agent",
@@ -153,6 +179,7 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "workspace.agents",
     "workspace.agents.write",
     "registry.role.create",
+    "registry.role.update",
     "registry.role.delete",
     "profile.list",
     "profile.create",
@@ -166,6 +193,12 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "skill.install",
     "docs.backlinks",
     "docs.list",
+    "docs.fork",
+    "docs.importAttachment",
+    "proposal.list",
+    "proposal.resolve",
+    "userAsk.deny",
+    "task.cancel",
     "operationalRetention.preview",
     "operationalRetention.purge",
   ]) {

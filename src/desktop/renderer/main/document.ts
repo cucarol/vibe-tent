@@ -118,6 +118,12 @@ export function renderToolbar(): void {
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? " aria-current=\"true\"" : ""}>预览</button>
         <div class="menu-sep" role="separator"></div>
         <button type="button" class="menu-item" role="menuitem" data-act="card">发出上下文卡</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="fork" title="复制子树并重发 id">派生副本</button>
+        ${
+          tab.nodeMode === "editable"
+            ? `<button type="button" class="menu-item" role="menuitem" data-act="attach">导入附件…</button>`
+            : ""
+        }
         ${
           !tab.coordination
             ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升为协作框</button>`
@@ -176,6 +182,29 @@ async function onToolbar(act: string): Promise<void> {
     }
     return;
   }
+  if (act === "fork") {
+    if (tab.dirty) {
+      el.status.textContent = "请先保存或撤销当前修改，再派生副本。";
+      return;
+    }
+    try {
+      const result = (await window.tentDesktop.rpc("docs.fork", {
+        workspaceId,
+        id: tab.cx,
+      })) as { id?: string; cx?: string };
+      const newId = result.id || result.cx;
+      el.status.textContent = newId ? `已派生副本` : "已派生副本";
+      await reloadTree();
+      if (newId) await openConcept(newId);
+    } catch (err) {
+      setError(err);
+    }
+    return;
+  }
+  if (act === "attach") {
+    await onImportAttachment(tab);
+    return;
+  }
   if (act === "card") {
     await window.tentDesktop.pushContextCard({
       kind: "box",
@@ -185,6 +214,73 @@ async function onToolbar(act: string): Promise<void> {
     });
     await host?.loadCards();
   }
+}
+
+/** Pick a local file, base64-encode, and store via docs.importAttachment (no secret echo). */
+async function onImportAttachment(tab: TabView): Promise<void> {
+  if (!workspaceId) return;
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "当前 Node 不是开放模式，不能导入附件。";
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "file";
+  input.hidden = true;
+  document.body.appendChild(input);
+  const file = await new Promise<File | null>((resolve) => {
+    input.addEventListener(
+      "change",
+      () => {
+        resolve(input.files?.[0] ?? null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.addEventListener(
+      "cancel",
+      () => {
+        resolve(null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.click();
+  });
+  if (!file) return;
+  try {
+    const bytesBase64 = await fileToBase64(file);
+    const result = (await window.tentDesktop.rpc("docs.importAttachment", {
+      workspaceId,
+      id: tab.cx,
+      fileName: file.name,
+      bytesBase64,
+    })) as { markdown?: string; relativePath?: string };
+    // Append markdown link into buffer when Service returns a snippet; user still saves.
+    if (result.markdown) {
+      const sep = tab.buffer.endsWith("\n") || tab.buffer.length === 0 ? "" : "\n";
+      tab.buffer = `${tab.buffer}${sep}\n${result.markdown}\n`;
+      tab.dirty = true;
+      host?.renderAll();
+    }
+    el.status.textContent = result.relativePath
+      ? `已导入附件 ${result.relativePath}（请保存正文）`
+      : "附件已导入";
+  } catch (err) {
+    setError(err);
+  }
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export async function saveTab(tab: TabView): Promise<void> {

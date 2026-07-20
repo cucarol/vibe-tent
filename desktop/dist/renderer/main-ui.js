@@ -194,6 +194,14 @@ function canInterruptTask(taskState, session, opts) {
   const s = taskState || "";
   return s === "running" || s === "waiting" || s === "taken";
 }
+function canCancelTask(taskState, session) {
+  const s = taskState || "";
+  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted" || s === "cancelled" || s === "canceled") {
+    return false;
+  }
+  if (session && session.alive) return false;
+  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
+}
 function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
   const byId = /* @__PURE__ */ new Map();
   const byTaskId = /* @__PURE__ */ new Map();
@@ -257,6 +265,7 @@ function buildTaskReviewItems(tasks, deliveries2 = [], sessions2 = []) {
       canInterrupt: canInterruptTask(state2, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId)
       }),
+      canCancel: canCancelTask(state2, session),
       summaryLine
     };
   });
@@ -5561,6 +5570,7 @@ var sessions = [];
 var userAsks = [];
 var a2aApprovals = [];
 var toolApprovals = [];
+var proposals = [];
 var profiles = [];
 var selectedProfileId = null;
 var createTypePick = "";
@@ -5619,7 +5629,7 @@ function actionableTasks() {
   );
 }
 function pendingInteractionCount() {
-  return userAsks.length + a2aApprovals.length + toolApprovals.length;
+  return userAsks.length + a2aApprovals.length + toolApprovals.length + proposals.length;
 }
 function tasksForActiveNode(states) {
   if (!activeCx) return [];
@@ -5701,14 +5711,19 @@ async function reloadTasks() {
 async function reloadPendingInteractions() {
   if (!workspaceId) return;
   try {
-    const [askResult, a2aResult, toolResult] = await Promise.all([
+    const [askResult, a2aResult, toolResult, proposalResult] = await Promise.all([
       window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
       window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
-      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId })
+      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
+      window.tentDesktop.rpc("proposal.list", {
+        workspaceId,
+        status: "pending"
+      })
     ]);
     userAsks = askResult.asks || [];
     a2aApprovals = a2aResult.approvals || [];
     toolApprovals = toolResult.approvals || [];
+    proposals = (proposalResult.proposals || []).filter((p) => p.status === "pending");
     host?.renderPendingInteractions();
   } catch (err) {
     setError(err);
@@ -5850,6 +5865,7 @@ function renderPendingInteractions() {
       ${choices ? `<div class="choice-list">${choices}</div>` : ""}
       <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
       <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
+      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD\u63D0\u95EE</button>
       <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
     </article>`;
   }).join("");
@@ -5872,12 +5888,40 @@ function renderPendingInteractions() {
       <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
     </article>`;
   }).join("");
-  el.a2u.innerHTML = asks + a2a + tools;
+  const proposalItems = proposals.map((p) => {
+    const body = (p.body || "").trim();
+    const preview = body.length > 160 ? body.slice(0, 157) + "\u2026" : body;
+    return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}">
+      <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
+      <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
+      <div class="muted interaction-note">${escapeHtml(p.boxId || "")} \xB7 ${escapeHtml(p.path)}</div>
+      <div class="interaction-actions">
+        <button type="button" class="btn btn-primary" data-proposal-accept="${escapeHtml(p.path)}">\u91C7\u7EB3</button>
+        <button type="button" class="btn btn-ghost" data-proposal-reject="${escapeHtml(p.path)}">\u9A73\u56DE</button>
+      </div>
+    </article>`;
+  }).join("");
+  el.a2u.innerHTML = asks + a2a + tools + proposalItems;
   el.a2u.querySelectorAll("[data-ask-reply]").forEach(
     (button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")))
   );
+  el.a2u.querySelectorAll("[data-ask-deny]").forEach(
+    (button) => button.addEventListener("click", () => void onDenyUserAsk(button.getAttribute("data-ask-deny")))
+  );
   el.a2u.querySelectorAll("[data-task-stop]").forEach(
     (button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop")))
+  );
+  el.a2u.querySelectorAll("[data-proposal-accept]").forEach(
+    (button) => button.addEventListener(
+      "click",
+      () => void onResolveProposal(button.getAttribute("data-proposal-accept"), "accept")
+    )
+  );
+  el.a2u.querySelectorAll("[data-proposal-reject]").forEach(
+    (button) => button.addEventListener(
+      "click",
+      () => void onResolveProposal(button.getAttribute("data-proposal-reject"), "reject")
+    )
   );
   el.a2u.querySelectorAll("[data-a2a-allow]").forEach(
     (button) => button.addEventListener(
@@ -5913,6 +5957,30 @@ async function onReplyUserAsk(askId) {
       ...choiceId ? { choiceId } : {}
     });
     el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onDenyUserAsk(askId) {
+  try {
+    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onResolveProposal(path, decision) {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("proposal.resolve", {
+      workspaceId,
+      path,
+      decision,
+      actor: "user"
+    });
+    el.status.textContent = decision === "accept" ? "\u5DF2\u91C7\u7EB3\u63D0\u6848\u3002" : "\u5DF2\u9A73\u56DE\u63D0\u6848\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
     setError(err);
@@ -6028,6 +6096,7 @@ function renderTasks() {
     const rejectDraft = rejectDrafts.get(t.path) || "";
     const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"} title="\u542F\u52A8 agent">\u542F\u52A8</button>` : "";
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-interrupt="${escapeHtml(t.path)}" title="\u4E2D\u65AD">\u4E2D\u65AD</button>` : "";
+    const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-cancel="${escapeHtml(t.path)}" title="\u53D6\u6D88\u4EFB\u52A1">\u53D6\u6D88</button>` : "";
     const reviewActions = t.canAcceptOrReject ? `<div class="task-primary-row">
               <button type="button" class="btn btn-primary" data-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
               <button type="button" class="btn btn-ghost" data-reject-toggle="${escapeHtml(t.path)}" aria-expanded="false">\u9A73\u56DE</button>
@@ -6036,7 +6105,7 @@ function renderTasks() {
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
               <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
             </div>` : "";
-    const actions = startBtn || interruptBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${reviewActions}</div>` : "";
+    const actions = startBtn || interruptBtn || cancelBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}${reviewActions}</div>` : "";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
         <div class="task-head">
           <strong>${who}</strong>
@@ -6064,6 +6133,9 @@ function renderTasks() {
   });
   el.tasks.querySelectorAll("[data-interrupt]").forEach((btn) => {
     btn.addEventListener("click", () => void onInterrupt(btn.getAttribute("data-interrupt")));
+  });
+  el.tasks.querySelectorAll("[data-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => void onCancelTask(btn.getAttribute("data-cancel")));
   });
   el.tasks.querySelectorAll("[data-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept(btn.getAttribute("data-accept")));
@@ -6124,6 +6196,20 @@ async function onInterrupt(taskPath) {
       taskPath
     });
     el.status.textContent = `\u5DF2\u4E2D\u65AD\uFF1A${taskPath}`;
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onCancelTask(taskPath) {
+  if (!workspaceId) return;
+  if (!window.confirm("\u53D6\u6D88\u8BE5\u4EFB\u52A1\uFF1F\u672A\u4EA4\u4ED8\u7684\u8FDB\u5EA6\u5C06\u7EC8\u6B62\u3002")) return;
+  try {
+    await window.tentDesktop.rpc("task.cancel", {
+      workspaceId,
+      taskPath
+    });
+    el.status.textContent = `\u5DF2\u53D6\u6D88\uFF1A${taskPath}`;
     await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
@@ -6287,6 +6373,8 @@ function renderToolbar() {
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
         <div class="menu-sep" role="separator"></div>
         <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="fork" title="\u590D\u5236\u5B50\u6811\u5E76\u91CD\u53D1 id">\u6D3E\u751F\u526F\u672C</button>
+        ${tab.nodeMode === "editable" ? `<button type="button" class="menu-item" role="menuitem" data-act="attach">\u5BFC\u5165\u9644\u4EF6\u2026</button>` : ""}
         ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
       </div>
     </div>
@@ -6340,6 +6428,29 @@ async function onToolbar(act) {
     }
     return;
   }
+  if (act === "fork") {
+    if (tab.dirty) {
+      el.status.textContent = "\u8BF7\u5148\u4FDD\u5B58\u6216\u64A4\u9500\u5F53\u524D\u4FEE\u6539\uFF0C\u518D\u6D3E\u751F\u526F\u672C\u3002";
+      return;
+    }
+    try {
+      const result = await window.tentDesktop.rpc("docs.fork", {
+        workspaceId,
+        id: tab.cx
+      });
+      const newId = result.id || result.cx;
+      el.status.textContent = newId ? `\u5DF2\u6D3E\u751F\u526F\u672C` : "\u5DF2\u6D3E\u751F\u526F\u672C";
+      await reloadTree();
+      if (newId) await openConcept(newId);
+    } catch (err) {
+      setError(err);
+    }
+    return;
+  }
+  if (act === "attach") {
+    await onImportAttachment(tab);
+    return;
+  }
   if (act === "card") {
     await window.tentDesktop.pushContextCard({
       kind: "box",
@@ -6349,6 +6460,69 @@ async function onToolbar(act) {
     });
     await host3?.loadCards();
   }
+}
+async function onImportAttachment(tab) {
+  if (!workspaceId) return;
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "\u5F53\u524D Node \u4E0D\u662F\u5F00\u653E\u6A21\u5F0F\uFF0C\u4E0D\u80FD\u5BFC\u5165\u9644\u4EF6\u3002";
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "file";
+  input.hidden = true;
+  document.body.appendChild(input);
+  const file = await new Promise((resolve) => {
+    input.addEventListener(
+      "change",
+      () => {
+        resolve(input.files?.[0] ?? null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.addEventListener(
+      "cancel",
+      () => {
+        resolve(null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.click();
+  });
+  if (!file) return;
+  try {
+    const bytesBase64 = await fileToBase64(file);
+    const result = await window.tentDesktop.rpc("docs.importAttachment", {
+      workspaceId,
+      id: tab.cx,
+      fileName: file.name,
+      bytesBase64
+    });
+    if (result.markdown) {
+      const sep = tab.buffer.endsWith("\n") || tab.buffer.length === 0 ? "" : "\n";
+      tab.buffer = `${tab.buffer}${sep}
+${result.markdown}
+`;
+      tab.dirty = true;
+      host3?.renderAll();
+    }
+    el.status.textContent = result.relativePath ? `\u5DF2\u5BFC\u5165\u9644\u4EF6 ${result.relativePath}\uFF08\u8BF7\u4FDD\u5B58\u6B63\u6587\uFF09` : "\u9644\u4EF6\u5DF2\u5BFC\u5165";
+  } catch (err) {
+    setError(err);
+  }
+}
+function fileToBase64(file) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 async function saveTab(tab) {
   if (tab.nodeMode !== "editable") {
@@ -7354,6 +7528,7 @@ function renderActivity() {
         <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
+          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD\u63D0\u95EE</button>
           <button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD</button>
         </div>
       </article>`;
@@ -7399,18 +7574,32 @@ function renderActivity() {
         </div>
       </article>`;
   }).join("");
-  const pendingBlock = pendingN + reviewTasks.length === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + reviewHtml;
+  const proposalHtml = proposals.map((p) => {
+    const body = (p.body || "").trim();
+    const preview = body.length > 160 ? body.slice(0, 157) + "\u2026" : body;
+    return `<article class="interaction-item">
+        <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
+        <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
+        <div class="muted interaction-note">${escapeHtml(p.boxId || "")}</div>
+        <div class="interaction-actions">
+          <button type="button" class="btn btn-primary" data-act-proposal-accept="${escapeHtml(p.path)}">\u91C7\u7EB3</button>
+          <button type="button" class="btn btn-ghost" data-act-proposal-reject="${escapeHtml(p.path)}">\u9A73\u56DE</button>
+        </div>
+      </article>`;
+  }).join("");
+  const pendingBlock = pendingN + reviewTasks.length === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
   const profileOpts = profiles.length > 0 ? profiles.map(
     (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
   ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
   const taskRows = tasks.map((t) => {
     const startBtn = t.canStartAgent ? `<button type="button" class="btn btn-primary" data-act-start="${escapeHtml(t.path)}"${profiles.length && selectedProfileId ? "" : " disabled"}>\u542F\u52A8</button>` : "";
     const interruptBtn = t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">\u4E2D\u65AD</button>` : "";
+    const cancelBtn = t.canCancel ? `<button type="button" class="btn btn-ghost" data-act-cancel="${escapeHtml(t.path)}">\u53D6\u6D88</button>` : "";
     return `<li class="task-item">
         <div class="task-head"><strong>${escapeHtml(t.role)}</strong>
           <span class="muted">${escapeHtml(taskStateLabel(t.state, t.status))}</span></div>
         ${t.prompt ? `<div class="task-summary">${escapeHtml(t.prompt.length > 100 ? t.prompt.slice(0, 97) + "\u2026" : t.prompt)}</div>` : ""}
-        <div class="task-actions">${startBtn}${interruptBtn}</div>
+        <div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}</div>
         <div class="faint" title="${escapeHtml(t.path)}">${escapeHtml(t.path)}</div>
       </li>`;
   }).join("");
@@ -7448,6 +7637,9 @@ function wireActivity(root) {
   root.querySelectorAll("[data-act-reply]").forEach((btn) => {
     btn.addEventListener("click", () => void onReply(btn.getAttribute("data-act-reply")));
   });
+  root.querySelectorAll("[data-act-ask-deny]").forEach((btn) => {
+    btn.addEventListener("click", () => void onDenyAsk(btn.getAttribute("data-act-ask-deny")));
+  });
   root.querySelectorAll("[data-act-a2a-allow]").forEach((btn) => {
     btn.addEventListener("click", () => void onA2A(btn.getAttribute("data-act-a2a-allow"), "approve"));
   });
@@ -7459,6 +7651,18 @@ function wireActivity(root) {
   });
   root.querySelectorAll("[data-act-tool-deny]").forEach((btn) => {
     btn.addEventListener("click", () => void onTool(btn.getAttribute("data-act-tool-deny"), false));
+  });
+  root.querySelectorAll("[data-act-proposal-accept]").forEach((btn) => {
+    btn.addEventListener(
+      "click",
+      () => void onProposal(btn.getAttribute("data-act-proposal-accept"), "accept")
+    );
+  });
+  root.querySelectorAll("[data-act-proposal-reject]").forEach((btn) => {
+    btn.addEventListener(
+      "click",
+      () => void onProposal(btn.getAttribute("data-act-proposal-reject"), "reject")
+    );
   });
   root.querySelectorAll("[data-act-accept]").forEach((btn) => {
     btn.addEventListener("click", () => void onAccept2(btn.getAttribute("data-act-accept")));
@@ -7487,6 +7691,9 @@ function wireActivity(root) {
   root.querySelectorAll("[data-act-interrupt]").forEach((btn) => {
     btn.addEventListener("click", () => void onInterrupt2(btn.getAttribute("data-act-interrupt")));
   });
+  root.querySelectorAll("[data-act-cancel]").forEach((btn) => {
+    btn.addEventListener("click", () => void onCancel(btn.getAttribute("data-act-cancel")));
+  });
 }
 async function refreshAfter() {
   await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
@@ -7508,6 +7715,30 @@ async function onReply(askId) {
       ...choiceId ? { choiceId } : {}
     });
     el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await refreshAfter();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onDenyAsk(askId) {
+  try {
+    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
+    await refreshAfter();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onProposal(path, decision) {
+  if (!workspaceId) return;
+  try {
+    await window.tentDesktop.rpc("proposal.resolve", {
+      workspaceId,
+      path,
+      decision,
+      actor: "user"
+    });
+    el.status.textContent = decision === "accept" ? "\u5DF2\u91C7\u7EB3\u63D0\u6848\u3002" : "\u5DF2\u9A73\u56DE\u63D0\u6848\u3002";
     await refreshAfter();
   } catch (err) {
     setError(err);
@@ -7602,6 +7833,17 @@ async function onInterrupt2(taskPath) {
     setError(err);
   }
 }
+async function onCancel(taskPath) {
+  if (!workspaceId) return;
+  if (!window.confirm("\u53D6\u6D88\u8BE5\u4EFB\u52A1\uFF1F\u672A\u4EA4\u4ED8\u7684\u8FDB\u5EA6\u5C06\u7EC8\u6B62\u3002")) return;
+  try {
+    await window.tentDesktop.rpc("task.cancel", { workspaceId, taskPath });
+    el.status.textContent = `\u5DF2\u53D6\u6D88\uFF1A${taskPath}`;
+    await refreshAfter();
+  } catch (err) {
+    setError(err);
+  }
+}
 
 // src/desktop/workbench/settings-model.ts
 var DELIVERY_POLICY_OPTIONS = [
@@ -7631,8 +7873,51 @@ function validateRoleCreate(draft) {
   if (draft.displayName?.trim()) payload.displayName = draft.displayName.trim();
   if (draft.prompt?.trim()) payload.prompt = draft.prompt.trim();
   if (draft.description?.trim()) payload.description = draft.description.trim();
+  if (draft.color?.trim()) payload.color = draft.color.trim();
   if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
   return { ok: true, payload };
+}
+function validateRoleUpdate(draft) {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "\u89D2\u8272\u8FD0\u8425\u952E\u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-zA-Z][a-zA-Z0-9_-]{0,63}$/.test(name)) {
+    return { ok: false, reason: "\u89D2\u8272\u8FD0\u8425\u952E\u65E0\u6548" };
+  }
+  const payload = {
+    name,
+    actor: "user"
+  };
+  if (draft.roleId?.trim()) payload.roleId = draft.roleId.trim();
+  const dn = (draft.displayName ?? "").trim();
+  payload.displayName = dn || null;
+  const prompt = (draft.prompt ?? "").trim();
+  payload.prompt = prompt || null;
+  const description = (draft.description ?? "").trim();
+  payload.description = description || null;
+  const color = (draft.color ?? "").trim();
+  payload.color = color || null;
+  if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
+  if (draft.allowedProfilesText !== void 0) {
+    const ids = parseAllowedProfilesText(draft.allowedProfilesText);
+    payload.allowedProfiles = ids;
+  }
+  return { ok: true, payload };
+}
+function parseAllowedProfilesText(text3) {
+  const raw = (text3 || "").trim();
+  if (!raw) return [];
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const part of raw.split(/[\s,;]+/)) {
+    const id = part.trim();
+    if (!id || seen.has(id)) continue;
+    seen.add(id);
+    out.push(id);
+  }
+  return out;
+}
+function formatAllowedProfilesText(ids) {
+  return (ids || []).join(", ");
 }
 function validateProfileCreate(draft) {
   const id = (draft.id || "").trim();
@@ -7740,6 +8025,7 @@ var retentionPreview = null;
 var loadError2 = null;
 var loading = false;
 var profileEditId = null;
+var roleEditName = null;
 function setSettingsSection(next) {
   section = next;
   renderSettings();
@@ -7916,33 +8202,75 @@ function renderRoles() {
   const list2 = fullRoles.length === 0 ? `<p class="muted">\u6682\u65E0\u89D2\u8272</p>` : `<ul class="settings-list">${fullRoles.map((r) => {
     const label = r.displayName && r.displayName !== r.name ? `${r.displayName} \xB7 ${r.name}` : r.name;
     const pol = r.a2aPolicy || "deny";
-    return `<li class="settings-list-item">
+    const profilesBit = r.allowedProfiles && r.allowedProfiles.length ? ` \xB7 profiles ${r.allowedProfiles.length}` : "";
+    const editing2 = roleEditName === r.name;
+    return `<li class="settings-list-item${editing2 ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}</span>
+                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(profilesBit)}</span>
+                ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
+                ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-role-edit="${escapeHtml(r.name)}" title="\u7F16\u8F91">\u7F16\u8F91</button>
                 <button type="button" class="btn btn-ghost" data-role-delete="${escapeHtml(r.name)}" title="\u5220\u9664">\u5220\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
-  return `
-    <div class="settings-block">
-      <div class="surface-section-head">\u89D2\u8272</div>
-      ${list2}
-    </div>
-    <div class="settings-block">
+  const editing = roleEditName ? fullRoles.find((r) => r.name === roleEditName) : null;
+  const editor = editing ? renderRoleEditor(editing) : `<div class="settings-block">
       <div class="surface-section-head">\u65B0\u5EFA</div>
       <div class="settings-form">
-        <input id="role-name" class="field" placeholder="name\uFF08\u8FD0\u8425\u952E\uFF09" />
+        <input id="role-name" class="field" placeholder="name\uFF08\u8FD0\u8425\u952E\uFF0C\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09" autocomplete="off" />
         <input id="role-display" class="field" placeholder="\u663E\u793A\u540D\uFF08\u53EF\u9009\uFF09" />
-        <input id="role-prompt" class="field" placeholder="prompt\uFF08\u53EF\u9009\uFF09" />
+        <input id="role-description" class="field" placeholder="\u63CF\u8FF0\uFF08\u53EF\u9009\uFF09" />
+        <textarea id="role-prompt" class="field settings-role-prompt" rows="3" placeholder="prompt\uFF08\u53EF\u9009\uFF09"></textarea>
+        <input id="role-color" class="field" placeholder="\u989C\u8272 token\uFF08\u53EF\u9009\uFF0C\u5982 gray\uFF09" />
         <select id="role-a2a" class="field">
           <option value="deny">a2a: deny</option>
           <option value="ask">a2a: ask</option>
           <option value="allow">a2a: allow</option>
         </select>
         <button type="button" id="btn-role-create" class="btn btn-primary">\u521B\u5EFA</button>
+      </div>
+    </div>`;
+  return `
+    <div class="settings-block">
+      <div class="surface-section-head">\u89D2\u8272</div>
+      <p class="muted">\u8FD0\u8425\u952E name \u4E0D\u53EF\u6539\uFF1B\u663E\u793A\u540D / prompt / a2a / \u767D\u540D\u5355\u7ECF registry.role.update\u3002</p>
+      ${list2}
+    </div>
+    ${editor}`;
+}
+function renderRoleEditor(role) {
+  const pol = role.a2aPolicy || "deny";
+  const profilesText = formatAllowedProfilesText(role.allowedProfiles);
+  return `
+    <div class="settings-block">
+      <div class="surface-section-head">\u7F16\u8F91\u89D2\u8272 \xB7 ${escapeHtml(role.name)}
+        <button type="button" id="btn-role-edit-close" class="btn btn-ghost">\u5173\u95ED</button>
+      </div>
+      <p class="muted">id <code>${escapeHtml(role.roleId || "\u2014")}</code> \xB7 \u8FD0\u8425\u952E <code>${escapeHtml(role.name)}</code>\uFF08\u4E0D\u53EF\u6539\u540D\uFF09</p>
+      <div class="settings-form">
+        <label class="settings-label" for="role-edit-display">\u663E\u793A\u540D</label>
+        <input id="role-edit-display" class="field" value="${escapeHtml(role.displayName || "")}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230\u8FD0\u8425\u952E" />
+        <label class="settings-label" for="role-edit-description">\u63CF\u8FF0</label>
+        <input id="role-edit-description" class="field" value="${escapeHtml(role.description || "")}" />
+        <label class="settings-label" for="role-edit-prompt">prompt</label>
+        <textarea id="role-edit-prompt" class="field settings-role-prompt" rows="5">${escapeHtml(role.prompt || "")}</textarea>
+        <label class="settings-label" for="role-edit-color">\u989C\u8272</label>
+        <input id="role-edit-color" class="field" value="${escapeHtml(role.color || "")}" placeholder="gray / blue \u2026" />
+        <label class="settings-label" for="role-edit-a2a">a2aPolicy</label>
+        <select id="role-edit-a2a" class="field">
+          <option value="deny"${pol === "deny" ? " selected" : ""}>deny</option>
+          <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
+          <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
+        </select>
+        <label class="settings-label" for="role-edit-profiles">allowedProfiles\uFF08\u9017\u53F7\u5206\u9694 profile id\uFF1B\u7A7A=\u6E05\u7A7A\uFF09</label>
+        <input id="role-edit-profiles" class="field" value="${escapeHtml(profilesText)}" placeholder="\u4F8B\u5982 grok-acp-default" />
+        <div class="settings-row">
+          <button type="button" id="btn-role-save" class="btn btn-primary">\u4FDD\u5B58</button>
+        </div>
       </div>
     </div>`;
 }
@@ -8127,6 +8455,17 @@ function wireSection(s, root) {
   }
   if (s === "roles") {
     document.getElementById("btn-role-create")?.addEventListener("click", () => void onRoleCreate());
+    document.getElementById("btn-role-save")?.addEventListener("click", () => void onRoleSave());
+    document.getElementById("btn-role-edit-close")?.addEventListener("click", () => {
+      roleEditName = null;
+      renderSettings();
+    });
+    root.querySelectorAll("[data-role-edit]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        roleEditName = btn.getAttribute("data-role-edit");
+        renderSettings();
+      });
+    });
     root.querySelectorAll("[data-role-delete]").forEach((btn) => {
       btn.addEventListener("click", () => void onRoleDelete(btn.getAttribute("data-role-delete")));
     });
@@ -8208,9 +8547,11 @@ async function onRoleCreate() {
   if (!workspaceId) return;
   const name = document.getElementById("role-name")?.value || "";
   const displayName = document.getElementById("role-display")?.value || "";
+  const description = document.getElementById("role-description")?.value || "";
   const prompt = document.getElementById("role-prompt")?.value || "";
+  const color = document.getElementById("role-color")?.value || "";
   const a2aPolicy = document.getElementById("role-a2a")?.value;
-  const built = validateRoleCreate({ name, displayName, prompt, a2aPolicy });
+  const built = validateRoleCreate({ name, displayName, description, prompt, color, a2aPolicy });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
@@ -8221,6 +8562,43 @@ async function onRoleCreate() {
       ...built.payload
     });
     el.status.textContent = `\u5DF2\u521B\u5EFA\u89D2\u8272 ${name.trim()}`;
+    roleEditName = name.trim();
+    await loadRolesFull();
+    await reloadRegistry();
+    renderSettings();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onRoleSave() {
+  if (!workspaceId || !roleEditName) return;
+  const role = fullRoles.find((r) => r.name === roleEditName);
+  const displayName = document.getElementById("role-edit-display")?.value || "";
+  const description = document.getElementById("role-edit-description")?.value || "";
+  const prompt = document.getElementById("role-edit-prompt")?.value || "";
+  const color = document.getElementById("role-edit-color")?.value || "";
+  const a2aPolicy = document.getElementById("role-edit-a2a")?.value;
+  const allowedProfilesText = document.getElementById("role-edit-profiles")?.value || "";
+  const built = validateRoleUpdate({
+    name: roleEditName,
+    roleId: role?.roleId,
+    displayName,
+    description,
+    prompt,
+    color,
+    a2aPolicy,
+    allowedProfilesText
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("registry.role.update", {
+      workspaceId,
+      ...built.payload
+    });
+    el.status.textContent = `\u5DF2\u66F4\u65B0\u89D2\u8272 ${roleEditName}`;
     await loadRolesFull();
     await reloadRegistry();
     renderSettings();
@@ -8230,7 +8608,7 @@ async function onRoleCreate() {
 }
 async function onRoleDelete(name) {
   if (!workspaceId) return;
-  if (!window.confirm(`\u5220\u9664\u89D2\u8272\u300C${name}\u300D\uFF1F`)) return;
+  if (!window.confirm(`\u5220\u9664\u89D2\u8272\u300C${name}\u300D\uFF1F\u786E\u8BA4\u987B\u7B49\u4E8E\u8FD0\u8425\u952E\u3002`)) return;
   try {
     await window.tentDesktop.rpc("registry.role.delete", {
       workspaceId,
@@ -8238,6 +8616,7 @@ async function onRoleDelete(name) {
       confirmation: name,
       actor: "user"
     });
+    if (roleEditName === name) roleEditName = null;
     el.status.textContent = `\u5DF2\u5220\u9664\u89D2\u8272 ${name}`;
     await loadRolesFull();
     await reloadRegistry();

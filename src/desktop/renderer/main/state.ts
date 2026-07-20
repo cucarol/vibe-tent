@@ -4,6 +4,7 @@
 import type {
   AgentProfileProjection,
   DeliveryProjection,
+  ProposalProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
   TaskProjection,
@@ -47,6 +48,8 @@ export let sessions: SessionProjection[] = [];
 export let userAsks: UserAskView[] = [];
 export let a2aApprovals: A2AApprovalView[] = [];
 export let toolApprovals: ToolApprovalView[] = [];
+/** Pending proposal triage (separate from delivery review). */
+export let proposals: ProposalProjection[] = [];
 /** Product profiles from profile.list (safe metadata; no secrets). */
 export let profiles: ProfileOption[] = [];
 /** Selected machine-local profile for「启动 agent」— never auto-starts. */
@@ -99,6 +102,10 @@ export function setUserAsks(list: UserAskView[]): void {
   userAsks = list;
 }
 
+export function setProposals(list: ProposalProjection[]): void {
+  proposals = list;
+}
+
 export function setA2aApprovals(list: A2AApprovalView[]): void {
   a2aApprovals = list;
 }
@@ -145,7 +152,7 @@ export function actionableTasks(): TaskReviewItem[] {
 }
 
 export function pendingInteractionCount(): number {
-  return userAsks.length + a2aApprovals.length + toolApprovals.length;
+  return userAsks.length + a2aApprovals.length + toolApprovals.length + proposals.length;
 }
 
 export function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
@@ -257,7 +264,7 @@ export async function reloadTasks(): Promise<void> {
 export async function reloadPendingInteractions(): Promise<void> {
   if (!workspaceId) return;
   try {
-    const [askResult, a2aResult, toolResult] = await Promise.all([
+    const [askResult, a2aResult, toolResult, proposalResult] = await Promise.all([
       window.tentDesktop.rpc("userAsk.listPending", { workspaceId }) as Promise<{ asks: UserAskView[] }>,
       window.tentDesktop.rpc("a2a.listPending", { workspaceId }) as Promise<{
         approvals: A2AApprovalView[];
@@ -265,10 +272,15 @@ export async function reloadPendingInteractions(): Promise<void> {
       window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }) as Promise<{
         approvals: ToolApprovalView[];
       }>,
+      window.tentDesktop.rpc("proposal.list", {
+        workspaceId,
+        status: "pending",
+      }) as Promise<{ proposals: ProposalProjection[] }>,
     ]);
     userAsks = askResult.asks || [];
     a2aApprovals = a2aResult.approvals || [];
     toolApprovals = toolResult.approvals || [];
+    proposals = (proposalResult.proposals || []).filter((p) => p.status === "pending");
     host?.renderPendingInteractions();
   } catch (err) {
     setError(err);
