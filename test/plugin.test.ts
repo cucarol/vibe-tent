@@ -269,6 +269,29 @@ test("plugin settings:default type registry exposes coordination on goal/prompt/
   assert.equal(typeAllowsWorkspacePointer("artifact", settings.newTentDefaults.typeRegistry), false);
 });
 
+test("plugin surfaces: no workspacePointer registry/settings write path", async () => {
+  const fs = await import("node:fs/promises");
+  const path = await import("node:path");
+  const { fileURLToPath } = await import("node:url");
+  const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const sources = await Promise.all(
+    ["registry-pane.ts", "settings.ts", "ui-controls.ts", "view.ts"].map((name) =>
+      fs.readFile(path.join(root, "src", "plugin", name), "utf8")
+    )
+  );
+  for (const src of sources) {
+    assert.doesNotMatch(src, /workspacePointer\s*:/);
+    assert.doesNotMatch(src, /workspacePointer:\s*true/);
+    assert.doesNotMatch(src, /setBaseWorkspacePointer/);
+    assert.doesNotMatch(src, /"workspacePointer"/);
+  }
+  // coordination is the live lifecycle axis exposed by settings/registry UI
+  const [registryPane, settingsSrc] = sources;
+  assert.match(registryPane, /coordination/);
+  assert.match(settingsSrc, /setBaseCoordination/);
+  assert.match(settingsSrc, /baseDefinitionCoordination/);
+});
+
 test("plugin colors:roles use explicit and inferred colors", () => {
   assert.equal(typeColorValue("cyan"), "var(--color-cyan, #2f9e93)");
   assert.equal(typeColorValue("#123456"), "#123456");

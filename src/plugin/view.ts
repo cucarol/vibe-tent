@@ -9,7 +9,7 @@ import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
 import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
 import { Box, Status } from "../core/types.js";
-import { splitType, joinType, typeAllowsWorkspacePointer } from "../core/typeRegistry.js";
+import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
 import { canClaim, isFrozen } from "../core/claim.js";
@@ -19,15 +19,13 @@ import { acceptProposal, loadProposals, rejectProposal, type Proposal } from "..
 import { loadTaskEnvelopes, relayPromptForTask, type TaskEnvelope } from "../core/task.js";
 import { taskAccept, taskReject } from "../core/task-lifecycle.js";
 import { buildCanvas, preservePositions, parseCanvas, canvasToJson } from "../core/canvas.js";
-import { parseOutputPointer } from "../core/output.js";
 import {
   ensureRoleWorkspace,
   resolveTentWorkspace,
   integrateWorkspaceCommits,
   listRoleCommitsFor,
-  readWorkspaceHead,
 } from "../core/workspace.js";
-import type { RoleCommit, WorkspaceHead } from "../core/workspace.js";
+import type { RoleCommit } from "../core/workspace.js";
 import {
   createChevronSelect,
   drawRwSegment,
@@ -46,7 +44,6 @@ import {
   bottomTabParts,
   hasTreePending,
   restorePaneScroll,
-  showsUnstampedState,
   statuslessDirectChildren,
   visibleTreeCount,
 } from "./ui-model.js";
@@ -118,7 +115,6 @@ export class TentView extends ItemView {
     paddingLeft: number;
     available: number;
   } | null = null;
-  private workspaceHeadCache = new TimedCache<WorkspaceHead | null>();
   private roleCommitsCache = new TimedCache<RoleCommit[] | null>();
 
   constructor(leaf: WorkspaceLeaf, private plugin: TentPlugin) {
@@ -1036,10 +1032,6 @@ export class TentView extends ItemView {
       this.draw();
     };
 
-    if (this.tent && typeAllowsWorkspacePointer(box.type, this.tent.typeRegistry)) {
-      this.drawOutputSummary(card, box);
-    }
-
     const reg = this.tent!.typeRegistry;
 
     // 二级编辑区(展开才显):扁平行,无组卡底框
@@ -1113,33 +1105,6 @@ export class TentView extends ItemView {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return null;
     return nodePath.join(adapter.getBasePath(), this.tentRootPath());
-  }
-
-  private drawOutputSummary(el: HTMLElement, box: Box) {
-    const pointer = parseOutputPointer(box.fm, box.body);
-    const card = el.createDiv({ cls: "tent-output-summary" });
-    if (showsUnstampedState(box)) {
-      card.createSpan({ cls: "tent-output-pill", text: box.fm.status === "done" ? "已交付" : "未盖章" });
-    }
-    card.createSpan({ cls: "tent-output-line", text: pointer.workspace ? `workspace: ${pointer.workspace}` : "workspace: 未记录" });
-    const refLine = card.createSpan({
-      cls: "tent-output-line",
-      text: pointer.workspace ? "workspace HEAD: 读取中" : pointer.ref ? `记录 ref: ${pointer.ref}` : "workspace HEAD: 不可用",
-    });
-    if (pointer.workspace) {
-      void this.loadWorkspaceHead(pointer.workspace)
-        .then((head) => {
-          if (!head) {
-            refLine.setText(pointer.ref ? `记录 ref: ${pointer.ref}（HEAD 不可用）` : "workspace HEAD: 不可用");
-            return;
-          }
-          refLine.setText(`workspace HEAD: ${head.shortRef} · ${head.branch}`);
-          refLine.title = head.ref;
-        })
-        .catch(() => {
-          refLine.setText(pointer.ref ? `记录 ref: ${pointer.ref}（HEAD 不可用）` : "workspace HEAD: 不可用");
-        });
-    }
   }
 
   private requireExplicitArchiveRoot(box: Box, action: "恢复" | "删除"): Box | null {
@@ -1472,7 +1437,7 @@ export class TentView extends ItemView {
           await this.acceptReadyDelivery(delivery, {
             integrate: async (refs) => {
               const wp = this.tent ? resolveTentWorkspace(this.tent) : undefined;
-              if (!wp) throw new Error("帐内没有 workspace 指针");
+              if (!wp) throw new Error("无法从 in-workspace .tent 解析 workspace root");
               const contract = await ensureRoleWorkspace(wp, delivery.role);
               await integrateWorkspaceCommits(contract, refs);
             },
@@ -1584,18 +1549,7 @@ export class TentView extends ItemView {
     return counts;
   }
 
-  private loadWorkspaceHead(workspace: string): Promise<WorkspaceHead | null> {
-    const key = nodePath.resolve(workspace);
-    return this.workspaceHeadCache.get(key, async () => {
-      try {
-        return await readWorkspaceHead(key);
-      } catch {
-        return null;
-      }
-    });
-  }
-
-  // 读取某 role lane 尚未合入正式分支的 commit;无 workspace 指针返回 null
+  // 读取某 role lane 尚未合入正式分支的 commit;无 in-workspace Git root 返回 null
   private async loadRoleCommits(owner: string): Promise<RoleCommit[] | null> {
     let wp: string | undefined;
     try {
@@ -1609,7 +1563,6 @@ export class TentView extends ItemView {
   }
 
   private clearGitUiCache() {
-    this.workspaceHeadCache.clear();
     this.roleCommitsCache.clear();
   }
 

@@ -1,8 +1,8 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import {
-  baseDefinitionWorkspacePointer,
+  baseDefinitionCoordination,
   DEFAULT_TYPE_REGISTRY,
-  setBaseWorkspacePointer,
+  setBaseCoordination,
   TYPE_COLOR_PALETTE,
   type TypeDefinition,
   type TypeRegistry,
@@ -158,14 +158,14 @@ export class TentSettingTab extends PluginSettingTab {
         .setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
-      const pointerFlag = baseDefinitionWorkspacePointer(definition);
-      const pointerSummary =
-        pointerFlag === undefined && (definition.tier ?? "base") === "modifier"
+      const coordinationFlag = baseDefinitionCoordination(definition);
+      const coordinationSummary =
+        (definition.tier ?? "base") === "modifier"
           ? ""
-          : ` · ${axisSummary("针", pointerFlag === true)}`;
+          : ` · ${axisSummary("协", coordinationFlag === true)}`;
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} · ${axisSummary("W", definition.writable)}${pointerSummary}`,
+        text: `${axisSummary("R", definition.readable)} · ${axisSummary("W", definition.writable)}${coordinationSummary}`,
       });
       summary.addButton((button) =>
         button
@@ -197,7 +197,7 @@ export class TentSettingTab extends PluginSettingTab {
     });
     this.drawAxisControl(editor, definition);
     if ((definition.tier ?? "base") === "base") {
-      this.drawWorkspacePointerControl(editor, definition);
+      this.drawCoordinationControl(editor, definition);
     }
 
     if (!BUILTIN_TYPES.has(name)) {
@@ -235,17 +235,17 @@ export class TentSettingTab extends PluginSettingTab {
     }
   }
 
-  private drawWorkspacePointerControl(parent: HTMLElement, definition: TypeDefinition) {
+  private drawCoordinationControl(parent: HTMLElement, definition: TypeDefinition) {
     new Setting(parent)
-      .setName("指针")
-      .setDesc("开启后，该一级 type 的框可承载 workspace 路径并注册 workspace 契约。")
+      .setName("协作")
+      .setDesc("开启后，该一级 type 的框可进入协作生命周期（status / task / delivery）。workspace root 由 in-workspace .tent 推导，不再使用 workspace 指针。")
       .addDropdown((dropdown) =>
         dropdown
           .addOption("on", "开")
           .addOption("off", "关")
-          .setValue(baseDefinitionWorkspacePointer(definition) === true ? "on" : "off")
+          .setValue(baseDefinitionCoordination(definition) === true ? "on" : "off")
           .onChange(async (value) => {
-            setBaseWorkspacePointer(definition, value === "on");
+            setBaseCoordination(definition, value === "on");
             await this.plugin.saveSettings();
             this.display();
           })
@@ -254,20 +254,20 @@ export class TentSettingTab extends PluginSettingTab {
 
   private drawAddType(parent: HTMLElement, tier: TypeTier, label: string) {
     let name = "";
-    let workspacePointer = false;
+    let coordination = false;
     const form = new Setting(parent)
       .setName(`新建${label}`)
-      .setDesc(tier === "base" ? "创建后名称不可修改。可选开启 workspace 指针能力。" : "创建后名称不可修改。");
+      .setDesc(tier === "base" ? "创建后名称不可修改。可选开启 collaboration（coordination）能力。" : "创建后名称不可修改。");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => { name = value; }));
     if (tier === "base") {
       form.addDropdown((dropdown) =>
         dropdown
-          .addOption("off", "指针关")
-          .addOption("on", "指针开")
+          .addOption("off", "协作关")
+          .addOption("on", "协作开")
           .setValue("off")
           .onChange((value) => {
-            workspacePointer = value === "on";
+            coordination = value === "on";
           })
       );
     }
@@ -289,7 +289,7 @@ export class TentSettingTab extends PluginSettingTab {
               readable: true,
               writable: false,
               color: "gray",
-              ...(workspacePointer ? { workspacePointer: true } : {}),
+              coordination,
             }
           : { tier: "modifier", color: "gray" };
         this.openType = normalized;

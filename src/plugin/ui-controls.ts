@@ -26,7 +26,7 @@ export function createChevronSelect(
 
 export function drawRwSegment(
   parent: HTMLElement,
-  key: "readable" | "writable" | "workspacePointer",
+  key: "readable" | "writable" | "coordination",
   declared: boolean | undefined,
   onChange: (value: boolean | undefined) => void,
   allowInherit = true,
@@ -36,10 +36,10 @@ export function drawRwSegment(
     cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : ""),
   });
   const keyLabel =
-    key === "readable" ? "R" : key === "writable" ? "W" : "针";
+    key === "readable" ? "R" : key === "writable" ? "W" : "协";
   segment.createSpan({ cls: "tent-seg-key", text: keyLabel });
-  if (key === "workspacePointer") {
-    tentTooltip(segment, "可承载 workspace 指针：开则该一级 type 的框可注册 workspace 路径");
+  if (key === "coordination") {
+    tentTooltip(segment, "可进入协作生命周期：开则该一级 type 的框可承载 status / task / delivery");
   }
   for (const state of rwSegmentStates(declared, allowInherit)) {
     const option = segment.createDiv({

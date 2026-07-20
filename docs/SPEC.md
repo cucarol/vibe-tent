@@ -5,36 +5,25 @@ The Obsidian plugin and CLI are clients of the same core rules.
 
 ## 1. Two Spaces
 
-A Tent points to exactly one real workspace:
+A Tent lives **in-workspace**: the Tent system root is always
+`workspaceRoot/.tent`. Workspace root is derived from that layout (the parent of
+the `.tent` directory), not from a box field or a type-axis “workspace pointer.”
 
-- **Tent** stores intent, context, box state, role contracts, and task
-  envelopes. It consists of plain files and does not use Git.
-- **Workspace** stores code and real deliverables. It must use Git.
+- **Workspace** is the real project root. It stores code and deliverables and
+  must use Git when agents integrate commits.
+- **Tent (system root)** stores intent, context, box state, role contracts, and
+  task envelopes under `.tent/`. It consists of plain files and does not use
+  Git.
 
-`output` is an ordinary box type, not a synonym for every delivery. A box may map
-the Tent to the workspace when its **base type** enables workspace-pointer
-capability:
+Task code channels use **WorkspaceLane** fields on the task envelope
+(`workspace`, `worktree`, `branch`, `targetBranch`). Service/core prepares the
+lane at dispatch or managed execution; agents do not invent those paths.
 
-```yaml
-id: bx-7k2f9q
-type: output
-workspace: C:/path/to/workspace
-ref: 0123abcd
-```
-
-`ref` is a workspace commit. A workspace pointer is registered when:
-
-1. the box's base type has `workspacePointer: true` in `.tent/types.json`
-   (compound types follow the base; modifiers do not configure this flag); and
-2. the box has a non-empty `workspace` value in frontmatter, or a
-   `workspace: ...` line in its body.
-
-The box name and tree position do not matter. Built-in `output` enables the flag
-by default; other base types do not, even if renamed or named similarly. A box
-whose type allows pointers but omits `workspace` is an ordinary box, not a
-workspace pointer. Legacy tents that lack the field treat a base type named
-`output` as enabled for migration. A Tent with multiple distinct workspace paths
-is invalid for dispatch/integration.
+`artifact` is the built-in type for real deliverables or structured
+`artifactRefs` pointers. It is an ordinary coordination-capable box type, not a
+synonym for every delivery and not a workspace-binding mechanism. The legacy
+type name `output` migrates to `artifact`; the retired `workspacePointer` type
+axis is stripped on load and rejected on write.
 
 ## 2. Boxes And Identity
 
@@ -76,13 +65,15 @@ cleared. Any duplicate that cannot be identified as a fresh copy is invalid.
 
 ## 3. Type And Permission Resolution
 
-`.tent/types.json` is a flat OKF-aligned type map. Built-ins are `goal`,
-`prompt`, `output`, `open`, `reference`, `asset`, and `sealed`.
+`.tent/types.json` is a flat OKF-aligned type map. Built-ins are `note`, `goal`,
+`prompt`, `artifact`, `open`, `reference`, `asset`, and `sealed`.
 
-Base type definitions may set optional `workspacePointer: true` so boxes of that
-base type can register the Tent's workspace path when they also carry a
-`workspace` field. Only base types store this flag; modifiers inherit from the
-compound type's base. Default built-in `output` has the flag on.
+Base type definitions may set optional `coordination: true` so concepts of that
+base type can enter the collaboration lifecycle (status, task occupation,
+delivery projection). Only base types store this flag; compound types follow
+the base. Default built-ins `goal`, `prompt`, and `artifact` enable
+coordination; `note` does not. The retired `workspacePointer` flag is ignored
+at runtime and must not be written by clients.
 
 A type is either a base type or a modifier. A compound type such as `goal-draft`
 combines a base with a modifier. Each permission axis resolves independently:
@@ -152,20 +143,22 @@ who may claim a box. The dispatch gate is topology and lifecycle state: the
 target subtree must not overlap an owner or another pending envelope, and it
 must not be archived or structurally invalid.
 
-When the registered workspace exists, the CLI derives and creates/reuses the
-target role's branch and worktree from the role name; neither dispatcher nor
-receiver hand-writes those envelope fields. Without a workspace pointer, a
-normal peer dispatch is a valid pure-Tent task and its envelope has no workspace
-contract.
+When the in-workspace Git root exists, the CLI derives and creates/reuses the
+target role's **WorkspaceLane** from the role name
+(`branch: tent-role/<role>`, `worktree: <parent>/<workspace>-worktrees/<role>`);
+neither dispatcher nor receiver hand-writes those envelope fields. Without a
+Git workspace, a normal peer dispatch is a valid pure-Tent task and its envelope
+has no WorkspaceLane.
 
 `--as-sub --by <role>` sets envelope `asSub: true`, records the dispatching role
 in `dispatchedBy`, and sets `targetBranch` to the dispatcher's role branch
 (`tent-role/<dispatcher>`). Sub commits integrate into that dispatcher lane
 (not mainline). Service `task.dispatch` with `asSub: true` is the same contract
-for durable role and agentProfile assignees. Because that relationship requires
-real Git lanes and a durable registry dispatcher (not `user`, not the assignee),
-sub dispatch fails before envelope creation without them. User/peer dispatch
-does not require a Git workspace. Missing `asSub` reads as peer (`false`).
+for durable role and agentProfile assignees. **asSub rule:** sub dispatch
+requires a durable registry dispatcher role (not `user`, not the assignee) and
+a real Git WorkspaceLane for that dispatcher; it fails before envelope creation
+without them. User/peer dispatch does not require a Git workspace. Missing
+`asSub` reads as peer (`false`).
 
 Manifest fields include `claims`, `readable`, `writable`, and the workspace
 lane. Dynamic claim/task data never enters role init.
@@ -264,7 +257,7 @@ Delivery:
 
 Fork:
 
-- copies a complete subtree, including output boxes;
+- copies a complete subtree, including artifact boxes;
 - changes only the copied root name;
 - preserves descendant names and content;
 - regenerates all copied box ids;
@@ -285,7 +278,6 @@ Core fails loudly on:
 - duplicate ids that are not adopted copies;
 - owner or pending-envelope overlap on confirmed dispatch;
 - stale/active mutation lock;
-- multiple workspace pointer boxes;
 - dirty or wrong workspace target branch;
 - Git integration conflict;
 - invalid order/type state.
