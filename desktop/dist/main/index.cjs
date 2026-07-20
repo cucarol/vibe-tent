@@ -819,11 +819,13 @@ function idOrPathParams(cxOrPath) {
   return { path: key };
 }
 function normalizeProjection(c) {
+  const mode = c.mode === "read-only" || c.mode === "archived" || c.mode === "editable" ? c.mode : c.archived ? "archived" : "editable";
   return {
     ...c,
     children: (c.children ?? []).map(normalizeProjection),
     tags: c.tags ?? [],
-    archived: !!c.archived,
+    mode,
+    archived: mode === "archived" || !!c.archived,
     invalid: !!c.invalid
   };
 }

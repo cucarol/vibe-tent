@@ -673,6 +673,9 @@ var roles = [];
 var taskReview = [];
 var deliveries = [];
 var sessions = [];
+var userAsks = [];
+var a2aApprovals = [];
+var toolApprovals = [];
 var profiles = [];
 var selectedProfileId = null;
 var createTypePick = "";
@@ -705,6 +708,9 @@ var el = {
   dispatch: document.getElementById("dispatch-panel"),
   tasks: document.getElementById("tasks"),
   cards: document.getElementById("cards"),
+  a2u: document.getElementById("a2u-host"),
+  u2a: document.getElementById("u2a-host"),
+  session: document.getElementById("session-host"),
   searchInput: document.getElementById("search-input"),
   searchHits: document.getElementById("search-hits"),
   createType: document.getElementById("create-type"),
@@ -879,7 +885,7 @@ function bindChromeMenus() {
   });
 }
 function syncInspectorSections() {
-  const hasTasks = taskReview.length > 0;
+  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount() > 0;
   const tab = activeCx ? localTabs.get(activeCx) : null;
   const canDispatch = !!(tab && tab.coordination);
   if (!el.secPending || !el.secDispatch || !el.secCards) return;
@@ -887,6 +893,16 @@ function syncInspectorSections() {
   if (anyOpen) return;
   if (hasTasks) el.secPending.open = true;
   else if (canDispatch) el.secDispatch.open = true;
+}
+function actionableTasks() {
+  return taskReview.filter(
+    (task) => ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
+      String(task.state || task.status || "")
+    )
+  );
+}
+function pendingInteractionCount() {
+  return userAsks.length + a2aApprovals.length + toolApprovals.length;
 }
 function bindLayoutChrome() {
   el.btnCollapseLeft?.addEventListener("click", () => onToggleSide("left"));
@@ -925,14 +941,23 @@ async function boot() {
   el.searchInput.addEventListener("keydown", (e) => {
     if (e.key === "Enter") void onSearch();
   });
-  window.tentDesktop.onStateChanged((s) => applyShell(s));
+  window.tentDesktop.onStateChanged((s) => {
+    applyShell(s);
+    if (workspaceId) void Promise.all([reloadPendingInteractions(), reloadTasks()]);
+  });
   await refresh();
 }
 async function refresh() {
   const s = await window.tentDesktop.getState();
   applyShell(s);
   if (workspaceId) {
-    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks(), reloadProfiles()]);
+    await Promise.all([
+      reloadTree(),
+      reloadRegistry(),
+      reloadTasks(),
+      reloadProfiles(),
+      reloadPendingInteractions()
+    ]);
   } else {
     await reloadProfiles();
   }
@@ -1004,6 +1029,10 @@ async function reloadTree() {
   if (!workspaceId) return;
   const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
   tree = result.concepts || [];
+  for (const [id, tab] of localTabs) {
+    const concept = findConcept(tree, id);
+    if (concept?.mode) tab.nodeMode = concept.mode;
+  }
   renderTree();
 }
 async function reloadRegistry() {
@@ -1039,6 +1068,24 @@ async function reloadTasks() {
     sessions = sessionResult.sessions || [];
     taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
     renderTasks();
+    renderTaskInput();
+    renderSessions();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function reloadPendingInteractions() {
+  if (!workspaceId) return;
+  try {
+    const [askResult, a2aResult, toolResult] = await Promise.all([
+      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
+      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
+      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId })
+    ]);
+    userAsks = askResult.asks || [];
+    a2aApprovals = a2aResult.approvals || [];
+    toolApprovals = toolResult.approvals || [];
+    renderPendingInteractions();
   } catch (err) {
     setError(err);
   }
@@ -1096,15 +1143,24 @@ function renderNodes(nodes) {
   return nodes.map((n) => {
     const mark = n.coordination ? nodeStatusMark(n.status) : "";
     const active = n.id === activeCx ? " active" : "";
+    const archived = n.mode === "archived" ? " is-archived" : "";
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)}">
+        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
           <span class="tree-meta">${mark}</span>
         </div>
         ${kids}
       </li>`;
   }).join("");
+}
+function findConcept(nodes, id) {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const child = findConcept(node.children || [], id);
+    if (child) return child;
+  }
+  return void 0;
 }
 async function openConcept(cx) {
   if (!workspaceId) return;
@@ -1129,6 +1185,7 @@ async function openConcept(cx) {
     buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
     dirty: false,
     mode: existing?.mode ?? "source",
+    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs
   };
@@ -1151,6 +1208,9 @@ function renderAll() {
   renderEditor();
   renderMeta();
   renderDispatchPanel();
+  renderPendingInteractions();
+  renderTaskInput();
+  renderSessions();
   renderTree();
   syncInspectorSections();
 }
@@ -1179,7 +1239,7 @@ function renderToolbar() {
   const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
   el.toolbar.innerHTML = `
     <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${modeIco}</button>
-    ${tab.dirty ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
+    ${tab.dirty && tab.nodeMode === "editable" ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
     <div class="menu-wrap">
       <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">${ICO.more}</button>
       <div class="menu" data-doc-menu role="menu" hidden>
@@ -1251,6 +1311,10 @@ async function onToolbar(act) {
   }
 }
 async function saveTab(tab) {
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "\u5F53\u524D Node \u4E0D\u662F\u5F00\u653E\u6A21\u5F0F\uFF0C\u4E0D\u80FD\u4FDD\u5B58\u6B63\u6587\u3002";
+    return;
+  }
   try {
     const result = await window.tentDesktop.rpc("docs.write", {
       workspaceId,
@@ -1284,6 +1348,8 @@ function renderEditor() {
   el.editor.innerHTML = `<textarea class="editor" id="buffer" spellcheck="false"></textarea>`;
   const ta = document.getElementById("buffer");
   ta.value = tab.buffer;
+  ta.readOnly = tab.nodeMode !== "editable";
+  ta.setAttribute("aria-readonly", ta.readOnly ? "true" : "false");
   ta.addEventListener("input", () => {
     tab.buffer = ta.value;
     tab.dirty = true;
@@ -1307,10 +1373,25 @@ function renderMeta() {
     return;
   }
   el.meta.classList.remove("muted");
-  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C` : escapeHtml(tab.type);
+  const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
+  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
+    <div class="meta-controls">
+      <label class="sr-only" for="node-display-name">\u540D\u79F0</label>
+      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
+      <button type="button" id="btn-rename-node" class="btn btn-secondary">\u91CD\u547D\u540D</button>
+    </div>
+    <div class="meta-controls">
+      <label for="node-mode">\u8BBF\u95EE</label>
+      <select id="node-mode" class="field field-compact">
+        <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>\u5F00\u653E</option>
+        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>\u4EC5\u53EF\u8BFB</option>
+        <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>\u5C01\u5B58</option>
+      </select>
+      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">\u5E94\u7528</button>
+    </div>
     <details class="meta-details">
       <summary>\u8BE6\u60C5</summary>
       <dl>
@@ -1319,6 +1400,54 @@ function renderMeta() {
         <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
       </dl>
     </details>`;
+  document.getElementById("btn-rename-node")?.addEventListener("click", () => void onRenameNode());
+  document.getElementById("btn-apply-node-mode")?.addEventListener("click", () => void onSetNodeMode());
+}
+async function onRenameNode() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const input = document.getElementById("node-display-name");
+  const newName = input?.value.trim() || "";
+  if (!tab || !workspaceId || !newName || newName === tab.name) return;
+  try {
+    const result = await window.tentDesktop.rpc("docs.rename", {
+      workspaceId,
+      id: tab.cx,
+      newName,
+      actor: "user"
+    });
+    tab.name = result.name;
+    tab.path = result.path;
+    el.status.textContent = `\u5DF2\u91CD\u547D\u540D\u4E3A\u300C${result.name}\u300D`;
+    await reloadTree();
+    renderAll();
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onSetNodeMode() {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const select = document.getElementById("node-mode");
+  const mode = select?.value;
+  if (!tab || !workspaceId || !mode || mode === tab.nodeMode) return;
+  if (tab.dirty) {
+    el.status.textContent = "\u8BF7\u5148\u4FDD\u5B58\u6216\u64A4\u9500\u5F53\u524D\u4FEE\u6539\uFF0C\u518D\u5207\u6362 Node \u8BBF\u95EE\u6A21\u5F0F\u3002";
+    return;
+  }
+  if (mode === "archived" && !window.confirm(`\u5C01\u5B58\u300C${tab.name}\u300D\u53CA\u5176\u5B50\u6811\uFF1F`)) return;
+  try {
+    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
+    tab.nodeMode = mode;
+    el.status.textContent = mode === "archived" ? `\u5DF2\u5C01\u5B58\u300C${tab.name}\u300D` : "\u8BBF\u95EE\u6A21\u5F0F\u5DF2\u66F4\u65B0";
+    if (mode === "archived") {
+      localTabs.delete(tab.cx);
+      const remainingTabs = [...localTabs.keys()];
+      activeCx = remainingTabs[remainingTabs.length - 1] || null;
+    }
+    await reloadTree();
+    renderAll();
+  } catch (err) {
+    setError(err);
+  }
 }
 function renderDispatchPanel() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -1411,20 +1540,147 @@ async function onDispatch() {
     });
     el.status.textContent = `\u5DF2\u6D3E\u6D3B \u2192 ${result.taskPath}\uFF08${result.state}\uFF09`;
     dispatchPrompt = "";
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
     renderDispatchPanel();
   } catch (err) {
     setError(err);
   }
 }
+function renderPendingInteractions() {
+  const hasPending = pendingInteractionCount() > 0;
+  el.a2u.hidden = !hasPending;
+  if (!hasPending) {
+    el.a2u.innerHTML = "";
+    renderTasks();
+    return;
+  }
+  const asks = userAsks.map((ask) => {
+    const choices = (ask.choices || []).map((choice) => `<label class="choice-row">
+      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
+      <span>${escapeHtml(choice.label)}</span></label>`).join("");
+    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}">
+      <div class="interaction-kicker">AGENT QUESTION \xB7 ${escapeHtml(ask.role || "Agent")}</div>
+      <div class="interaction-title">${escapeHtml(ask.question)}</div>
+      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
+      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
+      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
+    </article>`;
+  }).join("");
+  const a2a = a2aApprovals.map((item) => `<article class="interaction-item">
+    <div class="interaction-kicker">A2A APPROVAL</div>
+    <div class="interaction-title">${escapeHtml(item.role)} \u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
+    <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
+    <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
+    <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
+  </article>`).join("");
+  const tools = toolApprovals.map((item) => {
+    const summary = (item.options || []).map((option) => option.name || option.kind || option.optionId).filter(Boolean).join(" \xB7 ");
+    return `<article class="interaction-item">
+      <div class="interaction-kicker">TOOL PERMISSION</div><div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
+      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 ${escapeHtml(item.sessionId)}</div>
+      ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-tool-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
+      <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
+    </article>`;
+  }).join("");
+  el.a2u.innerHTML = asks + a2a + tools;
+  el.a2u.querySelectorAll("[data-ask-reply]").forEach((button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply"))));
+  el.a2u.querySelectorAll("[data-task-stop]").forEach((button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop"))));
+  el.a2u.querySelectorAll("[data-a2a-allow]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-allow"), "approve")));
+  el.a2u.querySelectorAll("[data-a2a-deny]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-deny"), "deny")));
+  el.a2u.querySelectorAll("[data-tool-allow]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-allow"), true)));
+  el.a2u.querySelectorAll("[data-tool-deny]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-deny"), false)));
+  renderTasks();
+  syncInspectorSections();
+}
+async function onReplyUserAsk(askId) {
+  const item = el.a2u.querySelector(`[data-ask-item="${CSS.escape(askId)}"]`);
+  const answer = item?.querySelector("[data-ask-answer]")?.value.trim() || "";
+  const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
+  if (!answer && !choiceId) {
+    el.status.textContent = "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002";
+    return;
+  }
+  try {
+    await window.tentDesktop.rpc("userAsk.reply", { askId, actor: "user", ...answer ? { answer } : {}, ...choiceId ? { choiceId } : {} });
+    el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onResolveA2A(approvalId, decision) {
+  try {
+    await window.tentDesktop.rpc("a2a.resolve", { approvalId, decision, actor: "user" });
+    el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+async function onResolveTool(approvalId, allow) {
+  try {
+    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", { approvalId, actor: "user" });
+    el.status.textContent = allow ? "\u5DF2\u5141\u8BB8\u672C\u6B21\u5DE5\u5177\u8C03\u7528\u3002" : "\u5DF2\u62D2\u7EDD\u5DE5\u5177\u8C03\u7528\u3002";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) {
+    setError(err);
+  }
+}
+function tasksForActiveNode(states) {
+  if (!activeCx) return [];
+  return actionableTasks().filter((task) => {
+    const state2 = String(task.state || task.status || "");
+    return task.claims.includes(activeCx) && (!states || states.includes(state2));
+  });
+}
+function renderTaskInput() {
+  const candidates = tasksForActiveNode(["running", "taken", "waiting"]);
+  el.u2a.hidden = candidates.length === 0;
+  if (!candidates.length) {
+    el.u2a.innerHTML = "";
+    return;
+  }
+  const options = candidates.map((task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} \xB7 ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`).join("");
+  el.u2a.innerHTML = `<article class="interaction-item u2a-item"><div class="interaction-kicker">\u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
+    ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
+    <textarea id="u2a-text" class="line-input" rows="2" placeholder="\u53D1\u9001\u4E00\u6B21\u6027\u8865\u5145\u6307\u4EE4"></textarea>
+    <div class="interaction-actions"><button type="button" id="btn-send-task-input" class="btn btn-secondary">\u53D1\u9001</button></div></article>`;
+  document.getElementById("btn-send-task-input")?.addEventListener("click", async () => {
+    const text = document.getElementById("u2a-text")?.value.trim() || "";
+    const taskPath = document.getElementById("u2a-task")?.value || candidates[0].path;
+    if (!text) {
+      el.status.textContent = "\u8BF7\u586B\u5199\u8865\u5145\u6307\u4EE4\u3002";
+      return;
+    }
+    try {
+      await window.tentDesktop.rpc("task.sendInput", { workspaceId, taskPath, text, actor: "user" });
+      el.status.textContent = "\u8865\u5145\u6307\u4EE4\u5DF2\u53D1\u9001\u3002";
+      await reloadTasks();
+    } catch (err) {
+      setError(err);
+    }
+  });
+}
+function renderSessions() {
+  const relatedTasks = tasksForActiveNode();
+  const taskIds = new Set(relatedTasks.map((task) => task.id).filter(Boolean));
+  const sessionIds = new Set(relatedTasks.map((task) => task.sessionId).filter(Boolean));
+  const related = sessions.filter((session) => sessionIds.has(session.sessionId) || !!session.lastTaskId && taskIds.has(session.lastTaskId));
+  el.session.hidden = related.length === 0;
+  el.session.innerHTML = related.map((session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
+    <span>${escapeHtml(session.roleName || session.profileId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`).join("");
+}
 function renderTasks() {
+  const visibleTasks = actionableTasks();
   if (el.taskCount) {
-    const n = taskReview.length;
+    const n = visibleTasks.length + pendingInteractionCount();
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
   if (el.secPending) {
-    if (taskReview.length > 0) {
+    if (visibleTasks.length > 0 || pendingInteractionCount() > 0) {
       el.secPending.open = true;
       if (el.secDispatch) el.secDispatch.open = false;
       if (el.secCards) el.secCards.open = false;
@@ -1432,19 +1688,19 @@ function renderTasks() {
       el.secPending.open = false;
     }
   }
-  if (!taskReview.length) {
+  if (!visibleTasks.length) {
     el.tasks.innerHTML = "";
     return;
   }
   const profileOpts = profiles.length > 0 ? profiles.map(
     (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
   ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
-  const anyStartable = taskReview.some((t) => t.canStartAgent);
+  const anyStartable = visibleTasks.some((t) => t.canStartAgent);
   const profileBar = anyStartable ? `<li class="task-profile-bar">
         <label class="sr-only" for="agent-profile">profile</label>
         <select id="agent-profile" title="profile"${profiles.length ? "" : " disabled"}>${profileOpts}</select>
       </li>` : "";
-  el.tasks.innerHTML = profileBar + taskReview.map((t) => {
+  el.tasks.innerHTML = profileBar + visibleTasks.map((t) => {
     const who = escapeHtml(t.role);
     const claims = (t.claims || []).filter(
       (c) => c !== "root" && !/^(cx|rl|tk|ss|dl|ti)-/i.test(c)
@@ -1539,7 +1795,7 @@ async function onStartAgent(taskPath) {
     const sid = result.session?.sessionId;
     const st = result.session?.state || result.task?.state || "";
     el.status.textContent = sid ? `\u5DF2\u542F\u52A8 agent \xB7 ${sid}${st ? `\uFF08${sessionStateLabel(st) || st}\uFF09` : ""}` : `\u5DF2\u542F\u52A8 agent \xB7 ${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
     await reloadTasks().catch(() => void 0);
@@ -1553,7 +1809,7 @@ async function onInterrupt(taskPath) {
       taskPath
     });
     el.status.textContent = `\u5DF2\u4E2D\u65AD\uFF1A${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }
@@ -1568,7 +1824,7 @@ async function onAccept(taskPath) {
       actor: payload.actor
     });
     el.status.textContent = `\u5DF2\u786E\u8BA4\u4EA4\u4ED8\uFF1A${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }
@@ -1591,7 +1847,7 @@ async function onReject(taskPath) {
     });
     el.status.textContent = `\u5DF2\u9A73\u56DE\uFF1A${taskPath}`;
     rejectDrafts.delete(taskPath);
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }

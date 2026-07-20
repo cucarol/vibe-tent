@@ -68,6 +68,8 @@ type ConceptNode = {
   coordination: boolean;
   status?: string;
   assignee?: string;
+  mode?: "editable" | "read-only" | "archived";
+  tags?: string[];
   children?: ConceptNode[];
 };
 
@@ -81,8 +83,38 @@ type TabView = {
   buffer: string;
   dirty: boolean;
   mode: "source" | "preview";
+  nodeMode: "editable" | "read-only" | "archived";
   frontmatter: Record<string, unknown>;
   artifactRefs?: Array<{ kind: string; target: string; label?: string }>;
+};
+
+type UserAskView = {
+  id: string;
+  taskPath: string;
+  sessionId?: string;
+  role?: string;
+  question: string;
+  choices?: Array<{ id: string; label: string }>;
+  createdAt: string;
+};
+
+type A2AApprovalView = {
+  id: string;
+  taskPath: string;
+  role: string;
+  profileId: string;
+  createdAt: string;
+};
+
+type ToolApprovalView = {
+  id: string;
+  sessionId: string;
+  taskPath?: string;
+  role?: string;
+  toolTitle: string;
+  options?: Array<{ optionId: string; kind?: string; name?: string }>;
+  createdAt: string;
+  expiresAt: string;
 };
 
 type ShellState = {
@@ -139,6 +171,9 @@ let roles: RoleOption[] = [];
 let taskReview: TaskReviewItem[] = [];
 let deliveries: DeliveryProjection[] = [];
 let sessions: SessionProjection[] = [];
+let userAsks: UserAskView[] = [];
+let a2aApprovals: A2AApprovalView[] = [];
+let toolApprovals: ToolApprovalView[] = [];
 /** Product profiles from profile.list (safe metadata; no secrets). */
 let profiles: ProfileOption[] = [];
 /** Selected machine-local profile for「启动 agent」— never auto-starts. */
@@ -183,6 +218,9 @@ const el = {
   dispatch: document.getElementById("dispatch-panel")!,
   tasks: document.getElementById("tasks")!,
   cards: document.getElementById("cards")!,
+  a2u: document.getElementById("a2u-host")!,
+  u2a: document.getElementById("u2a-host")!,
+  session: document.getElementById("session-host")!,
   searchInput: document.getElementById("search-input") as HTMLInputElement,
   searchHits: document.getElementById("search-hits")!,
   createType: document.getElementById("create-type") as HTMLSelectElement,
@@ -392,7 +430,7 @@ function bindChromeMenus(): void {
 
 /** Inspector: empty sections stay collapsed; only open what needs attention. */
 function syncInspectorSections(): void {
-  const hasTasks = taskReview.length > 0;
+  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount() > 0;
   const tab = activeCx ? localTabs.get(activeCx) : null;
   const canDispatch = !!(tab && tab.coordination);
   if (!el.secPending || !el.secDispatch || !el.secCards) return;
@@ -402,6 +440,18 @@ function syncInspectorSections(): void {
   if (hasTasks) el.secPending.open = true;
   else if (canDispatch) el.secDispatch.open = true;
   // 否则保持全收起，不展开空说明
+}
+
+function actionableTasks(): TaskReviewItem[] {
+  return taskReview.filter((task) =>
+    ["queued", "pending", "running", "taken", "waiting", "delivered"].includes(
+      String(task.state || task.status || "")
+    )
+  );
+}
+
+function pendingInteractionCount(): number {
+  return userAsks.length + a2aApprovals.length + toolApprovals.length;
 }
 
 function bindLayoutChrome(): void {
@@ -444,7 +494,10 @@ async function boot(): Promise<void> {
     if (e.key === "Enter") void onSearch();
   });
 
-  window.tentDesktop.onStateChanged((s) => applyShell(s as ShellState));
+  window.tentDesktop.onStateChanged((s) => {
+    applyShell(s as ShellState);
+    if (workspaceId) void Promise.all([reloadPendingInteractions(), reloadTasks()]);
+  });
   await refresh();
 }
 
@@ -452,7 +505,13 @@ async function refresh(): Promise<void> {
   const s = (await window.tentDesktop.getState()) as ShellState;
   applyShell(s);
   if (workspaceId) {
-    await Promise.all([reloadTree(), reloadRegistry(), reloadTasks(), reloadProfiles()]);
+    await Promise.all([
+      reloadTree(),
+      reloadRegistry(),
+      reloadTasks(),
+      reloadProfiles(),
+      reloadPendingInteractions(),
+    ]);
   } else {
     await reloadProfiles();
   }
@@ -536,6 +595,10 @@ async function reloadTree(): Promise<void> {
     concepts: ConceptNode[];
   };
   tree = result.concepts || [];
+  for (const [id, tab] of localTabs) {
+    const concept = findConcept(tree, id);
+    if (concept?.mode) tab.nodeMode = concept.mode;
+  }
   renderTree();
 }
 
@@ -581,6 +644,25 @@ async function reloadTasks(): Promise<void> {
     sessions = sessionResult.sessions || [];
     taskReview = buildTaskReviewItems(taskResult.tasks || [], deliveries, sessions);
     renderTasks();
+    renderTaskInput();
+    renderSessions();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function reloadPendingInteractions(): Promise<void> {
+  if (!workspaceId) return;
+  try {
+    const [askResult, a2aResult, toolResult] = await Promise.all([
+      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }) as Promise<{ asks: UserAskView[] }>,
+      window.tentDesktop.rpc("a2a.listPending", { workspaceId }) as Promise<{ approvals: A2AApprovalView[] }>,
+      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }) as Promise<{ approvals: ToolApprovalView[] }>,
+    ]);
+    userAsks = askResult.asks || [];
+    a2aApprovals = a2aResult.approvals || [];
+    toolApprovals = toolResult.approvals || [];
+    renderPendingInteractions();
   } catch (err) {
     setError(err);
   }
@@ -653,9 +735,10 @@ function renderNodes(nodes: ConceptNode[]): string {
     .map((n) => {
       const mark = n.coordination ? nodeStatusMark(n.status) : "";
       const active = n.id === activeCx ? " active" : "";
+      const archived = n.mode === "archived" ? " is-archived" : "";
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
       return `<li>
-        <div class="tree-node${active}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)}">
+        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)} · ${escapeHtml(n.mode || "editable")}">
           <span class="tree-name">${escapeHtml(n.name)}</span>
           <span class="tree-meta">${mark}</span>
         </div>
@@ -663,6 +746,15 @@ function renderNodes(nodes: ConceptNode[]): string {
       </li>`;
     })
     .join("");
+}
+
+function findConcept(nodes: ConceptNode[], id: string): ConceptNode | undefined {
+  for (const node of nodes) {
+    if (node.id === id) return node;
+    const child = findConcept(node.children || [], id);
+    if (child) return child;
+  }
+  return undefined;
 }
 
 async function openConcept(cx: string): Promise<void> {
@@ -676,6 +768,7 @@ async function openConcept(cx: string): Promise<void> {
     name?: string;
     type?: string;
     coordination?: boolean;
+    mode?: "editable" | "read-only" | "archived";
     body: string;
     raw?: string;
     etag: string;
@@ -701,6 +794,7 @@ async function openConcept(cx: string): Promise<void> {
     buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
     dirty: false,
     mode: existing?.mode ?? "source",
+    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs,
   };
@@ -725,6 +819,9 @@ function renderAll(): void {
   renderEditor();
   renderMeta();
   renderDispatchPanel();
+  renderPendingInteractions();
+  renderTaskInput();
+  renderSessions();
   renderTree();
   syncInspectorSections();
 }
@@ -759,7 +856,7 @@ function renderToolbar(): void {
   el.toolbar.innerHTML = `
     <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${modeIco}</button>
     ${
-      tab.dirty
+      tab.dirty && tab.nodeMode === "editable"
         ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="保存">保存</button>`
         : ""
     }
@@ -840,6 +937,10 @@ async function onToolbar(act: string): Promise<void> {
 }
 
 async function saveTab(tab: TabView): Promise<void> {
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "当前 Node 不是开放模式，不能保存正文。";
+    return;
+  }
   try {
     const result = (await window.tentDesktop.rpc("docs.write", {
       workspaceId,
@@ -875,6 +976,8 @@ function renderEditor(): void {
   el.editor.innerHTML = `<textarea class="editor" id="buffer" spellcheck="false"></textarea>`;
   const ta = document.getElementById("buffer") as HTMLTextAreaElement;
   ta.value = tab.buffer;
+  ta.readOnly = tab.nodeMode !== "editable";
+  ta.setAttribute("aria-readonly", ta.readOnly ? "true" : "false");
   ta.addEventListener("input", () => {
     tab.buffer = ta.value;
     tab.dirty = true;
@@ -901,12 +1004,28 @@ function renderMeta(): void {
   }
   el.meta.classList.remove("muted");
   // 标题 + 最多一行关键属性；类型/路径/id 收进详情折叠
+  const modeLabel =
+    tab.nodeMode === "read-only" ? "仅可读" : tab.nodeMode === "archived" ? "封存" : "开放";
   const oneLine = tab.coordination
-    ? `${escapeHtml(tab.type)} · 协作`
-    : escapeHtml(tab.type);
+    ? `${escapeHtml(tab.type)} · 协作 · ${modeLabel}`
+    : `${escapeHtml(tab.type)} · ${modeLabel}`;
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
+    <div class="meta-controls">
+      <label class="sr-only" for="node-display-name">名称</label>
+      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}" />
+      <button type="button" id="btn-rename-node" class="btn btn-secondary">重命名</button>
+    </div>
+    <div class="meta-controls">
+      <label for="node-mode">访问</label>
+      <select id="node-mode" class="field field-compact">
+        <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>开放</option>
+        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>仅可读</option>
+        <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>封存</option>
+      </select>
+      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">应用</button>
+    </div>
     <details class="meta-details">
       <summary>详情</summary>
       <dl>
@@ -915,6 +1034,56 @@ function renderMeta(): void {
         <dt>标识</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
       </dl>
     </details>`;
+  document.getElementById("btn-rename-node")?.addEventListener("click", () => void onRenameNode());
+  document.getElementById("btn-apply-node-mode")?.addEventListener("click", () => void onSetNodeMode());
+}
+
+async function onRenameNode(): Promise<void> {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const input = document.getElementById("node-display-name") as HTMLInputElement | null;
+  const newName = input?.value.trim() || "";
+  if (!tab || !workspaceId || !newName || newName === tab.name) return;
+  try {
+    const result = (await window.tentDesktop.rpc("docs.rename", {
+      workspaceId,
+      id: tab.cx,
+      newName,
+      actor: "user",
+    })) as { name: string; path: string };
+    tab.name = result.name;
+    tab.path = result.path;
+    el.status.textContent = `已重命名为「${result.name}」`;
+    await reloadTree();
+    renderAll();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+async function onSetNodeMode(): Promise<void> {
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  const select = document.getElementById("node-mode") as HTMLSelectElement | null;
+  const mode = select?.value as TabView["nodeMode"] | undefined;
+  if (!tab || !workspaceId || !mode || mode === tab.nodeMode) return;
+  if (tab.dirty) {
+    el.status.textContent = "请先保存或撤销当前修改，再切换 Node 访问模式。";
+    return;
+  }
+  if (mode === "archived" && !window.confirm(`封存「${tab.name}」及其子树？`)) return;
+  try {
+    await window.tentDesktop.rpc("docs.setMode", { workspaceId, id: tab.cx, mode });
+    tab.nodeMode = mode;
+    el.status.textContent = mode === "archived" ? `已封存「${tab.name}」` : "访问模式已更新";
+    if (mode === "archived") {
+      localTabs.delete(tab.cx);
+      const remainingTabs = [...localTabs.keys()];
+      activeCx = remainingTabs[remainingTabs.length - 1] || null;
+    }
+    await reloadTree();
+    renderAll();
+  } catch (err) {
+    setError(err);
+  }
 }
 
 function renderDispatchPanel(): void {
@@ -1025,22 +1194,139 @@ async function onDispatch(): Promise<void> {
     })) as { taskPath: string; state: string };
     el.status.textContent = `已派活 → ${result.taskPath}（${result.state}）`;
     dispatchPrompt = "";
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
     renderDispatchPanel();
   } catch (err) {
     setError(err);
   }
 }
 
+function renderPendingInteractions(): void {
+  const hasPending = pendingInteractionCount() > 0;
+  el.a2u.hidden = !hasPending;
+  if (!hasPending) {
+    el.a2u.innerHTML = "";
+    renderTasks();
+    return;
+  }
+  const asks = userAsks.map((ask) => {
+    const choices = (ask.choices || []).map((choice) => `<label class="choice-row">
+      <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
+      <span>${escapeHtml(choice.label)}</span></label>`).join("");
+    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}">
+      <div class="interaction-kicker">AGENT QUESTION · ${escapeHtml(ask.role || "Agent")}</div>
+      <div class="interaction-title">${escapeHtml(ask.question)}</div>
+      ${choices ? `<div class="choice-list">${choices}</div>` : ""}
+      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="补充说明（可选）"></textarea>
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">回复</button>
+      <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">中断任务</button></div>
+    </article>`;
+  }).join("");
+  const a2a = a2aApprovals.map((item) => `<article class="interaction-item">
+    <div class="interaction-kicker">A2A APPROVAL</div>
+    <div class="interaction-title">${escapeHtml(item.role)} 请求启动 ${escapeHtml(item.profileId)}</div>
+    <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
+    <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">允许一次</button>
+    <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">拒绝</button></div>
+  </article>`).join("");
+  const tools = toolApprovals.map((item) => {
+    const summary = (item.options || []).map((option) => option.name || option.kind || option.optionId).filter(Boolean).join(" · ");
+    return `<article class="interaction-item">
+      <div class="interaction-kicker">TOOL PERMISSION</div><div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
+      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} · ${escapeHtml(item.sessionId)}</div>
+      ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
+      <div class="interaction-actions"><button type="button" class="btn btn-primary" data-tool-allow="${escapeHtml(item.id)}">允许一次</button>
+      <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">拒绝</button></div>
+    </article>`;
+  }).join("");
+  el.a2u.innerHTML = asks + a2a + tools;
+  el.a2u.querySelectorAll<HTMLElement>("[data-ask-reply]").forEach((button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")!)));
+  el.a2u.querySelectorAll<HTMLElement>("[data-task-stop]").forEach((button) => button.addEventListener("click", () => void onInterrupt(button.getAttribute("data-task-stop")!)));
+  el.a2u.querySelectorAll<HTMLElement>("[data-a2a-allow]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-allow")!, "approve")));
+  el.a2u.querySelectorAll<HTMLElement>("[data-a2a-deny]").forEach((button) => button.addEventListener("click", () => void onResolveA2A(button.getAttribute("data-a2a-deny")!, "deny")));
+  el.a2u.querySelectorAll<HTMLElement>("[data-tool-allow]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-allow")!, true)));
+  el.a2u.querySelectorAll<HTMLElement>("[data-tool-deny]").forEach((button) => button.addEventListener("click", () => void onResolveTool(button.getAttribute("data-tool-deny")!, false)));
+  renderTasks();
+  syncInspectorSections();
+}
+
+async function onReplyUserAsk(askId: string): Promise<void> {
+  const item = el.a2u.querySelector<HTMLElement>(`[data-ask-item="${CSS.escape(askId)}"]`);
+  const answer = item?.querySelector<HTMLTextAreaElement>("[data-ask-answer]")?.value.trim() || "";
+  const choiceId = item?.querySelector<HTMLInputElement>("input[type=radio]:checked")?.value || "";
+  if (!answer && !choiceId) { el.status.textContent = "请选择一个选项或填写回复。"; return; }
+  try {
+    await window.tentDesktop.rpc("userAsk.reply", { askId, actor: "user", ...(answer ? { answer } : {}), ...(choiceId ? { choiceId } : {}) });
+    el.status.textContent = "已回复 Agent。";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) { setError(err); }
+}
+
+async function onResolveA2A(approvalId: string, decision: "approve" | "deny"): Promise<void> {
+  try {
+    await window.tentDesktop.rpc("a2a.resolve", { approvalId, decision, actor: "user" });
+    el.status.textContent = decision === "approve" ? "已允许启动 Agent。" : "已拒绝启动 Agent。";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) { setError(err); }
+}
+
+async function onResolveTool(approvalId: string, allow: boolean): Promise<void> {
+  try {
+    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", { approvalId, actor: "user" });
+    el.status.textContent = allow ? "已允许本次工具调用。" : "已拒绝工具调用。";
+    await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
+  } catch (err) { setError(err); }
+}
+
+function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
+  if (!activeCx) return [];
+  return actionableTasks().filter((task) => {
+    const state = String(task.state || task.status || "");
+    return task.claims.includes(activeCx!) && (!states || states.includes(state));
+  });
+}
+
+function renderTaskInput(): void {
+  const candidates = tasksForActiveNode(["running", "taken", "waiting"]);
+  el.u2a.hidden = candidates.length === 0;
+  if (!candidates.length) { el.u2a.innerHTML = ""; return; }
+  const options = candidates.map((task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} · ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`).join("");
+  el.u2a.innerHTML = `<article class="interaction-item u2a-item"><div class="interaction-kicker">追加任务输入</div>
+    ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
+    <textarea id="u2a-text" class="line-input" rows="2" placeholder="发送一次性补充指令"></textarea>
+    <div class="interaction-actions"><button type="button" id="btn-send-task-input" class="btn btn-secondary">发送</button></div></article>`;
+  document.getElementById("btn-send-task-input")?.addEventListener("click", async () => {
+    const text = (document.getElementById("u2a-text") as HTMLTextAreaElement | null)?.value.trim() || "";
+    const taskPath = (document.getElementById("u2a-task") as HTMLSelectElement | null)?.value || candidates[0]!.path;
+    if (!text) { el.status.textContent = "请填写补充指令。"; return; }
+    try {
+      await window.tentDesktop.rpc("task.sendInput", { workspaceId, taskPath, text, actor: "user" });
+      el.status.textContent = "补充指令已发送。";
+      await reloadTasks();
+    } catch (err) { setError(err); }
+  });
+}
+
+function renderSessions(): void {
+  const relatedTasks = tasksForActiveNode();
+  const taskIds = new Set(relatedTasks.map((task) => task.id).filter(Boolean));
+  const sessionIds = new Set(relatedTasks.map((task) => task.sessionId).filter(Boolean));
+  const related = sessions.filter((session) => sessionIds.has(session.sessionId) || (!!session.lastTaskId && taskIds.has(session.lastTaskId)));
+  el.session.hidden = related.length === 0;
+  el.session.innerHTML = related.map((session) => `<div class="session-row"><span class="session-dot ${session.alive ? "is-live" : ""}" aria-hidden="true"></span>
+    <span>${escapeHtml(session.roleName || session.profileId)}</span><span class="muted">${escapeHtml(sessionStateLabel(session.state) || session.state)}</span></div>`).join("");
+}
+
 function renderTasks(): void {
+  const visibleTasks = actionableTasks();
   if (el.taskCount) {
-    const n = taskReview.length;
+    const n = visibleTasks.length + pendingInteractionCount();
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
   // 有任务时确保待处理展开；空则收起
   if (el.secPending) {
-    if (taskReview.length > 0) {
+    if (visibleTasks.length > 0 || pendingInteractionCount() > 0) {
       el.secPending.open = true;
       if (el.secDispatch) el.secDispatch.open = false;
       if (el.secCards) el.secCards.open = false;
@@ -1048,7 +1334,7 @@ function renderTasks(): void {
       el.secPending.open = false;
     }
   }
-  if (!taskReview.length) {
+  if (!visibleTasks.length) {
     el.tasks.innerHTML = "";
     return;
   }
@@ -1063,7 +1349,7 @@ function renderTasks(): void {
           .join("")
       : `<option value="">（无 profile）</option>`;
 
-  const anyStartable = taskReview.some((t) => t.canStartAgent);
+  const anyStartable = visibleTasks.some((t) => t.canStartAgent);
   const profileBar = anyStartable
     ? `<li class="task-profile-bar">
         <label class="sr-only" for="agent-profile">profile</label>
@@ -1073,7 +1359,7 @@ function renderTasks(): void {
 
   el.tasks.innerHTML =
     profileBar +
-    taskReview
+    visibleTasks
       .map((t) => {
         // 谁 / 在做什么 / 一句摘要 / 动作；id/path/状态字收进详情
         const who = escapeHtml(t.role);
@@ -1205,7 +1491,7 @@ async function onStartAgent(taskPath: string): Promise<void> {
     el.status.textContent = sid
       ? `已启动 agent · ${sid}${st ? `（${sessionStateLabel(st) || st}）` : ""}`
       : `已启动 agent · ${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
     await reloadTasks().catch(() => undefined);
@@ -1220,7 +1506,7 @@ async function onInterrupt(taskPath: string): Promise<void> {
       taskPath,
     });
     el.status.textContent = `已中断：${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }
@@ -1236,7 +1522,7 @@ async function onAccept(taskPath: string): Promise<void> {
       actor: payload.actor,
     });
     el.status.textContent = `已确认交付：${taskPath}`;
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }
@@ -1260,7 +1546,7 @@ async function onReject(taskPath: string): Promise<void> {
     });
     el.status.textContent = `已驳回：${taskPath}`;
     rejectDrafts.delete(taskPath);
-    await Promise.all([reloadTasks(), reloadTree()]);
+    await Promise.all([reloadTasks(), reloadTree(), reloadPendingInteractions()]);
   } catch (err) {
     setError(err);
   }
