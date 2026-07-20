@@ -372,7 +372,6 @@ function createMainWindow(paths, prefs, isDev2) {
     }
   };
   const win = new import_electron.BrowserWindow(opts);
-  if (process.platform === "win32") win.setMenuBarVisibility(false);
   void win.loadFile(paths.mainHtml);
   if (isDev2) {
     if (process.env.TENT_DESKTOP_DEVTOOLS === "1") win.webContents.openDevTools({ mode: "detach" });

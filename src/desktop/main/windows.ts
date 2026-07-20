@@ -49,7 +49,6 @@ export function createMainWindow(
     },
   };
   const win = new BrowserWindow(opts);
-  if (process.platform === "win32") win.setMenuBarVisibility(false);
   void win.loadFile(paths.mainHtml);
   if (isDev) {
     // Optional: open DevTools when TENT_DESKTOP_DEVTOOLS=1
