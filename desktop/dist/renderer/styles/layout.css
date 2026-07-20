@@ -88,12 +88,12 @@
 .tree-panel .pane-head {
   gap: var(--space-1);
   padding: 0 var(--space-3) 0 var(--space-4);
-  align-items: flex-start;
-  height: auto;
-  min-height: 72px;
-  max-height: none;
-  padding-top: 22px;
-  padding-bottom: var(--space-3);
+  align-items: center;
+  height: var(--pane-head-height);
+  min-height: var(--pane-head-height);
+  max-height: var(--pane-head-height);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .tree-panel .pane-head-main {

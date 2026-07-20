@@ -1,9 +1,15 @@
-/** DOM hosts for the three-pane main workbench (ids match index.html). */
+/** DOM hosts for the app shell + three-pane workbench (ids match index.html). */
 export const el = {
   health: document.getElementById("health-pill")!,
   wsSelect: document.getElementById("workspace-select") as HTMLSelectElement,
   status: document.getElementById("status-line")!,
+  appRoot: document.getElementById("app-root"),
   layout: document.getElementById("main-layout")!,
+  secondaryHost: document.getElementById("secondary-host"),
+  graphHost: document.getElementById("graph-host"),
+  activityHost: document.getElementById("activity-host"),
+  settingsHost: document.getElementById("settings-host"),
+  activityBadge: document.getElementById("activity-badge"),
   treePanel: document.getElementById("tree-panel")!,
   sidePanel: document.getElementById("side-panel")!,
   splitterLeft: document.getElementById("splitter-left")!,
@@ -38,6 +44,13 @@ export const el = {
   secDispatch: document.getElementById("sec-dispatch") as HTMLDetailsElement | null,
   secCards: document.getElementById("sec-cards") as HTMLDetailsElement | null,
 };
+
+/** Sync top-nav activity badge with pending + reviewable work. */
+export function syncActivityBadge(count: number): void {
+  if (!el.activityBadge) return;
+  el.activityBadge.hidden = count === 0;
+  el.activityBadge.textContent = String(count);
+}
 
 export function setStatus(message: string, title?: string): void {
   el.status.textContent = message;

@@ -1,5 +1,6 @@
 // Main workbench renderer — talks only to preload bridge → service.
-// Componentized pure refactor: shell wires domains; state owns RPC adapters.
+// Componentized: shell wires domains; state owns RPC adapters; secondary surfaces
+// (graph / activity / settings) extend without collapsing back into one file.
 
 import "./api-types.js";
 import {
@@ -15,12 +16,13 @@ import {
 } from "./main/collaboration.js";
 import { openConcept, renderEditor, renderTabs, renderToolbar, bindDocumentHost } from "./main/document.js";
 import { renderDispatchPanel, bindDispatchHost } from "./main/dispatch.js";
-import { el, setError } from "./main/elements.js";
+import { el, setError, syncActivityBadge } from "./main/elements.js";
 import { renderMeta, syncInspectorSections, bindInspectorHost } from "./main/inspector.js";
 import { bindChromeMenus, bindLayoutChrome } from "./main/layout.js";
 import {
   bindStateHost,
   deliveries,
+  pendingInteractionCount,
   reloadPendingInteractions,
   reloadProfiles,
   reloadRegistry,
@@ -36,6 +38,7 @@ import {
   setTree,
   setWorkspaceId,
   setCreateTypePick,
+  actionableTasks,
   workspaceId,
 } from "./main/state.js";
 import type { ShellState } from "./main/types.js";
@@ -47,6 +50,17 @@ import {
   renderCreateTypeSelect,
   renderTree,
 } from "./main/tree.js";
+import { bindShellHost, bindSurfaceNav, getSurface, setSurface, type AppSurface } from "./main/shell.js";
+import { bindGraphHost, onGraphTreeChanged, reloadGraph, renderGraph } from "./main/graph.js";
+import { bindActivityHost, renderActivity } from "./main/activity.js";
+import { reloadSettings, renderSettings } from "./main/settings.js";
+
+function updateActivityChrome(): void {
+  const n =
+    pendingInteractionCount() +
+    actionableTasks().filter((t) => t.canAcceptOrReject).length;
+  syncActivityBadge(n);
+}
 
 function renderAll(): void {
   renderTabs();
@@ -59,16 +73,29 @@ function renderAll(): void {
   renderSessions();
   renderTree();
   syncInspectorSections();
+  updateActivityChrome();
+  // Keep secondary surfaces coherent when data reloads while they are open.
+  const surface = getSurface();
+  if (surface === "activity") renderActivity();
+  if (surface === "graph") renderGraph();
 }
 
 bindStateHost({
   renderTree,
   renderCreateTypeSelect,
   renderDispatchPanel,
-  renderTasks,
+  renderTasks: () => {
+    renderTasks();
+    updateActivityChrome();
+    if (getSurface() === "activity") renderActivity();
+  },
   renderTaskInput,
   renderSessions,
-  renderPendingInteractions,
+  renderPendingInteractions: () => {
+    renderPendingInteractions();
+    updateActivityChrome();
+    if (getSurface() === "activity") renderActivity();
+  },
 });
 bindTreeHost({ openConcept });
 bindDocumentHost({
@@ -79,10 +106,33 @@ bindDocumentHost({
 });
 bindInspectorHost({ renderAll });
 bindDispatchHost({ renderDispatchPanel });
+bindShellHost({
+  onSurfaceChange: (surface) => {
+    void onSurfaceEnter(surface);
+  },
+});
+bindGraphHost({
+  openConcept,
+  goWorkbench: () => setSurface("workbench"),
+});
+bindActivityHost({
+  goWorkbench: () => setSurface("workbench"),
+});
+
+async function onSurfaceEnter(surface: AppSurface): Promise<void> {
+  if (surface === "graph") {
+    await reloadGraph().catch((err) => setError(err));
+  } else if (surface === "activity") {
+    renderActivity();
+  } else if (surface === "settings") {
+    await reloadSettings().catch((err) => setError(err));
+  }
+}
 
 async function boot(): Promise<void> {
   bindLayoutChrome();
   bindChromeMenus();
+  bindSurfaceNav();
   document.getElementById("btn-open-ws")!.addEventListener("click", onOpenWorkspace);
   document.getElementById("btn-refresh")!.addEventListener("click", () => void refresh());
   document.getElementById("btn-new-note")!.addEventListener("click", () => void onCreateNote());
@@ -121,9 +171,13 @@ async function refresh(): Promise<void> {
       reloadProfiles(),
       reloadPendingInteractions(),
     ]);
+    onGraphTreeChanged();
   } else {
     await reloadProfiles();
   }
+  updateActivityChrome();
+  const surface = getSurface();
+  if (surface !== "workbench") await onSurfaceEnter(surface);
 }
 
 function applyShell(s: ShellState): void {
@@ -197,6 +251,7 @@ function applyShell(s: ShellState): void {
 
   renderTasks();
   renderDispatchPanel();
+  updateActivityChrome();
   void loadCards();
 }
 
