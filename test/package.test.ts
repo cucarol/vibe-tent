@@ -475,7 +475,7 @@ test("external tent complete:--require-check without workspace fails before muta
 
   await assert.rejects(
     () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", "git --version"),
-    /require-check requires a workspace pointer/,
+    /require-check requires a workspace root/,
   );
 
   assert.equal(await fs.readFile(fixture.boxNote, "utf8"), beforeBox);

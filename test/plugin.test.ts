@@ -274,22 +274,27 @@ test("plugin surfaces: no workspacePointer registry/settings write path", async 
   const path = await import("node:path");
   const { fileURLToPath } = await import("node:url");
   const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+  const pluginFiles = ["registry-pane.ts", "settings.ts", "ui-controls.ts", "view.ts"];
   const sources = await Promise.all(
-    ["registry-pane.ts", "settings.ts", "ui-controls.ts", "view.ts"].map((name) =>
-      fs.readFile(path.join(root, "src", "plugin", name), "utf8")
-    )
+    pluginFiles.map((name) => fs.readFile(path.join(root, "src", "plugin", name), "utf8"))
   );
   for (const src of sources) {
     assert.doesNotMatch(src, /workspacePointer\s*:/);
     assert.doesNotMatch(src, /workspacePointer:\s*true/);
     assert.doesNotMatch(src, /setBaseWorkspacePointer/);
     assert.doesNotMatch(src, /"workspacePointer"/);
+    // Retired product phrase must not reappear in user-facing plugin copy/prompts
+    assert.doesNotMatch(src, /workspace pointer/i);
   }
   // coordination is the live lifecycle axis exposed by settings/registry UI
-  const [registryPane, settingsSrc] = sources;
+  const [registryPane, settingsSrc, , viewSrc] = sources;
   assert.match(registryPane, /coordination/);
   assert.match(settingsSrc, /setBaseCoordination/);
   assert.match(settingsSrc, /baseDefinitionCoordination/);
+  // genesis clipboard prompt uses in-workspace / workspace-root language
+  assert.match(viewSrc, /workspace root/i);
+  assert.match(viewSrc, /in-workspace/i);
+  assert.doesNotMatch(viewSrc, /workspace pointer/i);
 });
 
 test("plugin colors:roles use explicit and inferred colors", () => {

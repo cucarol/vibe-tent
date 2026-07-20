@@ -5412,7 +5412,7 @@ var TentView = class extends import_obsidian4.ItemView {
     };
   }
   async copyGenesisPrompt() {
-    const prompt = "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace pointer, initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent and initialize the real workspace. Tent itself does not use Git.";
+    const prompt = "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace root (in-workspace `.tent` layout), initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent under that workspace and initialize the real workspace Git. Tent itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
     new import_obsidian4.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
   }

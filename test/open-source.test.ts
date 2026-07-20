@@ -162,6 +162,20 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   assert.doesNotMatch(uiControls, /workspacePointer/);
   assert.match(registryPane, /coordination/);
   assert.match(pluginSettings, /setBaseCoordination|baseDefinitionCoordination/);
+
+  // Plugin user-facing copy must not reintroduce the retired product phrase
+  const viewSrc = await fs.readFile(path.join(repoRoot, "src", "plugin", "view.ts"), "utf8");
+  for (const src of [registryPane, pluginSettings, uiControls, viewSrc]) {
+    assert.doesNotMatch(src, /workspace pointer/i);
+  }
+  assert.match(viewSrc, /workspace root \(in-workspace/i);
+
+  // Legacy external CLI complete errors: valid paths, renamed product wording only
+  const tentCli = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
+  assert.doesNotMatch(tentCli, /requires a workspace pointer/);
+  assert.doesNotMatch(tentCli, /has no workspace pointer/);
+  assert.match(tentCli, /require-check requires a workspace root/);
+  assert.match(tentCli, /The Tent has no workspace root/);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {

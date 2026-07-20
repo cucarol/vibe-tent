@@ -508,7 +508,7 @@ export class TentView extends ItemView {
 
   private async copyGenesisPrompt() {
     const prompt =
-      "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace pointer, initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent and initialize the real workspace. Tent itself does not use Git.";
+      "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace root (in-workspace `.tent` layout), initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent under that workspace and initialize the real workspace Git. Tent itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
     new Notice("已复制 tent-genesis 起手 prompt");
   }

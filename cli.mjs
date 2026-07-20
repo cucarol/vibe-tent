@@ -5511,12 +5511,12 @@ ${r.relayPrompt}`);
       let integrationLines = [];
       const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
       if (flags["require-check"]) {
-        if (!workspacePath) return fail("--require-check requires a workspace pointer");
+        if (!workspacePath) return fail("--require-check requires a workspace root");
         await runWorkspaceCheck(workspacePath, flags["require-check"]);
       }
       const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
       const integrate = async (commitRefs) => {
-        if (!workspacePath) throw new Error("The Tent has no workspace pointer");
+        if (!workspacePath) throw new Error("The Tent has no workspace root");
         const contract = await ensureRoleWorkspace(workspacePath, owner);
         const integrated = await integrateWorkspaceCommits(contract, commitRefs);
         integrationLines = integrated.map(
