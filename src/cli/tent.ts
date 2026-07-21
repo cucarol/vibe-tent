@@ -8,6 +8,7 @@
 //   tent new <帐名> --vault <vault>    同上,但读 vault 的 tentsRoot 设置,落到 <vault>/<tentsRoot>/<帐名>
 //   tent migrate|import --source <legacyRoot> --workspace <ws> [--dry-run] [--force]  旧独立帐根 → <ws>/.tent
 //   tent skill-install [--target all|claude|shared-agents] [--force]
+//   tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
 //   tent tree | status | roles | find | tags       // 只读
 //   tent dispatch / task-ack / complete / …        // external root migration window only
 
@@ -20,6 +21,15 @@ import {
   resolveCliSkillInstallDirs,
   type SkillInstallItemResult,
 } from "../machine/skills.js";
+import {
+  doctorAgentHooks,
+  formatAgentHooksResults,
+  installAgentHooks,
+  parseAgentHookId,
+  removeAgentHooks,
+  resolveAgentHookSelection,
+  type AgentHookId,
+} from "../machine/agent-hooks.js";
 import { loadTent } from "../core/tree.js";
 import {
   OpsEnv,
@@ -109,7 +119,7 @@ export function inWorkspaceLegacyMutationMessage(cmd: string, systemRoot: string
     `systemRoot is <workspace>/${TENT_SYSTEM_DIR}` +
     (workspace ? ` (workspace: ${workspace})` : "") +
     `.\n` +
-    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install.\n` +
+    `Allowed without Service: read-only tree/status/roles/find/tags; init/derived new/migrate/role-init/skill-install/agent-hooks.\n` +
     `External (non-${TENT_SYSTEM_DIR}) Tent roots still accept legacy mutation commands during the migration window.`
   );
 }
@@ -173,6 +183,52 @@ async function main() {
       force,
     });
     console.log(formatSkillInstallResults(target, results));
+    return;
+  }
+  // Machine-local native hook/config projection (no system root / Service required).
+  if (cmd === "agent-hooks") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(agentHooksHelpText());
+      return;
+    }
+    if (sub !== "install" && sub !== "doctor" && sub !== "remove") {
+      return fail(
+        `Unknown agent-hooks subcommand: ${sub}\nUsage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot] [--json]`
+      );
+    }
+    const { positionals, flags } = parseFlags(rest);
+    if (positionals.length > 0) {
+      return fail(
+        `Usage: tent agent-hooks ${sub} [--agent all|claude|codex|agy|copilot] [--json]`
+      );
+    }
+    let agents: AgentHookId[] | undefined;
+    try {
+      agents = flags.agent
+        ? resolveAgentHookSelection([flags.agent])
+        : undefined;
+      // Validate alias early when --agent is a single token that might be invalid.
+      if (flags.agent && flags.agent !== "all") parseAgentHookId(flags.agent);
+    } catch (error) {
+      return fail(error instanceof Error ? error.message : String(error));
+    }
+    const asJson = flags.json === "true";
+    // --home is a test/CLI override for machine-local config roots.
+    const home = flags.home || undefined;
+    const tentCommand = flags["tent-command"] || flags.tentCommand || undefined;
+    const runOpts = { agents, home, tentCommand };
+    const batch =
+      sub === "install"
+        ? await installAgentHooks(runOpts)
+        : sub === "doctor"
+          ? await doctorAgentHooks(runOpts)
+          : await removeAgentHooks(runOpts);
+    if (asJson) {
+      console.log(JSON.stringify(batch, null, 2));
+    } else {
+      console.log(formatAgentHooksResults(batch));
+    }
     return;
   }
   // External/legacy tent root → in-workspace `.tent` (B5). Does not require an existing system root.
@@ -248,7 +304,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent agent-hooks role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -650,6 +706,30 @@ function parseFlags(args: string[]): { positionals: string[]; flags: Record<stri
   return { positionals, flags };
 }
 
+function agentHooksHelpText(): string {
+  return `tent agent-hooks — machine-local native hook/config projection (V0.2)
+
+Usage:
+  tent agent-hooks install [--agent all|claude|codex|agy|copilot] [--json]
+  tent agent-hooks doctor  [--agent all|claude|codex|agy|copilot] [--json]
+  tent agent-hooks remove  [--agent all|claude|codex|agy|copilot] [--json]
+
+Behavior:
+  - SessionStart → tent agent enter
+  - Stop         → tent agent leave
+  - Merges into existing agent configs; never rewrites permissions or MCP.
+  - install / doctor / remove are idempotent.
+  - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
+  - Non-Tent cwd silent success is handled by tent agent enter|leave (not this command).
+
+Options:
+  --agent <id>     Target agent (default: all). Alias: agy → antigravity.
+  --json           Machine-readable result.
+  --home <path>    Override home for config roots (tests).
+  --tent-command <cmd>  Override tent entry used in projected commands (tests).
+`;
+}
+
 /** CLI stdout for skill-install — keep message shape compatible with package tests. */
 function formatSkillInstallResults(target: string, results: SkillInstallItemResult[]): string {
   const byDir = new Map<string, SkillInstallItemResult[]>();
@@ -716,6 +796,9 @@ Init / machine config (always allowed):
                                      Options: --dry-run --force --json
   skill-install [--target all|claude|shared-agents] [--force]
                                      Install bundled skills to selected machine roots.
+  agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copilot]
+                                     Project Tent-managed SessionStart/Stop hooks into
+                                     verified agent configs (no permissions / MCP).
   role-init <role>                   Regenerate the derived stable role init document.
 
 Read-only (allowed on in-workspace .tent):

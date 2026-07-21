@@ -1,0 +1,13 @@
+{
+  "UserPromptSubmit": [
+    {
+      "hooks": [
+        {
+          "type": "command",
+          "command": "echo pre-existing-codex-hook",
+          "async": false
+        }
+      ]
+    }
+  ]
+}

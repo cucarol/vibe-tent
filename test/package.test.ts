@@ -805,6 +805,7 @@ test("CLI 表面:help 与 version 正常退出", async () => {
   const help = await runCli(repoRoot, "--help");
   assert.match(help.stdout, /Usage:/);
   assert.match(help.stdout, /skill-install/);
+  assert.match(help.stdout, /agent-hooks/);
   assert.match(help.stdout, /status/);
   assert.match(help.stdout, /task-ack/);
   assert.match(help.stdout, /clean-temp/);
