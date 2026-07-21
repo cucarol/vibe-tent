@@ -15049,7 +15049,7 @@ var CodexAcpProviderAdapter = class {
     this.onPermissionAsk = options.onPermissionAsk;
   }
   capabilities() {
-    return mainstreamAcpCapabilities();
+    return loadSessionAcpCapabilities("external-app");
   }
   /**
    * Launch plan validation / env injection only.
@@ -15089,13 +15089,37 @@ var CodexAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "codex-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -15109,7 +15133,6 @@ var CodexAcpProviderAdapter = class {
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
     });
-    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
     return parseAcpResumeToken(raw);
@@ -15135,7 +15158,7 @@ var ClaudeAcpProviderAdapter = class {
     this.onPermissionAsk = options.onPermissionAsk;
   }
   capabilities() {
-    return mainstreamAcpCapabilities();
+    return loadSessionAcpCapabilities("external-app");
   }
   /**
    * Launch plan validation / optional env injection only.
@@ -15174,13 +15197,37 @@ var ClaudeAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "claude-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -15194,7 +15241,6 @@ var ClaudeAcpProviderAdapter = class {
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
     });
-    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
     return parseAcpResumeToken(raw);
@@ -15396,7 +15442,7 @@ var CopilotAcpProviderAdapter = class {
     this.onPermissionAsk = options.onPermissionAsk;
   }
   capabilities() {
-    return mainstreamAcpCapabilities();
+    return loadSessionAcpCapabilities("external-app");
   }
   resolveLaunch(plan) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
@@ -15429,13 +15475,37 @@ var CopilotAcpProviderAdapter = class {
     };
   }
   async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "copilot-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -15449,7 +15519,6 @@ var CopilotAcpProviderAdapter = class {
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
     });
-    return startManagedAcpSession({ plan, emit: emit2, client });
   }
   parseResumeToken(raw) {
     return parseAcpResumeToken(raw);
