@@ -3222,7 +3222,11 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
     });
     assert.ok(!s2.error, JSON.stringify(s2.error));
     const sessionId2 = (s2.result as { session: { sessionId: string } }).session.sessionId;
-    assert.notEqual(sessionId2, sessionId1);
+    assert.equal(
+      sessionId2,
+      sessionId1,
+      "a resumable durable Role Session is reused across tasks"
+    );
     assert.equal(
       (await loadTaskEnvelope(mount.env.fs, taskPath2)).roleBranchBase,
       firstRef
@@ -3949,6 +3953,111 @@ test("task.startSession reuses old sessionId via native load when resumeCapable 
       }, 45_000, "auto-delivery after resume bootstrap");
       assert.equal(delivery.summary, "RESUME_REUSE_OK");
       assert.doesNotMatch(delivery.summary, /HISTORY/);
+    },
+    { profiles: [profile] }
+  );
+});
+
+test("durable role reuses one provider session across delivered tasks", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("role-session-cross-task");
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-role-session-log-")),
+    "mock-acp-role-session.json"
+  );
+  const profile = mockAcpProfile("mock-acp-role-session", {
+    logPath,
+    promptText: "ROLE_SESSION_DONE",
+    keepAlive: true,
+  });
+  profile.env = {
+    ...profile.env,
+    MOCK_ACP_LOAD_SESSION: "1",
+    MOCK_ACP_HISTORY_TEXT: "OLD_TASK_HISTORY",
+  };
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const firstDispatch = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "first role task",
+      });
+      const firstPath = (firstDispatch.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath: firstPath });
+      const firstStart = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: firstPath,
+        profileId: profile.id,
+        callerKind: "user",
+      });
+      assert.ok(!firstStart.error, JSON.stringify(firstStart.error));
+      const sessionId = (
+        firstStart.result as { session: { sessionId: string } }
+      ).session.sessionId;
+
+      await pollUntil(async () => {
+        const rec = await svc.runtime.registry.read(sessionId);
+        return rec?.state === "stopped" ? rec : null;
+      }, 45_000, "first role delivery stop");
+
+      const secondBox = await rpc(svc, "docs.createNote", {
+        workspaceId,
+        name: "second-role-task",
+        type: "prompt",
+      });
+      const secondDispatch = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId: (secondBox.result as { id: string }).id,
+        role: "executor",
+        prompt: "second role task",
+      });
+      const secondPath = (secondDispatch.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath: secondPath });
+      const secondTask = await rpc(svc, "task.get", { workspaceId, taskPath: secondPath });
+      const secondTaskId = (
+        secondTask.result as { task: { id: string } }
+      ).task.id;
+
+      const secondStart = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath: secondPath,
+        profileId: profile.id,
+        callerKind: "user",
+      });
+      assert.ok(!secondStart.error, JSON.stringify(secondStart.error));
+      assert.equal(
+        (secondStart.result as { session: { sessionId: string } }).session.sessionId,
+        sessionId,
+        "Role Session must keep the same Tent session id across tasks"
+      );
+
+      const rebound = await svc.runtime.registry.read(sessionId);
+      assert.equal(rebound?.lastTaskId, secondTaskId);
+      const log = await pollUntil(async () => {
+        try {
+          const parsed = JSON.parse(await fs.readFile(logPath, "utf8")) as {
+            methods: string[];
+            loads?: Array<{ sessionId: string }>;
+          };
+          return parsed.methods.includes("session/load") ? parsed : null;
+        } catch {
+          return null;
+        }
+      }, 45_000, "cross-task session/load");
+      assert.ok(!log.methods.includes("session/new"));
+      assert.equal(log.loads?.[0]?.sessionId, "mock-acp-session-1");
+
+      const secondDelivery = await pollUntil(async () => {
+        const listed = await rpc(svc, "delivery.list", { workspaceId });
+        return (
+          listed.result as { deliveries: Array<{ taskId: string; summary: string }> }
+        ).deliveries.find((delivery) => delivery.taskId === secondTaskId);
+      }, 45_000, "second role delivery");
+      assert.equal(secondDelivery.summary, "ROLE_SESSION_DONE");
+      assert.doesNotMatch(secondDelivery.summary, /OLD_TASK_HISTORY/);
     },
     { profiles: [profile] }
   );

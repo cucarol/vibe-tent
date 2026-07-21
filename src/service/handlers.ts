@@ -3289,10 +3289,19 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       systemRoot: mount.systemRoot,
     });
 
-  // After service restart: waiting task may still hold the old Tent sessionId.
-  // When probe says resumeCapable (provider token + canResume), reuse that session
-  // via native load — never cross worktree/cwd. Otherwise keep create-new semantics.
-  const priorSessionId = task.sessionId?.trim() || "";
+  // A durable role owns one provider session across tasks. Prefer the task's
+  // historical binding, then the latest stopped role session with the same
+  // profile and runtime cwd. agentProfile tasks remain task-scoped.
+  const roleSession = isProfileTask
+    ? undefined
+    : await findResumableManagedSessionForRole(
+        ctx,
+        workspaceId,
+        task.role,
+        profileId,
+        cwd
+      );
+  const priorSessionId = task.sessionId?.trim() || roleSession?.id || "";
   let resumePrior = false;
   if (priorSessionId) {
     try {
@@ -3317,7 +3326,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
           workspaceMatches &&
           roleMatches &&
           assigneeKindMatches &&
-          taskMatches;
+          (!isProfileTask || taskMatches);
       }
     } catch (err) {
       // A stale task.sessionId whose machine-local registry row was cleaned is
@@ -3337,6 +3346,7 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         runtimeWorkspace: { cwd },
         cwd,
         bootstrapPrompt: sessionBootstrap,
+        lastTaskId: task.id || taskPath,
       });
     } else {
       handle = await ctx.runtime.startSession({
@@ -5000,12 +5010,11 @@ async function projectRuntimeEventOnce(
       // is still bound to this session (or has no sessionId yet). After reject-resume
       // rebinds to a new ss-, a late session.exited from the prior process must not
       // task.fail the rework occupation or cancel the review-feedback U2A item.
-      const task = tasks.find((t) => {
-        if (t.sessionId === ev.sessionId) return true;
+      const currentTask = tasks.find((t) => {
         if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
-        if (t.sessionId && t.sessionId !== ev.sessionId) return false;
-        return true;
+        return !t.sessionId || t.sessionId === ev.sessionId;
       });
+      const task = currentTask ?? tasks.find((t) => t.sessionId === ev.sessionId);
       if (!task) continue;
       if (ev.type === "session.waiting_user" && task.state === "running") {
         await ctx.mutations.run(mount.workspaceId, async () => {
@@ -5507,7 +5516,7 @@ async function restoreManagedSessionAfterRejectResume(
       input.workspaceId,
       task.role
     );
-    if (activeForRole && activeForRole.id !== priorSessionId) {
+    if (activeForRole) {
       const boundToThisTask =
         (!!task.id && activeForRole.lastTaskId === task.id) ||
         activeForRole.lastTaskId === input.taskPath;
@@ -6118,6 +6127,43 @@ async function findActiveManagedSessionForRole(
       SessionRegistry.isNonTerminal(rec.state) &&
       rec.state !== "external"
   );
+}
+
+/**
+ * Latest stopped provider session that belongs to this durable role lane.
+ * Provider capability is confirmed through probe; no session/new fallback is
+ * hidden behind this lookup.
+ */
+async function findResumableManagedSessionForRole(
+  ctx: HandlerContext,
+  workspaceId: string,
+  roleName: string,
+  profileId: string,
+  cwd: string
+): Promise<SessionRecord | undefined> {
+  if (!roleName) return undefined;
+  const candidates = (await ctx.runtime.registry.list())
+    .filter(
+      (rec) =>
+        rec.workspace === workspaceId &&
+        rec.roleName === roleName &&
+        (rec.assigneeKind ?? "role") !== "agentProfile" &&
+        rec.profileId === profileId &&
+        rec.state === "stopped" &&
+        !!rec.resumeToken &&
+        !!rec.runtimeWorkspace?.cwd &&
+        isSameWorkspaceRoot(
+          nodePath.resolve(rec.runtimeWorkspace.cwd),
+          nodePath.resolve(cwd)
+        )
+    )
+    .sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+
+  for (const candidate of candidates) {
+    const probe = await ctx.runtime.probe(candidate.id);
+    if (!probe.alive && probe.resumeCapable) return candidate;
+  }
+  return undefined;
 }
 
 /**

@@ -86,6 +86,8 @@ export interface ResumeSessionRequest {
    * must never auto-deliver; only a subsequent session/prompt may.
    */
   bootstrapPrompt?: string;
+  /** Rebind a durable Role Session to its current task before prompting. */
+  lastTaskId?: string;
 }
 
 export interface SessionHandle {

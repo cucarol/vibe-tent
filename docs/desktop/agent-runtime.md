@@ -62,12 +62,12 @@ Do **not** call either a “workspace pointer.” Lane is prepared by service/co
 
 ### Invariants
 
-1. **role ≠ session.** Changing or replacing a session does not change role identity, queue membership, or box occupation. Role may cache `currentSessionId` as a projection only.
+1. **role ≠ session, but a durable role keeps one current session.** Changing or replacing a session does not change role identity, queue membership, or box occupation. Across tasks, service reuses the latest stopped, resume-capable session only when workspace, role, profile, assignee kind, and runtime cwd still match. `lastTaskId` is rebound to the current task before prompting; `agentProfile` tasks remain task-scoped.
 2. **AgentProfile ≠ role.** Temporary one-shot agents may use a profile without entering the durable role registry (Task API already allows `assigneeKind: agentProfile`). **AgentProfile** configs never enter workspace git. Each new machine-local Session captures a non-secret launch-profile snapshot (including Skill name/path refs and MCP server descriptions with envKey/credentialRef only); native resume uses that snapshot so later profile edits cannot reinterpret an old provider token or hot-update MCP/skills on a live session. Credential values are resolved again by `credentialRef` at resume / session start for MCP env and headers.
 3. **ProviderAdapter ≠ Generic “supports all CLIs”.** A shared process skeleton is allowed; each shippable provider still needs its own adapter class (or explicit profile + verified capability set) and verification checklist.
 4. **Legacy `role.cli` is input, not runtime.** Existing `RoleCliConfig { command, resume? }` and SPEC “never spawn” hints are **migration sources for AgentProfile drafts**. They are not a second supervisor and must not be invoked by skills as spawn authority.
 5. **WorkspaceLane is orthogonal to session.** Durable role worktree/branch (`ensureRoleWorkspace` → `tent-role/<role>`) is prepared by service/core before internal `startSession`. One-shot agentProfile tasks use a task-scoped lane (`ensureTaskWorkspace` → `tent-task/<taskId>`) acquired at managed execution, not a durable `tent-role/<profile>` lane. Session rows store `assigneeKind` so live-role checks never treat profile sessions as durable role sessions.
-6. **Task stores `sessionId` only.** Session rows, PIDs, resume tokens, and RuntimeWorkspace absolute paths stay machine-local.
+6. **Task stores `sessionId` only.** Several historical tasks may retain the same durable Role Session id; runtime event projection uses the session row's current `lastTaskId`, not an older task's stale reference. Session rows, PIDs, resume tokens, and RuntimeWorkspace absolute paths stay machine-local.
 
 ---
 

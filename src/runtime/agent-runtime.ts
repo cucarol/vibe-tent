@@ -647,7 +647,7 @@ export class AgentRuntime implements AgentRuntimePort {
         workspaceLane: record.workspaceLane,
         runtimeWorkspace: { cwd },
         workspace: record.workspace,
-        lastTaskId: record.lastTaskId,
+        lastTaskId: req.lastTaskId ?? record.lastTaskId,
         env: req.env,
         bootstrapPrompt: req.bootstrapPrompt,
       }, profile);
@@ -681,6 +681,7 @@ export class AgentRuntime implements AgentRuntimePort {
       exitCode: undefined,
       stopReason: undefined,
       runtimeWorkspace: { cwd },
+      lastTaskId: req.lastTaskId ?? record.lastTaskId,
       updatedAt: now,
     });
     this.emit({ type: "session.starting", sessionId: req.sessionId });
