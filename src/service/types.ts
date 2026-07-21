@@ -252,6 +252,15 @@ export const PROVIDER_VERIFICATION_LEVELS = [
 export type ProviderVerificationLevel =
   (typeof PROVIDER_VERIFICATION_LEVELS)[number];
 
+export const NATIVE_FOREGROUND_LEVELS = [
+  "verified",
+  "unverified",
+  "unsupported",
+] as const;
+
+export type NativeForegroundLevel =
+  (typeof NATIVE_FOREGROUND_LEVELS)[number];
+
 /**
  * One product provider verification fact (provider.catalog).
  * Never includes secrets, env values, credentials, or profile config.
@@ -264,6 +273,12 @@ export type ProviderCatalogEntry = {
    * Derived from adapter.capabilities().canResume on the product registry.
    */
   canResume?: boolean;
+  /**
+   * Whether a provider-native CLI has been proven to resume the same ACP
+   * session and hand it back to ACP. This is repository evidence, not a
+   * machine-local installed/authenticated readiness check.
+   */
+  nativeForeground: NativeForegroundLevel;
   /** Optional short non-secret note for UI; only when authoritative and useful. */
   notes?: string;
 };

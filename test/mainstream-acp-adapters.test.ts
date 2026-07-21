@@ -30,6 +30,7 @@ import {
   createCopilotAcpAdapter,
 } from "../src/adapters/copilot-acp/index.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
+import { defaultNpxLaunch } from "../src/adapters/acp/index.js";
 import type { RuntimeEvent } from "../src/runtime/types.js";
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -72,8 +73,9 @@ test("Codex ACP resolves the official npx bridge and injects headless API-key au
     extras: { acp: { envKey: "OPENAI_API_KEY" } },
   });
 
-  assert.equal(launch.command, process.platform === "win32" ? "npx.cmd" : "npx");
-  assert.deepEqual(launch.args, ["--yes", CODEX_ACP_NPX_PACKAGE]);
+  const npx = defaultNpxLaunch();
+  assert.equal(launch.command, npx.command);
+  assert.deepEqual(launch.args, [...npx.argsPrefix, "--yes", CODEX_ACP_NPX_PACKAGE]);
   assert.equal(launch.env.OPENAI_API_KEY, "secret-for-test");
   assert.deepEqual(JSON.parse(launch.env.DEFAULT_AUTH_REQUEST), {
     methodId: "api-key",
@@ -108,8 +110,9 @@ test("Claude ACP resolves the official npx bridge and permits local-login mode",
     extras: { acp: {} },
   });
 
-  assert.equal(launch.command, process.platform === "win32" ? "npx.cmd" : "npx");
-  assert.deepEqual(launch.args, ["--yes", CLAUDE_ACP_NPX_PACKAGE]);
+  const npx = defaultNpxLaunch();
+  assert.equal(launch.command, npx.command);
+  assert.deepEqual(launch.args, [...npx.argsPrefix, "--yes", CLAUDE_ACP_NPX_PACKAGE]);
   assert.equal(launch.env.DEFAULT_AUTH_REQUEST, undefined);
   assert.equal(launch.env.ANTHROPIC_API_KEY, undefined);
 });
@@ -205,8 +208,10 @@ test("Copilot ACP uses the official npx package in explicit stdio mode", () => {
     env: {},
     extras: { acp: { model: "claude-sonnet-4.5" } },
   });
-  assert.equal(launch.command, process.platform === "win32" ? "npx.cmd" : "npx");
+  const npx = defaultNpxLaunch();
+  assert.equal(launch.command, npx.command);
   assert.deepEqual(launch.args, [
+    ...npx.argsPrefix,
     "--yes",
     COPILOT_ACP_NPX_PACKAGE,
     "--acp",

@@ -19,6 +19,7 @@ import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.j
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
 import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
 import type {
+  NativeForegroundLevel,
   ProviderCatalogEntry,
   ProviderCatalogProjection,
   ProviderVerificationLevel,
@@ -36,17 +37,28 @@ import {
  * Level semantics:
  * - adapter-implemented — launch contract coded; no repository mock/live suite claim
  * - mock-tested — offline mock ACP suite covers launch/protocol
- * - live-e2e — checked-in opt-in live E2E exists (currently grok-acp only)
+ * - live-e2e — checked-in opt-in live E2E exists and has passed against the provider
  */
 const PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER: Readonly<
   Record<ProductAcpAdapterId, ProviderVerificationLevel>
 > = {
   "grok-acp": "live-e2e",
-  "codex-acp": "mock-tested",
-  "claude-acp": "mock-tested",
+  "codex-acp": "live-e2e",
+  "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
   "opencode-acp": "mock-tested",
   "copilot-acp": "mock-tested",
+};
+
+const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
+  Record<ProductAcpAdapterId, NativeForegroundLevel>
+> = {
+  "grok-acp": "verified",
+  "codex-acp": "verified",
+  "claude-acp": "verified",
+  "antigravity-acp": "unsupported",
+  "opencode-acp": "unverified",
+  "copilot-acp": "unverified",
 };
 
 const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);
@@ -99,6 +111,7 @@ export function projectProviderCatalog(): ProviderCatalogProjection {
       adapterId,
       verificationLevel,
       canResume: adapter.capabilities().canResume === true,
+      nativeForeground: NATIVE_FOREGROUND_BY_ADAPTER[adapterId],
     });
   }
   return { providers };

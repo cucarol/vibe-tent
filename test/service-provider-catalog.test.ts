@@ -13,6 +13,7 @@ import { createServiceClient } from "../src/service/client.js";
 import {
   CLIENT_METHODS,
   isClientMethod,
+  NATIVE_FOREGROUND_LEVELS,
   PROVIDER_VERIFICATION_LEVELS,
   type ProviderCatalogEntry,
   type ProviderCatalogProjection,
@@ -31,12 +32,21 @@ const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);
 /** Expected verification levels from repository evidence (mock suite / live E2E). */
 const EXPECTED_LEVELS: Record<string, ProviderVerificationLevel> = {
   "grok-acp": "live-e2e",
-  "codex-acp": "mock-tested",
-  "claude-acp": "mock-tested",
+  "codex-acp": "live-e2e",
+  "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
   "opencode-acp": "mock-tested",
   "copilot-acp": "mock-tested",
 };
+
+const EXPECTED_FOREGROUND = {
+  "grok-acp": "verified",
+  "codex-acp": "verified",
+  "claude-acp": "verified",
+  "antigravity-acp": "unsupported",
+  "opencode-acp": "unverified",
+  "copilot-acp": "unverified",
+} as const;
 
 async function withService<T>(
   fn: (svc: Awaited<ReturnType<typeof startLocalTentService>>) => Promise<T>
@@ -92,9 +102,14 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     // Minimal projection: no secret-shaped or env-value fields.
     assert.equal(
       Object.keys(entry).every((k) =>
-        ["adapterId", "verificationLevel", "canResume", "notes"].includes(k)
+        ["adapterId", "verificationLevel", "canResume", "nativeForeground", "notes"].includes(k)
       ),
       true
+    );
+    assert.ok(NATIVE_FOREGROUND_LEVELS.includes(entry.nativeForeground));
+    assert.equal(
+      entry.nativeForeground,
+      EXPECTED_FOREGROUND[entry.adapterId as keyof typeof EXPECTED_FOREGROUND]
     );
     assert.ok(!("envKey" in entry));
     assert.ok(!("credentialRef" in entry));
@@ -114,11 +129,11 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     );
   }
 
-  // Only grok currently has repository live-e2e evidence.
+  // These adapters have checked-in real ACP/native CLI/ACP roundtrip probes.
   const live = providers.filter((p) => p.verificationLevel === "live-e2e");
   assert.deepEqual(
     live.map((p) => p.adapterId),
-    ["grok-acp"]
+    ["grok-acp", "codex-acp", "claude-acp"]
   );
 
   // Resume evidence: verified loadSession bridges advertise canResume; Antigravity does not.

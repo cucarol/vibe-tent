@@ -12,13 +12,13 @@ import type { RuntimeEvent } from "../../runtime/types.js";
 import {
   AcpClient,
   bindAcpPermissionHooks,
-  defaultNpxCommand,
   loadSessionAcpCapabilities,
   mapAcpProcessExit,
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
   readAcpSessionProjection,
+  resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
   startManagedAcpSession,
@@ -70,17 +70,17 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const hasCommandOverride = !!plan.command?.trim();
-    const command =
-      plan.command?.trim() || opts.executable || defaultNpxCommand();
-    const defaultArgs = opts.executable
-      ? ["--acp", "--stdio"]
-      : ["--yes", COPILOT_ACP_NPX_PACKAGE, "--acp", "--stdio"];
-    if (opts.model) defaultArgs.push("--model", opts.model);
-    const args = plan.args
-      ? [...plan.args]
-      : hasCommandOverride
-        ? []
-        : defaultArgs;
+    const base = resolveNpxAcpLaunch({
+      planCommand: plan.command,
+      planArgs: plan.args,
+      executable: opts.executable,
+      defaultPackage: COPILOT_ACP_NPX_PACKAGE,
+    });
+    const args = [...base.args];
+    if (!plan.args && !hasCommandOverride) args.push("--acp", "--stdio");
+    if (!plan.args && !hasCommandOverride && opts.model) {
+      args.push("--model", opts.model);
+    }
 
     const env: Record<string, string> = {
       ...plan.env,
@@ -100,7 +100,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     }
 
     return {
-      command,
+      command: base.command,
       args,
       cwd: plan.cwd,
       env,

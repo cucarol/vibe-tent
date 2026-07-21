@@ -7,6 +7,8 @@ import {
   type AcpProfileOptions,
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
+import * as fs from "node:fs";
+import * as path from "node:path";
 
 /**
  * Read ACP profile bag from LaunchPlan.extras.
@@ -111,9 +113,34 @@ export function resolvePlanOrProcessEnv(
   return undefined;
 }
 
-/** Windows uses npx.cmd so CreateProcess can resolve the shim without a shell. */
+/** Legacy display helper. Prefer defaultNpxLaunch for an actually spawnable plan. */
 export function defaultNpxCommand(): string {
   return process.platform === "win32" ? "npx.cmd" : "npx";
+}
+
+/** Resolve npx without a command-shell hop (`.cmd` + piped stdio is EINVAL on Windows). */
+export function defaultNpxLaunch(): { command: string; argsPrefix: string[] } {
+  if (process.platform !== "win32") return { command: "npx", argsPrefix: [] };
+
+  const candidates: string[] = [];
+  const npmExecPath = process.env.npm_execpath?.trim();
+  if (npmExecPath) candidates.push(path.join(path.dirname(npmExecPath), "npx-cli.js"));
+  for (const dir of (process.env.PATH || "").split(path.delimiter)) {
+    const root = dir.trim().replace(/^"|"$/g, "");
+    if (root) candidates.push(path.join(root, "node_modules", "npm", "bin", "npx-cli.js"));
+  }
+
+  const npxCli = candidates.find((candidate) => fs.existsSync(candidate));
+  if (!npxCli) {
+    throw new Error(
+      "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an explicit ACP executable"
+    );
+  }
+  const adjacentNode = path.resolve(npxCli, "..", "..", "..", "..", "node.exe");
+  return {
+    command: fs.existsSync(adjacentNode) ? adjacentNode : "node.exe",
+    argsPrefix: [npxCli],
+  };
 }
 
 /**
@@ -127,20 +154,21 @@ export function resolveNpxAcpLaunch(input: {
   defaultPackage: string;
 }): { command: string; args: string[] } {
   const defaultArgs = ["--yes", input.defaultPackage];
+  const usingDefaultLauncher =
+    !(typeof input.planCommand === "string" && input.planCommand.trim()) &&
+    !input.executable;
+  const defaultLaunch = usingDefaultLauncher ? defaultNpxLaunch() : undefined;
   const command =
     (typeof input.planCommand === "string" && input.planCommand.trim()
       ? input.planCommand.trim()
       : undefined) ||
     input.executable ||
-    defaultNpxCommand();
-  const usingDefaultLauncher =
-    !(typeof input.planCommand === "string" && input.planCommand.trim()) &&
-    !input.executable;
+    defaultLaunch!.command;
   const args =
     input.planArgs && input.planArgs.length > 0
       ? [...input.planArgs]
       : usingDefaultLauncher
-        ? [...defaultArgs]
+        ? [...defaultLaunch!.argsPrefix, ...defaultArgs]
         : [];
   return { command, args };
 }

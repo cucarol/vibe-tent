@@ -38,6 +38,7 @@ export {
 } from "./managed-session.js";
 export {
   defaultNpxCommand,
+  defaultNpxLaunch,
   normalizeAcpPermissionPolicy,
   normalizeSharedAcpOpts,
   readAcpExtras,
