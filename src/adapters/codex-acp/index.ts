@@ -14,14 +14,15 @@ import type { RuntimeEvent } from "../../runtime/types.js";
 import {
   AcpClient,
   bindAcpPermissionHooks,
+  loadSessionAcpCapabilities,
   mapAcpProcessExit,
-  mainstreamAcpCapabilities,
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
   readAcpSessionProjection,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
+  resumeManagedAcpSession,
   startManagedAcpSession,
   type AcpPermissionAskHooks,
 } from "../acp/index.js";
@@ -87,7 +88,9 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    return mainstreamAcpCapabilities();
+    // Verified 2026-07-21: @agentclientprotocol/codex-acp@1.1.5 initialize
+    // advertises agentCapabilities.loadSession; sessionId is ACP-native (CLI resume-homologous).
+    return loadSessionAcpCapabilities("external-app");
   }
 
   /**
@@ -137,6 +140,41 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (ev: RuntimeEvent) => void
   ): Promise<ManagedSession> {
+    const client = this.createClient(plan, emit);
+    return startManagedAcpSession({ plan, emit, client });
+  }
+
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (ev: RuntimeEvent) => void
+  ): Promise<ManagedSession> {
+    const providerSessionId = (
+      token.providerSessionId ?? token.raw
+    ).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "codex-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit);
+    return resumeManagedAcpSession({
+      plan,
+      emit,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt,
+    });
+  }
+
+  private createClient(
+    plan: LaunchPlan,
+    emit: (ev: RuntimeEvent) => void
+  ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
@@ -146,7 +184,7 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
     });
 
     // No authenticate hook — Codex bridge uses env DEFAULT_AUTH_REQUEST / local login.
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -160,8 +198,6 @@ export class CodexAcpProviderAdapter implements ProviderAdapter {
       emit,
       onPermissionAsk: permHooks.onPermissionAsk,
     });
-
-    return startManagedAcpSession({ plan, emit, client });
   }
 
   parseResumeToken(raw: string): ResumeToken {

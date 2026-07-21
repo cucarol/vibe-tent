@@ -300,107 +300,127 @@ for (const [name, adapter] of [
   });
 }
 
-test("OpenCode ACP advertises canResume; other mainstream adapters stay false", () => {
-  assert.equal(createOpenCodeAcpAdapter().capabilities().canResume, true);
-  assert.equal(typeof createOpenCodeAcpAdapter().resumeManagedSession, "function");
-  for (const adapter of [
-    createCodexAcpAdapter(),
-    createClaudeAcpAdapter(),
-    createAntigravityAcpAdapter(),
-    createCopilotAcpAdapter(),
-  ] as ProviderAdapter[]) {
-    assert.equal(adapter.capabilities().canResume, false, adapter.id);
-    assert.equal(adapter.resumeManagedSession, undefined, adapter.id);
+const RESUME_CAPABLE_MAINSTREAM: ReadonlyArray<
+  readonly [string, () => ProviderAdapter]
+> = [
+  ["OpenCode", createOpenCodeAcpAdapter],
+  ["Codex", createCodexAcpAdapter],
+  ["Claude", createClaudeAcpAdapter],
+  ["Copilot", createCopilotAcpAdapter],
+];
+
+test("mainstream ACP loadSession adapters advertise canResume; Antigravity stays false", () => {
+  for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
+    const adapter = create();
+    assert.equal(adapter.capabilities().canResume, true, name);
+    assert.equal(typeof adapter.resumeManagedSession, "function", name);
   }
+  const antigravity: ProviderAdapter = createAntigravityAcpAdapter();
+  assert.equal(antigravity.capabilities().canResume, false);
+  assert.equal(antigravity.resumeManagedSession, undefined);
 });
 
-test("OpenCode ACP resumeManagedSession uses session/load and isolates history replay", async () => {
-  const cwd = await tempDir("tent-opencode-load-");
-  const logPath = path.join(cwd, "mock-acp-log.json");
-  const events: RuntimeEvent[] = [];
-  const adapter = createOpenCodeAcpAdapter();
-  const session = await adapter.resumeManagedSession!(
-    {
-      sessionId: "ss-opencode-load",
-      profileId: "opencode-acp-default",
-      cwd,
-      env: {
-        MOCK_ACP_LOG: logPath,
-        MOCK_ACP_KEEP_ALIVE: "0",
-        MOCK_ACP_LOAD_SESSION: "1",
-        MOCK_ACP_HISTORY_TEXT: "OLD_HISTORY_MUST_NOT_DELIVER",
-        MOCK_ACP_PROMPT_TEXT: "POST_LOAD_ONLY",
-      },
-      command: process.execPath,
-      args: [MOCK_ACP],
-      bootstrapPrompt: "resume bootstrap after load",
-      extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
-    },
-    { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
-    (event) => events.push(event)
-  );
-
-  const managed = session as typeof session & { waitBootstrap(): Promise<void> };
-  await managed.waitBootstrap();
-
-  const complete = events.filter((e) => e.type === "session.prompt_complete");
-  assert.equal(complete.length, 1);
-  assert.equal(
-    (complete[0] as Extract<RuntimeEvent, { type: "session.prompt_complete" }>).assistantText,
-    "POST_LOAD_ONLY"
-  );
-  assert.ok(
-    !events.some(
-      (e) =>
-        e.type === "session.prompt_complete" &&
-        "assistantText" in e &&
-        String(e.assistantText).includes("OLD_HISTORY")
-    )
-  );
-
-  const log = await readJsonWhenComplete<{
-    methods: string[];
-    loads: Array<{ sessionId: string; cwd: string; hasMcpServers: boolean }>;
-    prompts: string[];
-  }>(logPath, (value) => value.methods.includes("session/prompt"));
-  assert.deepEqual(log.methods.slice(0, 3), [
-    "initialize",
-    "session/load",
-    "session/prompt",
-  ]);
-  assert.ok(!log.methods.includes("session/new"));
-  assert.equal(log.loads.length, 1);
-  assert.equal(log.loads[0].sessionId, "mock-acp-session-1");
-  assert.equal(log.loads[0].cwd, cwd);
-  assert.equal(log.loads[0].hasMcpServers, true);
-  assert.deepEqual(log.prompts, ["resume bootstrap after load"]);
-  await session.stop("shutdown");
-});
-
-test("OpenCode ACP resumeManagedSession fails loud when loadSession unsupported", async () => {
-  const cwd = await tempDir("tent-opencode-noload-");
-  const logPath = path.join(cwd, "mock-acp-log.json");
-  const adapter = createOpenCodeAcpAdapter();
-  await assert.rejects(
-    () =>
-      adapter.resumeManagedSession!(
-        {
-          sessionId: "ss-opencode-noload",
-          profileId: "opencode-acp-default",
-          cwd,
-          env: {
-            MOCK_ACP_LOG: logPath,
-            MOCK_ACP_KEEP_ALIVE: "0",
-            // loadSession not advertised
-          },
-          command: process.execPath,
-          args: [MOCK_ACP],
-          bootstrapPrompt: "should not prompt",
-          extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
+for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
+  test(`${name} ACP resumeManagedSession uses session/load and isolates history replay`, async () => {
+    const slug = name.toLowerCase();
+    const cwd = await tempDir(`tent-${slug}-load-`);
+    const logPath = path.join(cwd, "mock-acp-log.json");
+    const events: RuntimeEvent[] = [];
+    const adapter = create();
+    const session = await adapter.resumeManagedSession!(
+      {
+        sessionId: `ss-${slug}-load`,
+        profileId: `${slug}-acp-default`,
+        cwd,
+        env: {
+          MOCK_ACP_LOG: logPath,
+          MOCK_ACP_KEEP_ALIVE: "0",
+          MOCK_ACP_LOAD_SESSION: "1",
+          MOCK_ACP_HISTORY_TEXT: "OLD_HISTORY_MUST_NOT_DELIVER",
+          MOCK_ACP_PROMPT_TEXT: "POST_LOAD_ONLY",
         },
-        { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
-        () => undefined
-      ),
-    /loadSession|session\/load/i
-  );
-});
+        command: process.execPath,
+        args: [MOCK_ACP],
+        bootstrapPrompt: "resume bootstrap after load",
+        extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
+      },
+      { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+      (event) => events.push(event)
+    );
+
+    const managed = session as typeof session & { waitBootstrap(): Promise<void> };
+    await managed.waitBootstrap();
+
+    const complete = events.filter((e) => e.type === "session.prompt_complete");
+    assert.equal(complete.length, 1);
+    assert.equal(
+      (complete[0] as Extract<RuntimeEvent, { type: "session.prompt_complete" }>)
+        .assistantText,
+      "POST_LOAD_ONLY"
+    );
+    assert.ok(
+      !events.some(
+        (e) =>
+          e.type === "session.prompt_complete" &&
+          "assistantText" in e &&
+          String(e.assistantText).includes("OLD_HISTORY")
+      )
+    );
+
+    const log = await readJsonWhenComplete<{
+      methods: string[];
+      loads: Array<{ sessionId: string; cwd: string; hasMcpServers: boolean }>;
+      prompts: string[];
+    }>(logPath, (value) => value.methods.includes("session/prompt"));
+    assert.deepEqual(log.methods.slice(0, 3), [
+      "initialize",
+      "session/load",
+      "session/prompt",
+    ]);
+    assert.ok(!log.methods.includes("session/new"));
+    assert.equal(log.loads.length, 1);
+    assert.equal(log.loads[0].sessionId, "mock-acp-session-1");
+    assert.equal(log.loads[0].cwd, cwd);
+    assert.equal(log.loads[0].hasMcpServers, true);
+    assert.deepEqual(log.prompts, ["resume bootstrap after load"]);
+    await session.stop("shutdown");
+  });
+
+  test(`${name} ACP resumeManagedSession fails loud when loadSession unsupported`, async () => {
+    const slug = name.toLowerCase();
+    const cwd = await tempDir(`tent-${slug}-noload-`);
+    const logPath = path.join(cwd, "mock-acp-log.json");
+    const adapter = create();
+    await assert.rejects(
+      () =>
+        adapter.resumeManagedSession!(
+          {
+            sessionId: `ss-${slug}-noload`,
+            profileId: `${slug}-acp-default`,
+            cwd,
+            env: {
+              MOCK_ACP_LOG: logPath,
+              MOCK_ACP_KEEP_ALIVE: "0",
+              // loadSession not advertised
+            },
+            command: process.execPath,
+            args: [MOCK_ACP],
+            bootstrapPrompt: "should not prompt",
+            extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
+          },
+          { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+          () => undefined
+        ),
+      /loadSession|session\/load/i
+    );
+    // If the mock wrote a log, resume must never have fallen back to session/new.
+    try {
+      const log = JSON.parse(await fs.readFile(logPath, "utf8")) as {
+        methods: string[];
+      };
+      assert.ok(!log.methods.includes("session/new"));
+    } catch {
+      // no log file is fine
+    }
+  });
+}

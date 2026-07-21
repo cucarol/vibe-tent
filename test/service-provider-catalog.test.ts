@@ -121,13 +121,13 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     ["grok-acp"]
   );
 
-  // Resume evidence: grok + opencode advertise loadSession; others do not.
+  // Resume evidence: verified loadSession bridges advertise canResume; Antigravity does not.
   assert.equal(providerCatalogEntry("grok-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("opencode-acp")?.canResume, true);
-  assert.equal(providerCatalogEntry("codex-acp")?.canResume, false);
-  assert.equal(providerCatalogEntry("claude-acp")?.canResume, false);
+  assert.equal(providerCatalogEntry("codex-acp")?.canResume, true);
+  assert.equal(providerCatalogEntry("claude-acp")?.canResume, true);
+  assert.equal(providerCatalogEntry("copilot-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("antigravity-acp")?.canResume, false);
-  assert.equal(providerCatalogEntry("copilot-acp")?.canResume, false);
   assert.equal(providerCatalogEntry("fake-cli"), undefined);
   assert.equal(providerCatalogEntry("gemini-acp"), undefined);
 });

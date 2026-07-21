@@ -13,13 +13,14 @@ import {
   AcpClient,
   bindAcpPermissionHooks,
   defaultNpxCommand,
+  loadSessionAcpCapabilities,
   mapAcpProcessExit,
-  mainstreamAcpCapabilities,
   normalizeSharedAcpOpts,
   parseAcpResumeToken,
   readAcpExtras,
   readAcpSessionProjection,
   resolvePlanOrProcessEnv,
+  resumeManagedAcpSession,
   startManagedAcpSession,
   type AcpPermissionAskHooks,
 } from "../acp/index.js";
@@ -61,7 +62,9 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    return mainstreamAcpCapabilities();
+    // Verified 2026-07-21: GitHub Copilot CLI/ACP 1.0.73 initialize advertises
+    // agentCapabilities.loadSession; high confidence sessionId is ACP-native (CLI resume-homologous).
+    return loadSessionAcpCapabilities("external-app");
   }
 
   resolveLaunch(plan: LaunchPlan): ResolvedLaunch {
@@ -109,13 +112,48 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     plan: LaunchPlan,
     emit: (event: RuntimeEvent) => void
   ): Promise<ManagedSession> {
+    const client = this.createClient(plan, emit);
+    return startManagedAcpSession({ plan, emit, client });
+  }
+
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(
+    plan: LaunchPlan,
+    token: ResumeToken,
+    emit: (event: RuntimeEvent) => void
+  ): Promise<ManagedSession> {
+    const providerSessionId = (
+      token.providerSessionId ?? token.raw
+    ).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "copilot-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit);
+    return resumeManagedAcpSession({
+      plan,
+      emit,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt,
+    });
+  }
+
+  private createClient(
+    plan: LaunchPlan,
+    emit: (event: RuntimeEvent) => void
+  ): AcpClient {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
-    const client = new AcpClient({
+    return new AcpClient({
       command: launch.command,
       args: launch.args,
       cwd: launch.cwd,
@@ -129,7 +167,6 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
       emit,
       onPermissionAsk: hooks.onPermissionAsk,
     });
-    return startManagedAcpSession({ plan, emit, client });
   }
 
   parseResumeToken(raw: string): ResumeToken {

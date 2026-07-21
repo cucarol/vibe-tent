@@ -285,7 +285,11 @@ export function parseAcpResumeToken(raw: string): ResumeToken {
   return { raw, providerSessionId: raw };
 }
 
-/** Capabilities for verified loadSession bridges (Grok ACP, OpenCode ACP). */
+/**
+ * Capabilities for bridges verified to advertise agentCapabilities.loadSession
+ * (Grok, OpenCode, Codex, Claude Agent ACP, GitHub Copilot ACP).
+ * Runtime still gates each resume on the live initialize handshake.
+ */
 export function loadSessionAcpCapabilities(
   authModel: ProviderCapabilities["authModel"] = "external-app"
 ): ProviderCapabilities {
@@ -319,7 +323,10 @@ export function mapAcpProcessExit(
   return { type: "session.exited", sessionId: "", exitCode: code };
 }
 
-/** Shared capabilities for mainstream npx ACP bridges (codex / claude). */
+/**
+ * Shared capabilities for ACP bridges without verified loadSession
+ * (currently antigravity-acp / agy-acp only among product adapters).
+ */
 export function mainstreamAcpCapabilities(): {
   canSpawn: true;
   canResume: false;

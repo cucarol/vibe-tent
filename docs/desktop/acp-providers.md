@@ -5,11 +5,11 @@ Tent exposes a small, explicit set of coding-agent ACP adapters. It is not a uni
 | Adapter | Launch contract | Authentication | Repository verification |
 | --- | --- | --- | --- |
 | `grok-acp` | Local Grok executable in ACP stdio mode | CPA/Grok key and base URL from service process env | Mock suite + opt-in live E2E |
-| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Existing Codex/ChatGPT login, or explicit `envKey` injected through `DEFAULT_AUTH_REQUEST` | Mock launch/protocol suite |
-| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp` | Existing Claude login, or an explicitly configured process `envKey` | Mock launch/protocol suite |
+| `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Existing Codex/ChatGPT login, or explicit `envKey` injected through `DEFAULT_AUTH_REQUEST` | Mock launch/protocol suite; local loadSession initialize evidence below |
+| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp` | Existing Claude login, or an explicitly configured process `envKey` | Mock launch/protocol suite; local loadSession initialize evidence below |
 | `antigravity-acp` | Separately installed third-party `agy-acp` bridge | Bridge/`agy` local authentication, plus optional explicit process `envKey` | Mock launch/protocol suite |
 | `opencode-acp` | Native `opencode acp` | OpenCode's local provider configuration, plus optional explicit process `envKey` | Mock suite; local resume handshake evidence below |
-| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` | Mock launch/protocol suite |
+| `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` | Mock launch/protocol suite; local loadSession initialize evidence below |
 
 An adapter appearing in this table means its explicit launch contract is implemented;
 it does **not** mean every provider binary, account flow, or host platform is live-certified
@@ -48,10 +48,10 @@ Tent only advertises `capabilities.canResume = true` for bridges whose ACP `init
 | --- | --- | --- | --- |
 | `grok-acp` | **true** | `resumeManagedSession` → new bridge process → `initialize` → optional `authenticate` → **`session/load`** | Local `grok agent stdio` initialize handshake |
 | `opencode-acp` | **true** | same | Local `opencode acp` initialize handshake |
-| `codex-acp` | **false** | none | Tent default package not claimed as verified load; do not invent resume |
-| `claude-acp` | **false** | none | Not verified on this host |
-| `antigravity-acp` | **false** | none | Not verified |
-| `copilot-acp` | **false** | none | Not verified |
+| `codex-acp` | **true** | same (no ACP `authenticate` RPC; auth via env/`DEFAULT_AUTH_REQUEST` or local login) | 2026-07-21 initialize-only probe: `@agentclientprotocol/codex-acp@1.1.5` advertises `agentCapabilities.loadSession=true`; native CLI has resume; bridge source shows ACP `sessionId` homologous with CLI resume |
+| `claude-acp` | **true** | same (no ACP `authenticate` RPC; local Claude login and/or injected env) | 2026-07-21 initialize-only probe: `@agentclientprotocol/claude-agent-acp@0.60.0` advertises `agentCapabilities.loadSession=true`; native CLI has resume; bridge source shows ACP `sessionId` homologous with CLI resume |
+| `copilot-acp` | **true** | same (local Copilot/`gh` login and/or injected env) | 2026-07-21 initialize-only probe: GitHub Copilot CLI/ACP **1.0.73** advertises `agentCapabilities.loadSession=true`; native CLI has resume; high confidence ACP `sessionId` is homologous with CLI resume |
+| `antigravity-acp` | **false** | none | Not verified — third-party `agy-acp` loadSession still unproven on this host |
 
 Rules:
 
