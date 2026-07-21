@@ -27,9 +27,12 @@ import {
   formatAllowedProfilesText,
   mapProviderCatalogRows,
   parseAllowedProfilesText,
+  PROFILE_NEXT_SESSION_TIP,
+  profileDisplayLabel,
   retentionSummaryLine,
   validateCredentialSet,
   validateProfileCreate,
+  validateProfileUpdate,
   validateRoleCreate,
   validateRoleUpdate,
 } from "../src/desktop/workbench/settings-model.js";
@@ -112,10 +115,19 @@ test("mapProviderCatalogRows preserves authoritative verificationLevel", () => {
   const rows = mapProviderCatalogRows([
     { adapterId: "grok-acp", verificationLevel: "live-e2e", canResume: true },
     { adapterId: "codex-acp", verificationLevel: "mock-tested" },
+    { adapterId: "claude-acp", verificationLevel: "adapter-implemented" },
   ]);
   assert.equal(rows[0]!.verificationLevel, "live-e2e");
+  assert.equal(rows[0]!.levelLabel, "live E2E");
   assert.equal(rows[1]!.levelLabel, "mock-tested");
+  assert.equal(rows[1]!.verificationLevel, "mock-tested");
   assert.notEqual(rows[1]!.verificationLevel, "live-e2e");
+  assert.equal(rows[2]!.verificationLevel, "adapter-implemented");
+  assert.equal(rows[2]!.levelLabel, "adapter only");
+  // UI must not upgrade non-Grok entries.
+  for (const row of rows.filter((r) => r.adapterId !== "grok-acp")) {
+    assert.notEqual(row.verificationLevel, "live-e2e");
+  }
 });
 
 test("settings form validators reject bad ids and accept clean payloads", () => {
@@ -158,6 +170,41 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     model: "grok-4.5",
   });
   assert.equal(prof.ok, true);
+  if (prof.ok) {
+    assert.equal(prof.payload.id, "my-agent");
+    assert.equal(prof.payload.adapterId, "grok-acp");
+    assert.equal(prof.payload.model, "grok-4.5");
+  }
+
+  // profile.update: id key only; adapterId never on payload; empty clears.
+  assert.equal(validateProfileUpdate({ id: "" }).ok, false);
+  assert.equal(validateProfileUpdate({ id: "BadId" }).ok, false);
+  const profUp = validateProfileUpdate({
+    id: "my-agent",
+    displayName: "本地 Grok",
+    model: "",
+    envKey: "CPA_GROK_API_KEY",
+    credentialRef: "vault-main",
+  });
+  assert.equal(profUp.ok, true);
+  if (profUp.ok) {
+    assert.equal(profUp.payload.id, "my-agent");
+    assert.equal(profUp.payload.displayName, "本地 Grok");
+    assert.equal(profUp.payload.model, null);
+    assert.equal(profUp.payload.envKey, "CPA_GROK_API_KEY");
+    assert.equal(profUp.payload.credentialRef, "vault-main");
+    assert.ok(!("adapterId" in profUp.payload));
+    assert.ok(!("secret" in profUp.payload));
+    assert.ok(!("apiKey" in profUp.payload));
+    assert.ok(!("env" in profUp.payload));
+  }
+  const clearName = validateProfileUpdate({ id: "my-agent", displayName: "  " });
+  assert.equal(clearName.ok, true);
+  if (clearName.ok) assert.equal(clearName.payload.displayName, null);
+
+  assert.equal(profileDisplayLabel({ id: "p1", displayName: "Label" }), "Label");
+  assert.equal(profileDisplayLabel({ id: "p1", displayName: "" }), "p1");
+  assert.match(PROFILE_NEXT_SESSION_TIP, /下次会话生效/);
 
   assert.equal(validateCredentialSet({ id: "k", secret: "" }).ok, false);
   const cred = validateCredentialSet({ id: "api-key", secret: "s3cret", label: "main" });
@@ -191,6 +238,7 @@ test("desktop settings RPCs used by UI are on CLIENT_METHODS", () => {
     "registry.role.update",
     "registry.role.delete",
     "profile.list",
+    "profile.get",
     "profile.create",
     "profile.update",
     "profile.delete",
@@ -277,6 +325,40 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
     }
     const rows = mapProviderCatalogRows(catalog.providers);
     assert.equal(rows.length, catalog.providers.length);
+    // Only grok-acp may carry live-e2e; never upgrade other providers in UI mapping.
+    const liveRows = rows.filter((r) => r.verificationLevel === "live-e2e");
+    assert.deepEqual(
+      liveRows.map((r) => r.adapterId),
+      ["grok-acp"]
+    );
+    for (const row of rows) {
+      if (row.adapterId !== "grok-acp") {
+        assert.notEqual(row.verificationLevel, "live-e2e", row.adapterId);
+      }
+    }
+
+    // profile.list / profile.get — safe metadata; id + displayName projection for settings CRUD.
+    const listed = (await client.profileList()) as {
+      profiles: Array<{
+        id: string;
+        adapterId: string;
+        displayName: string;
+        testOnly?: boolean;
+      }>;
+    };
+    assert.ok(Array.isArray(listed.profiles));
+    assert.ok(listed.profiles.some((p) => p.id === "grok-acp-default"));
+    const listJson = JSON.stringify(listed);
+    assert.ok(!/"env"\s*:/.test(listJson));
+    assert.ok(!/sk-[a-zA-Z0-9]{8,}/.test(listJson));
+
+    const got = (await client.profileGet("grok-acp-default")) as {
+      profile: { id: string; adapterId: string; displayName: string };
+    };
+    assert.equal(got.profile.id, "grok-acp-default");
+    assert.equal(got.profile.adapterId, "grok-acp");
+    assert.ok(typeof got.profile.displayName === "string");
+    assert.equal(profileDisplayLabel(got.profile), got.profile.displayName || got.profile.id);
 
     const settings = await client.workspaceSettings(mounted.workspaceId) as {
       settings: { defaultDeliveryPolicy?: string };

@@ -14,9 +14,12 @@ import {
   DELIVERY_POLICY_OPTIONS,
   formatAllowedProfilesText,
   mapProviderCatalogRows,
+  PROFILE_NEXT_SESSION_TIP,
+  profileDisplayLabel,
   retentionSummaryLine,
   validateCredentialSet,
   validateProfileCreate,
+  validateProfileUpdate,
   validateRoleCreate,
   validateRoleUpdate,
   type DeliveryPolicy,
@@ -394,10 +397,12 @@ function renderProfiles(): string {
                   ? `凭证已配置`
                   : `凭证缺失`
                 : "";
+            const label = profileDisplayLabel(p);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
-                <strong>${escapeHtml(p.displayName || p.id)}</strong>
-                <span class="muted">${escapeHtml(p.adapterId)}${p.model ? " · " + escapeHtml(p.model) : ""}</span>
+                <strong>${escapeHtml(label)}</strong>
+                <span class="faint"><code>${escapeHtml(p.id)}</code> · <code>${escapeHtml(p.adapterId)}</code></span>
+                <span class="muted">${p.model ? escapeHtml(p.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
@@ -416,14 +421,18 @@ function renderProfiles(): string {
     ? renderProfileEditor(editing)
     : `<div class="settings-block">
         <div class="surface-section-head">新建 profile</div>
+        <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <input id="prof-id" class="field" placeholder="id" />
-          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" />
+          <label class="settings-label" for="prof-id">id（创建后不可改）</label>
+          <input id="prof-id" class="field" placeholder="id" autocomplete="off" />
+          <label class="settings-label" for="prof-adapter">adapterId（创建后不可改）</label>
+          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
           <datalist id="adapter-list">${providers.map((p) => `<option value="${escapeHtml(p.adapterId)}">`).join("")}</datalist>
+          <label class="settings-label" for="prof-name">显示名</label>
           <input id="prof-name" class="field" placeholder="displayName" />
           <input id="prof-model" class="field" placeholder="model" />
-          <input id="prof-env" class="field" placeholder="envKey" />
-          <input id="prof-cred" class="field" placeholder="credentialRef" />
+          <input id="prof-env" class="field" placeholder="envKey（环境变量名，非 secret）" />
+          <input id="prof-cred" class="field" placeholder="credentialRef（凭证 id，非 secret）" />
           <button type="button" id="btn-prof-create" class="btn btn-primary">创建</button>
         </div>
       </div>`;
@@ -431,11 +440,12 @@ function renderProfiles(): string {
   return `
     <div class="settings-block">
       <div class="surface-section-head">Provider 验证级别</div>
-      <p class="faint">权威来源 provider.catalog · 非全部 live E2E</p>
+      <p class="faint">权威来源 provider.catalog · 忠实区分 adapter implemented / mock tested / live E2E · 仅 Grok 有 checked-in live E2E</p>
       ${providerNote}
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Profiles</div>
+      <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
       ${list}
     </div>
     ${editor}`;
@@ -444,21 +454,30 @@ function renderProfiles(): string {
 function renderProfileEditor(p: AgentProfileProjection): string {
   const skillsJson = JSON.stringify(p.skills || [], null, 2);
   const mcpJson = JSON.stringify(p.mcpServers || [], null, 2);
+  const label = profileDisplayLabel(p);
   return `
     <div class="settings-block">
-      <div class="surface-section-head">编辑 · ${escapeHtml(p.id)}
+      <div class="surface-section-head">编辑 · ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">关闭</button>
       </div>
+      <p class="muted">id <code>${escapeHtml(p.id)}</code> · adapterId <code>${escapeHtml(p.adapterId)}</code>（均不可改）</p>
+      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} · 勿写 secret</p>
       <div class="settings-form">
-        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="displayName" />
+        <label class="settings-label" for="prof-edit-name">显示名</label>
+        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="留空则回退到 id" />
+        <label class="settings-label" for="prof-edit-model">model</label>
         <input id="prof-edit-model" class="field" value="${escapeHtml(p.model || "")}" placeholder="model" />
+        <label class="settings-label" for="prof-edit-exe">executable</label>
         <input id="prof-edit-exe" class="field" value="${escapeHtml(p.executable || "")}" placeholder="executable" />
+        <label class="settings-label" for="prof-edit-env">envKey（环境变量名）</label>
         <input id="prof-edit-env" class="field" value="${escapeHtml(p.envKey || "")}" placeholder="envKey" />
+        <label class="settings-label" for="prof-edit-cred">credentialRef（凭证 id）</label>
         <input id="prof-edit-cred" class="field" value="${escapeHtml(p.credentialRef || "")}" placeholder="credentialRef" />
+        <label class="settings-label" for="prof-edit-base">baseUrl</label>
         <input id="prof-edit-base" class="field" value="${escapeHtml(p.baseUrl || "")}" placeholder="baseUrl" />
-        <label class="settings-label">skills（JSON · 下次 session 生效）</label>
+        <label class="settings-label">skills（JSON · 下次会话生效）</label>
         <textarea id="prof-edit-skills" class="line-input" rows="4" spellcheck="false">${escapeHtml(skillsJson)}</textarea>
-        <label class="settings-label">mcpServers（JSON · 下次 session 生效 · 勿写 secret）</label>
+        <label class="settings-label">mcpServers（JSON · 下次会话生效 · 勿写 secret）</label>
         <textarea id="prof-edit-mcp" class="line-input" rows="6" spellcheck="false">${escapeHtml(mcpJson)}</textarea>
         <div class="settings-row">
           <button type="button" id="btn-prof-save" class="btn btn-primary">保存</button>
@@ -526,7 +545,7 @@ function renderSkills(): string {
           .join("")}</ul>`;
 
   const mcpNote = `
-    <p class="muted">MCP 挂在 Agent Profile 上编辑（Skills / MCP 分区或 Profiles 编辑器）。配置在<strong>下次 session</strong>生效。</p>
+    <p class="muted">MCP 挂在 Agent Profile 上编辑（Skills / MCP 分区或 Profiles 编辑器）。${escapeHtml(PROFILE_NEXT_SESSION_TIP)}。</p>
     <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config</p>
     <ul class="settings-list">${fullProfiles
       .map((p) => {
@@ -534,7 +553,8 @@ function renderSkills(): string {
         const sk = p.skills?.length ?? 0;
         return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(p.displayName || p.id)}</strong>
+            <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
+            <span class="faint"><code>${escapeHtml(p.id)}</code></span>
             <span class="muted">skills ${sk} · mcp ${n}</span>
           </div>
           <div class="settings-list-actions">
@@ -824,19 +844,23 @@ async function onProfileCreate(): Promise<void> {
 
 async function onProfileSave(): Promise<void> {
   if (!profileEditId) return;
-  const patch: Record<string, unknown> = { id: profileEditId };
-  const name = (document.getElementById("prof-edit-name") as HTMLInputElement | null)?.value;
-  const model = (document.getElementById("prof-edit-model") as HTMLInputElement | null)?.value;
-  const exe = (document.getElementById("prof-edit-exe") as HTMLInputElement | null)?.value;
-  const envKey = (document.getElementById("prof-edit-env") as HTMLInputElement | null)?.value;
-  const cred = (document.getElementById("prof-edit-cred") as HTMLInputElement | null)?.value;
-  const base = (document.getElementById("prof-edit-base") as HTMLInputElement | null)?.value;
-  if (name !== undefined) patch.displayName = name.trim() || null;
-  if (model !== undefined) patch.model = model.trim() || null;
-  if (exe !== undefined) patch.executable = exe.trim() || null;
-  if (envKey !== undefined) patch.envKey = envKey.trim() || null;
-  if (cred !== undefined) patch.credentialRef = cred.trim() || null;
-  if (base !== undefined) patch.baseUrl = base.trim() || null;
+  const built = validateProfileUpdate({
+    id: profileEditId,
+    displayName:
+      (document.getElementById("prof-edit-name") as HTMLInputElement | null)?.value || "",
+    model: (document.getElementById("prof-edit-model") as HTMLInputElement | null)?.value || "",
+    executable:
+      (document.getElementById("prof-edit-exe") as HTMLInputElement | null)?.value || "",
+    envKey: (document.getElementById("prof-edit-env") as HTMLInputElement | null)?.value || "",
+    credentialRef:
+      (document.getElementById("prof-edit-cred") as HTMLInputElement | null)?.value || "",
+    baseUrl: (document.getElementById("prof-edit-base") as HTMLInputElement | null)?.value || "",
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  const patch: Record<string, unknown> = { ...built.payload };
 
   const skillsRaw = (document.getElementById("prof-edit-skills") as HTMLTextAreaElement | null)
     ?.value;
@@ -856,7 +880,7 @@ async function onProfileSave(): Promise<void> {
   if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = "Profile 已保存（MCP/Skills 下次 session 生效）";
+    el.status.textContent = `Profile 已保存（${PROFILE_NEXT_SESSION_TIP}）`;
     await loadProfilesFull();
     renderSettings();
   } catch (err) {

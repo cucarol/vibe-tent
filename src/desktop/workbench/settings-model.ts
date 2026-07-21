@@ -50,6 +50,23 @@ export type ProfileFormDraft = {
   permissionPolicy?: "allow" | "ask" | "deny";
 };
 
+/**
+ * Edit draft for profile.update — id is required key; adapterId is never patchable.
+ * Empty optional strings clear the field (null) so Service can wipe prior values.
+ */
+export type ProfileUpdateDraft = {
+  /** Immutable profile id (RPC key only; not renamed). */
+  id: string;
+  displayName?: string;
+  model?: string;
+  executable?: string;
+  envKey?: string;
+  credentialRef?: string;
+  baseUrlEnvKey?: string;
+  baseUrl?: string;
+  permissionPolicy?: "allow" | "ask" | "deny";
+};
+
 export type CredentialFormDraft = {
   id: string;
   secret: string;
@@ -184,6 +201,70 @@ export function validateProfileCreate(draft: ProfileFormDraft):
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
   return { ok: true, payload };
 }
+
+/**
+ * Build profile.update payload (top-level fields only).
+ * Never includes adapterId — id and adapterId are immutable after create.
+ * Empty optional strings clear the field (null); omitted fields stay untouched only when
+ * the draft key is undefined (callers that always collect form values should pass strings).
+ * Never secrets / env maps / nested profile bags.
+ */
+export function validateProfileUpdate(draft: ProfileUpdateDraft):
+  | { ok: true; payload: Record<string, unknown> }
+  | { ok: false; reason: string } {
+  const id = (draft.id || "").trim();
+  if (!id) return { ok: false, reason: "profile id 不能为空" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
+    return { ok: false, reason: "profile id 须匹配 a-z 开头的小写 id" };
+  }
+  const payload: Record<string, unknown> = { id };
+
+  // Always send displayName so UI can clear custom labels (null → server falls back to id/key).
+  const dn = (draft.displayName ?? "").trim();
+  payload.displayName = dn || null;
+
+  if (draft.model !== undefined) {
+    payload.model = (draft.model ?? "").trim() || null;
+  }
+  if (draft.executable !== undefined) {
+    payload.executable = (draft.executable ?? "").trim() || null;
+  }
+  if (draft.envKey !== undefined) {
+    payload.envKey = (draft.envKey ?? "").trim() || null;
+  }
+  if (draft.credentialRef !== undefined) {
+    payload.credentialRef = (draft.credentialRef ?? "").trim() || null;
+  }
+  if (draft.baseUrlEnvKey !== undefined) {
+    payload.baseUrlEnvKey = (draft.baseUrlEnvKey ?? "").trim() || null;
+  }
+  if (draft.baseUrl !== undefined) {
+    payload.baseUrl = (draft.baseUrl ?? "").trim() || null;
+  }
+  if (draft.permissionPolicy) {
+    payload.permissionPolicy = draft.permissionPolicy;
+  }
+
+  // Defensive: never allow adapterId / secret-shaped keys on the wire from this helper.
+  if ("adapterId" in payload) delete payload.adapterId;
+  return { ok: true, payload };
+}
+
+/** Primary list label: mutable displayName first; immutable id is shown separately. */
+export function profileDisplayLabel(profile: {
+  id: string;
+  displayName?: string | null;
+}): string {
+  const dn = (profile.displayName || "").trim();
+  return dn || profile.id;
+}
+
+/**
+ * Session snapshot tip for profile editors (machine-local launch config).
+ * Live sessions keep boot snapshot; catalog edits apply on next session start.
+ */
+export const PROFILE_NEXT_SESSION_TIP =
+  "本机启动配置 · Session 使用快照 · 改动下次会话生效";
 
 /**
  * Credential set payload. Secret is passed through for RPC only —

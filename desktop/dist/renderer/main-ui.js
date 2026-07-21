@@ -8811,6 +8811,44 @@ function validateProfileCreate(draft) {
   if (draft.permissionPolicy) payload.permissionPolicy = draft.permissionPolicy;
   return { ok: true, payload };
 }
+function validateProfileUpdate(draft) {
+  const id = (draft.id || "").trim();
+  if (!id) return { ok: false, reason: "profile id \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-z][a-z0-9-]{0,62}$/.test(id)) {
+    return { ok: false, reason: "profile id \u987B\u5339\u914D a-z \u5F00\u5934\u7684\u5C0F\u5199 id" };
+  }
+  const payload = { id };
+  const dn = (draft.displayName ?? "").trim();
+  payload.displayName = dn || null;
+  if (draft.model !== void 0) {
+    payload.model = (draft.model ?? "").trim() || null;
+  }
+  if (draft.executable !== void 0) {
+    payload.executable = (draft.executable ?? "").trim() || null;
+  }
+  if (draft.envKey !== void 0) {
+    payload.envKey = (draft.envKey ?? "").trim() || null;
+  }
+  if (draft.credentialRef !== void 0) {
+    payload.credentialRef = (draft.credentialRef ?? "").trim() || null;
+  }
+  if (draft.baseUrlEnvKey !== void 0) {
+    payload.baseUrlEnvKey = (draft.baseUrlEnvKey ?? "").trim() || null;
+  }
+  if (draft.baseUrl !== void 0) {
+    payload.baseUrl = (draft.baseUrl ?? "").trim() || null;
+  }
+  if (draft.permissionPolicy) {
+    payload.permissionPolicy = draft.permissionPolicy;
+  }
+  if ("adapterId" in payload) delete payload.adapterId;
+  return { ok: true, payload };
+}
+function profileDisplayLabel(profile) {
+  const dn = (profile.displayName || "").trim();
+  return dn || profile.id;
+}
+var PROFILE_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
 function validateCredentialSet(draft) {
   const id = (draft.id || "").trim();
   if (!id) return { ok: false, reason: "credential id \u4E0D\u80FD\u4E3A\u7A7A" };
@@ -9176,10 +9214,12 @@ function renderProfiles() {
     const level = providers.find((x) => x.adapterId === p.adapterId);
     const levelBit = level ? `<span class="badge-level" data-level="${escapeHtml(String(level.verificationLevel))}">${escapeHtml(level.levelLabel)}</span>` : `<span class="faint">\u672A\u6536\u5F55 catalog</span>`;
     const cred = p.credentialRef != null ? p.credentialExists ? `\u51ED\u8BC1\u5DF2\u914D\u7F6E` : `\u51ED\u8BC1\u7F3A\u5931` : "";
+    const label = profileDisplayLabel(p);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
-                <strong>${escapeHtml(p.displayName || p.id)}</strong>
-                <span class="muted">${escapeHtml(p.adapterId)}${p.model ? " \xB7 " + escapeHtml(p.model) : ""}</span>
+                <strong>${escapeHtml(label)}</strong>
+                <span class="faint"><code>${escapeHtml(p.id)}</code> \xB7 <code>${escapeHtml(p.adapterId)}</code></span>
+                <span class="muted">${p.model ? escapeHtml(p.model) : ""}</span>
                 ${levelBit}
                 ${cred ? `<span class="faint">${escapeHtml(cred)}</span>` : ""}
               </div>
@@ -9192,25 +9232,30 @@ function renderProfiles() {
   const editing = profileEditId ? fullProfiles.find((p) => p.id === profileEditId) : null;
   const editor = editing ? renderProfileEditor(editing) : `<div class="settings-block">
         <div class="surface-section-head">\u65B0\u5EFA profile</div>
+        <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
         <div class="settings-form">
-          <input id="prof-id" class="field" placeholder="id" />
-          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" />
+          <label class="settings-label" for="prof-id">id\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
+          <input id="prof-id" class="field" placeholder="id" autocomplete="off" />
+          <label class="settings-label" for="prof-adapter">adapterId\uFF08\u521B\u5EFA\u540E\u4E0D\u53EF\u6539\uFF09</label>
+          <input id="prof-adapter" class="field" placeholder="adapterId" list="adapter-list" autocomplete="off" />
           <datalist id="adapter-list">${providers.map((p) => `<option value="${escapeHtml(p.adapterId)}">`).join("")}</datalist>
+          <label class="settings-label" for="prof-name">\u663E\u793A\u540D</label>
           <input id="prof-name" class="field" placeholder="displayName" />
           <input id="prof-model" class="field" placeholder="model" />
-          <input id="prof-env" class="field" placeholder="envKey" />
-          <input id="prof-cred" class="field" placeholder="credentialRef" />
+          <input id="prof-env" class="field" placeholder="envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF0C\u975E secret\uFF09" />
+          <input id="prof-cred" class="field" placeholder="credentialRef\uFF08\u51ED\u8BC1 id\uFF0C\u975E secret\uFF09" />
           <button type="button" id="btn-prof-create" class="btn btn-primary">\u521B\u5EFA</button>
         </div>
       </div>`;
   return `
     <div class="settings-block">
       <div class="surface-section-head">Provider \u9A8C\u8BC1\u7EA7\u522B</div>
-      <p class="faint">\u6743\u5A01\u6765\u6E90 provider.catalog \xB7 \u975E\u5168\u90E8 live E2E</p>
+      <p class="faint">\u6743\u5A01\u6765\u6E90 provider.catalog \xB7 \u5FE0\u5B9E\u533A\u5206 adapter implemented / mock tested / live E2E \xB7 \u4EC5 Grok \u6709 checked-in live E2E</p>
       ${providerNote}
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Profiles</div>
+      <p class="muted">${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
       ${list2}
     </div>
     ${editor}`;
@@ -9218,21 +9263,30 @@ function renderProfiles() {
 function renderProfileEditor(p) {
   const skillsJson = JSON.stringify(p.skills || [], null, 2);
   const mcpJson = JSON.stringify(p.mcpServers || [], null, 2);
+  const label = profileDisplayLabel(p);
   return `
     <div class="settings-block">
-      <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(p.id)}
+      <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">\u5173\u95ED</button>
       </div>
+      <p class="muted">id <code>${escapeHtml(p.id)}</code> \xB7 adapterId <code>${escapeHtml(p.adapterId)}</code>\uFF08\u5747\u4E0D\u53EF\u6539\uFF09</p>
+      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} \xB7 \u52FF\u5199 secret</p>
       <div class="settings-form">
-        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="displayName" />
+        <label class="settings-label" for="prof-edit-name">\u663E\u793A\u540D</label>
+        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 id" />
+        <label class="settings-label" for="prof-edit-model">model</label>
         <input id="prof-edit-model" class="field" value="${escapeHtml(p.model || "")}" placeholder="model" />
+        <label class="settings-label" for="prof-edit-exe">executable</label>
         <input id="prof-edit-exe" class="field" value="${escapeHtml(p.executable || "")}" placeholder="executable" />
+        <label class="settings-label" for="prof-edit-env">envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF09</label>
         <input id="prof-edit-env" class="field" value="${escapeHtml(p.envKey || "")}" placeholder="envKey" />
+        <label class="settings-label" for="prof-edit-cred">credentialRef\uFF08\u51ED\u8BC1 id\uFF09</label>
         <input id="prof-edit-cred" class="field" value="${escapeHtml(p.credentialRef || "")}" placeholder="credentialRef" />
+        <label class="settings-label" for="prof-edit-base">baseUrl</label>
         <input id="prof-edit-base" class="field" value="${escapeHtml(p.baseUrl || "")}" placeholder="baseUrl" />
-        <label class="settings-label">skills\uFF08JSON \xB7 \u4E0B\u6B21 session \u751F\u6548\uFF09</label>
+        <label class="settings-label">skills\uFF08JSON \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF09</label>
         <textarea id="prof-edit-skills" class="line-input" rows="4" spellcheck="false">${escapeHtml(skillsJson)}</textarea>
-        <label class="settings-label">mcpServers\uFF08JSON \xB7 \u4E0B\u6B21 session \u751F\u6548 \xB7 \u52FF\u5199 secret\uFF09</label>
+        <label class="settings-label">mcpServers\uFF08JSON \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548 \xB7 \u52FF\u5199 secret\uFF09</label>
         <textarea id="prof-edit-mcp" class="line-input" rows="6" spellcheck="false">${escapeHtml(mcpJson)}</textarea>
         <div class="settings-row">
           <button type="button" id="btn-prof-save" class="btn btn-primary">\u4FDD\u5B58</button>
@@ -9284,14 +9338,15 @@ function renderSkills() {
             </li>`;
   }).join("")}</ul>`;
   const mcpNote = `
-    <p class="muted">MCP \u6302\u5728 Agent Profile \u4E0A\u7F16\u8F91\uFF08Skills / MCP \u5206\u533A\u6216 Profiles \u7F16\u8F91\u5668\uFF09\u3002\u914D\u7F6E\u5728<strong>\u4E0B\u6B21 session</strong>\u751F\u6548\u3002</p>
+    <p class="muted">MCP \u6302\u5728 Agent Profile \u4E0A\u7F16\u8F91\uFF08Skills / MCP \u5206\u533A\u6216 Profiles \u7F16\u8F91\u5668\uFF09\u3002${escapeHtml(PROFILE_NEXT_SESSION_TIP)}\u3002</p>
     <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config</p>
     <ul class="settings-list">${fullProfiles.map((p) => {
     const n = p.mcpServers?.length ?? 0;
     const sk = p.skills?.length ?? 0;
     return `<li class="settings-list-item">
           <div class="settings-list-main">
-            <strong>${escapeHtml(p.displayName || p.id)}</strong>
+            <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
+            <span class="faint"><code>${escapeHtml(p.id)}</code></span>
             <span class="muted">skills ${sk} \xB7 mcp ${n}</span>
           </div>
           <div class="settings-list-actions">
@@ -9550,19 +9605,20 @@ async function onProfileCreate() {
 }
 async function onProfileSave() {
   if (!profileEditId) return;
-  const patch = { id: profileEditId };
-  const name = document.getElementById("prof-edit-name")?.value;
-  const model = document.getElementById("prof-edit-model")?.value;
-  const exe = document.getElementById("prof-edit-exe")?.value;
-  const envKey = document.getElementById("prof-edit-env")?.value;
-  const cred = document.getElementById("prof-edit-cred")?.value;
-  const base = document.getElementById("prof-edit-base")?.value;
-  if (name !== void 0) patch.displayName = name.trim() || null;
-  if (model !== void 0) patch.model = model.trim() || null;
-  if (exe !== void 0) patch.executable = exe.trim() || null;
-  if (envKey !== void 0) patch.envKey = envKey.trim() || null;
-  if (cred !== void 0) patch.credentialRef = cred.trim() || null;
-  if (base !== void 0) patch.baseUrl = base.trim() || null;
+  const built = validateProfileUpdate({
+    id: profileEditId,
+    displayName: document.getElementById("prof-edit-name")?.value || "",
+    model: document.getElementById("prof-edit-model")?.value || "",
+    executable: document.getElementById("prof-edit-exe")?.value || "",
+    envKey: document.getElementById("prof-edit-env")?.value || "",
+    credentialRef: document.getElementById("prof-edit-cred")?.value || "",
+    baseUrl: document.getElementById("prof-edit-base")?.value || ""
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  const patch = { ...built.payload };
   const skillsRaw = document.getElementById("prof-edit-skills")?.value;
   const mcpRaw = document.getElementById("prof-edit-mcp")?.value;
   try {
@@ -9580,7 +9636,7 @@ async function onProfileSave() {
   if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = "Profile \u5DF2\u4FDD\u5B58\uFF08MCP/Skills \u4E0B\u6B21 session \u751F\u6548\uFF09";
+    el.status.textContent = `Profile \u5DF2\u4FDD\u5B58\uFF08${PROFILE_NEXT_SESSION_TIP}\uFF09`;
     await loadProfilesFull();
     renderSettings();
   } catch (err) {
