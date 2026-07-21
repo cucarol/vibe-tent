@@ -28,18 +28,17 @@ const AGENT_ALIASES: Record<string, AgentHookId> = {
 };
 
 /**
- * Stable managed command stems — identity for install/doctor/remove.
- * Full projected form always includes `--host <agentId>`.
+ * Stable managed command identity for install/doctor/remove.
+ * Only the formal projected form counts:
+ *   tent agent session-start --host <agent>
+ *   tent agent session-end --host <agent>
+ * Bare enter/leave (unpublished) are never matched, upgraded, or removed —
+ * so user-authored commands with those tokens are left alone.
  */
 export const TENT_HOOK_SESSION_START_STEM = "agent session-start";
 export const TENT_HOOK_SESSION_END_STEM = "agent session-end";
 
-/** @deprecated Legacy stems still recognized by remove/doctor for cleanup. */
-export const TENT_HOOK_ENTER_COMMAND = "tent agent enter";
-/** @deprecated Legacy stems still recognized by remove/doctor for cleanup. */
-export const TENT_HOOK_LEAVE_COMMAND = "tent agent leave";
-
-/** Marker embedded in managed command entries for future-safe matching. */
+/** Marker embedded in managed Codex handler statusMessage (not used as sole match key). */
 export const TENT_HOOK_MARKER = "tent-managed-hook";
 
 export type HookLifecycleEvent = "SessionStart" | "Stop";
@@ -167,82 +166,56 @@ export function managedSessionEndCommand(
   return `${tent} agent session-end --host ${agent}`;
 }
 
-/** @deprecated Prefer managedSessionStartCommand(agent). Kept for tests/compat. */
-export function managedEnterCommand(tentCommand?: string): string {
-  return managedSessionStartCommand("claude", tentCommand);
-}
-
-/** @deprecated Prefer managedSessionEndCommand(agent). Kept for tests/compat. */
-export function managedLeaveCommand(tentCommand?: string): string {
-  return managedSessionEndCommand("claude", tentCommand);
-}
-
 /**
- * True if a hook command is Tent-managed (current session-start/end or legacy enter/leave).
- * Used by install/doctor/remove matching.
+ * True if a hook command is Tent-managed formal projection:
+ * `…tent… agent session-start|session-end --host <id>`.
+ * Does not match bare enter/leave or session-* without --host.
  */
 export function isManagedHookCommand(command: string | undefined | null): boolean {
   if (!command || typeof command !== "string") return false;
   const c = command.trim();
-  if (c.includes(TENT_HOOK_MARKER)) return true;
-  // Current product form: tent agent session-start|session-end [--host …]
-  if (/(?:^|[\s"'`/\\])tent(?:\.cmd|\.exe)?\s+agent\s+session-start\b/i.test(c)) {
-    return true;
-  }
-  if (/(?:^|[\s"'`/\\])tent(?:\.cmd|\.exe)?\s+agent\s+session-end\b/i.test(c)) {
-    return true;
-  }
-  // Custom tent entry: …/tent agent session-start|end
-  if (/\bagent\s+session-start\b/i.test(c) && /tent/i.test(c)) return true;
-  if (/\bagent\s+session-end\b/i.test(c) && /tent/i.test(c)) return true;
-  // Legacy enter/leave — still matched so remove can clean prior projections.
-  if (/(?:^|[\s"'`/\\])tent(?:\.cmd|\.exe)?\s+agent\s+enter\b/i.test(c)) return true;
-  if (/(?:^|[\s"'`/\\])tent(?:\.cmd|\.exe)?\s+agent\s+leave\b/i.test(c)) return true;
-  if (/\bagent\s+enter\b/i.test(c) && /tent/i.test(c)) return true;
-  if (/\bagent\s+leave\b/i.test(c) && /tent/i.test(c)) return true;
-  return false;
+  if (managedCommandHost(c) === null) return false;
+  if (!/tent/i.test(c)) return false;
+  return (
+    /\bagent\s+session-start\b/i.test(c) || /\bagent\s+session-end\b/i.test(c)
+  );
 }
 
+/** Formal session-start projection (requires --host). */
 export function isManagedEnterCommand(command: string | undefined | null): boolean {
   if (!isManagedHookCommand(command)) return false;
-  const c = String(command);
-  return /\bagent\s+session-start\b/i.test(c) || /\bagent\s+enter\b/i.test(c);
+  return /\bagent\s+session-start\b/i.test(String(command));
 }
 
+/** Formal session-end projection (requires --host). */
 export function isManagedLeaveCommand(command: string | undefined | null): boolean {
   if (!isManagedHookCommand(command)) return false;
-  const c = String(command);
-  return /\bagent\s+session-end\b/i.test(c) || /\bagent\s+leave\b/i.test(c);
+  return /\bagent\s+session-end\b/i.test(String(command));
 }
 
-/** Extract `--host <id>` from a managed command, if present. */
+/** Extract `--host <id>` from a command, if present. */
 export function managedCommandHost(command: string | undefined | null): string | null {
   if (!command || typeof command !== "string") return null;
   const m = command.match(/--host(?:\s+|=)([^\s"']+)/i);
   return m?.[1] ?? null;
 }
 
-/** True when command is a current-form session-start for the given host agent. */
+/** True when command is formal session-start for the given host agent. */
 export function isManagedSessionStartForHost(
   command: string | undefined | null,
   agent: AgentHookId
 ): boolean {
   if (!isManagedEnterCommand(command)) return false;
-  const host = managedCommandHost(command);
-  // Current form requires matching --host; legacy enter without host still counts as managed enter.
-  if (host === null) return /\bagent\s+enter\b/i.test(String(command));
-  return host === agent;
+  return managedCommandHost(command) === agent;
 }
 
-/** True when command is a current-form session-end for the given host agent. */
+/** True when command is formal session-end for the given host agent. */
 export function isManagedSessionEndForHost(
   command: string | undefined | null,
   agent: AgentHookId
 ): boolean {
   if (!isManagedLeaveCommand(command)) return false;
-  const host = managedCommandHost(command);
-  if (host === null) return /\bagent\s+leave\b/i.test(String(command));
-  return host === agent;
+  return managedCommandHost(command) === agent;
 }
 
 /** Install Tent-managed lifecycle hooks (idempotent merge; never touches permissions). */
@@ -512,15 +485,14 @@ async function projectClaudeLike(
     };
   }
 
-  // install — replace legacy enter/leave with session-start/end --host when present.
-  const upgraded = upgradeLegacyManagedHandlers(hooks, agent, enterCmd, leaveCmd, codexCommandShape === true);
+  // install — only formal session-start/end --host; never rewrite bare enter/leave.
   const enterHandler = buildCommandHandler(enterCmd, codexCommandShape === true);
   const leaveHandler = buildCommandHandler(leaveCmd, codexCommandShape === true);
   const addedEnter = ensureManagedEvent(hooks, "SessionStart", enterHandler, matchEnter);
   const addedLeave = ensureManagedEvent(hooks, "Stop", leaveHandler, matchLeave);
   const presentAfter = detectManagedEvents(hooks, agent);
 
-  if (!upgraded && !addedEnter && !addedLeave && presentAfter.length === 2) {
+  if (!addedEnter && !addedLeave && presentAfter.length === 2) {
     return {
       agent,
       support: "lifecycle",
@@ -708,58 +680,7 @@ function ensureManagedEvent(
   return true;
 }
 
-/**
- * Rewrite legacy `tent agent enter|leave` handlers to session-start/end --host.
- * Returns true if any handler was rewritten.
- */
-function upgradeLegacyManagedHandlers(
-  hooks: JsonObject,
-  agent: AgentHookId,
-  enterCmd: string,
-  leaveCmd: string,
-  codexShape: boolean
-): boolean {
-  let changed = false;
-  for (const event of ["SessionStart", "Stop"] as const) {
-    const groups = hooks[event];
-    if (!Array.isArray(groups)) continue;
-    const nextGroups = groups.map((group) => {
-      if (!group || typeof group !== "object" || Array.isArray(group)) return group;
-      const g = { ...(group as JsonObject) };
-      const handlers = Array.isArray(g.hooks) ? [...(g.hooks as unknown[])] : [];
-      g.hooks = handlers.map((h) => {
-        if (!h || typeof h !== "object" || Array.isArray(h)) return h;
-        const obj = { ...(h as JsonObject) };
-        const cmd = obj.command;
-        if (typeof cmd !== "string" || !isManagedHookCommand(cmd)) return h;
-        // Already current form with matching host — leave alone.
-        if (event === "SessionStart" && isManagedSessionStartForHost(cmd, agent) && managedCommandHost(cmd) === agent) {
-          return h;
-        }
-        if (event === "Stop" && isManagedSessionEndForHost(cmd, agent) && managedCommandHost(cmd) === agent) {
-          return h;
-        }
-        // Legacy enter/leave or wrong/missing host → rewrite to current form.
-        if (event === "SessionStart" && isManagedEnterCommand(cmd)) {
-          const next = buildCommandHandler(enterCmd, codexShape);
-          changed = true;
-          return { ...obj, ...next, command: enterCmd };
-        }
-        if (event === "Stop" && isManagedLeaveCommand(cmd)) {
-          const next = buildCommandHandler(leaveCmd, codexShape);
-          changed = true;
-          return { ...obj, ...next, command: leaveCmd };
-        }
-        return h;
-      });
-      return g;
-    });
-    hooks[event] = nextGroups;
-  }
-  return changed;
-}
-
-/** Remove managed handlers; returns true if anything was removed. */
+/** Remove only formal Tent-managed handlers; returns true if anything was removed. */
 function removeManagedFromHooks(hooks: JsonObject): boolean {
   let changed = false;
   for (const event of ["SessionStart", "Stop"] as const) {
