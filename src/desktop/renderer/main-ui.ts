@@ -17,13 +17,20 @@ import {
 import { openConcept, renderEditor, renderTabs, renderToolbar, bindDocumentHost } from "./main/document.js";
 import { renderDispatchPanel, bindDispatchHost } from "./main/dispatch.js";
 import { el, setError, syncActivityBadge } from "./main/elements.js";
-import { renderMeta, syncInspectorSections, bindInspectorHost } from "./main/inspector.js";
+import {
+  renderBacklinks,
+  renderMeta,
+  syncInspectorSections,
+  bindInspectorHost,
+} from "./main/inspector.js";
 import { bindChromeMenus, bindLayoutChrome } from "./main/layout.js";
 import {
   bindStateHost,
   deliveries,
   onServiceEvent,
   pendingInteractionCount,
+  reloadActiveBacklinks,
+  reloadBoxProjections,
   reloadPendingInteractions,
   reloadProfiles,
   reloadRegistry,
@@ -68,6 +75,7 @@ function renderAll(): void {
   renderToolbar();
   renderEditor();
   renderMeta();
+  renderBacklinks();
   renderDispatchPanel();
   renderPendingInteractions();
   renderTaskInput();
@@ -97,6 +105,8 @@ bindStateHost({
     updateActivityChrome();
     if (getSurface() === "activity") renderActivity();
   },
+  renderMeta,
+  renderBacklinks,
 });
 bindTreeHost({ openConcept });
 bindDocumentHost({
@@ -104,8 +114,15 @@ bindDocumentHost({
   renderTabs,
   renderToolbar,
   loadCards,
+  openWorkspace: () => void onOpenWorkspace(),
+  onConceptOpened: async () => {
+    await Promise.all([reloadBoxProjections(), reloadActiveBacklinks()]);
+    renderTree();
+    renderMeta();
+    renderBacklinks();
+  },
 });
-bindInspectorHost({ renderAll });
+bindInspectorHost({ renderAll, openConcept });
 bindDispatchHost({ renderDispatchPanel });
 bindShellHost({
   onSurfaceChange: (surface) => {
@@ -147,7 +164,14 @@ async function boot(): Promise<void> {
   el.wsSelect.addEventListener("change", () => {
     const id = el.wsSelect.value;
     if (id) {
-      void window.tentDesktop.setForeground(id).then((s) => applyShell(s as ShellState));
+      void window.tentDesktop
+        .setForeground(id)
+        .then(async (s) => {
+          applyShell(s as ShellState);
+          // Full reload after workspace switch (tabs cleared by setWorkspaceId).
+          await refresh();
+        })
+        .catch((err) => setError(err));
     }
   });
   el.searchInput.addEventListener("keydown", (e) => {
@@ -213,9 +237,14 @@ function applyShell(s: ShellState): void {
   const live = s.statusMessage || s.workspace?.statusMessage || "";
   if (live) el.status.textContent = live;
 
+  // Shell tree already overlays box.projection when present; still re-fetch on refresh().
   if (s.workspace?.tree?.length) {
     setTree(s.workspace.tree);
     renderTree();
+  } else if (!s.foregroundWorkspaceId) {
+    setTree([]);
+    renderTree();
+    renderAll();
   }
 
   if (s.coordinationTypes?.length) {

@@ -211,6 +211,39 @@ export class ServiceDocsClient implements DocsClient {
     return { cx: result.id };
   }
 
+  /**
+   * User-only rename of display name / folder (cx- immutable).
+   * Pass newName only — never attempt to edit id.
+   */
+  async rename(
+    cxOrPath: string,
+    newName: string,
+    actor = "user"
+  ): Promise<{ id: string; name: string; path: string }> {
+    const result = await this.rpc.call<{
+      id: string;
+      name: string;
+      path: string;
+    }>("docs.rename", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cxOrPath),
+      newName,
+      actor,
+    });
+    return { id: result.id, name: result.name, path: result.path };
+  }
+
+  async setMode(
+    cxOrPath: string,
+    mode: "editable" | "read-only" | "archived"
+  ): Promise<unknown> {
+    return this.rpc.call("docs.setMode", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cxOrPath),
+      mode,
+    });
+  }
+
   async search(query: string): Promise<SearchHit[]> {
     const result = await this.rpc.call<{ hits: SearchHit[] }>("docs.search", {
       workspaceId: this.workspaceId,

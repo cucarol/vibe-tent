@@ -320,3 +320,7 @@ textarea.editor:focus {
   color: var(--color-muted);
   font-weight: 400;
 }
+
+.empty-cta .empty-action {
+  margin: var(--space-4) 0 0;
+}

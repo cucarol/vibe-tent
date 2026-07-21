@@ -5845,7 +5845,9 @@ var el = {
   btnRailMore: document.getElementById("btn-rail-more"),
   secPending: document.getElementById("sec-pending"),
   secDispatch: document.getElementById("sec-dispatch"),
-  secCards: document.getElementById("sec-cards")
+  secCards: document.getElementById("sec-cards"),
+  secBacklinks: document.getElementById("sec-backlinks"),
+  backlinks: document.getElementById("backlinks-host")
 };
 function syncActivityBadge(count) {
   if (!el.activityBadge) return;
@@ -5862,6 +5864,83 @@ function setError(err) {
     suppressStatusToast = false;
   }
   showToast(msg, "error");
+}
+
+// src/desktop/workbench/box-projection.ts
+function boxStatusLabel(status) {
+  switch (status) {
+    case "doing":
+      return "\u8FDB\u884C\u4E2D";
+    case "done":
+      return "\u5B8C\u6210";
+    case "todo":
+      return "\u5F85\u529E";
+    default:
+      return status ? String(status) : "\u2014";
+  }
+}
+function normalizeBoxProjection(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw;
+  const workspaceId2 = typeof r.workspaceId === "string" ? r.workspaceId : "";
+  const boxId = typeof r.boxId === "string" && r.boxId || typeof r.id === "string" && r.id || "";
+  const statusRaw = r.status;
+  if (!workspaceId2 || !boxId) return null;
+  if (statusRaw !== "todo" && statusRaw !== "doing" && statusRaw !== "done") {
+    return null;
+  }
+  const out = {
+    workspaceId: workspaceId2,
+    boxId,
+    status: statusRaw
+  };
+  if (typeof r.assignee === "string" && r.assignee.trim()) {
+    out.assignee = r.assignee.trim();
+  }
+  if (typeof r.activeTaskId === "string" && r.activeTaskId.trim()) {
+    out.activeTaskId = r.activeTaskId.trim();
+  }
+  return out;
+}
+function collectCoordinationBoxIds(nodes) {
+  const ids = [];
+  const walk2 = (list2) => {
+    for (const n of list2) {
+      if (n.coordination && n.id) ids.push(n.id);
+      if (n.children?.length) walk2(n.children);
+    }
+  };
+  walk2(nodes);
+  return ids;
+}
+function applyBoxProjectionsToTree(nodes, byBoxId) {
+  return nodes.map((n) => applyOne(n, byBoxId));
+}
+function applyOne(node2, byBoxId) {
+  const children = node2.children?.length ? node2.children.map((c) => applyOne(c, byBoxId)) : node2.children;
+  if (!node2.coordination) {
+    const cleared = { ...node2, children };
+    delete cleared.status;
+    delete cleared.assignee;
+    return cleared;
+  }
+  const proj = byBoxId.get(node2.id);
+  if (!proj) {
+    const cleared = { ...node2, children };
+    delete cleared.status;
+    delete cleared.assignee;
+    return cleared;
+  }
+  const next = { ...node2, children, status: proj.status };
+  if (proj.assignee) next.assignee = proj.assignee;
+  else delete next.assignee;
+  return next;
+}
+function boxProjectionSummaryLine(proj) {
+  if (!proj) return null;
+  const parts = [boxStatusLabel(proj.status)];
+  if (proj.assignee) parts.push(proj.assignee);
+  return parts.join(" \xB7 ");
 }
 
 // src/desktop/workbench/open-tabs.ts
@@ -5894,11 +5973,16 @@ function closeOpenTab(tabOrder, closingCx, activeCx2) {
 }
 function documentEmptyCopy(hasWorkspace) {
   if (!hasWorkspace) {
-    return { title: "\u6253\u5F00\u5DE5\u4F5C\u533A", hint: null };
+    return {
+      title: "\u6253\u5F00\u5DE5\u4F5C\u533A",
+      hint: "\u9009\u62E9\u672C\u673A\u6587\u4EF6\u5939\u6302\u8F7D\u4E3A\u5DE5\u4F5C\u533A\uFF08\u4E0D\u76F4\u63A5\u8BFB\u53D6 .tent\uFF09",
+      action: "open-workspace"
+    };
   }
   return {
     title: "\u672A\u6253\u5F00\u6587\u6863",
-    hint: "\u4ECE\u5DE6\u4FA7 Nodes \u9009\u62E9\u4E00\u6761\u7B14\u8BB0"
+    hint: "\u4ECE\u5DE6\u4FA7 Nodes \u9009\u62E9\u4E00\u6761\u7B14\u8BB0",
+    action: null
   };
 }
 function isCloseTabShortcut(ev) {
@@ -5913,6 +5997,9 @@ var activeCx = null;
 var tree = [];
 var state = null;
 var workspaceId = null;
+var boxProjections = /* @__PURE__ */ new Map();
+var activeBacklinks = [];
+var activeBacklinksError = null;
 var coordinationTypes = [];
 var roles = [];
 var taskReview = [];
@@ -5937,9 +6024,6 @@ function setTree(nodes) {
 }
 function setState(s) {
   state = s;
-}
-function setWorkspaceId(id) {
-  workspaceId = id;
 }
 function setCoordinationTypes(list2) {
   coordinationTypes = list2;
@@ -6015,15 +6099,98 @@ var host = null;
 function bindStateHost(h) {
   host = h;
 }
+function clearLocalDocumentSession() {
+  localTabs.clear();
+  activeCx = null;
+  tree = [];
+  boxProjections.clear();
+  activeBacklinks = [];
+  activeBacklinksError = null;
+}
+function setWorkspaceId(id) {
+  if (workspaceId === id) return;
+  clearLocalDocumentSession();
+  workspaceId = id;
+}
 async function reloadTree() {
   if (!workspaceId) return;
   const result = await window.tentDesktop.rpc("docs.list", { workspaceId });
-  tree = result.concepts || [];
+  const raw = (result.concepts || []).map(stripListCollabFields);
+  tree = raw;
   for (const [id, tab] of localTabs) {
     const concept = findConcept(tree, id);
     if (concept?.mode) tab.nodeMode = concept.mode;
+    if (concept?.name) tab.name = concept.name;
+    if (concept?.path) tab.path = concept.path;
   }
+  await reloadBoxProjections();
   host?.renderTree();
+}
+function stripListCollabFields(node2) {
+  const { status: _s, assignee: _a, children, ...rest } = node2;
+  return {
+    ...rest,
+    children: children?.map(stripListCollabFields)
+  };
+}
+async function reloadBoxProjections() {
+  if (!workspaceId) {
+    boxProjections.clear();
+    return;
+  }
+  const ids = collectCoordinationBoxIds(tree);
+  if (ids.length === 0) {
+    boxProjections.clear();
+    tree = applyBoxProjectionsToTree(tree, boxProjections);
+    return;
+  }
+  const results = await Promise.all(
+    ids.map(
+      (id) => window.tentDesktop.rpc("box.projection", { workspaceId, id }).then((raw) => normalizeBoxProjection(raw)).catch(() => null)
+    )
+  );
+  boxProjections.clear();
+  for (const p of results) {
+    if (p) boxProjections.set(p.boxId, p);
+  }
+  tree = applyBoxProjectionsToTree(tree, boxProjections);
+  host?.renderMeta?.();
+}
+function boxProjectionFor(cx) {
+  if (!cx) return null;
+  return boxProjections.get(cx) ?? null;
+}
+async function reloadActiveBacklinks() {
+  if (!workspaceId || !activeCx) {
+    activeBacklinks = [];
+    activeBacklinksError = null;
+    host?.renderBacklinks?.();
+    return;
+  }
+  try {
+    const result = await window.tentDesktop.rpc("docs.backlinks", {
+      workspaceId,
+      id: activeCx
+    });
+    const hits = [];
+    for (const h of result.backlinks || []) {
+      const cx = h.fromCx || h.cx || h.id || "";
+      if (!cx) continue;
+      const row = {
+        cx,
+        name: h.fromName || h.name || cx,
+        path: h.fromPath || h.path || ""
+      };
+      if (typeof h.raw === "string" && h.raw) row.context = h.raw;
+      hits.push(row);
+    }
+    activeBacklinks = hits;
+    activeBacklinksError = null;
+  } catch (err) {
+    activeBacklinks = [];
+    activeBacklinksError = err instanceof Error ? err.message : String(err);
+  }
+  host?.renderBacklinks?.();
 }
 async function reloadRegistry() {
   if (!workspaceId) return;
@@ -6124,7 +6291,11 @@ async function onServiceEvent(type) {
   const reloadPendingNeeded = isPendingInteractionEventType(type);
   if (!reloadTasksNeeded && !reloadPendingNeeded) return;
   try {
-    if (reloadTasksNeeded) await reloadTasks();
+    if (reloadTasksNeeded) {
+      await reloadTasks();
+      await reloadBoxProjections();
+      host?.renderTree();
+    }
     if (reloadPendingNeeded) await reloadPendingInteractions();
   } catch (err) {
     setError(err);
@@ -6218,7 +6389,7 @@ function syncInspectorSections() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   const canDispatch = !!(tab && tab.coordination);
   if (!el.secPending || !el.secDispatch || !el.secCards) return;
-  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open;
+  const anyOpen = el.secPending.open || el.secDispatch.open || el.secCards.open || !!(el.secBacklinks && el.secBacklinks.open);
   if (anyOpen) return;
   if (hasTasks) el.secPending.open = true;
   else if (canDispatch) el.secDispatch.open = true;
@@ -6231,9 +6402,14 @@ function renderMeta() {
     return;
   }
   el.meta.classList.remove("muted");
+  const proj = tab.coordination ? boxProjectionFor(tab.cx) : null;
   const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
-  const oneLine = tab.coordination ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
+  const collabLine = boxProjectionSummaryLine(proj);
+  const oneLine = tab.coordination ? collabLine ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${escapeHtml(collabLine)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
   const renameDisabled = tab.nodeMode === "archived";
+  const projDl = tab.coordination && proj ? `<dt>\u72B6\u6001</dt><dd>${escapeHtml(boxStatusLabel(proj.status))}</dd>
+        <dt>\u7ECF\u529E</dt><dd>${proj.assignee ? escapeHtml(proj.assignee) : "\u2014"}</dd>
+        <dt>\u4EFB\u52A1</dt><dd>${proj.activeTaskId ? `<code title="${escapeHtml(proj.activeTaskId)}">${escapeHtml(proj.activeTaskId)}</code>` : "\u2014"}</dd>` : tab.coordination ? `<dt>\u72B6\u6001</dt><dd class="muted">\u6295\u5F71\u672A\u52A0\u8F7D</dd>` : "";
   el.meta.innerHTML = `
     <div class="meta-name">${escapeHtml(tab.name)}</div>
     <div class="meta-line muted">${oneLine}</div>
@@ -6244,7 +6420,7 @@ function renderMeta() {
     label: "\u91CD\u547D\u540D",
     variant: "secondary",
     id: "btn-rename-node",
-    title: renameDisabled ? "\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u91CD\u547D\u540D" : "\u91CD\u547D\u540D",
+    title: renameDisabled ? "\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u91CD\u547D\u540D" : "\u4EC5\u6539\u663E\u793A\u540D\uFF08docs.rename\uFF1Bid \u4E0D\u53EF\u6539\uFF09",
     disabled: renameDisabled
   })}
     </div>
@@ -6262,11 +6438,45 @@ function renderMeta() {
       <dl>
         <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
         <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
-        <dt>\u6807\u8BC6</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
+        <dt>\u6807\u8BC6</dt><dd><code title="\u4E0D\u53EF\u53D8 id">${escapeHtml(tab.cx)}</code></dd>
+        ${projDl}
       </dl>
     </details>`;
   document.getElementById("btn-rename-node")?.addEventListener("click", () => void onRenameNode());
   document.getElementById("btn-apply-node-mode")?.addEventListener("click", () => void onSetNodeMode());
+}
+function renderBacklinks() {
+  const hostEl = el.backlinks;
+  if (!hostEl) return;
+  const tab = activeCx ? localTabs.get(activeCx) : null;
+  if (!tab) {
+    hostEl.innerHTML = `<div class="muted">\u672A\u9009\u62E9</div>`;
+    return;
+  }
+  if (activeBacklinksError) {
+    hostEl.innerHTML = `<div class="muted">\u53CD\u5411\u94FE\u63A5\u52A0\u8F7D\u5931\u8D25\uFF1A${escapeHtml(activeBacklinksError)}</div>`;
+    return;
+  }
+  if (!activeBacklinks.length) {
+    hostEl.innerHTML = `<div class="muted">\u6682\u65E0\u53CD\u5411\u94FE\u63A5</div>`;
+    return;
+  }
+  hostEl.innerHTML = `<ul class="card-list backlink-list" aria-label="\u53CD\u5411\u94FE\u63A5">${activeBacklinks.map(
+    (h) => `<li class="card-item" data-open="${escapeHtml(h.cx)}" role="button" tabindex="0">
+          <strong>${escapeHtml(h.name)}</strong>
+          ${h.context ? `<div class="muted">${escapeHtml(h.context)}</div>` : h.path ? `<div class="muted">${escapeHtml(h.path)}</div>` : ""}
+        </li>`
+  ).join("")}</ul>`;
+  hostEl.querySelectorAll("[data-open]").forEach((node2) => {
+    const open = () => void host2?.openConcept?.(node2.getAttribute("data-open"));
+    node2.addEventListener("click", open);
+    node2.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        open();
+      }
+    });
+  });
 }
 async function onRenameNode() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -6804,8 +7014,10 @@ function bindDocumentChrome() {
     }
     const tabBtn = t?.closest("[data-tab]");
     if (tabBtn && el.tabs.contains(tabBtn)) {
-      setActiveCx(tabBtn.getAttribute("data-tab"));
+      const cx = tabBtn.getAttribute("data-tab");
+      setActiveCx(cx);
       host3?.renderAll();
+      if (cx) void host3?.onConceptOpened?.(cx);
       focusActiveTab();
     }
   });
@@ -6864,6 +7076,7 @@ async function closeTab(cx) {
   localTabs.delete(cx);
   setActiveCx(result.activeCx);
   host3?.renderAll();
+  if (result.activeCx) void host3?.onConceptOpened?.(result.activeCx);
   queueMicrotask(() => {
     if (result.activeCx) focusActiveTab();
     else {
@@ -6909,6 +7122,7 @@ async function openConcept(cx) {
   localTabs.set(tab.cx, tab);
   setActiveCx(tab.cx);
   host3?.renderAll();
+  void host3?.onConceptOpened?.(tab.cx);
 }
 function renderTabs() {
   const tabs = [...localTabs.values()];
@@ -7139,7 +7353,16 @@ function renderEditor() {
   if (!tab) {
     const copy = documentEmptyCopy(!!workspaceId);
     const hint = copy.hint ? `<p class="empty-hint">${escapeHtml(copy.hint)}</p>` : "";
-    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}</div>`;
+    const action = copy.action === "open-workspace" ? `<p class="empty-action">${btnHtml({
+      label: "\u6253\u5F00\u5DE5\u4F5C\u533A\u2026",
+      variant: "primary",
+      attrs: 'data-empty-act="open-ws"'
+    })}</p>` : "";
+    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}${action}</div>`;
+    el.editor.querySelector('[data-empty-act="open-ws"]')?.addEventListener(
+      "click",
+      () => void host3?.openWorkspace?.()
+    );
     return;
   }
   if (tab.mode === "preview") {
@@ -7711,28 +7934,38 @@ function renderTree() {
     });
   });
 }
-function nodeStatusMark(status) {
+function nodeStatusMark(status, assignee) {
   if (!status) return "";
   const s = status.toLowerCase();
-  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
-  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
-    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "done") return "";
+  const label = boxStatusLabel(s);
+  const title = assignee ? `${label} \xB7 ${assignee}` : label;
+  if (s === "doing") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
-    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "todo") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  return "";
 }
 function renderNodes(nodes) {
   return nodes.map((n) => {
-    const mark = n.coordination ? nodeStatusMark(n.status) : "";
+    const mark = n.coordination ? nodeStatusMark(n.status, n.assignee) : "";
     const rowClass = treeRowClass({
       active: n.id === activeCx,
       archived: n.mode === "archived"
     });
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
+    const titleParts = [
+      n.name,
+      n.type,
+      n.mode || "editable",
+      n.coordination && n.status ? boxStatusLabel(n.status) : "",
+      n.assignee || "",
+      n.id
+    ].filter(Boolean);
     return `<li>
-        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(titleParts.join(" \xB7 "))}">
           <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
           <span class="${UI.treeMeta}">${mark}</span>
         </div>
@@ -9459,6 +9692,7 @@ function renderAll() {
   renderToolbar();
   renderEditor();
   renderMeta();
+  renderBacklinks();
   renderDispatchPanel();
   renderPendingInteractions();
   renderTaskInput();
@@ -9485,16 +9719,25 @@ bindStateHost({
     renderPendingInteractions();
     updateActivityChrome();
     if (getSurface() === "activity") renderActivity();
-  }
+  },
+  renderMeta,
+  renderBacklinks
 });
 bindTreeHost({ openConcept });
 bindDocumentHost({
   renderAll,
   renderTabs,
   renderToolbar,
-  loadCards
+  loadCards,
+  openWorkspace: () => void onOpenWorkspace(),
+  onConceptOpened: async () => {
+    await Promise.all([reloadBoxProjections(), reloadActiveBacklinks()]);
+    renderTree();
+    renderMeta();
+    renderBacklinks();
+  }
 });
-bindInspectorHost({ renderAll });
+bindInspectorHost({ renderAll, openConcept });
 bindDispatchHost({ renderDispatchPanel });
 bindShellHost({
   onSurfaceChange: (surface) => {
@@ -9534,7 +9777,10 @@ async function boot() {
   el.wsSelect.addEventListener("change", () => {
     const id = el.wsSelect.value;
     if (id) {
-      void window.tentDesktop.setForeground(id).then((s) => applyShell(s));
+      void window.tentDesktop.setForeground(id).then(async (s) => {
+        applyShell(s);
+        await refresh();
+      }).catch((err) => setError(err));
     }
   });
   el.searchInput.addEventListener("keydown", (e) => {
@@ -9592,6 +9838,10 @@ function applyShell(s) {
   if (s.workspace?.tree?.length) {
     setTree(s.workspace.tree);
     renderTree();
+  } else if (!s.foregroundWorkspaceId) {
+    setTree([]);
+    renderTree();
+    renderAll();
   }
   if (s.coordinationTypes?.length) {
     setCoordinationTypes(s.coordinationTypes);

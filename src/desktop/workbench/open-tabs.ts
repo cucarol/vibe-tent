@@ -54,13 +54,20 @@ export function closeOpenTab(
 export function documentEmptyCopy(hasWorkspace: boolean): {
   title: string;
   hint: string | null;
+  /** When true, empty canvas exposes a left-click mount entry (data-empty-act=open-ws). */
+  action: "open-workspace" | null;
 } {
   if (!hasWorkspace) {
-    return { title: "打开工作区", hint: null };
+    return {
+      title: "打开工作区",
+      hint: "选择本机文件夹挂载为工作区（不直接读取 .tent）",
+      action: "open-workspace",
+    };
   }
   return {
     title: "未打开文档",
     hint: "从左侧 Nodes 选择一条笔记",
+    action: null,
   };
 }
 

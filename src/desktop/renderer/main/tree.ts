@@ -1,6 +1,7 @@
 // Node tree + create-type rail (left pane content).
 
 import { escapeHtml } from "../../../markdown/render.js";
+import { boxStatusLabel } from "../../workbench/box-projection.js";
 import {
   pickDefaultCoordinationType,
   suggestBoxName,
@@ -64,32 +65,43 @@ export function renderTree(): void {
   });
 }
 
-function nodeStatusMark(status?: string): string {
-  // 仅对进行中 / 待处理显示极弱标记；完成与普通节点默认无状态字
+function nodeStatusMark(status?: string, assignee?: string): string {
+  // Marks only from box.projection (todo|doing|done). done → no mark.
   if (!status) return "";
   const s = status.toLowerCase();
-  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
-  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
-    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "done") return "";
+  const label = boxStatusLabel(s);
+  const title = assignee ? `${label} · ${assignee}` : label;
+  if (s === "doing") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
-    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "todo") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  // 其它协调状态：细点，不显示英文胶囊
-  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  // Unknown projection status: no invent — omit mark.
+  return "";
 }
 
 function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
-      const mark = n.coordination ? nodeStatusMark(n.status) : "";
+      // displayName (name) first; immutable id only in title/tooltip
+      const mark = n.coordination ? nodeStatusMark(n.status, n.assignee) : "";
       const rowClass = treeRowClass({
         active: n.id === activeCx,
         archived: n.mode === "archived",
       });
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
+      const titleParts = [
+        n.name,
+        n.type,
+        n.mode || "editable",
+        n.coordination && n.status ? boxStatusLabel(n.status) : "",
+        n.assignee || "",
+        n.id,
+      ].filter(Boolean);
       return `<li>
-        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)} · ${escapeHtml(n.mode || "editable")}">
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(titleParts.join(" · "))}">
           <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
           <span class="${UI.treeMeta}">${mark}</span>
         </div>

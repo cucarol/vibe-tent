@@ -20,7 +20,12 @@ export type ConceptNode = {
   name: string;
   type: string;
   coordination: boolean;
+  /**
+   * Collaboration status from box.projection only (todo|doing|done).
+   * Never populated from docs.list frontmatter / owner.
+   */
   status?: string;
+  /** Assignee from box.projection only when an active task occupies the box. */
   assignee?: string;
   mode?: "editable" | "read-only" | "archived";
   tags?: string[];
@@ -40,6 +45,14 @@ export type TabView = {
   nodeMode: "editable" | "read-only" | "archived";
   frontmatter: Record<string, unknown>;
   artifactRefs?: Array<{ kind: string; target: string; label?: string }>;
+};
+
+/** docs.backlinks hit for inspector (right rail only — not document body). */
+export type BacklinkView = {
+  cx: string;
+  name: string;
+  path: string;
+  context?: string;
 };
 
 /** Normalized pending rows — see workbench/pending-interactions.ts. */

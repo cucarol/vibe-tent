@@ -46,10 +46,12 @@ test("closeOpenTab removes id and recomputes active", () => {
 test("documentEmptyCopy distinguishes workspace vs open-doc empty", () => {
   const noWs = documentEmptyCopy(false);
   assert.equal(noWs.title, "打开工作区");
-  assert.equal(noWs.hint, null);
+  assert.equal(noWs.action, "open-workspace");
+  assert.ok(noWs.hint);
 
   const emptyDocs = documentEmptyCopy(true);
   assert.equal(emptyDocs.title, "未打开文档");
+  assert.equal(emptyDocs.action, null);
   assert.match(emptyDocs.hint || "", /Nodes/);
 });
 
@@ -98,7 +100,9 @@ test("document tab strip exposes close controls and empty-state copy in source",
   assert.match(documentTs, /closeTab/);
   assert.match(documentTs, /documentTabHtml/);
   assert.match(documentTs, /documentEmptyCopy/);
+  assert.match(documentTs, /data-empty-act="open-ws"/);
   assert.match(openTabsTs, /未打开文档/);
+  assert.match(openTabsTs, /open-workspace/);
   assert.match(documentCss, /\.tab-close\b/);
   assert.match(documentCss, /focus-visible/);
   assert.match(documentCss, /var\(--size-tab-close\)/);

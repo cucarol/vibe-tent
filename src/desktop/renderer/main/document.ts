@@ -29,6 +29,10 @@ export type DocumentHost = {
   renderTabs: () => void;
   renderToolbar: () => void;
   loadCards: () => Promise<void>;
+  /** Empty-canvas left-click: mount workspace via main pick+workspace.mount. */
+  openWorkspace?: () => void | Promise<void>;
+  /** After open/select — refresh box.projection + backlinks for the active node. */
+  onConceptOpened?: (cx: string) => void | Promise<void>;
 };
 
 let host: DocumentHost | null = null;
@@ -55,8 +59,10 @@ function bindDocumentChrome(): void {
     }
     const tabBtn = t?.closest<HTMLElement>("[data-tab]");
     if (tabBtn && el.tabs.contains(tabBtn)) {
-      setActiveCx(tabBtn.getAttribute("data-tab"));
+      const cx = tabBtn.getAttribute("data-tab");
+      setActiveCx(cx);
       host?.renderAll();
+      if (cx) void host?.onConceptOpened?.(cx);
       focusActiveTab();
     }
   });
@@ -134,6 +140,7 @@ export async function closeTab(cx: string): Promise<boolean> {
   localTabs.delete(cx);
   setActiveCx(result.activeCx);
   host?.renderAll();
+  if (result.activeCx) void host?.onConceptOpened?.(result.activeCx);
   // Move focus to the new active tab, or the stage when empty.
   queueMicrotask(() => {
     if (result.activeCx) focusActiveTab();
@@ -199,6 +206,7 @@ export async function openConcept(cx: string): Promise<void> {
   localTabs.set(tab.cx, tab);
   setActiveCx(tab.cx);
   host?.renderAll();
+  void host?.onConceptOpened?.(tab.cx);
 }
 
 export function renderTabs(): void {
@@ -455,7 +463,19 @@ export function renderEditor(): void {
     const hint = copy.hint
       ? `<p class="empty-hint">${escapeHtml(copy.hint)}</p>`
       : "";
-    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}</div>`;
+    const action =
+      copy.action === "open-workspace"
+        ? `<p class="empty-action">${btnHtml({
+            label: "打开工作区…",
+            variant: "primary",
+            attrs: 'data-empty-act="open-ws"',
+          })}</p>`
+        : "";
+    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}${action}</div>`;
+    el.editor.querySelector<HTMLElement>('[data-empty-act="open-ws"]')?.addEventListener(
+      "click",
+      () => void host?.openWorkspace?.()
+    );
     return;
   }
   if (tab.mode === "preview") {

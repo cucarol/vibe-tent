@@ -117,6 +117,8 @@ export const el = {
   secPending: document.getElementById("sec-pending") as HTMLDetailsElement | null,
   secDispatch: document.getElementById("sec-dispatch") as HTMLDetailsElement | null,
   secCards: document.getElementById("sec-cards") as HTMLDetailsElement | null,
+  secBacklinks: document.getElementById("sec-backlinks") as HTMLDetailsElement | null,
+  backlinks: document.getElementById("backlinks-host"),
 };
 
 /** Sync top-nav activity badge with pending + reviewable work. */

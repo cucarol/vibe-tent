@@ -10,6 +10,12 @@ import type {
   TypeRegistryEntryProjection,
 } from "../../../service/types.js";
 import {
+  applyBoxProjectionsToTree,
+  collectCoordinationBoxIds,
+  normalizeBoxProjection,
+  type BoxProjectionView,
+} from "../../workbench/box-projection.js";
+import {
   buildTaskReviewItems,
   isActionableTaskState,
   listCoordinationTypeOptions,
@@ -37,7 +43,7 @@ import {
   type ToolApprovalItem,
   type UserAskItem,
 } from "../../workbench/pending-interactions.js";
-import type { ConceptNode, ShellState, TabView } from "./types.js";
+import type { BacklinkView, ConceptNode, ShellState, TabView } from "./types.js";
 import { setError } from "./elements.js";
 
 /** Local editor state mirrors WorkspaceController via service RPC (not core FS). */
@@ -46,6 +52,15 @@ export let activeCx: string | null = null;
 export let tree: ConceptNode[] = [];
 export let state: ShellState | null = null;
 export let workspaceId: string | null = null;
+
+/**
+ * box.projection by boxId — sole truth for tree/inspector status/assignee/activeTaskId.
+ * Cleared on workspace switch; never derived from frontmatter.
+ */
+export const boxProjections = new Map<string, BoxProjectionView>();
+/** docs.backlinks for the active node (inspector only). */
+export let activeBacklinks: BacklinkView[] = [];
+export let activeBacklinksError: string | null = null;
 
 /** Cached registry projections for create/dispatch pickers. */
 export let coordinationTypes: CoordinationTypeOption[] = [];
@@ -82,10 +97,6 @@ export function setTree(nodes: ConceptNode[]): void {
 
 export function setState(s: ShellState | null): void {
   state = s;
-}
-
-export function setWorkspaceId(id: string | null): void {
-  workspaceId = id;
 }
 
 export function setCoordinationTypes(list: CoordinationTypeOption[]): void {
@@ -210,6 +221,9 @@ export type StateHost = {
   renderTaskInput: () => void;
   renderSessions: () => void;
   renderPendingInteractions: () => void;
+  /** Re-render inspector meta / backlinks when projection or links change. */
+  renderMeta?: () => void;
+  renderBacklinks?: () => void;
 };
 
 let host: StateHost | null = null;
@@ -218,17 +232,139 @@ export function bindStateHost(h: StateHost): void {
   host = h;
 }
 
+export function setActiveBacklinks(hits: BacklinkView[], error: string | null = null): void {
+  activeBacklinks = hits;
+  activeBacklinksError = error;
+}
+
+export function clearLocalDocumentSession(): void {
+  localTabs.clear();
+  activeCx = null;
+  tree = [];
+  boxProjections.clear();
+  activeBacklinks = [];
+  activeBacklinksError = null;
+}
+
+/**
+ * Switch foreground workspace id. Clears document tabs when the id changes —
+ * open buffers are workspace-scoped and must not leak across mounts.
+ */
+export function setWorkspaceId(id: string | null): void {
+  if (workspaceId === id) return;
+  clearLocalDocumentSession();
+  workspaceId = id;
+}
+
 export async function reloadTree(): Promise<void> {
   if (!workspaceId) return;
   const result = (await window.tentDesktop.rpc("docs.list", { workspaceId })) as {
     concepts: ConceptNode[];
   };
-  tree = result.concepts || [];
+  // Strip list-side collab fields before overlay — docs.list is not authority.
+  const raw = (result.concepts || []).map(stripListCollabFields);
+  tree = raw;
   for (const [id, tab] of localTabs) {
     const concept = findConcept(tree, id);
     if (concept?.mode) tab.nodeMode = concept.mode;
+    if (concept?.name) tab.name = concept.name;
+    if (concept?.path) tab.path = concept.path;
   }
+  await reloadBoxProjections();
   host?.renderTree();
+}
+
+/** Drop status/assignee that may ride along on ConceptProjection from docs.list. */
+function stripListCollabFields(node: ConceptNode): ConceptNode {
+  const { status: _s, assignee: _a, children, ...rest } = node;
+  return {
+    ...rest,
+    children: children?.map(stripListCollabFields),
+  };
+}
+
+/**
+ * Fan-out box.projection for every coordination node in the tree.
+ * Failures for individual boxes leave that node without collab marks (no guess).
+ */
+export async function reloadBoxProjections(): Promise<void> {
+  if (!workspaceId) {
+    boxProjections.clear();
+    return;
+  }
+  const ids = collectCoordinationBoxIds(tree);
+  if (ids.length === 0) {
+    boxProjections.clear();
+    tree = applyBoxProjectionsToTree(tree, boxProjections);
+    return;
+  }
+  const results = await Promise.all(
+    ids.map((id) =>
+      window.tentDesktop
+        .rpc("box.projection", { workspaceId, id })
+        .then((raw) => normalizeBoxProjection(raw))
+        .catch(() => null)
+    )
+  );
+  boxProjections.clear();
+  for (const p of results) {
+    if (p) boxProjections.set(p.boxId, p);
+  }
+  tree = applyBoxProjectionsToTree(tree, boxProjections);
+  host?.renderMeta?.();
+}
+
+export function boxProjectionFor(cx: string | null | undefined): BoxProjectionView | null {
+  if (!cx) return null;
+  return boxProjections.get(cx) ?? null;
+}
+
+/** Load docs.backlinks for the active node into inspector state. */
+export async function reloadActiveBacklinks(): Promise<void> {
+  if (!workspaceId || !activeCx) {
+    activeBacklinks = [];
+    activeBacklinksError = null;
+    host?.renderBacklinks?.();
+    return;
+  }
+  try {
+    // Wire: BacklinkHit { fromCx, fromPath, fromName, raw, kind }
+    const result = (await window.tentDesktop.rpc("docs.backlinks", {
+      workspaceId,
+      id: activeCx,
+    })) as {
+      backlinks?: Array<{
+        fromCx?: string;
+        fromPath?: string;
+        fromName?: string;
+        raw?: string;
+        kind?: string;
+        // Tolerate older/alternate shapes if service ever aliases.
+        cx?: string;
+        id?: string;
+        name?: string;
+        path?: string;
+      }>;
+    };
+    const hits: BacklinkView[] = [];
+    for (const h of result.backlinks || []) {
+      const cx = h.fromCx || h.cx || h.id || "";
+      if (!cx) continue;
+      const row: BacklinkView = {
+        cx,
+        name: h.fromName || h.name || cx,
+        path: h.fromPath || h.path || "",
+      };
+      if (typeof h.raw === "string" && h.raw) row.context = h.raw;
+      hits.push(row);
+    }
+    activeBacklinks = hits;
+    activeBacklinksError = null;
+  } catch (err) {
+    activeBacklinks = [];
+    activeBacklinksError = err instanceof Error ? err.message : String(err);
+  }
+  host?.renderBacklinks?.();
 }
 
 export async function reloadRegistry(): Promise<void> {
@@ -354,10 +490,17 @@ export async function onServiceEvent(type: string): Promise<void> {
   if (!workspaceId) return;
   const reloadTasksNeeded = isTaskProjectionEventType(type);
   const reloadPendingNeeded = isPendingInteractionEventType(type);
+  // concept.changed is not currently fan-out by main host; keep for completeness
+  // if the filter widens. Tree refresh is still driven by explicit UI actions.
   if (!reloadTasksNeeded && !reloadPendingNeeded) return;
   try {
     // Tasks first so taskInput fan-out sees current paths (no guessed paths).
-    if (reloadTasksNeeded) await reloadTasks();
+    if (reloadTasksNeeded) {
+      await reloadTasks();
+      // Active task / delivery / session changes invalidate box.projection.
+      await reloadBoxProjections();
+      host?.renderTree();
+    }
     if (reloadPendingNeeded) await reloadPendingInteractions();
   } catch (err) {
     setError(err);

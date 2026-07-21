@@ -72,6 +72,14 @@
   color: var(--color-faint);
 }
 
+.backlinks-host {
+  min-width: 0;
+}
+
+.backlink-list .card-item {
+  cursor: pointer;
+}
+
 /* InspectorSection — flat details, no card chrome */
 .insp-section {
   border: none;
