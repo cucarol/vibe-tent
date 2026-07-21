@@ -44,6 +44,19 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   );
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
   const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
+  const agentSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-agent", "SKILL.md"), "utf8");
+  const agentPaths = await fs.readFile(
+    path.join(repoRoot, "skills", "tent-agent", "references", "paths.md"),
+    "utf8"
+  );
+  const agentTaskCli = await fs.readFile(
+    path.join(repoRoot, "skills", "tent-agent", "references", "task-cli.md"),
+    "utf8"
+  );
+  const agentSession = await fs.readFile(
+    path.join(repoRoot, "skills", "tent-agent", "references", "session-boundaries.md"),
+    "utf8"
+  );
   const pluginMain = await fs.readFile(path.join(repoRoot, "src", "plugin", "main.ts"), "utf8");
   const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   assert.equal(pkg.bin.tent, "./cli.mjs");
@@ -93,7 +106,11 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     "versions.json 记录当前插件所需的最低 Obsidian 版本"
   );
   assert.ok(pkg.files.includes("versions.json"), "npm 发布包包含 Obsidian 版本映射");
+  assert.ok(pkg.files.includes("skills/"), "npm 发布包包含 bundled skills/");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
+  assert.equal(await exists(path.join(repoRoot, "skills", "tent-agent", "SKILL.md")), true);
+  assert.equal(await exists(path.join(repoRoot, "skills", "tent-role", "SKILL.md")), true);
+  assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), true);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine-readable delivery record/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
@@ -115,6 +132,29 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   const roleProtocol = roleSkill.split("## Legacy")[0] ?? roleSkill;
   assert.doesNotMatch(roleProtocol, /`tent task-ack|`tent report </);
   assert.doesNotMatch(roleSkill, /tent handoff/i);
+  // tent-agent: compact entry skill; details in references; coexists with tent-role/tent-genesis
+  assert.match(agentSkill, /name: tent-agent/);
+  assert.match(agentSkill, /tent agent enter/);
+  assert.match(agentSkill, /tent agent status/);
+  assert.match(agentSkill, /tent agent leave/);
+  assert.match(agentSkill, /tent task claim/);
+  assert.match(agentSkill, /tent task get/);
+  assert.match(agentSkill, /tent task send-input/);
+  assert.match(agentSkill, /tent task ask-user/);
+  assert.match(agentSkill, /tent task deliver/);
+  assert.match(agentSkill, /delivery.*accept|Delivery.*accept|不等于.*accept|≠ accept|not.*user accept/i);
+  assert.match(agentSkill, /permission/i);
+  assert.match(agentSkill, /references\//);
+  assert.ok(agentSkill.length < 6000, "tent-agent SKILL.md should stay compact");
+  assert.match(agentPaths, /system root/i);
+  assert.match(agentPaths, /\.tent\/temp/);
+  assert.match(agentTaskCli, /tent task deliver/);
+  assert.match(agentTaskCli, /tent task ask-user/);
+  assert.match(agentTaskCli, /tent task send-input/);
+  assert.match(agentSession, /tent agent leave/i);
+  assert.match(agentSession, /It never:[\s\S]*delivers/i);
+  assert.match(agentSession, /permission/i);
+  assert.doesNotMatch(agentSkill, /tent handoff/i);
 });
 
 test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination + artifact", async () => {

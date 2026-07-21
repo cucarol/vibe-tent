@@ -68,6 +68,7 @@ test("listSkills: reports bundled names and per-target installed status", async 
   const names = listed.skills.map((s) => s.name).sort();
   assert.ok(names.includes("tent-role"));
   assert.ok(names.includes("tent-genesis"));
+  assert.ok(names.includes("tent-agent"));
 
   for (const skill of listed.skills) {
     assert.equal(skill.targets.length, SKILL_TARGET_IDS.length);
