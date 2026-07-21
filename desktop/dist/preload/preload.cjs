@@ -35,7 +35,9 @@ var DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  onStateChanged: "tent:state-changed"
+  onStateChanged: "tent:state-changed",
+  /** Fan-out of Local Service SSE envelope type (renderer re-fetches projections). */
+  onServiceEvent: "tent:service-event"
 };
 
 // src/desktop/preload/preload.ts
@@ -59,6 +61,11 @@ var api = {
     const listener = (_event, state) => handler(state);
     import_electron.ipcRenderer.on(DESKTOP_IPC.onStateChanged, listener);
     return () => import_electron.ipcRenderer.removeListener(DESKTOP_IPC.onStateChanged, listener);
+  },
+  onServiceEvent: (handler) => {
+    const listener = (_event, payload) => handler(payload);
+    import_electron.ipcRenderer.on(DESKTOP_IPC.onServiceEvent, listener);
+    return () => import_electron.ipcRenderer.removeListener(DESKTOP_IPC.onServiceEvent, listener);
   }
 };
 import_electron.contextBridge.exposeInMainWorld("tentDesktop", api);

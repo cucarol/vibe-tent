@@ -5474,6 +5474,239 @@ function applyLinksFromOriginal(text3, options) {
   }).join("");
 }
 
+// src/desktop/workbench/pending-interactions.ts
+var PENDING_INTERACTION_EVENT_TYPES = [
+  "a2a.ask",
+  "a2a.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled",
+  "delivery.updated",
+  "task.state",
+  "proposal.updated"
+];
+function isPendingInteractionEventType(type) {
+  return PENDING_INTERACTION_EVENT_TYPES.includes(type);
+}
+var TASK_PROJECTION_EVENT_TYPES = [
+  "task.state",
+  "delivery.updated",
+  "a2a.ask",
+  "a2a.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled"
+];
+function isTaskProjectionEventType(type) {
+  return TASK_PROJECTION_EVENT_TYPES.includes(type);
+}
+function isRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+function str(value) {
+  return typeof value === "string" && value.length > 0 ? value : void 0;
+}
+function strOrEmpty(value) {
+  return typeof value === "string" ? value : "";
+}
+function summarizeToolApprovalOptions(options) {
+  if (!options?.length) return "";
+  return options.map((o) => o.name || o.kind || o.optionId || "").filter(Boolean).join(" \xB7 ");
+}
+function normalizeUserAsk(raw) {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const taskPath = str(raw.taskPath);
+  const question = str(raw.question);
+  if (!id || !taskPath || !question) return null;
+  const choicesRaw = Array.isArray(raw.choices) ? raw.choices : [];
+  const choices = [];
+  for (const c of choicesRaw) {
+    if (!isRecord(c)) continue;
+    const cid = str(c.id);
+    const label = str(c.label);
+    if (cid && label) choices.push({ id: cid, label });
+  }
+  return {
+    kind: "userAsk",
+    id,
+    taskPath,
+    taskId: str(raw.taskId),
+    sessionId: str(raw.sessionId),
+    role: str(raw.role),
+    question,
+    choices,
+    createdAt: strOrEmpty(raw.createdAt)
+  };
+}
+function normalizeA2AApproval(raw) {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const taskPath = str(raw.taskPath);
+  const role = str(raw.role);
+  const profileId = str(raw.profileId);
+  if (!id || !taskPath || !role || !profileId) return null;
+  return {
+    kind: "a2a",
+    id,
+    taskPath,
+    taskId: str(raw.taskId),
+    role,
+    profileId,
+    policy: str(raw.policy),
+    callerKind: str(raw.callerKind),
+    createdAt: strOrEmpty(raw.createdAt)
+  };
+}
+function normalizeToolApproval(raw) {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const sessionId = str(raw.sessionId);
+  const toolTitle = str(raw.toolTitle);
+  if (!id || !sessionId || !toolTitle) return null;
+  const optionsRaw = Array.isArray(raw.options) ? raw.options : [];
+  const options = [];
+  for (const o of optionsRaw) {
+    if (!isRecord(o)) continue;
+    const optionId = str(o.optionId);
+    if (!optionId) continue;
+    options.push({
+      optionId,
+      kind: str(o.kind),
+      name: str(o.name)
+    });
+  }
+  return {
+    kind: "toolApproval",
+    id,
+    sessionId,
+    taskPath: str(raw.taskPath),
+    taskId: str(raw.taskId),
+    role: str(raw.role),
+    toolTitle,
+    paramsSummary: summarizeToolApprovalOptions(options),
+    options,
+    createdAt: strOrEmpty(raw.createdAt),
+    expiresAt: strOrEmpty(raw.expiresAt)
+  };
+}
+function normalizeTaskInput(raw) {
+  if (!isRecord(raw)) return null;
+  const id = str(raw.id);
+  const taskPath = str(raw.taskPath);
+  if (!id || !taskPath) return null;
+  const status = str(raw.status) || "pending";
+  if (status !== "pending") return null;
+  const kindRaw = str(raw.kind) || "user-input";
+  const refs = Array.isArray(raw.contextRefs) ? raw.contextRefs.filter((r) => typeof r === "string" && r.length > 0) : [];
+  return {
+    kind: "taskInput",
+    id,
+    taskPath,
+    taskId: str(raw.taskId),
+    sessionId: str(raw.sessionId),
+    role: str(raw.role),
+    inputKind: kindRaw,
+    text: str(raw.text),
+    contextRefs: refs,
+    status,
+    createdAt: strOrEmpty(raw.createdAt)
+  };
+}
+function normalizeProposal(raw) {
+  if (!isRecord(raw)) return null;
+  const path = str(raw.path);
+  if (!path) return null;
+  const status = str(raw.status) || "pending";
+  if (status !== "pending") return null;
+  return {
+    kind: "proposal",
+    path,
+    boxId: strOrEmpty(raw.boxId),
+    role: strOrEmpty(raw.role),
+    status,
+    body: strOrEmpty(raw.body),
+    createdAt: str(raw.createdAt)
+  };
+}
+function normalizeUserAskList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.asks) ? result.asks : [];
+  return list2.map(normalizeUserAsk).filter((x) => !!x);
+}
+function normalizeA2AList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
+  return list2.map(normalizeA2AApproval).filter((x) => !!x);
+}
+function normalizeToolApprovalList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.approvals) ? result.approvals : [];
+  return list2.map(normalizeToolApproval).filter((x) => !!x);
+}
+function normalizeTaskInputList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.inputs) ? result.inputs : [];
+  return list2.map(normalizeTaskInput).filter((x) => !!x);
+}
+function normalizeProposalList(result) {
+  const list2 = isRecord(result) && Array.isArray(result.proposals) ? result.proposals : [];
+  return list2.map(normalizeProposal).filter((x) => !!x);
+}
+function pendingInteractionCount(parts) {
+  return (parts.userAsks?.length ?? 0) + (parts.a2aApprovals?.length ?? 0) + (parts.toolApprovals?.length ?? 0) + (parts.taskInputs?.length ?? 0) + (parts.proposals?.length ?? 0);
+}
+function buildUserAskReplyPayload(askId, args) {
+  const id = askId.trim();
+  if (!id) return { ok: false, reason: "\u7F3A\u5C11\u63D0\u95EE id\u3002" };
+  const answer = args.answer?.trim() || "";
+  const choiceId = args.choiceId?.trim() || "";
+  if (!answer && !choiceId) {
+    return { ok: false, reason: "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002" };
+  }
+  return {
+    ok: true,
+    payload: {
+      askId: id,
+      actor: args.actor ?? "user",
+      ...answer ? { answer } : {},
+      ...choiceId ? { choiceId } : {}
+    }
+  };
+}
+function buildUserAskDenyPayload(askId, actor = "user") {
+  return { askId, actor };
+}
+function buildA2AResolvePayload(approvalId, decision, actor = "user") {
+  return { approvalId, decision, actor };
+}
+function buildToolApprovalResolvePayload(approvalId, allow, actor = "user") {
+  return {
+    method: allow ? "toolApproval.approveOnce" : "toolApproval.deny",
+    params: { approvalId, actor }
+  };
+}
+function buildTaskSendInputPayload(workspaceId2, taskPath, text3, actor = "user") {
+  const t = text3.trim();
+  if (!workspaceId2) return { ok: false, reason: "\u7F3A\u5C11\u5DE5\u4F5C\u533A\u3002" };
+  if (!taskPath.trim()) return { ok: false, reason: "\u7F3A\u5C11\u4EFB\u52A1\u8DEF\u5F84\u3002" };
+  if (!t) return { ok: false, reason: "\u8BF7\u586B\u5199\u8865\u5145\u6307\u4EE4\u3002" };
+  return {
+    ok: true,
+    payload: { workspaceId: workspaceId2, taskPath: taskPath.trim(), text: t, actor }
+  };
+}
+function taskInputKindLabel(inputKind) {
+  if (inputKind === "review-feedback") return "REVIEW FEEDBACK";
+  return "TASK INPUT";
+}
+
 // src/desktop/renderer/context-card-drag.ts
 function applyContextCardDragStart(dataTransfer, text3) {
   if (!dataTransfer) return;
@@ -5688,6 +5921,7 @@ var sessions = [];
 var userAsks = [];
 var a2aApprovals = [];
 var toolApprovals = [];
+var taskInputs = [];
 var proposals = [];
 var profiles = [];
 var selectedProfileId = null;
@@ -5744,8 +5978,14 @@ function actionableTasks() {
     (task) => isActionableTaskState(String(task.state || task.status || ""))
   );
 }
-function pendingInteractionCount() {
-  return userAsks.length + a2aApprovals.length + toolApprovals.length + proposals.length;
+function pendingInteractionCount2() {
+  return pendingInteractionCount({
+    userAsks,
+    a2aApprovals,
+    toolApprovals,
+    taskInputs,
+    proposals
+  });
 }
 function tasksForActiveNode(states) {
   if (!activeCx) return [];
@@ -5836,11 +6076,56 @@ async function reloadPendingInteractions() {
         status: "pending"
       })
     ]);
-    userAsks = askResult.asks || [];
-    a2aApprovals = a2aResult.approvals || [];
-    toolApprovals = toolResult.approvals || [];
-    proposals = (proposalResult.proposals || []).filter((p) => p.status === "pending");
+    userAsks = normalizeUserAskList(askResult);
+    a2aApprovals = normalizeA2AList(a2aResult);
+    toolApprovals = normalizeToolApprovalList(toolResult);
+    proposals = normalizeProposalList(proposalResult);
+    const paths = collectTaskPathsForInputPoll();
+    if (paths.length === 0) {
+      taskInputs = [];
+    } else {
+      const inputLists = await Promise.all(
+        paths.map(
+          (taskPath) => window.tentDesktop.rpc("taskInput.listPending", { workspaceId, taskPath }).then((r) => normalizeTaskInputList(r)).catch(() => [])
+        )
+      );
+      const byId = /* @__PURE__ */ new Map();
+      for (const list2 of inputLists) {
+        for (const item of list2) byId.set(item.id, item);
+      }
+      taskInputs = [...byId.values()].sort(
+        (a, b) => (b.createdAt || "").localeCompare(a.createdAt || "")
+      );
+    }
     host?.renderPendingInteractions();
+  } catch (err) {
+    setError(err);
+  }
+}
+function collectTaskPathsForInputPoll() {
+  const paths = /* @__PURE__ */ new Set();
+  for (const t of taskReview) {
+    if (t.path) paths.add(t.path);
+  }
+  for (const ask of userAsks) {
+    if (ask.taskPath) paths.add(ask.taskPath);
+  }
+  for (const a of a2aApprovals) {
+    if (a.taskPath) paths.add(a.taskPath);
+  }
+  for (const t of toolApprovals) {
+    if (t.taskPath) paths.add(t.taskPath);
+  }
+  return [...paths];
+}
+async function onServiceEvent(type) {
+  if (!workspaceId) return;
+  const reloadTasksNeeded = isTaskProjectionEventType(type);
+  const reloadPendingNeeded = isPendingInteractionEventType(type);
+  if (!reloadTasksNeeded && !reloadPendingNeeded) return;
+  try {
+    if (reloadTasksNeeded) await reloadTasks();
+    if (reloadPendingNeeded) await reloadPendingInteractions();
   } catch (err) {
     setError(err);
   }
@@ -5929,7 +6214,7 @@ function bindInspectorHost(h) {
   host2 = h;
 }
 function syncInspectorSections() {
-  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount() > 0;
+  const hasTasks = actionableTasks().length > 0 || pendingInteractionCount2() > 0;
   const tab = activeCx ? localTabs.get(activeCx) : null;
   const canDispatch = !!(tab && tab.coordination);
   if (!el.secPending || !el.secDispatch || !el.secCards) return;
@@ -6033,7 +6318,7 @@ async function onSetNodeMode() {
 
 // src/desktop/renderer/main/collaboration.ts
 function renderPendingInteractions() {
-  const hasPending = pendingInteractionCount() > 0;
+  const hasPending = pendingInteractionCount2() > 0;
   el.a2u.hidden = !hasPending;
   if (!hasPending) {
     el.a2u.innerHTML = "";
@@ -6046,39 +6331,54 @@ function renderPendingInteractions() {
       <input type="radio" name="ask-choice-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
       <span>${escapeHtml(choice.label)}</span></label>`
     ).join("");
-    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}">
-      <div class="interaction-kicker">AGENT QUESTION \xB7 ${escapeHtml(ask.role || "Agent")}</div>
+    const source = ask.role || "Agent";
+    return `<article class="interaction-item" data-ask-item="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
+      <div class="interaction-kicker">USER ASK \xB7 ${escapeHtml(source)}</div>
       <div class="interaction-title">${escapeHtml(ask.question)}</div>
+      <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
       ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
+      <textarea class="line-input" data-ask-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u81EA\u7531\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
       <div class="interaction-actions"><button type="button" class="btn btn-primary" data-ask-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
-      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD\u63D0\u95EE</button>
+      <button type="button" class="btn btn-ghost" data-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD</button>
       <button type="button" class="btn btn-ghost" data-task-stop="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD\u4EFB\u52A1</button></div>
     </article>`;
   }).join("");
   const a2a = a2aApprovals.map(
-    (item) => `<article class="interaction-item">
-    <div class="interaction-kicker">A2A APPROVAL</div>
-    <div class="interaction-title">${escapeHtml(item.role)} \u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
+    (item) => `<article class="interaction-item" data-pending-kind="a2a">
+    <div class="interaction-kicker">A2A \xB7 ${escapeHtml(item.role)}</div>
+    <div class="interaction-title">\u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
     <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
     <div class="interaction-actions"><button type="button" class="btn btn-primary" data-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
     <button type="button" class="btn btn-ghost" data-a2a-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
   </article>`
   ).join("");
   const tools = toolApprovals.map((item) => {
-    const summary = (item.options || []).map((option) => option.name || option.kind || option.optionId).filter(Boolean).join(" \xB7 ");
-    return `<article class="interaction-item">
-      <div class="interaction-kicker">TOOL PERMISSION</div><div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
-      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 ${escapeHtml(item.sessionId)}</div>
+    const summary = item.paramsSummary || "";
+    return `<article class="interaction-item" data-pending-kind="toolApproval">
+      <div class="interaction-kicker">TOOL \xB7 ${escapeHtml(item.toolTitle)}</div>
+      <div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
+      <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 session ${escapeHtml(item.sessionId)}</div>
       ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
       <div class="interaction-actions"><button type="button" class="btn btn-primary" data-tool-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
       <button type="button" class="btn btn-ghost" data-tool-deny="${escapeHtml(item.id)}">\u62D2\u7EDD</button></div>
     </article>`;
   }).join("");
+  const inputs = taskInputs.map((item) => {
+    const text3 = (item.text || "").trim();
+    const preview = text3.length > 160 ? text3.slice(0, 157) + "\u2026" : text3;
+    const refs = item.contextRefs.length > 0 ? `<div class="muted interaction-note">refs \xB7 ${escapeHtml(item.contextRefs.join(" \xB7 "))}</div>` : "";
+    return `<article class="interaction-item" data-pending-kind="taskInput" data-task-input="${escapeHtml(item.id)}">
+      <div class="interaction-kicker">${escapeHtml(taskInputKindLabel(item.inputKind))} \xB7 ${escapeHtml(item.role || "\u2014")}</div>
+      <div class="interaction-title">${escapeHtml(preview || "\uFF08\u65E0\u6B63\u6587\uFF09")}</div>
+      <div class="muted interaction-note">${escapeHtml(item.taskPath)}${item.sessionId ? ` \xB7 ${escapeHtml(item.sessionId)}` : ""}</div>
+      ${refs}
+      <div class="muted interaction-note">\u5F85 agent \u6D88\u8D39\uFF08taskInput.ack\uFF09</div>
+    </article>`;
+  }).join("");
   const proposalItems = proposals.map((p) => {
     const body = (p.body || "").trim();
     const preview = body.length > 160 ? body.slice(0, 157) + "\u2026" : body;
-    return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}">
+    return `<article class="interaction-item" data-proposal-path="${escapeHtml(p.path)}" data-pending-kind="proposal">
       <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
       <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
       <div class="muted interaction-note">${escapeHtml(p.boxId || "")} \xB7 ${escapeHtml(p.path)}</div>
@@ -6088,7 +6388,7 @@ function renderPendingInteractions() {
       </div>
     </article>`;
   }).join("");
-  el.a2u.innerHTML = asks + a2a + tools + proposalItems;
+  el.a2u.innerHTML = asks + a2a + tools + inputs + proposalItems;
   el.a2u.querySelectorAll("[data-ask-reply]").forEach(
     (button) => button.addEventListener("click", () => void onReplyUserAsk(button.getAttribute("data-ask-reply")))
   );
@@ -6132,17 +6432,13 @@ async function onReplyUserAsk(askId) {
   const item = el.a2u.querySelector(`[data-ask-item="${CSS.escape(askId)}"]`);
   const answer = item?.querySelector("[data-ask-answer]")?.value.trim() || "";
   const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
-  if (!answer && !choiceId) {
-    el.status.textContent = "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002";
+  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", {
-      askId,
-      actor: "user",
-      ...answer ? { answer } : {},
-      ...choiceId ? { choiceId } : {}
-    });
+    await window.tentDesktop.rpc("userAsk.reply", built.payload);
     el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
@@ -6151,7 +6447,7 @@ async function onReplyUserAsk(askId) {
 }
 async function onDenyUserAsk(askId) {
   try {
-    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
     el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
@@ -6175,7 +6471,7 @@ async function onResolveProposal(path, decision) {
 }
 async function onResolveA2A(approvalId, decision) {
   try {
-    await window.tentDesktop.rpc("a2a.resolve", { approvalId, decision, actor: "user" });
+    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(approvalId, decision, "user"));
     el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
@@ -6184,10 +6480,8 @@ async function onResolveA2A(approvalId, decision) {
 }
 async function onResolveTool(approvalId, allow) {
   try {
-    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", {
-      approvalId,
-      actor: "user"
-    });
+    const built = buildToolApprovalResolvePayload(approvalId, allow, "user");
+    await window.tentDesktop.rpc(built.method, built.params);
     el.status.textContent = allow ? "\u5DF2\u5141\u8BB8\u672C\u6B21\u5DE5\u5177\u8C03\u7528\u3002" : "\u5DF2\u62D2\u7EDD\u5DE5\u5177\u8C03\u7528\u3002";
     await Promise.all([reloadPendingInteractions(), reloadTasks(), reloadTree()]);
   } catch (err) {
@@ -6204,26 +6498,23 @@ function renderTaskInput() {
   const options = candidates.map(
     (task) => `<option value="${escapeHtml(task.path)}">${escapeHtml(task.role)} \xB7 ${escapeHtml(taskStateLabel(task.state, task.status))}</option>`
   ).join("");
-  el.u2a.innerHTML = `<article class="interaction-item u2a-item"><div class="interaction-kicker">\u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
+  el.u2a.innerHTML = `<article class="interaction-item u2a-item" data-pending-kind="taskSendInput"><div class="interaction-kicker">U2A \xB7 \u8FFD\u52A0\u4EFB\u52A1\u8F93\u5165</div>
     ${candidates.length > 1 ? `<select id="u2a-task" class="field">${options}</select>` : ""}
-    <textarea id="u2a-text" class="line-input" rows="2" placeholder="\u53D1\u9001\u4E00\u6B21\u6027\u8865\u5145\u6307\u4EE4"></textarea>
+    <textarea id="u2a-text" class="line-input" rows="2" placeholder="\u53D1\u9001\u4E00\u6B21\u6027\u8865\u5145\u6307\u4EE4\uFF08task.sendInput\uFF09"></textarea>
     <div class="interaction-actions"><button type="button" id="btn-send-task-input" class="btn btn-secondary">\u53D1\u9001</button></div></article>`;
   document.getElementById("btn-send-task-input")?.addEventListener("click", async () => {
     const text3 = document.getElementById("u2a-text")?.value.trim() || "";
     const taskPath = document.getElementById("u2a-task")?.value || candidates[0].path;
-    if (!text3) {
-      el.status.textContent = "\u8BF7\u586B\u5199\u8865\u5145\u6307\u4EE4\u3002";
+    if (!workspaceId) return;
+    const built = buildTaskSendInputPayload(workspaceId, taskPath, text3, "user");
+    if (!built.ok) {
+      el.status.textContent = built.reason;
       return;
     }
     try {
-      await window.tentDesktop.rpc("task.sendInput", {
-        workspaceId,
-        taskPath,
-        text: text3,
-        actor: "user"
-      });
+      await window.tentDesktop.rpc("task.sendInput", built.payload);
       el.status.textContent = "\u8865\u5145\u6307\u4EE4\u5DF2\u53D1\u9001\u3002";
-      await reloadTasks();
+      await Promise.all([reloadTasks(), reloadPendingInteractions()]);
     } catch (err) {
       setError(err);
     }
@@ -6245,12 +6536,12 @@ function renderSessions() {
 function renderTasks() {
   const visibleTasks = actionableTasks();
   if (el.taskCount) {
-    const n = visibleTasks.length + pendingInteractionCount();
+    const n = visibleTasks.length + pendingInteractionCount2();
     el.taskCount.hidden = n === 0;
     el.taskCount.textContent = String(n);
   }
   if (el.secPending) {
-    if (visibleTasks.length > 0 || pendingInteractionCount() > 0) {
+    if (visibleTasks.length > 0 || pendingInteractionCount2() > 0) {
       el.secPending.open = true;
       if (el.secDispatch) el.secDispatch.open = false;
       if (el.secCards) el.secCards.open = false;
@@ -7854,7 +8145,7 @@ function renderActivity() {
     hostEl.innerHTML = `<div class="empty empty-cta"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>`;
     return;
   }
-  const pendingN = pendingInteractionCount();
+  const pendingN = pendingInteractionCount2();
   const tasks = actionableTasks();
   const liveSessions = sessions.filter((s) => s.alive || s.state === "running" || s.state === "waiting");
   const asksHtml = userAsks.map((ask) => {
@@ -7863,22 +8154,23 @@ function renderActivity() {
         <input type="radio" name="act-ask-${escapeHtml(ask.id)}" value="${escapeHtml(choice.id)}" />
         <span>${escapeHtml(choice.label)}</span></label>`
     ).join("");
-    return `<article class="interaction-item" data-act-ask="${escapeHtml(ask.id)}">
-        <div class="interaction-kicker">AGENT QUESTION \xB7 ${escapeHtml(ask.role || "Agent")}</div>
+    return `<article class="interaction-item" data-act-ask="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
+        <div class="interaction-kicker">USER ASK \xB7 ${escapeHtml(ask.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(ask.question)}</div>
+        <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
         ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-        <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u8865\u5145\u8BF4\u660E\uFF08\u53EF\u9009\uFF09"></textarea>
+        <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="\u81EA\u7531\u56DE\u7B54\uFF08\u53EF\u9009\uFF09"></textarea>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-reply="${escapeHtml(ask.id)}">\u56DE\u590D</button>
-          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD\u63D0\u95EE</button>
+          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">\u62D2\u7EDD</button>
           <button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(ask.taskPath)}">\u4E2D\u65AD</button>
         </div>
       </article>`;
   }).join("");
   const a2aHtml = a2aApprovals.map(
-    (item) => `<article class="interaction-item">
-      <div class="interaction-kicker">A2A</div>
-      <div class="interaction-title">${escapeHtml(item.role)} \u2192 ${escapeHtml(item.profileId)}</div>
+    (item) => `<article class="interaction-item" data-pending-kind="a2a">
+      <div class="interaction-kicker">A2A \xB7 ${escapeHtml(item.role)}</div>
+      <div class="interaction-title">\u8BF7\u6C42\u542F\u52A8 ${escapeHtml(item.profileId)}</div>
       <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
       <div class="interaction-actions">
         <button type="button" class="btn btn-primary" data-act-a2a-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
@@ -7887,11 +8179,11 @@ function renderActivity() {
     </article>`
   ).join("");
   const toolsHtml = toolApprovals.map((item) => {
-    const summary = (item.options || []).map((o) => o.name || o.kind || o.optionId).filter(Boolean).join(" \xB7 ");
-    return `<article class="interaction-item">
-        <div class="interaction-kicker">TOOL</div>
+    const summary = item.paramsSummary || "";
+    return `<article class="interaction-item" data-pending-kind="toolApproval">
+        <div class="interaction-kicker">TOOL \xB7 ${escapeHtml(item.toolTitle)}</div>
         <div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
-        <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 ${escapeHtml(item.sessionId)}</div>
+        <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} \xB7 session ${escapeHtml(item.sessionId)}</div>
         ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-tool-allow="${escapeHtml(item.id)}">\u5141\u8BB8\u4E00\u6B21</button>
@@ -7899,16 +8191,27 @@ function renderActivity() {
         </div>
       </article>`;
   }).join("");
+  const inputsHtml = taskInputs.map((item) => {
+    const text3 = (item.text || "").trim();
+    const preview = text3.length > 160 ? text3.slice(0, 157) + "\u2026" : text3;
+    return `<article class="interaction-item" data-pending-kind="taskInput">
+        <div class="interaction-kicker">${escapeHtml(taskInputKindLabel(item.inputKind))} \xB7 ${escapeHtml(item.role || "\u2014")}</div>
+        <div class="interaction-title">${escapeHtml(preview || "\uFF08\u65E0\u6B63\u6587\uFF09")}</div>
+        <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
+        <div class="muted interaction-note">\u5F85 agent \u6D88\u8D39\uFF08taskInput.ack\uFF09</div>
+      </article>`;
+  }).join("");
   const reviewTasks = tasks.filter((t) => t.canAcceptOrReject);
   const reviewHtml = reviewTasks.map((t) => {
     const draft = rejectDrafts.get(t.path) || "";
-    return `<article class="interaction-item">
+    return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
         <div class="interaction-title">${escapeHtml(t.role)}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">\u786E\u8BA4</button>
           <button type="button" class="btn btn-ghost" data-act-reject-toggle="${escapeHtml(t.path)}">\u9A73\u56DE</button>
+          ${t.canInterrupt ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">\u4E2D\u65AD</button>` : ""}
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(draft)}" />
@@ -7919,7 +8222,7 @@ function renderActivity() {
   const proposalHtml = proposals.map((p) => {
     const body = (p.body || "").trim();
     const preview = body.length > 160 ? body.slice(0, 157) + "\u2026" : body;
-    return `<article class="interaction-item">
+    return `<article class="interaction-item" data-pending-kind="proposal">
         <div class="interaction-kicker">PROPOSAL \xB7 ${escapeHtml(p.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
         <div class="muted interaction-note">${escapeHtml(p.boxId || "")}</div>
@@ -7930,7 +8233,7 @@ function renderActivity() {
       </article>`;
   }).join("");
   const pendingTotal = pendingN + reviewTasks.length;
-  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
+  const pendingBlock = pendingTotal === 0 ? `<p class="muted">\u6682\u65E0\u5F85\u5904\u7406</p>` : asksHtml + a2aHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
   const profileOpts = profiles.length > 0 ? profiles.map(
     (p) => `<option value="${escapeHtml(p.id)}"${p.id === selectedProfileId ? " selected" : ""}>${escapeHtml(p.label)}</option>`
   ).join("") : `<option value="">\uFF08\u65E0 profile\uFF09</option>`;
@@ -8046,17 +8349,13 @@ async function onReply(askId) {
   const item = el.activityHost?.querySelector(`[data-act-ask="${CSS.escape(askId)}"]`);
   const answer = item?.querySelector("[data-act-answer]")?.value.trim() || "";
   const choiceId = item?.querySelector("input[type=radio]:checked")?.value || "";
-  if (!answer && !choiceId) {
-    el.status.textContent = "\u8BF7\u9009\u62E9\u4E00\u4E2A\u9009\u9879\u6216\u586B\u5199\u56DE\u590D\u3002";
+  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", {
-      askId,
-      actor: "user",
-      ...answer ? { answer } : {},
-      ...choiceId ? { choiceId } : {}
-    });
+    await window.tentDesktop.rpc("userAsk.reply", built.payload);
     el.status.textContent = "\u5DF2\u56DE\u590D Agent\u3002";
     await refreshAfter();
   } catch (err) {
@@ -8065,7 +8364,7 @@ async function onReply(askId) {
 }
 async function onDenyAsk(askId) {
   try {
-    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
     el.status.textContent = "\u5DF2\u62D2\u7EDD Agent \u63D0\u95EE\u3002";
     await refreshAfter();
   } catch (err) {
@@ -8089,7 +8388,7 @@ async function onProposal(path, decision) {
 }
 async function onA2A(id, decision) {
   try {
-    await window.tentDesktop.rpc("a2a.resolve", { approvalId: id, decision, actor: "user" });
+    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(id, decision, "user"));
     el.status.textContent = decision === "approve" ? "\u5DF2\u5141\u8BB8\u542F\u52A8 Agent\u3002" : "\u5DF2\u62D2\u7EDD\u542F\u52A8 Agent\u3002";
     await refreshAfter();
   } catch (err) {
@@ -8098,10 +8397,8 @@ async function onA2A(id, decision) {
 }
 async function onTool(id, allow) {
   try {
-    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", {
-      approvalId: id,
-      actor: "user"
-    });
+    const built = buildToolApprovalResolvePayload(id, allow, "user");
+    await window.tentDesktop.rpc(built.method, built.params);
     el.status.textContent = allow ? "\u5DF2\u5141\u8BB8\u672C\u6B21\u5DE5\u5177\u8C03\u7528\u3002" : "\u5DF2\u62D2\u7EDD\u5DE5\u5177\u8C03\u7528\u3002";
     await refreshAfter();
   } catch (err) {
@@ -8308,6 +8605,12 @@ function retentionSummaryLine(preview) {
 // src/desktop/renderer/main/contract-gaps.ts
 var DESKTOP_CONTRACT_GAPS = [
   {
+    id: "concept.permanent-delete",
+    methods: ["docs.delete", "docs.purge"],
+    need: "Permanent delete of a concept (beyond archive mode).",
+    fallback: "docs.setMode archived only; no permanent delete control."
+  },
+  {
     id: "docs.move-reparent",
     methods: ["docs.move", "docs.reparent"],
     need: "Move / reparent a concept in the tree while preserving cx- and rewriting links.",
@@ -8320,10 +8623,28 @@ var DESKTOP_CONTRACT_GAPS = [
     fallback: "Local projection: docs.list tree + docs.backlinks + docs.readForEdit body out-links for the selected node only."
   },
   {
+    id: "mcp.global-config",
+    methods: ["mcp.list", "mcp.install"],
+    need: "Machine-global MCP server catalog independent of AgentProfile.",
+    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only."
+  },
+  {
     id: "session.logs-reload",
     methods: ["session.logs", "session.transcript"],
     need: "Reloadable session log / transcript for past agent turns.",
     fallback: "session.list / session.get show state + alive only; no transcript surface."
+  },
+  {
+    id: "taskInput.global-list",
+    methods: ["taskInput.listPendingWorkspace"],
+    need: "Workspace-scoped pending TaskInput list without per-taskPath fan-out.",
+    fallback: "Desktop fans out taskInput.listPending over known task paths from task.list / other pending rows."
+  },
+  {
+    id: "toolApproval.params",
+    methods: ["toolApproval.paramsProjection"],
+    need: "Tool call argument / params summary on toolApproval projection (beyond options[]).",
+    fallback: "UI shows toolTitle + options name/kind summary only; never invents args."
   },
   {
     id: "type-tag-mutation",
@@ -8332,16 +8653,10 @@ var DESKTOP_CONTRACT_GAPS = [
     fallback: "registry.types is read-only; type/tags shown as projection only."
   },
   {
-    id: "concept.permanent-delete",
-    methods: ["docs.delete", "docs.purge"],
-    need: "Permanent delete of a concept (beyond archive mode).",
-    fallback: "docs.setMode archived only; no permanent delete control."
-  },
-  {
-    id: "mcp.global-config",
-    methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of AgentProfile.",
-    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only."
+    id: "userAsk.agent-profile",
+    methods: ["userAsk.sourceProfile"],
+    need: "Distinct source agent profile id on UserAsk projection (role alone is insufficient).",
+    fallback: "UI labels source as role when present; sessionId shown only in detail notes."
   }
 ];
 
@@ -9136,7 +9451,7 @@ async function onRetentionPurge() {
 
 // src/desktop/renderer/main-ui.ts
 function updateActivityChrome() {
-  const n = pendingInteractionCount() + actionableTasks().filter((t) => t.canAcceptOrReject).length;
+  const n = pendingInteractionCount2() + actionableTasks().filter((t) => t.canAcceptOrReject).length;
   syncActivityBadge(n);
 }
 function renderAll() {
@@ -9228,6 +9543,10 @@ async function boot() {
   window.tentDesktop.onStateChanged((s) => {
     applyShell(s);
     if (workspaceId) void Promise.all([reloadPendingInteractions(), reloadTasks()]);
+  });
+  window.tentDesktop.onServiceEvent((ev) => {
+    if (ev.workspaceId && workspaceId && ev.workspaceId !== workspaceId) return;
+    void onServiceEvent(ev.type);
   });
   await refresh();
 }

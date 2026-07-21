@@ -293,11 +293,53 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// src/desktop/workbench/pending-interactions.ts
+var PENDING_INTERACTION_EVENT_TYPES = [
+  "a2a.ask",
+  "a2a.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled",
+  "delivery.updated",
+  "task.state",
+  "proposal.updated"
+];
+function isPendingInteractionEventType(type) {
+  return PENDING_INTERACTION_EVENT_TYPES.includes(type);
+}
+var TASK_PROJECTION_EVENT_TYPES = [
+  "task.state",
+  "delivery.updated",
+  "a2a.ask",
+  "a2a.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled"
+];
+function isTaskProjectionEventType(type) {
+  return TASK_PROJECTION_EVENT_TYPES.includes(type);
+}
+
 // src/desktop/main/service-host.ts
 var DesktopServiceHost = class {
   constructor() {
     this.attach = null;
     this.child = null;
+    this.eventsSub = null;
+    this.eventListeners = /* @__PURE__ */ new Set();
+    /** Coalesce bursty SSE: type → last workspaceId in window. */
+    this.pendingByType = /* @__PURE__ */ new Map();
+    this.flushTimer = null;
   }
   get client() {
     return this.attach?.client ?? null;
@@ -308,12 +350,19 @@ var DesktopServiceHost = class {
   get startedByUs() {
     return !!this.attach?.started;
   }
+  /** Subscribe to filtered service events (pending / task projection invalidation). */
+  onServiceEvent(listener) {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
   async ensureAttached(options) {
     if (this.attach) {
       try {
         await this.attach.client.health();
+        this.ensureEventSubscription();
         return this.attach;
       } catch {
+        this.teardownEvents();
         this.attach = null;
       }
     }
@@ -324,13 +373,53 @@ var DesktopServiceHost = class {
     });
     this.attach = result;
     this.child = result.child;
+    this.ensureEventSubscription();
     return result;
   }
+  ensureEventSubscription() {
+    if (!this.attach?.client || this.eventsSub) return;
+    this.eventsSub = this.attach.client.subscribeEvents(
+      (ev) => this.handleEnvelope(ev),
+      () => {
+        this.teardownEvents();
+      }
+    );
+  }
+  handleEnvelope(ev) {
+    const type = ev?.type;
+    if (typeof type !== "string" || !type) return;
+    if (!isPendingInteractionEventType(type) && !isTaskProjectionEventType(type)) {
+      return;
+    }
+    const workspaceId = typeof ev.workspaceId === "string" ? ev.workspaceId : "";
+    this.pendingByType.set(type, workspaceId);
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      const batch = [...this.pendingByType.entries()];
+      this.pendingByType.clear();
+      for (const [t, ws] of batch) {
+        for (const listener of this.eventListeners) {
+          listener({ type: t, workspaceId: ws });
+        }
+      }
+    }, 50);
+  }
+  teardownEvents() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.pendingByType.clear();
+    this.eventsSub?.close();
+    this.eventsSub = null;
+  }
   /**
-   * Intentionally empty: closing the desktop shell must not stop Local Service
-   * or in-flight tasks (architecture §2).
+   * Intentionally empty of service kill: closing the desktop shell must not stop
+   * Local Service or in-flight tasks (architecture §2).
    */
   async disposeShellOnly() {
+    this.teardownEvents();
     this.attach = null;
     this.child = null;
   }
@@ -447,7 +536,9 @@ var DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  onStateChanged: "tent:state-changed"
+  onStateChanged: "tent:state-changed",
+  /** Fan-out of Local Service SSE envelope type (renderer re-fetches projections). */
+  onServiceEvent: "tent:service-event"
 };
 
 // src/desktop/prefs.ts
@@ -1877,6 +1968,19 @@ async function bootstrap() {
         win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
       }
     }
+  });
+  host.onServiceEvent((ev) => {
+    void model.refreshTasks().then(() => {
+      const snap = model.getSnapshot();
+      for (const win of import_electron3.BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
+        win.webContents.send(DESKTOP_IPC.onServiceEvent, {
+          type: ev.type,
+          workspaceId: ev.workspaceId
+        });
+      }
+    });
   });
   createTray(paths);
   const mountIdx = process.argv.indexOf("--mount");

@@ -6,6 +6,13 @@ import type {
   ProfileOption,
   RoleOption,
 } from "../../workbench/collaboration-ui.js";
+import type {
+  A2AApprovalItem,
+  ProposalItem,
+  TaskInputItem,
+  ToolApprovalItem,
+  UserAskItem,
+} from "../../workbench/pending-interactions.js";
 
 export type ConceptNode = {
   id: string;
@@ -35,34 +42,12 @@ export type TabView = {
   artifactRefs?: Array<{ kind: string; target: string; label?: string }>;
 };
 
-export type UserAskView = {
-  id: string;
-  taskPath: string;
-  sessionId?: string;
-  role?: string;
-  question: string;
-  choices?: Array<{ id: string; label: string }>;
-  createdAt: string;
-};
-
-export type A2AApprovalView = {
-  id: string;
-  taskPath: string;
-  role: string;
-  profileId: string;
-  createdAt: string;
-};
-
-export type ToolApprovalView = {
-  id: string;
-  sessionId: string;
-  taskPath?: string;
-  role?: string;
-  toolTitle: string;
-  options?: Array<{ optionId: string; kind?: string; name?: string }>;
-  createdAt: string;
-  expiresAt: string;
-};
+/** Normalized pending rows — see workbench/pending-interactions.ts. */
+export type UserAskView = UserAskItem;
+export type A2AApprovalView = A2AApprovalItem;
+export type ToolApprovalView = ToolApprovalItem;
+export type TaskInputView = TaskInputItem;
+export type ProposalView = ProposalItem;
 
 export type ShellState = {
   health: {

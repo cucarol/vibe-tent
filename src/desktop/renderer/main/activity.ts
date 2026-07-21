@@ -1,5 +1,5 @@
 // Activity secondary surface: unified inbox of pending interactions + tasks/sessions.
-// Reuses the same RPC actions as the workbench inspector (no parallel state machines).
+// Reuses the same RPC adapters as the workbench inspector (no parallel state machines).
 
 import { escapeHtml } from "../../../markdown/render.js";
 import {
@@ -9,6 +9,13 @@ import {
   sessionStateLabel,
   taskStateLabel,
 } from "../../workbench/collaboration-ui.js";
+import {
+  buildA2AResolvePayload,
+  buildToolApprovalResolvePayload,
+  buildUserAskDenyPayload,
+  buildUserAskReplyPayload,
+  taskInputKindLabel,
+} from "../../workbench/pending-interactions.js";
 import { el, setError } from "./elements.js";
 import {
   a2aApprovals,
@@ -23,6 +30,7 @@ import {
   selectedProfileId,
   sessions,
   setSelectedProfileId,
+  taskInputs,
   toolApprovals,
   userAsks,
   workspaceId,
@@ -58,14 +66,15 @@ export function renderActivity(): void {
         <span>${escapeHtml(choice.label)}</span></label>`
         )
         .join("");
-      return `<article class="interaction-item" data-act-ask="${escapeHtml(ask.id)}">
-        <div class="interaction-kicker">AGENT QUESTION · ${escapeHtml(ask.role || "Agent")}</div>
+      return `<article class="interaction-item" data-act-ask="${escapeHtml(ask.id)}" data-pending-kind="userAsk">
+        <div class="interaction-kicker">USER ASK · ${escapeHtml(ask.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(ask.question)}</div>
+        <div class="muted interaction-note">${escapeHtml(ask.taskPath)}</div>
         ${choices ? `<div class="choice-list">${choices}</div>` : ""}
-        <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="补充说明（可选）"></textarea>
+        <textarea class="line-input" data-act-answer="${escapeHtml(ask.id)}" rows="2" placeholder="自由回答（可选）"></textarea>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-reply="${escapeHtml(ask.id)}">回复</button>
-          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">拒绝提问</button>
+          <button type="button" class="btn btn-ghost" data-act-ask-deny="${escapeHtml(ask.id)}">拒绝</button>
           <button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(ask.taskPath)}">中断</button>
         </div>
       </article>`;
@@ -74,9 +83,9 @@ export function renderActivity(): void {
 
   const a2aHtml = a2aApprovals
     .map(
-      (item) => `<article class="interaction-item">
-      <div class="interaction-kicker">A2A</div>
-      <div class="interaction-title">${escapeHtml(item.role)} → ${escapeHtml(item.profileId)}</div>
+      (item) => `<article class="interaction-item" data-pending-kind="a2a">
+      <div class="interaction-kicker">A2A · ${escapeHtml(item.role)}</div>
+      <div class="interaction-title">请求启动 ${escapeHtml(item.profileId)}</div>
       <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
       <div class="interaction-actions">
         <button type="button" class="btn btn-primary" data-act-a2a-allow="${escapeHtml(item.id)}">允许一次</button>
@@ -88,14 +97,11 @@ export function renderActivity(): void {
 
   const toolsHtml = toolApprovals
     .map((item) => {
-      const summary = (item.options || [])
-        .map((o) => o.name || o.kind || o.optionId)
-        .filter(Boolean)
-        .join(" · ");
-      return `<article class="interaction-item">
-        <div class="interaction-kicker">TOOL</div>
+      const summary = item.paramsSummary || "";
+      return `<article class="interaction-item" data-pending-kind="toolApproval">
+        <div class="interaction-kicker">TOOL · ${escapeHtml(item.toolTitle)}</div>
         <div class="interaction-title">${escapeHtml(item.toolTitle)}</div>
-        <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} · ${escapeHtml(item.sessionId)}</div>
+        <div class="muted interaction-note">${escapeHtml(item.role || "Agent")} · session ${escapeHtml(item.sessionId)}</div>
         ${summary ? `<div class="muted interaction-note">${escapeHtml(summary)}</div>` : ""}
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-tool-allow="${escapeHtml(item.id)}">允许一次</button>
@@ -105,17 +111,35 @@ export function renderActivity(): void {
     })
     .join("");
 
+  const inputsHtml = taskInputs
+    .map((item) => {
+      const text = (item.text || "").trim();
+      const preview = text.length > 160 ? text.slice(0, 157) + "…" : text;
+      return `<article class="interaction-item" data-pending-kind="taskInput">
+        <div class="interaction-kicker">${escapeHtml(taskInputKindLabel(item.inputKind))} · ${escapeHtml(item.role || "—")}</div>
+        <div class="interaction-title">${escapeHtml(preview || "（无正文）")}</div>
+        <div class="muted interaction-note">${escapeHtml(item.taskPath)}</div>
+        <div class="muted interaction-note">待 agent 消费（taskInput.ack）</div>
+      </article>`;
+    })
+    .join("");
+
   const reviewTasks = tasks.filter((t) => t.canAcceptOrReject);
   const reviewHtml = reviewTasks
     .map((t) => {
       const draft = rejectDrafts.get(t.path) || "";
-      return `<article class="interaction-item">
+      return `<article class="interaction-item" data-pending-kind="deliveryReview">
         <div class="interaction-kicker">DELIVERY REVIEW</div>
         <div class="interaction-title">${escapeHtml(t.role)}</div>
         <div class="muted interaction-note">${escapeHtml(t.deliverySummary || t.prompt || t.path)}</div>
         <div class="interaction-actions">
           <button type="button" class="btn btn-primary" data-act-accept="${escapeHtml(t.path)}">确认</button>
           <button type="button" class="btn btn-ghost" data-act-reject-toggle="${escapeHtml(t.path)}">驳回</button>
+          ${
+            t.canInterrupt
+              ? `<button type="button" class="btn btn-ghost" data-act-interrupt="${escapeHtml(t.path)}">中断</button>`
+              : ""
+          }
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(draft)}" />
@@ -129,7 +153,7 @@ export function renderActivity(): void {
     .map((p) => {
       const body = (p.body || "").trim();
       const preview = body.length > 160 ? body.slice(0, 157) + "…" : body;
-      return `<article class="interaction-item">
+      return `<article class="interaction-item" data-pending-kind="proposal">
         <div class="interaction-kicker">PROPOSAL · ${escapeHtml(p.role || "Agent")}</div>
         <div class="interaction-title">${escapeHtml(preview || p.path)}</div>
         <div class="muted interaction-note">${escapeHtml(p.boxId || "")}</div>
@@ -145,7 +169,7 @@ export function renderActivity(): void {
   const pendingBlock =
     pendingTotal === 0
       ? `<p class="muted">暂无待处理</p>`
-      : asksHtml + a2aHtml + toolsHtml + proposalHtml + reviewHtml;
+      : asksHtml + a2aHtml + toolsHtml + inputsHtml + proposalHtml + reviewHtml;
 
   const profileOpts =
     profiles.length > 0
@@ -295,17 +319,13 @@ async function onReply(askId: string): Promise<void> {
     item?.querySelector<HTMLTextAreaElement>("[data-act-answer]")?.value.trim() || "";
   const choiceId =
     item?.querySelector<HTMLInputElement>("input[type=radio]:checked")?.value || "";
-  if (!answer && !choiceId) {
-    el.status.textContent = "请选择一个选项或填写回复。";
+  const built = buildUserAskReplyPayload(askId, { answer, choiceId, actor: "user" });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
     return;
   }
   try {
-    await window.tentDesktop.rpc("userAsk.reply", {
-      askId,
-      actor: "user",
-      ...(answer ? { answer } : {}),
-      ...(choiceId ? { choiceId } : {}),
-    });
+    await window.tentDesktop.rpc("userAsk.reply", built.payload);
     el.status.textContent = "已回复 Agent。";
     await refreshAfter();
   } catch (err) {
@@ -315,7 +335,7 @@ async function onReply(askId: string): Promise<void> {
 
 async function onDenyAsk(askId: string): Promise<void> {
   try {
-    await window.tentDesktop.rpc("userAsk.deny", { askId, actor: "user" });
+    await window.tentDesktop.rpc("userAsk.deny", buildUserAskDenyPayload(askId, "user"));
     el.status.textContent = "已拒绝 Agent 提问。";
     await refreshAfter();
   } catch (err) {
@@ -341,7 +361,7 @@ async function onProposal(path: string, decision: "accept" | "reject"): Promise<
 
 async function onA2A(id: string, decision: "approve" | "deny"): Promise<void> {
   try {
-    await window.tentDesktop.rpc("a2a.resolve", { approvalId: id, decision, actor: "user" });
+    await window.tentDesktop.rpc("a2a.resolve", buildA2AResolvePayload(id, decision, "user"));
     el.status.textContent = decision === "approve" ? "已允许启动 Agent。" : "已拒绝启动 Agent。";
     await refreshAfter();
   } catch (err) {
@@ -351,10 +371,8 @@ async function onA2A(id: string, decision: "approve" | "deny"): Promise<void> {
 
 async function onTool(id: string, allow: boolean): Promise<void> {
   try {
-    await window.tentDesktop.rpc(allow ? "toolApproval.approveOnce" : "toolApproval.deny", {
-      approvalId: id,
-      actor: "user",
-    });
+    const built = buildToolApprovalResolvePayload(id, allow, "user");
+    await window.tentDesktop.rpc(built.method, built.params);
     el.status.textContent = allow ? "已允许本次工具调用。" : "已拒绝工具调用。";
     await refreshAfter();
   } catch (err) {

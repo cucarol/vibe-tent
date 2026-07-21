@@ -4,7 +4,6 @@
 import type {
   AgentProfileProjection,
   DeliveryProjection,
-  ProposalProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
   TaskProjection,
@@ -23,14 +22,22 @@ import {
   type RoleOption,
   type TaskReviewItem,
 } from "../../workbench/collaboration-ui.js";
-import type {
-  A2AApprovalView,
-  ConceptNode,
-  ShellState,
-  TabView,
-  ToolApprovalView,
-  UserAskView,
-} from "./types.js";
+import {
+  isPendingInteractionEventType,
+  isTaskProjectionEventType,
+  normalizeA2AList,
+  normalizeProposalList,
+  normalizeTaskInputList,
+  normalizeToolApprovalList,
+  normalizeUserAskList,
+  pendingInteractionCount as countPendingParts,
+  type A2AApprovalItem,
+  type ProposalItem,
+  type TaskInputItem,
+  type ToolApprovalItem,
+  type UserAskItem,
+} from "../../workbench/pending-interactions.js";
+import type { ConceptNode, ShellState, TabView } from "./types.js";
 import { setError } from "./elements.js";
 
 /** Local editor state mirrors WorkspaceController via service RPC (not core FS). */
@@ -46,11 +53,13 @@ export let roles: RoleOption[] = [];
 export let taskReview: TaskReviewItem[] = [];
 export let deliveries: DeliveryProjection[] = [];
 export let sessions: SessionProjection[] = [];
-export let userAsks: UserAskView[] = [];
-export let a2aApprovals: A2AApprovalView[] = [];
-export let toolApprovals: ToolApprovalView[] = [];
+export let userAsks: UserAskItem[] = [];
+export let a2aApprovals: A2AApprovalItem[] = [];
+export let toolApprovals: ToolApprovalItem[] = [];
+/** U2A one-shot pending inputs — independent type, never folded into UserAsk. */
+export let taskInputs: TaskInputItem[] = [];
 /** Pending proposal triage (separate from delivery review). */
-export let proposals: ProposalProjection[] = [];
+export let proposals: ProposalItem[] = [];
 /** Product profiles from profile.list (safe metadata; no secrets). */
 export let profiles: ProfileOption[] = [];
 /** Selected machine-local profile for「启动 agent」— never auto-starts. */
@@ -99,20 +108,24 @@ export function setSessions(list: SessionProjection[]): void {
   sessions = list;
 }
 
-export function setUserAsks(list: UserAskView[]): void {
+export function setUserAsks(list: UserAskItem[]): void {
   userAsks = list;
 }
 
-export function setProposals(list: ProposalProjection[]): void {
+export function setProposals(list: ProposalItem[]): void {
   proposals = list;
 }
 
-export function setA2aApprovals(list: A2AApprovalView[]): void {
+export function setA2aApprovals(list: A2AApprovalItem[]): void {
   a2aApprovals = list;
 }
 
-export function setToolApprovals(list: ToolApprovalView[]): void {
+export function setToolApprovals(list: ToolApprovalItem[]): void {
   toolApprovals = list;
+}
+
+export function setTaskInputs(list: TaskInputItem[]): void {
+  taskInputs = list;
 }
 
 export function setProfiles(list: ProfileOption[]): void {
@@ -152,7 +165,13 @@ export function actionableTasks(): TaskReviewItem[] {
 }
 
 export function pendingInteractionCount(): number {
-  return userAsks.length + a2aApprovals.length + toolApprovals.length + proposals.length;
+  return countPendingParts({
+    userAsks,
+    a2aApprovals,
+    toolApprovals,
+    taskInputs,
+    proposals,
+  });
 }
 
 export function tasksForActiveNode(states?: string[]): TaskReviewItem[] {
@@ -261,27 +280,85 @@ export async function reloadTasks(): Promise<void> {
   }
 }
 
+/**
+ * Re-fetch all independent pending types via real listPending RPCs.
+ * taskInput has no workspace-global inbox — fan-out over known task paths only.
+ */
 export async function reloadPendingInteractions(): Promise<void> {
   if (!workspaceId) return;
   try {
     const [askResult, a2aResult, toolResult, proposalResult] = await Promise.all([
-      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }) as Promise<{ asks: UserAskView[] }>,
-      window.tentDesktop.rpc("a2a.listPending", { workspaceId }) as Promise<{
-        approvals: A2AApprovalView[];
-      }>,
-      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }) as Promise<{
-        approvals: ToolApprovalView[];
-      }>,
+      window.tentDesktop.rpc("userAsk.listPending", { workspaceId }),
+      window.tentDesktop.rpc("a2a.listPending", { workspaceId }),
+      window.tentDesktop.rpc("toolApproval.listPending", { workspaceId }),
       window.tentDesktop.rpc("proposal.list", {
         workspaceId,
         status: "pending",
-      }) as Promise<{ proposals: ProposalProjection[] }>,
+      }),
     ]);
-    userAsks = askResult.asks || [];
-    a2aApprovals = a2aResult.approvals || [];
-    toolApprovals = toolResult.approvals || [];
-    proposals = (proposalResult.proposals || []).filter((p) => p.status === "pending");
+    userAsks = normalizeUserAskList(askResult);
+    a2aApprovals = normalizeA2AList(a2aResult);
+    toolApprovals = normalizeToolApprovalList(toolResult);
+    proposals = normalizeProposalList(proposalResult);
+
+    // taskInput.listPending requires workspaceId+taskPath (no global list).
+    const paths = collectTaskPathsForInputPoll();
+    if (paths.length === 0) {
+      taskInputs = [];
+    } else {
+      const inputLists = await Promise.all(
+        paths.map((taskPath) =>
+          window.tentDesktop
+            .rpc("taskInput.listPending", { workspaceId, taskPath })
+            .then((r) => normalizeTaskInputList(r))
+            .catch(() => [] as TaskInputItem[])
+        )
+      );
+      const byId = new Map<string, TaskInputItem>();
+      for (const list of inputLists) {
+        for (const item of list) byId.set(item.id, item);
+      }
+      taskInputs = [...byId.values()].sort((a, b) =>
+        (b.createdAt || "").localeCompare(a.createdAt || "")
+      );
+    }
     host?.renderPendingInteractions();
+  } catch (err) {
+    setError(err);
+  }
+}
+
+/** Task paths we know about for scoped taskInput.listPending fan-out. */
+function collectTaskPathsForInputPoll(): string[] {
+  const paths = new Set<string>();
+  for (const t of taskReview) {
+    if (t.path) paths.add(t.path);
+  }
+  for (const ask of userAsks) {
+    if (ask.taskPath) paths.add(ask.taskPath);
+  }
+  for (const a of a2aApprovals) {
+    if (a.taskPath) paths.add(a.taskPath);
+  }
+  for (const t of toolApprovals) {
+    if (t.taskPath) paths.add(t.taskPath);
+  }
+  return [...paths];
+}
+
+/**
+ * Service event → re-fetch projections. Renderer never guesses state from the
+ * envelope payload alone.
+ */
+export async function onServiceEvent(type: string): Promise<void> {
+  if (!workspaceId) return;
+  const reloadTasksNeeded = isTaskProjectionEventType(type);
+  const reloadPendingNeeded = isPendingInteractionEventType(type);
+  if (!reloadTasksNeeded && !reloadPendingNeeded) return;
+  try {
+    // Tasks first so taskInput fan-out sees current paths (no guessed paths).
+    if (reloadTasksNeeded) await reloadTasks();
+    if (reloadPendingNeeded) await reloadPendingInteractions();
   } catch (err) {
     setError(err);
   }

@@ -21,6 +21,12 @@ export type ContractGap = {
  */
 export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
   {
+    id: "concept.permanent-delete",
+    methods: ["docs.delete", "docs.purge"],
+    need: "Permanent delete of a concept (beyond archive mode).",
+    fallback: "docs.setMode archived only; no permanent delete control.",
+  },
+  {
     id: "docs.move-reparent",
     methods: ["docs.move", "docs.reparent"],
     need: "Move / reparent a concept in the tree while preserving cx- and rewriting links.",
@@ -33,10 +39,28 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
     fallback: "Local projection: docs.list tree + docs.backlinks + docs.readForEdit body out-links for the selected node only.",
   },
   {
+    id: "mcp.global-config",
+    methods: ["mcp.list", "mcp.install"],
+    need: "Machine-global MCP server catalog independent of AgentProfile.",
+    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only.",
+  },
+  {
     id: "session.logs-reload",
     methods: ["session.logs", "session.transcript"],
     need: "Reloadable session log / transcript for past agent turns.",
     fallback: "session.list / session.get show state + alive only; no transcript surface.",
+  },
+  {
+    id: "taskInput.global-list",
+    methods: ["taskInput.listPendingWorkspace"],
+    need: "Workspace-scoped pending TaskInput list without per-taskPath fan-out.",
+    fallback: "Desktop fans out taskInput.listPending over known task paths from task.list / other pending rows.",
+  },
+  {
+    id: "toolApproval.params",
+    methods: ["toolApproval.paramsProjection"],
+    need: "Tool call argument / params summary on toolApproval projection (beyond options[]).",
+    fallback: "UI shows toolTitle + options name/kind summary only; never invents args.",
   },
   {
     id: "type-tag-mutation",
@@ -45,16 +69,10 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
     fallback: "registry.types is read-only; type/tags shown as projection only.",
   },
   {
-    id: "concept.permanent-delete",
-    methods: ["docs.delete", "docs.purge"],
-    need: "Permanent delete of a concept (beyond archive mode).",
-    fallback: "docs.setMode archived only; no permanent delete control.",
-  },
-  {
-    id: "mcp.global-config",
-    methods: ["mcp.list", "mcp.install"],
-    need: "Machine-global MCP server catalog independent of AgentProfile.",
-    fallback: "MCP is edited only as profile.mcpServers (next session); skill.list/install covers bundled skills only.",
+    id: "userAsk.agent-profile",
+    methods: ["userAsk.sourceProfile"],
+    need: "Distinct source agent profile id on UserAsk projection (role alone is insufficient).",
+    fallback: "UI labels source as role when present; sessionId shown only in detail notes.",
   },
 ] as const;
 

@@ -34,6 +34,10 @@ export type TentDesktopBridge = {
     foregroundRoot?: string | null;
   }>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
+  /** Service SSE type only — re-fetch listPending / task.list; do not invent state. */
+  onServiceEvent: (
+    handler: (ev: { type: string; workspaceId?: string }) => void
+  ) => () => void;
 };
 
 declare global {

@@ -22,6 +22,7 @@ import { bindChromeMenus, bindLayoutChrome } from "./main/layout.js";
 import {
   bindStateHost,
   deliveries,
+  onServiceEvent,
   pendingInteractionCount,
   reloadPendingInteractions,
   reloadProfiles,
@@ -155,7 +156,13 @@ async function boot(): Promise<void> {
 
   window.tentDesktop.onStateChanged((s) => {
     applyShell(s as ShellState);
+    // Shell snapshot does not carry A2U pending rows — keep listPending in sync.
     if (workspaceId) void Promise.all([reloadPendingInteractions(), reloadTasks()]);
+  });
+  // Authoritative invalidation path: event type only → re-fetch projections.
+  window.tentDesktop.onServiceEvent((ev) => {
+    if (ev.workspaceId && workspaceId && ev.workspaceId !== workspaceId) return;
+    void onServiceEvent(ev.type);
   });
   await refresh();
 }

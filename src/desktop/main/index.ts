@@ -94,6 +94,22 @@ async function bootstrap(): Promise<void> {
     },
   });
 
+  // SSE → IPC: renderer re-fetches projections; main does not invent UI state.
+  host.onServiceEvent((ev) => {
+    // Keep shell-model task rows roughly in sync for float metrics.
+    void model.refreshTasks().then(() => {
+      const snap = model.getSnapshot();
+      for (const win of BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
+        win.webContents.send(DESKTOP_IPC.onServiceEvent, {
+          type: ev.type,
+          workspaceId: ev.workspaceId,
+        });
+      }
+    });
+  });
+
   createTray(paths);
 
   // Optional CLI arg: tent-desktop --mount <workspace>
