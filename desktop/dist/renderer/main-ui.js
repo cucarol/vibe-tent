@@ -5860,6 +5860,69 @@ async function reloadProfiles() {
   }
 }
 
+// src/desktop/renderer/main/ui.ts
+var UI = {
+  btn: "btn",
+  btnPrimary: "btn btn-primary",
+  btnSecondary: "btn btn-secondary",
+  btnGhost: "btn btn-ghost",
+  btnDanger: "btn btn-danger",
+  iconBtn: "icon-btn",
+  field: "field",
+  fieldCompact: "field field-compact",
+  tab: "tab",
+  tabLabel: "tab-label",
+  tabClose: "tab-close",
+  treeNode: "tree-node",
+  treeName: "tree-name",
+  treeMeta: "tree-meta",
+  inspSection: "insp-section",
+  inspSummary: "insp-summary",
+  inspBody: "insp-body",
+  collapseEdge: "icon-btn collapse-edge",
+  railToggle: "icon-btn rail-toggle"
+};
+function btnClass(variant = "secondary", extra) {
+  const base = variant === "primary" ? UI.btnPrimary : variant === "ghost" ? UI.btnGhost : variant === "danger" ? UI.btnDanger : UI.btnSecondary;
+  return extra ? `${base} ${extra}` : base;
+}
+function btnHtml(opts) {
+  const cls = btnClass(opts.variant ?? "secondary", opts.extraClass);
+  const id = opts.id ? ` id="${escapeHtml(opts.id)}"` : "";
+  const title = opts.title ? ` title="${escapeHtml(opts.title)}"` : "";
+  const disabled = opts.disabled ? " disabled" : "";
+  const attrs = opts.attrs ? ` ${opts.attrs}` : "";
+  return `<button type="button" class="${cls}"${id}${title}${disabled}${attrs}>${escapeHtml(opts.label)}</button>`;
+}
+function iconBtnHtml(opts) {
+  const cls = opts.extraClass ? `${UI.iconBtn} ${opts.extraClass}` : UI.iconBtn;
+  const id = opts.id ? ` id="${escapeHtml(opts.id)}"` : "";
+  const label = opts.ariaLabel ?? opts.title;
+  const title = ` title="${escapeHtml(opts.title)}"`;
+  const aria = ` aria-label="${escapeHtml(label)}"`;
+  const expanded = opts.expanded === void 0 || opts.expanded === null ? "" : ` aria-expanded="${opts.expanded ? "true" : "false"}"`;
+  const disabled = opts.disabled ? " disabled" : "";
+  const attrs = opts.attrs ? ` ${opts.attrs}` : "";
+  return `<button type="button" class="${cls}"${id}${title}${aria}${expanded}${disabled}${attrs}>${opts.icon}</button>`;
+}
+function documentTabHtml(opts) {
+  const cx = escapeHtml(opts.cx);
+  const name = escapeHtml(opts.name);
+  const dirtyMark = opts.dirty ? " \xB7" : "";
+  const closeLabel = `\u5173\u95ED ${opts.name}`;
+  const title = `${opts.name}${opts.dirty ? "\uFF08\u672A\u4FDD\u5B58\uFF09" : ""}`;
+  return `<div class="${UI.tab}${opts.active ? " active" : ""}" role="presentation" data-tab-wrap="${cx}">
+        <button type="button" class="${UI.tabLabel}" role="tab" data-tab="${cx}" aria-selected="${opts.active ? "true" : "false"}" title="${escapeHtml(title)}">${name}${dirtyMark}</button>
+        <button type="button" class="${UI.tabClose}" data-close-tab="${cx}" title="${escapeHtml(closeLabel)}" aria-label="${escapeHtml(closeLabel)}">${opts.closeIcon}</button>
+      </div>`;
+}
+function treeRowClass(opts) {
+  let cls = UI.treeNode;
+  if (opts.active) cls += " active";
+  if (opts.archived) cls += " is-archived";
+  return cls;
+}
+
 // src/desktop/renderer/main/inspector.ts
 var host2 = null;
 function bindInspectorHost(h) {
@@ -5891,17 +5954,23 @@ function renderMeta() {
     <div class="meta-line muted">${oneLine}</div>
     <div class="meta-controls">
       <label class="sr-only" for="node-display-name">\u540D\u79F0</label>
-      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
-      <button type="button" id="btn-rename-node" class="btn btn-secondary"${renameDisabled ? " disabled" : ""} title="${renameDisabled ? "\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u91CD\u547D\u540D" : "\u91CD\u547D\u540D"}">\u91CD\u547D\u540D</button>
+      <input id="node-display-name" class="${UI.field}" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
+      ${btnHtml({
+    label: "\u91CD\u547D\u540D",
+    variant: "secondary",
+    id: "btn-rename-node",
+    title: renameDisabled ? "\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u91CD\u547D\u540D" : "\u91CD\u547D\u540D",
+    disabled: renameDisabled
+  })}
     </div>
     <div class="meta-controls">
       <label for="node-mode">\u8BBF\u95EE</label>
-      <select id="node-mode" class="field field-compact">
+      <select id="node-mode" class="${UI.fieldCompact}">
         <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>\u5F00\u653E</option>
         <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>\u4EC5\u53EF\u8BFB</option>
         <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>\u5C01\u5B58</option>
       </select>
-      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">\u5E94\u7528</button>
+      ${btnHtml({ label: "\u5E94\u7528", variant: "secondary", id: "btn-apply-node-mode" })}
     </div>
     <details class="meta-details">
       <summary>\u8BE6\u60C5</summary>
@@ -6221,7 +6290,7 @@ function renderTasks() {
             </div>
             <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
+              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
             </div>` : "";
     const actions = startBtn || interruptBtn || cancelBtn || reviewActions ? `<div class="task-actions">${startBtn}${interruptBtn}${cancelBtn}${reviewActions}</div>` : "";
     return `<li class="task-item" data-task="${escapeHtml(t.path)}">
@@ -6554,15 +6623,15 @@ function renderTabs() {
   const tabs = [...localTabs.values()];
   el.tabs.setAttribute("role", "tablist");
   el.tabs.setAttribute("aria-label", "\u6253\u5F00\u7684\u6587\u6863");
-  el.tabs.innerHTML = tabs.map((t) => {
-    const active = t.cx === activeCx;
-    const dirtyMark = t.dirty ? " \xB7" : "";
-    const closeLabel = `\u5173\u95ED ${t.name}`;
-    return `<div class="tab${active ? " active" : ""}" role="presentation" data-tab-wrap="${escapeHtml(t.cx)}">
-        <button type="button" class="tab-label" role="tab" data-tab="${escapeHtml(t.cx)}" aria-selected="${active ? "true" : "false"}" title="${escapeHtml(t.name)}${t.dirty ? "\uFF08\u672A\u4FDD\u5B58\uFF09" : ""}">${escapeHtml(t.name)}${dirtyMark}</button>
-        <button type="button" class="tab-close" data-close-tab="${escapeHtml(t.cx)}" title="${escapeHtml(closeLabel)}" aria-label="${escapeHtml(closeLabel)}">${ICO.close}</button>
-      </div>`;
-  }).join("");
+  el.tabs.innerHTML = tabs.map(
+    (t) => documentTabHtml({
+      cx: t.cx,
+      name: t.name,
+      active: t.cx === activeCx,
+      dirty: t.dirty,
+      closeIcon: ICO.close
+    })
+  ).join("");
 }
 function renderToolbar() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -6574,11 +6643,29 @@ function renderToolbar() {
   const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
   const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
   const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
+  const saveBtn = tab.dirty && tab.nodeMode === "editable" ? btnHtml({
+    label: "\u4FDD\u5B58",
+    variant: "primary",
+    title: "\u4FDD\u5B58",
+    attrs: 'data-act="save"',
+    extraClass: "btn-quiet-save"
+  }) : "";
   el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}\uFF08${modeLabel}\uFF09">${modeIco}</button>
-    ${tab.dirty && tab.nodeMode === "editable" ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="\u4FDD\u5B58">\u4FDD\u5B58</button>` : ""}
+    ${iconBtnHtml({
+    icon: modeIco,
+    title: modeTitle,
+    ariaLabel: `${modeTitle}\uFF08${modeLabel}\uFF09`,
+    extraClass: "mode-toggle",
+    attrs: 'data-act="toggle-mode"'
+  })}
+    ${saveBtn}
     <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="\u66F4\u591A" aria-label="\u6587\u6863\u66F4\u591A\u64CD\u4F5C" aria-haspopup="menu">${ICO.more}</button>
+      ${iconBtnHtml({
+    icon: ICO.more,
+    title: "\u66F4\u591A",
+    ariaLabel: "\u6587\u6863\u66F4\u591A\u64CD\u4F5C",
+    attrs: 'data-doc-more aria-haspopup="menu"'
+  })}
       <div class="menu" data-doc-menu role="menu" hidden>
         <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? ' aria-current="true"' : ""}>\u6E90\u7801</button>
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? ' aria-current="true"' : ""}>\u9884\u89C8</button>
@@ -6821,7 +6908,12 @@ function renderDispatchPanel() {
         <textarea id="dispatch-prompt" rows="3" placeholder="\u5199\u7ED9\u76EE\u6807 role \u7684\u4EFB\u52A1\u8BF4\u660E\u2026">${escapeHtml(dispatchPrompt)}</textarea>
       </div>
       <div class="row dispatch-actions">
-        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>\u6D3E\u6D3B</button>
+        ${btnHtml({
+    label: "\u6D3E\u6D3B",
+    variant: "primary",
+    id: "btn-dispatch",
+    disabled: !validation.ok
+  })}
         ${validation.ok ? "" : `<span class="faint">${escapeHtml(validation.reason || "")}</span>`}
       </div>
     </div>
@@ -7315,9 +7407,17 @@ function renderCreateTypeSelect() {
   ).join("");
 }
 function renderTree() {
+  el.tree.setAttribute("role", "tree");
   el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">\u6682\u65E0\u6982\u5FF5</li>`;
   el.tree.querySelectorAll("[data-open]").forEach((node2) => {
-    node2.addEventListener("click", () => void host5?.openConcept(node2.getAttribute("data-open")));
+    const open = () => void host5?.openConcept(node2.getAttribute("data-open"));
+    node2.addEventListener("click", open);
+    node2.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        open();
+      }
+    });
   });
 }
 function nodeStatusMark(status) {
@@ -7335,13 +7435,15 @@ function nodeStatusMark(status) {
 function renderNodes(nodes) {
   return nodes.map((n) => {
     const mark = n.coordination ? nodeStatusMark(n.status) : "";
-    const active = n.id === activeCx ? " active" : "";
-    const archived = n.mode === "archived" ? " is-archived" : "";
+    const rowClass = treeRowClass({
+      active: n.id === activeCx,
+      archived: n.mode === "archived"
+    });
     const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
     return `<li>
-        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
-          <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${mark}</span>
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} \xB7 ${escapeHtml(n.type)} \xB7 ${escapeHtml(n.mode || "editable")}">
+          <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
+          <span class="${UI.treeMeta}">${mark}</span>
         </div>
         ${kids}
       </li>`;
@@ -7810,7 +7912,7 @@ function renderActivity() {
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="\u9A73\u56DE\u539F\u56E0" value="${escapeHtml(draft)}" />
-          <button type="button" class="btn btn-secondary" data-act-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
+          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}">\u786E\u8BA4\u9A73\u56DE</button>
         </div>
       </article>`;
   }).join("");

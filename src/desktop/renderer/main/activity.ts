@@ -119,7 +119,7 @@ export function renderActivity(): void {
         </div>
         <div class="reject-panel" data-act-reject-panel="${escapeHtml(t.path)}" hidden>
           <input type="text" class="field" data-act-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(draft)}" />
-          <button type="button" class="btn btn-secondary" data-act-reject="${escapeHtml(t.path)}">确认驳回</button>
+          <button type="button" class="btn btn-danger" data-act-reject="${escapeHtml(t.path)}">确认驳回</button>
         </div>
       </article>`;
     })

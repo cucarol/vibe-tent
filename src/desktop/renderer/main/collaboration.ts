@@ -11,6 +11,7 @@ import {
 import { bindContextCardDrag } from "../context-card-drag.js";
 import { el, setError } from "./elements.js";
 import { syncInspectorSections } from "./inspector.js";
+import { btnClass } from "./ui.js";
 import {
   a2aApprovals,
   actionableTasks,
@@ -364,7 +365,7 @@ export function renderTasks(): void {
             </div>
             <div class="reject-panel" data-reject-panel="${escapeHtml(t.path)}" hidden>
               <input type="text" class="field" data-reject-reason="${escapeHtml(t.path)}" placeholder="驳回原因" value="${escapeHtml(rejectDraft)}" />
-              <button type="button" class="btn btn-secondary" data-reject="${escapeHtml(t.path)}">确认驳回</button>
+              <button type="button" class="${btnClass("danger")}" data-reject="${escapeHtml(t.path)}">确认驳回</button>
             </div>`
           : "";
         const actions =

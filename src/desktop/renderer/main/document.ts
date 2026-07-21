@@ -22,6 +22,7 @@ import {
   workspaceId,
 } from "./state.js";
 import type { TabView } from "./types.js";
+import { btnHtml, documentTabHtml, iconBtnHtml } from "./ui.js";
 
 export type DocumentHost = {
   renderAll: () => void;
@@ -205,15 +206,15 @@ export function renderTabs(): void {
   el.tabs.setAttribute("role", "tablist");
   el.tabs.setAttribute("aria-label", "打开的文档");
   el.tabs.innerHTML = tabs
-    .map((t) => {
-      const active = t.cx === activeCx;
-      const dirtyMark = t.dirty ? " ·" : "";
-      const closeLabel = `关闭 ${t.name}`;
-      return `<div class="tab${active ? " active" : ""}" role="presentation" data-tab-wrap="${escapeHtml(t.cx)}">
-        <button type="button" class="tab-label" role="tab" data-tab="${escapeHtml(t.cx)}" aria-selected="${active ? "true" : "false"}" title="${escapeHtml(t.name)}${t.dirty ? "（未保存）" : ""}">${escapeHtml(t.name)}${dirtyMark}</button>
-        <button type="button" class="tab-close" data-close-tab="${escapeHtml(t.cx)}" title="${escapeHtml(closeLabel)}" aria-label="${escapeHtml(closeLabel)}">${ICO.close}</button>
-      </div>`;
-    })
+    .map((t) =>
+      documentTabHtml({
+        cx: t.cx,
+        name: t.name,
+        active: t.cx === activeCx,
+        dirty: t.dirty,
+        closeIcon: ICO.close,
+      })
+    )
     .join("");
 }
 
@@ -228,15 +229,32 @@ export function renderToolbar(): void {
   const modeTitle = tab.mode === "preview" ? "切换到源码" : "切换到预览";
   // 克制工具组：模式图标 + dirty 时保存 + 更多；干净状态不提示「已保存」
   const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
+  const saveBtn =
+    tab.dirty && tab.nodeMode === "editable"
+      ? btnHtml({
+          label: "保存",
+          variant: "primary",
+          title: "保存",
+          attrs: 'data-act="save"',
+          extraClass: "btn-quiet-save",
+        })
+      : "";
   el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${modeIco}</button>
-    ${
-      tab.dirty && tab.nodeMode === "editable"
-        ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="保存">保存</button>`
-        : ""
-    }
+    ${iconBtnHtml({
+      icon: modeIco,
+      title: modeTitle,
+      ariaLabel: `${modeTitle}（${modeLabel}）`,
+      extraClass: "mode-toggle",
+      attrs: 'data-act="toggle-mode"',
+    })}
+    ${saveBtn}
     <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">${ICO.more}</button>
+      ${iconBtnHtml({
+        icon: ICO.more,
+        title: "更多",
+        ariaLabel: "文档更多操作",
+        attrs: 'data-doc-more aria-haspopup="menu"',
+      })}
       <div class="menu" data-doc-menu role="menu" hidden>
         <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? " aria-current=\"true\"" : ""}>源码</button>
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? " aria-current=\"true\"" : ""}>预览</button>

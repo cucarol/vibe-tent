@@ -37,9 +37,18 @@
   --space-4: 16px;
   --space-5: 24px;
   --space-6: 32px;
+
+  /* Control geometry — shared by Button / IconButton / Field / Tab / Tree / Section */
   --size-icon: 30px;
   --size-control: 32px;
+  --size-control-compact: 28px;
+  --size-tab-close: 20px;
+  --size-tree-row: 32px;
+  --size-section-head: 36px;
+  --control-pad-x: var(--space-3);
+  --control-gap: var(--space-2);
   --radius: 5px;
+  --radius-sm: 3px;
   --radius-sheet: 0;
   --pane-head-height: 56px;
   --read-col: 40rem;
@@ -51,9 +60,16 @@
   --font-ui-small: 13px;
   --font-ui-smaller: 12px;
   --font-ui-tiny: 11px;
+  --font-weight-ui: 500;
+  --font-weight-strong: 600;
+  --font-weight-brand: 600;
   --lh-tight: 1.25;
   --lh-ui: 1.4;
   --lh-body: 1.72;
+
+  --focus-ring: 2px solid color-mix(in srgb, var(--color-focus) 70%, transparent);
+  --focus-ring-offset: 1px;
+  --control-disabled-opacity: 0.42;
 
   /* 兼容旧 token 名 */
   --background-primary: var(--color-surface);
@@ -132,13 +148,15 @@ select:focus-visible,
 textarea:focus-visible,
 .splitter:focus-visible,
 .icon-btn:focus-visible,
-.menu-item:focus-visible {
-  outline: 2px solid color-mix(in srgb, var(--color-focus) 70%, transparent);
-  outline-offset: 1px;
+.menu-item:focus-visible,
+.tab-close:focus-visible,
+.tab-label:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
 }
 
 button:disabled {
-  opacity: 0.42;
+  opacity: var(--control-disabled-opacity);
   cursor: not-allowed;
 }
 

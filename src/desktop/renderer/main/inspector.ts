@@ -13,6 +13,7 @@ import {
   workspaceId,
 } from "./state.js";
 import type { TabView } from "./types.js";
+import { UI, btnHtml } from "./ui.js";
 
 export type InspectorHost = {
   renderAll: () => void;
@@ -58,17 +59,23 @@ export function renderMeta(): void {
     <div class="meta-line muted">${oneLine}</div>
     <div class="meta-controls">
       <label class="sr-only" for="node-display-name">名称</label>
-      <input id="node-display-name" class="field" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
-      <button type="button" id="btn-rename-node" class="btn btn-secondary"${renameDisabled ? " disabled" : ""} title="${renameDisabled ? "封存节点不可重命名" : "重命名"}">重命名</button>
+      <input id="node-display-name" class="${UI.field}" value="${escapeHtml(tab.name)}"${renameDisabled ? " disabled" : ""} />
+      ${btnHtml({
+        label: "重命名",
+        variant: "secondary",
+        id: "btn-rename-node",
+        title: renameDisabled ? "封存节点不可重命名" : "重命名",
+        disabled: renameDisabled,
+      })}
     </div>
     <div class="meta-controls">
       <label for="node-mode">访问</label>
-      <select id="node-mode" class="field field-compact">
+      <select id="node-mode" class="${UI.fieldCompact}">
         <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>开放</option>
         <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>仅可读</option>
         <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>封存</option>
       </select>
-      <button type="button" id="btn-apply-node-mode" class="btn btn-secondary">应用</button>
+      ${btnHtml({ label: "应用", variant: "secondary", id: "btn-apply-node-mode" })}
     </div>
     <details class="meta-details">
       <summary>详情</summary>

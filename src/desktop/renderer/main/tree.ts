@@ -16,6 +16,7 @@ import {
   reloadTree,
 } from "./state.js";
 import type { ConceptNode } from "./types.js";
+import { UI, treeRowClass } from "./ui.js";
 
 export type TreeHost = {
   openConcept: (cx: string) => Promise<void>;
@@ -49,9 +50,17 @@ export function renderCreateTypeSelect(): void {
 }
 
 export function renderTree(): void {
+  el.tree.setAttribute("role", "tree");
   el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">暂无概念</li>`;
   el.tree.querySelectorAll<HTMLElement>("[data-open]").forEach((node) => {
-    node.addEventListener("click", () => void host?.openConcept(node.getAttribute("data-open")!));
+    const open = () => void host?.openConcept(node.getAttribute("data-open")!);
+    node.addEventListener("click", open);
+    node.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        open();
+      }
+    });
   });
 }
 
@@ -74,13 +83,15 @@ function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
       const mark = n.coordination ? nodeStatusMark(n.status) : "";
-      const active = n.id === activeCx ? " active" : "";
-      const archived = n.mode === "archived" ? " is-archived" : "";
+      const rowClass = treeRowClass({
+        active: n.id === activeCx,
+        archived: n.mode === "archived",
+      });
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
       return `<li>
-        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)} · ${escapeHtml(n.mode || "editable")}">
-          <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${mark}</span>
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)} · ${escapeHtml(n.mode || "editable")}">
+          <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
+          <span class="${UI.treeMeta}">${mark}</span>
         </div>
         ${kids}
       </li>`;

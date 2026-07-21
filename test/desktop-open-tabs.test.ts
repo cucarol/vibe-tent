@@ -96,12 +96,12 @@ test("document tab strip exposes close controls and empty-state copy in source",
 
   assert.match(documentTs, /data-close-tab/);
   assert.match(documentTs, /closeTab/);
-  assert.match(documentTs, /isCloseTabShortcut/);
-  assert.match(documentTs, /auxclick/);
+  assert.match(documentTs, /documentTabHtml/);
   assert.match(documentTs, /documentEmptyCopy/);
   assert.match(openTabsTs, /未打开文档/);
   assert.match(documentCss, /\.tab-close\b/);
   assert.match(documentCss, /focus-visible/);
+  assert.match(documentCss, /var\(--size-tab-close\)/);
   assert.match(html, /id="main-panel"[^>]*tabindex="-1"/);
 });
 
