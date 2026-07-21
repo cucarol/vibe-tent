@@ -3888,7 +3888,7 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
   };
 }
 
-/** First-class externalKey match, with legacy env fallback, scoped to workspace when set. */
+/** First-class externalKey match, scoped to workspace when set. */
 async function findExternalSessionByKey(
   ctx: HandlerContext,
   externalKey: string,

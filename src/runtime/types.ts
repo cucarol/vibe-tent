@@ -143,8 +143,7 @@ export interface SessionRecord {
   stopReason?: StopReason;
   /**
    * Stable pull-host / external-GUI idempotency key within a workspace.
-   * First-class field — not profile env. Legacy rows may still carry
-   * `profileSnapshot.env.TENT_EXTERNAL_KEY` which readers treat as fallback.
+   * First-class field on the session row — not profile env.
    */
   externalKey?: string;
 }
@@ -289,15 +288,11 @@ export function isSessionId(id: string): boolean {
 
 /**
  * Resolve the stable externalKey for a session row.
- * Prefers first-class `externalKey`; falls back to legacy
- * `profileSnapshot.env.TENT_EXTERNAL_KEY` written by earlier V0.2 builds.
+ * First-class `externalKey` only — no profile-env fallback.
  */
 export function recordExternalKey(rec: {
   externalKey?: string;
-  profileSnapshot?: { env?: Record<string, string> };
 }): string | undefined {
-  const primary = rec.externalKey?.trim();
-  if (primary) return primary;
-  const legacy = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY?.trim();
-  return legacy || undefined;
+  const key = rec.externalKey?.trim();
+  return key || undefined;
 }

@@ -11760,10 +11760,8 @@ function isSessionId(id) {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
 }
 function recordExternalKey(rec) {
-  const primary = rec.externalKey?.trim();
-  if (primary) return primary;
-  const legacy = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY?.trim();
-  return legacy || void 0;
+  const key = rec.externalKey?.trim();
+  return key || void 0;
 }
 
 // src/runtime/session-registry.ts

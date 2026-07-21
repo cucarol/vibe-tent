@@ -326,7 +326,6 @@ export class AgentRuntime implements AgentRuntimePort {
     }
 
     // 2) externalKey / role+workspace idempotency: reuse open external row.
-    // Prefer first-class externalKey; fall back to legacy profileSnapshot.env.TENT_EXTERNAL_KEY.
     if (externalKey || (workspace && roleName)) {
       const all = await this.registry.list();
       const match = all.find((rec) => {
@@ -346,7 +345,6 @@ export class AgentRuntime implements AgentRuntimePort {
         if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
           patch.runtimeWorkspace = { cwd };
         }
-        // Migrate legacy env-key rows onto the first-class field when reusing.
         if (externalKey && match.externalKey !== externalKey) {
           patch.externalKey = externalKey;
         }

@@ -375,7 +375,7 @@ test("parseNativeHookStdin + pickNativeSessionId accept common fields", () => {
   assert.equal(parseNativeHookStdin("not-json"), null);
 });
 
-test("runtime stores first-class externalKey (not profile env)", async () => {
+test("runtime stores first-class externalKey only", async () => {
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ext-key-"));
   const runtime = createAgentRuntime({ dataDir });
   try {
@@ -387,8 +387,11 @@ test("runtime stores first-class externalKey (not profile env)", async () => {
     const rec = await runtime.registry.read(h.sessionId);
     assert.equal(rec?.externalKey, "explicit-key-1");
     assert.equal(recordExternalKey(rec!), "explicit-key-1");
-    // Must not stuff key into profile env
-    assert.equal(rec?.profileSnapshot?.env?.TENT_EXTERNAL_KEY, undefined);
+    // Key lives only on the first-class field — not profile env.
+    assert.equal(rec?.profileSnapshot?.env, undefined);
+    // Env-only / missing first-class field → no key (no legacy fallback).
+    assert.equal(recordExternalKey({}), undefined);
+    assert.equal(recordExternalKey({ externalKey: "  " }), undefined);
   } finally {
     await runtime.shutdown();
   }
