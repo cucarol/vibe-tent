@@ -24,17 +24,30 @@ import {
   verificationLevelLabel,
 } from "../src/desktop/workbench/graph-model.js";
 import {
+  buildMcpServersPayload,
+  buildSkillsPayload,
+  credentialListRow,
+  CREDENTIAL_VAULT_TYPE,
   formatAllowedProfilesText,
   mapProviderCatalogRows,
+  mcpCredentialStatusLine,
+  mcpDraftsFromProjection,
+  mcpSourceLine,
   parseAllowedProfilesText,
   PROFILE_NEXT_SESSION_TIP,
   profileDisplayLabel,
   retentionSummaryLine,
+  setMcpEnabled,
+  setSkillEnabled,
+  skillDraftsFromProjection,
+  skillSourceLine,
   validateCredentialSet,
+  validateMcpAddDraft,
   validateProfileCreate,
   validateProfileUpdate,
   validateRoleCreate,
   validateRoleUpdate,
+  validateSkillAddDraft,
 } from "../src/desktop/workbench/settings-model.js";
 
 test("contract gaps list missing desktop methods without inventing RPCs", () => {
@@ -213,6 +226,106 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(cred.payload.secret, "s3cret");
     assert.equal(cred.payload.label, "main");
   }
+
+  // credential list row: ref id + type + 已配置 — never secret fields.
+  const crow = credentialListRow({
+    id: "api-key",
+    createdAt: "t0",
+    updatedAt: "t1",
+    label: "main",
+  });
+  assert.equal(crow.id, "api-key");
+  assert.equal(crow.type, CREDENTIAL_VAULT_TYPE);
+  assert.equal(crow.status, "已配置");
+  assert.equal(crow.label, "main");
+  assert.ok(!("secret" in crow));
+  assert.ok(!("ciphertext" in crow));
+});
+
+test("profile skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
+  const skills = skillDraftsFromProjection([
+    { name: "tent-role", path: "/home/u/.agents/skills/tent-role", enabled: true },
+    { name: "tent-genesis", enabled: false },
+  ]);
+  assert.equal(skills.length, 2);
+  assert.equal(skills[0]!.enabled, true);
+  assert.equal(skills[1]!.enabled, false);
+  assert.match(skillSourceLine(skills[0]!), /tent-role/);
+  assert.match(skillSourceLine(skills[1]!), /name-only/);
+
+  const toggled = setSkillEnabled(skills, "tent-genesis", true);
+  assert.equal(toggled.find((s) => s.name === "tent-genesis")?.enabled, true);
+
+  const skillWire = buildSkillsPayload(toggled);
+  for (const row of skillWire) {
+    assert.ok(row.name);
+    assert.ok(!("displayName" in row));
+    assert.ok(!("body" in row));
+    assert.ok(!("secret" in row));
+  }
+  assert.equal(skillWire.find((s) => s.name === "tent-genesis")?.enabled, true);
+
+  const mcps = mcpDraftsFromProjection([
+    {
+      name: "fs",
+      transport: "stdio",
+      enabled: true,
+      command: "npx",
+      args: ["-y", "server"],
+      envCredentialRefs: { API_KEY: "mcp-key" },
+    },
+    {
+      name: "remote",
+      transport: "http",
+      enabled: false,
+      url: "https://mcp.example.com/mcp",
+      headerCredentialRefs: { Authorization: "missing-key" },
+    },
+  ]);
+  assert.equal(mcps.length, 2);
+  assert.match(mcpSourceLine(mcps[0]!), /stdio/);
+  assert.match(mcpSourceLine(mcps[1]!), /http/);
+
+  const disabled = setMcpEnabled(mcps, "fs", false);
+  assert.equal(disabled.find((m) => m.name === "fs")?.enabled, false);
+
+  const configured = new Set(["mcp-key"]);
+  assert.match(mcpCredentialStatusLine(mcps[0]!, configured), /mcp-key·已配置/);
+  assert.match(mcpCredentialStatusLine(mcps[1]!, configured), /missing-key·缺失/);
+  // Status line never embeds secret-like values beyond ref ids.
+  assert.equal(mcpCredentialStatusLine(mcps[0]!, configured).includes("sk-"), false);
+
+  const mcpWire = buildMcpServersPayload(disabled);
+  const wireJson = JSON.stringify(mcpWire);
+  assert.equal(wireJson.includes("displayName"), false);
+  // No plaintext secret bags (substring-safe: envCredentialRefs / header* are allowed).
+  assert.equal(/"env"\s*:/.test(wireJson), false);
+  assert.equal(/"headers"\s*:/.test(wireJson), false);
+  assert.equal(/"secret"\s*:/.test(wireJson), false);
+  assert.ok(wireJson.includes("envCredentialRefs"));
+  assert.ok(wireJson.includes("mcp-key"));
+  assert.equal(mcpWire.find((m) => m.name === "fs")?.enabled, false);
+
+  const addSkill = validateSkillAddDraft({ name: "tent-role" });
+  assert.equal(addSkill.ok, true);
+  assert.equal(validateSkillAddDraft({ name: "" }).ok, false);
+
+  const addMcp = validateMcpAddDraft({
+    name: "fs2",
+    transport: "stdio",
+    command: "npx",
+    envCredentialName: "API_KEY",
+    envCredentialRef: "vault-1",
+  });
+  assert.equal(addMcp.ok, true);
+  if (addMcp.ok) {
+    assert.deepEqual(addMcp.entry.envCredentialRefs, { API_KEY: "vault-1" });
+    assert.ok(!("env" in addMcp.entry));
+  }
+  assert.equal(
+    validateMcpAddDraft({ name: "x", transport: "stdio", command: "" }).ok,
+    false
+  );
 });
 
 test("retentionSummaryLine is compact Chinese status", () => {

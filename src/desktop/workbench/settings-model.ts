@@ -3,6 +3,11 @@
  * Payload builders only — no RPC, no secrets in return values.
  */
 
+import type {
+  AgentProfileMcpServerProjection,
+  AgentProfileSkillProjection,
+} from "../../adapters/acp/mcp-skills.js";
+import type { CredentialProjection } from "../../service/credential-store.js";
 import type { ProviderCatalogEntry, ProviderVerificationLevel } from "../../service/types.js";
 import { verificationLevelLabel } from "./graph-model.js";
 
@@ -266,6 +271,9 @@ export function profileDisplayLabel(profile: {
 export const PROFILE_NEXT_SESSION_TIP =
   "本机启动配置 · Session 使用快照 · 改动下次会话生效";
 
+/** Vault entry type shown in credentials UI (store has no multi-provider field). */
+export const CREDENTIAL_VAULT_TYPE = "secret";
+
 /**
  * Credential set payload. Secret is passed through for RPC only —
  * callers must not log it or render it back after submit.
@@ -287,6 +295,316 @@ export function validateCredentialSet(draft: CredentialFormDraft):
   };
   if (draft.label?.trim()) payload.label = draft.label.trim();
   return { ok: true, payload };
+}
+
+/**
+ * Safe credential list row for Settings — ref id + vault type + configured status.
+ * Never includes secret, ciphertext, or provider tokens.
+ */
+export function credentialListRow(c: CredentialProjection): {
+  id: string;
+  type: string;
+  status: "已配置";
+  /** Optional non-secret label only (never a secret). */
+  label?: string;
+  updatedAt?: string;
+} {
+  const label = (c.label || c.metadata?.label || "").trim() || undefined;
+  return {
+    id: c.id,
+    type: CREDENTIAL_VAULT_TYPE,
+    status: "已配置",
+    ...(label ? { label } : {}),
+    ...(c.updatedAt ? { updatedAt: c.updatedAt } : {}),
+  };
+}
+
+// ---------------------------------------------------------------------------
+// Profile Skills / MCP drafts (id/ref + enabled only; no displayName, no secrets)
+// ---------------------------------------------------------------------------
+
+export type SkillRefDraft = {
+  name: string;
+  path?: string;
+  enabled: boolean;
+};
+
+export type McpServerDraft = {
+  name: string;
+  transport: "stdio" | "http";
+  enabled: boolean;
+  command?: string;
+  args?: string[];
+  envKeys?: Record<string, string>;
+  envCredentialRefs?: Record<string, string>;
+  url?: string;
+  headerEnvKeys?: Record<string, string>;
+  headerCredentialRefs?: Record<string, string>;
+};
+
+/** Map projection → editor drafts (name/path/enabled only). */
+export function skillDraftsFromProjection(
+  skills?: AgentProfileSkillProjection[] | null
+): SkillRefDraft[] {
+  if (!skills?.length) return [];
+  return skills.map((s) => ({
+    name: s.name,
+    ...(s.path ? { path: s.path } : {}),
+    enabled: s.enabled !== false,
+  }));
+}
+
+/** Map projection → editor drafts (refs only; projection already has no secrets). */
+export function mcpDraftsFromProjection(
+  servers?: AgentProfileMcpServerProjection[] | null
+): McpServerDraft[] {
+  if (!servers?.length) return [];
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    enabled: s.enabled !== false,
+    ...(s.command !== undefined ? { command: s.command } : {}),
+    ...(s.args !== undefined ? { args: [...s.args] } : {}),
+    ...(s.envKeys !== undefined ? { envKeys: { ...s.envKeys } } : {}),
+    ...(s.envCredentialRefs !== undefined
+      ? { envCredentialRefs: { ...s.envCredentialRefs } }
+      : {}),
+    ...(s.url !== undefined ? { url: s.url } : {}),
+    ...(s.headerEnvKeys !== undefined ? { headerEnvKeys: { ...s.headerEnvKeys } } : {}),
+    ...(s.headerCredentialRefs !== undefined
+      ? { headerCredentialRefs: { ...s.headerCredentialRefs } }
+      : {}),
+  }));
+}
+
+export function setSkillEnabled(
+  drafts: SkillRefDraft[],
+  name: string,
+  enabled: boolean
+): SkillRefDraft[] {
+  return drafts.map((d) => (d.name === name ? { ...d, enabled } : d));
+}
+
+export function setMcpEnabled(
+  drafts: McpServerDraft[],
+  name: string,
+  enabled: boolean
+): McpServerDraft[] {
+  return drafts.map((d) => (d.name === name ? { ...d, enabled } : d));
+}
+
+export function removeSkillDraft(drafts: SkillRefDraft[], name: string): SkillRefDraft[] {
+  return drafts.filter((d) => d.name !== name);
+}
+
+export function removeMcpDraft(drafts: McpServerDraft[], name: string): McpServerDraft[] {
+  return drafts.filter((d) => d.name !== name);
+}
+
+/**
+ * Wire skills for profile.update — name / optional path / enabled only.
+ * Never displayName, body, or secret-shaped keys.
+ */
+export function buildSkillsPayload(
+  drafts: SkillRefDraft[]
+): Array<{ name: string; path?: string; enabled?: boolean }> {
+  return drafts.map((d) => {
+    const row: { name: string; path?: string; enabled?: boolean } = {
+      name: d.name,
+    };
+    if (d.path?.trim()) row.path = d.path.trim();
+    // Persist false so re-enable later works; omit true (default).
+    if (d.enabled === false) row.enabled = false;
+    else if (d.enabled === true) row.enabled = true;
+    return row;
+  });
+}
+
+/**
+ * Wire mcpServers for profile.update — envKey/credentialRef *names* only.
+ * Strips accidental secret-shaped keys; never plaintext env/headers.
+ */
+export function buildMcpServersPayload(drafts: McpServerDraft[]): Array<Record<string, unknown>> {
+  return drafts.map((d) => {
+    const row: Record<string, unknown> = {
+      name: d.name,
+      transport: d.transport,
+      enabled: d.enabled !== false,
+    };
+    if (d.transport === "stdio") {
+      if (d.command?.trim()) row.command = d.command.trim();
+      if (d.args?.length) row.args = [...d.args];
+      if (d.envKeys && Object.keys(d.envKeys).length) row.envKeys = { ...d.envKeys };
+      if (d.envCredentialRefs && Object.keys(d.envCredentialRefs).length) {
+        row.envCredentialRefs = { ...d.envCredentialRefs };
+      }
+    } else {
+      if (d.url?.trim()) row.url = d.url.trim();
+      if (d.headerEnvKeys && Object.keys(d.headerEnvKeys).length) {
+        row.headerEnvKeys = { ...d.headerEnvKeys };
+      }
+      if (d.headerCredentialRefs && Object.keys(d.headerCredentialRefs).length) {
+        row.headerCredentialRefs = { ...d.headerCredentialRefs };
+      }
+    }
+    // Defensive: never allow plaintext secret bags on the wire from this helper.
+    delete row.env;
+    delete row.headers;
+    delete row.secret;
+    delete row.token;
+    delete row.apiKey;
+    delete row.displayName;
+    return row;
+  });
+}
+
+/** Source / path line for a skill ref (name identity + optional path). */
+export function skillSourceLine(s: { name: string; path?: string | null }): string {
+  const p = (s.path || "").trim();
+  return p ? p : "name-only（无 path）";
+}
+
+/** Source line for MCP: transport + command/url (never secrets). */
+export function mcpSourceLine(s: {
+  transport: string;
+  command?: string | null;
+  args?: string[] | null;
+  url?: string | null;
+}): string {
+  if (s.transport === "http") {
+    const url = (s.url || "").trim();
+    return url ? `http · ${url}` : "http";
+  }
+  const cmd = (s.command || "").trim();
+  const args = (s.args || []).join(" ").trim();
+  if (cmd && args) return `stdio · ${cmd} ${args}`;
+  if (cmd) return `stdio · ${cmd}`;
+  return "stdio";
+}
+
+/**
+ * MCP credential ref status for UI — only ref ids + 已配置 / 缺失.
+ * Never secret values. `configuredIds` is the set of vault ids from credential.list.
+ */
+export function mcpCredentialStatusParts(
+  s: {
+    envCredentialRefs?: Record<string, string> | null;
+    headerCredentialRefs?: Record<string, string> | null;
+  },
+  configuredIds: ReadonlySet<string> | readonly string[]
+): Array<{ envName: string; refId: string; configured: boolean }> {
+  const set =
+    configuredIds instanceof Set
+      ? configuredIds
+      : new Set(
+          Array.from(configuredIds).filter(
+            (x): x is string => typeof x === "string" && x.length > 0
+          )
+        );
+  const out: Array<{ envName: string; refId: string; configured: boolean }> = [];
+  const pushMap = (map?: Record<string, string> | null) => {
+    if (!map) return;
+    for (const [envName, refId] of Object.entries(map)) {
+      const id = (refId || "").trim();
+      if (!id) continue;
+      out.push({ envName, refId: id, configured: set.has(id) });
+    }
+  };
+  pushMap(s.envCredentialRefs);
+  pushMap(s.headerCredentialRefs);
+  return out;
+}
+
+/** Compact Chinese status for MCP credential refs (no secrets). */
+export function mcpCredentialStatusLine(
+  s: {
+    envCredentialRefs?: Record<string, string> | null;
+    headerCredentialRefs?: Record<string, string> | null;
+  },
+  configuredIds: ReadonlySet<string> | readonly string[]
+): string {
+  const parts = mcpCredentialStatusParts(s, configuredIds);
+  if (!parts.length) return "";
+  return parts
+    .map((p) => `${p.refId}${p.configured ? "·已配置" : "·缺失"}`)
+    .join(" ");
+}
+
+/**
+ * Minimal skill add draft (name + optional path). Not a skill editor —
+ * only identity refs for profile.skills.
+ */
+export function validateSkillAddDraft(draft: {
+  name: string;
+  path?: string;
+  enabled?: boolean;
+}): { ok: true; entry: SkillRefDraft } | { ok: false; reason: string } {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "skill name 不能为空" };
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name) || name.includes("..")) {
+    return { ok: false, reason: "skill name 无效" };
+  }
+  const path = (draft.path || "").trim();
+  const entry: SkillRefDraft = {
+    name,
+    enabled: draft.enabled !== false,
+    ...(path ? { path } : {}),
+  };
+  return { ok: true, entry };
+}
+
+/**
+ * Minimal MCP add draft (name + transport + command/url + optional credential refs).
+ * Not an MCP proxy / marketplace UI — refs only.
+ */
+export function validateMcpAddDraft(draft: {
+  name: string;
+  transport: "stdio" | "http";
+  command?: string;
+  url?: string;
+  /** Single env var name → credential id (optional convenience). */
+  envCredentialName?: string;
+  envCredentialRef?: string;
+  enabled?: boolean;
+}): { ok: true; entry: McpServerDraft } | { ok: false; reason: string } {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "MCP name 不能为空" };
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) {
+    return { ok: false, reason: "MCP name 无效" };
+  }
+  if (draft.transport !== "stdio" && draft.transport !== "http") {
+    return { ok: false, reason: "transport 须为 stdio 或 http" };
+  }
+  const entry: McpServerDraft = {
+    name,
+    transport: draft.transport,
+    enabled: draft.enabled !== false,
+  };
+  if (draft.transport === "stdio") {
+    const command = (draft.command || "").trim();
+    if (!command) return { ok: false, reason: "stdio 需要 command" };
+    entry.command = command;
+  } else {
+    const url = (draft.url || "").trim();
+    if (!url) return { ok: false, reason: "http 需要 url" };
+    entry.url = url;
+  }
+  const envName = (draft.envCredentialName || "").trim();
+  const envRef = (draft.envCredentialRef || "").trim();
+  if (envName || envRef) {
+    if (!envName || !envRef) {
+      return { ok: false, reason: "credential 需同时填 env 名与 vault id" };
+    }
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(envRef)) {
+      return { ok: false, reason: "credentialRef 须为 vault id" };
+    }
+    if (draft.transport === "stdio") {
+      entry.envCredentialRefs = { [envName]: envRef };
+    } else {
+      entry.headerCredentialRefs = { [envName]: envRef };
+    }
+  }
+  return { ok: true, entry };
 }
 
 export function retentionSummaryLine(preview: {

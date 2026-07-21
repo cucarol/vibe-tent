@@ -11,19 +11,36 @@ import type {
 import type { CredentialProjection } from "../../../service/credential-store.js";
 import type { BundledSkillListEntry } from "../../../machine/skills.js";
 import {
+  buildMcpServersPayload,
+  buildSkillsPayload,
+  credentialListRow,
+  CREDENTIAL_VAULT_TYPE,
   DELIVERY_POLICY_OPTIONS,
   formatAllowedProfilesText,
   mapProviderCatalogRows,
+  mcpCredentialStatusLine,
+  mcpDraftsFromProjection,
+  mcpSourceLine,
   PROFILE_NEXT_SESSION_TIP,
   profileDisplayLabel,
+  removeMcpDraft,
+  removeSkillDraft,
   retentionSummaryLine,
+  setMcpEnabled,
+  setSkillEnabled,
+  skillDraftsFromProjection,
+  skillSourceLine,
   validateCredentialSet,
+  validateMcpAddDraft,
   validateProfileCreate,
   validateProfileUpdate,
   validateRoleCreate,
   validateRoleUpdate,
+  validateSkillAddDraft,
   type DeliveryPolicy,
+  type McpServerDraft,
   type ProviderRow,
+  type SkillRefDraft,
 } from "../../workbench/settings-model.js";
 import { DESKTOP_CONTRACT_GAPS } from "./contract-gaps.js";
 import { el, setError } from "./elements.js";
@@ -70,10 +87,55 @@ let retentionPreview: {
 } | null = null;
 let loadError: string | null = null;
 let loading = false;
-/** Profile editor: skills/mcp JSON drafts (next session). */
+/** Profile editor: skills/mcp drafts (next session; id/ref only). */
 let profileEditId: string | null = null;
+/** Working copies while a profile is open for edit — never secrets. */
+let skillDrafts: SkillRefDraft[] = [];
+let mcpDrafts: McpServerDraft[] = [];
+/** Unsaved basic fields while skills/mcp list re-renders. */
+let profileFieldDraft: {
+  displayName: string;
+  model: string;
+  executable: string;
+  envKey: string;
+  credentialRef: string;
+  baseUrl: string;
+} | null = null;
 /** Role editor: operational name of the role being edited. */
 let roleEditName: string | null = null;
+
+function openProfileEditor(id: string | null): void {
+  profileEditId = id;
+  profileFieldDraft = null;
+  if (!id) {
+    skillDrafts = [];
+    mcpDrafts = [];
+    return;
+  }
+  const p = fullProfiles.find((x) => x.id === id);
+  skillDrafts = skillDraftsFromProjection(p?.skills);
+  mcpDrafts = mcpDraftsFromProjection(p?.mcpServers);
+}
+
+/** Preserve basic form inputs across skill/mcp list re-renders. */
+function captureProfileFieldDraft(): void {
+  if (!profileEditId) return;
+  profileFieldDraft = {
+    displayName:
+      (document.getElementById("prof-edit-name") as HTMLInputElement | null)?.value ?? "",
+    model: (document.getElementById("prof-edit-model") as HTMLInputElement | null)?.value ?? "",
+    executable:
+      (document.getElementById("prof-edit-exe") as HTMLInputElement | null)?.value ?? "",
+    envKey: (document.getElementById("prof-edit-env") as HTMLInputElement | null)?.value ?? "",
+    credentialRef:
+      (document.getElementById("prof-edit-cred") as HTMLInputElement | null)?.value ?? "",
+    baseUrl: (document.getElementById("prof-edit-base") as HTMLInputElement | null)?.value ?? "",
+  };
+}
+
+function configuredCredentialIds(): Set<string> {
+  return new Set(credentials.map((c) => c.id));
+}
 
 export function getSettingsSection(): SettingsSection {
   return section;
@@ -115,11 +177,11 @@ async function loadSectionData(s: SettingsSection): Promise<void> {
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
     } else if (s === "profiles") {
-      await Promise.all([loadProfilesFull(), loadProviders()]);
+      await Promise.all([loadProfilesFull(), loadProviders(), loadCredentials()]);
     } else if (s === "credentials") {
       await loadCredentials();
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadProfilesFull()]);
+      await Promise.all([loadSkills(), loadProfilesFull(), loadCredentials()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -452,36 +514,126 @@ function renderProfiles(): string {
 }
 
 function renderProfileEditor(p: AgentProfileProjection): string {
-  const skillsJson = JSON.stringify(p.skills || [], null, 2);
-  const mcpJson = JSON.stringify(p.mcpServers || [], null, 2);
   const label = profileDisplayLabel(p);
+  const fields = profileFieldDraft ?? {
+    displayName: p.displayName || "",
+    model: p.model || "",
+    executable: p.executable || "",
+    envKey: p.envKey || "",
+    credentialRef: p.credentialRef || "",
+    baseUrl: p.baseUrl || "",
+  };
+  const credIds = configuredCredentialIds();
+  const skillList =
+    skillDrafts.length === 0
+      ? `<p class="muted">无 skill 引用</p>`
+      : `<ul class="settings-list">${skillDrafts
+          .map((s) => {
+            const src = skillSourceLine(s);
+            return `<li class="settings-list-item">
+              <div class="settings-list-main">
+                <label class="settings-check">
+                  <input type="checkbox" data-skill-toggle="${escapeHtml(s.name)}"${s.enabled ? " checked" : ""} />
+                  <strong><code>${escapeHtml(s.name)}</code></strong>
+                </label>
+                <span class="muted">${escapeHtml(src)}</span>
+              </div>
+              <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-skill-remove="${escapeHtml(s.name)}" title="移除引用">移除</button>
+              </div>
+            </li>`;
+          })
+          .join("")}</ul>`;
+
+  const mcpList =
+    mcpDrafts.length === 0
+      ? `<p class="muted">无 MCP 服务器</p>`
+      : `<ul class="settings-list">${mcpDrafts
+          .map((m) => {
+            const src = mcpSourceLine(m);
+            const credLine = mcpCredentialStatusLine(m, credIds);
+            return `<li class="settings-list-item">
+              <div class="settings-list-main">
+                <label class="settings-check">
+                  <input type="checkbox" data-mcp-toggle="${escapeHtml(m.name)}"${m.enabled ? " checked" : ""} />
+                  <strong><code>${escapeHtml(m.name)}</code></strong>
+                </label>
+                <span class="muted">${escapeHtml(src)}</span>
+                ${
+                  credLine
+                    ? `<span class="faint">凭证 ${escapeHtml(credLine)}</span>`
+                    : ""
+                }
+              </div>
+              <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-mcp-remove="${escapeHtml(m.name)}" title="移除">移除</button>
+              </div>
+            </li>`;
+          })
+          .join("")}</ul>`;
+
+  const credOptions = credentials
+    .map((c) => `<option value="${escapeHtml(c.id)}">`)
+    .join("");
+
   return `
     <div class="settings-block">
       <div class="surface-section-head">编辑 · ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">关闭</button>
       </div>
       <p class="muted">id <code>${escapeHtml(p.id)}</code> · adapterId <code>${escapeHtml(p.adapterId)}</code>（均不可改）</p>
-      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} · 勿写 secret</p>
+      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} · 运行中 session 不热更新 · 勿写 secret</p>
       <div class="settings-form">
         <label class="settings-label" for="prof-edit-name">显示名</label>
-        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="留空则回退到 id" />
+        <input id="prof-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="留空则回退到 id" />
         <label class="settings-label" for="prof-edit-model">model</label>
-        <input id="prof-edit-model" class="field" value="${escapeHtml(p.model || "")}" placeholder="model" />
+        <input id="prof-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
         <label class="settings-label" for="prof-edit-exe">executable</label>
-        <input id="prof-edit-exe" class="field" value="${escapeHtml(p.executable || "")}" placeholder="executable" />
+        <input id="prof-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
         <label class="settings-label" for="prof-edit-env">envKey（环境变量名）</label>
-        <input id="prof-edit-env" class="field" value="${escapeHtml(p.envKey || "")}" placeholder="envKey" />
+        <input id="prof-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
         <label class="settings-label" for="prof-edit-cred">credentialRef（凭证 id）</label>
-        <input id="prof-edit-cred" class="field" value="${escapeHtml(p.credentialRef || "")}" placeholder="credentialRef" />
+        <input id="prof-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
+        <datalist id="cred-ref-list">${credOptions}</datalist>
         <label class="settings-label" for="prof-edit-base">baseUrl</label>
-        <input id="prof-edit-base" class="field" value="${escapeHtml(p.baseUrl || "")}" placeholder="baseUrl" />
-        <label class="settings-label">skills（JSON · 下次会话生效）</label>
-        <textarea id="prof-edit-skills" class="line-input" rows="4" spellcheck="false">${escapeHtml(skillsJson)}</textarea>
-        <label class="settings-label">mcpServers（JSON · 下次会话生效 · 勿写 secret）</label>
-        <textarea id="prof-edit-mcp" class="line-input" rows="6" spellcheck="false">${escapeHtml(mcpJson)}</textarea>
-        <div class="settings-row">
-          <button type="button" id="btn-prof-save" class="btn btn-primary">保存</button>
+        <input id="prof-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="surface-section-head">Skills</div>
+      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      ${skillList}
+      <div class="settings-form settings-form-inline">
+        <input id="skill-add-name" class="field" placeholder="skill name（id）" autocomplete="off" list="bundled-skill-list" />
+        <datalist id="bundled-skill-list">${skills.map((s) => `<option value="${escapeHtml(s.name)}">`).join("")}</datalist>
+        <input id="skill-add-path" class="field" placeholder="绝对 path（可选）" autocomplete="off" />
+        <button type="button" id="btn-skill-add" class="btn btn-secondary">添加引用</button>
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="surface-section-head">MCP Servers</div>
+      <p class="faint">只保存 id/ref · credential 仅显示已配置 · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      ${mcpList}
+      <div class="settings-form">
+        <div class="settings-form-inline">
+          <input id="mcp-add-name" class="field" placeholder="name" autocomplete="off" />
+          <select id="mcp-add-transport" class="field field-compact">
+            <option value="stdio">stdio</option>
+            <option value="http">http</option>
+          </select>
         </div>
+        <input id="mcp-add-command" class="field" placeholder="command（stdio）" autocomplete="off" />
+        <input id="mcp-add-url" class="field" placeholder="url（http）" autocomplete="off" />
+        <div class="settings-form-inline">
+          <input id="mcp-add-env-name" class="field" placeholder="env/header 名（可选）" autocomplete="off" />
+          <input id="mcp-add-env-ref" class="field" placeholder="credential vault id（可选）" list="cred-ref-list" autocomplete="off" />
+        </div>
+        <button type="button" id="btn-mcp-add" class="btn btn-secondary">添加 MCP</button>
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="settings-row">
+        <button type="button" id="btn-prof-save" class="btn btn-primary">保存（下次会话生效）</button>
       </div>
     </div>`;
 }
@@ -492,15 +644,16 @@ function renderCredentials(): string {
       ? `<p class="muted">无已配置凭证</p>`
       : `<ul class="settings-list">${credentials
           .map((c) => {
-            const label = c.label || c.metadata?.label || c.id;
+            const row = credentialListRow(c);
             return `<li class="settings-list-item">
               <div class="settings-list-main">
-                <strong>${escapeHtml(label)}</strong>
-                <span class="muted"><code>${escapeHtml(c.id)}</code> · 已配置</span>
-                <span class="faint">${escapeHtml(c.updatedAt || "")}</span>
+                <strong><code>${escapeHtml(row.id)}</code></strong>
+                <span class="muted">${escapeHtml(row.type)} · ${escapeHtml(row.status)}</span>
+                ${row.label ? `<span class="faint">${escapeHtml(row.label)}</span>` : ""}
+                ${row.updatedAt ? `<span class="faint">${escapeHtml(row.updatedAt)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(c.id)}">删除</button>
+                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(row.id)}" title="删除凭证">删除</button>
               </div>
             </li>`;
           })
@@ -509,15 +662,15 @@ function renderCredentials(): string {
   return `
     <div class="settings-block">
       <div class="surface-section-head">凭证</div>
-      <p class="faint">仅显示配置状态 · 不读回 secret</p>
+      <p class="faint">仅显示 ref id · ${escapeHtml(CREDENTIAL_VAULT_TYPE)} · 已配置 · 绝不读回 secret</p>
       ${list}
     </div>
     <div class="settings-block">
       <div class="surface-section-head">设置 / 更新</div>
       <div class="settings-form">
-        <input id="cred-id" class="field" placeholder="id" autocomplete="off" />
-        <input id="cred-label" class="field" placeholder="label（可选）" autocomplete="off" />
-        <input id="cred-secret" class="field" type="password" placeholder="secret" autocomplete="new-password" />
+        <input id="cred-id" class="field" placeholder="id（vault ref）" autocomplete="off" />
+        <input id="cred-label" class="field" placeholder="label（可选，非 secret）" autocomplete="off" />
+        <input id="cred-secret" class="field" type="password" placeholder="secret（提交后立即清空）" autocomplete="new-password" />
         <button type="button" id="btn-cred-set" class="btn btn-primary">保存</button>
       </div>
     </div>`;
@@ -544,21 +697,30 @@ function renderSkills(): string {
           })
           .join("")}</ul>`;
 
+  const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP 挂在 Agent Profile 上编辑（Skills / MCP 分区或 Profiles 编辑器）。${escapeHtml(PROFILE_NEXT_SESSION_TIP)}。</p>
-    <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config</p>
+    <p class="muted">MCP / Profile Skills 在 Agent Profile 编辑器中用列表 + 启用开关管理。${escapeHtml(PROFILE_NEXT_SESSION_TIP)}。运行中 session 不热更新。</p>
+    <p class="faint">无全局 mcp.* RPC · 见契约缺口 mcp.global-config · 不伪造全局目录</p>
     <ul class="settings-list">${fullProfiles
       .map((p) => {
-        const n = p.mcpServers?.length ?? 0;
-        const sk = p.skills?.length ?? 0;
+        const skillBits = (p.skills || [])
+          .map((s) => `${s.name}${s.enabled === false ? "·关" : "·开"}`)
+          .join(" ");
+        const mcpBits = (p.mcpServers || [])
+          .map((m) => {
+            const cred = mcpCredentialStatusLine(m, credIds);
+            return `${m.name}${m.enabled === false ? "·关" : "·开"}${cred ? `(${cred})` : ""}`;
+          })
+          .join(" ");
         return `<li class="settings-list-item">
           <div class="settings-list-main">
             <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
             <span class="faint"><code>${escapeHtml(p.id)}</code></span>
-            <span class="muted">skills ${sk} · mcp ${n}</span>
+            <span class="muted">skills ${escapeHtml(skillBits || "—")}</span>
+            <span class="muted">mcp ${escapeHtml(mcpBits || "—")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">编辑</button>
+            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">编辑 Skills/MCP</button>
           </div>
         </li>`;
       })
@@ -566,14 +728,15 @@ function renderSkills(): string {
 
   return `
     <div class="settings-block">
-      <div class="surface-section-head">Bundled Skills</div>
+      <div class="surface-section-head">Bundled Skills（skill.list / skill.install）</div>
+      <p class="faint">仅安装 package bundled skills 到 ~/.agents 与 ~/.claude · 无 Skill 编辑器 / 远程市场 / uninstall</p>
       ${skillList}
       <div class="settings-row">
         <button type="button" id="btn-skill-install-all" class="btn btn-secondary">安装全部</button>
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">MCP（per profile）</div>
+      <div class="surface-section-head">Profile Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -636,19 +799,57 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
     document.getElementById("btn-prof-create")?.addEventListener("click", () => void onProfileCreate());
     document.getElementById("btn-prof-save")?.addEventListener("click", () => void onProfileSave());
     document.getElementById("btn-prof-edit-close")?.addEventListener("click", () => {
-      profileEditId = null;
+      openProfileEditor(null);
       renderSettings();
     });
     root.querySelectorAll<HTMLElement>("[data-profile-edit]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        profileEditId = btn.getAttribute("data-profile-edit");
+        const id = btn.getAttribute("data-profile-edit");
         section = "profiles";
+        openProfileEditor(id);
+        // Ensure credentials loaded for MCP "已配置" status.
+        void loadCredentials().then(() => renderSettings());
         renderSettings();
       });
     });
     root.querySelectorAll<HTMLElement>("[data-profile-delete]").forEach((btn) => {
       btn.addEventListener("click", () => void onProfileDelete(btn.getAttribute("data-profile-delete")!));
     });
+    // Profile Skills / MCP list controls (draft-only until Save).
+    root.querySelectorAll<HTMLInputElement>("[data-skill-toggle]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const name = box.getAttribute("data-skill-toggle");
+        if (!name) return;
+        skillDrafts = setSkillEnabled(skillDrafts, name, box.checked);
+      });
+    });
+    root.querySelectorAll<HTMLElement>("[data-skill-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-skill-remove");
+        if (!name) return;
+        captureProfileFieldDraft();
+        skillDrafts = removeSkillDraft(skillDrafts, name);
+        renderSettings();
+      });
+    });
+    document.getElementById("btn-skill-add")?.addEventListener("click", () => onSkillAdd());
+    root.querySelectorAll<HTMLInputElement>("[data-mcp-toggle]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const name = box.getAttribute("data-mcp-toggle");
+        if (!name) return;
+        mcpDrafts = setMcpEnabled(mcpDrafts, name, box.checked);
+      });
+    });
+    root.querySelectorAll<HTMLElement>("[data-mcp-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-mcp-remove");
+        if (!name) return;
+        captureProfileFieldDraft();
+        mcpDrafts = removeMcpDraft(mcpDrafts, name);
+        renderSettings();
+      });
+    });
+    document.getElementById("btn-mcp-add")?.addEventListener("click", () => onMcpAdd());
   }
   if (s === "credentials") {
     document.getElementById("btn-cred-set")?.addEventListener("click", () => void onCredSet());
@@ -842,6 +1043,55 @@ async function onProfileCreate(): Promise<void> {
   }
 }
 
+function onSkillAdd(): void {
+  const name = (document.getElementById("skill-add-name") as HTMLInputElement | null)?.value || "";
+  const path = (document.getElementById("skill-add-path") as HTMLInputElement | null)?.value || "";
+  const built = validateSkillAddDraft({ name, path });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  if (skillDrafts.some((s) => s.name.toLowerCase() === built.entry.name.toLowerCase())) {
+    el.status.textContent = `skill ${built.entry.name} 已在列表中`;
+    return;
+  }
+  captureProfileFieldDraft();
+  skillDrafts = [...skillDrafts, built.entry];
+  renderSettings();
+}
+
+function onMcpAdd(): void {
+  const name = (document.getElementById("mcp-add-name") as HTMLInputElement | null)?.value || "";
+  const transport = ((document.getElementById("mcp-add-transport") as HTMLSelectElement | null)
+    ?.value || "stdio") as "stdio" | "http";
+  const command =
+    (document.getElementById("mcp-add-command") as HTMLInputElement | null)?.value || "";
+  const url = (document.getElementById("mcp-add-url") as HTMLInputElement | null)?.value || "";
+  const envCredentialName =
+    (document.getElementById("mcp-add-env-name") as HTMLInputElement | null)?.value || "";
+  const envCredentialRef =
+    (document.getElementById("mcp-add-env-ref") as HTMLInputElement | null)?.value || "";
+  const built = validateMcpAddDraft({
+    name,
+    transport,
+    command,
+    url,
+    envCredentialName,
+    envCredentialRef,
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  if (mcpDrafts.some((m) => m.name.toLowerCase() === built.entry.name.toLowerCase())) {
+    el.status.textContent = `MCP ${built.entry.name} 已在列表中`;
+    return;
+  }
+  captureProfileFieldDraft();
+  mcpDrafts = [...mcpDrafts, built.entry];
+  renderSettings();
+}
+
 async function onProfileSave(): Promise<void> {
   if (!profileEditId) return;
   const built = validateProfileUpdate({
@@ -860,28 +1110,23 @@ async function onProfileSave(): Promise<void> {
     el.status.textContent = built.reason;
     return;
   }
-  const patch: Record<string, unknown> = { ...built.payload };
-
-  const skillsRaw = (document.getElementById("prof-edit-skills") as HTMLTextAreaElement | null)
-    ?.value;
-  const mcpRaw = (document.getElementById("prof-edit-mcp") as HTMLTextAreaElement | null)?.value;
-  try {
-    if (skillsRaw !== undefined) {
-      patch.skills = JSON.parse(skillsRaw || "[]");
-    }
-    if (mcpRaw !== undefined) {
-      patch.mcpServers = JSON.parse(mcpRaw || "[]");
-    }
-  } catch {
-    el.status.textContent = "skills / mcpServers 须为合法 JSON";
-    return;
-  }
+  // Skills / MCP from structured drafts only — never free-form JSON with secrets.
+  const skillsPayload = buildSkillsPayload(skillDrafts);
+  const mcpPayload = buildMcpServersPayload(mcpDrafts);
+  const patch: Record<string, unknown> = {
+    ...built.payload,
+    // Empty array clears on server via parse path; use null only when intentionally empty? Backend accepts [].
+    skills: skillsPayload.length ? skillsPayload : null,
+    mcpServers: mcpPayload.length ? mcpPayload : null,
+  };
   const saveBtn = document.getElementById("btn-prof-save") as HTMLButtonElement | null;
   if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = `Profile 已保存（${PROFILE_NEXT_SESSION_TIP}）`;
+    el.status.textContent = `Profile 已保存 · 下次会话生效（运行中 session 不热更新）`;
     await loadProfilesFull();
+    // Refresh drafts from server projection after save.
+    openProfileEditor(profileEditId);
     renderSettings();
   } catch (err) {
     setError(err);
@@ -893,7 +1138,7 @@ async function onProfileDelete(id: string): Promise<void> {
   if (!window.confirm(`删除 profile「${id}」？`)) return;
   try {
     await window.tentDesktop.rpc("profile.delete", { id });
-    if (profileEditId === id) profileEditId = null;
+    if (profileEditId === id) openProfileEditor(null);
     el.status.textContent = `已删除 profile ${id}`;
     await loadProfilesFull();
     renderSettings();
@@ -903,32 +1148,46 @@ async function onProfileDelete(id: string): Promise<void> {
 }
 
 async function onCredSet(): Promise<void> {
-  const id = (document.getElementById("cred-id") as HTMLInputElement | null)?.value || "";
-  const label = (document.getElementById("cred-label") as HTMLInputElement | null)?.value || "";
+  const idEl = document.getElementById("cred-id") as HTMLInputElement | null;
+  const labelEl = document.getElementById("cred-label") as HTMLInputElement | null;
   const secretEl = document.getElementById("cred-secret") as HTMLInputElement | null;
+  const id = idEl?.value || "";
+  const label = labelEl?.value || "";
   const secret = secretEl?.value || "";
   const built = validateCredentialSet({ id, secret, label });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
+  // Clear secret from DOM immediately after successful validate / before RPC —
+  // never re-display. Local `built.payload.secret` is the only remaining copy for the call.
+  if (secretEl) secretEl.value = "";
   const setBtn = document.getElementById("btn-cred-set") as HTMLButtonElement | null;
   if (setBtn) setBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("credential.set", built.payload);
-    // Clear secret from DOM immediately — never re-display.
-    if (secretEl) secretEl.value = "";
+    // RPC: secret only on wire; response is id/metadata — never echo secret into UI state.
+    await window.tentDesktop.rpc("credential.set", {
+      id: built.payload.id,
+      secret: built.payload.secret,
+      ...(built.payload.label !== undefined ? { label: built.payload.label } : {}),
+    });
+    // Drop secret from local payload handle (do not keep in module state).
+    (built.payload as { secret?: string }).secret = "";
     el.status.textContent = `凭证 ${built.payload.id} 已配置`;
+    if (idEl) idEl.value = built.payload.id;
     await loadCredentials();
     renderSettings();
   } catch (err) {
+    // Secret already cleared from DOM; user must re-enter (safer than echo).
+    (built.payload as { secret?: string }).secret = "";
     setError(err);
     if (setBtn) setBtn.disabled = false;
   }
 }
 
 async function onCredDelete(id: string): Promise<void> {
-  if (!window.confirm(`删除凭证「${id}」？`)) return;
+  // Left-click confirm (window.confirm) — no secret shown.
+  if (!window.confirm(`删除凭证「${id}」？此操作不可撤销。`)) return;
   try {
     await window.tentDesktop.rpc("credential.delete", { id });
     el.status.textContent = `已删除凭证 ${id}`;

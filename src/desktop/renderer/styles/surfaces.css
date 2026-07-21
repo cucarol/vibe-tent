@@ -394,6 +394,20 @@
   margin-top: var(--space-2);
 }
 
+.settings-check {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  cursor: pointer;
+}
+
+.settings-form-inline {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.5rem;
+  align-items: center;
+}
+
 .settings-form {
   display: flex;
   flex-direction: column;

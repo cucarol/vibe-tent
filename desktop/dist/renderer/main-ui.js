@@ -8849,6 +8849,7 @@ function profileDisplayLabel(profile) {
   return dn || profile.id;
 }
 var PROFILE_NEXT_SESSION_TIP = "\u672C\u673A\u542F\u52A8\u914D\u7F6E \xB7 Session \u4F7F\u7528\u5FEB\u7167 \xB7 \u6539\u52A8\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548";
+var CREDENTIAL_VAULT_TYPE = "secret";
 function validateCredentialSet(draft) {
   const id = (draft.id || "").trim();
   if (!id) return { ok: false, reason: "credential id \u4E0D\u80FD\u4E3A\u7A7A" };
@@ -8864,6 +8865,187 @@ function validateCredentialSet(draft) {
   };
   if (draft.label?.trim()) payload.label = draft.label.trim();
   return { ok: true, payload };
+}
+function credentialListRow(c) {
+  const label = (c.label || c.metadata?.label || "").trim() || void 0;
+  return {
+    id: c.id,
+    type: CREDENTIAL_VAULT_TYPE,
+    status: "\u5DF2\u914D\u7F6E",
+    ...label ? { label } : {},
+    ...c.updatedAt ? { updatedAt: c.updatedAt } : {}
+  };
+}
+function skillDraftsFromProjection(skills2) {
+  if (!skills2?.length) return [];
+  return skills2.map((s) => ({
+    name: s.name,
+    ...s.path ? { path: s.path } : {},
+    enabled: s.enabled !== false
+  }));
+}
+function mcpDraftsFromProjection(servers) {
+  if (!servers?.length) return [];
+  return servers.map((s) => ({
+    name: s.name,
+    transport: s.transport,
+    enabled: s.enabled !== false,
+    ...s.command !== void 0 ? { command: s.command } : {},
+    ...s.args !== void 0 ? { args: [...s.args] } : {},
+    ...s.envKeys !== void 0 ? { envKeys: { ...s.envKeys } } : {},
+    ...s.envCredentialRefs !== void 0 ? { envCredentialRefs: { ...s.envCredentialRefs } } : {},
+    ...s.url !== void 0 ? { url: s.url } : {},
+    ...s.headerEnvKeys !== void 0 ? { headerEnvKeys: { ...s.headerEnvKeys } } : {},
+    ...s.headerCredentialRefs !== void 0 ? { headerCredentialRefs: { ...s.headerCredentialRefs } } : {}
+  }));
+}
+function setSkillEnabled(drafts, name, enabled) {
+  return drafts.map((d) => d.name === name ? { ...d, enabled } : d);
+}
+function setMcpEnabled(drafts, name, enabled) {
+  return drafts.map((d) => d.name === name ? { ...d, enabled } : d);
+}
+function removeSkillDraft(drafts, name) {
+  return drafts.filter((d) => d.name !== name);
+}
+function removeMcpDraft(drafts, name) {
+  return drafts.filter((d) => d.name !== name);
+}
+function buildSkillsPayload(drafts) {
+  return drafts.map((d) => {
+    const row = {
+      name: d.name
+    };
+    if (d.path?.trim()) row.path = d.path.trim();
+    if (d.enabled === false) row.enabled = false;
+    else if (d.enabled === true) row.enabled = true;
+    return row;
+  });
+}
+function buildMcpServersPayload(drafts) {
+  return drafts.map((d) => {
+    const row = {
+      name: d.name,
+      transport: d.transport,
+      enabled: d.enabled !== false
+    };
+    if (d.transport === "stdio") {
+      if (d.command?.trim()) row.command = d.command.trim();
+      if (d.args?.length) row.args = [...d.args];
+      if (d.envKeys && Object.keys(d.envKeys).length) row.envKeys = { ...d.envKeys };
+      if (d.envCredentialRefs && Object.keys(d.envCredentialRefs).length) {
+        row.envCredentialRefs = { ...d.envCredentialRefs };
+      }
+    } else {
+      if (d.url?.trim()) row.url = d.url.trim();
+      if (d.headerEnvKeys && Object.keys(d.headerEnvKeys).length) {
+        row.headerEnvKeys = { ...d.headerEnvKeys };
+      }
+      if (d.headerCredentialRefs && Object.keys(d.headerCredentialRefs).length) {
+        row.headerCredentialRefs = { ...d.headerCredentialRefs };
+      }
+    }
+    delete row.env;
+    delete row.headers;
+    delete row.secret;
+    delete row.token;
+    delete row.apiKey;
+    delete row.displayName;
+    return row;
+  });
+}
+function skillSourceLine(s) {
+  const p = (s.path || "").trim();
+  return p ? p : "name-only\uFF08\u65E0 path\uFF09";
+}
+function mcpSourceLine(s) {
+  if (s.transport === "http") {
+    const url = (s.url || "").trim();
+    return url ? `http \xB7 ${url}` : "http";
+  }
+  const cmd = (s.command || "").trim();
+  const args = (s.args || []).join(" ").trim();
+  if (cmd && args) return `stdio \xB7 ${cmd} ${args}`;
+  if (cmd) return `stdio \xB7 ${cmd}`;
+  return "stdio";
+}
+function mcpCredentialStatusParts(s, configuredIds) {
+  const set = configuredIds instanceof Set ? configuredIds : new Set(
+    Array.from(configuredIds).filter(
+      (x) => typeof x === "string" && x.length > 0
+    )
+  );
+  const out = [];
+  const pushMap = (map) => {
+    if (!map) return;
+    for (const [envName, refId] of Object.entries(map)) {
+      const id = (refId || "").trim();
+      if (!id) continue;
+      out.push({ envName, refId: id, configured: set.has(id) });
+    }
+  };
+  pushMap(s.envCredentialRefs);
+  pushMap(s.headerCredentialRefs);
+  return out;
+}
+function mcpCredentialStatusLine(s, configuredIds) {
+  const parts = mcpCredentialStatusParts(s, configuredIds);
+  if (!parts.length) return "";
+  return parts.map((p) => `${p.refId}${p.configured ? "\xB7\u5DF2\u914D\u7F6E" : "\xB7\u7F3A\u5931"}`).join(" ");
+}
+function validateSkillAddDraft(draft) {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "skill name \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[a-zA-Z0-9][a-zA-Z0-9._-]{0,63}$/.test(name) || name.includes("..")) {
+    return { ok: false, reason: "skill name \u65E0\u6548" };
+  }
+  const path = (draft.path || "").trim();
+  const entry = {
+    name,
+    enabled: draft.enabled !== false,
+    ...path ? { path } : {}
+  };
+  return { ok: true, entry };
+}
+function validateMcpAddDraft(draft) {
+  const name = (draft.name || "").trim();
+  if (!name) return { ok: false, reason: "MCP name \u4E0D\u80FD\u4E3A\u7A7A" };
+  if (!/^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$/.test(name)) {
+    return { ok: false, reason: "MCP name \u65E0\u6548" };
+  }
+  if (draft.transport !== "stdio" && draft.transport !== "http") {
+    return { ok: false, reason: "transport \u987B\u4E3A stdio \u6216 http" };
+  }
+  const entry = {
+    name,
+    transport: draft.transport,
+    enabled: draft.enabled !== false
+  };
+  if (draft.transport === "stdio") {
+    const command = (draft.command || "").trim();
+    if (!command) return { ok: false, reason: "stdio \u9700\u8981 command" };
+    entry.command = command;
+  } else {
+    const url = (draft.url || "").trim();
+    if (!url) return { ok: false, reason: "http \u9700\u8981 url" };
+    entry.url = url;
+  }
+  const envName = (draft.envCredentialName || "").trim();
+  const envRef = (draft.envCredentialRef || "").trim();
+  if (envName || envRef) {
+    if (!envName || !envRef) {
+      return { ok: false, reason: "credential \u9700\u540C\u65F6\u586B env \u540D\u4E0E vault id" };
+    }
+    if (!/^[a-z][a-z0-9-]{0,62}$/.test(envRef)) {
+      return { ok: false, reason: "credentialRef \u987B\u4E3A vault id" };
+    }
+    if (draft.transport === "stdio") {
+      entry.envCredentialRefs = { [envName]: envRef };
+    } else {
+      entry.headerCredentialRefs = { [envName]: envRef };
+    }
+  }
+  return { ok: true, entry };
 }
 function retentionSummaryLine(preview) {
   const tasks = preview.candidateTaskCount ?? 0;
@@ -8954,7 +9136,36 @@ var retentionPreview = null;
 var loadError2 = null;
 var loading = false;
 var profileEditId = null;
+var skillDrafts = [];
+var mcpDrafts = [];
+var profileFieldDraft = null;
 var roleEditName = null;
+function openProfileEditor(id) {
+  profileEditId = id;
+  profileFieldDraft = null;
+  if (!id) {
+    skillDrafts = [];
+    mcpDrafts = [];
+    return;
+  }
+  const p = fullProfiles.find((x) => x.id === id);
+  skillDrafts = skillDraftsFromProjection(p?.skills);
+  mcpDrafts = mcpDraftsFromProjection(p?.mcpServers);
+}
+function captureProfileFieldDraft() {
+  if (!profileEditId) return;
+  profileFieldDraft = {
+    displayName: document.getElementById("prof-edit-name")?.value ?? "",
+    model: document.getElementById("prof-edit-model")?.value ?? "",
+    executable: document.getElementById("prof-edit-exe")?.value ?? "",
+    envKey: document.getElementById("prof-edit-env")?.value ?? "",
+    credentialRef: document.getElementById("prof-edit-cred")?.value ?? "",
+    baseUrl: document.getElementById("prof-edit-base")?.value ?? ""
+  };
+}
+function configuredCredentialIds() {
+  return new Set(credentials.map((c) => c.id));
+}
 function setSettingsSection(next) {
   section = next;
   renderSettings();
@@ -8989,11 +9200,11 @@ async function loadSectionData(s) {
     } else if (s === "roles" && workspaceId) {
       await loadRolesFull();
     } else if (s === "profiles") {
-      await Promise.all([loadProfilesFull(), loadProviders()]);
+      await Promise.all([loadProfilesFull(), loadProviders(), loadCredentials()]);
     } else if (s === "credentials") {
       await loadCredentials();
     } else if (s === "skills") {
-      await Promise.all([loadSkills(), loadProfilesFull()]);
+      await Promise.all([loadSkills(), loadProfilesFull(), loadCredentials()]);
     } else if (s === "maintenance" && workspaceId) {
       await loadRetentionPreview();
     }
@@ -9261,65 +9472,137 @@ function renderProfiles() {
     ${editor}`;
 }
 function renderProfileEditor(p) {
-  const skillsJson = JSON.stringify(p.skills || [], null, 2);
-  const mcpJson = JSON.stringify(p.mcpServers || [], null, 2);
   const label = profileDisplayLabel(p);
+  const fields = profileFieldDraft ?? {
+    displayName: p.displayName || "",
+    model: p.model || "",
+    executable: p.executable || "",
+    envKey: p.envKey || "",
+    credentialRef: p.credentialRef || "",
+    baseUrl: p.baseUrl || ""
+  };
+  const credIds = configuredCredentialIds();
+  const skillList = skillDrafts.length === 0 ? `<p class="muted">\u65E0 skill \u5F15\u7528</p>` : `<ul class="settings-list">${skillDrafts.map((s) => {
+    const src = skillSourceLine(s);
+    return `<li class="settings-list-item">
+              <div class="settings-list-main">
+                <label class="settings-check">
+                  <input type="checkbox" data-skill-toggle="${escapeHtml(s.name)}"${s.enabled ? " checked" : ""} />
+                  <strong><code>${escapeHtml(s.name)}</code></strong>
+                </label>
+                <span class="muted">${escapeHtml(src)}</span>
+              </div>
+              <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-skill-remove="${escapeHtml(s.name)}" title="\u79FB\u9664\u5F15\u7528">\u79FB\u9664</button>
+              </div>
+            </li>`;
+  }).join("")}</ul>`;
+  const mcpList = mcpDrafts.length === 0 ? `<p class="muted">\u65E0 MCP \u670D\u52A1\u5668</p>` : `<ul class="settings-list">${mcpDrafts.map((m) => {
+    const src = mcpSourceLine(m);
+    const credLine = mcpCredentialStatusLine(m, credIds);
+    return `<li class="settings-list-item">
+              <div class="settings-list-main">
+                <label class="settings-check">
+                  <input type="checkbox" data-mcp-toggle="${escapeHtml(m.name)}"${m.enabled ? " checked" : ""} />
+                  <strong><code>${escapeHtml(m.name)}</code></strong>
+                </label>
+                <span class="muted">${escapeHtml(src)}</span>
+                ${credLine ? `<span class="faint">\u51ED\u8BC1 ${escapeHtml(credLine)}</span>` : ""}
+              </div>
+              <div class="settings-list-actions">
+                <button type="button" class="btn btn-ghost" data-mcp-remove="${escapeHtml(m.name)}" title="\u79FB\u9664">\u79FB\u9664</button>
+              </div>
+            </li>`;
+  }).join("")}</ul>`;
+  const credOptions = credentials.map((c) => `<option value="${escapeHtml(c.id)}">`).join("");
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u7F16\u8F91 \xB7 ${escapeHtml(label)}
         <button type="button" class="btn btn-ghost" id="btn-prof-edit-close">\u5173\u95ED</button>
       </div>
       <p class="muted">id <code>${escapeHtml(p.id)}</code> \xB7 adapterId <code>${escapeHtml(p.adapterId)}</code>\uFF08\u5747\u4E0D\u53EF\u6539\uFF09</p>
-      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} \xB7 \u52FF\u5199 secret</p>
+      <p class="faint">${escapeHtml(PROFILE_NEXT_SESSION_TIP)} \xB7 \u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0 \xB7 \u52FF\u5199 secret</p>
       <div class="settings-form">
         <label class="settings-label" for="prof-edit-name">\u663E\u793A\u540D</label>
-        <input id="prof-edit-name" class="field" value="${escapeHtml(p.displayName || "")}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 id" />
+        <input id="prof-edit-name" class="field" value="${escapeHtml(fields.displayName)}" placeholder="\u7559\u7A7A\u5219\u56DE\u9000\u5230 id" />
         <label class="settings-label" for="prof-edit-model">model</label>
-        <input id="prof-edit-model" class="field" value="${escapeHtml(p.model || "")}" placeholder="model" />
+        <input id="prof-edit-model" class="field" value="${escapeHtml(fields.model)}" placeholder="model" />
         <label class="settings-label" for="prof-edit-exe">executable</label>
-        <input id="prof-edit-exe" class="field" value="${escapeHtml(p.executable || "")}" placeholder="executable" />
+        <input id="prof-edit-exe" class="field" value="${escapeHtml(fields.executable)}" placeholder="executable" />
         <label class="settings-label" for="prof-edit-env">envKey\uFF08\u73AF\u5883\u53D8\u91CF\u540D\uFF09</label>
-        <input id="prof-edit-env" class="field" value="${escapeHtml(p.envKey || "")}" placeholder="envKey" />
+        <input id="prof-edit-env" class="field" value="${escapeHtml(fields.envKey)}" placeholder="envKey" />
         <label class="settings-label" for="prof-edit-cred">credentialRef\uFF08\u51ED\u8BC1 id\uFF09</label>
-        <input id="prof-edit-cred" class="field" value="${escapeHtml(p.credentialRef || "")}" placeholder="credentialRef" />
+        <input id="prof-edit-cred" class="field" value="${escapeHtml(fields.credentialRef)}" placeholder="credentialRef" list="cred-ref-list" />
+        <datalist id="cred-ref-list">${credOptions}</datalist>
         <label class="settings-label" for="prof-edit-base">baseUrl</label>
-        <input id="prof-edit-base" class="field" value="${escapeHtml(p.baseUrl || "")}" placeholder="baseUrl" />
-        <label class="settings-label">skills\uFF08JSON \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF09</label>
-        <textarea id="prof-edit-skills" class="line-input" rows="4" spellcheck="false">${escapeHtml(skillsJson)}</textarea>
-        <label class="settings-label">mcpServers\uFF08JSON \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548 \xB7 \u52FF\u5199 secret\uFF09</label>
-        <textarea id="prof-edit-mcp" class="line-input" rows="6" spellcheck="false">${escapeHtml(mcpJson)}</textarea>
-        <div class="settings-row">
-          <button type="button" id="btn-prof-save" class="btn btn-primary">\u4FDD\u5B58</button>
+        <input id="prof-edit-base" class="field" value="${escapeHtml(fields.baseUrl)}" placeholder="baseUrl" />
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="surface-section-head">Skills</div>
+      <p class="faint">\u53EA\u4FDD\u5B58 name/path/enabled \xB7 \u4E0D\u5B58 displayName \xB7 ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      ${skillList}
+      <div class="settings-form settings-form-inline">
+        <input id="skill-add-name" class="field" placeholder="skill name\uFF08id\uFF09" autocomplete="off" list="bundled-skill-list" />
+        <datalist id="bundled-skill-list">${skills.map((s) => `<option value="${escapeHtml(s.name)}">`).join("")}</datalist>
+        <input id="skill-add-path" class="field" placeholder="\u7EDD\u5BF9 path\uFF08\u53EF\u9009\uFF09" autocomplete="off" />
+        <button type="button" id="btn-skill-add" class="btn btn-secondary">\u6DFB\u52A0\u5F15\u7528</button>
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="surface-section-head">MCP Servers</div>
+      <p class="faint">\u53EA\u4FDD\u5B58 id/ref \xB7 credential \u4EC5\u663E\u793A\u5DF2\u914D\u7F6E \xB7 ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      ${mcpList}
+      <div class="settings-form">
+        <div class="settings-form-inline">
+          <input id="mcp-add-name" class="field" placeholder="name" autocomplete="off" />
+          <select id="mcp-add-transport" class="field field-compact">
+            <option value="stdio">stdio</option>
+            <option value="http">http</option>
+          </select>
         </div>
+        <input id="mcp-add-command" class="field" placeholder="command\uFF08stdio\uFF09" autocomplete="off" />
+        <input id="mcp-add-url" class="field" placeholder="url\uFF08http\uFF09" autocomplete="off" />
+        <div class="settings-form-inline">
+          <input id="mcp-add-env-name" class="field" placeholder="env/header \u540D\uFF08\u53EF\u9009\uFF09" autocomplete="off" />
+          <input id="mcp-add-env-ref" class="field" placeholder="credential vault id\uFF08\u53EF\u9009\uFF09" list="cred-ref-list" autocomplete="off" />
+        </div>
+        <button type="button" id="btn-mcp-add" class="btn btn-secondary">\u6DFB\u52A0 MCP</button>
+      </div>
+    </div>
+    <div class="settings-block">
+      <div class="settings-row">
+        <button type="button" id="btn-prof-save" class="btn btn-primary">\u4FDD\u5B58\uFF08\u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF09</button>
       </div>
     </div>`;
 }
 function renderCredentials() {
   const list2 = credentials.length === 0 ? `<p class="muted">\u65E0\u5DF2\u914D\u7F6E\u51ED\u8BC1</p>` : `<ul class="settings-list">${credentials.map((c) => {
-    const label = c.label || c.metadata?.label || c.id;
+    const row = credentialListRow(c);
     return `<li class="settings-list-item">
               <div class="settings-list-main">
-                <strong>${escapeHtml(label)}</strong>
-                <span class="muted"><code>${escapeHtml(c.id)}</code> \xB7 \u5DF2\u914D\u7F6E</span>
-                <span class="faint">${escapeHtml(c.updatedAt || "")}</span>
+                <strong><code>${escapeHtml(row.id)}</code></strong>
+                <span class="muted">${escapeHtml(row.type)} \xB7 ${escapeHtml(row.status)}</span>
+                ${row.label ? `<span class="faint">${escapeHtml(row.label)}</span>` : ""}
+                ${row.updatedAt ? `<span class="faint">${escapeHtml(row.updatedAt)}</span>` : ""}
               </div>
               <div class="settings-list-actions">
-                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(c.id)}">\u5220\u9664</button>
+                <button type="button" class="btn btn-ghost" data-cred-delete="${escapeHtml(row.id)}" title="\u5220\u9664\u51ED\u8BC1">\u5220\u9664</button>
               </div>
             </li>`;
   }).join("")}</ul>`;
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u51ED\u8BC1</div>
-      <p class="faint">\u4EC5\u663E\u793A\u914D\u7F6E\u72B6\u6001 \xB7 \u4E0D\u8BFB\u56DE secret</p>
+      <p class="faint">\u4EC5\u663E\u793A ref id \xB7 ${escapeHtml(CREDENTIAL_VAULT_TYPE)} \xB7 \u5DF2\u914D\u7F6E \xB7 \u7EDD\u4E0D\u8BFB\u56DE secret</p>
       ${list2}
     </div>
     <div class="settings-block">
       <div class="surface-section-head">\u8BBE\u7F6E / \u66F4\u65B0</div>
       <div class="settings-form">
-        <input id="cred-id" class="field" placeholder="id" autocomplete="off" />
-        <input id="cred-label" class="field" placeholder="label\uFF08\u53EF\u9009\uFF09" autocomplete="off" />
-        <input id="cred-secret" class="field" type="password" placeholder="secret" autocomplete="new-password" />
+        <input id="cred-id" class="field" placeholder="id\uFF08vault ref\uFF09" autocomplete="off" />
+        <input id="cred-label" class="field" placeholder="label\uFF08\u53EF\u9009\uFF0C\u975E secret\uFF09" autocomplete="off" />
+        <input id="cred-secret" class="field" type="password" placeholder="secret\uFF08\u63D0\u4EA4\u540E\u7ACB\u5373\u6E05\u7A7A\uFF09" autocomplete="new-password" />
         <button type="button" id="btn-cred-set" class="btn btn-primary">\u4FDD\u5B58</button>
       </div>
     </div>`;
@@ -9337,33 +9620,39 @@ function renderSkills() {
               </div>
             </li>`;
   }).join("")}</ul>`;
+  const credIds = configuredCredentialIds();
   const mcpNote = `
-    <p class="muted">MCP \u6302\u5728 Agent Profile \u4E0A\u7F16\u8F91\uFF08Skills / MCP \u5206\u533A\u6216 Profiles \u7F16\u8F91\u5668\uFF09\u3002${escapeHtml(PROFILE_NEXT_SESSION_TIP)}\u3002</p>
-    <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config</p>
+    <p class="muted">MCP / Profile Skills \u5728 Agent Profile \u7F16\u8F91\u5668\u4E2D\u7528\u5217\u8868 + \u542F\u7528\u5F00\u5173\u7BA1\u7406\u3002${escapeHtml(PROFILE_NEXT_SESSION_TIP)}\u3002\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\u3002</p>
+    <p class="faint">\u65E0\u5168\u5C40 mcp.* RPC \xB7 \u89C1\u5951\u7EA6\u7F3A\u53E3 mcp.global-config \xB7 \u4E0D\u4F2A\u9020\u5168\u5C40\u76EE\u5F55</p>
     <ul class="settings-list">${fullProfiles.map((p) => {
-    const n = p.mcpServers?.length ?? 0;
-    const sk = p.skills?.length ?? 0;
+    const skillBits = (p.skills || []).map((s) => `${s.name}${s.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}`).join(" ");
+    const mcpBits = (p.mcpServers || []).map((m) => {
+      const cred = mcpCredentialStatusLine(m, credIds);
+      return `${m.name}${m.enabled === false ? "\xB7\u5173" : "\xB7\u5F00"}${cred ? `(${cred})` : ""}`;
+    }).join(" ");
     return `<li class="settings-list-item">
           <div class="settings-list-main">
             <strong>${escapeHtml(profileDisplayLabel(p))}</strong>
             <span class="faint"><code>${escapeHtml(p.id)}</code></span>
-            <span class="muted">skills ${sk} \xB7 mcp ${n}</span>
+            <span class="muted">skills ${escapeHtml(skillBits || "\u2014")}</span>
+            <span class="muted">mcp ${escapeHtml(mcpBits || "\u2014")}</span>
           </div>
           <div class="settings-list-actions">
-            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">\u7F16\u8F91</button>
+            <button type="button" class="btn btn-ghost" data-profile-edit="${escapeHtml(p.id)}">\u7F16\u8F91 Skills/MCP</button>
           </div>
         </li>`;
   }).join("") || `<li class="muted">\u65E0 profile</li>`}</ul>`;
   return `
     <div class="settings-block">
-      <div class="surface-section-head">Bundled Skills</div>
+      <div class="surface-section-head">Bundled Skills\uFF08skill.list / skill.install\uFF09</div>
+      <p class="faint">\u4EC5\u5B89\u88C5 package bundled skills \u5230 ~/.agents \u4E0E ~/.claude \xB7 \u65E0 Skill \u7F16\u8F91\u5668 / \u8FDC\u7A0B\u5E02\u573A / uninstall</p>
       ${skillList}
       <div class="settings-row">
         <button type="button" id="btn-skill-install-all" class="btn btn-secondary">\u5B89\u88C5\u5168\u90E8</button>
       </div>
     </div>
     <div class="settings-block">
-      <div class="surface-section-head">MCP\uFF08per profile\uFF09</div>
+      <div class="surface-section-head">Profile Skills / MCP</div>
       ${mcpNote}
     </div>`;
 }
@@ -9420,19 +9709,55 @@ function wireSection(s, root) {
     document.getElementById("btn-prof-create")?.addEventListener("click", () => void onProfileCreate());
     document.getElementById("btn-prof-save")?.addEventListener("click", () => void onProfileSave());
     document.getElementById("btn-prof-edit-close")?.addEventListener("click", () => {
-      profileEditId = null;
+      openProfileEditor(null);
       renderSettings();
     });
     root.querySelectorAll("[data-profile-edit]").forEach((btn) => {
       btn.addEventListener("click", () => {
-        profileEditId = btn.getAttribute("data-profile-edit");
+        const id = btn.getAttribute("data-profile-edit");
         section = "profiles";
+        openProfileEditor(id);
+        void loadCredentials().then(() => renderSettings());
         renderSettings();
       });
     });
     root.querySelectorAll("[data-profile-delete]").forEach((btn) => {
       btn.addEventListener("click", () => void onProfileDelete(btn.getAttribute("data-profile-delete")));
     });
+    root.querySelectorAll("[data-skill-toggle]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const name = box.getAttribute("data-skill-toggle");
+        if (!name) return;
+        skillDrafts = setSkillEnabled(skillDrafts, name, box.checked);
+      });
+    });
+    root.querySelectorAll("[data-skill-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-skill-remove");
+        if (!name) return;
+        captureProfileFieldDraft();
+        skillDrafts = removeSkillDraft(skillDrafts, name);
+        renderSettings();
+      });
+    });
+    document.getElementById("btn-skill-add")?.addEventListener("click", () => onSkillAdd());
+    root.querySelectorAll("[data-mcp-toggle]").forEach((box) => {
+      box.addEventListener("change", () => {
+        const name = box.getAttribute("data-mcp-toggle");
+        if (!name) return;
+        mcpDrafts = setMcpEnabled(mcpDrafts, name, box.checked);
+      });
+    });
+    root.querySelectorAll("[data-mcp-remove]").forEach((btn) => {
+      btn.addEventListener("click", () => {
+        const name = btn.getAttribute("data-mcp-remove");
+        if (!name) return;
+        captureProfileFieldDraft();
+        mcpDrafts = removeMcpDraft(mcpDrafts, name);
+        renderSettings();
+      });
+    });
+    document.getElementById("btn-mcp-add")?.addEventListener("click", () => onMcpAdd());
   }
   if (s === "credentials") {
     document.getElementById("btn-cred-set")?.addEventListener("click", () => void onCredSet());
@@ -9603,6 +9928,49 @@ async function onProfileCreate() {
     if (createBtn) createBtn.disabled = false;
   }
 }
+function onSkillAdd() {
+  const name = document.getElementById("skill-add-name")?.value || "";
+  const path = document.getElementById("skill-add-path")?.value || "";
+  const built = validateSkillAddDraft({ name, path });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  if (skillDrafts.some((s) => s.name.toLowerCase() === built.entry.name.toLowerCase())) {
+    el.status.textContent = `skill ${built.entry.name} \u5DF2\u5728\u5217\u8868\u4E2D`;
+    return;
+  }
+  captureProfileFieldDraft();
+  skillDrafts = [...skillDrafts, built.entry];
+  renderSettings();
+}
+function onMcpAdd() {
+  const name = document.getElementById("mcp-add-name")?.value || "";
+  const transport = document.getElementById("mcp-add-transport")?.value || "stdio";
+  const command = document.getElementById("mcp-add-command")?.value || "";
+  const url = document.getElementById("mcp-add-url")?.value || "";
+  const envCredentialName = document.getElementById("mcp-add-env-name")?.value || "";
+  const envCredentialRef = document.getElementById("mcp-add-env-ref")?.value || "";
+  const built = validateMcpAddDraft({
+    name,
+    transport,
+    command,
+    url,
+    envCredentialName,
+    envCredentialRef
+  });
+  if (!built.ok) {
+    el.status.textContent = built.reason;
+    return;
+  }
+  if (mcpDrafts.some((m) => m.name.toLowerCase() === built.entry.name.toLowerCase())) {
+    el.status.textContent = `MCP ${built.entry.name} \u5DF2\u5728\u5217\u8868\u4E2D`;
+    return;
+  }
+  captureProfileFieldDraft();
+  mcpDrafts = [...mcpDrafts, built.entry];
+  renderSettings();
+}
 async function onProfileSave() {
   if (!profileEditId) return;
   const built = validateProfileUpdate({
@@ -9618,26 +9986,21 @@ async function onProfileSave() {
     el.status.textContent = built.reason;
     return;
   }
-  const patch = { ...built.payload };
-  const skillsRaw = document.getElementById("prof-edit-skills")?.value;
-  const mcpRaw = document.getElementById("prof-edit-mcp")?.value;
-  try {
-    if (skillsRaw !== void 0) {
-      patch.skills = JSON.parse(skillsRaw || "[]");
-    }
-    if (mcpRaw !== void 0) {
-      patch.mcpServers = JSON.parse(mcpRaw || "[]");
-    }
-  } catch {
-    el.status.textContent = "skills / mcpServers \u987B\u4E3A\u5408\u6CD5 JSON";
-    return;
-  }
+  const skillsPayload = buildSkillsPayload(skillDrafts);
+  const mcpPayload = buildMcpServersPayload(mcpDrafts);
+  const patch = {
+    ...built.payload,
+    // Empty array clears on server via parse path; use null only when intentionally empty? Backend accepts [].
+    skills: skillsPayload.length ? skillsPayload : null,
+    mcpServers: mcpPayload.length ? mcpPayload : null
+  };
   const saveBtn = document.getElementById("btn-prof-save");
   if (saveBtn) saveBtn.disabled = true;
   try {
     await window.tentDesktop.rpc("profile.update", patch);
-    el.status.textContent = `Profile \u5DF2\u4FDD\u5B58\uFF08${PROFILE_NEXT_SESSION_TIP}\uFF09`;
+    el.status.textContent = `Profile \u5DF2\u4FDD\u5B58 \xB7 \u4E0B\u6B21\u4F1A\u8BDD\u751F\u6548\uFF08\u8FD0\u884C\u4E2D session \u4E0D\u70ED\u66F4\u65B0\uFF09`;
     await loadProfilesFull();
+    openProfileEditor(profileEditId);
     renderSettings();
   } catch (err) {
     setError(err);
@@ -9648,7 +10011,7 @@ async function onProfileDelete(id) {
   if (!window.confirm(`\u5220\u9664 profile\u300C${id}\u300D\uFF1F`)) return;
   try {
     await window.tentDesktop.rpc("profile.delete", { id });
-    if (profileEditId === id) profileEditId = null;
+    if (profileEditId === id) openProfileEditor(null);
     el.status.textContent = `\u5DF2\u5220\u9664 profile ${id}`;
     await loadProfilesFull();
     renderSettings();
@@ -9657,30 +10020,39 @@ async function onProfileDelete(id) {
   }
 }
 async function onCredSet() {
-  const id = document.getElementById("cred-id")?.value || "";
-  const label = document.getElementById("cred-label")?.value || "";
+  const idEl = document.getElementById("cred-id");
+  const labelEl = document.getElementById("cred-label");
   const secretEl = document.getElementById("cred-secret");
+  const id = idEl?.value || "";
+  const label = labelEl?.value || "";
   const secret = secretEl?.value || "";
   const built = validateCredentialSet({ id, secret, label });
   if (!built.ok) {
     el.status.textContent = built.reason;
     return;
   }
+  if (secretEl) secretEl.value = "";
   const setBtn = document.getElementById("btn-cred-set");
   if (setBtn) setBtn.disabled = true;
   try {
-    await window.tentDesktop.rpc("credential.set", built.payload);
-    if (secretEl) secretEl.value = "";
+    await window.tentDesktop.rpc("credential.set", {
+      id: built.payload.id,
+      secret: built.payload.secret,
+      ...built.payload.label !== void 0 ? { label: built.payload.label } : {}
+    });
+    built.payload.secret = "";
     el.status.textContent = `\u51ED\u8BC1 ${built.payload.id} \u5DF2\u914D\u7F6E`;
+    if (idEl) idEl.value = built.payload.id;
     await loadCredentials();
     renderSettings();
   } catch (err) {
+    built.payload.secret = "";
     setError(err);
     if (setBtn) setBtn.disabled = false;
   }
 }
 async function onCredDelete(id) {
-  if (!window.confirm(`\u5220\u9664\u51ED\u8BC1\u300C${id}\u300D\uFF1F`)) return;
+  if (!window.confirm(`\u5220\u9664\u51ED\u8BC1\u300C${id}\u300D\uFF1F\u6B64\u64CD\u4F5C\u4E0D\u53EF\u64A4\u9500\u3002`)) return;
   try {
     await window.tentDesktop.rpc("credential.delete", { id });
     el.status.textContent = `\u5DF2\u5220\u9664\u51ED\u8BC1 ${id}`;
