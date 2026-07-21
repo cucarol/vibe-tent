@@ -141,6 +141,12 @@ export interface SessionRecord {
   exitCode?: number | null;
   lastError?: string;
   stopReason?: StopReason;
+  /**
+   * Stable pull-host / external-GUI idempotency key within a workspace.
+   * First-class field — not profile env. Legacy rows may still carry
+   * `profileSnapshot.env.TENT_EXTERNAL_KEY` which readers treat as fallback.
+   */
+  externalKey?: string;
 }
 
 /**
@@ -279,4 +285,19 @@ export function makeSessionId(rand: () => number = Math.random, len = 8): string
 
 export function isSessionId(id: string): boolean {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
+}
+
+/**
+ * Resolve the stable externalKey for a session row.
+ * Prefers first-class `externalKey`; falls back to legacy
+ * `profileSnapshot.env.TENT_EXTERNAL_KEY` written by earlier V0.2 builds.
+ */
+export function recordExternalKey(rec: {
+  externalKey?: string;
+  profileSnapshot?: { env?: Record<string, string> };
+}): string | undefined {
+  const primary = rec.externalKey?.trim();
+  if (primary) return primary;
+  const legacy = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY?.trim();
+  return legacy || undefined;
 }

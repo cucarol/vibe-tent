@@ -11759,6 +11759,12 @@ function makeSessionId(rand = Math.random, len = 8) {
 function isSessionId(id) {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
 }
+function recordExternalKey(rec) {
+  const primary = rec.externalKey?.trim();
+  if (primary) return primary;
+  const legacy = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY?.trim();
+  return legacy || void 0;
+}
 
 // src/runtime/session-registry.ts
 import * as fs3 from "node:fs/promises";
@@ -11882,7 +11888,8 @@ function parseSessionRecord(data, sessionId) {
     "resumeToken",
     "workspace",
     "lastTaskId",
-    "lastError"
+    "lastError",
+    "externalKey"
   ]) {
     if (key in data && data[key] !== void 0 && typeof data[key] !== "string") {
       return null;
@@ -19404,6 +19411,7 @@ async function sessionList(ctx, p) {
       resumeCapable: probe.resumeCapable,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
+      externalKey: recordExternalKey(rec),
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt
     });
@@ -19426,6 +19434,7 @@ async function sessionGet(ctx, p) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
+    externalKey: recordExternalKey(rec),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt
   };
@@ -19447,10 +19456,7 @@ async function sessionEnter(ctx, p) {
     const prior = await ctx.runtime.registry.read(sessionId);
     if (prior?.state === "external") priorExternalId = prior.id;
   } else if (externalKey) {
-    const all2 = await ctx.runtime.registry.list();
-    const hit = all2.find(
-      (rec2) => rec2.state === "external" && rec2.profileSnapshot?.env?.TENT_EXTERNAL_KEY === externalKey && (!workspaceId || !rec2.workspace || rec2.workspace === workspaceId)
-    );
+    const hit = await findExternalSessionByKey(ctx, externalKey, workspaceId);
     if (hit) priorExternalId = hit.id;
   }
   let handle;
@@ -19485,6 +19491,7 @@ async function sessionEnter(ctx, p) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec?.lastTaskId,
     workspace: rec?.workspace ?? workspaceId,
+    externalKey: recordExternalKey(rec ?? {}) ?? externalKey,
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt
   };
@@ -19494,10 +19501,11 @@ async function sessionEnter(ctx, p) {
   };
 }
 async function sessionStatus(ctx, p) {
-  const sessionId = optionalString(p, "sessionId");
+  const sessionIdArg = optionalString(p, "sessionId");
+  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
   const workspaceId = optionalString(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
-  if (!sessionId) {
+  if (!sessionIdArg && !externalKey) {
     const all2 = await ctx.runtime.registry.list();
     const sessions = [];
     for (const rec2 of all2) {
@@ -19515,6 +19523,7 @@ async function sessionStatus(ctx, p) {
         resumeCapable: probe2.resumeCapable,
         lastTaskId: rec2.lastTaskId,
         workspace: rec2.workspace,
+        externalKey: recordExternalKey(rec2),
         createdAt: rec2.createdAt,
         updatedAt: rec2.updatedAt
       });
@@ -19526,8 +19535,16 @@ async function sessionStatus(ctx, p) {
     ) : [];
     return { sessions, incompleteTasks: incompleteTasks2 };
   }
-  const rec = await ctx.runtime.registry.read(sessionId);
-  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const resolved = await resolveExternalSessionRef(ctx, {
+    sessionId: sessionIdArg,
+    externalKey,
+    workspaceId
+  });
+  if (!resolved) {
+    const label = sessionIdArg || externalKey || "?";
+    throw new RpcError(-32004, `Session not found: ${label}`);
+  }
+  const { rec, sessionId } = resolved;
   const probe = await ctx.runtime.probe(sessionId);
   const session = {
     sessionId: rec.id,
@@ -19540,6 +19557,7 @@ async function sessionStatus(ctx, p) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
+    externalKey: recordExternalKey(rec),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt
   };
@@ -19556,19 +19574,34 @@ async function sessionStatus(ctx, p) {
   };
 }
 async function sessionLeave(ctx, p) {
-  const sessionId = requireString(p, "sessionId");
+  const sessionIdArg = optionalString(p, "sessionId");
+  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
   const workspaceId = optionalString(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
-  const rec = await ctx.runtime.registry.read(sessionId);
-  if (!rec) {
+  if (!sessionIdArg && !externalKey) {
+    throw new RpcError(
+      -32602,
+      "session.leave requires sessionId or externalKey"
+    );
+  }
+  const resolved = await resolveExternalSessionRef(ctx, {
+    sessionId: sessionIdArg,
+    externalKey,
+    workspaceId
+  });
+  if (!resolved) {
     return {
-      sessionId,
+      sessionId: sessionIdArg || "",
+      externalKey: externalKey || void 0,
       state: "stopped",
       left: false,
       alreadyLeft: true,
-      incompleteTasks: []
+      incompleteTasks: [],
+      delivered: false,
+      accepted: false
     };
   }
+  const { rec, sessionId } = resolved;
   const incompleteTasks = await listIncompleteTasksBoundToSession(
     ctx,
     rec.workspace || workspaceId,
@@ -19593,6 +19626,7 @@ async function sessionLeave(ctx, p) {
   }
   return {
     sessionId,
+    externalKey: recordExternalKey(rec) ?? externalKey,
     state,
     left,
     alreadyLeft: !left,
@@ -19604,6 +19638,30 @@ async function sessionLeave(ctx, p) {
     delivered: false,
     accepted: false
   };
+}
+async function findExternalSessionByKey(ctx, externalKey, workspaceId) {
+  const all2 = await ctx.runtime.registry.list();
+  return all2.find(
+    (rec) => rec.state === "external" && recordExternalKey(rec) === externalKey && (!workspaceId || !rec.workspace || rec.workspace === workspaceId)
+  ) ?? null;
+}
+async function resolveExternalSessionRef(ctx, ref) {
+  if (ref.sessionId) {
+    if (!isSessionId(ref.sessionId)) {
+    } else {
+      const rec = await ctx.runtime.registry.read(ref.sessionId);
+      if (rec) return { rec, sessionId: rec.id };
+    }
+  }
+  if (ref.externalKey) {
+    const hit = await findExternalSessionByKey(ctx, ref.externalKey, ref.workspaceId);
+    if (hit) return { rec: hit, sessionId: hit.id };
+  }
+  if (ref.sessionId && !isSessionId(ref.sessionId)) {
+    const hit = await findExternalSessionByKey(ctx, ref.sessionId, ref.workspaceId);
+    if (hit) return { rec: hit, sessionId: hit.id };
+  }
+  return null;
 }
 async function listIncompleteTasksBoundToSession(ctx, workspaceId, sessionId) {
   if (!workspaceId) return [];
@@ -23378,18 +23436,8 @@ var AgentRuntime = class {
           if (req.lastTaskId && existing.lastTaskId !== req.lastTaskId) {
             patch.lastTaskId = req.lastTaskId;
           }
-          if (externalKey) {
-            const snap = {
-              ...existing.profileSnapshot ?? {
-                id: existing.profileId,
-                adapterId: existing.adapterId
-              },
-              env: {
-                ...existing.profileSnapshot?.env ?? {},
-                TENT_EXTERNAL_KEY: externalKey
-              }
-            };
-            patch.profileSnapshot = snap;
+          if (externalKey && existing.externalKey !== externalKey) {
+            patch.externalKey = externalKey;
           }
           if (Object.keys(patch).length > 0) {
             const updated = await this.registry.update(req.sessionId, patch);
@@ -23410,8 +23458,7 @@ var AgentRuntime = class {
         if (rec.state !== "external") return false;
         if (workspace && rec.workspace && rec.workspace !== workspace) return false;
         if (externalKey) {
-          const key = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY;
-          return key === externalKey;
+          return recordExternalKey(rec) === externalKey;
         }
         return Boolean(roleName && rec.roleName === roleName);
       });
@@ -23422,6 +23469,9 @@ var AgentRuntime = class {
         }
         if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
           patch.runtimeWorkspace = { cwd };
+        }
+        if (externalKey && match.externalKey !== externalKey) {
+          patch.externalKey = externalKey;
         }
         if (Object.keys(patch).length > 0) {
           const updated = await this.registry.update(match.id, patch);
@@ -23434,8 +23484,7 @@ var AgentRuntime = class {
     const now = (/* @__PURE__ */ new Date()).toISOString();
     const profileSnapshot = {
       id: profileId,
-      adapterId: EXTERNAL_ADAPTER_ID,
-      ...externalKey ? { env: { TENT_EXTERNAL_KEY: externalKey } } : {}
+      adapterId: EXTERNAL_ADAPTER_ID
     };
     const record = {
       id: sessionId,
@@ -23450,7 +23499,8 @@ var AgentRuntime = class {
       workspaceLane: req.workspaceLane,
       createdAt: now,
       updatedAt: now,
-      lastTaskId: req.lastTaskId
+      lastTaskId: req.lastTaskId,
+      ...externalKey ? { externalKey } : {}
     };
     await this.registry.write(record);
     return handleFrom(record);

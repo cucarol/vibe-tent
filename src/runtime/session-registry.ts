@@ -87,6 +87,7 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
     "workspace",
     "lastTaskId",
     "lastError",
+    "externalKey",
   ] as const) {
     if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
       return null;

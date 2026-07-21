@@ -151,6 +151,8 @@ export type SessionProjection = {
   resumeCapable: boolean;
   lastTaskId?: string;
   workspace?: string;
+  /** Stable pull-host key when registered via externalKey (hooks / GUI). */
+  externalKey?: string;
   createdAt?: string;
   updatedAt?: string;
 };

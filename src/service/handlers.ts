@@ -108,8 +108,12 @@ import {
 } from "../core/workspace.js";
 import { makeTaskId } from "../core/task-model.js";
 import type { AgentRuntime } from "../runtime/agent-runtime.js";
-import { makeSessionId } from "../runtime/types.js";
 import type { RuntimeEvent, SessionRecord } from "../runtime/types.js";
+import {
+  isSessionId,
+  makeSessionId,
+  recordExternalKey,
+} from "../runtime/types.js";
 import { SessionRegistry } from "../runtime/session-registry.js";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
@@ -3603,6 +3607,7 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       resumeCapable: probe.resumeCapable,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
+      externalKey: recordExternalKey(rec),
       createdAt: rec.createdAt,
       updatedAt: rec.updatedAt,
     });
@@ -3626,6 +3631,7 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
+    externalKey: recordExternalKey(rec),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
   };
@@ -3658,13 +3664,7 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     const prior = await ctx.runtime.registry.read(sessionId);
     if (prior?.state === "external") priorExternalId = prior.id;
   } else if (externalKey) {
-    const all = await ctx.runtime.registry.list();
-    const hit = all.find(
-      (rec) =>
-        rec.state === "external" &&
-        rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY === externalKey &&
-        (!workspaceId || !rec.workspace || rec.workspace === workspaceId)
-    );
+    const hit = await findExternalSessionByKey(ctx, externalKey, workspaceId);
     if (hit) priorExternalId = hit.id;
   }
 
@@ -3701,6 +3701,7 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec?.lastTaskId,
     workspace: rec?.workspace ?? workspaceId,
+    externalKey: recordExternalKey(rec ?? {}) ?? externalKey,
     createdAt: handle.createdAt,
     updatedAt: handle.updatedAt,
   };
@@ -3713,14 +3714,17 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * Probe an external/managed session and list incomplete task bindings (no mutation).
+ * Resolves by sessionId **or** workspace-scoped externalKey.
  */
 async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
-  const sessionId = optionalString(p, "sessionId");
+  const sessionIdArg = optionalString(p, "sessionId");
+  const externalKey =
+    optionalString(p, "externalKey") || optionalString(p, "key");
   const workspaceId = optionalString(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
 
-  // Without sessionId: list open external sessions for workspace (or all).
-  if (!sessionId) {
+  // Without sessionId or externalKey: list open external sessions for workspace (or all).
+  if (!sessionIdArg && !externalKey) {
     const all = await ctx.runtime.registry.list();
     const sessions: SessionProjection[] = [];
     for (const rec of all) {
@@ -3738,6 +3742,7 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
         resumeCapable: probe.resumeCapable,
         lastTaskId: rec.lastTaskId,
         workspace: rec.workspace,
+        externalKey: recordExternalKey(rec),
         createdAt: rec.createdAt,
         updatedAt: rec.updatedAt,
       });
@@ -3752,8 +3757,16 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
     return { sessions, incompleteTasks };
   }
 
-  const rec = await ctx.runtime.registry.read(sessionId);
-  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const resolved = await resolveExternalSessionRef(ctx, {
+    sessionId: sessionIdArg,
+    externalKey,
+    workspaceId,
+  });
+  if (!resolved) {
+    const label = sessionIdArg || externalKey || "?";
+    throw new RpcError(-32004, `Session not found: ${label}`);
+  }
+  const { rec, sessionId } = resolved;
   const probe = await ctx.runtime.probe(sessionId);
   const session: SessionProjection = {
     sessionId: rec.id,
@@ -3766,6 +3779,7 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
     resumeCapable: probe.resumeCapable,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
+    externalKey: recordExternalKey(rec),
     createdAt: rec.createdAt,
     updatedAt: rec.updatedAt,
   };
@@ -3787,17 +3801,32 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
 /**
  * End or unbind an external session. Never delivers or accepts tasks —
  * only stops the session registry binding and reports incomplete task state.
+ * Resolves by sessionId **or** workspace-scoped externalKey.
  */
 async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
-  const sessionId = requireString(p, "sessionId");
+  const sessionIdArg = optionalString(p, "sessionId");
+  const externalKey =
+    optionalString(p, "externalKey") || optionalString(p, "key");
   const workspaceId = optionalString(p, "workspaceId");
   if (workspaceId) ctx.host.require(workspaceId);
 
-  const rec = await ctx.runtime.registry.read(sessionId);
-  if (!rec) {
-    // Idempotent leave: already gone.
+  if (!sessionIdArg && !externalKey) {
+    throw new RpcError(
+      -32602,
+      "session.leave requires sessionId or externalKey"
+    );
+  }
+
+  const resolved = await resolveExternalSessionRef(ctx, {
+    sessionId: sessionIdArg,
+    externalKey,
+    workspaceId,
+  });
+  if (!resolved) {
+    // Idempotent leave: already gone (or never entered).
     return {
-      sessionId,
+      sessionId: sessionIdArg || "",
+      externalKey: externalKey || undefined,
       state: "stopped",
       left: false,
       alreadyLeft: true,
@@ -3807,8 +3836,12 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
         state: string;
         role: string;
       }>,
+      delivered: false,
+      accepted: false,
     };
   }
+
+  const { rec, sessionId } = resolved;
 
   // Snapshot incomplete tasks before unbinding (leave must not deliver/accept).
   const incompleteTasks = await listIncompleteTasksBoundToSession(
@@ -3841,6 +3874,7 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
 
   return {
     sessionId,
+    externalKey: recordExternalKey(rec) ?? externalKey,
     state,
     left,
     alreadyLeft: !left,
@@ -3852,6 +3886,56 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
     delivered: false,
     accepted: false,
   };
+}
+
+/** First-class externalKey match, with legacy env fallback, scoped to workspace when set. */
+async function findExternalSessionByKey(
+  ctx: HandlerContext,
+  externalKey: string,
+  workspaceId?: string
+): Promise<SessionRecord | null> {
+  const all = await ctx.runtime.registry.list();
+  return (
+    all.find(
+      (rec) =>
+        rec.state === "external" &&
+        recordExternalKey(rec) === externalKey &&
+        (!workspaceId || !rec.workspace || rec.workspace === workspaceId)
+    ) ?? null
+  );
+}
+
+/**
+ * Resolve a session row by sessionId or externalKey.
+ * sessionId wins when both are provided and the id exists.
+ */
+async function resolveExternalSessionRef(
+  ctx: HandlerContext,
+  ref: {
+    sessionId?: string;
+    externalKey?: string;
+    workspaceId?: string;
+  }
+): Promise<{ rec: SessionRecord; sessionId: string } | null> {
+  if (ref.sessionId) {
+    if (!isSessionId(ref.sessionId)) {
+      // May be a bare externalKey mistakenly passed as sessionId — try key path below.
+    } else {
+      const rec = await ctx.runtime.registry.read(ref.sessionId);
+      if (rec) return { rec, sessionId: rec.id };
+      // Fall through to externalKey when id not found (or only key provided).
+    }
+  }
+  if (ref.externalKey) {
+    const hit = await findExternalSessionByKey(ctx, ref.externalKey, ref.workspaceId);
+    if (hit) return { rec: hit, sessionId: hit.id };
+  }
+  // sessionId that is not an ss- id: treat as externalKey lookup for convenience.
+  if (ref.sessionId && !isSessionId(ref.sessionId)) {
+    const hit = await findExternalSessionByKey(ctx, ref.sessionId, ref.workspaceId);
+    if (hit) return { rec: hit, sessionId: hit.id };
+  }
+  return null;
 }
 
 /** Active (non-terminal) tasks in a workspace that reference sessionId. */

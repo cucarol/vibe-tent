@@ -4296,13 +4296,17 @@ var ServiceClient = class {
   }
   /**
    * End external session binding only — never deliver/accept tasks.
-   * Reports incompleteTasks still bound to the sessionId.
+   * Reports incompleteTasks still bound to the sessionId / externalKey.
+   * Accepts either a sessionId string or an options object (hook closed-loop).
    */
-  sessionLeave(sessionId, workspaceId) {
-    return this.call("session.leave", {
-      sessionId,
-      ...workspaceId ? { workspaceId } : {}
-    });
+  sessionLeave(sessionIdOrArgs, workspaceId) {
+    if (typeof sessionIdOrArgs === "string") {
+      return this.call("session.leave", {
+        sessionId: sessionIdOrArgs,
+        ...workspaceId ? { workspaceId } : {}
+      });
+    }
+    return this.call("session.leave", { ...sessionIdOrArgs });
   }
   a2aListPending(workspaceId) {
     return this.call("a2a.listPending", workspaceId ? { workspaceId } : {});
@@ -5202,18 +5206,28 @@ async function runAgentCommand(sub, args, globals = {}) {
 ` + agentHelpText()
     );
   }
+  const hookAlias = isHookAlias(sub);
   try {
     const { positionals, flags } = parseAgentFlags(args);
     const json = globals.json === true || flags.json === "true";
     const silent = globals.silentOutsideTent === true || flags.silent === "true" || flags["silent-outside"] === "true";
-    const cwd = pathResolve(globals.cwd);
-    const workspaceFlag = flags.workspace || globals.workspace;
+    const hookMeta = hookAlias ? await loadHookMeta(flags, globals) : { stdin: null, host: void 0 };
+    const cwd = pathResolve(globals.cwd) || pathResolve(
+      typeof hookMeta.stdin?.cwd === "string" ? hookMeta.stdin.cwd : void 0
+    ) || pathResolve(
+      typeof hookMeta.stdin?.workspace === "string" ? hookMeta.stdin.workspace : void 0
+    ) || pathResolve(
+      typeof hookMeta.stdin?.workspace_root === "string" ? hookMeta.stdin.workspace_root : void 0
+    ) || pathResolve(
+      typeof hookMeta.stdin?.workspaceRoot === "string" ? hookMeta.stdin.workspaceRoot : void 0
+    );
+    const workspaceFlag = flags.workspace || globals.workspace || (typeof hookMeta.stdin?.workspace === "string" ? hookMeta.stdin.workspace : void 0) || (typeof hookMeta.stdin?.workspace_root === "string" ? hookMeta.stdin.workspace_root : void 0) || (typeof hookMeta.stdin?.workspaceRoot === "string" ? hookMeta.stdin.workspaceRoot : void 0);
     const tentProbe = await probeTentPresence({
       cwd,
       workspace: workspaceFlag
     });
     if (!tentProbe.ok) {
-      if (silent || isHookAlias(sub)) {
+      if (silent || hookAlias) {
         return silentOutsideResult(normalized, json);
       }
       return {
@@ -5235,23 +5249,40 @@ async function runAgentCommand(sub, args, globals = {}) {
       workspace: workspaceFlag
     });
     const workspaceId = ctx.workspaceId;
+    const explicitKey = flags.key || flags["external-key"] || flags.externalKey || flags.external;
+    const host = flags.host || flags.agent || hookMeta.host || process.env.TENT_HOOK_HOST || process.env.TENT_AGENT_HOST;
+    const nativeSessionId = pickNativeSessionId(hookMeta.stdin, flags);
+    const derivedKey = hookAlias ? buildHookExternalKey({
+      host,
+      nativeSessionId,
+      workspaceRoot: ctx.workspaceRoot,
+      workspaceId
+    }) : void 0;
+    const externalKey = explicitKey || derivedKey;
     switch (normalized) {
       case "enter": {
         if (positionals.length > 0) {
           return failUsage2(
-            "Usage: tent agent enter [--session <ss-\u2026>] [--role <name>] [--profile <id>] [--key <externalKey>] [--task <taskId>] [--json]"
+            "Usage: tent agent enter [--session <ss-\u2026>] [--role <name>] [--profile <id>] [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]"
           );
         }
+        if (hookAlias && !externalKey) {
+          return {
+            exitCode: 1,
+            stdout: "",
+            stderr: "session-start requires --host <agent> (or native session id + host) to form a stable externalKey; refusing to create orphan external rows\n"
+          };
+        }
         const sessionId = flags.session || flags["session-id"] || flags.sessionId;
+        const tentSessionId = sessionId && isTentSessionId(sessionId) ? sessionId : void 0;
         const roleName = flags.role || flags["role-name"] || flags.roleName || process.env.TENT_ROLE;
         const profileId = flags.profile || flags["profile-id"] || flags.profileId;
-        const externalKey = flags.key || flags["external-key"] || flags.externalKey || flags.external;
         const lastTaskId = flags.task || flags["task-id"] || flags.taskId || flags["last-task-id"];
         const assigneeKindRaw = flags["assignee-kind"] || flags.assigneeKind;
         const assigneeKind = assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role" ? assigneeKindRaw : void 0;
         const result = await client.sessionEnter({
           workspaceId,
-          sessionId,
+          sessionId: tentSessionId,
           profileId,
           roleName,
           externalKey,
@@ -5264,24 +5295,41 @@ async function runAgentCommand(sub, args, globals = {}) {
       case "status": {
         if (positionals.length > 1) {
           return failUsage2(
-            "Usage: tent agent status [sessionId] [--workspace <path>] [--json]"
+            "Usage: tent agent status [sessionId] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
-        const sessionId = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
+        const sessionIdPos = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
+        const tentSessionId = sessionIdPos && isTentSessionId(sessionIdPos) ? sessionIdPos : void 0;
+        const keyFromPos = sessionIdPos && !isTentSessionId(sessionIdPos) ? sessionIdPos : void 0;
         const result = await client.sessionStatus({
           workspaceId,
-          sessionId
+          sessionId: tentSessionId,
+          externalKey: explicitKey || keyFromPos || derivedKey
         });
         return okPrint2(result, json, (r) => formatStatus(r));
       }
       case "leave": {
-        const sessionId = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
-        if (!sessionId || positionals.length > 1) {
+        const sessionIdPos = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
+        const tentSessionId = sessionIdPos && isTentSessionId(sessionIdPos) ? sessionIdPos : void 0;
+        const keyFromPos = sessionIdPos && !isTentSessionId(sessionIdPos) ? sessionIdPos : void 0;
+        const leaveKey = explicitKey || keyFromPos || derivedKey;
+        if (!tentSessionId && !leaveKey) {
+          if (hookAlias) {
+            return {
+              exitCode: 1,
+              stdout: "",
+              stderr: "session-end requires --host <agent> (with native stdin session id or workspace fallback) or --key <externalKey>; cannot leave without a stable identity\n"
+            };
+          }
           return failUsage2(
-            "Usage: tent agent leave <sessionId> [--workspace <path>] [--json]"
+            "Usage: tent agent leave [<sessionId>] [--key <externalKey>] [--host <agent>] [--workspace <path>] [--json]"
           );
         }
-        const result = await client.sessionLeave(sessionId, workspaceId);
+        const result = await client.sessionLeave({
+          sessionId: tentSessionId,
+          externalKey: leaveKey,
+          workspaceId
+        });
         return okPrint2(result, json, (r) => formatLeave(r));
       }
       default:
@@ -5289,7 +5337,7 @@ async function runAgentCommand(sub, args, globals = {}) {
     }
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    if (isHookAlias(sub) && /Not inside a Tent/i.test(message)) {
+    if (hookAlias && /Not inside a Tent/i.test(message)) {
       return silentOutsideResult("status", globals.json === true);
     }
     return { exitCode: 1, stdout: "", stderr: message + "\n" };
@@ -5300,9 +5348,9 @@ function agentHelpText() {
 
 Usage:
   tent agent enter   [--session <ss-\u2026>] [--role <name>] [--profile <id>]
-                     [--key <externalKey>] [--task <taskId>] [--json]
-  tent agent status  [sessionId] [--json]
-  tent agent leave   <sessionId> [--json]
+                     [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
+  tent agent status  [sessionId|externalKey] [--key <externalKey>] [--json]
+  tent agent leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 
 Semantics:
   enter   Register or reuse a SessionRegistry row with state=external.
@@ -5311,13 +5359,20 @@ Semantics:
   leave   End external session binding only. Never deliver or accept.
           Reports incompleteTasks still open for the caller to handle.
 
-Hook aliases (same RPC; silent exit 0 when cwd is not a Tent workspace):
-  tent agent session-start   \u2192 enter
-  tent agent session-status  \u2192 status
-  tent agent session-end     \u2192 leave
+Hook aliases (projection contract with Agent Hook task):
+  tent agent session-start --host <agent>   \u2192 enter via stable externalKey
+  tent agent session-end   --host <agent>   \u2192 leave via same externalKey
+  tent agent session-status --host <agent>  \u2192 status via same externalKey
+
+  Reads native hook stdin JSON when present (session_id / sessionId / cwd /
+  workspace). externalKey = host + ":" + nativeSessionId, or host + ":ws:" +
+  workspaceRoot when no native id (explicit, testable fallback \u2014 not silent orphans).
+  Outside a Tent workspace: silent exit 0. Inside a real Tent: other errors fail loud.
 
 Common flags:
-  --workspace <path>   Workspace root (default: resolve from cwd)
+  --workspace <path>   Workspace root (default: resolve from cwd / stdin)
+  --host <agent>       Host/agent name for hook externalKey (alias: --agent)
+  --key <externalKey>  Explicit externalKey (overrides derived)
   --data-dir <path>    Service data area override
   --attach-only        Do not bootstrap Local Service
   --json               Machine-readable result
@@ -5340,6 +5395,97 @@ function isHookAlias(sub) {
   const s = (sub || "").trim().toLowerCase();
   return s === "session-start" || s === "sessionstart" || s === "session-status" || s === "sessionstatus" || s === "session-end" || s === "sessionend";
 }
+function buildHookExternalKey(opts) {
+  const host = normalizeHostToken(opts.host);
+  if (!host) return void 0;
+  const native = (opts.nativeSessionId || "").trim();
+  if (native) {
+    return `${host}:${native}`;
+  }
+  const ws = (opts.workspaceRoot || "").trim() || (opts.workspaceId || "").trim();
+  if (!ws) return void 0;
+  return `${host}:ws:${normalizeWorkspaceToken(ws)}`;
+}
+function parseNativeHookStdin(text) {
+  if (text == null) return null;
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return null;
+    }
+    return parsed;
+  } catch {
+    return null;
+  }
+}
+function pickNativeSessionId(stdin, flags = {}) {
+  const fromFlags = flags["native-session"] || flags.nativeSession || flags["provider-session"] || flags.providerSession;
+  if (fromFlags && fromFlags.trim()) return fromFlags.trim();
+  if (!stdin) return void 0;
+  const candidates = [
+    stdin.session_id,
+    stdin.sessionId,
+    stdin.SESSION_ID,
+    stdin.sessionID
+  ];
+  for (const c of candidates) {
+    if (typeof c === "string" && c.trim()) return c.trim();
+  }
+  return void 0;
+}
+function normalizeHostToken(host) {
+  const h = (host || "").trim().toLowerCase();
+  if (!h) return void 0;
+  return h.replace(/[^a-z0-9._+-]+/g, "-").replace(/^-+|-+$/g, "") || void 0;
+}
+function normalizeWorkspaceToken(ws) {
+  return ws.replace(/\\/g, "/").replace(/\/+$/, "").toLowerCase();
+}
+function isTentSessionId(id) {
+  return id.startsWith("ss-") && id.length > 3;
+}
+async function loadHookMeta(flags, globals) {
+  const host = flags.host || flags.agent || process.env.TENT_HOOK_HOST || process.env.TENT_AGENT_HOST;
+  let text = globals.stdinText;
+  if (text === void 0 && !globals.skipStdin) {
+    text = await readStdinIfAny();
+  }
+  return { stdin: parseNativeHookStdin(text), host };
+}
+function readStdinIfAny() {
+  return new Promise((resolve10, reject) => {
+    if (process.stdin.isTTY) {
+      resolve10("");
+      return;
+    }
+    let data = "";
+    let settled = false;
+    const done = (value) => {
+      if (settled) return;
+      settled = true;
+      resolve10(value);
+    };
+    const timer = setTimeout(() => done(data), 500);
+    process.stdin.setEncoding("utf8");
+    process.stdin.on("data", (chunk) => {
+      data += chunk;
+    });
+    process.stdin.on("end", () => {
+      clearTimeout(timer);
+      done(data);
+    });
+    process.stdin.on("error", (err) => {
+      clearTimeout(timer);
+      reject(err);
+    });
+    if (process.stdin.readableEnded) {
+      clearTimeout(timer);
+      done(data);
+    }
+  });
+}
 async function probeTentPresence(options) {
   try {
     await resolveWorkspacePaths({
@@ -5359,7 +5505,12 @@ async function probeTentPresence(options) {
   }
 }
 function silentOutsideResult(kind, json) {
-  const payload = kind === "enter" ? { skipped: true, reason: "not-a-tent-workspace", session: null } : kind === "status" ? { skipped: true, reason: "not-a-tent-workspace", sessions: [], incompleteTasks: [] } : {
+  const payload = kind === "enter" ? { skipped: true, reason: "not-a-tent-workspace", session: null } : kind === "status" ? {
+    skipped: true,
+    reason: "not-a-tent-workspace",
+    sessions: [],
+    incompleteTasks: []
+  } : {
     skipped: true,
     reason: "not-a-tent-workspace",
     left: false,
@@ -5379,7 +5530,8 @@ function formatEnter(result) {
   return `\u2713 External session enter
 sessionId: ${s.sessionId ?? "?"}
 state: ${s.state ?? "external"}
-` + (s.roleName ? `role: ${s.roleName}
+` + (s.externalKey ? `externalKey: ${s.externalKey}
+` : "") + (s.roleName ? `role: ${s.roleName}
 ` : "") + (s.profileId ? `profileId: ${s.profileId}
 ` : "") + (row.reused != null ? `reused: ${row.reused}
 ` : "");
@@ -5393,6 +5545,7 @@ function formatStatus(result) {
       `sessionId: ${s.sessionId ?? "?"}`,
       `state: ${s.state ?? "?"}`,
       `alive: ${s.alive ?? false}`,
+      ...s.externalKey ? [`externalKey: ${s.externalKey}`] : [],
       ...s.roleName ? [`role: ${s.roleName}`] : [],
       ...s.lastTaskId ? [`lastTaskId: ${s.lastTaskId}`] : [],
       ...row.open != null ? [`open: ${row.open}`] : []
@@ -5401,7 +5554,7 @@ function formatStatus(result) {
     lines.push(`externalSessions: ${row.sessions.length}`);
     for (const s of row.sessions) {
       lines.push(
-        `- ${s.sessionId ?? "?"} state=${s.state ?? "?"}` + (s.roleName ? ` role=${s.roleName}` : "")
+        `- ${s.sessionId ?? "?"} state=${s.state ?? "?"}` + (s.externalKey ? ` key=${s.externalKey}` : "") + (s.roleName ? ` role=${s.roleName}` : "")
       );
     }
   }
@@ -5420,6 +5573,7 @@ function formatLeave(result) {
   const lines = [
     `\u2713 External session leave`,
     `sessionId: ${row.sessionId ?? "?"}`,
+    ...row.externalKey ? [`externalKey: ${row.externalKey}`] : [],
     `state: ${row.state ?? "stopped"}`,
     `left: ${row.left ?? false}`,
     ...row.alreadyLeft ? [`alreadyLeft: true`] : [],

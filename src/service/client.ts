@@ -617,19 +617,40 @@ export class ServiceClient {
   }
 
   /** Probe external/managed session + incomplete task bindings. */
-  sessionStatus(args: { workspaceId?: string; sessionId?: string } = {}) {
+  sessionStatus(
+    args: {
+      workspaceId?: string;
+      sessionId?: string;
+      externalKey?: string;
+      key?: string;
+    } = {}
+  ) {
     return this.call("session.status", { ...args });
   }
 
   /**
    * End external session binding only — never deliver/accept tasks.
-   * Reports incompleteTasks still bound to the sessionId.
+   * Reports incompleteTasks still bound to the sessionId / externalKey.
+   * Accepts either a sessionId string or an options object (hook closed-loop).
    */
-  sessionLeave(sessionId: string, workspaceId?: string) {
-    return this.call("session.leave", {
-      sessionId,
-      ...(workspaceId ? { workspaceId } : {}),
-    });
+  sessionLeave(
+    sessionIdOrArgs:
+      | string
+      | {
+          sessionId?: string;
+          workspaceId?: string;
+          externalKey?: string;
+          key?: string;
+        },
+    workspaceId?: string
+  ) {
+    if (typeof sessionIdOrArgs === "string") {
+      return this.call("session.leave", {
+        sessionId: sessionIdOrArgs,
+        ...(workspaceId ? { workspaceId } : {}),
+      });
+    }
+    return this.call("session.leave", { ...sessionIdOrArgs });
   }
 
   a2aListPending(workspaceId?: string) {

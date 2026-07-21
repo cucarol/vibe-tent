@@ -23,9 +23,13 @@ import {
   EXTERNAL_ADAPTER_ID,
 } from "../src/runtime/index.js";
 import {
+  buildHookExternalKey,
   normalizeAgentSub,
+  parseNativeHookStdin,
+  pickNativeSessionId,
   runAgentCommand,
 } from "../src/cli/agent-rpc.js";
+import { recordExternalKey } from "../src/runtime/types.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 
@@ -295,6 +299,7 @@ test("hook alias session-start outside Tent: silent exit 0", async () => {
     cwd: nonTent,
     attachOnly: true,
     dataDir: path.join(os.tmpdir(), "no-svc-" + Date.now()),
+    skipStdin: true,
   });
   assert.equal(result.exitCode, 0, result.stderr);
   assert.equal(result.stderr, "");
@@ -323,6 +328,7 @@ test("hook session-end outside Tent: silent exit 0", async () => {
       cwd: nonTent,
       attachOnly: true,
       dataDir: path.join(os.tmpdir(), "no-svc3-" + Date.now()),
+      skipStdin: true,
     }
   );
   assert.equal(result.exitCode, 0, result.stderr);
@@ -334,4 +340,282 @@ test("hook session-end outside Tent: silent exit 0", async () => {
   assert.equal(body.skipped, true);
   assert.equal(body.delivered, false);
   assert.equal(body.accepted, false);
+});
+
+test("buildHookExternalKey: host+nativeSessionId or host+workspace fallback", () => {
+  assert.equal(
+    buildHookExternalKey({ host: "Codex", nativeSessionId: "abc-123" }),
+    "codex:abc-123"
+  );
+  assert.equal(
+    buildHookExternalKey({
+      host: "claude",
+      workspaceRoot: "C:\\proj\\MyRepo\\",
+    }),
+    "claude:ws:c:/proj/myrepo"
+  );
+  // No host → refuse (no silent orphan key)
+  assert.equal(
+    buildHookExternalKey({ nativeSessionId: "x", workspaceRoot: "/w" }),
+    undefined
+  );
+  assert.equal(buildHookExternalKey({ host: "agy" }), undefined);
+});
+
+test("parseNativeHookStdin + pickNativeSessionId accept common fields", () => {
+  const a = parseNativeHookStdin(
+    JSON.stringify({ session_id: "nat-1", cwd: "/ws" })
+  );
+  assert.equal(pickNativeSessionId(a), "nat-1");
+  const b = parseNativeHookStdin(
+    JSON.stringify({ sessionId: "nat-2", workspace: "/ws2" })
+  );
+  assert.equal(pickNativeSessionId(b), "nat-2");
+  assert.equal(parseNativeHookStdin(""), null);
+  assert.equal(parseNativeHookStdin("not-json"), null);
+});
+
+test("runtime stores first-class externalKey (not profile env)", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ext-key-"));
+  const runtime = createAgentRuntime({ dataDir });
+  try {
+    const h = await runtime.enterExternalSession({
+      externalKey: "explicit-key-1",
+      workspace: "ws-k",
+      roleName: "executor",
+    });
+    const rec = await runtime.registry.read(h.sessionId);
+    assert.equal(rec?.externalKey, "explicit-key-1");
+    assert.equal(recordExternalKey(rec!), "explicit-key-1");
+    // Must not stuff key into profile env
+    assert.equal(rec?.profileSnapshot?.env?.TENT_EXTERNAL_KEY, undefined);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("service status/leave resolve by externalKey without sessionId", async () => {
+  await withService(async (svc) => {
+    const ws = await makeWorkspace();
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+
+    const entered = (await client.sessionEnter({
+      workspaceId,
+      externalKey: "lookup-key-1",
+      roleName: "executor",
+      cwd: ws,
+    })) as { session: { sessionId: string; externalKey?: string } };
+    assert.equal(entered.session.externalKey, "lookup-key-1");
+    const sessionId = entered.session.sessionId;
+
+    const status = (await client.sessionStatus({
+      workspaceId,
+      externalKey: "lookup-key-1",
+    })) as {
+      session: { sessionId: string; externalKey?: string; state: string };
+      open: boolean;
+    };
+    assert.equal(status.session.sessionId, sessionId);
+    assert.equal(status.session.externalKey, "lookup-key-1");
+    assert.equal(status.open, true);
+
+    const left = (await client.sessionLeave({
+      externalKey: "lookup-key-1",
+      workspaceId,
+    })) as {
+      sessionId: string;
+      left: boolean;
+      delivered: boolean;
+      accepted: boolean;
+    };
+    assert.equal(left.sessionId, sessionId);
+    assert.equal(left.left, true);
+    assert.equal(left.delivered, false);
+    assert.equal(left.accepted, false);
+
+    const left2 = (await client.sessionLeave({
+      externalKey: "lookup-key-1",
+      workspaceId,
+    })) as { alreadyLeft: boolean; left: boolean };
+    assert.equal(left2.alreadyLeft, true);
+    assert.equal(left2.left, false);
+  });
+});
+
+test("hook session-start → status → session-end closed loop via --host + stdin (no sessionId file)", async () => {
+  await withService(async (svc, dataDir) => {
+    const ws = await makeWorkspace();
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    await client.mount(ws);
+
+    const stdinStart = JSON.stringify({
+      session_id: "provider-sess-42",
+      cwd: ws,
+    });
+    const start = await runAgentCommand(
+      "session-start",
+      ["--host", "codex", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        packageRoot: repoRoot,
+        stdinText: stdinStart,
+        skipStdin: true,
+      }
+    );
+    assert.equal(start.exitCode, 0, start.stderr);
+    const startBody = JSON.parse(start.stdout) as {
+      session: { sessionId: string; externalKey?: string; state: string };
+      reused: boolean;
+    };
+    assert.equal(startBody.session.state, "external");
+    assert.equal(startBody.session.externalKey, "codex:provider-sess-42");
+    assert.equal(startBody.reused, false);
+    const sessionId = startBody.session.sessionId;
+
+    // Re-enter same host+native id reuses (idempotent) without knowing ss-
+    const start2 = await runAgentCommand(
+      "session-start",
+      ["--host", "codex", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        stdinText: stdinStart,
+        skipStdin: true,
+      }
+    );
+    assert.equal(start2.exitCode, 0, start2.stderr);
+    const start2Body = JSON.parse(start2.stdout) as {
+      session: { sessionId: string };
+      reused: boolean;
+    };
+    assert.equal(start2Body.session.sessionId, sessionId);
+    assert.equal(start2Body.reused, true);
+
+    // status without sessionId — only --host + same stdin
+    const status = await runAgentCommand(
+      "session-status",
+      ["--host", "codex", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        stdinText: stdinStart,
+        skipStdin: true,
+      }
+    );
+    assert.equal(status.exitCode, 0, status.stderr);
+    const statusBody = JSON.parse(status.stdout) as {
+      session: { sessionId: string; externalKey?: string };
+      open: boolean;
+    };
+    assert.equal(statusBody.session.sessionId, sessionId);
+    assert.equal(statusBody.session.externalKey, "codex:provider-sess-42");
+    assert.equal(statusBody.open, true);
+
+    // end in a "separate process" style call: no sessionId positional
+    const end = await runAgentCommand(
+      "session-end",
+      ["--host", "codex", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        stdinText: stdinStart,
+        skipStdin: true,
+      }
+    );
+    assert.equal(end.exitCode, 0, end.stderr);
+    const endBody = JSON.parse(end.stdout) as {
+      sessionId: string;
+      left: boolean;
+      delivered: boolean;
+      accepted: boolean;
+      state: string;
+    };
+    assert.equal(endBody.sessionId, sessionId);
+    assert.equal(endBody.left, true);
+    assert.equal(endBody.delivered, false);
+    assert.equal(endBody.accepted, false);
+    assert.equal(endBody.state, "stopped");
+  });
+});
+
+test("hook session-start without native id uses host+workspace fallback; no host fails loud in Tent", async () => {
+  await withService(async (svc, dataDir) => {
+    const ws = await makeWorkspace();
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    await client.mount(ws);
+
+    // No host → refuse enter (would create un-findable orphans)
+    const noHost = await runAgentCommand("session-start", ["--json"], {
+      client,
+      cwd: ws,
+      dataDir,
+      skipStdin: true,
+      stdinText: "",
+    });
+    assert.equal(noHost.exitCode, 1);
+    assert.match(noHost.stderr, /externalKey|orphan|--host/i);
+
+    // host + workspace fallback (empty stdin, no session_id)
+    const start = await runAgentCommand(
+      "session-start",
+      ["--host", "claude", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        skipStdin: true,
+        stdinText: "",
+      }
+    );
+    assert.equal(start.exitCode, 0, start.stderr);
+    const startBody = JSON.parse(start.stdout) as {
+      session: { sessionId: string; externalKey?: string };
+    };
+    const expectedKey = buildHookExternalKey({
+      host: "claude",
+      workspaceRoot: ws,
+    });
+    assert.equal(startBody.session.externalKey, expectedKey);
+
+    const end = await runAgentCommand(
+      "session-end",
+      ["--host", "claude", "--json"],
+      {
+        client,
+        cwd: ws,
+        dataDir,
+        skipStdin: true,
+        stdinText: "",
+      }
+    );
+    assert.equal(end.exitCode, 0, end.stderr);
+    const endBody = JSON.parse(end.stdout) as { left: boolean; sessionId: string };
+    assert.equal(endBody.left, true);
+    assert.equal(endBody.sessionId, startBody.session.sessionId);
+  });
+});
+
+test("hook aliases silent outside Tent even with --host", async () => {
+  const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws4-"));
+  const result = await runAgentCommand(
+    "session-start",
+    ["--host", "codex", "--json"],
+    {
+      cwd: nonTent,
+      attachOnly: true,
+      dataDir: path.join(os.tmpdir(), "no-svc4-" + Date.now()),
+      skipStdin: true,
+      stdinText: JSON.stringify({ session_id: "x", cwd: nonTent }),
+    }
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = JSON.parse(result.stdout) as { skipped: boolean };
+  assert.equal(body.skipped, true);
 });

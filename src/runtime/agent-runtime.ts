@@ -52,6 +52,7 @@ import {
   EXTERNAL_PROFILE_ID,
   isSessionId,
   makeSessionId,
+  recordExternalKey,
 } from "./types.js";
 
 export interface AgentRuntimeOptions {
@@ -306,18 +307,8 @@ export class AgentRuntime implements AgentRuntimePort {
           if (req.lastTaskId && existing.lastTaskId !== req.lastTaskId) {
             patch.lastTaskId = req.lastTaskId;
           }
-          if (externalKey) {
-            const snap = {
-              ...(existing.profileSnapshot ?? {
-                id: existing.profileId,
-                adapterId: existing.adapterId,
-              }),
-              env: {
-                ...((existing.profileSnapshot as AgentProfileConfig | undefined)?.env ?? {}),
-                TENT_EXTERNAL_KEY: externalKey,
-              },
-            };
-            patch.profileSnapshot = snap as AgentProfileConfig;
+          if (externalKey && existing.externalKey !== externalKey) {
+            patch.externalKey = externalKey;
           }
           if (Object.keys(patch).length > 0) {
             const updated = await this.registry.update(req.sessionId, patch);
@@ -335,14 +326,14 @@ export class AgentRuntime implements AgentRuntimePort {
     }
 
     // 2) externalKey / role+workspace idempotency: reuse open external row.
+    // Prefer first-class externalKey; fall back to legacy profileSnapshot.env.TENT_EXTERNAL_KEY.
     if (externalKey || (workspace && roleName)) {
       const all = await this.registry.list();
       const match = all.find((rec) => {
         if (rec.state !== "external") return false;
         if (workspace && rec.workspace && rec.workspace !== workspace) return false;
         if (externalKey) {
-          const key = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY;
-          return key === externalKey;
+          return recordExternalKey(rec) === externalKey;
         }
         // Soft match: same workspace + role label for hook re-enter without key.
         return Boolean(roleName && rec.roleName === roleName);
@@ -354,6 +345,10 @@ export class AgentRuntime implements AgentRuntimePort {
         }
         if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
           patch.runtimeWorkspace = { cwd };
+        }
+        // Migrate legacy env-key rows onto the first-class field when reusing.
+        if (externalKey && match.externalKey !== externalKey) {
+          patch.externalKey = externalKey;
         }
         if (Object.keys(patch).length > 0) {
           const updated = await this.registry.update(match.id, patch);
@@ -368,7 +363,6 @@ export class AgentRuntime implements AgentRuntimePort {
     const profileSnapshot: AgentProfileConfig = {
       id: profileId,
       adapterId: EXTERNAL_ADAPTER_ID,
-      ...(externalKey ? { env: { TENT_EXTERNAL_KEY: externalKey } } : {}),
     };
     const record: SessionRecord = {
       id: sessionId,
@@ -384,6 +378,7 @@ export class AgentRuntime implements AgentRuntimePort {
       createdAt: now,
       updatedAt: now,
       lastTaskId: req.lastTaskId,
+      ...(externalKey ? { externalKey } : {}),
     };
     await this.registry.write(record);
     // No session.starting / session.live process events — external has no child.
