@@ -134,26 +134,40 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(roleSkill, /tent handoff/i);
   // tent-agent: compact entry skill; details in references; coexists with tent-role/tent-genesis
   assert.match(agentSkill, /name: tent-agent/);
-  assert.match(agentSkill, /tent agent enter/);
-  assert.match(agentSkill, /tent agent status/);
-  assert.match(agentSkill, /tent agent leave/);
   assert.match(agentSkill, /tent task claim/);
   assert.match(agentSkill, /tent task get/);
-  assert.match(agentSkill, /tent task send-input/);
   assert.match(agentSkill, /tent task ask-user/);
+  assert.match(agentSkill, /tent task task-input list/);
+  assert.match(agentSkill, /tent task task-input get/);
+  assert.match(agentSkill, /tent task task-input ack/);
   assert.match(agentSkill, /tent task deliver/);
   assert.match(agentSkill, /delivery.*accept|Delivery.*accept|不等于.*accept|≠ accept|not.*user accept/i);
-  assert.match(agentSkill, /permission/i);
+  assert.match(agentSkill, /U2A|user → agent|user\/dispatcher/i);
+  assert.match(agentSkill, /A2U|agent → user/i);
+  assert.match(agentSkill, /context pointer/i);
   assert.match(agentSkill, /references\//);
   assert.ok(agentSkill.length < 6000, "tent-agent SKILL.md should stay compact");
+  // Agent must not treat send-input as its own write path; document user-only + agent consume.
+  assert.match(agentSkill, /never call `tent task send-input`|never.*send-input/i);
+  assert.doesNotMatch(agentSkill, /tent agent enter|tent agent status|tent agent leave/);
+  assert.doesNotMatch(agentSkill, /honor contract|manifest-writable|Honor manifest readable/i);
   assert.match(agentPaths, /system root/i);
   assert.match(agentPaths, /\.tent\/temp/);
+  assert.match(agentPaths, /context pointer/i);
+  assert.doesNotMatch(agentPaths, /honor contract/i);
   assert.match(agentTaskCli, /tent task deliver/);
   assert.match(agentTaskCli, /tent task ask-user/);
   assert.match(agentTaskCli, /tent task send-input/);
-  assert.match(agentSession, /tent agent leave/i);
-  assert.match(agentSession, /It never:[\s\S]*delivers/i);
-  assert.match(agentSession, /permission/i);
+  assert.match(agentTaskCli, /tent task task-input list/);
+  assert.match(agentTaskCli, /tent task task-input ack/);
+  assert.match(agentTaskCli, /user \/ dispatcher only|User \/ dispatcher only|user-only/i);
+  assert.match(agentTaskCli, /should \*\*not\*\* call .*send-input|Agents should \*\*not\*\* call .*send-input/i);
+  assert.match(agentTaskCli, /no.*tent agent enter|There is \*\*no\*\* `tent agent/i);
+  assert.match(agentSession, /A2U|ask-user/i);
+  assert.match(agentSession, /U2A|task-input|send-input/i);
+  assert.match(agentSession, /context pointer/i);
+  assert.match(agentSession, /no `tent agent leave`|There is no `tent agent leave`/i);
+  assert.doesNotMatch(agentSession, /honor contract|readable \/ writable.*sandbox/i);
   assert.doesNotMatch(agentSkill, /tent handoff/i);
 });
 

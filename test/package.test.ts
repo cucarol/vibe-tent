@@ -772,19 +772,24 @@ function assertInstalledTentRoleSkill(skill: string) {
 /** Assert installed tent-agent is the compact V0.2 entry skill with service task CLI + session bounds. */
 function assertInstalledTentAgentSkill(skill: string) {
   assert.match(skill, /name: tent-agent/);
-  assert.match(skill, /tent agent enter/);
-  assert.match(skill, /tent agent status/);
-  assert.match(skill, /tent agent leave/);
   assert.match(skill, /tent task claim/);
   assert.match(skill, /tent task get/);
-  assert.match(skill, /tent task send-input/);
   assert.match(skill, /tent task ask-user/);
+  assert.match(skill, /tent task task-input list/);
+  assert.match(skill, /tent task task-input get/);
+  assert.match(skill, /tent task task-input ack/);
   assert.match(skill, /tent task deliver/);
   assert.match(skill, /delivery.*accept|Delivery.*accept|不等于.*accept|≠ accept|not.*user accept/i);
-  assert.match(skill, /permission|原生 permission|native.*permission/i);
+  assert.match(skill, /U2A|user → agent/i);
+  assert.match(skill, /A2U|agent → user/i);
+  assert.match(skill, /context pointer/i);
+  assert.match(skill, /never call `tent task send-input`|never.*send-input/i);
   assert.match(skill, /references\//);
   assert.match(skill, /\.tent/);
   assert.match(skill, /taskPath|system root/i);
+  // No invented top-level agent lifecycle CLI; no tent-role-style honor ACL teaching.
+  assert.doesNotMatch(skill, /tent agent enter|tent agent status|tent agent leave/);
+  assert.doesNotMatch(skill, /honor contract|manifest-writable|Honor manifest readable/i);
   assert.doesNotMatch(skill, /`tent task-ack/);
   assert.doesNotMatch(skill, /`tent report </);
   assert.doesNotMatch(skill, /tent handoff/i);

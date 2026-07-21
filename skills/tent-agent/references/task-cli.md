@@ -2,6 +2,8 @@
 
 Collaboration lifecycle mutates only through **Local Service** (`tent task *`). CLI attaches to the machine-local service, mounts the workspace, and calls RPC. CLI exit does **not** stop the service.
 
+Only commands that exist on the current CLI are listed below. Do not invent `tent agent *` or other missing top-level verbs.
+
 ## Commands agents actually use
 
 ```text
@@ -9,21 +11,25 @@ tent task list [--workspace <path>] [--json]
 tent task get <taskPath> [--workspace <path>] [--json]
 tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
 tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--workspace <path>] [--json]
-tent task user-ask list|get <askId>|reply <askId>|deny <askId> […]   # usually user/Desktop
-tent task task-input list <taskPath>|get <inputId>|ack <inputId> --task <taskPath> --actor <role|sessionId>
+tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]
+tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--json]
+tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
 ```
 
-Optional review (user / authorized):
+User / Desktop (agents do **not** drive these as their primary path):
 
 ```text
+tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
+tent task user-ask list|get <askId>|reply <askId>|deny <askId> […]
 tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task cancel <taskPath> …
+tent task dispatch <boxId> <role> …
 ```
 
 Agents should **not** self-accept their own delivery unless the product path explicitly authorizes it.
+Agents should **not** call `tent task send-input` to “message themselves.”
 
 ## taskPath
 
@@ -44,29 +50,53 @@ Agents should **not** self-accept their own delivery unless the product path exp
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>
 ```
 
-## send-input (U2A)
+## U2A — user writes, agent consumes
 
-User (or Desktop) can append one-shot text or concept refs to a **running** task. Agents consume via the task-input surface (`task-input list/get/ack`) as exposed by the service. Do not invent a second inbox under the workspace root.
+**Write path (user / dispatcher only):**
 
-## ask-user (A2U)
+```bash
+tent task send-input <taskPath> [--text "…"] [--refs id,id]
+```
 
-Lightweight agent→user business question — not a chat product:
+Service stores a machine-local TaskInput. Managed ACP injects a fixed-format follow-up (`## User Input` / review feedback). External agents must poll.
+
+**Consume path (agent):**
+
+```bash
+tent task task-input list <taskPath>
+tent task task-input get <inputId> --task <taskPath>
+tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId>
+```
+
+- `list` / `get` / `ack` always need the task scope (`taskPath`); there is no global inbox.
+- `ack` `--actor` must match the task role or a service-verified session id for that task.
+- Do not invent a second inbox under the workspace root.
+
+## A2U — agent asks, user answers
 
 ```bash
 tent task ask-user <taskPath> --question "…" [--choices a=Label A,b=Label B]
 ```
 
-Wait for user reply through the service / Desktop; do not busy-loop inventing answers.
+Creates a UserAsk and moves the task to `waiting(user-input)`. User replies via Desktop or:
 
-## Agent session CLI (orthogonal)
-
-```text
-tent agent enter|status|leave [--json]
+```bash
+tent task user-ask reply <askId> [--answer …] [--choice <id>]
+tent task user-ask deny <askId>
 ```
 
-- Bind / inspect / unbind external session metadata.
-- **leave does not deliver or accept.**
-- Non-Tent cwd: lifecycle hooks that are silent no-ops must exit 0.
+Wait for the reply through the service; do not busy-loop inventing answers.
+
+## Orientation helpers (real top-level commands)
+
+```bash
+tent status          # proposals, tasks, paths (read-only)
+tent roles           # role registry
+tent tree            # box tree
+tent task list       # service task list
+```
+
+There is **no** `tent agent enter|status|leave` on the current CLI. Session bind metadata is optional via `claim --session` when the host provides a session id; do not document missing agent lifecycle subcommands as fallbacks.
 
 ## What not to use as the main path
 
@@ -76,11 +106,4 @@ tent agent enter|status|leave [--json]
 | `tent complete` / old report flows | Formal delivery is Delivery-only via `task.deliver` |
 | Chat-only “done” without deliver | External path must `task.deliver` |
 | Self `task.accept` | User (or authorized) review only |
-
-## Orientation helpers
-
-```bash
-tent status          # proposals, tasks, paths (read-only)
-tent roles           # role registry
-tent task list       # service task list
-```
+| Agent calling `task.send-input` | User-only U2A write path |

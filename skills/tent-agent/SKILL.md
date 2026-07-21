@@ -1,6 +1,6 @@
 ---
 name: tent-agent
-description: Compact Tent entry for any new Agent: detect .tent and task envelopes, run tent agent enter/status/leave, and drive task claim/get/send-input/ask-user/deliver. Prefer this over tent-role for new agents.
+description: Compact Tent entry for any new Agent: detect .tent and task envelopes, claim/get/deliver via tent task *, consume U2A via task-input, ask user via ask-user. Prefer this over tent-role for new agents.
 ---
 
 # tent-agent
@@ -13,7 +13,7 @@ Details live under `references/` — keep this file short and cache-friendly.
 
 - You are inside (or should attach to) a workspace that has `.tent/`.
 - Bootstrap / Context Card / relay prompt points at a task envelope under `.tent/temp/…`.
-- You need claim → work → deliver, or A2U (`ask-user`) / U2A (`send-input`) mid-task.
+- You need claim → work → deliver, or mid-task A2U / U2A.
 
 ## Hard facts (do not invent)
 
@@ -25,25 +25,13 @@ Details live under `references/` — keep this file short and cache-friendly.
 | **file read path** | Relative to workspace root: `.tent/temp/…` |
 | **box** | Task content (identity note) |
 | **envelope** | Machine delivery record (`tk-…`); not the task body |
+| **manifest** | Dispatch-time **context pointer** (claims + paths to load). Not a permission system |
 | **delivery** | Agent submission (`dl-…`); **not** user accept |
 | **accept** | User (or authorized) review of a delivery |
 
 Never invent missing envelope / manifest / box content — fetch by path or id first. Never resolve operational files as `<workspaceRoot>/temp` (use `.tent/temp`).
 
 More path rules: `references/paths.md`.
-
-## Session lifecycle (external)
-
-```bash
-# cwd = workspace root (contains .tent/)
-tent agent enter [--json]          # bind / resume external session when available
-tent agent status [--json]         # session + task orientation
-tent agent leave [--json]          # unbind only — does NOT deliver or accept
-```
-
-- **leave** ends or unbinds the external session binding and may report unfinished work. It does **not** call deliver/accept.
-- Outside a Tent workspace, agent lifecycle hooks that are designed for silent no-op must exit 0 (do not fail the host agent).
-- Tent does **not** take over the host product’s native tool/permission UI. External GUI sessions do not become ACP processes via this skill.
 
 ## Task lifecycle (Local Service)
 
@@ -54,10 +42,25 @@ tent task list [--json]
 tent task get <taskPath> [--json]
 tent task claim <taskPath> [--session <sessionId>] [--json]
 # … work in envelope worktree/branch when present …
-tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--json]
 tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--json]
+tent task task-input list <taskPath> [--json]
+tent task task-input get <inputId> --task <taskPath> [--json]
+tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--json]
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--json]
 ```
+
+Orientation (read-only, no Service required): `tent status`, `tent roles`, `tent tree`.
+
+### Direction: A2U vs U2A
+
+| Direction | Who writes | Agent action | CLI |
+| --- | --- | --- | --- |
+| **A2U** (agent → user) | Agent | Ask a business question; wait for reply | `tent task ask-user` (agent). User answers via Desktop / `tent task user-ask reply\|deny` |
+| **U2A** (user → agent) | **User or dispatcher only** | **Consume** pending inputs; do **not** call `send-input` on yourself | User writes with `tent task send-input`. Agent: `tent task task-input list\|get\|ack` |
+
+- **Agents never call `tent task send-input`.** That is the user/dispatcher write path.
+- Managed ACP may inject U2A as a structured `## User Input` / review-feedback turn; external agents poll + ack.
+- `ask-user` is not chat and not tool-permission UI.
 
 ### Managed ACP vs external / relay
 
@@ -74,21 +77,22 @@ Copying a relay prompt is not consuming the task. Only claim (or service claim) 
 - Do not mark box `status: done` yourself.
 - Chat summary alone is not delivery; use `tent task deliver` on the external path.
 
-Full command notes: `references/task-cli.md`. Session / permission boundaries: `references/session-boundaries.md`.
+Full command notes: `references/task-cli.md`. Session boundaries: `references/session-boundaries.md`.
 
 ## Minimal external loop
 
 1. Confirm cwd is workspace root with `.tent/RULES.md`.
-2. `tent agent enter` / `tent agent status` (when CLI is available); otherwise `tent status` / `tent task list`.
+2. Orient with `tent status` / `tent task list` when helpful.
 3. Resolve taskPath from Context Card, user, or `tent task list`.
-4. `tent task claim` → `tent task get` → read envelope, manifest, claimed box (real file reads).
-5. Honor manifest readable/writable (honor contract, not a sandbox). Prefer envelope `worktree` / `branch` for code work. Commit workspace changes; never commit `.tent/`.
-6. Need a decision → `tent task ask-user`. Need mid-run user text → consume via `send-input` / task-input ack as the service surface provides.
-7. `tent task deliver … --summary …` then `tent agent leave` if you bound a session.
+4. `tent task claim` → `tent task get` → read envelope, **manifest as context pointer**, claimed box (real file reads).
+5. Prefer envelope `worktree` / `branch` for code work. Commit workspace changes; never commit `.tent/`.
+6. Need a decision → `tent task ask-user` (A2U). Mid-run user text → `task-input list/get/ack` (U2A consume); never `send-input` as the agent.
+7. `tent task deliver … --summary …`.
 8. Stop. Wait for user accept/reject. Do not self-accept.
 
 ## What this skill is not
 
 - Not Tent genesis → use `tent-genesis`.
 - Not a full durable-role handbook (type registry, tags, orchestrator manual) → see `tent-role` if you need that depth.
-- Not ACP runtime, permission broker, or Desktop UI control.
+- Not ACP runtime, host tool-permission UI, or Desktop control.
+- Not a permission projector: V0.2 does **not** enforce or teach `readable`/`writable` as a security or honor-permission system. Use the manifest to know **what context to open**, not as an ACL.
