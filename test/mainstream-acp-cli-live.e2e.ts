@@ -13,7 +13,6 @@ import { execFile } from "node:child_process";
 import * as fs from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
-import { promisify } from "node:util";
 import { test } from "node:test";
 import { createAgentRuntime, type AgentProfileConfig, type RuntimeEvent } from "../src/runtime/index.js";
 import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
@@ -22,7 +21,6 @@ import { CLAUDE_ACP_ADAPTER_ID } from "../src/adapters/claude-acp/types.js";
 import { OPENCODE_ACP_ADAPTER_ID } from "../src/adapters/opencode-acp/index.js";
 import { COPILOT_ACP_ADAPTER_ID } from "../src/adapters/copilot-acp/types.js";
 
-const execFileAsync = promisify(execFile);
 const selected = new Set(
   (process.env.TENT_LIVE_PROVIDERS || "")
     .split(",")
@@ -74,14 +72,24 @@ async function runNative(
   cwd: string,
   env?: NodeJS.ProcessEnv
 ): Promise<string> {
-  const result = await execFileAsync(command, args, {
-    cwd,
-    env: { ...process.env, ...env },
-    timeout: 300_000,
-    maxBuffer: 4 * 1024 * 1024,
-    windowsHide: true,
+  return new Promise((resolve, reject) => {
+    const child = execFile(command, args, {
+      cwd,
+      env: { ...process.env, ...env },
+      timeout: 300_000,
+      maxBuffer: 4 * 1024 * 1024,
+      windowsHide: true,
+    }, (error, stdout, stderr) => {
+      if (error) {
+        reject(Object.assign(error, { stdout, stderr }));
+        return;
+      }
+      resolve(`${stdout || ""}\n${stderr || ""}`.trim());
+    });
+    // Some CLIs read piped stdin in addition to positional prompt arguments.
+    // EOF makes this probe unambiguously non-interactive.
+    child.stdin?.end();
   });
-  return `${result.stdout || ""}\n${result.stderr || ""}`.trim();
 }
 
 const providers: ProviderCase[] = [
@@ -143,7 +151,7 @@ const providers: ProviderCase[] = [
     name: "opencode",
     profile: profile("foreground-opencode", OPENCODE_ACP_ADAPTER_ID, nativePaths.opencode, ["acp"]),
     nativeResume: (sessionId, prompt, cwd) =>
-      runNative(nativePaths.opencode, ["run", "--session", sessionId, "--pure", prompt], cwd),
+      runNative(nativePaths.opencode, ["run", "--session", sessionId, prompt], cwd),
   },
   {
     name: "copilot",

@@ -16583,7 +16583,7 @@ var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
   "codex-acp": "live-e2e",
   "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "mock-tested",
+  "opencode-acp": "live-e2e",
   "copilot-acp": "live-e2e"
 };
 var NATIVE_FOREGROUND_BY_ADAPTER = {
@@ -16591,7 +16591,7 @@ var NATIVE_FOREGROUND_BY_ADAPTER = {
   "codex-acp": "verified",
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
-  "opencode-acp": "unverified",
+  "opencode-acp": "verified",
   "copilot-acp": "verified"
 };
 var LEVEL_SET = new Set(PROVIDER_VERIFICATION_LEVELS);

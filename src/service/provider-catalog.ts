@@ -46,7 +46,7 @@ const PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER: Readonly<
   "codex-acp": "live-e2e",
   "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "mock-tested",
+  "opencode-acp": "live-e2e",
   "copilot-acp": "live-e2e",
 };
 
@@ -57,7 +57,7 @@ const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
   "codex-acp": "verified",
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
-  "opencode-acp": "unverified",
+  "opencode-acp": "verified",
   "copilot-acp": "verified",
 };
 

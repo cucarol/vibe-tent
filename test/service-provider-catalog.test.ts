@@ -35,7 +35,7 @@ const EXPECTED_LEVELS: Record<string, ProviderVerificationLevel> = {
   "codex-acp": "live-e2e",
   "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "mock-tested",
+  "opencode-acp": "live-e2e",
   "copilot-acp": "live-e2e",
 };
 
@@ -44,7 +44,7 @@ const EXPECTED_FOREGROUND = {
   "codex-acp": "verified",
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
-  "opencode-acp": "unverified",
+  "opencode-acp": "verified",
   "copilot-acp": "verified",
 } as const;
 
@@ -133,7 +133,7 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
   const live = providers.filter((p) => p.verificationLevel === "live-e2e");
   assert.deepEqual(
     live.map((p) => p.adapterId),
-    ["grok-acp", "codex-acp", "claude-acp", "copilot-acp"]
+    ["grok-acp", "codex-acp", "claude-acp", "opencode-acp", "copilot-acp"]
   );
 
   // Resume evidence: verified loadSession bridges advertise canResume; Antigravity does not.
