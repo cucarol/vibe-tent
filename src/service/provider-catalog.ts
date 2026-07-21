@@ -47,7 +47,7 @@ const PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER: Readonly<
   "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
   "opencode-acp": "mock-tested",
-  "copilot-acp": "mock-tested",
+  "copilot-acp": "live-e2e",
 };
 
 const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
@@ -58,7 +58,7 @@ const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
   "opencode-acp": "unverified",
-  "copilot-acp": "unverified",
+  "copilot-acp": "verified",
 };
 
 const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);

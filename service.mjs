@@ -16584,7 +16584,7 @@ var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
   "claude-acp": "live-e2e",
   "antigravity-acp": "mock-tested",
   "opencode-acp": "mock-tested",
-  "copilot-acp": "mock-tested"
+  "copilot-acp": "live-e2e"
 };
 var NATIVE_FOREGROUND_BY_ADAPTER = {
   "grok-acp": "verified",
@@ -16592,7 +16592,7 @@ var NATIVE_FOREGROUND_BY_ADAPTER = {
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
   "opencode-acp": "unverified",
-  "copilot-acp": "unverified"
+  "copilot-acp": "verified"
 };
 var LEVEL_SET = new Set(PROVIDER_VERIFICATION_LEVELS);
 function defaultProductAcpAdapters() {
