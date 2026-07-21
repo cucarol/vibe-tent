@@ -28,10 +28,12 @@ Desktop / 共置 agent 使用 **in-workspace** 布局：
 ## 模型
 
 - Tent 用普通文件保存意图、上下文、状态和协作管道；Tent 本身不使用 Git。
-- 一顶 Tent 只指向一个真实 workspace。真实代码、commit、branch、worktree 都发生在 workspace。
-- 一个 role 是一个长期 session，并复用一个 workspace `worktree + branch`。一个 role 可以处理多个 box。
-- 一个 box 是一个文件夹加同名 Markdown 身份笔记。`bx-` id 随移动保持稳定。层级表达服务关系。
+- 一顶 Tent 住在唯一真实 workspace 的 `.tent/` 下：workspace root 由 in-workspace 布局推导，不是 type 轴或 box 上的「workspace 指针」。
+- 任务代码通道是 envelope 上的 **WorkspaceLane**（`workspace` / `worktree` / `branch` / `targetBranch`）。真实 commit 发生在 workspace。
+- 一个 role 是一个长期 session，并复用一条 durable WorkspaceLane（`tent-role/<role>`）。一个 role 可以处理多个 box。
+- 一个 box 是一个文件夹加同名 Markdown 身份笔记。`bx-` / `cx-` id 随移动保持稳定。层级表达服务关系。
 - box = 任务本体；envelope = 机器投递状态载体。一句话版：内容住 box，状态住 envelope。
+- type 注册表的 **`coordination`** 控制协作生命周期（status / occupation / delivery）；`workspacePointer` 已退役。
 - `manifest.yml` 解析 claim、readable、writable。它是 honor contract，不是安全沙箱。若任务指令和 manifest 边界冲突，停止并询问 user。role 必须实际读取所需文件，不能仅凭 manifest 条目名称声称已知内容。
 - 交付与验收走 **Local Service** 的 `tent task deliver` / Desktop accept；聊天里的总结是给人看的，不是第二写路径。
 
@@ -57,16 +59,16 @@ Desktop / 共置 agent 使用 **in-workspace** 布局：
 
 - `goal`：只用于真正的目标、最终要达成的结果、核心方向。它应该回答“我们要完成什么”。不要把普通待办、检查项、问题记录都写成 goal。
 - `prompt`：范围最大，用于任务说明、上下文、问题、提案、检查清单、review 发现、后续待办、派活意图，以及大多数 user/agent 协作文本。
-- `output`：用于产出或产出指针。产出可以是代码仓、文档、release、npm 包、截图、构建物、task envelope、workspace 指针等，重点是它代表或指向某个交付物。
+- `artifact`：用于真实产出或产出指针（代码、文档、release、npm 包、截图、构建物、`artifactRefs` 等）。旧名 `output` 已迁移为 `artifact`；它不绑定 workspace root。
 
 二级 type 通常是可选修饰，不是默认补全项。
 
-- 只有当当前注册表里的二级 type 符号语义真的重要，或需要它覆盖一级 type 的 R/W 默认值时，才写 `goal-open`、`prompt-reference`、`output-asset` 这类复合 type。
+- 只有当当前注册表里的二级 type 符号语义真的重要，或需要它覆盖一级 type 的 R/W 默认值时，才写 `goal-open`、`prompt-reference`、`artifact-asset` 这类复合 type。
 - 不要因为“还没做完”就自动加 `open`。进度属于 `status`。
 - 不要因为“做完了”就自动加 `sealed`。`sealed` 是语义封存或隔离，不等于 done。
 - 不确定时，优先用合适的一级 type；必要时停下来问 user。
 
-进度用 `status: todo | doing | done` 表达。type 表达语义和 R/W，不替代 status。
+进度用 `status: todo | doing | done` 表达。type 表达语义、R/W 与 `coordination`，不替代 status。
 
 ## Tags 选择
 
@@ -80,14 +82,13 @@ tags 是跨树检索索引，用来帮助 user 和 agent 之后找回同主题 b
 
 简化判断：type 表达主语义和 R/W，status 表达进度，层级表达归属关系，tags 表达横向检索主题。
 
-## Output 位置
+## Artifact 位置
 
-`output` 表示真实产出或产出指针。
+`artifact` 表示真实产出或产出指针（不是 workspace 绑定）。
 
-- 全局 workspace 指针可以作为顶层 output。
-- 具体代码、文档、release、npm 包、截图、构建物等 output，优先创建在对应处理 box 的子级中。
-- output 笔记可以写 `workspace`、`ref`、`path` 或 `paths`，用于指向真实 workspace 的 commit、文件或目录。
-- 不要把普通任务记录写成 output；只有它代表或指向一个可验收产物时才使用 output。
+- 具体代码、文档、release、npm 包、截图、构建物等 artifact，优先创建在对应处理 box 的子级中。
+- artifact 笔记可用 `ref`、`path`、`paths` 或 Delivery 的 `artifactRefs` 指向真实交付物；workspace root 仍由 in-workspace `.tent` 推导。
+- 不要把普通任务记录写成 artifact；只有它代表或指向一个可验收产物时才使用 artifact。
 
 ## agent 向 user 提提案
 
@@ -118,7 +119,7 @@ Desktop 共置与 Local Service 路径使用 **`tent task *`**（经 Service RPC
 5. **外部路径**接任务后读取 envelope 指向的 manifest 与 claimed box；box 正文才是任务定义，envelope 只是不可变指针。复制 relay prompt 不是消费事件；只有 `task claim`（或 service 代 claim）会把任务改成 `running`。Managed 路径以 prompt 内 user prompt 为准，不必为取 prompt 而调用 CLI。
 6. 粗 box 可以直接派活。claim 后先对齐任务：读 box 正文和必要子框；不清楚就问 user；对齐结论写回 box 正文。box 的细节是在推进中长出来的，不是派活门槛。
 7. 如果 user 没有给 task 文件而是在会话里直接口头指派（ad-hoc），仍先扫描信箱；没有 pending/queued task 时再按口头范围工作。读 `.tent/RULES.md` 与所需上下文，只在既有授权或 user 明示的范围内写 Tent 文件；范围拿不准就先确认。
-8. 使用 task 里的 `worktree` 作为真实代码工作目录，使用 task 里的 `branch` 作为该 role 的长期分支。后续任务复用它们。这三个字段由 dispatch 自动生成：从 Tent 唯一的 workspace 指针框解析 workspace，按 `tent-role/<role>` 与 `<workspace>-worktrees/<role>` 命名并实际创建 worktree——派活者不手填，接活者不自建。若 envelope 没有这些字段，说明该 Tent 没有 workspace 指针框：这是合法的纯 Tent 任务（只做 Tent 侧工作，不碰代码仓），不是派活出错。
+8. 使用 task 的 **WorkspaceLane**：`worktree` 为真实代码工作目录，`branch` 为该 role/task 的 Git 分支。后续 durable role 任务复用同一 lane。这些字段由 dispatch / managed execution **自动命名并创建**——durable role：`tent-role/<role>` 与 `<workspace>-worktrees/<role>`；one-shot agentProfile：`tent-task/<taskId>` 与对应 worktree。派活者不手填，接活者不自建。若 envelope 没有这些字段，说明当前是纯 Tent 任务（无 Git workspace / 无代码 lane），合法，不是派活出错。
 9. 读取 `.tent/RULES.md` 和完成任务必要的 manifest-readable 上下文。只在 manifest-writable 范围内写 Tent 文件。
 10. 真实 workspace 的改动按 box 或独立可验收交付分批 commit。不要 commit Tent 状态（`.tent/`）。
 11. 协作命令：
@@ -139,7 +140,8 @@ tent task deliver <taskPath> --summary <text> [--commits sha,sha]
 标准链路是：dispatch -> spawn/唤醒 -> claim（或 startSession 代 claim）-> deliver -> review -> accept。
 
 - dispatch：写 manifest 和 queued task envelope，不写 owner/status。派活不要求你对目标 box 有 readable 或 writable——claim 权独立于读写权，唯一的门是占用拓扑：目标及其祖先、子孙没有 owner，也没有 active task envelope，且不是归档/失效子树。编排 role 可以把任何无占用冲突的框派给别的 role；manifest 的写权是为接活 role 生成的，与派活者无关。
-- workspace 契约：任意位置的框只要其一级/base type 在 `.tent/types.json` 开启了 `workspacePointer`，且 frontmatter 有非空 `workspace`（或正文有 `workspace: ...` 行），就是 workspace 指针；框名与 type 字面名称（是否叫 `output`）不参与识别，二级 type 跟随一级。CLI 据此自动创建/复用 `tent-role/<role>` 与 `<workspace>-worktrees/<role>`，派活者不手填 envelope 的 workspace/worktree/branch。开启能力但未填 `workspace` 的框只是普通框。
+- WorkspaceLane 契约：workspace root 来自 in-workspace `.tent`；lane 字段由 service/core 自动命名并创建/复用（role：`tent-role/<role>`；profile task：`tent-task/<taskId>`）。派活者不手填 envelope 的 workspace/worktree/branch。不存在 type 级 workspace 指针注册。
+- **asSub 规则（精简）**：`--as-sub --by <dispatcher>` / `asSub: true` 要求 durable 注册表 dispatcher + 真实 Git WorkspaceLane；`targetBranch` 指向 dispatcher 的 `tent-role/<dispatcher>`。缺 dispatcher 或无 Git lane 时在写 envelope 前失败。peer 派活不需要 Git。
 - claim：外部 agent 执行 `tent task claim <taskPath>`（Service RPC）后，envelope 变为 running，并把目标 box owner 设为该 role、status 设为 doing。**`task.startSession` 会在 user 路径上先 claim——managed agent 不要再 claim。**
 - deliver：**外部路径**完成后执行 `tent task deliver <taskPath> --summary …`。**Managed ACP 路径**由 Local Service 在 `session/prompt` 成功结束时用最终 assistant 回复自动 deliver；agent 不必也不应依赖 CLI deliver。user 用 Desktop 或 `tent task accept/reject` 裁决。
 - A2A：role 是否可 `startSession` 由 `.tent/roles.json` 的 `a2aPolicy: allow|ask|deny`（默认 deny）服务端硬执行；`allow` 时 `profileId` 必须在该 role 的 `allowedProfiles`（只存 profile id，不存凭据）。`ask` 仍走 user 批准，用户批准可覆盖白名单。不要把 secret 写入 role；改 role 用 service `registry.role.*`（user-only）。

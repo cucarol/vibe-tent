@@ -475,7 +475,7 @@ test("external tent complete:--require-check without workspace fails before muta
 
   await assert.rejects(
     () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", "git --version"),
-    /require-check requires a workspace pointer/,
+    /require-check requires a workspace root/,
   );
 
   assert.equal(await fs.readFile(fixture.boxNote, "utf8"), beforeBox);
@@ -720,6 +720,10 @@ function assertInstalledTentRoleSkill(skill: string) {
   assert.match(skill, /tent task deliver/);
   assert.match(skill, /task\.startSession|startSession/);
   assert.match(skill, /already claimed|已 claim|代 claim/);
+  assert.match(skill, /WorkspaceLane/);
+  assert.match(skill, /tent-role\/<role>/);
+  assert.match(skill, /asSub/);
+  assert.doesNotMatch(skill, /types\.json` 开启了 `workspacePointer`/);
   // Legacy may appear only as isolated notes, not as the primary protocol steps.
   assert.match(skill, /## Legacy/);
   // Primary protocol must not prescribe task-ack / tent report as the default claim/deliver path.

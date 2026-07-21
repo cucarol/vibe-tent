@@ -13,7 +13,7 @@ import {
   updateTypeMetadata,
 } from "../core/typeManagement.js";
 import {
-  baseDefinitionWorkspacePointer,
+  baseDefinitionCoordination,
   type TypeDefinition,
   type TypeRegistry,
   type TypeTier,
@@ -251,7 +251,7 @@ function drawTypeRow(
     rightArea.createDiv({ cls: "item-indicators" }),
     definition.readable,
     definition.writable,
-    baseDefinitionWorkspacePointer(definition) === true ? true : definition.tier === "modifier" ? undefined : false
+    definition.tier === "modifier" ? undefined : baseDefinitionCoordination(definition) === true
   );
   const actions = rightArea.createDiv({ cls: "row-actions" });
   const edit = actions.createEl("button", {
@@ -304,17 +304,17 @@ function drawRwCapsule(
   host: HTMLElement,
   readable: boolean | undefined,
   writable: boolean | undefined,
-  workspacePointer?: boolean
+  coordination?: boolean
 ): void {
   const capsule = host.createSpan({ cls: "rw-cap" });
   const label = (state: boolean | undefined) => (
     state === undefined ? "继承" : state ? "开" : "关"
   );
-  const pointerTip =
-    workspacePointer === undefined
+  const coordinationTip =
+    coordination === undefined
       ? ""
-      : ` · workspace 指针:${label(workspacePointer)}`;
-  addTooltip(capsule, `readable:${label(readable)} · writable:${label(writable)}${pointerTip}`);
+      : ` · coordination:${label(coordination)}`;
+  addTooltip(capsule, `readable:${label(readable)} · writable:${label(writable)}${coordinationTip}`);
   const drawPart = (key: string, value: boolean | undefined) => {
     const className = value === undefined ? "is-inherit" : value ? "is-on" : "is-off";
     const symbol = value === undefined ? "—" : value ? "√" : "✕";
@@ -325,9 +325,9 @@ function drawRwCapsule(
   drawPart("R", readable);
   capsule.createSpan({ cls: "rw-dot", text: "·" });
   drawPart("W", writable);
-  if (workspacePointer !== undefined) {
+  if (coordination !== undefined) {
     capsule.createSpan({ cls: "rw-dot", text: "·" });
-    drawPart("针", workspacePointer);
+    drawPart("协", coordination);
   }
 }
 
@@ -363,7 +363,7 @@ function drawLabelRow(host: HTMLElement, label: string, extraClass = ""): HTMLEl
     label === "颜色" ? "color" :
     label === "描述" ? "description" :
     label === "R/W" ? "r-w" :
-    label === "指针" ? "workspace-pointer" :
+    label === "协作" ? "coordination" :
     label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const row = host.createDiv({
     cls: `tent-newform-row tent-newform-row-${normalized}${extraClass ? ` ${extraClass}` : ""}`,
@@ -408,14 +408,14 @@ function drawTypeEditDrawer(
   }, isModifier);
 
   if (!isModifier) {
-    const pointer = drawLabelRow(drawer, "指针").createDiv({ cls: "tent-drawer-rw" });
+    const coordination = drawLabelRow(drawer, "协作").createDiv({ cls: "tent-drawer-rw" });
     drawRwSegment(
-      pointer,
-      "workspacePointer",
-      baseDefinitionWorkspacePointer(definition) === true,
+      coordination,
+      "coordination",
+      baseDefinitionCoordination(definition) === true,
       async (value) => {
         await updateTypeMetadata(context.fs, "type", name, {
-          workspacePointer: value === true,
+          coordination: value === true,
         });
         await context.refresh();
       },
@@ -450,14 +450,14 @@ function drawNewTypeForm(
     description: string;
     readable: boolean | undefined;
     writable: boolean | undefined;
-    workspacePointer: boolean;
+    coordination: boolean;
     color: string;
   } = {
     name: "",
     description: "",
     readable: tier === "modifier" ? undefined : true,
     writable: tier === "modifier" ? undefined : false,
-    workspacePointer: false,
+    coordination: false,
     color: "gray",
   };
   const isModifier = tier === "modifier";
@@ -484,9 +484,9 @@ function drawNewTypeForm(
   }, isModifier);
 
   if (!isModifier) {
-    const pointer = drawLabelRow(card, "指针").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(pointer, "workspacePointer", form.workspacePointer, (value) => {
-      form.workspacePointer = value === true;
+    const coordination = drawLabelRow(card, "协作").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(coordination, "coordination", form.coordination, (value) => {
+      form.coordination = value === true;
     }, false);
   }
 
@@ -518,7 +518,7 @@ function drawNewTypeForm(
           tier: "base",
           readable: form.readable!,
           writable: form.writable!,
-          ...(form.workspacePointer ? { workspacePointer: true } : {}),
+          ...(form.coordination ? { coordination: true } : { coordination: false }),
         };
     if (form.color) definition.color = form.color;
     if (form.description) definition.description = form.description;

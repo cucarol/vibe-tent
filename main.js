@@ -160,22 +160,6 @@ function setBaseCoordination(definition, value) {
   }
   definition.coordination = value;
 }
-function typeAllowsWorkspacePointer(_type, _registry) {
-  void _type;
-  void _registry;
-  return false;
-}
-function baseDefinitionWorkspacePointer(_definition) {
-  void _definition;
-  return void 0;
-}
-function setBaseWorkspacePointer(_definition, _value) {
-  void _definition;
-  void _value;
-  throw new Error(
-    "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
-  );
-}
 async function loadTypeRegistry(fs) {
   if (!await fs.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
@@ -3923,44 +3907,6 @@ function parseCanvas(raw) {
   return null;
 }
 
-// src/core/output.ts
-function parseOutputPointer(fm, body) {
-  const result = {};
-  const fmWorkspace = fieldString(fm.workspace);
-  if (fmWorkspace) result.workspace = fmWorkspace;
-  const fmRef = fieldString(fm.ref);
-  if (fmRef) result.ref = fmRef;
-  for (const rawLine of body.split(/\r?\n/)) {
-    const line = normalizeLabelLine(rawLine);
-    if (!result.workspace) {
-      const workspace = matchField(line, ["workspace", "workspace \u8DEF\u5F84", "repo", "pointer", "\u8DEF\u5F84"]);
-      if (workspace) result.workspace = workspace;
-    }
-    if (!result.ref) {
-      const ref = matchField(line, ["git ref", "git-ref", "\u5F53\u524D ref", "commit", "ref"]);
-      if (ref) result.ref = ref;
-    }
-  }
-  return result;
-}
-function fieldString(value) {
-  return typeof value === "string" && value.trim() ? cleanValue(value) : void 0;
-}
-function normalizeLabelLine(line) {
-  return line.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "").replace(/`([^`]+)`/g, "$1").trim();
-}
-function matchField(line, fields) {
-  for (const field of fields) {
-    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = new RegExp(`^${escaped}\\s*[:\uFF1A]\\s*(.+)$`, "i").exec(line);
-    if (match) return cleanValue(match[1]);
-  }
-  return void 0;
-}
-function cleanValue(value) {
-  return value.trim().replace(/^`|`$/g, "").trim();
-}
-
 // src/core/workspace.ts
 var nodePath2 = __toESM(require("node:path"), 1);
 var nodeFs2 = __toESM(require("node:fs/promises"), 1);
@@ -3971,15 +3917,6 @@ function resolveTentWorkspace(_tent, systemRoot) {
   if (!systemRoot) return void 0;
   const fromLayout = workspaceRootFromSystemRoot(systemRoot);
   return fromLayout ? nodePath2.resolve(fromLayout) : void 0;
-}
-async function readWorkspaceHead(workspace) {
-  const root = nodePath2.resolve(workspace);
-  await assertGitWorkspace(root);
-  const branch = await resolveTargetBranch(root);
-  const ref = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
-  const shortRef = (await git(root, ["rev-parse", "--short", ref])).trim();
-  if (!ref || !shortRef) throw new Error("Cannot read workspace HEAD.");
-  return { ref, shortRef, branch };
 }
 async function ensureRoleWorkspace(workspace, role) {
   const root = nodePath2.resolve(workspace);
@@ -4266,9 +4203,6 @@ function visibleTreeCount(node, collapsed, directCount) {
   const subtreeCount = (current) => directCount(current) + current.children.reduce((total, child) => total + subtreeCount(child), 0);
   return subtreeCount(node);
 }
-function showsUnstampedState(node) {
-  return node.fm.status !== void 0 || !!node.fm.owner;
-}
 function statuslessDirectChildren(node) {
   return node.children.filter((child) => child.fm.status === void 0);
 }
@@ -4349,10 +4283,10 @@ function drawRwSegment(parent, key, declared, onChange, allowInherit = true, rea
   const segment = parent.createDiv({
     cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "")
   });
-  const keyLabel = key === "readable" ? "R" : key === "writable" ? "W" : "\u9488";
+  const keyLabel = key === "readable" ? "R" : key === "writable" ? "W" : "\u534F";
   segment.createSpan({ cls: "tent-seg-key", text: keyLabel });
-  if (key === "workspacePointer") {
-    tentTooltip(segment, "\u53EF\u627F\u8F7D workspace \u6307\u9488\uFF1A\u5F00\u5219\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u6CE8\u518C workspace \u8DEF\u5F84");
+  if (key === "coordination") {
+    tentTooltip(segment, "\u53EF\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F\uFF1A\u5F00\u5219\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u627F\u8F7D status / task / delivery");
   }
   for (const state of rwSegmentStates(declared, allowInherit)) {
     const option = segment.createDiv({
@@ -4666,7 +4600,7 @@ function drawTypeRow(content, context, state, section, name, definition) {
     rightArea.createDiv({ cls: "item-indicators" }),
     definition.readable,
     definition.writable,
-    baseDefinitionWorkspacePointer(definition) === true ? true : definition.tier === "modifier" ? void 0 : false
+    definition.tier === "modifier" ? void 0 : baseDefinitionCoordination(definition) === true
   );
   const actions = rightArea.createDiv({ cls: "row-actions" });
   const edit = actions.createEl("button", {
@@ -4712,11 +4646,11 @@ function drawTypeRow(content, context, state, section, name, definition) {
   };
   if (open2) drawTypeEditDrawer(wrapper, context, name, definition);
 }
-function drawRwCapsule(host, readable, writable, workspacePointer) {
+function drawRwCapsule(host, readable, writable, coordination) {
   const capsule = host.createSpan({ cls: "rw-cap" });
   const label = (state) => state === void 0 ? "\u7EE7\u627F" : state ? "\u5F00" : "\u5173";
-  const pointerTip = workspacePointer === void 0 ? "" : ` \xB7 workspace \u6307\u9488:${label(workspacePointer)}`;
-  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}${pointerTip}`);
+  const coordinationTip = coordination === void 0 ? "" : ` \xB7 coordination:${label(coordination)}`;
+  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}${coordinationTip}`);
   const drawPart = (key, value) => {
     const className = value === void 0 ? "is-inherit" : value ? "is-on" : "is-off";
     const symbol = value === void 0 ? "\u2014" : value ? "\u221A" : "\u2715";
@@ -4727,9 +4661,9 @@ function drawRwCapsule(host, readable, writable, workspacePointer) {
   drawPart("R", readable);
   capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
   drawPart("W", writable);
-  if (workspacePointer !== void 0) {
+  if (coordination !== void 0) {
     capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
-    drawPart("\u9488", workspacePointer);
+    drawPart("\u534F", coordination);
   }
 }
 function drawPalette(host, selected, onSelect) {
@@ -4754,7 +4688,7 @@ function drawPalette(host, selected, onSelect) {
   return palette;
 }
 function drawLabelRow(host, label, extraClass = "") {
-  const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label === "\u6307\u9488" ? "workspace-pointer" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
+  const normalized = label === "\u540D\u5B57" ? "name" : label === "\u989C\u8272" ? "color" : label === "\u63CF\u8FF0" ? "description" : label === "R/W" ? "r-w" : label === "\u534F\u4F5C" ? "coordination" : label.toLowerCase().replace(/[^a-z0-9]+/g, "-");
   const row = host.createDiv({
     cls: `tent-newform-row tent-newform-row-${normalized}${extraClass ? ` ${extraClass}` : ""}`
   });
@@ -4788,14 +4722,14 @@ function drawTypeEditDrawer(wrapper, context, name, definition) {
     await context.refresh();
   }, isModifier);
   if (!isModifier) {
-    const pointer = drawLabelRow(drawer, "\u6307\u9488").createDiv({ cls: "tent-drawer-rw" });
+    const coordination = drawLabelRow(drawer, "\u534F\u4F5C").createDiv({ cls: "tent-drawer-rw" });
     drawRwSegment(
-      pointer,
-      "workspacePointer",
-      baseDefinitionWorkspacePointer(definition) === true,
+      coordination,
+      "coordination",
+      baseDefinitionCoordination(definition) === true,
       async (value) => {
         await updateTypeMetadata(context.fs, "type", name, {
-          workspacePointer: value === true
+          coordination: value === true
         });
         await context.refresh();
       },
@@ -4823,7 +4757,7 @@ function drawNewTypeForm(section, context, state, tier) {
     description: "",
     readable: tier === "modifier" ? void 0 : true,
     writable: tier === "modifier" ? void 0 : false,
-    workspacePointer: false,
+    coordination: false,
     color: "gray"
   };
   const isModifier = tier === "modifier";
@@ -4846,9 +4780,9 @@ function drawNewTypeForm(section, context, state, tier) {
     form.writable = value;
   }, isModifier);
   if (!isModifier) {
-    const pointer = drawLabelRow(card, "\u6307\u9488").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(pointer, "workspacePointer", form.workspacePointer, (value) => {
-      form.workspacePointer = value === true;
+    const coordination = drawLabelRow(card, "\u534F\u4F5C").createDiv({ cls: "tent-drawer-rw" });
+    drawRwSegment(coordination, "coordination", form.coordination, (value) => {
+      form.coordination = value === true;
     }, false);
   }
   const description = drawLabelRow(card, "\u63CF\u8FF0").createEl("textarea", {
@@ -4876,7 +4810,7 @@ function drawNewTypeForm(section, context, state, tier) {
       tier: "base",
       readable: form.readable,
       writable: form.writable,
-      ...form.workspacePointer ? { workspacePointer: true } : {}
+      ...form.coordination ? { coordination: true } : { coordination: false }
     };
     if (form.color) definition.color = form.color;
     if (form.description) definition.description = form.description;
@@ -5140,7 +5074,6 @@ var TentView = class extends import_obsidian4.ItemView {
     this.recentCreates = /* @__PURE__ */ new Set();
     this.columnResizeObserver = null;
     this.columnResizeDrag = null;
-    this.workspaceHeadCache = new TimedCache();
     this.roleCommitsCache = new TimedCache();
   }
   getViewType() {
@@ -5479,7 +5412,7 @@ var TentView = class extends import_obsidian4.ItemView {
     };
   }
   async copyGenesisPrompt() {
-    const prompt = "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace pointer, initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent and initialize the real workspace. Tent itself does not use Git.";
+    const prompt = "Please use tent-genesis to create a new Tent. First grill me on the Tent name, goal, workspace root (in-workspace `.tent` layout), initial top-level boxes, and initial roles (name + prompt), then scaffold the Tent under that workspace and initialize the real workspace Git. Tent itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
     new import_obsidian4.Notice("\u5DF2\u590D\u5236 tent-genesis \u8D77\u624B prompt");
   }
@@ -5909,9 +5842,6 @@ var TentView = class extends import_obsidian4.ItemView {
       this.propEditExpanded = !this.propEditExpanded;
       this.draw();
     };
-    if (this.tent && typeAllowsWorkspacePointer(box.type, this.tent.typeRegistry)) {
-      this.drawOutputSummary(card, box);
-    }
     const reg = this.tent.typeRegistry;
     if (this.propEditExpanded) {
       const editor = card.createDiv({ cls: "tent-prop-editor" });
@@ -5971,30 +5901,6 @@ var TentView = class extends import_obsidian4.ItemView {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof import_obsidian4.FileSystemAdapter)) return null;
     return nodePath3.join(adapter.getBasePath(), this.tentRootPath());
-  }
-  drawOutputSummary(el, box) {
-    const pointer = parseOutputPointer(box.fm, box.body);
-    const card = el.createDiv({ cls: "tent-output-summary" });
-    if (showsUnstampedState(box)) {
-      card.createSpan({ cls: "tent-output-pill", text: box.fm.status === "done" ? "\u5DF2\u4EA4\u4ED8" : "\u672A\u76D6\u7AE0" });
-    }
-    card.createSpan({ cls: "tent-output-line", text: pointer.workspace ? `workspace: ${pointer.workspace}` : "workspace: \u672A\u8BB0\u5F55" });
-    const refLine = card.createSpan({
-      cls: "tent-output-line",
-      text: pointer.workspace ? "workspace HEAD: \u8BFB\u53D6\u4E2D" : pointer.ref ? `\u8BB0\u5F55 ref: ${pointer.ref}` : "workspace HEAD: \u4E0D\u53EF\u7528"
-    });
-    if (pointer.workspace) {
-      void this.loadWorkspaceHead(pointer.workspace).then((head) => {
-        if (!head) {
-          refLine.setText(pointer.ref ? `\u8BB0\u5F55 ref: ${pointer.ref}\uFF08HEAD \u4E0D\u53EF\u7528\uFF09` : "workspace HEAD: \u4E0D\u53EF\u7528");
-          return;
-        }
-        refLine.setText(`workspace HEAD: ${head.shortRef} \xB7 ${head.branch}`);
-        refLine.title = head.ref;
-      }).catch(() => {
-        refLine.setText(pointer.ref ? `\u8BB0\u5F55 ref: ${pointer.ref}\uFF08HEAD \u4E0D\u53EF\u7528\uFF09` : "workspace HEAD: \u4E0D\u53EF\u7528");
-      });
-    }
   }
   requireExplicitArchiveRoot(box, action) {
     const root = this.findExplicitArchiveRoot(box);
@@ -6304,7 +6210,7 @@ var TentView = class extends import_obsidian4.ItemView {
           await this.acceptReadyDelivery(delivery, {
             integrate: async (refs) => {
               const wp = this.tent ? resolveTentWorkspace(this.tent) : void 0;
-              if (!wp) throw new Error("\u5E10\u5185\u6CA1\u6709 workspace \u6307\u9488");
+              if (!wp) throw new Error("\u65E0\u6CD5\u4ECE in-workspace .tent \u89E3\u6790 workspace root");
               const contract = await ensureRoleWorkspace(wp, delivery.role);
               await integrateWorkspaceCommits(contract, refs);
             }
@@ -6399,17 +6305,7 @@ var TentView = class extends import_obsidian4.ItemView {
     }
     return counts;
   }
-  loadWorkspaceHead(workspace) {
-    const key = nodePath3.resolve(workspace);
-    return this.workspaceHeadCache.get(key, async () => {
-      try {
-        return await readWorkspaceHead(key);
-      } catch {
-        return null;
-      }
-    });
-  }
-  // 读取某 role lane 尚未合入正式分支的 commit;无 workspace 指针返回 null
+  // 读取某 role lane 尚未合入正式分支的 commit;无 in-workspace Git root 返回 null
   async loadRoleCommits(owner) {
     let wp;
     try {
@@ -6422,7 +6318,6 @@ var TentView = class extends import_obsidian4.ItemView {
     return this.roleCommitsCache.get(`${workspace}\0${owner}`, () => listRoleCommitsFor(workspace, owner));
   }
   clearGitUiCache() {
-    this.workspaceHeadCache.clear();
     this.roleCommitsCache.clear();
   }
   // 派活内联:表单常驻；下方显示当前投递状态。
@@ -6846,11 +6741,11 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       const summary = new import_obsidian5.Setting(row).setName(name).setDesc(definition.description || "");
       const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
       color.style.backgroundColor = typeColorValue(definition.color);
-      const pointerFlag = baseDefinitionWorkspacePointer(definition);
-      const pointerSummary = pointerFlag === void 0 && (definition.tier ?? "base") === "modifier" ? "" : ` \xB7 ${axisSummary("\u9488", pointerFlag === true)}`;
+      const coordinationFlag = baseDefinitionCoordination(definition);
+      const coordinationSummary = (definition.tier ?? "base") === "modifier" ? "" : ` \xB7 ${axisSummary("\u534F", coordinationFlag === true)}`;
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} \xB7 ${axisSummary("W", definition.writable)}${pointerSummary}`
+        text: `${axisSummary("R", definition.readable)} \xB7 ${axisSummary("W", definition.writable)}${coordinationSummary}`
       });
       summary.addButton(
         (button) => button.setIcon("settings").setTooltip(`\u7F16\u8F91 ${name}`).onClick(() => {
@@ -6876,7 +6771,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     });
     this.drawAxisControl(editor, definition);
     if ((definition.tier ?? "base") === "base") {
-      this.drawWorkspacePointerControl(editor, definition);
+      this.drawCoordinationControl(editor, definition);
     }
     if (!BUILTIN_TYPES.has(name)) {
       new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684\u5E10\u3002").addButton(
@@ -6904,10 +6799,10 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
       });
     }
   }
-  drawWorkspacePointerControl(parent, definition) {
-    new import_obsidian5.Setting(parent).setName("\u6307\u9488").setDesc("\u5F00\u542F\u540E\uFF0C\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u627F\u8F7D workspace \u8DEF\u5F84\u5E76\u6CE8\u518C workspace \u5951\u7EA6\u3002").addDropdown(
-      (dropdown) => dropdown.addOption("on", "\u5F00").addOption("off", "\u5173").setValue(baseDefinitionWorkspacePointer(definition) === true ? "on" : "off").onChange(async (value) => {
-        setBaseWorkspacePointer(definition, value === "on");
+  drawCoordinationControl(parent, definition) {
+    new import_obsidian5.Setting(parent).setName("\u534F\u4F5C").setDesc("\u5F00\u542F\u540E\uFF0C\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F\uFF08status / task / delivery\uFF09\u3002workspace root \u7531 in-workspace .tent \u63A8\u5BFC\uFF0C\u4E0D\u518D\u4F7F\u7528 workspace \u6307\u9488\u3002").addDropdown(
+      (dropdown) => dropdown.addOption("on", "\u5F00").addOption("off", "\u5173").setValue(baseDefinitionCoordination(definition) === true ? "on" : "off").onChange(async (value) => {
+        setBaseCoordination(definition, value === "on");
         await this.plugin.saveSettings();
         this.display();
       })
@@ -6915,16 +6810,16 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   }
   drawAddType(parent, tier, label) {
     let name = "";
-    let workspacePointer = false;
-    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc(tier === "base" ? "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002\u53EF\u9009\u5F00\u542F workspace \u6307\u9488\u80FD\u529B\u3002" : "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    let coordination = false;
+    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc(tier === "base" ? "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002\u53EF\u9009\u5F00\u542F collaboration\uFF08coordination\uFF09\u80FD\u529B\u3002" : "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
     form.settingEl.addClass("tent-settings-add-row");
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
     }));
     if (tier === "base") {
       form.addDropdown(
-        (dropdown) => dropdown.addOption("off", "\u6307\u9488\u5173").addOption("on", "\u6307\u9488\u5F00").setValue("off").onChange((value) => {
-          workspacePointer = value === "on";
+        (dropdown) => dropdown.addOption("off", "\u534F\u4F5C\u5173").addOption("on", "\u534F\u4F5C\u5F00").setValue("off").onChange((value) => {
+          coordination = value === "on";
         })
       );
     }
@@ -6945,7 +6840,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
           readable: true,
           writable: false,
           color: "gray",
-          ...workspacePointer ? { workspacePointer: true } : {}
+          coordination
         } : { tier: "modifier", color: "gray" };
         this.openType = normalized;
         await this.plugin.saveSettings();
