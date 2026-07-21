@@ -596,6 +596,42 @@ export class ServiceClient {
     return this.call("session.get", { sessionId });
   }
 
+  /**
+   * Register or reuse a pull-host external session (no ACP spawn).
+   * Machine-callable; idempotent for sessionId / externalKey.
+   */
+  sessionEnter(
+    args: {
+      workspaceId?: string;
+      sessionId?: string;
+      profileId?: string;
+      roleName?: string;
+      role?: string;
+      externalKey?: string;
+      lastTaskId?: string;
+      cwd?: string;
+      assigneeKind?: "role" | "agentProfile";
+    } = {}
+  ) {
+    return this.call("session.enter", { ...args });
+  }
+
+  /** Probe external/managed session + incomplete task bindings. */
+  sessionStatus(args: { workspaceId?: string; sessionId?: string } = {}) {
+    return this.call("session.status", { ...args });
+  }
+
+  /**
+   * End external session binding only — never deliver/accept tasks.
+   * Reports incompleteTasks still bound to the sessionId.
+   */
+  sessionLeave(sessionId: string, workspaceId?: string) {
+    return this.call("session.leave", {
+      sessionId,
+      ...(workspaceId ? { workspaceId } : {}),
+    });
+  }
+
   a2aListPending(workspaceId?: string) {
     return this.call("a2a.listPending", workspaceId ? { workspaceId } : {});
   }

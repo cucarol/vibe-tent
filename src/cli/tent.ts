@@ -58,6 +58,7 @@ import {
 import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
 import { importExternalTentRoot } from "../core/migration.js";
 import { runTaskCommand, taskHelpText } from "./task-rpc.js";
+import { runAgentCommand, agentHelpText } from "./agent-rpc.js";
 import { runProposalSubmit } from "./proposal-rpc.js";
 
 /**
@@ -224,6 +225,20 @@ async function main() {
     return;
   }
 
+  // External / pull-host session lifecycle (SessionRegistry state=external; no ACP spawn).
+  if (cmd === "agent") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(agentHelpText());
+      return;
+    }
+    const result = await runAgentCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
+
   // Unknown commands fail before system-root resolution (no cwd fallback writes).
   const tentCommands = new Set([
     ...LEGACY_MUTATION_COMMANDS,
@@ -233,7 +248,7 @@ async function main() {
   ]);
   if (!tentCommands.has(cmd)) {
     return fail(
-      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+      `Unknown command: ${cmd || "(empty)"}\nCommands: new migrate import task agent role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
 
@@ -687,6 +702,8 @@ Run commands from a workspace with <workspace>/.tent/ (or legacy external tent r
 Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task list|get|claim|deliver|…  Attach Local Service → mount → task.* RPC
   tent task --help                    Full task subcommand help
+  tent agent enter|status|leave       External session lifecycle (no ACP spawn)
+  tent agent --help                   Pull-host enter/status/leave + hook aliases
   propose <boxId> <file|->            Submit a proposal (in-workspace → proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 

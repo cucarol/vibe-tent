@@ -220,13 +220,50 @@ export interface FakeProfileOptions {
   canResume?: boolean;
 }
 
+/**
+ * Pull-host / external GUI session registration (no ACP spawn).
+ * Writes a SessionRegistry row with state=external; never starts a process.
+ */
+export interface EnterExternalSessionRequest {
+  /** Service-preallocated or client-supplied ss- id. When omitted, runtime allocates. */
+  sessionId?: string;
+  /**
+   * Machine-local profile label for attribution only.
+   * Defaults to EXTERNAL_PROFILE_ID — not used to launch ACP.
+   */
+  profileId?: string;
+  roleName?: string;
+  assigneeKind?: "role" | "agentProfile";
+  /** Mounted workspace key for multi-mount filtering. */
+  workspace?: string;
+  runtimeWorkspace?: RuntimeWorkspace;
+  cwd?: string;
+  workspaceLane?: WorkspaceLaneRef;
+  /** Optional task id projection only. */
+  lastTaskId?: string;
+  /**
+   * Idempotency key for external GUI sessions (e.g. provider session handle).
+   * When set, a second enter with the same key reuses the live external row.
+   */
+  externalKey?: string;
+}
+
 export interface AgentRuntimePort {
   startSession(req: StartSessionRequest): Promise<SessionHandle>;
   resumeSession(req: ResumeSessionRequest): Promise<SessionHandle>;
+  /**
+   * Register or reuse a pull-host external session (state=external, no process).
+   * Idempotent for the same sessionId / externalKey while the row is still external.
+   */
+  enterExternalSession(req: EnterExternalSessionRequest): Promise<SessionHandle>;
   stopSession(sessionId: string, reason: StopReason): Promise<void>;
   probe(sessionId: string): Promise<SessionProbe>;
   subscribe(sessionId: string, sink: (ev: RuntimeEvent) => void): Unsubscribe;
 }
+
+/** Synthetic adapter/profile ids for pull-host external GUI sessions (no spawn). */
+export const EXTERNAL_ADAPTER_ID = "external";
+export const EXTERNAL_PROFILE_ID = "external";
 
 export const SESSION_ID_PREFIX = "ss-";
 

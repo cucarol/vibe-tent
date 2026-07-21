@@ -361,6 +361,12 @@ export async function dispatchMethod(
         return sessionList(ctx, p);
       case "session.get":
         return sessionGet(ctx, p);
+      case "session.enter":
+        return sessionEnter(ctx, p);
+      case "session.status":
+        return sessionStatus(ctx, p);
+      case "session.leave":
+        return sessionLeave(ctx, p);
       case "a2a.listPending":
         return a2aListPending(ctx, p);
       case "a2a.resolve":
@@ -3624,6 +3630,269 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     updatedAt: rec.updatedAt,
   };
   return { session: projection };
+}
+
+/**
+ * Register or reuse a pull-host external session (SessionRegistry state=external).
+ * Does not start ACP / managed processes. Idempotent for sessionId / externalKey.
+ */
+async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+
+  const sessionId = optionalString(p, "sessionId");
+  const profileId = optionalString(p, "profileId");
+  const roleName = optionalString(p, "roleName") || optionalString(p, "role");
+  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
+  const lastTaskId = optionalString(p, "lastTaskId") || optionalString(p, "taskId");
+  const cwd = optionalString(p, "cwd");
+  const assigneeKindRaw = optionalString(p, "assigneeKind");
+  const assigneeKind =
+    assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role"
+      ? assigneeKindRaw
+      : undefined;
+
+  // Snapshot for idempotent "reused" reporting (same open external row).
+  let priorExternalId: string | undefined;
+  if (sessionId) {
+    const prior = await ctx.runtime.registry.read(sessionId);
+    if (prior?.state === "external") priorExternalId = prior.id;
+  } else if (externalKey) {
+    const all = await ctx.runtime.registry.list();
+    const hit = all.find(
+      (rec) =>
+        rec.state === "external" &&
+        rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY === externalKey &&
+        (!workspaceId || !rec.workspace || rec.workspace === workspaceId)
+    );
+    if (hit) priorExternalId = hit.id;
+  }
+
+  let handle;
+  try {
+    handle = await ctx.runtime.enterExternalSession({
+      sessionId: sessionId || undefined,
+      profileId: profileId || undefined,
+      roleName: roleName || undefined,
+      assigneeKind,
+      workspace: workspaceId || undefined,
+      cwd: cwd || undefined,
+      lastTaskId: lastTaskId || undefined,
+      externalKey: externalKey || undefined,
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/already active as managed/i.test(message)) {
+      throw new RpcError(RPC_LIFECYCLE, message);
+    }
+    throw new RpcError(-32602, message);
+  }
+
+  const rec = await ctx.runtime.registry.read(handle.sessionId);
+  const probe = await ctx.runtime.probe(handle.sessionId);
+  const session: SessionProjection = {
+    sessionId: handle.sessionId,
+    profileId: handle.profileId,
+    adapterId: handle.adapterId,
+    state: probe.state,
+    roleName: handle.roleName,
+    assigneeKind: handle.assigneeKind ?? "role",
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec?.lastTaskId,
+    workspace: rec?.workspace ?? workspaceId,
+    createdAt: handle.createdAt,
+    updatedAt: handle.updatedAt,
+  };
+
+  return {
+    session,
+    reused: priorExternalId === handle.sessionId,
+  };
+}
+
+/**
+ * Probe an external/managed session and list incomplete task bindings (no mutation).
+ */
+async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
+  const sessionId = optionalString(p, "sessionId");
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+
+  // Without sessionId: list open external sessions for workspace (or all).
+  if (!sessionId) {
+    const all = await ctx.runtime.registry.list();
+    const sessions: SessionProjection[] = [];
+    for (const rec of all) {
+      if (rec.state !== "external") continue;
+      if (workspaceId && rec.workspace && rec.workspace !== workspaceId) continue;
+      const probe = await ctx.runtime.probe(rec.id);
+      sessions.push({
+        sessionId: rec.id,
+        profileId: rec.profileId,
+        adapterId: rec.adapterId,
+        state: probe.state,
+        roleName: rec.roleName,
+        assigneeKind: rec.assigneeKind ?? "role",
+        alive: probe.alive,
+        resumeCapable: probe.resumeCapable,
+        lastTaskId: rec.lastTaskId,
+        workspace: rec.workspace,
+        createdAt: rec.createdAt,
+        updatedAt: rec.updatedAt,
+      });
+    }
+    const incompleteTasks = workspaceId
+      ? await listIncompleteTasksForSessions(
+          ctx,
+          workspaceId,
+          sessions.map((s) => s.sessionId)
+        )
+      : [];
+    return { sessions, incompleteTasks };
+  }
+
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const probe = await ctx.runtime.probe(sessionId);
+  const session: SessionProjection = {
+    sessionId: rec.id,
+    profileId: rec.profileId,
+    adapterId: rec.adapterId,
+    state: probe.state,
+    roleName: rec.roleName,
+    assigneeKind: rec.assigneeKind ?? "role",
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec.lastTaskId,
+    workspace: rec.workspace,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt,
+  };
+
+  const incompleteTasks = await listIncompleteTasksBoundToSession(
+    ctx,
+    rec.workspace || workspaceId,
+    sessionId
+  );
+
+  return {
+    session,
+    incompleteTasks,
+    /** Convenience: true while external is open or managed process is alive. */
+    open: SessionRegistry.isOpen(probe.state as SessionRecord["state"]) || probe.alive,
+  };
+}
+
+/**
+ * End or unbind an external session. Never delivers or accepts tasks —
+ * only stops the session registry binding and reports incomplete task state.
+ */
+async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
+  const sessionId = requireString(p, "sessionId");
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) {
+    // Idempotent leave: already gone.
+    return {
+      sessionId,
+      state: "stopped",
+      left: false,
+      alreadyLeft: true,
+      incompleteTasks: [] as Array<{
+        path: string;
+        id?: string;
+        state: string;
+        role: string;
+      }>,
+    };
+  }
+
+  // Snapshot incomplete tasks before unbinding (leave must not deliver/accept).
+  const incompleteTasks = await listIncompleteTasksBoundToSession(
+    ctx,
+    rec.workspace || workspaceId,
+    sessionId
+  );
+
+  // Managed open sessions: refuse leave via this surface (use task.interrupt / stop).
+  // External leave only ends external binding; if already terminal, report idempotent.
+  if (SessionRegistry.isNonTerminal(rec.state)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `session.leave is for external/pull-host sessions; managed session is ${rec.state}. Use task.interrupt or runtime stop.`,
+      { sessionId, state: rec.state }
+    );
+  }
+
+  let left = false;
+  let state = rec.state;
+  if (rec.state === "external") {
+    await ctx.runtime.stopSession(sessionId, "user");
+    left = true;
+    const after = await ctx.runtime.registry.read(sessionId);
+    state = after?.state ?? "stopped";
+  } else {
+    // Already stopped/failed — idempotent leave.
+    state = rec.state === "failed" ? "failed" : "stopped";
+  }
+
+  return {
+    sessionId,
+    state,
+    left,
+    alreadyLeft: !left,
+    incompleteTasks,
+    /**
+     * Explicit contract: leave never auto-delivers or accepts.
+     * Callers must use task.deliver / task.accept separately.
+     */
+    delivered: false,
+    accepted: false,
+  };
+}
+
+/** Active (non-terminal) tasks in a workspace that reference sessionId. */
+async function listIncompleteTasksBoundToSession(
+  ctx: HandlerContext,
+  workspaceId: string | undefined,
+  sessionId: string
+): Promise<Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }>> {
+  if (!workspaceId) return [];
+  try {
+    ctx.host.require(workspaceId);
+  } catch {
+    return [];
+  }
+  return listIncompleteTasksForSessions(ctx, workspaceId, [sessionId]);
+}
+
+async function listIncompleteTasksForSessions(
+  ctx: HandlerContext,
+  workspaceId: string,
+  sessionIds: string[]
+): Promise<Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }>> {
+  if (sessionIds.length === 0) return [];
+  const idSet = new Set(sessionIds);
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const out: Array<{ path: string; id?: string; state: string; role: string; sessionId?: string }> =
+    [];
+  for (const task of tasks) {
+    const sid = task.sessionId?.trim();
+    if (!sid || !idSet.has(sid)) continue;
+    if (!isActiveTaskState(task.state)) continue;
+    out.push({
+      path: task.path,
+      id: task.id,
+      state: task.state,
+      role: task.role,
+      sessionId: sid,
+    });
+  }
+  return out;
 }
 
 async function a2aListPending(ctx: HandlerContext, p: Record<string, unknown>) {

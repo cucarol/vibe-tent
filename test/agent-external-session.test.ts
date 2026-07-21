@@ -1,0 +1,337 @@
+/**
+ * V0.2 external / pull-host session lifecycle:
+ * - Runtime enterExternalSession (no ACP spawn)
+ * - Service RPC session.enter / status / leave
+ * - CLI tent agent enter|status|leave (+ hook aliases)
+ * - Idempotency, non-Tent silent exit 0 for hooks
+ * - leave never deliver/accept
+ */
+import assert from "node:assert/strict";
+import * as fs from "node:fs/promises";
+import * as os from "node:os";
+import * as path from "node:path";
+import { test } from "node:test";
+import { fileURLToPath } from "node:url";
+import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { NodeFs } from "../src/fs/node-fs.js";
+import { startLocalTentService } from "../src/service/service.js";
+import { createServiceClient } from "../src/service/client.js";
+import {
+  createAgentRuntime,
+  makeSessionId,
+  SessionRegistry,
+  EXTERNAL_ADAPTER_ID,
+} from "../src/runtime/index.js";
+import {
+  normalizeAgentSub,
+  runAgentCommand,
+} from "../src/cli/agent-rpc.js";
+
+const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
+
+async function makeWorkspace(name = "ext-sess"): Promise<string> {
+  const workspace = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ext-ws-"));
+  const fsa = new NodeFs(workspace);
+  await scaffoldInWorkspace(fsa, {
+    name,
+    rules: "# RULES\n\nExternal session lifecycle test\n",
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
+  });
+  await fsa.writeFile(
+    ".tent/roles.json",
+    JSON.stringify(
+      {
+        roles: [
+          { name: "executor", prompt: "do work" },
+          { name: "orchestrator", prompt: "dispatch" },
+        ],
+      },
+      null,
+      2
+    ) + "\n"
+  );
+  return workspace;
+}
+
+async function withService<T>(
+  fn: (
+    svc: Awaited<ReturnType<typeof startLocalTentService>>,
+    dataDir: string
+  ) => Promise<T>
+): Promise<T> {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ext-data-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  try {
+    return await fn(svc, dataDir);
+  } finally {
+    await svc.stop();
+  }
+}
+
+test("normalizeAgentSub maps public + hook aliases", () => {
+  assert.equal(normalizeAgentSub("enter"), "enter");
+  assert.equal(normalizeAgentSub("session-start"), "enter");
+  assert.equal(normalizeAgentSub("status"), "status");
+  assert.equal(normalizeAgentSub("session-status"), "status");
+  assert.equal(normalizeAgentSub("leave"), "leave");
+  assert.equal(normalizeAgentSub("session-end"), "leave");
+  assert.equal(normalizeAgentSub("nope"), null);
+});
+
+test("SessionRegistry.isOpen includes external; isNonTerminal does not", () => {
+  assert.equal(SessionRegistry.isNonTerminal("external"), false);
+  assert.equal(SessionRegistry.isOpen("external"), true);
+  assert.equal(SessionRegistry.isOpen("live"), true);
+  assert.equal(SessionRegistry.isOpen("stopped"), false);
+});
+
+test("runtime enterExternalSession: no process, state=external, idempotent", async () => {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ext-rt-"));
+  const runtime = createAgentRuntime({ dataDir });
+  try {
+    const sessionId = makeSessionId(() => 0.42);
+    const h1 = await runtime.enterExternalSession({
+      sessionId,
+      roleName: "executor",
+      workspace: "ws-1",
+      externalKey: "gui-key-1",
+      cwd: dataDir,
+    });
+    assert.equal(h1.sessionId, sessionId);
+    assert.equal(h1.state, "external");
+    assert.equal(h1.adapterId, EXTERNAL_ADAPTER_ID);
+    assert.equal(runtime.supervisor.isAlive(sessionId), false);
+
+    const probe = await runtime.probe(sessionId);
+    assert.equal(probe.state, "external");
+    assert.equal(probe.alive, true);
+    assert.equal(probe.resumeCapable, false);
+
+    // Idempotent re-enter with same id
+    const h2 = await runtime.enterExternalSession({
+      sessionId,
+      roleName: "executor",
+      workspace: "ws-1",
+      externalKey: "gui-key-1",
+    });
+    assert.equal(h2.sessionId, sessionId);
+    assert.equal(h2.state, "external");
+
+    // externalKey alone reuses
+    const h3 = await runtime.enterExternalSession({
+      externalKey: "gui-key-1",
+      workspace: "ws-1",
+    });
+    assert.equal(h3.sessionId, sessionId);
+
+    await runtime.stopSession(sessionId, "user");
+    const after = await runtime.probe(sessionId);
+    assert.equal(after.state, "stopped");
+    assert.equal(after.alive, false);
+  } finally {
+    await runtime.shutdown();
+  }
+});
+
+test("service RPC session.enter/status/leave: idempotent, no deliver", async () => {
+  await withService(async (svc, dataDir) => {
+    const ws = await makeWorkspace();
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+
+    const entered = (await client.sessionEnter({
+      workspaceId,
+      roleName: "executor",
+      externalKey: "rpc-key-a",
+      cwd: ws,
+    })) as {
+      session: { sessionId: string; state: string; adapterId: string; alive: boolean };
+      reused: boolean;
+    };
+    assert.equal(entered.session.state, "external");
+    assert.equal(entered.session.adapterId, EXTERNAL_ADAPTER_ID);
+    assert.equal(entered.session.alive, true);
+    assert.equal(entered.reused, false);
+    const sessionId = entered.session.sessionId;
+    assert.ok(sessionId.startsWith("ss-"));
+
+    // Idempotent enter
+    const again = (await client.sessionEnter({
+      workspaceId,
+      sessionId,
+      externalKey: "rpc-key-a",
+    })) as { session: { sessionId: string }; reused: boolean };
+    assert.equal(again.session.sessionId, sessionId);
+    assert.equal(again.reused, true);
+
+    // Dispatch + claim with this session so leave can report incomplete
+    const note = (await client.call("docs.createNote", {
+      workspaceId,
+      name: "work-item",
+      type: "prompt",
+      body: "# work\n",
+    })) as { id: string };
+    // Prefer task.dispatch if available via client helper
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: note.id,
+      role: "executor",
+      prompt: "do the thing",
+      dispatchedBy: "user",
+    })) as { taskPath: string };
+    await client.taskClaim(workspaceId, dispatched.taskPath, sessionId);
+
+    const status = (await client.sessionStatus({
+      workspaceId,
+      sessionId,
+    })) as {
+      session: { state: string };
+      open: boolean;
+      incompleteTasks: Array<{ path: string; state: string }>;
+    };
+    assert.equal(status.session.state, "external");
+    assert.equal(status.open, true);
+    assert.ok(status.incompleteTasks.length >= 1);
+    assert.equal(status.incompleteTasks[0]!.state, "running");
+
+    const left = (await client.sessionLeave(sessionId, workspaceId)) as {
+      sessionId: string;
+      state: string;
+      left: boolean;
+      delivered: boolean;
+      accepted: boolean;
+      incompleteTasks: Array<{ path: string; state: string }>;
+    };
+    assert.equal(left.left, true);
+    assert.equal(left.state, "stopped");
+    assert.equal(left.delivered, false);
+    assert.equal(left.accepted, false);
+    assert.ok(left.incompleteTasks.length >= 1);
+    // Task still running — leave must not complete it
+    const task = (await client.taskGet(workspaceId, dispatched.taskPath)) as {
+      task: { state: string; sessionId?: string };
+    };
+    assert.equal(task.task.state, "running");
+    assert.equal(task.task.sessionId, sessionId);
+
+    // Idempotent leave
+    const left2 = (await client.sessionLeave(sessionId, workspaceId)) as {
+      left: boolean;
+      alreadyLeft: boolean;
+      delivered: boolean;
+    };
+    assert.equal(left2.left, false);
+    assert.equal(left2.alreadyLeft, true);
+    assert.equal(left2.delivered, false);
+
+    // dataDir used so service endpoint exists under test isolation
+    assert.ok(dataDir);
+  });
+});
+
+test("CLI agent enter/status/leave via service", async () => {
+  await withService(async (svc, dataDir) => {
+    const ws = await makeWorkspace();
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    await client.mount(ws);
+
+    const enter = await runAgentCommand(
+      "enter",
+      ["--role", "executor", "--key", "cli-key-1", "--json"],
+      { client, cwd: ws, dataDir, packageRoot: repoRoot }
+    );
+    assert.equal(enter.exitCode, 0, enter.stderr);
+    const enterBody = JSON.parse(enter.stdout) as {
+      session: { sessionId: string; state: string };
+      reused: boolean;
+    };
+    assert.equal(enterBody.session.state, "external");
+    const sessionId = enterBody.session.sessionId;
+
+    const enter2 = await runAgentCommand(
+      "enter",
+      ["--session", sessionId, "--json"],
+      { client, cwd: ws, dataDir }
+    );
+    assert.equal(enter2.exitCode, 0, enter2.stderr);
+    const enter2Body = JSON.parse(enter2.stdout) as { reused: boolean };
+    assert.equal(enter2Body.reused, true);
+
+    const status = await runAgentCommand("status", [sessionId, "--json"], {
+      client,
+      cwd: ws,
+      dataDir,
+    });
+    assert.equal(status.exitCode, 0, status.stderr);
+    const statusBody = JSON.parse(status.stdout) as {
+      session: { sessionId: string; state: string };
+      open: boolean;
+    };
+    assert.equal(statusBody.session.sessionId, sessionId);
+    assert.equal(statusBody.open, true);
+
+    const leave = await runAgentCommand("leave", [sessionId, "--json"], {
+      client,
+      cwd: ws,
+      dataDir,
+    });
+    assert.equal(leave.exitCode, 0, leave.stderr);
+    const leaveBody = JSON.parse(leave.stdout) as {
+      left: boolean;
+      delivered: boolean;
+      accepted: boolean;
+      state: string;
+    };
+    assert.equal(leaveBody.left, true);
+    assert.equal(leaveBody.delivered, false);
+    assert.equal(leaveBody.accepted, false);
+    assert.equal(leaveBody.state, "stopped");
+  });
+});
+
+test("hook alias session-start outside Tent: silent exit 0", async () => {
+  const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws-"));
+  const result = await runAgentCommand("session-start", ["--json"], {
+    cwd: nonTent,
+    attachOnly: true,
+    dataDir: path.join(os.tmpdir(), "no-svc-" + Date.now()),
+  });
+  assert.equal(result.exitCode, 0, result.stderr);
+  assert.equal(result.stderr, "");
+  const body = JSON.parse(result.stdout) as { skipped: boolean; reason: string };
+  assert.equal(body.skipped, true);
+  assert.equal(body.reason, "not-a-tent-workspace");
+});
+
+test("public enter outside Tent: fail-loud (not silent)", async () => {
+  const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws2-"));
+  const result = await runAgentCommand("enter", ["--json"], {
+    cwd: nonTent,
+    attachOnly: true,
+    dataDir: path.join(os.tmpdir(), "no-svc2-" + Date.now()),
+  });
+  assert.equal(result.exitCode, 1);
+  assert.match(result.stderr, /Not inside a Tent/i);
+});
+
+test("hook session-end outside Tent: silent exit 0", async () => {
+  const nonTent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-not-ws3-"));
+  const result = await runAgentCommand(
+    "session-end",
+    ["ss-doesnotmatter", "--json"],
+    {
+      cwd: nonTent,
+      attachOnly: true,
+      dataDir: path.join(os.tmpdir(), "no-svc3-" + Date.now()),
+    }
+  );
+  assert.equal(result.exitCode, 0, result.stderr);
+  const body = JSON.parse(result.stdout) as {
+    skipped: boolean;
+    delivered: boolean;
+    accepted: boolean;
+  };
+  assert.equal(body.skipped, true);
+  assert.equal(body.delivered, false);
+  assert.equal(body.accepted, false);
+});

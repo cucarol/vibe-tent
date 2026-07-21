@@ -35,6 +35,7 @@ import { SessionRegistry } from "./session-registry.js";
 import type {
   AgentProfileConfig,
   AgentRuntimePort,
+  EnterExternalSessionRequest,
   ResolveCredentialRef,
   ResolveProfileEnv,
   ResumeSessionRequest,
@@ -46,7 +47,12 @@ import type {
   StopReason,
   Unsubscribe,
 } from "./types.js";
-import { isSessionId } from "./types.js";
+import {
+  EXTERNAL_ADAPTER_ID,
+  EXTERNAL_PROFILE_ID,
+  isSessionId,
+  makeSessionId,
+} from "./types.js";
 
 export interface AgentRuntimeOptions {
   dataDir: string;
@@ -263,6 +269,125 @@ export class AgentRuntime implements AgentRuntimePort {
         this.startInFlight.delete(req.sessionId);
       }
     }
+  }
+
+  /**
+   * Register a pull-host / external GUI session without spawning ACP.
+   * Idempotent: same sessionId or externalKey while state remains external reuses the row.
+   */
+  async enterExternalSession(req: EnterExternalSessionRequest): Promise<SessionHandle> {
+    this.assertOpen();
+
+    const externalKey = req.externalKey?.trim() || undefined;
+    const profileId = (req.profileId?.trim() || EXTERNAL_PROFILE_ID).trim();
+    const roleName = req.roleName?.trim() || undefined;
+    const assigneeKind = req.assigneeKind;
+    const workspace = req.workspace?.trim() || undefined;
+    const cwd =
+      req.runtimeWorkspace?.cwd ?? req.cwd ?? req.workspaceLane?.worktree ?? undefined;
+
+    // 1) Explicit sessionId: reuse if still external; refuse if managed open.
+    if (req.sessionId) {
+      if (!isSessionId(req.sessionId)) {
+        throw new Error(`Invalid session id: ${req.sessionId}`);
+      }
+      const existing = await this.registry.read(req.sessionId);
+      if (existing) {
+        if (existing.state === "external") {
+          const patch: Partial<SessionRecord> = {};
+          if (roleName && existing.roleName !== roleName) patch.roleName = roleName;
+          if (assigneeKind && existing.assigneeKind !== assigneeKind) {
+            patch.assigneeKind = assigneeKind;
+          }
+          if (workspace && existing.workspace !== workspace) patch.workspace = workspace;
+          if (cwd && existing.runtimeWorkspace?.cwd !== cwd) {
+            patch.runtimeWorkspace = { cwd };
+          }
+          if (req.lastTaskId && existing.lastTaskId !== req.lastTaskId) {
+            patch.lastTaskId = req.lastTaskId;
+          }
+          if (externalKey) {
+            const snap = {
+              ...(existing.profileSnapshot ?? {
+                id: existing.profileId,
+                adapterId: existing.adapterId,
+              }),
+              env: {
+                ...((existing.profileSnapshot as AgentProfileConfig | undefined)?.env ?? {}),
+                TENT_EXTERNAL_KEY: externalKey,
+              },
+            };
+            patch.profileSnapshot = snap as AgentProfileConfig;
+          }
+          if (Object.keys(patch).length > 0) {
+            const updated = await this.registry.update(req.sessionId, patch);
+            return handleFrom(updated);
+          }
+          return handleFrom(existing);
+        }
+        if (SessionRegistry.isNonTerminal(existing.state)) {
+          throw new Error(
+            `Session already active as managed runtime (state=${existing.state}): ${req.sessionId}`
+          );
+        }
+        // Terminal row: re-open as external with the same id (replace metadata).
+      }
+    }
+
+    // 2) externalKey / role+workspace idempotency: reuse open external row.
+    if (externalKey || (workspace && roleName)) {
+      const all = await this.registry.list();
+      const match = all.find((rec) => {
+        if (rec.state !== "external") return false;
+        if (workspace && rec.workspace && rec.workspace !== workspace) return false;
+        if (externalKey) {
+          const key = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY;
+          return key === externalKey;
+        }
+        // Soft match: same workspace + role label for hook re-enter without key.
+        return Boolean(roleName && rec.roleName === roleName);
+      });
+      if (match) {
+        const patch: Partial<SessionRecord> = {};
+        if (req.lastTaskId && match.lastTaskId !== req.lastTaskId) {
+          patch.lastTaskId = req.lastTaskId;
+        }
+        if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
+          patch.runtimeWorkspace = { cwd };
+        }
+        if (Object.keys(patch).length > 0) {
+          const updated = await this.registry.update(match.id, patch);
+          return handleFrom(updated);
+        }
+        return handleFrom(match);
+      }
+    }
+
+    const sessionId = req.sessionId && isSessionId(req.sessionId) ? req.sessionId : makeSessionId();
+    const now = new Date().toISOString();
+    const profileSnapshot: AgentProfileConfig = {
+      id: profileId,
+      adapterId: EXTERNAL_ADAPTER_ID,
+      ...(externalKey ? { env: { TENT_EXTERNAL_KEY: externalKey } } : {}),
+    };
+    const record: SessionRecord = {
+      id: sessionId,
+      profileId,
+      adapterId: EXTERNAL_ADAPTER_ID,
+      profileSnapshot,
+      roleName,
+      assigneeKind,
+      state: "external",
+      runtimeWorkspace: cwd ? { cwd } : undefined,
+      workspace,
+      workspaceLane: req.workspaceLane,
+      createdAt: now,
+      updatedAt: now,
+      lastTaskId: req.lastTaskId,
+    };
+    await this.registry.write(record);
+    // No session.starting / session.live process events — external has no child.
+    return handleFrom(record);
   }
 
   private async startSessionExclusive(req: StartSessionRequest): Promise<SessionHandle> {
@@ -768,6 +893,21 @@ export class AgentRuntime implements AgentRuntimePort {
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
 
+    // External / pull-host: no process to kill — only end the registry binding.
+    if (record.state === "external") {
+      await this.registry.update(sessionId, {
+        state: "stopped",
+        stopReason: reason,
+        pid: undefined,
+      });
+      this.emit({
+        type: "session.exited",
+        sessionId,
+        exitCode: 0,
+      });
+      return;
+    }
+
     const managed = this.managed.get(sessionId);
     if (managed) {
       try {
@@ -815,6 +955,18 @@ export class AgentRuntime implements AgentRuntimePort {
         alive: false,
         resumeCapable: false,
         lastError: "session not found",
+      };
+    }
+
+    // Pull-host external: no PID; open while state remains external.
+    if (record.state === "external") {
+      return {
+        sessionId,
+        state: "external",
+        alive: true,
+        resumeCapable: false,
+        lastError: record.lastError,
+        exitCode: record.exitCode,
       };
     }
 

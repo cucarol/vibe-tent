@@ -233,9 +233,20 @@ export class SessionRegistry {
     });
   }
 
-  /** Non-terminal states that should be probed after service restart. */
+  /**
+   * Non-terminal managed states that should be process-probed after service restart.
+   * Does **not** include `external` (pull-host has no supervised PID).
+   */
   static isNonTerminal(state: SessionState): boolean {
     return state === "starting" || state === "live" || state === "waiting-user";
+  }
+
+  /**
+   * Session is still open for collaboration: managed non-terminal **or** pull-host external.
+   * Use for list/status/idempotent enter; not for process reconcile (see isNonTerminal).
+   */
+  static isOpen(state: SessionState): boolean {
+    return SessionRegistry.isNonTerminal(state) || state === "external";
   }
 
   private async readUnlocked(sessionId: string): Promise<SessionRecord | null> {

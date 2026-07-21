@@ -11745,6 +11745,8 @@ function git(cwd, args) {
 }
 
 // src/runtime/types.ts
+var EXTERNAL_ADAPTER_ID = "external";
+var EXTERNAL_PROFILE_ID = "external";
 var SESSION_ID_PREFIX = "ss-";
 var SESSION_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
 function makeSessionId(rand = Math.random, len = 8) {
@@ -11915,7 +11917,7 @@ function parseSessionRecord(data, sessionId) {
   }
   return data;
 }
-var SessionRegistry = class {
+var SessionRegistry = class _SessionRegistry {
   constructor(dataDir) {
     this.dataDir = dataDir;
     /** Serialize disk mutations so stop + exit handlers cannot race rename. */
@@ -11999,9 +12001,19 @@ var SessionRegistry = class {
       }
     });
   }
-  /** Non-terminal states that should be probed after service restart. */
+  /**
+   * Non-terminal managed states that should be process-probed after service restart.
+   * Does **not** include `external` (pull-host has no supervised PID).
+   */
   static isNonTerminal(state) {
     return state === "starting" || state === "live" || state === "waiting-user";
+  }
+  /**
+   * Session is still open for collaboration: managed non-terminal **or** pull-host external.
+   * Use for list/status/idempotent enter; not for process reconcile (see isNonTerminal).
+   */
+  static isOpen(state) {
+    return _SessionRegistry.isNonTerminal(state) || state === "external";
   }
   async readUnlocked(sessionId) {
     const file = sessionFilePath(this.dataDir, sessionId);
@@ -13168,6 +13180,15 @@ var CLIENT_METHODS = [
   "proposal.resolve",
   "session.list",
   "session.get",
+  /**
+   * External / pull-host session lifecycle (no ACP spawn).
+   * enter: register or reuse state=external SessionRegistry row.
+   * status: probe + incomplete task bindings for that session.
+   * leave: stop/unbind external session only — never deliver/accept.
+   */
+  "session.enter",
+  "session.status",
+  "session.leave",
   "a2a.listPending",
   "a2a.resolve",
   /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */
@@ -16825,6 +16846,12 @@ async function dispatchMethod(ctx, method, params) {
         return sessionList(ctx, p);
       case "session.get":
         return sessionGet(ctx, p);
+      case "session.enter":
+        return sessionEnter(ctx, p);
+      case "session.status":
+        return sessionStatus(ctx, p);
+      case "session.leave":
+        return sessionLeave(ctx, p);
       case "a2a.listPending":
         return a2aListPending(ctx, p);
       case "a2a.resolve":
@@ -19403,6 +19430,209 @@ async function sessionGet(ctx, p) {
     updatedAt: rec.updatedAt
   };
   return { session: projection };
+}
+async function sessionEnter(ctx, p) {
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+  const sessionId = optionalString(p, "sessionId");
+  const profileId = optionalString(p, "profileId");
+  const roleName = optionalString(p, "roleName") || optionalString(p, "role");
+  const externalKey = optionalString(p, "externalKey") || optionalString(p, "key");
+  const lastTaskId = optionalString(p, "lastTaskId") || optionalString(p, "taskId");
+  const cwd = optionalString(p, "cwd");
+  const assigneeKindRaw = optionalString(p, "assigneeKind");
+  const assigneeKind = assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role" ? assigneeKindRaw : void 0;
+  let priorExternalId;
+  if (sessionId) {
+    const prior = await ctx.runtime.registry.read(sessionId);
+    if (prior?.state === "external") priorExternalId = prior.id;
+  } else if (externalKey) {
+    const all2 = await ctx.runtime.registry.list();
+    const hit = all2.find(
+      (rec2) => rec2.state === "external" && rec2.profileSnapshot?.env?.TENT_EXTERNAL_KEY === externalKey && (!workspaceId || !rec2.workspace || rec2.workspace === workspaceId)
+    );
+    if (hit) priorExternalId = hit.id;
+  }
+  let handle;
+  try {
+    handle = await ctx.runtime.enterExternalSession({
+      sessionId: sessionId || void 0,
+      profileId: profileId || void 0,
+      roleName: roleName || void 0,
+      assigneeKind,
+      workspace: workspaceId || void 0,
+      cwd: cwd || void 0,
+      lastTaskId: lastTaskId || void 0,
+      externalKey: externalKey || void 0
+    });
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (/already active as managed/i.test(message)) {
+      throw new RpcError(RPC_LIFECYCLE, message);
+    }
+    throw new RpcError(-32602, message);
+  }
+  const rec = await ctx.runtime.registry.read(handle.sessionId);
+  const probe = await ctx.runtime.probe(handle.sessionId);
+  const session = {
+    sessionId: handle.sessionId,
+    profileId: handle.profileId,
+    adapterId: handle.adapterId,
+    state: probe.state,
+    roleName: handle.roleName,
+    assigneeKind: handle.assigneeKind ?? "role",
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec?.lastTaskId,
+    workspace: rec?.workspace ?? workspaceId,
+    createdAt: handle.createdAt,
+    updatedAt: handle.updatedAt
+  };
+  return {
+    session,
+    reused: priorExternalId === handle.sessionId
+  };
+}
+async function sessionStatus(ctx, p) {
+  const sessionId = optionalString(p, "sessionId");
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+  if (!sessionId) {
+    const all2 = await ctx.runtime.registry.list();
+    const sessions = [];
+    for (const rec2 of all2) {
+      if (rec2.state !== "external") continue;
+      if (workspaceId && rec2.workspace && rec2.workspace !== workspaceId) continue;
+      const probe2 = await ctx.runtime.probe(rec2.id);
+      sessions.push({
+        sessionId: rec2.id,
+        profileId: rec2.profileId,
+        adapterId: rec2.adapterId,
+        state: probe2.state,
+        roleName: rec2.roleName,
+        assigneeKind: rec2.assigneeKind ?? "role",
+        alive: probe2.alive,
+        resumeCapable: probe2.resumeCapable,
+        lastTaskId: rec2.lastTaskId,
+        workspace: rec2.workspace,
+        createdAt: rec2.createdAt,
+        updatedAt: rec2.updatedAt
+      });
+    }
+    const incompleteTasks2 = workspaceId ? await listIncompleteTasksForSessions(
+      ctx,
+      workspaceId,
+      sessions.map((s) => s.sessionId)
+    ) : [];
+    return { sessions, incompleteTasks: incompleteTasks2 };
+  }
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) throw new RpcError(-32004, `Session not found: ${sessionId}`);
+  const probe = await ctx.runtime.probe(sessionId);
+  const session = {
+    sessionId: rec.id,
+    profileId: rec.profileId,
+    adapterId: rec.adapterId,
+    state: probe.state,
+    roleName: rec.roleName,
+    assigneeKind: rec.assigneeKind ?? "role",
+    alive: probe.alive,
+    resumeCapable: probe.resumeCapable,
+    lastTaskId: rec.lastTaskId,
+    workspace: rec.workspace,
+    createdAt: rec.createdAt,
+    updatedAt: rec.updatedAt
+  };
+  const incompleteTasks = await listIncompleteTasksBoundToSession(
+    ctx,
+    rec.workspace || workspaceId,
+    sessionId
+  );
+  return {
+    session,
+    incompleteTasks,
+    /** Convenience: true while external is open or managed process is alive. */
+    open: SessionRegistry.isOpen(probe.state) || probe.alive
+  };
+}
+async function sessionLeave(ctx, p) {
+  const sessionId = requireString(p, "sessionId");
+  const workspaceId = optionalString(p, "workspaceId");
+  if (workspaceId) ctx.host.require(workspaceId);
+  const rec = await ctx.runtime.registry.read(sessionId);
+  if (!rec) {
+    return {
+      sessionId,
+      state: "stopped",
+      left: false,
+      alreadyLeft: true,
+      incompleteTasks: []
+    };
+  }
+  const incompleteTasks = await listIncompleteTasksBoundToSession(
+    ctx,
+    rec.workspace || workspaceId,
+    sessionId
+  );
+  if (SessionRegistry.isNonTerminal(rec.state)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `session.leave is for external/pull-host sessions; managed session is ${rec.state}. Use task.interrupt or runtime stop.`,
+      { sessionId, state: rec.state }
+    );
+  }
+  let left = false;
+  let state = rec.state;
+  if (rec.state === "external") {
+    await ctx.runtime.stopSession(sessionId, "user");
+    left = true;
+    const after = await ctx.runtime.registry.read(sessionId);
+    state = after?.state ?? "stopped";
+  } else {
+    state = rec.state === "failed" ? "failed" : "stopped";
+  }
+  return {
+    sessionId,
+    state,
+    left,
+    alreadyLeft: !left,
+    incompleteTasks,
+    /**
+     * Explicit contract: leave never auto-delivers or accepts.
+     * Callers must use task.deliver / task.accept separately.
+     */
+    delivered: false,
+    accepted: false
+  };
+}
+async function listIncompleteTasksBoundToSession(ctx, workspaceId, sessionId) {
+  if (!workspaceId) return [];
+  try {
+    ctx.host.require(workspaceId);
+  } catch {
+    return [];
+  }
+  return listIncompleteTasksForSessions(ctx, workspaceId, [sessionId]);
+}
+async function listIncompleteTasksForSessions(ctx, workspaceId, sessionIds) {
+  if (sessionIds.length === 0) return [];
+  const idSet = new Set(sessionIds);
+  const mount = ctx.host.require(workspaceId);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const out = [];
+  for (const task of tasks) {
+    const sid = task.sessionId?.trim();
+    if (!sid || !idSet.has(sid)) continue;
+    if (!isActiveTaskState(task.state)) continue;
+    out.push({
+      path: task.path,
+      id: task.id,
+      state: task.state,
+      role: task.role,
+      sessionId: sid
+    });
+  }
+  return out;
 }
 async function a2aListPending(ctx, p) {
   const workspaceId = optionalString(p, "workspaceId");
@@ -23117,6 +23347,114 @@ var AgentRuntime = class {
       }
     }
   }
+  /**
+   * Register a pull-host / external GUI session without spawning ACP.
+   * Idempotent: same sessionId or externalKey while state remains external reuses the row.
+   */
+  async enterExternalSession(req) {
+    this.assertOpen();
+    const externalKey = req.externalKey?.trim() || void 0;
+    const profileId = (req.profileId?.trim() || EXTERNAL_PROFILE_ID).trim();
+    const roleName = req.roleName?.trim() || void 0;
+    const assigneeKind = req.assigneeKind;
+    const workspace = req.workspace?.trim() || void 0;
+    const cwd = req.runtimeWorkspace?.cwd ?? req.cwd ?? req.workspaceLane?.worktree ?? void 0;
+    if (req.sessionId) {
+      if (!isSessionId(req.sessionId)) {
+        throw new Error(`Invalid session id: ${req.sessionId}`);
+      }
+      const existing = await this.registry.read(req.sessionId);
+      if (existing) {
+        if (existing.state === "external") {
+          const patch = {};
+          if (roleName && existing.roleName !== roleName) patch.roleName = roleName;
+          if (assigneeKind && existing.assigneeKind !== assigneeKind) {
+            patch.assigneeKind = assigneeKind;
+          }
+          if (workspace && existing.workspace !== workspace) patch.workspace = workspace;
+          if (cwd && existing.runtimeWorkspace?.cwd !== cwd) {
+            patch.runtimeWorkspace = { cwd };
+          }
+          if (req.lastTaskId && existing.lastTaskId !== req.lastTaskId) {
+            patch.lastTaskId = req.lastTaskId;
+          }
+          if (externalKey) {
+            const snap = {
+              ...existing.profileSnapshot ?? {
+                id: existing.profileId,
+                adapterId: existing.adapterId
+              },
+              env: {
+                ...existing.profileSnapshot?.env ?? {},
+                TENT_EXTERNAL_KEY: externalKey
+              }
+            };
+            patch.profileSnapshot = snap;
+          }
+          if (Object.keys(patch).length > 0) {
+            const updated = await this.registry.update(req.sessionId, patch);
+            return handleFrom(updated);
+          }
+          return handleFrom(existing);
+        }
+        if (SessionRegistry.isNonTerminal(existing.state)) {
+          throw new Error(
+            `Session already active as managed runtime (state=${existing.state}): ${req.sessionId}`
+          );
+        }
+      }
+    }
+    if (externalKey || workspace && roleName) {
+      const all2 = await this.registry.list();
+      const match = all2.find((rec) => {
+        if (rec.state !== "external") return false;
+        if (workspace && rec.workspace && rec.workspace !== workspace) return false;
+        if (externalKey) {
+          const key = rec.profileSnapshot?.env?.TENT_EXTERNAL_KEY;
+          return key === externalKey;
+        }
+        return Boolean(roleName && rec.roleName === roleName);
+      });
+      if (match) {
+        const patch = {};
+        if (req.lastTaskId && match.lastTaskId !== req.lastTaskId) {
+          patch.lastTaskId = req.lastTaskId;
+        }
+        if (cwd && match.runtimeWorkspace?.cwd !== cwd) {
+          patch.runtimeWorkspace = { cwd };
+        }
+        if (Object.keys(patch).length > 0) {
+          const updated = await this.registry.update(match.id, patch);
+          return handleFrom(updated);
+        }
+        return handleFrom(match);
+      }
+    }
+    const sessionId = req.sessionId && isSessionId(req.sessionId) ? req.sessionId : makeSessionId();
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const profileSnapshot = {
+      id: profileId,
+      adapterId: EXTERNAL_ADAPTER_ID,
+      ...externalKey ? { env: { TENT_EXTERNAL_KEY: externalKey } } : {}
+    };
+    const record = {
+      id: sessionId,
+      profileId,
+      adapterId: EXTERNAL_ADAPTER_ID,
+      profileSnapshot,
+      roleName,
+      assigneeKind,
+      state: "external",
+      runtimeWorkspace: cwd ? { cwd } : void 0,
+      workspace,
+      workspaceLane: req.workspaceLane,
+      createdAt: now,
+      updatedAt: now,
+      lastTaskId: req.lastTaskId
+    };
+    await this.registry.write(record);
+    return handleFrom(record);
+  }
   async startSessionExclusive(req) {
     const existing = await this.registry.read(req.sessionId);
     if (existing && SessionRegistry.isNonTerminal(existing.state)) {
@@ -23531,6 +23869,19 @@ var AgentRuntime = class {
   async stopSessionInternal(sessionId, reason) {
     const record = await this.registry.read(sessionId);
     if (!record) throw new Error(`Session not found: ${sessionId}`);
+    if (record.state === "external") {
+      await this.registry.update(sessionId, {
+        state: "stopped",
+        stopReason: reason,
+        pid: void 0
+      });
+      this.emit({
+        type: "session.exited",
+        sessionId,
+        exitCode: 0
+      });
+      return;
+    }
     const managed = this.managed.get(sessionId);
     if (managed) {
       try {
@@ -23573,6 +23924,16 @@ var AgentRuntime = class {
         alive: false,
         resumeCapable: false,
         lastError: "session not found"
+      };
+    }
+    if (record.state === "external") {
+      return {
+        sessionId,
+        state: "external",
+        alive: true,
+        resumeCapable: false,
+        lastError: record.lastError,
+        exitCode: record.exitCode
       };
     }
     const managed = this.managed.get(sessionId);

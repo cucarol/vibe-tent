@@ -397,6 +397,15 @@ export const CLIENT_METHODS = [
   "proposal.resolve",
   "session.list",
   "session.get",
+  /**
+   * External / pull-host session lifecycle (no ACP spawn).
+   * enter: register or reuse state=external SessionRegistry row.
+   * status: probe + incomplete task bindings for that session.
+   * leave: stop/unbind external session only — never deliver/accept.
+   */
+  "session.enter",
+  "session.status",
+  "session.leave",
   "a2a.listPending",
   "a2a.resolve",
   /** ACP tool permission approvals (permissionPolicy=ask) — distinct from a2a.* spawn gate. */

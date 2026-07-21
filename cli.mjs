@@ -4283,6 +4283,27 @@ var ServiceClient = class {
   sessionGet(sessionId) {
     return this.call("session.get", { sessionId });
   }
+  /**
+   * Register or reuse a pull-host external session (no ACP spawn).
+   * Machine-callable; idempotent for sessionId / externalKey.
+   */
+  sessionEnter(args = {}) {
+    return this.call("session.enter", { ...args });
+  }
+  /** Probe external/managed session + incomplete task bindings. */
+  sessionStatus(args = {}) {
+    return this.call("session.status", { ...args });
+  }
+  /**
+   * End external session binding only — never deliver/accept tasks.
+   * Reports incompleteTasks still bound to the sessionId.
+   */
+  sessionLeave(sessionId, workspaceId) {
+    return this.call("session.leave", {
+      sessionId,
+      ...workspaceId ? { workspaceId } : {}
+    });
+  }
   a2aListPending(workspaceId) {
     return this.call("a2a.listPending", workspaceId ? { workspaceId } : {});
   }
@@ -5172,6 +5193,295 @@ Derived role-init remains available because it regenerates bootstrap context onl
 `;
 }
 
+// src/cli/agent-rpc.ts
+async function runAgentCommand(sub, args, globals = {}) {
+  const normalized = normalizeAgentSub(sub);
+  if (!normalized) {
+    return failUsage2(
+      `Unknown agent subcommand: ${sub || "(empty)"}
+` + agentHelpText()
+    );
+  }
+  try {
+    const { positionals, flags } = parseAgentFlags(args);
+    const json = globals.json === true || flags.json === "true";
+    const silent = globals.silentOutsideTent === true || flags.silent === "true" || flags["silent-outside"] === "true";
+    const cwd = pathResolve(globals.cwd);
+    const workspaceFlag = flags.workspace || globals.workspace;
+    const tentProbe = await probeTentPresence({
+      cwd,
+      workspace: workspaceFlag
+    });
+    if (!tentProbe.ok) {
+      if (silent || isHookAlias(sub)) {
+        return silentOutsideResult(normalized, json);
+      }
+      return {
+        exitCode: 1,
+        stdout: "",
+        stderr: tentProbe.message + "\n"
+      };
+    }
+    const attachOpts = {
+      dataDir: flags["data-dir"] || globals.dataDir,
+      attachOnly: globals.attachOnly === true || flags["attach-only"] === "true",
+      serviceEntry: flags["service-entry"] || globals.serviceEntry,
+      packageRoot: globals.packageRoot,
+      env: globals.env
+    };
+    const client = globals.client ?? (await attachOrBootstrapService(attachOpts)).client;
+    const ctx = await ensureMountedWorkspace(client, {
+      cwd,
+      workspace: workspaceFlag
+    });
+    const workspaceId = ctx.workspaceId;
+    switch (normalized) {
+      case "enter": {
+        if (positionals.length > 0) {
+          return failUsage2(
+            "Usage: tent agent enter [--session <ss-\u2026>] [--role <name>] [--profile <id>] [--key <externalKey>] [--task <taskId>] [--json]"
+          );
+        }
+        const sessionId = flags.session || flags["session-id"] || flags.sessionId;
+        const roleName = flags.role || flags["role-name"] || flags.roleName || process.env.TENT_ROLE;
+        const profileId = flags.profile || flags["profile-id"] || flags.profileId;
+        const externalKey = flags.key || flags["external-key"] || flags.externalKey || flags.external;
+        const lastTaskId = flags.task || flags["task-id"] || flags.taskId || flags["last-task-id"];
+        const assigneeKindRaw = flags["assignee-kind"] || flags.assigneeKind;
+        const assigneeKind = assigneeKindRaw === "agentProfile" || assigneeKindRaw === "role" ? assigneeKindRaw : void 0;
+        const result = await client.sessionEnter({
+          workspaceId,
+          sessionId,
+          profileId,
+          roleName,
+          externalKey,
+          lastTaskId,
+          cwd: ctx.workspaceRoot,
+          assigneeKind
+        });
+        return okPrint2(result, json, (r) => formatEnter(r));
+      }
+      case "status": {
+        if (positionals.length > 1) {
+          return failUsage2(
+            "Usage: tent agent status [sessionId] [--workspace <path>] [--json]"
+          );
+        }
+        const sessionId = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
+        const result = await client.sessionStatus({
+          workspaceId,
+          sessionId
+        });
+        return okPrint2(result, json, (r) => formatStatus(r));
+      }
+      case "leave": {
+        const sessionId = positionals[0] || flags.session || flags["session-id"] || flags.sessionId;
+        if (!sessionId || positionals.length > 1) {
+          return failUsage2(
+            "Usage: tent agent leave <sessionId> [--workspace <path>] [--json]"
+          );
+        }
+        const result = await client.sessionLeave(sessionId, workspaceId);
+        return okPrint2(result, json, (r) => formatLeave(r));
+      }
+      default:
+        return failUsage2(agentHelpText());
+    }
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (isHookAlias(sub) && /Not inside a Tent/i.test(message)) {
+      return silentOutsideResult("status", globals.json === true);
+    }
+    return { exitCode: 1, stdout: "", stderr: message + "\n" };
+  }
+}
+function agentHelpText() {
+  return `tent agent \u2014 external / pull-host session lifecycle (Local Service RPC)
+
+Usage:
+  tent agent enter   [--session <ss-\u2026>] [--role <name>] [--profile <id>]
+                     [--key <externalKey>] [--task <taskId>] [--json]
+  tent agent status  [sessionId] [--json]
+  tent agent leave   <sessionId> [--json]
+
+Semantics:
+  enter   Register or reuse a SessionRegistry row with state=external.
+          Does not start ACP or any managed agent process. Idempotent.
+  status  Probe session + list incomplete (active) tasks bound to it.
+  leave   End external session binding only. Never deliver or accept.
+          Reports incompleteTasks still open for the caller to handle.
+
+Hook aliases (same RPC; silent exit 0 when cwd is not a Tent workspace):
+  tent agent session-start   \u2192 enter
+  tent agent session-status  \u2192 status
+  tent agent session-end     \u2192 leave
+
+Common flags:
+  --workspace <path>   Workspace root (default: resolve from cwd)
+  --data-dir <path>    Service data area override
+  --attach-only        Do not bootstrap Local Service
+  --json               Machine-readable result
+`;
+}
+function normalizeAgentSub(sub) {
+  const s = (sub || "").trim().toLowerCase();
+  if (s === "enter" || s === "session-start" || s === "sessionstart" || s === "start") {
+    return "enter";
+  }
+  if (s === "status" || s === "session-status" || s === "sessionstatus") {
+    return "status";
+  }
+  if (s === "leave" || s === "session-end" || s === "sessionend" || s === "end") {
+    return "leave";
+  }
+  return null;
+}
+function isHookAlias(sub) {
+  const s = (sub || "").trim().toLowerCase();
+  return s === "session-start" || s === "sessionstart" || s === "session-status" || s === "sessionstatus" || s === "session-end" || s === "sessionend";
+}
+async function probeTentPresence(options) {
+  try {
+    await resolveWorkspacePaths({
+      cwd: options.cwd,
+      workspace: options.workspace
+    });
+    return { ok: true };
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!options.workspace) {
+      const systemRoot = await findTentSystemRoot(options.cwd || process.cwd());
+      if (!systemRoot) {
+        return { ok: false, message: NOT_INSIDE_TENT_MESSAGE };
+      }
+    }
+    return { ok: false, message };
+  }
+}
+function silentOutsideResult(kind, json) {
+  const payload = kind === "enter" ? { skipped: true, reason: "not-a-tent-workspace", session: null } : kind === "status" ? { skipped: true, reason: "not-a-tent-workspace", sessions: [], incompleteTasks: [] } : {
+    skipped: true,
+    reason: "not-a-tent-workspace",
+    left: false,
+    alreadyLeft: true,
+    incompleteTasks: [],
+    delivered: false,
+    accepted: false
+  };
+  if (json) {
+    return { exitCode: 0, stdout: JSON.stringify(payload) + "\n", stderr: "" };
+  }
+  return { exitCode: 0, stdout: "", stderr: "" };
+}
+function formatEnter(result) {
+  const row = result;
+  const s = row.session ?? {};
+  return `\u2713 External session enter
+sessionId: ${s.sessionId ?? "?"}
+state: ${s.state ?? "external"}
+` + (s.roleName ? `role: ${s.roleName}
+` : "") + (s.profileId ? `profileId: ${s.profileId}
+` : "") + (row.reused != null ? `reused: ${row.reused}
+` : "");
+}
+function formatStatus(result) {
+  const row = result;
+  const lines = [];
+  if (row.session) {
+    const s = row.session;
+    lines.push(
+      `sessionId: ${s.sessionId ?? "?"}`,
+      `state: ${s.state ?? "?"}`,
+      `alive: ${s.alive ?? false}`,
+      ...s.roleName ? [`role: ${s.roleName}`] : [],
+      ...s.lastTaskId ? [`lastTaskId: ${s.lastTaskId}`] : [],
+      ...row.open != null ? [`open: ${row.open}`] : []
+    );
+  } else if (row.sessions) {
+    lines.push(`externalSessions: ${row.sessions.length}`);
+    for (const s of row.sessions) {
+      lines.push(
+        `- ${s.sessionId ?? "?"} state=${s.state ?? "?"}` + (s.roleName ? ` role=${s.roleName}` : "")
+      );
+    }
+  }
+  const tasks = row.incompleteTasks ?? [];
+  lines.push("", `incompleteTasks: ${tasks.length}`);
+  for (const t of tasks) {
+    lines.push(
+      `- ${t.path ?? t.id ?? "?"} state=${t.state ?? "?"} role=${t.role ?? "?"}`
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+function formatLeave(result) {
+  const row = result;
+  const tasks = row.incompleteTasks ?? [];
+  const lines = [
+    `\u2713 External session leave`,
+    `sessionId: ${row.sessionId ?? "?"}`,
+    `state: ${row.state ?? "stopped"}`,
+    `left: ${row.left ?? false}`,
+    ...row.alreadyLeft ? [`alreadyLeft: true`] : [],
+    `delivered: ${row.delivered ?? false}`,
+    `accepted: ${row.accepted ?? false}`,
+    "",
+    `incompleteTasks: ${tasks.length}`
+  ];
+  for (const t of tasks) {
+    lines.push(
+      `- ${t.path ?? "?"} state=${t.state ?? "?"} role=${t.role ?? "?"}`
+    );
+  }
+  if (tasks.length > 0) {
+    lines.push(
+      "",
+      "Note: leave did not deliver/accept. Finish incomplete tasks with tent task deliver / accept as needed."
+    );
+  }
+  return lines.join("\n") + "\n";
+}
+function okPrint2(result, json, human) {
+  const stdout = json ? JSON.stringify(result, null, 2) + "\n" : human(result);
+  return { exitCode: 0, stdout, stderr: "" };
+}
+function failUsage2(msg) {
+  return { exitCode: 1, stdout: "", stderr: msg + "\n" };
+}
+function pathResolve(cwd) {
+  if (!cwd) return void 0;
+  return cwd;
+}
+function parseAgentFlags(args) {
+  const positionals = [];
+  const flags = {};
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "--") {
+      positionals.push(...args.slice(i + 1));
+      break;
+    }
+    if (a.startsWith("--")) {
+      const eq = a.indexOf("=");
+      if (eq > 2) {
+        flags[a.slice(2, eq)] = a.slice(eq + 1);
+        continue;
+      }
+      const key = a.slice(2);
+      const next = args[i + 1];
+      if (next !== void 0 && !next.startsWith("--")) {
+        flags[key] = next;
+        i++;
+      } else {
+        flags[key] = "true";
+      }
+      continue;
+    }
+    positionals.push(a);
+  }
+  return { positionals, flags };
+}
+
 // src/cli/proposal-rpc.ts
 async function runProposalSubmit(args, globals = {}) {
   try {
@@ -5344,6 +5654,18 @@ async function main() {
     if (result.exitCode !== 0) process.exitCode = result.exitCode;
     return;
   }
+  if (cmd === "agent") {
+    const [sub, ...rest] = args;
+    if (!sub || sub === "help" || sub === "--help" || sub === "-h") {
+      console.log(agentHelpText());
+      return;
+    }
+    const result = await runAgentCommand(sub, rest, { packageRoot: packageRoot() });
+    if (result.stdout) process.stdout.write(result.stdout);
+    if (result.stderr) process.stderr.write(result.stderr);
+    if (result.exitCode !== 0) process.exitCode = result.exitCode;
+    return;
+  }
   const tentCommands = /* @__PURE__ */ new Set([
     ...LEGACY_MUTATION_COMMANDS,
     ...LEGACY_READONLY_COMMANDS,
@@ -5353,7 +5675,7 @@ async function main() {
   if (!tentCommands.has(cmd)) {
     return fail(
       `Unknown command: ${cmd || "(empty)"}
-Commands: new migrate import task role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
+Commands: new migrate import task agent role-init roles dispatch task-ack task-cancel propose complete stamp status grant-readable new-box tag untag tag-new tag-rm tags find fork clean-temp force-release okf-sync skill-install tree`
     );
   }
   const env = await makeEnv();
@@ -5783,6 +6105,8 @@ Run commands from a workspace with <workspace>/.tent/ (or legacy external tent r
 Service-backed collaboration (required for Desktop / in-workspace mutates):
   tent task list|get|claim|deliver|\u2026  Attach Local Service \u2192 mount \u2192 task.* RPC
   tent task --help                    Full task subcommand help
+  tent agent enter|status|leave       External session lifecycle (no ACP spawn)
+  tent agent --help                   Pull-host enter/status/leave + hook aliases
   propose <boxId> <file|->            Submit a proposal (in-workspace \u2192 proposal.submit RPC)
   CLI exit does not stop Local Service. Token stays in machine-local service.json.
 
