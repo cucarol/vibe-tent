@@ -715,17 +715,19 @@ Usage:
   tent agent-hooks remove  [--agent all|claude|codex|agy|copilot] [--json]
 
 Behavior:
-  - SessionStart → tent agent enter
-  - Stop         → tent agent leave
+  - SessionStart → tent agent session-start --host <agent>
+  - Stop         → tent agent session-end --host <agent>
+  - CLI hook aliases parse session identity/cwd from native hook stdin and
+    silently skip non-Tent workspaces (leave never needs a sessionId positional).
   - Merges into existing agent configs; never rewrites permissions or MCP.
-  - install / doctor / remove are idempotent.
+  - install / doctor / remove are idempotent; remove only Tent-managed handlers.
   - Antigravity (agy) and Copilot report unsupported when no verified lifecycle hook surface exists.
-  - Non-Tent cwd silent success is handled by tent agent enter|leave (not this command).
+  - Projection only writes under --home (tests) or os.homedir(); never smoke real user configs.
 
 Options:
   --agent <id>     Target agent (default: all). Alias: agy → antigravity.
   --json           Machine-readable result.
-  --home <path>    Override home for config roots (tests).
+  --home <path>    Override home for config roots (tests / isolated fixtures only).
   --tent-command <cmd>  Override tent entry used in projected commands (tests).
 `;
 }
