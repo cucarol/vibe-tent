@@ -19223,7 +19223,14 @@ async function taskStartSessionRpc(ctx, p) {
     workspaceRoot: mount.workspaceRoot,
     systemRoot: mount.systemRoot
   });
-  const priorSessionId = task.sessionId?.trim() || "";
+  const roleSession = isProfileTask ? void 0 : await findResumableManagedSessionForRole(
+    ctx,
+    workspaceId,
+    task.role,
+    profileId,
+    cwd
+  );
+  const priorSessionId = task.sessionId?.trim() || roleSession?.id || "";
   let resumePrior = false;
   if (priorSessionId) {
     try {
@@ -19237,7 +19244,7 @@ async function taskStartSessionRpc(ctx, p) {
         const roleMatches = prior?.roleName === task.role;
         const assigneeKindMatches = (prior?.assigneeKind ?? "role") === taskAssigneeKind(task);
         const taskMatches = prior?.lastTaskId === taskPath || !!task.id && prior?.lastTaskId === task.id;
-        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && taskMatches;
+        resumePrior = cwdMatches && profileMatches && workspaceMatches && roleMatches && assigneeKindMatches && (!isProfileTask || taskMatches);
       }
     } catch (err) {
       if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) {
@@ -19252,7 +19259,8 @@ async function taskStartSessionRpc(ctx, p) {
         sessionId: priorSessionId,
         runtimeWorkspace: { cwd },
         cwd,
-        bootstrapPrompt: sessionBootstrap
+        bootstrapPrompt: sessionBootstrap,
+        lastTaskId: task.id || taskPath
       });
     } else {
       handle = await ctx.runtime.startSession({
@@ -20475,12 +20483,11 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
       const mount = ctx.host.get(info.workspaceId);
       if (!mount) continue;
       const tasks = await loadTaskEnvelopes(mount.env.fs);
-      const task = tasks.find((t) => {
-        if (t.sessionId === ev.sessionId) return true;
+      const currentTask = tasks.find((t) => {
         if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
-        if (t.sessionId && t.sessionId !== ev.sessionId) return false;
-        return true;
+        return !t.sessionId || t.sessionId === ev.sessionId;
       });
+      const task = currentTask ?? tasks.find((t) => t.sessionId === ev.sessionId);
       if (!task) continue;
       if (ev.type === "session.waiting_user" && task.state === "running") {
         await ctx.mutations.run(mount.workspaceId, async () => {
@@ -20810,7 +20817,7 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       input.workspaceId,
       task.role
     );
-    if (activeForRole && activeForRole.id !== priorSessionId) {
+    if (activeForRole) {
       const boundToThisTask = !!task.id && activeForRole.lastTaskId === task.id || activeForRole.lastTaskId === input.taskPath;
       if (!boundToThisTask) {
         throw new Error(
@@ -21227,6 +21234,20 @@ async function findActiveManagedSessionForRole(ctx, workspaceId, roleName) {
   return all2.find(
     (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && SessionRegistry.isNonTerminal(rec.state) && rec.state !== "external"
   );
+}
+async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, profileId, cwd) {
+  if (!roleName) return void 0;
+  const candidates = (await ctx.runtime.registry.list()).filter(
+    (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && rec.profileId === profileId && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
+      nodePath3.resolve(rec.runtimeWorkspace.cwd),
+      nodePath3.resolve(cwd)
+    )
+  ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
+  for (const candidate of candidates) {
+    const probe = await ctx.runtime.probe(candidate.id);
+    if (!probe.alive && probe.resumeCapable) return candidate;
+  }
+  return void 0;
 }
 function resolveA2AAuthorityRole(task, callerKind) {
   if (callerKind === "user") return task.role;
@@ -23785,7 +23806,7 @@ var AgentRuntime = class {
         workspaceLane: record.workspaceLane,
         runtimeWorkspace: { cwd },
         workspace: record.workspace,
-        lastTaskId: record.lastTaskId,
+        lastTaskId: req.lastTaskId ?? record.lastTaskId,
         env: req.env,
         bootstrapPrompt: req.bootstrapPrompt
       }, profile);
@@ -23812,6 +23833,7 @@ var AgentRuntime = class {
       exitCode: void 0,
       stopReason: void 0,
       runtimeWorkspace: { cwd },
+      lastTaskId: req.lastTaskId ?? record.lastTaskId,
       updatedAt: now
     });
     this.emit({ type: "session.starting", sessionId: req.sessionId });
