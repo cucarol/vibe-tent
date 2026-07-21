@@ -2,8 +2,6 @@
 
 Collaboration lifecycle mutates only through **Local Service** (`tent task *`). CLI attaches to the machine-local service, mounts the workspace, and calls RPC. CLI exit does **not** stop the service.
 
-Only commands that exist on the current CLI are listed below. Do not invent `tent agent *` or other missing top-level verbs.
-
 ## Commands agents actually use
 
 ```text
@@ -17,7 +15,16 @@ tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--jso
 tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
 ```
 
-User / Desktop (agents do **not** drive these as their primary path):
+External session lifecycle (orthogonal; no ACP spawn):
+
+```text
+tent agent enter   [--session <ss-…>] [--role <name>] [--profile <id>]
+                   [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
+tent agent status  [sessionId|externalKey] [--key <externalKey>] [--json]
+tent agent leave   [sessionId|externalKey] [--key <externalKey>] [--json]
+```
+
+User / dispatcher write path and review (not the executor’s self-inbox):
 
 ```text
 tent task send-input <taskPath> [--text <text>|-] [--refs id,id] [--workspace <path>] [--json]
@@ -29,7 +36,6 @@ tent task dispatch <boxId> <role> …
 ```
 
 Agents should **not** self-accept their own delivery unless the product path explicitly authorizes it.
-Agents should **not** call `tent task send-input` to “message themselves.”
 
 ## taskPath
 
@@ -50,17 +56,15 @@ Agents should **not** call `tent task send-input` to “message themselves.”
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>
 ```
 
-## U2A — user writes, agent consumes
+## U2A — writers vs executor
 
-**Write path (user / dispatcher only):**
+**Write path** (`tent task send-input`): **user** or **dispatcher** (including an agent dispatcher pushing U2A into a **subordinate** task).
 
 ```bash
 tent task send-input <taskPath> [--text "…"] [--refs id,id]
 ```
 
-Service stores a machine-local TaskInput. Managed ACP injects a fixed-format follow-up (`## User Input` / review feedback). External agents must poll.
-
-**Consume path (agent):**
+**Consume path** (executor of that task):
 
 ```bash
 tent task task-input list <taskPath>
@@ -68,9 +72,13 @@ tent task task-input get <inputId> --task <taskPath>
 tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId>
 ```
 
-- `list` / `get` / `ack` always need the task scope (`taskPath`); there is no global inbox.
+Rules:
+
+- Do **not** self-`send-input` on the **same** task you are currently executing.
+- A dispatcher **may** `send-input` to another task’s path when acting as U2A writer.
+- `list` / `get` / `ack` always need `taskPath` scope; no global inbox.
 - `ack` `--actor` must match the task role or a service-verified session id for that task.
-- Do not invent a second inbox under the workspace root.
+- Managed ACP injects fixed-format follow-ups (`## User Input` / review feedback); external agents poll + ack.
 
 ## A2U — agent asks, user answers
 
@@ -87,16 +95,29 @@ tent task user-ask deny <askId>
 
 Wait for the reply through the service; do not busy-loop inventing answers.
 
-## Orientation helpers (real top-level commands)
+## External session CLI
+
+Verified public surface (sibling lifecycle CLI):
+
+| Command | Meaning |
+| --- | --- |
+| `tent agent enter` | Register/reuse external session (`state=external`). No ACP. Idempotent. |
+| `tent agent status` | Probe session + incomplete tasks. |
+| `tent agent leave` | End binding only. **Never** deliver/accept. |
+
+Hook aliases (native install / projection): `session-start` / `session-status` / `session-end` with `--host <agent>` → same enter/status/leave via stable `externalKey`. Outside Tent: silent exit 0 for hooks.
+
+Optional bind on claim: `tent task claim … --session <ss-…>` when the host already has a session id.
+
+## Orientation helpers
 
 ```bash
 tent status          # proposals, tasks, paths (read-only)
 tent roles           # role registry
 tent tree            # box tree
 tent task list       # service task list
+tent agent status    # external session orientation
 ```
-
-There is **no** `tent agent enter|status|leave` on the current CLI. Session bind metadata is optional via `claim --session` when the host provides a session id; do not document missing agent lifecycle subcommands as fallbacks.
 
 ## What not to use as the main path
 
@@ -106,4 +127,4 @@ There is **no** `tent agent enter|status|leave` on the current CLI. Session bind
 | `tent complete` / old report flows | Formal delivery is Delivery-only via `task.deliver` |
 | Chat-only “done” without deliver | External path must `task.deliver` |
 | Self `task.accept` | User (or authorized) review only |
-| Agent calling `task.send-input` | User-only U2A write path |
+| Self `send-input` on **this** task | Executor consumes via `task-input *`; writers are user/dispatcher |

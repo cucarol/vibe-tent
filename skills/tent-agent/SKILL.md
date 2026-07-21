@@ -1,6 +1,6 @@
 ---
 name: tent-agent
-description: Compact Tent entry for any new Agent: detect .tent and task envelopes, claim/get/deliver via tent task *, consume U2A via task-input, ask user via ask-user. Prefer this over tent-role for new agents.
+description: Compact Tent entry for any new Agent: detect .tent and task envelopes, run tent agent enter/status/leave, and drive task claim/get/ask-user/task-input/deliver. Prefer this over tent-role for new agents.
 ---
 
 # tent-agent
@@ -33,6 +33,19 @@ Never invent missing envelope / manifest / box content — fetch by path or id f
 
 More path rules: `references/paths.md`.
 
+## External session (pull-host)
+
+```bash
+tent agent enter [--session <ss-…>] [--role <name>] [--profile <id>] [--key <externalKey>] [--json]
+tent agent status [sessionId|externalKey] [--key <externalKey>] [--json]
+tent agent leave [sessionId|externalKey] [--key <externalKey>] [--json]
+```
+
+- **enter** — register/reuse a `state=external` session row. No ACP spawn. Idempotent.
+- **status** — probe session + incomplete tasks bound to it.
+- **leave** — unbind/end external session only. Does **not** deliver or accept; may report unfinished tasks.
+- Outside a Tent workspace, hook aliases (`session-start` / `session-end`) silent-exit 0; public enter/status/leave fail-loud unless designed silent. See `references/session-boundaries.md`.
+
 ## Task lifecycle (Local Service)
 
 Primary collaboration mutations go through **`tent task *`** (Service RPC). Do not use legacy `task-ack` / `complete` as the main path.
@@ -49,17 +62,18 @@ tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [-
 tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--json]
 ```
 
-Orientation (read-only, no Service required): `tent status`, `tent roles`, `tent tree`.
+Orientation (read-only): `tent status`, `tent roles`, `tent tree`.
 
 ### Direction: A2U vs U2A
 
-| Direction | Who writes | Agent action | CLI |
+| Direction | Writer | Executor (this task) | CLI |
 | --- | --- | --- | --- |
-| **A2U** (agent → user) | Agent | Ask a business question; wait for reply | `tent task ask-user` (agent). User answers via Desktop / `tent task user-ask reply\|deny` |
-| **U2A** (user → agent) | **User or dispatcher only** | **Consume** pending inputs; do **not** call `send-input` on yourself | User writes with `tent task send-input`. Agent: `tent task task-input list\|get\|ack` |
+| **A2U** | Agent on this task | Ask; wait for reply | `tent task ask-user` → user `user-ask reply\|deny` |
+| **U2A** | **User or dispatcher** (incl. agent dispatcher to a **sub** task) | **Consume** inputs for *this* task | Writer: `tent task send-input`. Executor: `task-input list\|get\|ack` |
 
-- **Agents never call `tent task send-input`.** That is the user/dispatcher write path.
-- Managed ACP may inject U2A as a structured `## User Input` / review-feedback turn; external agents poll + ack.
+- Do **not** self-`send-input` on the **same** task you are executing.
+- A dispatcher **may** `send-input` to a subordinate task it owns as writer.
+- Managed ACP may inject U2A as `## User Input` / review feedback; external agents poll + ack.
 - `ask-user` is not chat and not tool-permission UI.
 
 ### Managed ACP vs external / relay
@@ -67,7 +81,7 @@ Orientation (read-only, no Service required): `tent status`, `tent roles`, `tent
 | Path | Claim | Deliver |
 | --- | --- | --- |
 | **Managed ACP** (`task.startSession`) | Service already claimed; do **not** re-claim | Final assistant reply is the report; Service auto-delivers. Manual policy still waits for **user** accept |
-| **External / relay** (clipboard, pull-host, manual) | `tent task claim` | `tent task deliver --summary …` |
+| **External / relay** | `tent task claim` | `tent task deliver --summary …` |
 
 Copying a relay prompt is not consuming the task. Only claim (or service claim) moves `queued → running`.
 
@@ -82,17 +96,17 @@ Full command notes: `references/task-cli.md`. Session boundaries: `references/se
 ## Minimal external loop
 
 1. Confirm cwd is workspace root with `.tent/RULES.md`.
-2. Orient with `tent status` / `tent task list` when helpful.
+2. `tent agent enter` / `tent agent status` when binding an external session; else `tent status` / `tent task list`.
 3. Resolve taskPath from Context Card, user, or `tent task list`.
 4. `tent task claim` → `tent task get` → read envelope, **manifest as context pointer**, claimed box (real file reads).
 5. Prefer envelope `worktree` / `branch` for code work. Commit workspace changes; never commit `.tent/`.
-6. Need a decision → `tent task ask-user` (A2U). Mid-run user text → `task-input list/get/ack` (U2A consume); never `send-input` as the agent.
-7. `tent task deliver … --summary …`.
+6. Need a decision → `tent task ask-user` (A2U). Mid-run user/dispatcher text → `task-input list/get/ack` (U2A consume). Do not self-`send-input` on this same task.
+7. `tent task deliver … --summary …` then `tent agent leave` if you bound a session.
 8. Stop. Wait for user accept/reject. Do not self-accept.
 
 ## What this skill is not
 
 - Not Tent genesis → use `tent-genesis`.
-- Not a full durable-role handbook (type registry, tags, orchestrator manual) → see `tent-role` if you need that depth.
+- Not a full durable-role handbook → see `tent-role` if you need that depth.
 - Not ACP runtime, host tool-permission UI, or Desktop control.
-- Not a permission projector: V0.2 does **not** enforce or teach `readable`/`writable` as a security or honor-permission system. Use the manifest to know **what context to open**, not as an ACL.
+- Not a permission projector: use the manifest as **what context to open**, not as an ACL.
