@@ -5631,6 +5631,49 @@ function setError(err) {
   showToast(msg, "error");
 }
 
+// src/desktop/workbench/open-tabs.ts
+function resolveActiveAfterClose(tabOrder, closingCx, activeCx2) {
+  const remaining = tabOrder.filter((id) => id !== closingCx);
+  if (remaining.length === 0) return null;
+  if (activeCx2 && activeCx2 !== closingCx && remaining.includes(activeCx2)) {
+    return activeCx2;
+  }
+  const idx = tabOrder.indexOf(closingCx);
+  if (idx === -1) {
+    return remaining[remaining.length - 1] ?? null;
+  }
+  if (idx > 0) {
+    const left = tabOrder[idx - 1];
+    if (remaining.includes(left)) return left;
+  }
+  return remaining[Math.min(idx, remaining.length - 1)] ?? null;
+}
+function closeOpenTab(tabOrder, closingCx, activeCx2) {
+  if (!tabOrder.includes(closingCx)) {
+    return { order: [...tabOrder], activeCx: activeCx2, closed: false };
+  }
+  const nextActive = resolveActiveAfterClose(tabOrder, closingCx, activeCx2);
+  return {
+    order: tabOrder.filter((id) => id !== closingCx),
+    activeCx: nextActive,
+    closed: true
+  };
+}
+function documentEmptyCopy(hasWorkspace) {
+  if (!hasWorkspace) {
+    return { title: "\u6253\u5F00\u5DE5\u4F5C\u533A", hint: null };
+  }
+  return {
+    title: "\u672A\u6253\u5F00\u6587\u6863",
+    hint: "\u4ECE\u5DE6\u4FA7 Nodes \u9009\u62E9\u4E00\u6761\u7B14\u8BB0"
+  };
+}
+function isCloseTabShortcut(ev) {
+  if (ev.altKey || ev.shiftKey) return false;
+  if (!(ev.ctrlKey || ev.metaKey)) return false;
+  return ev.key === "w" || ev.key === "W";
+}
+
 // src/desktop/renderer/main/state.ts
 var localTabs = /* @__PURE__ */ new Map();
 var activeCx = null;
@@ -5907,9 +5950,10 @@ async function onSetNodeMode() {
     tab.nodeMode = mode;
     el.status.textContent = mode === "archived" ? `\u5DF2\u5C01\u5B58\u300C${tab.name}\u300D` : "\u8BBF\u95EE\u6A21\u5F0F\u5DF2\u66F4\u65B0";
     if (mode === "archived") {
+      const order = [...localTabs.keys()];
+      const result = closeOpenTab(order, tab.cx, activeCx);
       localTabs.delete(tab.cx);
-      const remainingTabs = [...localTabs.keys()];
-      setActiveCx(remainingTabs[remainingTabs.length - 1] || null);
+      setActiveCx(result.activeCx);
     }
     await reloadTree();
     host2?.renderAll();
@@ -6375,13 +6419,105 @@ var ICO = {
   chevronLeft: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M9.75 3.75 5.5 8l4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   chevronRight: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M6.25 3.75 10.5 8l-4.25 4.25" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>',
   modeSource: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M5.25 4.5 2.75 8l2.5 3.5M10.75 4.5 13.25 8l-2.5 3.5M9.1 3.5 6.9 12.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round" stroke-linejoin="round"/></svg>',
-  modePreview: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>'
+  modePreview: '<svg class="ico" viewBox="0 0 16 16" aria-hidden="true"><path d="M2.75 4.25h10.5M2.75 8h7.5M2.75 11.75h10.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg>',
+  close: '<svg class="ico ico-close" viewBox="0 0 16 16" aria-hidden="true"><path d="M4.5 4.5 11.5 11.5M11.5 4.5 4.5 11.5" fill="none" stroke="currentColor" stroke-width="1.35" stroke-linecap="round"/></svg>'
 };
 
 // src/desktop/renderer/main/document.ts
 var host3 = null;
+var documentChromeBound = false;
 function bindDocumentHost(h) {
   host3 = h;
+  bindDocumentChrome();
+}
+function bindDocumentChrome() {
+  if (documentChromeBound) return;
+  documentChromeBound = true;
+  el.tabs.addEventListener("click", (ev) => {
+    const t = ev.target;
+    const closeBtn = t?.closest("[data-close-tab]");
+    if (closeBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void closeTab(closeBtn.getAttribute("data-close-tab"));
+      return;
+    }
+    const tabBtn = t?.closest("[data-tab]");
+    if (tabBtn && el.tabs.contains(tabBtn)) {
+      setActiveCx(tabBtn.getAttribute("data-tab"));
+      host3?.renderAll();
+      focusActiveTab();
+    }
+  });
+  el.tabs.addEventListener("auxclick", (ev) => {
+    if (ev.button !== 1) return;
+    const t = ev.target;
+    const tabEl = t?.closest("[data-tab], [data-tab-wrap], [data-close-tab]");
+    if (!tabEl || !el.tabs.contains(tabEl)) return;
+    const cx = tabEl.getAttribute("data-close-tab") || tabEl.getAttribute("data-tab") || tabEl.getAttribute("data-tab-wrap");
+    if (!cx) return;
+    ev.preventDefault();
+    void closeTab(cx);
+  });
+  el.tabs.addEventListener("mousedown", (ev) => {
+    if (ev.button === 1 && ev.target?.closest("[data-tab], [data-tab-wrap], [data-close-tab]")) {
+      ev.preventDefault();
+    }
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (!isCloseTabShortcut(ev)) return;
+    if (!activeCx || !localTabs.has(activeCx)) return;
+    const surface = document.getElementById("app-root")?.dataset.surface;
+    if (surface && surface !== "workbench") return;
+    ev.preventDefault();
+    void closeTab(activeCx);
+  });
+  document.addEventListener("click", (ev) => {
+    const t = ev.target;
+    if (!t) return;
+    const wrap = el.toolbar.querySelector(".menu-wrap");
+    if (wrap?.contains(t)) return;
+    closeDocMoreMenu();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeDocMoreMenu();
+  });
+}
+function closeDocMoreMenu() {
+  const moreMenu = el.toolbar.querySelector("[data-doc-menu]");
+  const moreBtn = el.toolbar.querySelector("[data-doc-more]");
+  if (moreMenu && !moreMenu.hidden) {
+    moreMenu.hidden = true;
+    moreBtn?.setAttribute("aria-expanded", "false");
+  }
+}
+async function closeTab(cx) {
+  const tab = localTabs.get(cx);
+  if (!tab) return false;
+  if (tab.dirty) {
+    const ok = window.confirm(`\u300C${tab.name}\u300D\u6709\u672A\u4FDD\u5B58\u66F4\u6539\uFF0C\u5173\u95ED\u5C06\u4E22\u5F03\u4FEE\u6539\u3002\u4ECD\u8981\u5173\u95ED\uFF1F`);
+    if (!ok) return false;
+  }
+  const order = [...localTabs.keys()];
+  const result = closeOpenTab(order, cx, activeCx);
+  if (!result.closed) return false;
+  localTabs.delete(cx);
+  setActiveCx(result.activeCx);
+  host3?.renderAll();
+  queueMicrotask(() => {
+    if (result.activeCx) focusActiveTab();
+    else {
+      const stage = document.getElementById("main-panel");
+      stage?.focus({ preventScroll: true });
+    }
+  });
+  return true;
+}
+function focusActiveTab() {
+  if (!activeCx) return;
+  const safe = typeof CSS !== "undefined" && typeof CSS.escape === "function" ? CSS.escape(activeCx) : activeCx.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const btn = el.tabs.querySelector(`[data-tab="${safe}"]`);
+  btn?.focus({ preventScroll: true });
 }
 async function openConcept(cx) {
   if (!workspaceId) return;
@@ -6416,16 +6552,17 @@ async function openConcept(cx) {
 }
 function renderTabs() {
   const tabs = [...localTabs.values()];
+  el.tabs.setAttribute("role", "tablist");
+  el.tabs.setAttribute("aria-label", "\u6253\u5F00\u7684\u6587\u6863");
   el.tabs.innerHTML = tabs.map((t) => {
-    const active = t.cx === activeCx ? " active" : "";
-    return `<button type="button" class="tab${active}" data-tab="${escapeHtml(t.cx)}">${escapeHtml(t.name)}${t.dirty ? " \xB7" : ""}</button>`;
+    const active = t.cx === activeCx;
+    const dirtyMark = t.dirty ? " \xB7" : "";
+    const closeLabel = `\u5173\u95ED ${t.name}`;
+    return `<div class="tab${active ? " active" : ""}" role="presentation" data-tab-wrap="${escapeHtml(t.cx)}">
+        <button type="button" class="tab-label" role="tab" data-tab="${escapeHtml(t.cx)}" aria-selected="${active ? "true" : "false"}" title="${escapeHtml(t.name)}${t.dirty ? "\uFF08\u672A\u4FDD\u5B58\uFF09" : ""}">${escapeHtml(t.name)}${dirtyMark}</button>
+        <button type="button" class="tab-close" data-close-tab="${escapeHtml(t.cx)}" title="${escapeHtml(closeLabel)}" aria-label="${escapeHtml(closeLabel)}">${ICO.close}</button>
+      </div>`;
   }).join("");
-  el.tabs.querySelectorAll("[data-tab]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      setActiveCx(btn.getAttribute("data-tab"));
-      host3?.renderAll();
-    });
-  });
 }
 function renderToolbar() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
@@ -6622,7 +6759,9 @@ async function saveTab(tab) {
 function renderEditor() {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">\u6253\u5F00\u5DE5\u4F5C\u533A</p></div>';
+    const copy = documentEmptyCopy(!!workspaceId);
+    const hint = copy.hint ? `<p class="empty-hint">${escapeHtml(copy.hint)}</p>` : "";
+    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}</div>`;
     return;
   }
   if (tab.mode === "preview") {
@@ -6966,17 +7105,27 @@ function applyLayoutChrome() {
   el.layout.classList.toggle("is-right-collapsed", effective.rightCollapsed);
   if (el.btnExpandLeft) {
     el.btnExpandLeft.hidden = !layoutPrefs.leftCollapsed;
+    el.btnExpandLeft.setAttribute("aria-expanded", layoutPrefs.leftCollapsed ? "false" : "true");
+    el.btnExpandLeft.title = "\u5C55\u5F00\u5DE6\u4FA7\u680F";
+    el.btnExpandLeft.setAttribute("aria-label", "\u5C55\u5F00\u5DE6\u4FA7\u680F");
   }
   if (el.btnExpandRight) {
     el.btnExpandRight.hidden = !layoutPrefs.rightCollapsed;
+    el.btnExpandRight.setAttribute("aria-expanded", layoutPrefs.rightCollapsed ? "false" : "true");
+    el.btnExpandRight.title = "\u5C55\u5F00\u53F3\u4FA7\u680F";
+    el.btnExpandRight.setAttribute("aria-label", "\u5C55\u5F00\u53F3\u4FA7\u680F");
   }
   if (el.btnCollapseLeft) {
     el.btnCollapseLeft.hidden = layoutPrefs.leftCollapsed;
     el.btnCollapseLeft.setAttribute("aria-expanded", layoutPrefs.leftCollapsed ? "false" : "true");
+    el.btnCollapseLeft.title = "\u6536\u8D77\u5DE6\u4FA7\u680F";
+    el.btnCollapseLeft.setAttribute("aria-label", "\u6536\u8D77\u5DE6\u4FA7\u680F");
   }
   if (el.btnCollapseRight) {
     el.btnCollapseRight.hidden = layoutPrefs.rightCollapsed;
     el.btnCollapseRight.setAttribute("aria-expanded", layoutPrefs.rightCollapsed ? "false" : "true");
+    el.btnCollapseRight.title = "\u6536\u8D77\u53F3\u4FA7\u680F";
+    el.btnCollapseRight.setAttribute("aria-label", "\u6536\u8D77\u53F3\u4FA7\u680F");
   }
   if (el.splitterLeft) {
     el.splitterLeft.setAttribute("aria-valuemin", String(LAYOUT_BOUNDS.leftMin));
@@ -7071,6 +7220,9 @@ function closeChromePopovers() {
   setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
   setMenuOpen(false);
 }
+function isChromePopoverOpen() {
+  return !!el.searchDrawer && !el.searchDrawer.hidden || !!el.createDrawer && !el.createDrawer.hidden || !!el.railOverflow && !el.railOverflow.hidden;
+}
 function bindChromeMenus() {
   el.btnToggleSearch?.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -7086,6 +7238,7 @@ function bindChromeMenus() {
     setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
     setMenuOpen(false);
     setDrawerOpen(el.createDrawer, el.btnToggleCreate, open);
+    if (open) el.createType?.focus();
   });
   el.btnRailMore?.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -7093,6 +7246,10 @@ function bindChromeMenus() {
     setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
     setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
     setMenuOpen(open);
+    if (open) {
+      const first = el.railOverflow?.querySelector(".menu-item");
+      first?.focus();
+    }
   });
   el.railOverflow?.addEventListener("click", (ev) => {
     const t = ev.target;
@@ -7107,7 +7264,16 @@ function bindChromeMenus() {
     closeChromePopovers();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeChromePopovers();
+    if (ev.key !== "Escape") return;
+    if (!isChromePopoverOpen()) return;
+    const wasSearch = !!el.searchDrawer && !el.searchDrawer.hidden;
+    const wasCreate = !!el.createDrawer && !el.createDrawer.hidden;
+    const wasMenu = !!el.railOverflow && !el.railOverflow.hidden;
+    ev.preventDefault();
+    closeChromePopovers();
+    if (wasMenu) el.btnRailMore?.focus();
+    else if (wasSearch) el.btnToggleSearch?.focus();
+    else if (wasCreate) el.btnToggleCreate?.focus();
   });
 }
 function bindLayoutChrome() {

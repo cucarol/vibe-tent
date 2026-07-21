@@ -1,6 +1,7 @@
 // Node inspector: meta, rename, mode; section open defaults.
 
 import { escapeHtml } from "../../../markdown/render.js";
+import { closeOpenTab } from "../../workbench/open-tabs.js";
 import { el, setError } from "./elements.js";
 import {
   activeCx,
@@ -118,9 +119,11 @@ async function onSetNodeMode(): Promise<void> {
     tab.nodeMode = mode;
     el.status.textContent = mode === "archived" ? `已封存「${tab.name}」` : "访问模式已更新";
     if (mode === "archived") {
+      // Same neighbor preference as user tab-close (left, else right).
+      const order = [...localTabs.keys()];
+      const result = closeOpenTab(order, tab.cx, activeCx);
       localTabs.delete(tab.cx);
-      const remainingTabs = [...localTabs.keys()];
-      setActiveCx(remainingTabs[remainingTabs.length - 1] || null);
+      setActiveCx(result.activeCx);
     }
     await reloadTree();
     host?.renderAll();

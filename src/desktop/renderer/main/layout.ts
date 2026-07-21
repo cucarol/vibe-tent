@@ -39,19 +39,30 @@ export function applyLayoutChrome(): void {
   el.layout.classList.toggle("is-right-collapsed", effective.rightCollapsed);
 
   // Expand chips only for user-collapsed sides (not ephemeral auto-collapse).
+  // Narrow auto-collapse must not set prefs — expand stays hidden until user collapsed.
   if (el.btnExpandLeft) {
     el.btnExpandLeft.hidden = !layoutPrefs.leftCollapsed;
+    el.btnExpandLeft.setAttribute("aria-expanded", layoutPrefs.leftCollapsed ? "false" : "true");
+    el.btnExpandLeft.title = "展开左侧栏";
+    el.btnExpandLeft.setAttribute("aria-label", "展开左侧栏");
   }
   if (el.btnExpandRight) {
     el.btnExpandRight.hidden = !layoutPrefs.rightCollapsed;
+    el.btnExpandRight.setAttribute("aria-expanded", layoutPrefs.rightCollapsed ? "false" : "true");
+    el.btnExpandRight.title = "展开右侧栏";
+    el.btnExpandRight.setAttribute("aria-label", "展开右侧栏");
   }
   if (el.btnCollapseLeft) {
     el.btnCollapseLeft.hidden = layoutPrefs.leftCollapsed;
     el.btnCollapseLeft.setAttribute("aria-expanded", layoutPrefs.leftCollapsed ? "false" : "true");
+    el.btnCollapseLeft.title = "收起左侧栏";
+    el.btnCollapseLeft.setAttribute("aria-label", "收起左侧栏");
   }
   if (el.btnCollapseRight) {
     el.btnCollapseRight.hidden = layoutPrefs.rightCollapsed;
     el.btnCollapseRight.setAttribute("aria-expanded", layoutPrefs.rightCollapsed ? "false" : "true");
+    el.btnCollapseRight.title = "收起右侧栏";
+    el.btnCollapseRight.setAttribute("aria-label", "收起右侧栏");
   }
 
   // Splitter ARIA values describe the adjacent panel width.
@@ -173,6 +184,14 @@ function closeChromePopovers(): void {
   setMenuOpen(false);
 }
 
+function isChromePopoverOpen(): boolean {
+  return (
+    (!!el.searchDrawer && !el.searchDrawer.hidden) ||
+    (!!el.createDrawer && !el.createDrawer.hidden) ||
+    (!!el.railOverflow && !el.railOverflow.hidden)
+  );
+}
+
 export function bindChromeMenus(): void {
   el.btnToggleSearch?.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -188,6 +207,7 @@ export function bindChromeMenus(): void {
     setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
     setMenuOpen(false);
     setDrawerOpen(el.createDrawer, el.btnToggleCreate, open);
+    if (open) el.createType?.focus();
   });
   el.btnRailMore?.addEventListener("click", (ev) => {
     ev.stopPropagation();
@@ -195,6 +215,10 @@ export function bindChromeMenus(): void {
     setDrawerOpen(el.searchDrawer, el.btnToggleSearch, false);
     setDrawerOpen(el.createDrawer, el.btnToggleCreate, false);
     setMenuOpen(open);
+    if (open) {
+      const first = el.railOverflow?.querySelector<HTMLElement>(".menu-item");
+      first?.focus();
+    }
   });
   el.railOverflow?.addEventListener("click", (ev) => {
     // Keep menu open only until an item is chosen.
@@ -210,7 +234,16 @@ export function bindChromeMenus(): void {
     closeChromePopovers();
   });
   document.addEventListener("keydown", (ev) => {
-    if (ev.key === "Escape") closeChromePopovers();
+    if (ev.key !== "Escape") return;
+    if (!isChromePopoverOpen()) return;
+    const wasSearch = !!el.searchDrawer && !el.searchDrawer.hidden;
+    const wasCreate = !!el.createDrawer && !el.createDrawer.hidden;
+    const wasMenu = !!el.railOverflow && !el.railOverflow.hidden;
+    ev.preventDefault();
+    closeChromePopovers();
+    if (wasMenu) el.btnRailMore?.focus();
+    else if (wasSearch) el.btnToggleSearch?.focus();
+    else if (wasCreate) el.btnToggleCreate?.focus();
   });
 }
 

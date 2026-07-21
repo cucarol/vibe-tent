@@ -252,8 +252,9 @@
   display: none;
 }
 
-.layout.is-left-collapsed #btn-expand-left,
-.layout.is-right-collapsed #btn-expand-right {
+/* Expand chips live in stage head; show only when not [hidden] (user collapse). */
+.layout.is-left-collapsed #btn-expand-left:not([hidden]),
+.layout.is-right-collapsed #btn-expand-right:not([hidden]) {
   display: inline-flex;
 }
 
