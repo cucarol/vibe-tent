@@ -77,3 +77,7 @@ https://github.com/user-attachments/assets/092cec70-e68d-4298-a2fc-c5d58921a14d
 ## 许可证
 
 [MIT](LICENSE)
+
+## 友情链接
+
+[Linux DO](https://linux.do)：连接开发者与技术爱好者的开放社区。
