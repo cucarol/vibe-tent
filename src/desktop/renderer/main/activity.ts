@@ -463,5 +463,3 @@ async function onCancel(taskPath: string): Promise<void> {
     setError(err);
   }
 }
-
-

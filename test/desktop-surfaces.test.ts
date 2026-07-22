@@ -126,9 +126,22 @@ test("verificationLevelLabel is closed and does not upgrade levels", () => {
 
 test("mapProviderCatalogRows preserves authoritative verificationLevel", () => {
   const rows = mapProviderCatalogRows([
-    { adapterId: "grok-acp", verificationLevel: "live-e2e", canResume: true },
-    { adapterId: "codex-acp", verificationLevel: "mock-tested" },
-    { adapterId: "claude-acp", verificationLevel: "adapter-implemented" },
+    {
+      adapterId: "grok-acp",
+      verificationLevel: "live-e2e",
+      canResume: true,
+      nativeForeground: "verified",
+    },
+    {
+      adapterId: "codex-acp",
+      verificationLevel: "mock-tested",
+      nativeForeground: "unverified",
+    },
+    {
+      adapterId: "claude-acp",
+      verificationLevel: "adapter-implemented",
+      nativeForeground: "unsupported",
+    },
   ]);
   assert.equal(rows[0]!.verificationLevel, "live-e2e");
   assert.equal(rows[0]!.levelLabel, "live E2E");
@@ -438,16 +451,21 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
     }
     const rows = mapProviderCatalogRows(catalog.providers);
     assert.equal(rows.length, catalog.providers.length);
-    // Only grok-acp may carry live-e2e; never upgrade other providers in UI mapping.
+    // UI preserves the backend catalog instead of maintaining its own provider map.
     const liveRows = rows.filter((r) => r.verificationLevel === "live-e2e");
+    const expectedLive = catalog.providers
+      .filter((p) => p.verificationLevel === "live-e2e")
+      .map((p) => p.adapterId);
     assert.deepEqual(
       liveRows.map((r) => r.adapterId),
-      ["grok-acp"]
+      expectedLive
     );
-    for (const row of rows) {
-      if (row.adapterId !== "grok-acp") {
-        assert.notEqual(row.verificationLevel, "live-e2e", row.adapterId);
-      }
+    for (const [index, row] of rows.entries()) {
+      assert.equal(
+        row.verificationLevel,
+        catalog.providers[index]?.verificationLevel,
+        row.adapterId
+      );
     }
 
     // profile.list / profile.get — safe metadata; id + displayName projection for settings CRUD.

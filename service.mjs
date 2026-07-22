@@ -274,8 +274,8 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
 ]);
 function systemRootFromWorkspace(workspaceRoot) {
   const root = workspaceRoot.replace(/[\\/]+$/, "");
-  const sep2 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  return `${root}${sep2}${TENT_SYSTEM_DIR}`;
+  const sep3 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
+  return `${root}${sep3}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath3) {
   const path21 = relativePath3.replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -2470,7 +2470,7 @@ function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -2507,7 +2507,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// ../../Tent/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -4636,13 +4636,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// ../../Tent/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// ../../Tent/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -4676,7 +4676,7 @@ function push(list2, items) {
   return items;
 }
 
-// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -4716,7 +4716,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -4734,12 +4734,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// ../../Tent/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -4771,7 +4771,7 @@ function regexCheck(regex) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -4793,7 +4793,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -4843,7 +4843,7 @@ function initializeContent(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -5025,7 +5025,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// ../../Tent/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -5035,21 +5035,21 @@ function classifyCharacter(code) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
   while (++index2 < constructs2.length) {
-    const resolve13 = constructs2[index2].resolveAll;
-    if (resolve13 && !called.includes(resolve13)) {
-      events = resolve13(events, context);
-      called.push(resolve13);
+    const resolve14 = constructs2[index2].resolveAll;
+    if (resolve14 && !called.includes(resolve14)) {
+      events = resolve14(events, context);
+      called.push(resolve14);
     }
   }
   return events;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -5180,7 +5180,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -5281,7 +5281,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -5296,7 +5296,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -5354,7 +5354,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -5380,7 +5380,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -5445,7 +5445,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -5628,7 +5628,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -5692,7 +5692,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -5807,7 +5807,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -6000,7 +6000,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -6153,7 +6153,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -6224,7 +6224,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -6316,7 +6316,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -6377,7 +6377,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -6439,7 +6439,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -6458,7 +6458,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -6544,7 +6544,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -6565,7 +6565,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -6656,7 +6656,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -6723,7 +6723,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -7102,7 +7102,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -7408,7 +7408,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -7634,7 +7634,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -7665,7 +7665,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -7687,7 +7687,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -7702,7 +7702,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -7741,7 +7741,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -7871,7 +7871,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -7963,7 +7963,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -8001,7 +8001,7 @@ function initializeFlow(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -8140,7 +8140,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -8215,7 +8215,7 @@ var disable = {
   null: []
 };
 
-// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -8538,7 +8538,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// ../../Tent/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -8564,14 +8564,14 @@ function parse(options) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -8650,7 +8650,7 @@ function preprocess() {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -8668,7 +8668,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -8694,7 +8694,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -10660,6 +10660,343 @@ function attachmentResult(relativePath3, label, sourceNotePath) {
   };
 }
 
+// src/adapters/acp/image-prompt.ts
+import * as nodePath2 from "node:path";
+import { pathToFileURL } from "node:url";
+var MAX_ACP_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
+var MAX_ACP_IMAGES_PER_PROMPT = 8;
+var MAX_ACP_IMAGES_TOTAL_BYTES = MAX_ATTACHMENT_BYTES;
+var ACP_IMAGE_MIME_BY_EXT = {
+  ".png": "image/png",
+  ".jpg": "image/jpeg",
+  ".jpeg": "image/jpeg",
+  ".gif": "image/gif",
+  ".webp": "image/webp",
+  ".bmp": "image/bmp"
+};
+function extractMarkdownImageRefs(body, options) {
+  if (!body || !body.trim()) return [];
+  const tree = fromMarkdown(body);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const fromNotePath = options?.fromNotePath;
+  walkMdast(tree, (node2) => {
+    if (node2.type !== "image") return;
+    const img = node2;
+    const rawUrl = (img.url ?? "").trim();
+    if (!rawUrl) return;
+    if (isExternalOrDataUrl(rawUrl)) return;
+    const resolved = resolveLocalImagePath(rawUrl, fromNotePath);
+    if (!resolved) return;
+    const key = resolved.toLowerCase();
+    if (seen.has(key)) return;
+    seen.add(key);
+    const alt = typeof img.alt === "string" && img.alt.trim() ? img.alt.trim() : void 0;
+    const markdownPointer = alt ? `![${alt}](${rawUrl})` : `![](${rawUrl})`;
+    out.push({
+      relativePath: resolved,
+      ...alt ? { alt } : {},
+      markdownPointer
+    });
+  });
+  return out;
+}
+async function projectBootstrapImagesToAcpPrompt(input) {
+  const bootstrapText = input.bootstrapText ?? "";
+  const refs = Array.isArray(input.imageRefs) ? input.imageRefs : [];
+  const transportOk = input.transportSupportsImage === true;
+  const notes = [];
+  const fallbackPointers = [];
+  if (refs.length === 0) {
+    return {
+      prompt: [{ type: "text", text: bootstrapText }],
+      imagesAttached: false,
+      fallbackPointers: [],
+      notes: []
+    };
+  }
+  if (!transportOk) {
+    for (const ref of refs) {
+      const ptr = ref.markdownPointer || ref.relativePath;
+      if (ptr) fallbackPointers.push(ptr);
+    }
+    const reason = "ACP transport did not advertise promptCapabilities.image (treated as unsupported)";
+    notes.push(reason);
+    const text4 = appendImageFallbackNote(bootstrapText, fallbackPointers, reason);
+    return {
+      prompt: [{ type: "text", text: text4 }],
+      imagesAttached: false,
+      fallbackPointers,
+      notes
+    };
+  }
+  if (typeof input.readBinary !== "function") {
+    notes.push("image readBinary unavailable; keeping Markdown image pointers");
+    for (const ref of refs) {
+      fallbackPointers.push(ref.markdownPointer || ref.relativePath);
+    }
+    const text4 = appendImageFallbackNote(
+      bootstrapText,
+      fallbackPointers,
+      "image bytes unavailable"
+    );
+    return {
+      prompt: [{ type: "text", text: text4 }],
+      imagesAttached: false,
+      fallbackPointers,
+      notes
+    };
+  }
+  const imageBlocks = [];
+  const limited = refs.slice(0, MAX_ACP_IMAGES_PER_PROMPT);
+  if (refs.length > MAX_ACP_IMAGES_PER_PROMPT) {
+    notes.push(
+      `image cap: projecting first ${MAX_ACP_IMAGES_PER_PROMPT} of ${refs.length} refs`
+    );
+    for (const ref of refs.slice(MAX_ACP_IMAGES_PER_PROMPT)) {
+      fallbackPointers.push(ref.markdownPointer || ref.relativePath);
+    }
+  }
+  let totalBytes = 0;
+  for (const ref of limited) {
+    const rel = normalizeSystemRelativePath(ref.relativePath);
+    if (!rel) {
+      fallbackPointers.push(ref.markdownPointer || ref.relativePath);
+      notes.push(`skip unsafe path: ${ref.relativePath}`);
+      continue;
+    }
+    const extMime = mimeFromPath(rel);
+    if (!extMime) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(`skip unsupported image type: ${rel}`);
+      continue;
+    }
+    let bytes;
+    try {
+      bytes = await input.readBinary(rel);
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(`skip unreadable image ${rel}: ${msg.slice(0, 120)}`);
+      continue;
+    }
+    if (bytes.byteLength <= 0) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(`skip empty image: ${rel}`);
+      continue;
+    }
+    if (bytes.byteLength > MAX_ACP_IMAGE_BYTES) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(
+        `skip oversized image ${rel}: ${bytes.byteLength} > ${MAX_ACP_IMAGE_BYTES}`
+      );
+      continue;
+    }
+    if (totalBytes + bytes.byteLength > MAX_ACP_IMAGES_TOTAL_BYTES) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(
+        `skip image ${rel}: would exceed total budget ${MAX_ACP_IMAGES_TOTAL_BYTES}`
+      );
+      continue;
+    }
+    const sniffed = sniffImageMime(bytes);
+    if (!sniffed || !isAllowedImageMime(sniffed)) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(`skip non-image or magic-mismatch bytes: ${rel}`);
+      continue;
+    }
+    if (!mimeExtAgrees(extMime, sniffed)) {
+      fallbackPointers.push(ref.markdownPointer || rel);
+      notes.push(`skip extension/magic mismatch: ${rel} (${extMime} vs ${sniffed})`);
+      continue;
+    }
+    totalBytes += bytes.byteLength;
+    const block = {
+      type: "image",
+      data: Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength).toString(
+        "base64"
+      ),
+      mimeType: sniffed
+    };
+    const uri = fileUriForSystemRelative(rel, input.systemRoot);
+    if (uri) block.uri = uri;
+    imageBlocks.push(block);
+  }
+  if (imageBlocks.length === 0) {
+    const text4 = fallbackPointers.length > 0 ? appendImageFallbackNote(
+      bootstrapText,
+      fallbackPointers,
+      "no local images could be attached"
+    ) : bootstrapText;
+    return {
+      prompt: [{ type: "text", text: text4 }],
+      imagesAttached: false,
+      fallbackPointers,
+      notes
+    };
+  }
+  let text3 = bootstrapText;
+  if (fallbackPointers.length > 0) {
+    text3 = appendImageFallbackNote(
+      bootstrapText,
+      fallbackPointers,
+      "some referenced images could not be attached"
+    );
+  }
+  return {
+    prompt: [{ type: "text", text: text3 }, ...imageBlocks],
+    imagesAttached: true,
+    fallbackPointers,
+    notes
+  };
+}
+function acpTransportSupportsImage(agentCapabilities) {
+  if (!agentCapabilities || typeof agentCapabilities !== "object") return false;
+  const caps = agentCapabilities;
+  return caps.promptCapabilities?.image === true;
+}
+function appendImageFallbackNote(bootstrapText, pointers, reason) {
+  const unique = [...new Set(pointers.map((p) => p.trim()).filter(Boolean))];
+  if (unique.length === 0) return bootstrapText;
+  const lines = [
+    bootstrapText.trimEnd(),
+    "",
+    "--- Tent image note ---",
+    `Local images kept as Markdown pointers (${reason}).`,
+    ...unique.map((p) => `- ${p}`),
+    ""
+  ];
+  return lines.join("\n");
+}
+function resolveLocalImagePath(rawUrl, fromNotePath) {
+  let t = rawUrl.trim().replace(/\\/g, "/");
+  if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
+  if (!t || isExternalOrDataUrl(t)) return null;
+  t = (t.split("#")[0]?.split("?")[0] ?? t).trim();
+  if (!t) return null;
+  if (t === `.tent/${ATTACHMENTS_DIR}` || t.startsWith(`.tent/${ATTACHMENTS_DIR}/`)) {
+    t = t.slice(".tent/".length);
+  }
+  if (t.startsWith("./")) t = t.slice(2);
+  if ((t.startsWith("../") || t.includes("/../") || t.startsWith("./")) && fromNotePath) {
+    const base = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
+    for (const part of t.split("/")) {
+      if (part === "." || part === "") continue;
+      if (part === "..") {
+        if (base.length === 0) return null;
+        base.pop();
+      } else {
+        base.push(part);
+      }
+    }
+    t = base.join("/");
+  } else if (fromNotePath && !t.startsWith(ATTACHMENTS_DIR) && !nodePath2.posix.isAbsolute(t)) {
+    if (t.startsWith("./")) t = t.slice(2);
+    if (!t.startsWith("/") && !t.includes(":")) {
+      const dir = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1).join("/");
+      t = dir ? `${dir}/${t}` : t;
+    }
+  }
+  return normalizeSystemRelativePath(t);
+}
+function normalizeSystemRelativePath(raw) {
+  let t = raw.trim().replace(/\\/g, "/");
+  if (!t) return null;
+  if (t.startsWith("/") || /^[a-zA-Z]:\//.test(t)) return null;
+  if (t.includes("\0")) return null;
+  const parts = [];
+  for (const p of t.split("/")) {
+    if (p === "" || p === ".") continue;
+    if (p === "..") {
+      if (parts.length === 0) return null;
+      parts.pop();
+      continue;
+    }
+    parts.push(p);
+  }
+  if (parts.length === 0) return null;
+  return parts.join("/");
+}
+function mimeFromPath(relativePath3) {
+  const ext = nodePath2.posix.extname(relativePath3).toLowerCase();
+  return ACP_IMAGE_MIME_BY_EXT[ext];
+}
+function isAllowedImageMime(mime) {
+  const m = mime.trim().toLowerCase();
+  return Object.values(ACP_IMAGE_MIME_BY_EXT).includes(m);
+}
+function sniffImageMime(bytes) {
+  if (bytes.byteLength < 4) return void 0;
+  if (bytes[0] === 137 && bytes[1] === 80 && bytes[2] === 78 && bytes[3] === 71) {
+    return "image/png";
+  }
+  if (bytes[0] === 255 && bytes[1] === 216 && bytes[2] === 255) {
+    return "image/jpeg";
+  }
+  if (bytes[0] === 71 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 56) {
+    return "image/gif";
+  }
+  if (bytes.byteLength >= 12 && bytes[0] === 82 && bytes[1] === 73 && bytes[2] === 70 && bytes[3] === 70 && bytes[8] === 87 && bytes[9] === 69 && bytes[10] === 66 && bytes[11] === 80) {
+    return "image/webp";
+  }
+  if (bytes[0] === 66 && bytes[1] === 77) {
+    return "image/bmp";
+  }
+  return void 0;
+}
+function fileUriForSystemRelative(relativePath3, systemRoot) {
+  const rel = normalizeSystemRelativePath(relativePath3);
+  if (!rel || !systemRoot || !systemRoot.trim()) return void 0;
+  const root = nodePath2.resolve(systemRoot.trim());
+  const abs = nodePath2.resolve(root, ...rel.split("/"));
+  const rootCmp = process.platform === "win32" ? root.toLowerCase() : root;
+  const absCmp = process.platform === "win32" ? abs.toLowerCase() : abs;
+  if (absCmp !== rootCmp && !absCmp.startsWith(rootCmp + nodePath2.sep)) {
+    return void 0;
+  }
+  return pathToFileURL(abs).href;
+}
+function mimeExtAgrees(extMime, sniffed) {
+  return extMime.trim().toLowerCase() === sniffed.trim().toLowerCase();
+}
+function isExternalOrDataUrl(href) {
+  const t = href.trim();
+  if (!t) return true;
+  if (t.startsWith("//")) return true;
+  if (/^data:/i.test(t)) return true;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(t)) {
+    return true;
+  }
+  return false;
+}
+function walkMdast(node2, visit) {
+  visit(node2);
+  if ("children" in node2 && Array.isArray(node2.children)) {
+    for (const child of node2.children) walkMdast(child, visit);
+  }
+}
+async function collectBootstrapImageRefsFromTask(input) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const pushAll = (refs) => {
+    for (const r of refs) {
+      const key = r.relativePath.toLowerCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push(r);
+    }
+  };
+  pushAll(extractMarkdownImageRefs(input.userPrompt || ""));
+  for (const claim of input.claimBodies ?? []) {
+    pushAll(
+      extractMarkdownImageRefs(claim.body || "", {
+        fromNotePath: claim.notePath
+      })
+    );
+  }
+  return out.slice(0, MAX_ACP_IMAGES_PER_PROMPT * 2);
+}
+
 // src/core/proposal.ts
 async function submitProposal(fs19, clock, role, boxId, body) {
   return withTentMutation(fs19, async () => submitProposalUnlocked(fs19, clock, role, boxId, body));
@@ -11402,11 +11739,11 @@ function isNotFound(error) {
 }
 
 // src/core/workspace.ts
-import * as nodePath2 from "node:path";
+import * as nodePath3 from "node:path";
 import * as nodeFs from "node:fs/promises";
 import { spawn } from "node:child_process";
 async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
-  const root = nodePath2.resolve(workspace);
+  const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
   const full = await fullRef(root, sourceRef);
   const ancestor = await findAncestorIntegration(root, full, targetBranch);
@@ -11416,7 +11753,7 @@ async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
   return void 0;
 }
 async function readRoleBranchTip(workspace, branch) {
-  const root = nodePath2.resolve(workspace);
+  const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
   const name = branch.trim();
   if (!name) throw new Error("Role branch name is required.");
@@ -11426,7 +11763,7 @@ async function readRoleBranchTip(workspace, branch) {
 }
 async function isGitWorkspace(workspace) {
   try {
-    await assertGitWorkspace(nodePath2.resolve(workspace));
+    await assertGitWorkspace(nodePath3.resolve(workspace));
     return true;
   } catch {
     return false;
@@ -11437,19 +11774,19 @@ async function ensureRoleWorkspaceIfGit(workspace, role) {
   return ensureRoleWorkspace(workspace, role);
 }
 async function ensureRoleWorkspace(workspace, role) {
-  const root = nodePath2.resolve(workspace);
+  const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
   const targetBranch = await resolveTargetBranch(root);
   const roleSlug = safeComponent(role);
   const branch = `tent-role/${roleSlug}`;
-  const worktree = nodePath2.join(
-    nodePath2.dirname(root),
-    `${nodePath2.basename(root)}-worktrees`,
+  const worktree = nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
     roleSlug
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath3.resolve(existing)), branch, targetBranch };
   }
   if (await pathExists(worktree)) {
     throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
@@ -11467,23 +11804,23 @@ async function ensureTaskWorkspaceIfGit(workspace, taskId) {
   return ensureTaskWorkspace(workspace, taskId);
 }
 async function ensureTaskWorkspace(workspace, taskId) {
-  const root = nodePath2.resolve(workspace);
+  const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
   const id = taskId.trim();
   if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
   const targetBranch = await resolveTargetBranch(root);
   const taskSlug = safeComponent(id);
   const branch = `tent-task/${taskSlug}`;
-  const worktree = nodePath2.join(
-    nodePath2.dirname(root),
-    `${nodePath2.basename(root)}-worktrees`,
+  const worktree = nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
     `task-${taskSlug}`
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
     return {
       workspace: root,
-      worktree: await nodeFs.realpath(nodePath2.resolve(existing)),
+      worktree: await nodeFs.realpath(nodePath3.resolve(existing)),
       branch,
       targetBranch
     };
@@ -11574,7 +11911,7 @@ async function resolveIntegrationCwd(root, targetBranch) {
   }
   const existing = await worktreeForBranch(root, targetBranch);
   if (existing) {
-    const wt = await nodeFs.realpath(nodePath2.resolve(existing));
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
     const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
     if (wtCurrent === targetBranch) return wt;
     throw new Error(
@@ -11621,7 +11958,7 @@ async function listPendingRoleCommits(contract, base) {
 async function assertGitWorkspace(root) {
   const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
   const [realTop, realRoot] = await Promise.all([
-    nodeFs.realpath(nodePath2.resolve(top)),
+    nodeFs.realpath(nodePath3.resolve(top)),
     nodeFs.realpath(root)
   ]);
   if (!isSameWorkspaceRoot(realTop, realRoot)) {
@@ -11730,14 +12067,14 @@ async function gitOk(cwd, args) {
   }
 }
 function git(cwd, args) {
-  return new Promise((resolve13, reject) => {
+  return new Promise((resolve14, reject) => {
     const child = spawn("git", args, { cwd, windowsHide: true });
     let out = "";
     let err = "";
     child.stdout.on("data", (data) => out += data);
     child.stderr.on("data", (data) => err += data);
     child.on("close", (code) => {
-      if (code === 0) resolve13(out);
+      if (code === 0) resolve14(out);
       else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
     });
     child.on("error", reject);
@@ -12053,7 +12390,7 @@ var SessionRegistry = class _SessionRegistry {
 
 // src/service/handlers.ts
 import * as nodeFs2 from "node:fs/promises";
-import * as nodePath3 from "node:path";
+import * as nodePath5 from "node:path";
 
 // src/service/etag.ts
 import { createHash as createHash2 } from "node:crypto";
@@ -12069,8 +12406,8 @@ var MutationBus = class {
   async run(workspaceId, action) {
     const prev = this.tails.get(workspaceId) ?? Promise.resolve();
     let release;
-    const gate = new Promise((resolve13) => {
-      release = resolve13;
+    const gate = new Promise((resolve14) => {
+      release = resolve14;
     });
     const chain = prev.catch(() => void 0).then(() => gate);
     this.tails.set(workspaceId, chain);
@@ -13240,7 +13577,7 @@ var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
 
 // src/service/profiles.ts
-import * as fs12 from "node:fs/promises";
+import * as fs13 from "node:fs/promises";
 import * as path12 from "node:path";
 
 // src/adapters/acp/mcp-skills.ts
@@ -13905,7 +14242,7 @@ function createFakeAdapter(options) {
 }
 
 // src/adapters/grok-acp/index.ts
-import * as fs10 from "node:fs";
+import * as fs11 from "node:fs";
 import * as os3 from "node:os";
 import * as path10 from "node:path";
 
@@ -13948,6 +14285,11 @@ var AcpClient = class {
     this.lastLoadReplayUpdateAt = 0;
     /** Cached from initialize agentCapabilities.loadSession (default false). */
     this.loadSessionSupported = false;
+    /**
+     * Cached from initialize agentCapabilities.promptCapabilities.image.
+     * Only explicit true counts; omit/false → unsupported (no guessing).
+     */
+    this.promptImageSupported = false;
     /** Concurrent ask-policy requests keep the session waiting until all resolve. */
     this.permissionAsksInFlight = 0;
     /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -13989,6 +14331,13 @@ var AcpClient = class {
   get lastStderrTail() {
     return this.stderrTail;
   }
+  /**
+   * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
+   * Default false until connect(); custom/unclear transports stay false.
+   */
+  get supportsPromptImage() {
+    return this.promptImageSupported;
+  }
   isAlive() {
     const pid = this.proc?.pid;
     if (pid == null || pid <= 0 || this.closed) return false;
@@ -14024,6 +14373,9 @@ var AcpClient = class {
         }
       });
       this.loadSessionSupported = init.agentCapabilities?.loadSession === true;
+      this.promptImageSupported = acpTransportSupportsImage(
+        init.agentCapabilities
+      );
       if (this.options.authenticate) {
         const authParams = await this.options.authenticate(
           init.authMethods ?? []
@@ -14096,6 +14448,8 @@ var AcpClient = class {
   }
   /**
    * Send session/prompt with managed bootstrap (Context Card + user prompt).
+   * Optional image refs are projected only when live initialize advertised
+   * promptCapabilities.image === true; otherwise Markdown pointers + a short note.
    * Accumulates agent_message_chunk only for the final report text.
    * Safe to call after connect(); failures throw (caller emits session.failed).
    */
@@ -14111,11 +14465,12 @@ var AcpClient = class {
     this.collectingPromptResponse = true;
     try {
       const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+      const prompt = Array.isArray(this.options.bootstrapImageRefs) && this.options.bootstrapImageRefs.length > 0 ? await this.buildPromptBlocks(bootstrapPrompt) : [{ type: "text", text: bootstrapPrompt }];
       const result = await this.request(
         "session/prompt",
         {
           sessionId: this.providerSessionId,
-          prompt: [{ type: "text", text: bootstrapPrompt }]
+          prompt
         },
         promptTimeout
       );
@@ -14138,6 +14493,25 @@ var AcpClient = class {
     } finally {
       this.collectingPromptResponse = false;
     }
+  }
+  /**
+   * Project bootstrap text (+ optional image refs) to ACP content blocks.
+   * Image bytes are process-scoped for this RPC only — never stored on the client.
+   * Sole gate: cached live promptCapabilities.image from initialize.
+   */
+  async buildPromptBlocks(bootstrapPrompt) {
+    const refs = Array.isArray(this.options.bootstrapImageRefs) ? this.options.bootstrapImageRefs : [];
+    if (refs.length === 0) {
+      return [{ type: "text", text: bootstrapPrompt }];
+    }
+    const projected = await projectBootstrapImagesToAcpPrompt({
+      bootstrapText: bootstrapPrompt,
+      imageRefs: refs,
+      transportSupportsImage: this.promptImageSupported,
+      readBinary: this.options.readBootstrapImageBinary,
+      systemRoot: this.options.bootstrapImageSystemRoot
+    });
+    return projected.prompt;
   }
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
   async stop(reason) {
@@ -14419,13 +14793,13 @@ var AcpClient = class {
     }
   }
   waitForPermissionDecision(askInfo) {
-    return new Promise((resolve13) => {
+    return new Promise((resolve14) => {
       let settled = false;
       const finish = (decision) => {
         if (settled) return;
         settled = true;
         this.permissionWaitCancels.delete(cancel);
-        resolve13(decision);
+        resolve14(decision);
       };
       const cancel = () => finish("deny");
       this.permissionWaitCancels.add(cancel);
@@ -14445,12 +14819,12 @@ var AcpClient = class {
       );
     }
     const id = this.nextId++;
-    return new Promise((resolve13, reject) => {
+    return new Promise((resolve14, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve13, reject, timer });
+      this.pending.set(id, { resolve: resolve14, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params }, (err) => {
         this.failPendingWrite(id, method, err);
       });
@@ -14496,16 +14870,16 @@ var AcpClient = class {
     if (!proc || this.exitCode !== null || this.exitSignal !== null || proc.exitCode !== null || proc.signalCode !== null) {
       return Promise.resolve();
     }
-    return new Promise((resolve13) => {
-      this.exitWaiters.push(resolve13);
+    return new Promise((resolve14) => {
+      this.exitWaiters.push(resolve14);
     });
   }
   async waitForExitOrForceKill(timeoutMs) {
     let timer;
     const outcome = await Promise.race([
       this.waitExit().then(() => "exit"),
-      new Promise((resolve13) => {
-        timer = setTimeout(() => resolve13("timeout"), timeoutMs);
+      new Promise((resolve14) => {
+        timer = setTimeout(() => resolve14("timeout"), timeoutMs);
       })
     ]);
     if (timer) clearTimeout(timer);
@@ -14516,14 +14890,14 @@ var AcpClient = class {
     const pid = proc?.pid;
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve13) => {
+      await new Promise((resolve14) => {
         let settled = false;
         let timer;
         const finish = () => {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
-          resolve13();
+          resolve14();
         };
         const killer = spawn2("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
@@ -14556,7 +14930,7 @@ function selectAllowOnce(options) {
   return { outcome: "cancelled" };
 }
 function sleep(ms) {
-  return new Promise((resolve13) => setTimeout(resolve13, ms));
+  return new Promise((resolve14) => setTimeout(resolve14, ms));
 }
 
 // src/adapters/acp/managed-session.ts
@@ -14732,8 +15106,107 @@ function mainstreamAcpCapabilities() {
   };
 }
 
+// src/fs/node-fs.ts
+import * as fs9 from "node:fs/promises";
+import * as nodePath4 from "node:path";
+var NodeFs = class {
+  constructor(root) {
+    this.root = nodePath4.resolve(root);
+  }
+  abs(p) {
+    const resolved = nodePath4.resolve(this.root, p);
+    const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
+    const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
+    if (candidate !== root && !candidate.startsWith(root + nodePath4.sep)) {
+      throw new Error(`Path escapes Tent root: ${p}`);
+    }
+    return resolved;
+  }
+  async listDir(dir) {
+    const entries = await fs9.readdir(this.abs(dir), { withFileTypes: true });
+    return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
+  }
+  async readFile(path21) {
+    return fs9.readFile(this.abs(path21), "utf8");
+  }
+  async writeFile(path21, content3) {
+    await fs9.mkdir(nodePath4.dirname(this.abs(path21)), { recursive: true });
+    await fs9.writeFile(this.abs(path21), content3, "utf8");
+  }
+  async readBinary(path21) {
+    const buf = await fs9.readFile(this.abs(path21));
+    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+  }
+  async writeBinary(path21, data) {
+    const abs = this.abs(path21);
+    await fs9.mkdir(nodePath4.dirname(abs), { recursive: true });
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
+    const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    try {
+      await fs9.writeFile(tmp, payload);
+      await fs9.rename(tmp, abs);
+    } catch (err) {
+      await fs9.rm(tmp, { force: true }).catch(() => void 0);
+      throw err;
+    }
+  }
+  async exists(path21) {
+    try {
+      await fs9.access(this.abs(path21));
+      return true;
+    } catch {
+      return false;
+    }
+  }
+  async mkdir(path21) {
+    await fs9.mkdir(this.abs(path21), { recursive: true });
+  }
+  async move(from, to) {
+    await fs9.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
+    await fs9.rename(this.abs(from), this.abs(to));
+  }
+  async remove(path21) {
+    await fs9.rm(this.abs(path21), { recursive: true, force: true });
+  }
+  async withLock(path21, action) {
+    const lockPath = this.abs(path21);
+    await fs9.mkdir(nodePath4.dirname(lockPath), { recursive: true });
+    let handle;
+    for (let attempt = 0; attempt < 2; attempt++) {
+      try {
+        handle = await fs9.open(lockPath, "wx");
+        break;
+      } catch (error) {
+        if (!isAlreadyExists(error)) throw error;
+        const stale = await isStaleLock(lockPath);
+        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
+        await fs9.rm(lockPath, { force: true });
+      }
+    }
+    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
+    try {
+      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
+      return await action();
+    } finally {
+      await handle.close();
+      await fs9.rm(lockPath, { force: true });
+    }
+  }
+};
+function isAlreadyExists(error) {
+  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
+}
+async function isStaleLock(path21) {
+  try {
+    const stat2 = await fs9.stat(path21);
+    return Date.now() - stat2.mtimeMs > 12e4;
+  } catch {
+    return true;
+  }
+}
+
 // src/adapters/acp/profile.ts
-import * as fs9 from "node:fs";
+import * as fs10 from "node:fs";
 import * as path9 from "node:path";
 function readAcpExtras(extras, legacyKeys = []) {
   if (!extras || typeof extras !== "object") return {};
@@ -14753,6 +15226,22 @@ function readAcpSessionProjection(extras) {
   const skills = Array.isArray(skillRaw) ? skillRaw : [];
   return { mcpServers, skills };
 }
+function readBootstrapImageClientOptions(plan) {
+  const refs = Array.isArray(plan.bootstrapImageRefs) ? plan.bootstrapImageRefs : [];
+  const systemRoot = typeof plan.extras?.bootstrapImageSystemRoot === "string" ? plan.extras.bootstrapImageSystemRoot.trim() : "";
+  if (refs.length === 0) {
+    return {};
+  }
+  const out = {
+    bootstrapImageRefs: refs
+  };
+  if (systemRoot) {
+    out.bootstrapImageSystemRoot = systemRoot;
+    const nodeFs3 = new NodeFs(systemRoot);
+    out.readBootstrapImageBinary = (relativePath3) => nodeFs3.readBinary(relativePath3);
+  }
+  return out;
+}
 function normalizeAcpPermissionPolicy(raw) {
   return raw === "allow" || raw === "ask" || raw === "deny" ? raw : "deny";
 }
@@ -14770,8 +15259,8 @@ function normalizeSharedAcpOpts(raw) {
     permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
   };
 }
-function resolvePlanOrProcessEnv(envKey, planEnv, resolve13) {
-  if (resolve13) return resolve13(envKey, planEnv);
+function resolvePlanOrProcessEnv(envKey, planEnv, resolve14) {
+  if (resolve14) return resolve14(envKey, planEnv);
   const fromPlan = planEnv[envKey];
   if (typeof fromPlan === "string" && fromPlan.trim()) return fromPlan;
   const fromProc = process.env[envKey];
@@ -14787,7 +15276,7 @@ function defaultNpxLaunch() {
     const root = dir.trim().replace(/^"|"$/g, "");
     if (root) candidates.push(path9.join(root, "node_modules", "npm", "bin", "npx-cli.js"));
   }
-  const npxCli = candidates.find((candidate) => fs9.existsSync(candidate));
+  const npxCli = candidates.find((candidate) => fs10.existsSync(candidate));
   if (!npxCli) {
     throw new Error(
       "Unable to locate npm/bin/npx-cli.js on Windows; install Node.js/npm or configure an explicit ACP executable"
@@ -14795,7 +15284,7 @@ function defaultNpxLaunch() {
   }
   const adjacentNode = path9.resolve(npxCli, "..", "..", "..", "..", "node.exe");
   return {
-    command: fs9.existsSync(adjacentNode) ? adjacentNode : "node.exe",
+    command: fs10.existsSync(adjacentNode) ? adjacentNode : "node.exe",
     argsPrefix: [npxCli]
   };
 }
@@ -14822,6 +15311,9 @@ var GrokAcpClient = class {
       permissionPolicy: options.permissionPolicy,
       mcpServers: options.mcpServers,
       skills: options.skills,
+      bootstrapImageRefs: options.bootstrapImageRefs,
+      bootstrapImageSystemRoot: options.bootstrapImageSystemRoot,
+      readBootstrapImageBinary: options.readBootstrapImageBinary,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,
@@ -14936,13 +15428,13 @@ var GrokAcpProviderAdapter = class {
       );
     }
     if (!plan.command && opts.executable) {
-      if (!fs10.existsSync(opts.executable)) {
+      if (!fs11.existsSync(opts.executable)) {
         throw new Error(
           `Grok \u53EF\u6267\u884C\u6587\u4EF6\u4E0D\u5B58\u5728: ${opts.executable}\u3002\u8BF7\u5728 machine-local AgentProfile.acp.executable \u4E2D\u914D\u7F6E\u6B63\u786E\u8DEF\u5F84\u3002`
         );
       }
     } else if (!plan.command) {
-      if (!fs10.existsSync(command)) {
+      if (!fs11.existsSync(command)) {
         throw new Error(
           `\u672A\u627E\u5230 Grok \u53EF\u6267\u884C\u6587\u4EF6: ${command}\u3002\u8BF7\u5B89\u88C5 grok CLI \u6216\u5728 AgentProfile \u4E2D\u8BBE\u7F6E acp.executable\u3002`
         );
@@ -15017,6 +15509,7 @@ var GrokAcpProviderAdapter = class {
     const opts = normalizeGrokOpts(readAcpExtras(plan.extras, ["grokAcp"]));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15031,6 +15524,7 @@ var GrokAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
     });
@@ -15137,6 +15631,7 @@ var CodexAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15150,6 +15645,7 @@ var CodexAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "Codex ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -15245,6 +15741,7 @@ var ClaudeAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const permHooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15258,6 +15755,7 @@ var ClaudeAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "Claude ACP",
       emit: emit2,
       onPermissionAsk: permHooks.onPermissionAsk
@@ -15321,6 +15819,7 @@ var AntigravityAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15334,6 +15833,7 @@ var AntigravityAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -15421,6 +15921,7 @@ var OpenCodeAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15434,6 +15935,7 @@ var OpenCodeAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "OpenCode ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -15530,6 +16032,7 @@ var CopilotAcpProviderAdapter = class {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk
     });
@@ -15543,6 +16046,7 @@ var CopilotAcpProviderAdapter = class {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "GitHub Copilot ACP",
       emit: emit2,
       onPermissionAsk: hooks.onPermissionAsk
@@ -15560,7 +16064,7 @@ function createCopilotAcpAdapter(options) {
 }
 
 // src/service/credential-store.ts
-import * as fs11 from "node:fs/promises";
+import * as fs12 from "node:fs/promises";
 import * as path11 from "node:path";
 
 // src/service/credential-protector.ts
@@ -15613,7 +16117,7 @@ function createWindowsDpapiProtector() {
   };
 }
 function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve13, reject) => {
+  return new Promise((resolve14, reject) => {
     const child = spawn3(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -15640,7 +16144,7 @@ function runPowerShellStdin(command, stdinData, op) {
         reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
         return;
       }
-      resolve13(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+      resolve14(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
     });
     child.stdin?.on("error", (err) => {
       reject(
@@ -15805,7 +16309,7 @@ var CredentialStore = class {
   }
   async loadFromDisk() {
     try {
-      const raw = await fs11.readFile(this.file, "utf8");
+      const raw = await fs12.readFile(this.file, "utf8");
       let parsed;
       try {
         parsed = JSON.parse(raw);
@@ -16397,7 +16901,7 @@ function parseAgentProfileDiskRow(value) {
 async function loadAgentProfilesWithMigration(dataDir) {
   const file = profilesPath(dataDir);
   try {
-    const raw = await fs12.readFile(file, "utf8");
+    const raw = await fs13.readFile(file, "utf8");
     let parsed;
     try {
       parsed = JSON.parse(raw);
@@ -16643,7 +17147,7 @@ var RpcError = class extends Error {
 };
 
 // src/machine/skills.ts
-import * as fs13 from "node:fs/promises";
+import * as fs14 from "node:fs/promises";
 import * as os4 from "node:os";
 import * as path13 from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
@@ -16687,7 +17191,7 @@ async function listBundledSkillNames(packageRoot) {
   const sourceDir = bundledSkillsDir(packageRoot);
   let entries;
   try {
-    entries = await fs13.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs14.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -16741,7 +17245,7 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs13.mkdir(dest.dir, { recursive: true });
+    await fs14.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
       const source = path13.join(sourceDir, name);
       const target = path13.join(dest.dir, name);
@@ -16759,9 +17263,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists && force) {
-        await fs13.rm(target, { recursive: true, force: true });
+        await fs14.rm(target, { recursive: true, force: true });
       }
-      await fs13.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs14.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -16814,7 +17318,7 @@ function assertChildPath(parent, child) {
 }
 async function existsPath(target) {
   try {
-    await fs13.access(target);
+    await fs14.access(target);
     return true;
   } catch {
     return false;
@@ -17036,7 +17540,7 @@ async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
   const mount = ctx.host.require(workspaceId);
   const canonicalPaths = /* @__PURE__ */ new Map();
   const canonicalize = (value) => {
-    const resolved = nodePath3.resolve(value);
+    const resolved = nodePath5.resolve(value);
     let pending = canonicalPaths.get(resolved);
     if (!pending) {
       pending = nodeFs2.realpath(resolved).catch(() => resolved);
@@ -19260,6 +19764,8 @@ async function taskStartSessionRpc(ctx, p) {
     workspaceRoot: mount.workspaceRoot,
     systemRoot: mount.systemRoot
   });
+  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+  const bootstrapImageSystemRoot = bootstrapImageRefs.length > 0 ? mount.systemRoot : void 0;
   const roleSession = isProfileTask ? void 0 : await findResumableManagedSessionForRole(
     ctx,
     workspaceId,
@@ -19275,7 +19781,7 @@ async function taskStartSessionRpc(ctx, p) {
       if (probe.resumeCapable && !probe.alive) {
         const prior = await ctx.runtime.registry.read(priorSessionId);
         const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
-        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath3.resolve(recordedCwd), nodePath3.resolve(cwd));
+        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath5.resolve(recordedCwd), nodePath5.resolve(cwd));
         const profileMatches = !prior?.profileId || prior.profileId === profileId;
         const workspaceMatches = prior?.workspace === workspaceId;
         const roleMatches = prior?.roleName === task.role;
@@ -19297,6 +19803,10 @@ async function taskStartSessionRpc(ctx, p) {
         runtimeWorkspace: { cwd },
         cwd,
         bootstrapPrompt: sessionBootstrap,
+        ...bootstrapImageRefs.length > 0 ? {
+          bootstrapImageRefs,
+          bootstrapImageSystemRoot
+        } : {},
         lastTaskId: task.id || taskPath
       });
     } else {
@@ -19309,6 +19819,10 @@ async function taskStartSessionRpc(ctx, p) {
         runtimeWorkspace: { cwd },
         cwd,
         bootstrapPrompt: sessionBootstrap,
+        ...bootstrapImageRefs.length > 0 ? {
+          bootstrapImageRefs,
+          bootstrapImageSystemRoot
+        } : {},
         lastTaskId: task.id || taskPath,
         workspace: workspaceId
       });
@@ -20396,7 +20910,7 @@ function projectionRetryDelayMs() {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
 function sleepMs(ms) {
-  return new Promise((resolve13) => setTimeout(resolve13, ms));
+  return new Promise((resolve14) => setTimeout(resolve14, ms));
 }
 function classifyProjectionError(err) {
   if (err instanceof TaskLifecycleError) {
@@ -21156,9 +21670,9 @@ async function integrateWorkspaceCommitsForTask(workspaceRoot, task, commits) {
   await integrateWorkspaceCommits(contract, commits);
 }
 async function resolveIntegrationContract(workspaceRoot, task) {
-  const mountedRoot = nodePath3.resolve(workspaceRoot);
+  const mountedRoot = nodePath5.resolve(workspaceRoot);
   if (task.workspace) {
-    const claimed = nodePath3.resolve(task.workspace);
+    const claimed = nodePath5.resolve(task.workspace);
     if (!isSameWorkspaceRoot(claimed, mountedRoot)) {
       throw new Error(
         `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`
@@ -21174,8 +21688,8 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     );
   }
   if (task.worktree) {
-    const claimedWt = nodePath3.resolve(task.worktree);
-    const realWt = nodePath3.resolve(real.worktree);
+    const claimedWt = nodePath5.resolve(task.worktree);
+    const realWt = nodePath5.resolve(real.worktree);
     if (!isSameWorkspaceRoot(claimedWt, realWt)) {
       throw new Error(
         `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
@@ -21276,8 +21790,8 @@ async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, pr
   if (!roleName) return void 0;
   const candidates = (await ctx.runtime.registry.list()).filter(
     (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && rec.profileId === profileId && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
-      nodePath3.resolve(rec.runtimeWorkspace.cwd),
-      nodePath3.resolve(cwd)
+      nodePath5.resolve(rec.runtimeWorkspace.cwd),
+      nodePath5.resolve(cwd)
     )
   ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   for (const candidate of candidates) {
@@ -21342,6 +21856,24 @@ function buildSessionBootstrapPrompt(task, roots) {
 --- Tent managed session bootstrap ---
 ${sessionSteps}
 `;
+}
+async function collectTaskBootstrapImageRefs(fs19, task) {
+  const userPrompt = extractTaskUserPrompt(task);
+  const claimBodies = [];
+  try {
+    const tent = await loadTent(fs19);
+    for (const claimId of task.claims ?? []) {
+      if (!claimId || claimId === "root") continue;
+      const box = tent.byId.get(claimId);
+      if (!box || typeof box.body !== "string") continue;
+      claimBodies.push({
+        body: box.body,
+        notePath: boxNotePath(box.path)
+      });
+    }
+  } catch {
+  }
+  return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 function projectTask(task) {
   const lane = task.workspace || task.worktree || task.branch || task.targetBranch ? {
@@ -21508,7 +22040,7 @@ function headerValue(headers, name) {
 }
 
 // src/service/data-dir.ts
-import * as fs14 from "node:fs/promises";
+import * as fs15 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os5 from "node:os";
 import * as path14 from "node:path";
@@ -21548,7 +22080,7 @@ async function writeServiceEndpoint(dataDir, record) {
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs14.readFile(file, "utf8");
+    const raw = await fs15.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -21570,7 +22102,7 @@ async function removeServiceEndpoint(dataDir, expectedInstanceId) {
       const endpoint = await readServiceEndpoint(dataDir);
       if (endpoint?.instanceId !== expectedInstanceId) return;
     }
-    await fs14.rm(serviceEndpointPath(dataDir), { force: true });
+    await fs15.rm(serviceEndpointPath(dataDir), { force: true });
   } catch {
   }
 }
@@ -21737,14 +22269,14 @@ async function createServiceHttpServer(options) {
   };
 }
 function listen(server, port, host) {
-  return new Promise((resolve13, reject) => {
+  return new Promise((resolve14, reject) => {
     const onError = (error) => {
       server.off("listening", onListening);
       reject(error);
     };
     const onListening = () => {
       server.off("error", onError);
-      resolve13();
+      resolve14();
     };
     server.once("error", onError);
     server.once("listening", onListening);
@@ -21752,8 +22284,8 @@ function listen(server, port, host) {
   });
 }
 function closeServer(server) {
-  return new Promise((resolve13, reject) => {
-    server.close((err) => err ? reject(err) : resolve13());
+  return new Promise((resolve14, reject) => {
+    server.close((err) => err ? reject(err) : resolve14());
   });
 }
 async function handleRequest(req, res, options, closeSseConnections) {
@@ -21959,7 +22491,7 @@ function writeJson2(res, status, body) {
   res.end(payload);
 }
 function readBody(req, maxBytes) {
-  return new Promise((resolve13, reject) => {
+  return new Promise((resolve14, reject) => {
     const declaredLength = Number(req.headers["content-length"] ?? 0);
     if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
       req.resume();
@@ -21988,7 +22520,7 @@ function readBody(req, maxBytes) {
       }
       chunks.push(buffer);
     };
-    const onEnd = () => finish(() => resolve13(Buffer.concat(chunks, total).toString("utf8")));
+    const onEnd = () => finish(() => resolve14(Buffer.concat(chunks, total).toString("utf8")));
     const onError = (error) => finish(() => reject(error));
     const onAborted = () => finish(() => reject(new Error("request aborted")));
     req.on("data", onData);
@@ -22041,107 +22573,6 @@ import { createHash as createHash3 } from "node:crypto";
 import { watch } from "node:fs";
 import * as fs16 from "node:fs/promises";
 import * as path15 from "node:path";
-
-// src/fs/node-fs.ts
-import * as fs15 from "node:fs/promises";
-import * as nodePath4 from "node:path";
-var NodeFs = class {
-  constructor(root) {
-    this.root = nodePath4.resolve(root);
-  }
-  abs(p) {
-    const resolved = nodePath4.resolve(this.root, p);
-    const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
-    const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-    if (candidate !== root && !candidate.startsWith(root + nodePath4.sep)) {
-      throw new Error(`Path escapes Tent root: ${p}`);
-    }
-    return resolved;
-  }
-  async listDir(dir) {
-    const entries = await fs15.readdir(this.abs(dir), { withFileTypes: true });
-    return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
-  }
-  async readFile(path21) {
-    return fs15.readFile(this.abs(path21), "utf8");
-  }
-  async writeFile(path21, content3) {
-    await fs15.mkdir(nodePath4.dirname(this.abs(path21)), { recursive: true });
-    await fs15.writeFile(this.abs(path21), content3, "utf8");
-  }
-  async readBinary(path21) {
-    const buf = await fs15.readFile(this.abs(path21));
-    return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-  }
-  async writeBinary(path21, data) {
-    const abs = this.abs(path21);
-    await fs15.mkdir(nodePath4.dirname(abs), { recursive: true });
-    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
-    const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
-    try {
-      await fs15.writeFile(tmp, payload);
-      await fs15.rename(tmp, abs);
-    } catch (err) {
-      await fs15.rm(tmp, { force: true }).catch(() => void 0);
-      throw err;
-    }
-  }
-  async exists(path21) {
-    try {
-      await fs15.access(this.abs(path21));
-      return true;
-    } catch {
-      return false;
-    }
-  }
-  async mkdir(path21) {
-    await fs15.mkdir(this.abs(path21), { recursive: true });
-  }
-  async move(from, to) {
-    await fs15.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
-    await fs15.rename(this.abs(from), this.abs(to));
-  }
-  async remove(path21) {
-    await fs15.rm(this.abs(path21), { recursive: true, force: true });
-  }
-  async withLock(path21, action) {
-    const lockPath = this.abs(path21);
-    await fs15.mkdir(nodePath4.dirname(lockPath), { recursive: true });
-    let handle;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        handle = await fs15.open(lockPath, "wx");
-        break;
-      } catch (error) {
-        if (!isAlreadyExists(error)) throw error;
-        const stale = await isStaleLock(lockPath);
-        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs15.rm(lockPath, { force: true });
-      }
-    }
-    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
-      return await action();
-    } finally {
-      await handle.close();
-      await fs15.rm(lockPath, { force: true });
-    }
-  }
-};
-function isAlreadyExists(error) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-}
-async function isStaleLock(path21) {
-  try {
-    const stat2 = await fs15.stat(path21);
-    return Date.now() - stat2.mtimeMs > 12e4;
-  } catch {
-    return true;
-  }
-}
-
-// src/service/workspace-host.ts
 var WORKSPACE_ID_DIGEST_LEN = 12;
 var WorkspaceHost = class {
   constructor(options) {
@@ -22566,7 +22997,7 @@ var ToolApprovalStore = class {
    */
   waitForDecision(id, timeoutMs) {
     if (this.closed) return Promise.resolve("denied");
-    return new Promise((resolve13) => {
+    return new Promise((resolve14) => {
       let settled = false;
       let timer;
       const finish = (status) => {
@@ -22581,7 +23012,7 @@ var ToolApprovalStore = class {
           );
           if ((this.waiters.get(id) ?? []).length === 0) this.waiters.delete(id);
         }
-        resolve13(status);
+        resolve14(status);
       };
       const list2 = this.waiters.get(id) ?? [];
       list2.push({ resolve: finish });
@@ -23246,11 +23677,11 @@ var ProcessSupervisor = class {
       notifyExit();
     });
     try {
-      await new Promise((resolve13, reject) => {
+      await new Promise((resolve14, reject) => {
         const onSpawn = () => {
           child.off("error", onStartError);
           spawned = true;
-          resolve13();
+          resolve14();
         };
         const onStartError = (error) => {
           child.off("spawn", onSpawn);
@@ -23297,13 +23728,13 @@ var ProcessSupervisor = class {
       this.children.delete(sessionId);
       return;
     }
-    await new Promise((resolve13) => {
+    await new Promise((resolve14) => {
       const done = () => {
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = void 0;
         }
-        resolve13();
+        resolve14();
       };
       if (live.exited) {
         done();
@@ -23332,14 +23763,14 @@ var ProcessSupervisor = class {
     const pid = live.child.pid;
     if (pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve13) => {
+      await new Promise((resolve14) => {
         const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve13());
-        killer.on("error", () => resolve13());
-        setTimeout(resolve13, 1500);
+        killer.on("exit", () => resolve14());
+        killer.on("error", () => resolve14());
+        setTimeout(resolve14, 1500);
       });
     } else {
       try {
@@ -23348,11 +23779,11 @@ var ProcessSupervisor = class {
       }
     }
     if (!live.exited) {
-      await new Promise((resolve13) => {
-        const t = setTimeout(resolve13, 500);
+      await new Promise((resolve14) => {
+        const t = setTimeout(resolve14, 500);
         live.child.once("exit", () => {
           clearTimeout(t);
-          resolve13();
+          resolve14();
         });
       });
     }
@@ -23683,13 +24114,17 @@ var AgentRuntime = class {
         cwd,
         env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
+        // Ephemeral path refs only — never base64; not written to SessionRecord.
+        bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
           acp: profile.acp,
           // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
-          ...await this.buildAcpLaunchExtras(profile, planEnv)
+          ...await this.buildAcpLaunchExtras(profile, planEnv),
+          // System root for safe image byte reads at prompt time (ephemeral; not SessionRecord).
+          ...req.bootstrapImageRefs && req.bootstrapImageRefs.length > 0 && typeof req.bootstrapImageSystemRoot === "string" && req.bootstrapImageSystemRoot.trim() ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() } : {}
         }
       };
       let pid;
@@ -23845,7 +24280,9 @@ var AgentRuntime = class {
         workspace: record.workspace,
         lastTaskId: req.lastTaskId ?? record.lastTaskId,
         env: req.env,
-        bootstrapPrompt: req.bootstrapPrompt
+        bootstrapPrompt: req.bootstrapPrompt,
+        bootstrapImageRefs: req.bootstrapImageRefs,
+        bootstrapImageSystemRoot: req.bootstrapImageSystemRoot
       }, profile);
     }
     if (typeof adapter.resumeManagedSession !== "function") {
@@ -23884,13 +24321,15 @@ var AgentRuntime = class {
         cwd,
         env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
+        bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
         args: profile.args,
         extras: {
           fake: profile.fake,
           acp: profile.acp,
           // Resume uses profileSnapshot (not live catalog edits).
-          ...await this.buildAcpLaunchExtras(profile, planEnv)
+          ...await this.buildAcpLaunchExtras(profile, planEnv),
+          ...req.bootstrapImageRefs && req.bootstrapImageRefs.length > 0 && typeof req.bootstrapImageSystemRoot === "string" && req.bootstrapImageSystemRoot.trim() ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() } : {}
         }
       };
       const resumeToken = adapter.parseResumeToken ? adapter.parseResumeToken(tokenRaw) : { raw: tokenRaw, providerSessionId: tokenRaw };

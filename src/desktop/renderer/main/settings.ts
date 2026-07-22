@@ -1249,5 +1249,3 @@ async function onRetentionPurge(): Promise<void> {
     if (purgeBtn) purgeBtn.disabled = false;
   }
 }
-
-
