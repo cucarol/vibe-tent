@@ -8,6 +8,7 @@
 - 可以并行且写入范围互不冲突时，并发派遣多个 SubGrok；不要让主 Agent 重复执行已经委派的同一工作。
 - 主 Agent 仍需检查 SubGrok 的证据、改动和测试结果。委派不等于盲目接受，也不把产品决策或不可逆操作交给 SubGrok 自行决定。
 - 立即阻塞当前关键路径、需要结合完整 user 上下文判断，或规模很小的工作，由主 Agent 直接处理即可。
-- Tent 内的长期协作优先通过 Tent task/role/agent profile 派发；纯临时调查可以直接调用 SubGrok ACP。
+- 所有 SubGrok ACP 调用都必须由 Tent 发起和管理，不得直接调用 provider adapter、ACP wrapper 或 `invoke-grok-acp.mjs` 绕过 Tent core。
+- 长期协作绑定 Tent task/role/agent profile；临时调查使用 Tent 管理的临时 task/session，可以不认领长期 role，但仍需保留统一的运行状态、上下文与交付链路。
 
 目标是节省主 Agent 的 token 与上下文，把它留给真正需要连续判断、与 user 对齐和最终验收的工作。

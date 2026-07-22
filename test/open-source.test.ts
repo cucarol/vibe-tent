@@ -43,7 +43,6 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
     await fs.readFile(path.join(repoRoot, "versions.json"), "utf8")
   );
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
-  const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const agentSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-agent", "SKILL.md"), "utf8");
   const agentPaths = await fs.readFile(
     path.join(repoRoot, "skills", "tent-agent", "references", "paths.md"),
@@ -109,8 +108,8 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.ok(pkg.files.includes("skills/"), "npm 发布包包含 bundled skills/");
   assert.equal(await exists(path.join(repoRoot, "LICENSE")), true);
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-agent", "SKILL.md")), true);
-  assert.equal(await exists(path.join(repoRoot, "skills", "tent-role", "SKILL.md")), true);
-  assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), true);
+  assert.equal(await exists(path.join(repoRoot, "skills", "tent-role", "SKILL.md")), false);
+  assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), false);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine-readable delivery record/);
   assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
@@ -121,19 +120,13 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.doesNotMatch(spec, /temp\/<role>\/reports\//);
   assert.doesNotMatch(spec, /## 6\. Proposal, Report, And Fork/);
   assert.doesNotMatch(spec, /handoff/i);
-  assert.match(roleSkill, /内容住 box，状态住 envelope/);
-  assert.match(roleSkill, /编排者手册/);
-  assert.match(roleSkill, /dispatch -> spawn\/唤醒 -> claim（或 startSession 代 claim）-> deliver -> review -> accept/);
-  assert.match(roleSkill, /in-workspace/);
-  assert.match(roleSkill, /\.tent\/temp\//);
-  assert.match(roleSkill, /tent task get/);
-  assert.match(roleSkill, /tent task deliver/);
-  assert.match(roleSkill, /## Legacy/);
-  const roleProtocol = roleSkill.split("## Legacy")[0] ?? roleSkill;
-  assert.doesNotMatch(roleProtocol, /`tent task-ack|`tent report </);
-  assert.doesNotMatch(roleSkill, /tent handoff/i);
-  // tent-agent: compact entry skill; details in references; coexists with tent-role/tent-genesis
+  // tent-agent: the single compact entry skill; details live in references.
   assert.match(agentSkill, /name: tent-agent/);
+  assert.match(agentSkill, /single V0\.2 model-side entry/i);
+  assert.match(agentSkill, /tent new <workspace>/);
+  assert.match(agentSkill, /tent role-init <role>/);
+  assert.match(agentSkill, /\.tent\/temp\/<role>\/init\.md/);
+  assert.doesNotMatch(agentSkill, /use `tent-genesis`|see `tent-role`/i);
   assert.match(agentSkill, /tent agent enter/);
   assert.match(agentSkill, /tent agent status/);
   assert.match(agentSkill, /tent agent leave/);
@@ -181,7 +174,10 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
 
 test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination + artifact", async () => {
   const spec = await fs.readFile(path.join(repoRoot, "docs", "SPEC.md"), "utf8");
-  const roleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
+  const agentPaths = await fs.readFile(
+    path.join(repoRoot, "skills", "tent-agent", "references", "paths.md"),
+    "utf8"
+  );
   const registryPane = await fs.readFile(path.join(repoRoot, "src", "plugin", "registry-pane.ts"), "utf8");
   const pluginSettings = await fs.readFile(path.join(repoRoot, "src", "plugin", "settings.ts"), "utf8");
   const uiControls = await fs.readFile(path.join(repoRoot, "src", "plugin", "ui-controls.ts"), "utf8");
@@ -201,19 +197,16 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   // retirement may be named; must not describe it as a live type configuration surface
   assert.match(spec, /retired `workspacePointer`|workspacePointer.*retired|retired.*workspacePointer/i);
 
-  // tent-role skill: automatic lane naming + asSub + no type+workspace pointer registration contract
-  assert.match(roleSkill, /WorkspaceLane/);
-  assert.match(roleSkill, /tent-role\/<role>/);
-  assert.match(roleSkill, /tent-task\/<taskId>/);
-  assert.match(roleSkill, /asSub 规则|asSub/);
-  assert.match(roleSkill, /`artifact`|artifact/);
-  assert.match(roleSkill, /coordination/);
+  // Unified agent skill keeps the automatic lane naming contract in its path reference.
+  assert.match(agentPaths, /WorkspaceLane/);
+  assert.match(agentPaths, /tent-role\/<role>/);
+  assert.match(agentPaths, /tent-task\/<taskId>/);
   assert.doesNotMatch(
-    roleSkill,
+    agentPaths,
     /types\.json` 开启了 `workspacePointer`/
   );
   assert.doesNotMatch(
-    roleSkill,
+    agentPaths,
     /从 Tent 唯一的 workspace 指针框解析 workspace/
   );
 
@@ -230,7 +223,7 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   for (const src of [registryPane, pluginSettings, uiControls, viewSrc]) {
     assert.doesNotMatch(src, /workspace pointer/i);
   }
-  assert.match(viewSrc, /workspace root \(in-workspace/i);
+  assert.match(viewSrc, /in-workspace[^\n]*workspace root/i);
 
   // Legacy external CLI complete errors: valid paths, renamed product wording only
   const tentCli = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");

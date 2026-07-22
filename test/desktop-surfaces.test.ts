@@ -257,17 +257,17 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
 
 test("profile skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
   const skills = skillDraftsFromProjection([
-    { name: "tent-role", path: "/home/u/.agents/skills/tent-role", enabled: true },
-    { name: "tent-genesis", enabled: false },
+    { name: "tent-agent", path: "/home/u/.agents/skills/tent-agent", enabled: true },
+    { name: "review-helper", enabled: false },
   ]);
   assert.equal(skills.length, 2);
   assert.equal(skills[0]!.enabled, true);
   assert.equal(skills[1]!.enabled, false);
-  assert.match(skillSourceLine(skills[0]!), /tent-role/);
+  assert.match(skillSourceLine(skills[0]!), /tent-agent/);
   assert.match(skillSourceLine(skills[1]!), /name-only/);
 
-  const toggled = setSkillEnabled(skills, "tent-genesis", true);
-  assert.equal(toggled.find((s) => s.name === "tent-genesis")?.enabled, true);
+  const toggled = setSkillEnabled(skills, "review-helper", true);
+  assert.equal(toggled.find((s) => s.name === "review-helper")?.enabled, true);
 
   const skillWire = buildSkillsPayload(toggled);
   for (const row of skillWire) {
@@ -276,7 +276,7 @@ test("profile skills/mcp drafts: toggle, id/ref only, no displayName/secrets", (
     assert.ok(!("body" in row));
     assert.ok(!("secret" in row));
   }
-  assert.equal(skillWire.find((s) => s.name === "tent-genesis")?.enabled, true);
+  assert.equal(skillWire.find((s) => s.name === "review-helper")?.enabled, true);
 
   const mcps = mcpDraftsFromProjection([
     {

@@ -6922,8 +6922,8 @@ async function newTent(target, vault) {
   const name = path8.basename(workspaceRoot);
   const fallbackRules = `# ${name} - Project Rules
 
-> Local project rules for this Tent. Created by tent-genesis; edit freely.
-> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.
+> Local project rules for this Tent; edit freely.
+> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-agent skill.
 
 - Output workspace: ${workspaceRoot.replaceAll("\\", "/")}
 - Commit / naming conventions: <fill in>

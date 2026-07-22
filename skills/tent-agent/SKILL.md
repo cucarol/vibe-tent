@@ -1,19 +1,25 @@
 ---
 name: tent-agent
-description: Compact Tent entry for any new Agent: detect .tent and task envelopes, run tent agent enter/status/leave, and drive task claim/get/ask-user/task-input/deliver. Prefer this over tent-role for new agents.
+description: Unified Tent entry for any Agent: create or enter a Tent, initialize or resume a role, bind external sessions, and drive the task lifecycle.
 ---
 
 # tent-agent
 
-Use this skill whenever an agent joins or resumes work inside a Tent workspace. It is the **V0.2 model-side entry** for new agents. Prefer it over `tent-role` on the future main path. Do **not** delete or replace installed `tent-role` / `tent-genesis`; those remain for genesis and durable-role sessions.
+Use this skill whenever an agent creates, joins, or resumes work inside a Tent workspace. It is the **single V0.2 model-side entry**; the former two Tent skills are retired.
 
 Details live under `references/` — keep this file short and cache-friendly.
 
 ## When to use
 
+- You need to create a Tent in a workspace that does not yet have `.tent/`.
 - You are inside (or should attach to) a workspace that has `.tent/`.
 - Bootstrap / Context Card / relay prompt points at a task envelope under `.tent/temp/…`.
 - You need claim → work → deliver, or mid-task A2U / U2A.
+
+## Create or initialize
+
+- If `.tent/` is absent, confirm the workspace root and initial roles, then use `tent new <workspace>`; do not invent an external Tent root.
+- For a durable role, read `.tent/RULES.md` and `.tent/temp/<role>/init.md`; generate the latter with `tent role-init <role>` for a new role.
 
 ## Hard facts (do not invent)
 
@@ -26,7 +32,7 @@ Details live under `references/` — keep this file short and cache-friendly.
 | **box** | Task content (identity note) |
 | **envelope** | Machine delivery record (`tk-…`); not the task body |
 | **manifest** | Dispatch-time **context pointer** (claims + paths to load). Not a permission system |
-| **delivery** | Agent submission (`dl-…`); **not** user accept |
+| **delivery** | Agent submission (`dl-…`); not user accept |
 | **accept** | User (or authorized) review of a delivery |
 
 Never invent missing envelope / manifest / box content — fetch by path or id first. Never resolve operational files as `<workspaceRoot>/temp` (use `.tent/temp`).
@@ -41,9 +47,7 @@ tent agent status [sessionId|externalKey] [--key <externalKey>] [--json]
 tent agent leave [sessionId|externalKey] [--key <externalKey>] [--json]
 ```
 
-- **enter** — register/reuse a `state=external` session row. No ACP spawn. Idempotent.
-- **status** — probe session + incomplete tasks bound to it.
-- **leave** — unbind/end external session only. Does **not** deliver or accept; may report unfinished tasks.
+- **enter** registers/reuses an external session; **status** probes it; **leave** ends it without delivering or accepting.
 - Outside a Tent workspace, hook aliases (`session-start` / `session-end`) silent-exit 0; public enter/status/leave fail-loud unless designed silent. See `references/session-boundaries.md`.
 
 ## Task lifecycle (Local Service)
@@ -106,7 +110,5 @@ Full command notes: `references/task-cli.md`. Session boundaries: `references/se
 
 ## What this skill is not
 
-- Not Tent genesis → use `tent-genesis`.
-- Not a full durable-role handbook → see `tent-role` if you need that depth.
 - Not ACP runtime, host tool-permission UI, or Desktop control.
 - Not a permission projector: use the manifest as **what context to open**, not as an ACL.

@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// tent CLI —— agent 侧的薄壳。tent-genesis / tent-role 等 skill 脚本就是喊这个命令。
+// tent CLI —— agent 侧的薄壳。统一的 tent-agent skill 通过这个命令进入 Tent。
 // 用法(cwd = 帐根 / workspace 根, new 例外):
 //   --- 新架构协作生命周期（Local Service RPC；不直写）---
 //   tent task list|get|claim|deliver|…  attach → mount → task.* （见 task-rpc.ts）
@@ -890,8 +890,8 @@ async function newTent(target: string, vault?: string): Promise<void> {
   const name = path.basename(workspaceRoot);
   const fallbackRules =
     `# ${name} - Project Rules\n\n` +
-      `> Local project rules for this Tent. Created by tent-genesis; edit freely.\n` +
-    `> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-role skill.\n\n` +
+      `> Local project rules for this Tent; edit freely.\n` +
+    `> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-agent skill.\n\n` +
     `- Output workspace: ${workspaceRoot.replaceAll("\\", "/")}\n` +
     `- Commit / naming conventions: <fill in>\n` +
     `- Other project rules: <fill in>\n`;

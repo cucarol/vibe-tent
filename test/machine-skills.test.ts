@@ -66,9 +66,7 @@ test("listSkills: reports bundled names and per-target installed status", async 
   const home = await tempDir("tent-skill-list-");
   const listed = await listSkills({ packageRoot: repoRoot, home });
   const names = listed.skills.map((s) => s.name).sort();
-  assert.ok(names.includes("tent-role"));
-  assert.ok(names.includes("tent-genesis"));
-  assert.ok(names.includes("tent-agent"));
+  assert.deepEqual(names, ["tent-agent"]);
 
   for (const skill of listed.skills) {
     assert.equal(skill.targets.length, SKILL_TARGET_IDS.length);
@@ -84,50 +82,46 @@ test("listSkills: reports bundled names and per-target installed status", async 
   await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-role"],
+    skills: ["tent-agent"],
     targets: ["claude"],
   });
   const after = await listSkills({ packageRoot: repoRoot, home });
-  const role = after.skills.find((s) => s.name === "tent-role");
-  assert.ok(role);
-  const claude = role!.targets.find((t) => t.target === "claude");
-  const agents = role!.targets.find((t) => t.target === "shared-agents");
+  const agent = after.skills.find((s) => s.name === "tent-agent");
+  assert.ok(agent);
+  const claude = agent!.targets.find((t) => t.target === "claude");
+  const agents = agent!.targets.find((t) => t.target === "shared-agents");
   assert.equal(claude?.installed, true);
   assert.equal(agents?.installed, false);
-
-  const genesis = after.skills.find((s) => s.name === "tent-genesis");
-  assert.ok(genesis!.targets.every((t) => t.installed === false));
 });
 
 test("installSkills: selective, skip, force, dual targets", async () => {
   const home = await tempDir("tent-skill-install-unit-");
-  const bundledRole = await fs.readFile(
-    path.join(repoRoot, "skills", "tent-role", "SKILL.md"),
+  const bundledAgent = await fs.readFile(
+    path.join(repoRoot, "skills", "tent-agent", "SKILL.md"),
     "utf8"
   );
 
   const first = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-role"],
+    skills: ["tent-agent"],
   });
   // Default both targets.
   assert.equal(first.filter((r) => r.status === "installed").length, 2);
-  assert.ok(first.every((r) => r.skill === "tent-role"));
+  assert.ok(first.every((r) => r.skill === "tent-agent"));
   assert.ok(first.some((r) => r.target === "claude"));
   assert.ok(first.some((r) => r.target === "shared-agents"));
 
   for (const id of SKILL_TARGET_IDS) {
-    const p = path.join(skillTargetDir(id, home), "tent-role", "SKILL.md");
-    assert.equal(await fs.readFile(p, "utf8"), bundledRole);
+    const p = path.join(skillTargetDir(id, home), "tent-agent", "SKILL.md");
+    assert.equal(await fs.readFile(p, "utf8"), bundledAgent);
   }
-  assert.equal(await exists(path.join(skillTargetDir("claude", home), "tent-genesis")), false);
 
   // Skip without force.
   const skipped = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-role"],
+    skills: ["tent-agent"],
     targets: ["claude"],
   });
   assert.equal(skipped.length, 1);
@@ -136,35 +130,22 @@ test("installSkills: selective, skip, force, dual targets", async () => {
 
   // Stale content + force overwrites only selected target.
   await fs.writeFile(
-    path.join(skillTargetDir("claude", home), "tent-role", "SKILL.md"),
+    path.join(skillTargetDir("claude", home), "tent-agent", "SKILL.md"),
     "# stale\n",
     "utf8"
   );
   const forced = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-role"],
+    skills: ["tent-agent"],
     targets: ["claude"],
     force: true,
   });
   assert.equal(forced[0]!.status, "installed");
   assert.equal(
-    await fs.readFile(path.join(skillTargetDir("claude", home), "tent-role", "SKILL.md"), "utf8"),
-    bundledRole
+    await fs.readFile(path.join(skillTargetDir("claude", home), "tent-agent", "SKILL.md"), "utf8"),
+    bundledAgent
   );
-
-  // Single-target selective install of the other skill.
-  const one = await installSkills({
-    packageRoot: repoRoot,
-    home,
-    skills: ["tent-genesis"],
-    targets: ["shared-agents"],
-  });
-  assert.equal(one.length, 1);
-  assert.equal(one[0]!.target, "shared-agents");
-  assert.equal(one[0]!.status, "installed");
-  assert.equal(await exists(path.join(skillTargetDir("claude", home), "tent-genesis")), false);
-  assert.equal(await exists(path.join(skillTargetDir("shared-agents", home), "tent-genesis")), true);
 });
 
 test("installSkills: rejects traversal, unknown skill, unknown target", async () => {
@@ -184,7 +165,7 @@ test("installSkills: rejects traversal, unknown skill, unknown target", async ()
       installSkills({
         packageRoot: repoRoot,
         home,
-        skills: ["tent-role/../../etc"],
+        skills: ["tent-agent/../../etc"],
       }),
     /Invalid skill name/
   );
@@ -235,7 +216,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
         targets: Array<{ target: string; path: string; installed: boolean }>;
       }>;
     };
-    assert.ok(listed.skills.some((s) => s.name === "tent-role"));
+    assert.deepEqual(listed.skills.map((s) => s.name), ["tent-agent"]);
     for (const s of listed.skills) {
       for (const t of s.targets) {
         assert.ok(t.path.startsWith(home), `path under injected home: ${t.path}`);
@@ -245,7 +226,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
 
     // Selective install to one target.
     const partial = (await client.skillInstall({
-      skills: ["tent-role"],
+      skills: ["tent-agent"],
       targets: ["claude"],
     })) as { results: Array<{ skill: string; status: string; target?: string }> };
     assert.equal(partial.results.length, 1);
@@ -253,30 +234,23 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     assert.equal(partial.results[0]!.target, "claude");
 
     const afterPartial = (await client.skillList()) as typeof listed;
-    const role = afterPartial.skills.find((s) => s.name === "tent-role")!;
-    assert.equal(role.targets.find((t) => t.target === "claude")!.installed, true);
-    assert.equal(role.targets.find((t) => t.target === "shared-agents")!.installed, false);
+    const agent = afterPartial.skills.find((s) => s.name === "tent-agent")!;
+    assert.equal(agent.targets.find((t) => t.target === "claude")!.installed, true);
+    assert.equal(agent.targets.find((t) => t.target === "shared-agents")!.installed, false);
 
     // Skip then force.
     const skip = (await client.skillInstall({
-      skills: ["tent-role"],
+      skills: ["tent-agent"],
       targets: ["claude"],
     })) as { results: Array<{ status: string }> };
     assert.equal(skip.results[0]!.status, "skipped");
 
     const force = (await client.skillInstall({
-      skills: ["tent-role"],
+      skills: ["tent-agent"],
       targets: ["claude"],
       force: true,
     })) as { results: Array<{ status: string }> };
     assert.equal(force.results[0]!.status, "installed");
-
-    // Default install both targets for remaining / all.
-    const both = (await client.skillInstall({ skills: ["tent-genesis"] })) as {
-      results: Array<{ target?: string; status: string }>;
-    };
-    assert.equal(both.results.length, 2);
-    assert.ok(both.results.every((r) => r.status === "installed"));
 
     // Validation: traversal / unknown target / banned path params.
     await assert.rejects(
@@ -290,7 +264,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     await assert.rejects(
       () =>
         client.call("skill.install", {
-          skills: ["tent-role"],
+          skills: ["tent-agent"],
           source: "/tmp/evil",
         } as Record<string, unknown>),
       /does not accept source/
@@ -299,14 +273,14 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
       () =>
         client.call("skill.install", {
           workspaceId: "ws-1",
-          skills: ["tent-role"],
+          skills: ["tent-agent"],
         } as Record<string, unknown>),
       /does not accept workspaceId/
     );
 
     // Paths never hard-coded to a real user home.
-    const diskRole = path.join(home, ".claude", "skills", "tent-role", "SKILL.md");
-    assert.equal(await exists(diskRole), true);
+    const diskAgent = path.join(home, ".claude", "skills", "tent-agent", "SKILL.md");
+    assert.equal(await exists(diskAgent), true);
   } finally {
     await svc.stop();
   }

@@ -573,68 +573,41 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
 test("skill-install:安装内置 skills,重复执行跳过,需 --force 覆盖", async () => {
   const target = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-skill-install-")));
   const installed = await runCli(repoRoot, "skill-install", "--dir", target);
-  assert.match(installed.stdout, /tent-genesis: installed/);
-  assert.match(installed.stdout, /tent-role: installed/);
   assert.match(installed.stdout, /tent-agent: installed/);
-  assert.equal(await exists(path.join(target, "tent-genesis", "SKILL.md")), true);
-  assert.equal(await exists(path.join(target, "tent-role", "SKILL.md")), true);
+  assert.doesNotMatch(installed.stdout, /tent-genesis|tent-role/);
   assert.equal(await exists(path.join(target, "tent-agent", "SKILL.md")), true);
   assert.equal(await exists(path.join(target, "tent-agent", "references", "paths.md")), true);
   assert.equal(await exists(path.join(target, "tent-agent", "references", "task-cli.md")), true);
   assert.equal(await exists(path.join(target, "tent-agent", "references", "session-boundaries.md")), true);
-  const bundledRoleSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
   const bundledAgentSkill = await fs.readFile(path.join(repoRoot, "skills", "tent-agent", "SKILL.md"), "utf8");
-  const installedRoleSkill = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
   const installedAgentSkill = await fs.readFile(path.join(target, "tent-agent", "SKILL.md"), "utf8");
-  assert.equal(
-    installedRoleSkill,
-    bundledRoleSkill,
-    "skill-install must copy bundled tent-role byte-for-byte",
-  );
   assert.equal(
     installedAgentSkill,
     bundledAgentSkill,
     "skill-install must copy bundled tent-agent byte-for-byte",
   );
-  assertInstalledTentRoleSkill(installedRoleSkill);
   assertInstalledTentAgentSkill(installedAgentSkill);
 
   // Idempotent: without --force, existing skills are skipped (not an error).
   const skipped = await runCli(repoRoot, "skill-install", "--dir", target);
-  assert.match(skipped.stdout, /tent-genesis: skipped/);
-  assert.match(skipped.stdout, /tent-role: skipped/);
   assert.match(skipped.stdout, /tent-agent: skipped/);
   assert.match(skipped.stdout, /already exists/);
-  assert.equal(
-    await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8"),
-    bundledRoleSkill,
-    "skip must leave existing skill bytes unchanged",
-  );
   assert.equal(
     await fs.readFile(path.join(target, "tent-agent", "SKILL.md"), "utf8"),
     bundledAgentSkill,
     "skip must leave existing tent-agent bytes unchanged",
   );
 
-  // Simulate stale local skill that still teaches legacy main flow
+  // Simulate stale local unified skill and force-refresh it.
   await fs.writeFile(
-    path.join(target, "tent-role", "SKILL.md"),
-    [
-      "---",
-      "name: tent-role",
-      "---",
-      "# stale legacy",
-      "1. Run `tent task-ack <taskPath>`",
-      "2. Finish with `tent report <boxId>`",
-      "Confirm cwd has RULES.md, .tent/, temp/ at workspace root.",
-      "Read temp/<role>/init.md",
-    ].join("\n") + "\n",
+    path.join(target, "tent-agent", "SKILL.md"),
+    "# stale\n",
     "utf8",
   );
   await runCli(repoRoot, "skill-install", "--dir", target, "--force");
-  const forced = await fs.readFile(path.join(target, "tent-role", "SKILL.md"), "utf8");
-  assert.equal(forced, bundledRoleSkill, "skill-install --force must match bundled skill");
-  assertInstalledTentRoleSkill(forced);
+  const forced = await fs.readFile(path.join(target, "tent-agent", "SKILL.md"), "utf8");
+  assert.equal(forced, bundledAgentSkill, "skill-install --force must match bundled skill");
+  assertInstalledTentAgentSkill(forced);
 
   await assert.rejects(
     () => runCli(repoRoot, "skill-install", "--target", "codex", "--dir", target),
@@ -648,8 +621,6 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
   const agentsSkills = path.join(fakeHome, ".agents", "skills");
   const homeEnv = { HOME: fakeHome, USERPROFILE: fakeHome };
 
-  const bundledRole = await fs.readFile(path.join(repoRoot, "skills", "tent-role", "SKILL.md"), "utf8");
-  const bundledGenesis = await fs.readFile(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md"), "utf8");
   const bundledAgent = await fs.readFile(path.join(repoRoot, "skills", "tent-agent", "SKILL.md"), "utf8");
 
   const first = await run(
@@ -661,9 +632,8 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
   assert.match(first.stdout, /skill-install/);
   assert.match(first.stdout, new RegExp(escapeRegExp(claudeSkills)));
   assert.match(first.stdout, new RegExp(escapeRegExp(agentsSkills)));
-  assert.match(first.stdout, /tent-genesis: installed/);
-  assert.match(first.stdout, /tent-role: installed/);
   assert.match(first.stdout, /tent-agent: installed/);
+  assert.doesNotMatch(first.stdout, /tent-genesis|tent-role/);
   // Targets must resolve under the temp HOME only (os.homedir via HOME/USERPROFILE).
   for (const line of first.stdout.split(/\r?\n/)) {
     const trimmed = line.trim();
@@ -681,16 +651,6 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
 
   for (const root of [claudeSkills, agentsSkills]) {
     assert.equal(
-      await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8"),
-      bundledRole,
-      `${root}/tent-role must match bundled bytes`,
-    );
-    assert.equal(
-      await fs.readFile(path.join(root, "tent-genesis", "SKILL.md"), "utf8"),
-      bundledGenesis,
-      `${root}/tent-genesis must match bundled bytes`,
-    );
-    assert.equal(
       await fs.readFile(path.join(root, "tent-agent", "SKILL.md"), "utf8"),
       bundledAgent,
       `${root}/tent-agent must match bundled bytes`,
@@ -700,13 +660,12 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
       true,
       `${root}/tent-agent must install references/`,
     );
-    assertInstalledTentRoleSkill(await fs.readFile(path.join(root, "tent-role", "SKILL.md"), "utf8"));
     assertInstalledTentAgentSkill(await fs.readFile(path.join(root, "tent-agent", "SKILL.md"), "utf8"));
   }
 
-  // Pre-fill only Claude with stale content; agents dir empty after wipe of one skill.
-  await fs.writeFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "# stale claude only\n", "utf8");
-  await fs.rm(path.join(agentsSkills, "tent-role"), { recursive: true, force: true });
+  // Pre-fill only Claude with stale content; agents copy is missing.
+  await fs.writeFile(path.join(claudeSkills, "tent-agent", "SKILL.md"), "# stale claude only\n", "utf8");
+  await fs.rm(path.join(agentsSkills, "tent-agent"), { recursive: true, force: true });
 
   const partial = await run(
     process.execPath,
@@ -714,17 +673,17 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
     repoRoot,
     homeEnv,
   );
-  // Claude tent-role skipped; agents tent-role installed independently.
-  assert.match(partial.stdout, new RegExp(`${escapeRegExp(claudeSkills)}[\\s\\S]*tent-role: skipped`));
-  assert.match(partial.stdout, new RegExp(`${escapeRegExp(agentsSkills)}[\\s\\S]*tent-role: installed`));
+  // Claude tent-agent skipped; agents tent-agent installed independently.
+  assert.match(partial.stdout, new RegExp(`${escapeRegExp(claudeSkills)}[\\s\\S]*tent-agent: skipped`));
+  assert.match(partial.stdout, new RegExp(`${escapeRegExp(agentsSkills)}[\\s\\S]*tent-agent: installed`));
   assert.equal(
-    await fs.readFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "utf8"),
+    await fs.readFile(path.join(claudeSkills, "tent-agent", "SKILL.md"), "utf8"),
     "# stale claude only\n",
     "without --force, existing Claude skill must not be overwritten",
   );
   assert.equal(
-    await fs.readFile(path.join(agentsSkills, "tent-role", "SKILL.md"), "utf8"),
-    bundledRole,
+    await fs.readFile(path.join(agentsSkills, "tent-agent", "SKILL.md"), "utf8"),
+    bundledAgent,
     "missing agents skill must still install when Claude already has one",
   );
 
@@ -734,40 +693,10 @@ test("skill-install:默认同步到 Claude 与 .agents/skills,目标独立判断
     repoRoot,
     homeEnv,
   );
-  assert.match(forced.stdout, /tent-role: installed/);
-  assert.equal(await fs.readFile(path.join(claudeSkills, "tent-role", "SKILL.md"), "utf8"), bundledRole);
-  assert.equal(await fs.readFile(path.join(agentsSkills, "tent-role", "SKILL.md"), "utf8"), bundledRole);
+  assert.match(forced.stdout, /tent-agent: installed/);
+  assert.equal(await fs.readFile(path.join(claudeSkills, "tent-agent", "SKILL.md"), "utf8"), bundledAgent);
+  assert.equal(await fs.readFile(path.join(agentsSkills, "tent-agent", "SKILL.md"), "utf8"), bundledAgent);
 });
-
-/** Assert installed tent-role is the new in-workspace + service lifecycle skill, not legacy main flow. */
-function assertInstalledTentRoleSkill(skill: string) {
-  assert.match(skill, /name: tent-role/);
-  assert.match(skill, /in-workspace/);
-  assert.match(skill, /workspace root/i);
-  assert.match(skill, /system root/i);
-  assert.match(skill, /\.tent\/temp\//);
-  assert.match(skill, /temp\/<role>\/init\.md/);
-  assert.match(skill, /tent task claim/);
-  assert.match(skill, /tent task get/);
-  assert.match(skill, /tent task deliver/);
-  assert.match(skill, /task\.startSession|startSession/);
-  assert.match(skill, /already claimed|已 claim|代 claim/);
-  assert.match(skill, /WorkspaceLane/);
-  assert.match(skill, /tent-role\/<role>/);
-  assert.match(skill, /asSub/);
-  assert.doesNotMatch(skill, /types\.json` 开启了 `workspacePointer`/);
-  // Legacy may appear only as isolated notes, not as the primary protocol steps.
-  assert.match(skill, /## Legacy/);
-  // Primary protocol must not prescribe task-ack / tent report as the default claim/deliver path.
-  const protocolSection = skill.split("## Legacy")[0] ?? skill;
-  assert.doesNotMatch(
-    protocolSection,
-    /接任务后的第一步运行 `tent task-ack|Run `tent task-ack|`tent report <boxId>/,
-  );
-  assert.doesNotMatch(protocolSection, /确认工作目录就是 Tent 根目录，且包含 `RULES\.md`、`\.tent\/`、`temp\/`/);
-  assert.doesNotMatch(protocolSection, /新 role session 只读一次 `temp\/<role>\/init\.md`/);
-  assert.doesNotMatch(skill, /tent handoff/);
-}
 
 /** Assert installed tent-agent is the compact V0.2 entry skill with service task CLI + session bounds. */
 function assertInstalledTentAgentSkill(skill: string) {
@@ -797,7 +726,7 @@ function assertInstalledTentAgentSkill(skill: string) {
   assert.doesNotMatch(skill, /`tent task-ack/);
   assert.doesNotMatch(skill, /`tent report </);
   assert.doesNotMatch(skill, /tent handoff/i);
-  // Keep primary SKILL short; deep type/orchestrator handbook stays in tent-role.
+  // Keep the unified primary SKILL short; deeper command detail stays in references/.
   assert.ok(skill.length < 6000, "tent-agent SKILL.md should stay compact/cache-friendly");
 }
 
