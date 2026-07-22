@@ -45,6 +45,8 @@ import {
   acquireServiceDataDirLease,
   type ServiceDataDirLease,
 } from "./service-lease.js";
+import { sweepAttachmentGc } from "../markdown/attachment-gc.js";
+import { purgeOperationalRetention } from "../core/retention.js";
 
 export interface LocalTentServiceOptions {
   host?: string;
@@ -135,7 +137,16 @@ async function startOwnedLocalTentService(
 
   const events = new EventBus();
   const mutations = new MutationBus();
-  const workspaceHost = new WorkspaceHost({ events });
+  const workspaceHost = new WorkspaceHost({
+    events,
+    housekeeper: async (mount) => {
+      await mutations.run(mount.workspaceId, async () => {
+        const now = mount.env.clock.now();
+        await purgeOperationalRetention(mount.env.fs, { now });
+        await sweepAttachmentGc(mount.env.fs, { now });
+      });
+    },
+  });
   registerStartupCleanup(30, () => workspaceHost.dispose());
   const a2a = new A2AApprovalStore(dataDir);
   await a2a.ensureLoaded();

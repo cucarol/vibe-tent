@@ -264,6 +264,18 @@ Default edit path does **not** perform destructive link projection on every save
 - Return value includes `relativePath` (system-root relative), a Markdown link relative to the owning concept note, and optional `ArtifactRef` `{ kind: "path", target, label }`.
 - Insert ordinary relative Markdown image/file links (or service-logical URLs resolved in preview).
 - No cloud image host; large-file warnings allowed. No migration layer for legacy `.b64` markers.
+- Attachment ownership is `cx-` based: while the owning concept exists (including
+  `archived` concepts), every file under its attachment directory is durable even
+  when temporarily absent from the body. Rename/move therefore never changes
+  attachment ownership.
+- The Local Service performs conservative, invisible attachment housekeeping.
+  Only files whose owner concept no longer exists **and** which are unreferenced
+  by concept or operational Markdown/ArtifactRefs become candidates. A candidate
+  must remain orphaned for 30 days after first observation before deletion;
+  missing/corrupt GC state and scan ambiguity fail closed.
+- Attachment references are extracted separately from concept links. The same
+  derived edges may feed a future relationship graph, but graph/cache absence is
+  never sufficient proof for deletion: each GC sweep rechecks disk sources.
 
 ### 6.4 Editor session state
 

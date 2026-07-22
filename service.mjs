@@ -1335,8 +1335,8 @@ function isDeliveryId(id) {
   return id.startsWith("dl-") && id.length > 3;
 }
 var TaskLifecycleError = class extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message2) {
+    super(message2);
     this.code = code;
     this.name = "TaskLifecycleError";
   }
@@ -11118,8 +11118,8 @@ var TERMINAL_DELIVERY_STATUSES = /* @__PURE__ */ new Set([
   "rejected"
 ]);
 var RetentionError = class extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message2) {
+    super(message2);
     this.code = code;
     this.name = "RetentionError";
   }
@@ -11186,9 +11186,9 @@ async function previewOperationalRetention(fs19, options = {}) {
     if (!isTerminalTaskState(task.state)) continue;
     if (isActiveTaskState(task.state)) continue;
     if (task.id && (taskIdCounts.get(task.id) ?? 0) > 1) {
-      const message = `duplicate task id ${task.id}; refusing ambiguous retention group`;
-      skipped.push({ path: task.path, reason: message });
-      warnings.push(`skipped ${task.path}: ${message}`);
+      const message2 = `duplicate task id ${task.id}; refusing ambiguous retention group`;
+      skipped.push({ path: task.path, reason: message2 });
+      warnings.push(`skipped ${task.path}: ${message2}`);
       continue;
     }
     const related = task.id ? deliveriesByTaskId.get(task.id) ?? [] : [];
@@ -11588,8 +11588,8 @@ async function updateWorkspaceSettings(fs19, patch) {
   });
 }
 var WorkspaceSettingsError = class extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message2) {
+    super(message2);
     this.code = code;
     this.name = "WorkspaceSettingsError";
   }
@@ -11694,8 +11694,8 @@ async function writeWorkspaceAgents(workspaceRoot, content3) {
   };
 }
 var WorkspaceAgentsError = class extends Error {
-  constructor(code, message) {
-    super(message);
+  constructor(code, message2) {
+    super(message2);
     this.code = code;
     this.name = "WorkspaceAgentsError";
   }
@@ -13596,8 +13596,8 @@ var MAX_MCP_HEADER_ENTRIES = 16;
 function fieldOk(value) {
   return { ok: true, value };
 }
-function fieldErr(message) {
-  return { ok: false, message };
+function fieldErr(message2) {
+  return { ok: false, message: message2 };
 }
 function defaultAllowedSkillRoots(home) {
   const root = home ?? os.homedir();
@@ -14441,8 +14441,8 @@ var AcpClient = class {
         loadSessionSupported: this.loadSessionSupported
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : String(err);
-      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      const message2 = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message2} (stderr: ${this.stderrTail.slice(-500)})` : message2;
       throw new Error(detail);
     }
   }
@@ -14487,8 +14487,8 @@ var AcpClient = class {
       if (this.stopRequested) {
         throw new Error("session interrupted before prompt completed");
       }
-      const message = err instanceof Error ? err.message : String(err);
-      const detail = this.stderrTail ? `${message} (stderr: ${this.stderrTail.slice(-500)})` : message;
+      const message2 = err instanceof Error ? err.message : String(err);
+      const detail = this.stderrTail ? `${message2} (stderr: ${this.stderrTail.slice(-500)})` : message2;
       throw new Error(detail);
     } finally {
       this.collectingPromptResponse = false;
@@ -14638,29 +14638,29 @@ var AcpClient = class {
     });
   }
   onLine(line) {
-    let message;
+    let message2;
     try {
-      message = JSON.parse(line);
+      message2 = JSON.parse(line);
     } catch {
       return;
     }
-    if ("method" in message && message.method === "session/update") {
+    if ("method" in message2 && message2.method === "session/update") {
       this.handleSessionUpdate(
-        message.params?.update
+        message2.params?.update
       );
       return;
     }
-    if ("method" in message && message.method === "session/request_permission" && message.id !== void 0) {
+    if ("method" in message2 && message2.method === "session/request_permission" && message2.id !== void 0) {
       void this.handlePermissionRequest(
-        message.id,
-        message.params
+        message2.id,
+        message2.params
       );
       return;
     }
-    if ("method" in message && message.id !== void 0 && message.method) {
+    if ("method" in message2 && message2.id !== void 0 && message2.method) {
       this.write({
         jsonrpc: "2.0",
-        id: message.id,
+        id: message2.id,
         error: {
           code: -32601,
           message: `Client-side requests are disabled for Tent ${this.label} adapter.`
@@ -14668,18 +14668,18 @@ var AcpClient = class {
       });
       return;
     }
-    if (!("id" in message) || message.id === void 0) return;
-    const id = Number(message.id);
+    if (!("id" in message2) || message2.id === void 0) return;
+    const id = Number(message2.id);
     const pending = this.pending.get(id);
     if (!pending) return;
     this.pending.delete(id);
     clearTimeout(pending.timer);
-    if ("error" in message && message.error) {
+    if ("error" in message2 && message2.error) {
       pending.reject(
-        new Error(message.error.message || JSON.stringify(message.error))
+        new Error(message2.error.message || JSON.stringify(message2.error))
       );
     } else {
-      pending.resolve(("result" in message ? message.result : void 0) ?? {});
+      pending.resolve(("result" in message2 ? message2.result : void 0) ?? {});
     }
   }
   handleSessionUpdate(update) {
@@ -15029,13 +15029,13 @@ function runManagedBootstrapPrompt(plan, emit2, client, bootstrap) {
       stopReason: result.stopReason || "end_turn"
     });
   }).catch(async (err) => {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/interrupted|session stopped/i.test(message)) {
-      client.reportFailed(`session interrupted: ${message}`);
+    const message2 = err instanceof Error ? err.message : String(err);
+    if (/interrupted|session stopped/i.test(message2)) {
+      client.reportFailed(`session interrupted: ${message2}`);
       await stopAcpClientQuiet(client);
       return;
     }
-    client.reportFailed(message);
+    client.reportFailed(message2);
     await stopAcpClientQuiet(client);
   });
 }
@@ -15061,8 +15061,8 @@ async function resumeManagedAcpSession(input) {
     await client.connect({ mode: "load", providerSessionId: loadId });
   } catch (err) {
     await stopAcpClientQuiet(client);
-    const message = err instanceof Error ? err.message : String(err);
-    throw new Error(message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new Error(message2);
   }
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
   const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
@@ -16477,8 +16477,8 @@ var CredentialStore = class {
 function fieldOk2(value) {
   return { ok: true, value };
 }
-function fieldErr2(message) {
-  return { ok: false, message };
+function fieldErr2(message2) {
+  return { ok: false, message: message2 };
 }
 var PROFILE_ID_RE = /^[a-z][a-z0-9-]{0,62}$/;
 var ENV_KEY_RE2 = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -17139,8 +17139,8 @@ function projectProviderCatalog() {
 
 // src/service/rpc-error.ts
 var RpcError = class extends Error {
-  constructor(code, message, data) {
-    super(message);
+  constructor(code, message2, data) {
+    super(message2);
     this.code = code;
     this.data = data;
   }
@@ -17896,14 +17896,14 @@ async function docsSetMode(ctx, p) {
     try {
       await setNodeMode(mount.env, concept.id, mode);
     } catch (err) {
-      const message = err instanceof Error ? err.message : "docs.setMode failed";
-      if (/not found/i.test(message)) throw new RpcError(-32004, message);
+      const message2 = err instanceof Error ? err.message : "docs.setMode failed";
+      if (/not found/i.test(message2)) throw new RpcError(-32004, message2);
       if (/mode must be|Invalid boxes|archive root|already archived|Claimed ranges|restored to editable/i.test(
-        message
+        message2
       )) {
-        throw new RpcError(-32602, message);
+        throw new RpcError(-32602, message2);
       }
-      throw new RpcError(-32e3, message);
+      throw new RpcError(-32e3, message2);
     }
     const after = await loadTent(mount.env.fs);
     const updated = after.byId.get(concept.id);
@@ -18318,22 +18318,22 @@ function parseRoleDefinitionParams(p, opts) {
     return role;
   } catch (err) {
     if (err instanceof RpcError) throw err;
-    const message = err instanceof Error ? err.message : "Invalid role definition";
-    throw new RpcError(-32602, message);
+    const message2 = err instanceof Error ? err.message : "Invalid role definition";
+    throw new RpcError(-32602, message2);
   }
 }
 function mapRoleRegistryError(err, surface) {
   if (err instanceof RpcError) return err;
-  const message = err instanceof Error ? err.message : `${surface} failed`;
+  const message2 = err instanceof Error ? err.message : `${surface} failed`;
   if (/already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
-    message
+    message2
   )) {
-    if (/does not exist/i.test(message)) {
-      return new RpcError(-32004, message);
+    if (/does not exist/i.test(message2)) {
+      return new RpcError(-32004, message2);
     }
-    return new RpcError(-32602, message);
+    return new RpcError(-32602, message2);
   }
-  return new RpcError(-32e3, message);
+  return new RpcError(-32e3, message2);
 }
 async function profileList(ctx, p) {
   const includeTest = p.includeTest === true;
@@ -18476,16 +18476,16 @@ async function credentialSet(ctx, p) {
     );
     return { credential };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "credential.set failed";
-    if (secret && message.includes(secret)) {
+    const message2 = err instanceof Error ? err.message : "credential.set failed";
+    if (secret && message2.includes(secret)) {
       throw new RpcError(-32602, "credential.set failed");
     }
     if (/Invalid credential id|Missing or invalid credential|credential secret|metadata|must match/i.test(
-      message
+      message2
     )) {
-      throw new RpcError(-32602, message);
+      throw new RpcError(-32602, message2);
     }
-    throw new RpcError(-32e3, message);
+    throw new RpcError(-32e3, message2);
   }
 }
 async function credentialDelete(ctx, p) {
@@ -18500,22 +18500,22 @@ async function credentialDelete(ctx, p) {
     );
     return result;
   } catch (err) {
-    const message = err instanceof Error ? err.message : "credential.delete failed";
-    if (/not found/i.test(message)) {
-      throw new RpcError(-32004, message);
+    const message2 = err instanceof Error ? err.message : "credential.delete failed";
+    if (/not found/i.test(message2)) {
+      throw new RpcError(-32004, message2);
     }
-    if (/Invalid credential id|Missing or invalid credential/i.test(message)) {
-      throw new RpcError(-32602, message);
+    if (/Invalid credential id|Missing or invalid credential/i.test(message2)) {
+      throw new RpcError(-32602, message2);
     }
-    throw new RpcError(-32e3, message);
+    throw new RpcError(-32e3, message2);
   }
 }
 async function skillList(ctx) {
   try {
     return await listSkills({ packageRoot: ctx.packageRoot, home: ctx.home });
   } catch (err) {
-    const message = err instanceof Error ? err.message : "skill.list failed";
-    throw new RpcError(-32e3, message);
+    const message2 = err instanceof Error ? err.message : "skill.list failed";
+    throw new RpcError(-32e3, message2);
   }
 }
 async function skillInstall(ctx, p) {
@@ -18545,8 +18545,8 @@ async function skillInstall(ctx, p) {
     try {
       targets = p.targets.map((t) => parseSkillTargetId(t));
     } catch (err) {
-      const message = err instanceof Error ? err.message : "Invalid targets";
-      throw new RpcError(-32602, message);
+      const message2 = err instanceof Error ? err.message : "Invalid targets";
+      throw new RpcError(-32602, message2);
     }
   }
   let force = false;
@@ -18576,13 +18576,13 @@ async function skillInstall(ctx, p) {
     );
     return { results };
   } catch (err) {
-    const message = err instanceof Error ? err.message : "skill.install failed";
+    const message2 = err instanceof Error ? err.message : "skill.install failed";
     if (/Invalid skill name|Unknown skill target|Unknown bundled skill|escapes the destination/i.test(
-      message
+      message2
     )) {
-      throw new RpcError(-32602, message);
+      throw new RpcError(-32602, message2);
     }
-    throw new RpcError(-32e3, message);
+    throw new RpcError(-32e3, message2);
   }
 }
 async function docsCreateNote(ctx, p) {
@@ -18623,8 +18623,8 @@ async function docsImportAttachment(ctx, p) {
   try {
     bytes = rawBase64 === "" ? new Uint8Array() : decodeBase64Strict(rawBase64);
   } catch (err) {
-    const message = err instanceof Error ? err.message : "Invalid base64";
-    throw new RpcError(-32602, message);
+    const message2 = err instanceof Error ? err.message : "Invalid base64";
+    throw new RpcError(-32602, message2);
   }
   if (bytes.byteLength > MAX_ATTACHMENT_BYTES) {
     throw new RpcError(
@@ -18655,11 +18655,11 @@ async function docsImportAttachment(ctx, p) {
         artifactRef: result.artifactRef
       };
     } catch (err) {
-      const message = err instanceof Error ? err.message : "importAttachment failed";
-      if (/exceeds max size|Invalid base64|path rejected|file name/i.test(message)) {
-        throw new RpcError(-32602, message);
+      const message2 = err instanceof Error ? err.message : "importAttachment failed";
+      if (/exceeds max size|Invalid base64|path rejected|file name/i.test(message2)) {
+        throw new RpcError(-32602, message2);
       }
-      throw new RpcError(-32e3, message);
+      throw new RpcError(-32e3, message2);
     }
   });
 }
@@ -18750,16 +18750,16 @@ async function docsRename(ctx, p) {
 }
 function mapDocsRenameError(err) {
   if (err instanceof RpcError) return err;
-  const message = err instanceof Error ? err.message : "docs.rename failed";
-  if (/not found/i.test(message)) {
-    return new RpcError(-32004, message);
+  const message2 = err instanceof Error ? err.message : "docs.rename failed";
+  if (/not found/i.test(message2)) {
+    return new RpcError(-32004, message2);
   }
   if (/already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
-    message
+    message2
   )) {
-    return new RpcError(-32602, message);
+    return new RpcError(-32602, message2);
   }
-  return new RpcError(-32e3, message);
+  return new RpcError(-32e3, message2);
 }
 async function taskDispatch(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -19244,11 +19244,11 @@ async function deliverManagedTaskInput(ctx, item, opts) {
             "service"
           );
         } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
+          const message2 = err instanceof Error ? err.message : String(err);
           return {
             input: forInject,
             continued: true,
-            continueError: `managed inject ok but markDelivered failed: ${message}`
+            continueError: `managed inject ok but markDelivered failed: ${message2}`
           };
         }
       }
@@ -19306,7 +19306,7 @@ async function continueManagedAfterTaskInput(ctx, item) {
     });
     return { continued: true };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     ctx.events.emit(
       "session.state",
       item.workspaceId,
@@ -19314,12 +19314,12 @@ async function continueManagedAfterTaskInput(ctx, item) {
         sessionId: item.sessionId,
         taskPath: item.taskPath,
         runtimeEvent: "taskInput.continue.failed",
-        error: message,
+        error: message2,
         taskFailed: false
       },
       "service"
     );
-    return { continued: false, error: message };
+    return { continued: false, error: message2 };
   }
 }
 async function taskDeliverRpc(ctx, p) {
@@ -19491,16 +19491,16 @@ async function taskRejectRpc(ctx, p) {
       continueError: delivery.continueError
     };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
       sessionId: boundSessionId,
-      message
+      message: message2
     });
     throw new RpcError(
       RPC_LIFECYCLE,
-      `task.reject resume failed to restore managed session: ${message}`,
+      `task.reject resume failed to restore managed session: ${message2}`,
       { taskPath, sessionId: boundSessionId, inputId: reviewInput.id }
     );
   }
@@ -19828,15 +19828,15 @@ async function taskStartSessionRpc(ctx, p) {
       });
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     await failTaskFromRuntime(ctx, {
       workspaceId,
       taskPath,
       sessionId: void 0,
       reason: "session.failed",
-      summary: message
+      summary: message2
     });
-    throw new RpcError(-32e3, message);
+    throw new RpcError(-32e3, message2);
   }
   const bound = await ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
@@ -20098,11 +20098,11 @@ async function sessionEnter(ctx, p) {
       externalKey: externalKey || void 0
     });
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/already active as managed/i.test(message)) {
-      throw new RpcError(RPC_LIFECYCLE, message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    if (/already active as managed/i.test(message2)) {
+      throw new RpcError(RPC_LIFECYCLE, message2);
     }
-    throw new RpcError(-32602, message);
+    throw new RpcError(-32602, message2);
   }
   const rec = await ctx.runtime.registry.read(handle.sessionId);
   const probe = await ctx.runtime.probe(handle.sessionId);
@@ -20565,7 +20565,7 @@ async function continueManagedAfterUserAsk(ctx, item) {
     });
     return { continued: true };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     ctx.events.emit(
       "session.state",
       item.workspaceId,
@@ -20573,12 +20573,12 @@ async function continueManagedAfterUserAsk(ctx, item) {
         sessionId: item.sessionId,
         taskPath: item.taskPath,
         runtimeEvent: "userAsk.continue.failed",
-        error: message,
+        error: message2,
         taskFailed: false
       },
       "service"
     );
-    return { continued: false, error: message };
+    return { continued: false, error: message2 };
   }
 }
 function projectUserAsk(item) {
@@ -20662,8 +20662,8 @@ async function taskInputListPending(ctx, p) {
     const pending = await ctx.taskInputs.listPending(workspaceId, taskPath);
     return { inputs: pending.map(projectTaskInput) };
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
   }
 }
 async function taskInputGet(ctx, p) {
@@ -20674,8 +20674,8 @@ async function taskInputGet(ctx, p) {
   try {
     item = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
   }
   if (!item) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
   return { input: projectTaskInput(item) };
@@ -20696,8 +20696,8 @@ async function taskInputAckRpc(ctx, p) {
   try {
     existing = await ctx.taskInputs.get(inputId, workspaceId, taskPath);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    throw new RpcError(-32602, message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(-32602, message2);
   }
   if (!existing) throw new RpcError(-32004, `TaskInput not found: ${inputId}`);
   const allowed = await isTaskInputAckActorAllowed(ctx, existing, actor);
@@ -20719,14 +20719,14 @@ async function taskInputAckRpc(ctx, p) {
   try {
     item = await ctx.taskInputs.ack(inputId, workspaceId, taskPath, actor);
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
-    if (/not found/i.test(message)) {
-      throw new RpcError(-32004, message);
+    const message2 = err instanceof Error ? err.message : String(err);
+    if (/not found/i.test(message2)) {
+      throw new RpcError(-32004, message2);
     }
-    if (/already /i.test(message)) {
-      throw new RpcError(RPC_LIFECYCLE, message, { inputId });
+    if (/already /i.test(message2)) {
+      throw new RpcError(RPC_LIFECYCLE, message2, { inputId });
     }
-    throw new RpcError(-32603, message);
+    throw new RpcError(-32603, message2);
   }
   ctx.events.emit(
     "taskInput.consumed",
@@ -21218,7 +21218,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       });
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
@@ -21226,7 +21226,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       if (task.state === "running" || task.state === "waiting") {
         try {
           await ctx.runtime.registry.update(input.sessionId, {
-            lastError: `managed auto-deliver failed: ${message}`
+            lastError: `managed auto-deliver failed: ${message2}`
           });
         } catch {
         }
@@ -21238,7 +21238,7 @@ async function tryManagedAutoDeliver(ctx, input) {
             taskPath: input.taskPath,
             taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
-            error: message,
+            error: message2,
             // Explicit: task remains non-terminal for retry.
             taskFailed: false
           },
@@ -21297,10 +21297,10 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
       await ctx.runtime.stopSession(input.sessionId, "user");
     }
   } catch (err) {
-    const message = err instanceof Error ? err.message : String(err);
+    const message2 = err instanceof Error ? err.message : String(err);
     try {
       await ctx.runtime.registry.update(input.sessionId, {
-        lastError: `managed session stop after deliver failed: ${message}`
+        lastError: `managed session stop after deliver failed: ${message2}`
       });
     } catch {
     }
@@ -21311,7 +21311,7 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
         sessionId: input.sessionId,
         taskPath: input.taskPath,
         runtimeEvent: "session.stop_after_deliver.failed",
-        error: message,
+        error: message2,
         // Delivery already succeeded; task must not be failed for stop issues.
         taskFailed: false
       },
@@ -22356,9 +22356,9 @@ async function handleRequest(req, res, options, closeSseConnections) {
       });
       return;
     }
-    const message = parsed;
-    const id = isRpcId(message.id) ? message.id ?? null : null;
-    if (message.jsonrpc !== "2.0" || !message.method || typeof message.method !== "string" || !isRpcId(message.id)) {
+    const message2 = parsed;
+    const id = isRpcId(message2.id) ? message2.id ?? null : null;
+    if (message2.jsonrpc !== "2.0" || !message2.method || typeof message2.method !== "string" || !isRpcId(message2.id)) {
       writeJson2(res, 200, {
         jsonrpc: "2.0",
         id,
@@ -22366,7 +22366,7 @@ async function handleRequest(req, res, options, closeSseConnections) {
       });
       return;
     }
-    if (message.params !== void 0 && (!message.params || typeof message.params !== "object")) {
+    if (message2.params !== void 0 && (!message2.params || typeof message2.params !== "object")) {
       writeJson2(res, 200, {
         jsonrpc: "2.0",
         id,
@@ -22374,11 +22374,11 @@ async function handleRequest(req, res, options, closeSseConnections) {
       });
       return;
     }
-    const params = message.params === void 0 ? void 0 : Array.isArray(message.params) ? Object.fromEntries(
-      message.params.map((v, i) => [String(i), v])
-    ) : typeof message.params === "object" && message.params ? message.params : void 0;
+    const params = message2.params === void 0 ? void 0 : Array.isArray(message2.params) ? Object.fromEntries(
+      message2.params.map((v, i) => [String(i), v])
+    ) : typeof message2.params === "object" && message2.params ? message2.params : void 0;
     try {
-      const result = await dispatchMethod(ctx, message.method, params);
+      const result = await dispatchMethod(ctx, message2.method, params);
       writeJson2(res, 200, { jsonrpc: "2.0", id, result });
     } catch (error) {
       if (error instanceof RpcError) {
@@ -22579,10 +22579,15 @@ var WorkspaceHost = class {
     this.mounts = /* @__PURE__ */ new Map();
     this.foregroundId = null;
     this.watchTimers = /* @__PURE__ */ new Map();
+    this.housekeepingTimers = /* @__PURE__ */ new Map();
+    this.housekeepingRunning = /* @__PURE__ */ new Set();
     this.events = options.events;
     this.clock = options.clock ?? { now: () => (/* @__PURE__ */ new Date()).toISOString() };
     this.watchFn = options.watchFn ?? watch;
     this.watchDebounceMs = options.watchDebounceMs ?? 50;
+    this.housekeeper = options.housekeeper;
+    this.housekeepingInitialDelayMs = options.housekeepingInitialDelayMs ?? 6e4;
+    this.housekeepingIntervalMs = options.housekeepingIntervalMs ?? 24 * 60 * 60 * 1e3;
   }
   list() {
     return [...this.mounts.values()].map((m) => this.toInfo(m));
@@ -22646,6 +22651,7 @@ var WorkspaceHost = class {
     };
     mount.watcher = this.startWatch(mount);
     this.mounts.set(workspaceId, mount);
+    this.scheduleHousekeeping(mount, this.housekeepingInitialDelayMs);
     if (!this.foregroundId) {
       this.foregroundId = workspaceId;
       this.events.emit("workspace.switched", workspaceId, {
@@ -22665,6 +22671,7 @@ var WorkspaceHost = class {
     const mount = this.mounts.get(workspaceId);
     if (!mount) return;
     this.stopWatch(mount);
+    this.stopHousekeeping(workspaceId);
     this.mounts.delete(workspaceId);
     if (this.foregroundId === workspaceId) {
       const next = this.mounts.keys().next();
@@ -22705,6 +22712,9 @@ var WorkspaceHost = class {
     }
     for (const timer of this.watchTimers.values()) clearTimeout(timer);
     this.watchTimers.clear();
+    for (const timer of this.housekeepingTimers.values()) clearTimeout(timer);
+    this.housekeepingTimers.clear();
+    this.housekeepingRunning.clear();
   }
   toInfo(m) {
     return {
@@ -22723,6 +22733,7 @@ var WorkspaceHost = class {
         if (!filename) return;
         const rel = String(filename).replace(/\\/g, "/");
         if (rel === "mutation.lock" || rel.endsWith("/mutation.lock")) return;
+        if (rel === "attachments/.gc-state.json") return;
         if (Date.now() < mount.suppressWatchUntil) return;
         const prev = this.watchTimers.get(mount.workspaceId);
         if (prev) clearTimeout(prev);
@@ -22760,6 +22771,34 @@ var WorkspaceHost = class {
     } catch {
     }
     mount.watcher = void 0;
+  }
+  scheduleHousekeeping(mount, delayMs) {
+    if (!this.housekeeper || this.housekeepingIntervalMs <= 0) return;
+    this.stopHousekeeping(mount.workspaceId);
+    const timer = setTimeout(() => {
+      this.housekeepingTimers.delete(mount.workspaceId);
+      void this.runHousekeeping(mount.workspaceId);
+    }, Math.max(0, delayMs));
+    timer.unref?.();
+    this.housekeepingTimers.set(mount.workspaceId, timer);
+  }
+  async runHousekeeping(workspaceId) {
+    const mount = this.mounts.get(workspaceId);
+    if (!mount || !this.housekeeper || this.housekeepingRunning.has(workspaceId)) return;
+    this.housekeepingRunning.add(workspaceId);
+    try {
+      await this.housekeeper(mount);
+    } catch {
+    } finally {
+      this.housekeepingRunning.delete(workspaceId);
+      const current = this.mounts.get(workspaceId);
+      if (current) this.scheduleHousekeeping(current, this.housekeepingIntervalMs);
+    }
+  }
+  stopHousekeeping(workspaceId) {
+    const timer = this.housekeepingTimers.get(workspaceId);
+    if (timer) clearTimeout(timer);
+    this.housekeepingTimers.delete(workspaceId);
   }
 };
 function makeWorkspaceId(workspaceRoot) {
@@ -23692,8 +23731,8 @@ var ProcessSupervisor = class {
       });
     } catch (error) {
       this.children.delete(sessionId);
-      const message = error instanceof Error ? error.message : String(error);
-      throw new Error(`Failed to spawn process for session ${sessionId}: ${message}`);
+      const message2 = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to spawn process for session ${sessionId}: ${message2}`);
     }
     if (child.pid == null) {
       this.children.delete(sessionId);
@@ -24218,16 +24257,16 @@ var AgentRuntime = class {
         await this.supervisor.stop(req.sessionId).catch(() => void 0);
         await this.waitForChildExit(req.sessionId, true);
       }
-      const message = err instanceof Error ? err.message : String(err);
+      const message2 = err instanceof Error ? err.message : String(err);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
-        lastError: message,
+        lastError: message2,
         pid: void 0
       });
       if (!err?.terminalAlreadyEmitted) {
-        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message2 });
       }
-      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      throw Object.assign(new Error(message2), { session: handleFrom(failed) });
     }
   }
   async resumeSession(req) {
@@ -24416,16 +24455,16 @@ var AgentRuntime = class {
         await this.waitForManagedTerminal(req.sessionId, true);
       }
       const rawMessage = err instanceof Error ? err.message : String(err);
-      const message = redactRuntimeValue(rawMessage, tokenRaw);
+      const message2 = redactRuntimeValue(rawMessage, tokenRaw);
       const failed = await this.registry.update(req.sessionId, {
         state: "failed",
-        lastError: message,
+        lastError: message2,
         pid: void 0
       });
       if (!err?.terminalAlreadyEmitted) {
-        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message });
+        this.emit({ type: "session.failed", sessionId: req.sessionId, error: message2 });
       }
-      throw Object.assign(new Error(message), { session: handleFrom(failed) });
+      throw Object.assign(new Error(message2), { session: handleFrom(failed) });
     }
   }
   /**
@@ -24841,8 +24880,8 @@ function sameRuntimeCwd(left, right) {
   const b = path17.resolve(right);
   return process.platform === "win32" ? a.toLowerCase() === b.toLowerCase() : a === b;
 }
-function redactRuntimeValue(message, value) {
-  return value ? message.split(value).join("[provider-session]") : message;
+function redactRuntimeValue(message2, value) {
+  return value ? message2.split(value).join("[provider-session]") : message2;
 }
 function createAgentRuntime(options) {
   return new AgentRuntime(options);
@@ -24952,6 +24991,268 @@ function hasCode(error, code) {
   return !!error && typeof error === "object" && "code" in error && error.code === code;
 }
 
+// src/markdown/attachment-refs.ts
+import * as nodePath6 from "node:path";
+function resolveAttachmentPath(raw, sourcePath) {
+  let target = raw.trim();
+  if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1).trim();
+  if (!target || target.startsWith("#") || target.startsWith("//")) return void 0;
+  if (/^[a-z][a-z0-9+.-]*:/i.test(target)) return void 0;
+  try {
+    target = decodeURIComponent(target);
+  } catch {
+    return void 0;
+  }
+  target = (target.split("#")[0]?.split("?")[0] ?? target).replace(/\\/g, "/").trim();
+  if (!target) return void 0;
+  const systemPrefix = `${TENT_SYSTEM_DIR}/${ATTACHMENTS_DIR}/`;
+  if (target.startsWith(systemPrefix)) target = target.slice(TENT_SYSTEM_DIR.length + 1);
+  if (target.startsWith(`/${ATTACHMENTS_DIR}/`)) target = target.slice(1);
+  let normalized;
+  if (target === ATTACHMENTS_DIR || target.startsWith(`${ATTACHMENTS_DIR}/`)) {
+    normalized = nodePath6.posix.normalize(target);
+  } else if ((target.startsWith("./") || target.startsWith("../")) && sourcePath) {
+    normalized = nodePath6.posix.normalize(
+      nodePath6.posix.join(nodePath6.posix.dirname(sourcePath.replace(/\\/g, "/")), target)
+    );
+  } else {
+    return void 0;
+  }
+  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/`) || normalized.includes("\0")) return void 0;
+  if (normalized.split("/").some((segment) => segment === ".." || segment === "")) return void 0;
+  return normalized;
+}
+function extractAttachmentReferences(markdown, sourcePath) {
+  const tree = fromMarkdown(markdown);
+  const definitions = collectDefinitions2(tree);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  walk2(tree, (node2) => {
+    if (node2.type === "image" || node2.type === "link") {
+      push2(out, seen, node2.url, node2.type === "image" ? "image" : "link", sourcePath);
+      return "skip";
+    }
+    if (node2.type === "imageReference" || node2.type === "linkReference") {
+      const definition2 = definitions.get(normalizeIdentifier3(node2.identifier));
+      if (definition2) {
+        push2(
+          out,
+          seen,
+          definition2.url,
+          node2.type === "imageReference" ? "image" : "link",
+          sourcePath
+        );
+      }
+      return "skip";
+    }
+    if (node2.type === "text") {
+      for (const match of node2.value.matchAll(/!\[\[([^\]|#]+)(?:[#|][^\]]*)?\]\]/g)) {
+        push2(out, seen, match[1] ?? "", "wiki-embed", sourcePath);
+      }
+    }
+  });
+  return out;
+}
+function extractAttachmentArtifactRefs(value, sourcePath) {
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const visit = (item) => {
+    if (Array.isArray(item)) {
+      for (const child of item) visit(child);
+      return;
+    }
+    if (!item || typeof item !== "object") return;
+    const record = item;
+    if (record.kind === "path" && typeof record.target === "string") {
+      push2(out, seen, record.target, "artifact-ref", sourcePath);
+    }
+    for (const child of Object.values(record)) visit(child);
+  };
+  visit(value);
+  return out;
+}
+function collectDefinitions2(tree) {
+  const definitions = /* @__PURE__ */ new Map();
+  walk2(tree, (node2) => {
+    if (node2.type === "definition") {
+      definitions.set(normalizeIdentifier3(node2.identifier), { url: node2.url });
+    }
+  });
+  return definitions;
+}
+function normalizeIdentifier3(value) {
+  return value.trim().replace(/\s+/g, " ").toLowerCase();
+}
+function walk2(node2, visit) {
+  if (visit(node2) === "skip") return;
+  if ("children" in node2 && Array.isArray(node2.children)) {
+    for (const child of node2.children) walk2(child, visit);
+  }
+}
+function push2(out, seen, raw, kind, sourcePath) {
+  const path21 = resolveAttachmentPath(raw, sourcePath);
+  if (!path21) return;
+  const key = `${kind}:${path21}`;
+  if (seen.has(key)) return;
+  seen.add(key);
+  out.push({ path: path21, kind, raw });
+}
+
+// src/markdown/attachment-gc.ts
+var ATTACHMENT_GC_GRACE_DAYS = 30;
+var ATTACHMENT_GC_STATE_PATH = `${ATTACHMENTS_DIR}/.gc-state.json`;
+var DAY_MS = 24 * 60 * 60 * 1e3;
+async function sweepAttachmentGc(fs19, options = {}) {
+  return withTentMutation(fs19, async () => {
+    const result = {
+      scanned: 0,
+      retainedByOwner: 0,
+      retainedByReference: 0,
+      candidates: 0,
+      deleted: [],
+      warnings: []
+    };
+    if (!await fs19.exists(ATTACHMENTS_DIR)) return result;
+    const nowMs = resolveNow(options.now);
+    const graceDays = options.graceDays ?? ATTACHMENT_GC_GRACE_DAYS;
+    if (!Number.isFinite(graceDays) || graceDays < 0) {
+      throw new Error("attachment GC graceDays must be a non-negative number");
+    }
+    let tent;
+    try {
+      tent = await loadTent(fs19);
+    } catch (error) {
+      result.warnings.push(`concept scan failed: ${message(error)}`);
+      return result;
+    }
+    if (tent.duplicateIds.size > 0 || [...tent.byPath.values()].some((box) => box.invalid)) {
+      result.warnings.push("concept index is ambiguous or invalid; attachment deletion skipped");
+      return result;
+    }
+    let files;
+    let references;
+    try {
+      files = (await listFiles(fs19, ATTACHMENTS_DIR)).filter(
+        (path21) => path21 !== ATTACHMENT_GC_STATE_PATH
+      );
+      references = await collectAttachmentReferences(fs19);
+    } catch (error) {
+      result.warnings.push(`attachment reference scan failed: ${message(error)}`);
+      return result;
+    }
+    result.scanned = files.length;
+    const loadedState = await readState(fs19);
+    if (loadedState.warning) result.warnings.push(loadedState.warning);
+    const state = loadedState.state;
+    const nextCandidates = {};
+    const owners = new Set(tent.byId.keys());
+    const liveFiles = new Set(files);
+    for (const file of files) {
+      const owner = file.split("/")[1] ?? "";
+      if (owner && owners.has(owner)) {
+        result.retainedByOwner += 1;
+        continue;
+      }
+      if (references.has(file)) {
+        result.retainedByReference += 1;
+        continue;
+      }
+      const firstSeen = loadedState.valid ? state.candidates[file] : void 0;
+      const firstSeenMs = firstSeen ? Date.parse(firstSeen) : Number.NaN;
+      if (loadedState.valid && Number.isFinite(firstSeenMs) && nowMs - firstSeenMs >= graceDays * DAY_MS) {
+        try {
+          await fs19.remove(file);
+          result.deleted.push(file);
+        } catch (error) {
+          result.warnings.push(`failed to delete ${file}: ${message(error)}`);
+          nextCandidates[file] = firstSeen;
+        }
+      } else {
+        nextCandidates[file] = Number.isFinite(firstSeenMs) ? firstSeen : new Date(nowMs).toISOString();
+      }
+    }
+    for (const path21 of Object.keys(state.candidates)) {
+      if (!liveFiles.has(path21)) delete nextCandidates[path21];
+    }
+    result.candidates = Object.keys(nextCandidates).length;
+    await fs19.writeFile(
+      ATTACHMENT_GC_STATE_PATH,
+      JSON.stringify({ version: 1, candidates: nextCandidates }, null, 2) + "\n"
+    );
+    await removeEmptyOwnerDirs(fs19, result);
+    return result;
+  });
+}
+async function collectAttachmentReferences(fs19) {
+  const refs = /* @__PURE__ */ new Set();
+  for (const path21 of await listFiles(fs19, "")) {
+    if (!path21.endsWith(".md") || path21.startsWith(`${ATTACHMENTS_DIR}/`)) continue;
+    const raw = await fs19.readFile(path21);
+    const parsed = parseFrontmatter(raw);
+    for (const ref of extractAttachmentReferences(parsed.body, path21)) refs.add(ref.path);
+    for (const ref of extractAttachmentArtifactRefs(parsed.data, path21)) refs.add(ref.path);
+    for (const match of raw.matchAll(
+      /(?:\.tent\/)?(?:\.\.\/|\.\/)*attachments\/[A-Za-z0-9._~!$&+,;=@%()\[\]\-\/]+/g
+    )) {
+      const resolved = resolveAttachmentPath(match[0], path21);
+      if (resolved) refs.add(resolved);
+    }
+  }
+  return refs;
+}
+async function listFiles(fs19, dir) {
+  if (dir && !await fs19.exists(dir)) return [];
+  const out = [];
+  for (const entry of await fs19.listDir(dir)) {
+    const path21 = dir ? `${dir}/${entry.name}` : entry.name;
+    if (entry.isDir) out.push(...await listFiles(fs19, path21));
+    else out.push(path21);
+  }
+  return out;
+}
+async function readState(fs19) {
+  const empty = { version: 1, candidates: {} };
+  if (!await fs19.exists(ATTACHMENT_GC_STATE_PATH)) return { state: empty, valid: true };
+  try {
+    const parsed = JSON.parse(await fs19.readFile(ATTACHMENT_GC_STATE_PATH));
+    if (parsed.version !== 1 || !parsed.candidates || typeof parsed.candidates !== "object") {
+      throw new Error("unsupported state shape");
+    }
+    const candidates = {};
+    for (const [path21, firstSeen] of Object.entries(parsed.candidates)) {
+      if (path21.startsWith(`${ATTACHMENTS_DIR}/`) && path21 !== ATTACHMENT_GC_STATE_PATH && typeof firstSeen === "string" && Number.isFinite(Date.parse(firstSeen))) {
+        candidates[path21] = firstSeen;
+      }
+    }
+    return { state: { version: 1, candidates }, valid: true };
+  } catch (error) {
+    return {
+      state: empty,
+      valid: false,
+      warning: `attachment GC state reset: ${message(error)}`
+    };
+  }
+}
+async function removeEmptyOwnerDirs(fs19, result) {
+  for (const entry of await fs19.listDir(ATTACHMENTS_DIR)) {
+    if (!entry.isDir) continue;
+    const dir = `${ATTACHMENTS_DIR}/${entry.name}`;
+    try {
+      if ((await fs19.listDir(dir)).length === 0) await fs19.remove(dir);
+    } catch (error) {
+      result.warnings.push(`failed to remove empty attachment directory ${dir}: ${message(error)}`);
+    }
+  }
+}
+function resolveNow(value) {
+  const ms = value instanceof Date ? value.getTime() : value ? Date.parse(value) : Date.now();
+  if (!Number.isFinite(ms)) throw new Error("attachment GC now must be a valid date");
+  return ms;
+}
+function message(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+
 // src/service/service.ts
 var SERVICE_VERSION = "0.1.0-b5";
 async function startLocalTentService(options = {}) {
@@ -24984,7 +25285,16 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   const token = options.token ?? generateServiceToken();
   const events = new EventBus();
   const mutations = new MutationBus();
-  const workspaceHost = new WorkspaceHost({ events });
+  const workspaceHost = new WorkspaceHost({
+    events,
+    housekeeper: async (mount) => {
+      await mutations.run(mount.workspaceId, async () => {
+        const now = mount.env.clock.now();
+        await purgeOperationalRetention(mount.env.fs, { now });
+        await sweepAttachmentGc(mount.env.fs, { now });
+      });
+    }
+  });
   registerStartupCleanup(30, () => workspaceHost.dispose());
   const a2a = new A2AApprovalStore(dataDir);
   await a2a.ensureLoaded();

@@ -89,6 +89,12 @@ Forbidden reverse edges:
 - Workspace collaboration settings (`.tent/settings.json`: e.g. `defaultDeliveryPolicy`; extensible)
 - Operational records required for recovery (task, handoff, delivery, …) subject to retention
 - `ArtifactRef` associations on concepts/deliveries (structured refs; see §5.2)
+- Tent-managed attachment bytes under `.tent/attachments/<cx>/`; owner-first,
+  reference-checked housekeeping is derived from on-disk concepts/operational
+  records and never manages workspace files or external ArtifactRef targets
+- The Local Service runs bounded housekeeping after mount and at most daily:
+  terminal operational retention and attachment GC are automatic hygiene, not
+  a user workflow or an OS-level scheduled task
 - RULES / project conventions
 - Task operational records may store **`sessionId` only** as a reference; never session rows, PIDs, or resume tokens
 

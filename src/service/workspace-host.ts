@@ -33,6 +33,10 @@ export interface WorkspaceHostOptions {
   watchFn?: typeof watch;
   /** Debounce external FS events (ms). */
   watchDebounceMs?: number;
+  /** Optional invisible per-workspace maintenance. Errors are intentionally non-fatal. */
+  housekeeper?: (mount: MountedWorkspace) => Promise<void>;
+  housekeepingInitialDelayMs?: number;
+  housekeepingIntervalMs?: number;
 }
 
 export class WorkspaceHost {
@@ -43,12 +47,20 @@ export class WorkspaceHost {
   private readonly watchFn: typeof watch;
   private readonly watchDebounceMs: number;
   private watchTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private readonly housekeeper?: (mount: MountedWorkspace) => Promise<void>;
+  private readonly housekeepingInitialDelayMs: number;
+  private readonly housekeepingIntervalMs: number;
+  private housekeepingTimers = new Map<string, ReturnType<typeof setTimeout>>();
+  private housekeepingRunning = new Set<string>();
 
   constructor(options: WorkspaceHostOptions) {
     this.events = options.events;
     this.clock = options.clock ?? { now: () => new Date().toISOString() };
     this.watchFn = options.watchFn ?? watch;
     this.watchDebounceMs = options.watchDebounceMs ?? 50;
+    this.housekeeper = options.housekeeper;
+    this.housekeepingInitialDelayMs = options.housekeepingInitialDelayMs ?? 60_000;
+    this.housekeepingIntervalMs = options.housekeepingIntervalMs ?? 24 * 60 * 60 * 1000;
   }
 
   list(): MountedWorkspaceInfo[] {
@@ -127,6 +139,7 @@ export class WorkspaceHost {
 
     mount.watcher = this.startWatch(mount);
     this.mounts.set(workspaceId, mount);
+    this.scheduleHousekeeping(mount, this.housekeepingInitialDelayMs);
 
     if (!this.foregroundId) {
       this.foregroundId = workspaceId;
@@ -150,6 +163,7 @@ export class WorkspaceHost {
     const mount = this.mounts.get(workspaceId);
     if (!mount) return;
     this.stopWatch(mount);
+    this.stopHousekeeping(workspaceId);
     this.mounts.delete(workspaceId);
     if (this.foregroundId === workspaceId) {
       const next = this.mounts.keys().next();
@@ -193,6 +207,9 @@ export class WorkspaceHost {
     }
     for (const timer of this.watchTimers.values()) clearTimeout(timer);
     this.watchTimers.clear();
+    for (const timer of this.housekeepingTimers.values()) clearTimeout(timer);
+    this.housekeepingTimers.clear();
+    this.housekeepingRunning.clear();
   }
 
   private toInfo(m: MountedWorkspace): MountedWorkspaceInfo {
@@ -213,6 +230,7 @@ export class WorkspaceHost {
         if (!filename) return;
         const rel = String(filename).replace(/\\/g, "/");
         if (rel === "mutation.lock" || rel.endsWith("/mutation.lock")) return;
+        if (rel === "attachments/.gc-state.json") return;
         if (Date.now() < mount.suppressWatchUntil) return;
 
         const prev = this.watchTimers.get(mount.workspaceId);
@@ -255,6 +273,38 @@ export class WorkspaceHost {
       // ignore
     }
     mount.watcher = undefined;
+  }
+
+  private scheduleHousekeeping(mount: MountedWorkspace, delayMs: number): void {
+    if (!this.housekeeper || this.housekeepingIntervalMs <= 0) return;
+    this.stopHousekeeping(mount.workspaceId);
+    const timer = setTimeout(() => {
+      this.housekeepingTimers.delete(mount.workspaceId);
+      void this.runHousekeeping(mount.workspaceId);
+    }, Math.max(0, delayMs));
+    timer.unref?.();
+    this.housekeepingTimers.set(mount.workspaceId, timer);
+  }
+
+  private async runHousekeeping(workspaceId: string): Promise<void> {
+    const mount = this.mounts.get(workspaceId);
+    if (!mount || !this.housekeeper || this.housekeepingRunning.has(workspaceId)) return;
+    this.housekeepingRunning.add(workspaceId);
+    try {
+      await this.housekeeper(mount);
+    } catch {
+      // Housekeeping is hygiene, never a reason to break an active workspace.
+    } finally {
+      this.housekeepingRunning.delete(workspaceId);
+      const current = this.mounts.get(workspaceId);
+      if (current) this.scheduleHousekeeping(current, this.housekeepingIntervalMs);
+    }
+  }
+
+  private stopHousekeeping(workspaceId: string): void {
+    const timer = this.housekeepingTimers.get(workspaceId);
+    if (timer) clearTimeout(timer);
+    this.housekeepingTimers.delete(workspaceId);
   }
 }
 

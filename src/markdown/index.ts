@@ -8,6 +8,19 @@ export {
   decodeBase64Strict,
   storeAttachmentBytes,
 } from "./attachments.js";
+export {
+  extractAttachmentReferences,
+  extractAttachmentArtifactRefs,
+  resolveAttachmentPath,
+  type AttachmentReference,
+} from "./attachment-refs.js";
+export {
+  ATTACHMENT_GC_GRACE_DAYS,
+  ATTACHMENT_GC_STATE_PATH,
+  sweepAttachmentGc,
+  type AttachmentGcOptions,
+  type AttachmentGcResult,
+} from "./attachment-gc.js";
 
 export { contentEtag } from "./etag.js";
 export {
