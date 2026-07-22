@@ -451,6 +451,8 @@ export class AgentRuntime implements AgentRuntimePort {
         cwd,
         env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
+        // Ephemeral path refs only — never base64; not written to SessionRecord.
+        bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
         args: profile.args,
         extras: {
@@ -458,6 +460,13 @@ export class AgentRuntime implements AgentRuntimePort {
           acp: profile.acp,
           // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
           ...(await this.buildAcpLaunchExtras(profile, planEnv)),
+          // System root for safe image byte reads at prompt time (ephemeral; not SessionRecord).
+          ...(req.bootstrapImageRefs &&
+          req.bootstrapImageRefs.length > 0 &&
+          typeof req.bootstrapImageSystemRoot === "string" &&
+          req.bootstrapImageSystemRoot.trim()
+            ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() }
+            : {}),
         },
       };
 
@@ -650,6 +659,8 @@ export class AgentRuntime implements AgentRuntimePort {
         lastTaskId: req.lastTaskId ?? record.lastTaskId,
         env: req.env,
         bootstrapPrompt: req.bootstrapPrompt,
+        bootstrapImageRefs: req.bootstrapImageRefs,
+        bootstrapImageSystemRoot: req.bootstrapImageSystemRoot,
       }, profile);
     }
 
@@ -696,6 +707,7 @@ export class AgentRuntime implements AgentRuntimePort {
         cwd,
         env: planEnv,
         bootstrapPrompt: req.bootstrapPrompt,
+        bootstrapImageRefs: req.bootstrapImageRefs,
         command: profile.command,
         args: profile.args,
         extras: {
@@ -703,6 +715,12 @@ export class AgentRuntime implements AgentRuntimePort {
           acp: profile.acp,
           // Resume uses profileSnapshot (not live catalog edits).
           ...(await this.buildAcpLaunchExtras(profile, planEnv)),
+          ...(req.bootstrapImageRefs &&
+          req.bootstrapImageRefs.length > 0 &&
+          typeof req.bootstrapImageSystemRoot === "string" &&
+          req.bootstrapImageSystemRoot.trim()
+            ? { bootstrapImageSystemRoot: req.bootstrapImageSystemRoot.trim() }
+            : {}),
         },
       };
 

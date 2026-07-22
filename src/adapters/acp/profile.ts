@@ -7,6 +7,9 @@ import {
   type AcpProfileOptions,
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
+import type { BootstrapImageRef } from "./image-prompt.js";
+import type { LaunchPlan } from "../types.js";
+import { NodeFs } from "../../fs/node-fs.js";
 import * as fs from "node:fs";
 import * as path from "node:path";
 
@@ -43,6 +46,43 @@ export function readAcpSessionProjection(extras: Record<string, unknown> | undef
   const mcpServers = Array.isArray(mcpRaw) ? (mcpRaw as AcpMcpServerWire[]) : [];
   const skills = Array.isArray(skillRaw) ? (skillRaw as AcpSkillMetaRef[]) : [];
   return { mcpServers, skills };
+}
+
+/**
+ * Ephemeral image projection fields for AcpClient from a LaunchPlan.
+ * Paths only on the plan; bytes are read at session/prompt under system root.
+ * Image blocks still require live initialize promptCapabilities.image === true.
+ * Never log or persist resolved bytes.
+ */
+export function readBootstrapImageClientOptions(plan: LaunchPlan): {
+  bootstrapImageRefs?: BootstrapImageRef[];
+  bootstrapImageSystemRoot?: string;
+  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+} {
+  const refs = Array.isArray(plan.bootstrapImageRefs)
+    ? plan.bootstrapImageRefs
+    : [];
+  const systemRoot =
+    typeof plan.extras?.bootstrapImageSystemRoot === "string"
+      ? plan.extras.bootstrapImageSystemRoot.trim()
+      : "";
+  if (refs.length === 0) {
+    return {};
+  }
+  const out: {
+    bootstrapImageRefs?: BootstrapImageRef[];
+    bootstrapImageSystemRoot?: string;
+    readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
+  } = {
+    bootstrapImageRefs: refs,
+  };
+  if (systemRoot) {
+    out.bootstrapImageSystemRoot = systemRoot;
+    const nodeFs = new NodeFs(systemRoot);
+    out.readBootstrapImageBinary = (relativePath: string) =>
+      nodeFs.readBinary(relativePath);
+  }
+  return out;
 }
 
 export function normalizeAcpPermissionPolicy(

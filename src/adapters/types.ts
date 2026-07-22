@@ -20,6 +20,11 @@ export interface LaunchPlan {
   cwd: string;
   env: Record<string, string>;
   bootstrapPrompt?: string;
+  /**
+   * Ephemeral local image path refs for managed ACP bootstrap (paths only, no base64).
+   * Adapters project these at session/prompt time; never persist on SessionRecord.
+   */
+  bootstrapImageRefs?: import("./acp/image-prompt.js").BootstrapImageRef[];
   /** Profile-level command/args overrides. */
   command?: string;
   args?: string[];

@@ -9,6 +9,7 @@ import {
   type AcpStartResult,
 } from "../acp/client.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "../acp/mcp-skills.js";
+import type { BootstrapImageRef } from "../acp/image-prompt.js";
 import type { AcpPermissionOption } from "../acp/types.js";
 import type { RuntimeEvent } from "../../runtime/types.js";
 import type { GrokAcpPermissionPolicy } from "./types.js";
@@ -30,6 +31,9 @@ export type GrokAcpClientOptions = {
    * Tent metadata only — not universal provider-side skill activation.
    */
   skills?: AcpSkillMetaRef[];
+  bootstrapImageRefs?: BootstrapImageRef[];
+  bootstrapImageSystemRoot?: string;
+  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
@@ -65,6 +69,9 @@ export class GrokAcpClient {
       permissionPolicy: options.permissionPolicy,
       mcpServers: options.mcpServers,
       skills: options.skills,
+      bootstrapImageRefs: options.bootstrapImageRefs,
+      bootstrapImageSystemRoot: options.bootstrapImageSystemRoot,
+      readBootstrapImageBinary: options.readBootstrapImageBinary,
       label: "Grok ACP",
       emit: options.emit,
       onPermissionAsk: options.onPermissionAsk,

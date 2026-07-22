@@ -18,6 +18,7 @@ import {
   parseAcpResumeToken,
   readAcpExtras,
   readAcpSessionProjection,
+  readBootstrapImageClientOptions,
   resolveNpxAcpLaunch,
   resolvePlanOrProcessEnv,
   resumeManagedAcpSession,
@@ -150,6 +151,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -163,6 +165,7 @@ export class CopilotAcpProviderAdapter implements ProviderAdapter {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "GitHub Copilot ACP",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

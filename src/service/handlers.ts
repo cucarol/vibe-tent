@@ -15,6 +15,7 @@ import { promoteConcept } from "../core/concept.js";
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
 import {
+  extractTaskUserPrompt,
   loadTaskEnvelope,
   loadTaskEnvelopes,
   patchTaskEnvelope,
@@ -31,6 +32,10 @@ import {
   MAX_ATTACHMENT_BYTES,
   storeAttachmentBytes,
 } from "../markdown/attachments.js";
+import {
+  collectBootstrapImageRefsFromTask,
+  type BootstrapImageRef,
+} from "../adapters/acp/image-prompt.js";
 import { loadDeliveries } from "../core/delivery.js";
 import {
   acceptProposal,
@@ -3289,6 +3294,13 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
       systemRoot: mount.systemRoot,
     });
 
+  // Ephemeral image path refs from task user prompt + claimed node bodies only.
+  // Paths only — never base64; never written to task/session/profile disk.
+  // ACP image blocks still require live initialize promptCapabilities.image === true.
+  const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+  const bootstrapImageSystemRoot =
+    bootstrapImageRefs.length > 0 ? mount.systemRoot : undefined;
+
   // A durable role owns one provider session across tasks. Prefer the task's
   // historical binding, then the latest stopped role session with the same
   // profile and runtime cwd. agentProfile tasks remain task-scoped.
@@ -3346,6 +3358,12 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         runtimeWorkspace: { cwd },
         cwd,
         bootstrapPrompt: sessionBootstrap,
+        ...(bootstrapImageRefs.length > 0
+          ? {
+              bootstrapImageRefs,
+              bootstrapImageSystemRoot,
+            }
+          : {}),
         lastTaskId: task.id || taskPath,
       });
     } else {
@@ -3358,6 +3376,12 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
         runtimeWorkspace: { cwd },
         cwd,
         bootstrapPrompt: sessionBootstrap,
+        ...(bootstrapImageRefs.length > 0
+          ? {
+              bootstrapImageRefs,
+              bootstrapImageSystemRoot,
+            }
+          : {}),
         lastTaskId: task.id || taskPath,
         workspace: workspaceId,
       });
@@ -6259,6 +6283,34 @@ function buildSessionBootstrapPrompt(
     `--- Tent managed session bootstrap ---\n` +
     `${sessionSteps}\n`
   );
+}
+
+/**
+ * Collect local image path refs from task user prompt + claimed concept bodies.
+ * Explicit sources only — no workspace scan. Missing claims/files are skipped.
+ * Returns paths only (never base64).
+ */
+async function collectTaskBootstrapImageRefs(
+  fs: import("../core/adapter.js").FsAdapter,
+  task: TaskEnvelope
+): Promise<BootstrapImageRef[]> {
+  const userPrompt = extractTaskUserPrompt(task);
+  const claimBodies: Array<{ body: string; notePath?: string }> = [];
+  try {
+    const tent = await loadTent(fs);
+    for (const claimId of task.claims ?? []) {
+      if (!claimId || claimId === "root") continue;
+      const box = tent.byId.get(claimId);
+      if (!box || typeof box.body !== "string") continue;
+      claimBodies.push({
+        body: box.body,
+        notePath: boxNotePath(box.path),
+      });
+    }
+  } catch {
+    // Tree load failure must not block startSession — fall back to user prompt only.
+  }
+  return collectBootstrapImageRefsFromTask({ userPrompt, claimBodies });
 }
 
 function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjection {

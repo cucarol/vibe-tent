@@ -65,6 +65,18 @@ export interface StartSessionRequest {
   runtimeWorkspace?: RuntimeWorkspace;
   /** Initial text for the agent (relay / task pointer). Not multi-turn chat. */
   bootstrapPrompt?: string;
+  /**
+   * Ephemeral local image path refs for managed ACP bootstrap projection.
+   * Paths only — never base64. Not written to SessionRecord / task / profile disk.
+   * Projected to ACP image blocks only when live initialize
+   * agentCapabilities.promptCapabilities.image === true.
+   */
+  bootstrapImageRefs?: import("../adapters/acp/image-prompt.js").BootstrapImageRef[];
+  /**
+   * Absolute tent system root (`.tent`) for safe image byte reads at prompt time.
+   * Ephemeral only — never SessionRecord. Required when bootstrapImageRefs is non-empty.
+   */
+  bootstrapImageSystemRoot?: string;
   /** Alias of runtimeWorkspace.cwd when set. */
   cwd?: string;
   /** Process-scoped env; no secret plaintext for disk. */
@@ -86,6 +98,13 @@ export interface ResumeSessionRequest {
    * must never auto-deliver; only a subsequent session/prompt may.
    */
   bootstrapPrompt?: string;
+  /**
+   * Ephemeral image path refs for post-load bootstrap projection (same rules as start).
+   * Never persisted on the session registry row.
+   */
+  bootstrapImageRefs?: import("../adapters/acp/image-prompt.js").BootstrapImageRef[];
+  /** Absolute tent system root for post-load image reads (ephemeral). */
+  bootstrapImageSystemRoot?: string;
   /** Rebind a durable Role Session to its current task before prompting. */
   lastTaskId?: string;
 }

@@ -54,6 +54,11 @@ const dieAfterSessionMs = Number(process.env.MOCK_ACP_DIE_AFTER_SESSION_MS || "0
 const dieExitCode = Number(process.env.MOCK_ACP_DIE_EXIT_CODE || "1");
 /** Advertise loadSession capability (default off — matches schema default false). */
 const loadSessionCapable = process.env.MOCK_ACP_LOAD_SESSION === "1";
+/**
+ * Advertise agentCapabilities.promptCapabilities.image (default off).
+ * Only explicit "1" opts in — matches ACP schema default false.
+ */
+const promptImageCapable = process.env.MOCK_ACP_PROMPT_IMAGE === "1";
 const historyText = process.env.MOCK_ACP_HISTORY_TEXT || "HISTORY_REPLAY";
 const lateHistoryMs = Number(process.env.MOCK_ACP_LATE_HISTORY_MS || "0");
 const failLoad = process.env.MOCK_ACP_FAIL_LOAD === "1";
@@ -70,10 +75,13 @@ const log = {
   methods: [],
   authenticateParams: null,
   prompts: [],
+  /** Structured prompt block summary (types + image meta; never full base64 dumps). */
+  promptBlocks: [],
   news: [],
   loads: [],
   permissionOutcomes: [],
   loadSessionCapable,
+  promptImageCapable,
   envKeysPresent: {
     CPA_GROK_API_KEY: Boolean(process.env.CPA_GROK_API_KEY),
     XAI_API_KEY: Boolean(process.env.XAI_API_KEY),
@@ -148,14 +156,20 @@ rl.on("line", (line) => {
   if (msg.method) log.methods.push(msg.method);
 
   if (msg.method === "initialize") {
+    const agentCapabilities = {};
+    // Schema default loadSession=false; only advertise when MOCK_ACP_LOAD_SESSION=1.
+    if (loadSessionCapable) agentCapabilities.loadSession = true;
+    // Schema default promptCapabilities.image=false; only advertise when MOCK_ACP_PROMPT_IMAGE=1.
+    if (promptImageCapable) {
+      agentCapabilities.promptCapabilities = { image: true };
+    }
     write({
       jsonrpc: "2.0",
       id: msg.id,
       result: {
         protocolVersion: 1,
         authMethods: [{ id: "xai.api_key" }, { id: "cached_token" }],
-        // Schema default loadSession=false; only advertise when MOCK_ACP_LOAD_SESSION=1.
-        agentCapabilities: loadSessionCapable ? { loadSession: true } : {},
+        agentCapabilities,
       },
     });
     return;
@@ -299,12 +313,36 @@ rl.on("line", (line) => {
   }
 
   if (msg.method === "session/prompt") {
-    const textParts = (msg.params?.prompt || [])
+    const promptArr = Array.isArray(msg.params?.prompt) ? msg.params.prompt : [];
+    const textParts = promptArr
       .filter((p) => p?.type === "text")
       .map((p) => p.text)
       .join("");
     // Log full prompt (tests assert user prompt entered ACP); cap huge dumps.
     log.prompts.push(textParts.slice(0, 8000));
+    // Structured blocks: types + image mime/size only (never full base64 payloads).
+    log.promptBlocks.push(
+      promptArr.map((p) => {
+        if (!p || typeof p !== "object") return { type: null };
+        if (p.type === "image") {
+          const dataLen =
+            typeof p.data === "string" ? p.data.length : 0;
+          return {
+            type: "image",
+            mimeType: typeof p.mimeType === "string" ? p.mimeType : null,
+            dataChars: dataLen,
+            hasUri: typeof p.uri === "string" && p.uri.length > 0,
+          };
+        }
+        if (p.type === "text") {
+          return {
+            type: "text",
+            textChars: typeof p.text === "string" ? p.text.length : 0,
+          };
+        }
+        return { type: typeof p.type === "string" ? p.type : null };
+      })
+    );
     // U2A follow-ups: UserAsk "## User Answer"; sendInput "## User Input";
     // reject-resume review "## Review Feedback". All use FOLLOWUP_TEXT.
     const isUserFollowUp =

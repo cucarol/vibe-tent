@@ -19,6 +19,7 @@ import {
   parseAcpResumeToken,
   readAcpExtras,
   readAcpSessionProjection,
+  readBootstrapImageClientOptions,
   resolvePlanOrProcessEnv,
   startManagedAcpSession,
   type AcpPermissionAskHooks,
@@ -103,6 +104,7 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
     const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
     const launch = this.resolveLaunch(plan);
     const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
     const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
       onPermissionAsk: this.onPermissionAsk,
     });
@@ -116,6 +118,7 @@ export class AntigravityAcpProviderAdapter implements ProviderAdapter {
       permissionPolicy: opts.permissionPolicy,
       mcpServers: sessionProj.mcpServers,
       skills: sessionProj.skills,
+      ...imageOpts,
       label: "Antigravity ACP (third-party agy-acp bridge)",
       emit,
       onPermissionAsk: hooks.onPermissionAsk,

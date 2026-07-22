@@ -16,6 +16,12 @@ import {
   DEFAULT_PROMPT_TIMEOUT_MS,
 } from "./types.js";
 import type { AcpMcpServerWire, AcpSkillMetaRef } from "./mcp-skills.js";
+import {
+  acpTransportSupportsImage,
+  type AcpPromptContentBlock,
+  type BootstrapImageRef,
+  projectBootstrapImagesToAcpPrompt,
+} from "./image-prompt.js";
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
@@ -45,6 +51,22 @@ export type AcpClientOptions = {
    * Optional; omitted when profile has no enabled skills.
    */
   skills?: AcpSkillMetaRef[];
+  /**
+   * Ephemeral local image path refs for managed bootstrap (paths only).
+   * Projected at session/prompt time only when live initialize
+   * promptCapabilities.image === true; never persisted by the client.
+   */
+  bootstrapImageRefs?: BootstrapImageRef[];
+  /**
+   * Absolute tent system root for safe image reads + valid file:// URIs.
+   * Ephemeral only — never SessionRecord.
+   */
+  bootstrapImageSystemRoot?: string;
+  /**
+   * Read image bytes under tent system root. Required to attach images when
+   * transport supports image. Failures fall back to Markdown pointers.
+   */
+  readBootstrapImageBinary?: (relativePath: string) => Promise<Uint8Array>;
   /** Emit RuntimeEvent fragments (caller fills sessionId where needed). */
   emit: (ev: RuntimeEvent) => void;
   /**
@@ -127,6 +149,11 @@ export class AcpClient {
   private lastLoadReplayUpdateAt = 0;
   /** Cached from initialize agentCapabilities.loadSession (default false). */
   private loadSessionSupported = false;
+  /**
+   * Cached from initialize agentCapabilities.promptCapabilities.image.
+   * Only explicit true counts; omit/false → unsupported (no guessing).
+   */
+  private promptImageSupported = false;
   /** Concurrent ask-policy requests keep the session waiting until all resolve. */
   private permissionAsksInFlight = 0;
   /** Stop/exit cancellation for in-flight onPermissionAsk waiters. */
@@ -183,6 +210,14 @@ export class AcpClient {
     return this.stderrTail;
   }
 
+  /**
+   * True only when initialize advertised agentCapabilities.promptCapabilities.image === true.
+   * Default false until connect(); custom/unclear transports stay false.
+   */
+  get supportsPromptImage(): boolean {
+    return this.promptImageSupported;
+  }
+
   isAlive(): boolean {
     const pid = this.proc?.pid;
     if (pid == null || pid <= 0 || this.closed) return false;
@@ -220,11 +255,18 @@ export class AcpClient {
         },
       })) as {
         authMethods?: Array<{ id: string }>;
-        agentCapabilities?: { loadSession?: boolean };
+        agentCapabilities?: {
+          loadSession?: boolean;
+          promptCapabilities?: { image?: boolean };
+        };
       };
 
       this.loadSessionSupported =
         init.agentCapabilities?.loadSession === true;
+      // Strict: only explicit true. Missing promptCapabilities → no image blocks.
+      this.promptImageSupported = acpTransportSupportsImage(
+        init.agentCapabilities
+      );
 
       if (this.options.authenticate) {
         const authParams = await this.options.authenticate(
@@ -313,6 +355,8 @@ export class AcpClient {
 
   /**
    * Send session/prompt with managed bootstrap (Context Card + user prompt).
+   * Optional image refs are projected only when live initialize advertised
+   * promptCapabilities.image === true; otherwise Markdown pointers + a short note.
    * Accumulates agent_message_chunk only for the final report text.
    * Safe to call after connect(); failures throw (caller emits session.failed).
    */
@@ -330,11 +374,19 @@ export class AcpClient {
     try {
       const promptTimeout =
         this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
+      // Keep the ordinary text-only path synchronous. Besides avoiding needless
+      // work, this preserves stdin error ordering for callers that immediately
+      // observe the request after sendPrompt().
+      const prompt =
+        Array.isArray(this.options.bootstrapImageRefs) &&
+        this.options.bootstrapImageRefs.length > 0
+          ? await this.buildPromptBlocks(bootstrapPrompt)
+          : [{ type: "text" as const, text: bootstrapPrompt }];
       const result = (await this.request(
         "session/prompt",
         {
           sessionId: this.providerSessionId,
-          prompt: [{ type: "text", text: bootstrapPrompt }],
+          prompt,
         },
         promptTimeout
       )) as { stopReason?: string };
@@ -361,6 +413,30 @@ export class AcpClient {
     } finally {
       this.collectingPromptResponse = false;
     }
+  }
+
+  /**
+   * Project bootstrap text (+ optional image refs) to ACP content blocks.
+   * Image bytes are process-scoped for this RPC only — never stored on the client.
+   * Sole gate: cached live promptCapabilities.image from initialize.
+   */
+  private async buildPromptBlocks(
+    bootstrapPrompt: string
+  ): Promise<AcpPromptContentBlock[]> {
+    const refs = Array.isArray(this.options.bootstrapImageRefs)
+      ? this.options.bootstrapImageRefs
+      : [];
+    if (refs.length === 0) {
+      return [{ type: "text", text: bootstrapPrompt }];
+    }
+    const projected = await projectBootstrapImagesToAcpPrompt({
+      bootstrapText: bootstrapPrompt,
+      imageRefs: refs,
+      transportSupportsImage: this.promptImageSupported,
+      readBinary: this.options.readBootstrapImageBinary,
+      systemRoot: this.options.bootstrapImageSystemRoot,
+    });
+    return projected.prompt;
   }
 
   /** Keep process alive after bootstrap for probe/stop (caller owns lifecycle). */
