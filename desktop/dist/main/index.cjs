@@ -293,11 +293,53 @@ function sleep(ms) {
   return new Promise((r) => setTimeout(r, ms));
 }
 
+// src/desktop/workbench/pending-interactions.ts
+var PENDING_INTERACTION_EVENT_TYPES = [
+  "a2a.ask",
+  "a2a.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled",
+  "delivery.updated",
+  "task.state",
+  "proposal.updated"
+];
+function isPendingInteractionEventType(type) {
+  return PENDING_INTERACTION_EVENT_TYPES.includes(type);
+}
+var TASK_PROJECTION_EVENT_TYPES = [
+  "task.state",
+  "delivery.updated",
+  "a2a.ask",
+  "a2a.resolved",
+  "userAsk.pending",
+  "userAsk.resolved",
+  "toolApproval.pending",
+  "toolApproval.resolved",
+  "taskInput.pending",
+  "taskInput.delivered",
+  "taskInput.consumed",
+  "taskInput.cancelled"
+];
+function isTaskProjectionEventType(type) {
+  return TASK_PROJECTION_EVENT_TYPES.includes(type);
+}
+
 // src/desktop/main/service-host.ts
 var DesktopServiceHost = class {
   constructor() {
     this.attach = null;
     this.child = null;
+    this.eventsSub = null;
+    this.eventListeners = /* @__PURE__ */ new Set();
+    /** Coalesce bursty SSE: type → last workspaceId in window. */
+    this.pendingByType = /* @__PURE__ */ new Map();
+    this.flushTimer = null;
   }
   get client() {
     return this.attach?.client ?? null;
@@ -308,12 +350,19 @@ var DesktopServiceHost = class {
   get startedByUs() {
     return !!this.attach?.started;
   }
+  /** Subscribe to filtered service events (pending / task projection invalidation). */
+  onServiceEvent(listener) {
+    this.eventListeners.add(listener);
+    return () => this.eventListeners.delete(listener);
+  }
   async ensureAttached(options) {
     if (this.attach) {
       try {
         await this.attach.client.health();
+        this.ensureEventSubscription();
         return this.attach;
       } catch {
+        this.teardownEvents();
         this.attach = null;
       }
     }
@@ -324,13 +373,53 @@ var DesktopServiceHost = class {
     });
     this.attach = result;
     this.child = result.child;
+    this.ensureEventSubscription();
     return result;
   }
+  ensureEventSubscription() {
+    if (!this.attach?.client || this.eventsSub) return;
+    this.eventsSub = this.attach.client.subscribeEvents(
+      (ev) => this.handleEnvelope(ev),
+      () => {
+        this.teardownEvents();
+      }
+    );
+  }
+  handleEnvelope(ev) {
+    const type = ev?.type;
+    if (typeof type !== "string" || !type) return;
+    if (!isPendingInteractionEventType(type) && !isTaskProjectionEventType(type)) {
+      return;
+    }
+    const workspaceId = typeof ev.workspaceId === "string" ? ev.workspaceId : "";
+    this.pendingByType.set(type, workspaceId);
+    if (this.flushTimer) return;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = null;
+      const batch = [...this.pendingByType.entries()];
+      this.pendingByType.clear();
+      for (const [t, ws] of batch) {
+        for (const listener of this.eventListeners) {
+          listener({ type: t, workspaceId: ws });
+        }
+      }
+    }, 50);
+  }
+  teardownEvents() {
+    if (this.flushTimer) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = null;
+    }
+    this.pendingByType.clear();
+    this.eventsSub?.close();
+    this.eventsSub = null;
+  }
   /**
-   * Intentionally empty: closing the desktop shell must not stop Local Service
-   * or in-flight tasks (architecture §2).
+   * Intentionally empty of service kill: closing the desktop shell must not stop
+   * Local Service or in-flight tasks (architecture §2).
    */
   async disposeShellOnly() {
+    this.teardownEvents();
     this.attach = null;
     this.child = null;
   }
@@ -447,7 +536,9 @@ var DESKTOP_IPC = {
   pickWorkspaceFolder: "tent:pick-workspace-folder",
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
-  onStateChanged: "tent:state-changed"
+  onStateChanged: "tent:state-changed",
+  /** Fan-out of Local Service SSE envelope type (renderer re-fetches projections). */
+  onServiceEvent: "tent:service-event"
 };
 
 // src/desktop/prefs.ts
@@ -766,6 +857,26 @@ var ServiceDocsClient = class {
       ...idOrPathParams(cxOrPath)
     });
     return { cx: result.id };
+  }
+  /**
+   * User-only rename of display name / folder (cx- immutable).
+   * Pass newName only — never attempt to edit id.
+   */
+  async rename(cxOrPath, newName, actor = "user") {
+    const result = await this.rpc.call("docs.rename", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cxOrPath),
+      newName,
+      actor
+    });
+    return { id: result.id, name: result.name, path: result.path };
+  }
+  async setMode(cxOrPath, mode) {
+    return this.rpc.call("docs.setMode", {
+      workspaceId: this.workspaceId,
+      ...idOrPathParams(cxOrPath),
+      mode
+    });
   }
   async search(query) {
     const result = await this.rpc.call("docs.search", {
@@ -1317,6 +1428,65 @@ var ContextCardStore = class {
   }
 };
 
+// src/desktop/workbench/box-projection.ts
+function normalizeBoxProjection(raw) {
+  if (!raw || typeof raw !== "object") return null;
+  const r = raw;
+  const workspaceId = typeof r.workspaceId === "string" ? r.workspaceId : "";
+  const boxId = typeof r.boxId === "string" && r.boxId || typeof r.id === "string" && r.id || "";
+  const statusRaw = r.status;
+  if (!workspaceId || !boxId) return null;
+  if (statusRaw !== "todo" && statusRaw !== "doing" && statusRaw !== "done") {
+    return null;
+  }
+  const out = {
+    workspaceId,
+    boxId,
+    status: statusRaw
+  };
+  if (typeof r.assignee === "string" && r.assignee.trim()) {
+    out.assignee = r.assignee.trim();
+  }
+  if (typeof r.activeTaskId === "string" && r.activeTaskId.trim()) {
+    out.activeTaskId = r.activeTaskId.trim();
+  }
+  return out;
+}
+function collectCoordinationBoxIds(nodes) {
+  const ids = [];
+  const walk = (list) => {
+    for (const n of list) {
+      if (n.coordination && n.id) ids.push(n.id);
+      if (n.children?.length) walk(n.children);
+    }
+  };
+  walk(nodes);
+  return ids;
+}
+function applyBoxProjectionsToTree(nodes, byBoxId) {
+  return nodes.map((n) => applyOne(n, byBoxId));
+}
+function applyOne(node, byBoxId) {
+  const children = node.children?.length ? node.children.map((c) => applyOne(c, byBoxId)) : node.children;
+  if (!node.coordination) {
+    const cleared = { ...node, children };
+    delete cleared.status;
+    delete cleared.assignee;
+    return cleared;
+  }
+  const proj = byBoxId.get(node.id);
+  if (!proj) {
+    const cleared = { ...node, children };
+    delete cleared.status;
+    delete cleared.assignee;
+    return cleared;
+  }
+  const next = { ...node, children, status: proj.status };
+  if (proj.assignee) next.assignee = proj.assignee;
+  else delete next.assignee;
+  return next;
+}
+
 // src/desktop/workbench/collaboration-ui.ts
 function listCoordinationTypeNames(types) {
   return types.filter((t) => {
@@ -1444,6 +1614,14 @@ function canInterruptTask(taskState, session, opts) {
   const s = taskState || "";
   return s === "running" || s === "waiting" || s === "taken";
 }
+function canCancelTask(taskState, session) {
+  const s = taskState || "";
+  if (s === "delivered" || s === "accepted" || s === "rejected" || s === "interrupted" || s === "cancelled" || s === "canceled") {
+    return false;
+  }
+  if (session && session.alive) return false;
+  return s === "queued" || s === "pending" || s === "running" || s === "taken" || s === "waiting" || s === "failed";
+}
 function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
   const byId = /* @__PURE__ */ new Map();
   const byTaskId = /* @__PURE__ */ new Map();
@@ -1507,6 +1685,7 @@ function buildTaskReviewItems(tasks, deliveries = [], sessions = []) {
       canInterrupt: canInterruptTask(state, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId)
       }),
+      canCancel: canCancelTask(state, session),
       summaryLine
     };
   });
@@ -1534,6 +1713,7 @@ var DesktopShellModel = class {
     this.profiles = [];
     this.selectedProfileId = null;
     this.statusMessage = null;
+    this.boxProjections = /* @__PURE__ */ new Map();
     this.listeners = /* @__PURE__ */ new Set();
     this.cards = new ContextCardStore();
   }
@@ -1545,11 +1725,21 @@ var DesktopShellModel = class {
     return () => this.listeners.delete(listener);
   }
   getSnapshot() {
+    const raw = this.controller?.getSnapshot() ?? null;
+    let workspace = raw;
+    if (raw) {
+      const stripped = stripTreeCollab(raw.tree);
+      const overlaid = applyBoxProjectionsToTree(stripped, this.boxProjections);
+      workspace = {
+        ...raw,
+        tree: overlaid
+      };
+    }
     return {
       health: this.health,
       workspaces: this.workspaces,
       foregroundWorkspaceId: this.foregroundWorkspaceId,
-      workspace: this.controller?.getSnapshot() ?? null,
+      workspace,
       tasks: this.tasks,
       taskReview: buildTaskReviewItems(
         this.tasks.map((t) => ({
@@ -1571,7 +1761,8 @@ var DesktopShellModel = class {
       coordinationTypes: this.coordinationTypes,
       profiles: this.profiles,
       selectedProfileId: this.selectedProfileId,
-      statusMessage: this.statusMessage
+      statusMessage: this.statusMessage,
+      boxProjections: [...this.boxProjections.values()]
     };
   }
   getController() {
@@ -1645,11 +1836,41 @@ var DesktopShellModel = class {
   async bindForeground(workspaceId) {
     if (!this.rpc) return;
     this.foregroundWorkspaceId = workspaceId;
+    this.boxProjections.clear();
     this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
     await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
+    this.emit();
+  }
+  /**
+   * box.projection fan-out for coordination nodes in the current tree.
+   * Sole authority for status/assignee/activeTaskId on the shell snapshot tree.
+   */
+  async refreshBoxProjections() {
+    if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
+      this.boxProjections.clear();
+      this.emit();
+      return;
+    }
+    const snap = this.controller.getSnapshot();
+    const ids = collectCoordinationBoxIds(snap.tree ?? []);
+    if (ids.length === 0) {
+      this.boxProjections.clear();
+      this.emit();
+      return;
+    }
+    const ws = this.foregroundWorkspaceId;
+    const results = await Promise.all(
+      ids.map(
+        (id) => this.rpc.call("box.projection", { workspaceId: ws, id }).then((raw) => normalizeBoxProjection(raw)).catch(() => null)
+      )
+    );
+    this.boxProjections.clear();
+    for (const p of results) {
+      if (p) this.boxProjections.set(p.boxId, p);
+    }
     this.emit();
   }
   async refreshTasks() {
@@ -1685,6 +1906,7 @@ var DesktopShellModel = class {
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
       this.sessions = sessionResult.sessions ?? [];
+      await this.refreshBoxProjections();
     } catch {
       this.tasks = [];
       this.deliveries = [];
@@ -1797,6 +2019,15 @@ var DesktopShellModel = class {
     for (const l of this.listeners) l();
   }
 };
+function stripTreeCollab(nodes) {
+  return nodes.map((n) => {
+    const { status: _s, assignee: _a, children, ...rest } = n;
+    return {
+      ...rest,
+      children: children ? stripTreeCollab(children) : children
+    };
+  });
+}
 
 // src/desktop/main/index.ts
 var isDev = !import_electron3.app.isPackaged;
@@ -1868,6 +2099,19 @@ async function bootstrap() {
         win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
       }
     }
+  });
+  host.onServiceEvent((ev) => {
+    void model.refreshTasks().then(() => {
+      const snap = model.getSnapshot();
+      for (const win of import_electron3.BrowserWindow.getAllWindows()) {
+        if (win.isDestroyed()) continue;
+        win.webContents.send(DESKTOP_IPC.onStateChanged, snap);
+        win.webContents.send(DESKTOP_IPC.onServiceEvent, {
+          type: ev.type,
+          workspaceId: ev.workspaceId
+        });
+      }
+    });
   });
   createTray(paths);
   const mountIdx = process.argv.indexOf("--mount");

@@ -10,6 +10,21 @@ import type {
   TypeRegistryEntryProjection,
 } from "../../service/types.js";
 
+/** Task states still shown in Activity / Inspector action lists (includes failed for retry/cancel). */
+export const ACTIONABLE_TASK_STATES = [
+  "queued",
+  "pending",
+  "running",
+  "taken",
+  "waiting",
+  "delivered",
+  "failed",
+] as const;
+
+export function isActionableTaskState(state: string): boolean {
+  return (ACTIONABLE_TASK_STATES as readonly string[]).includes(state);
+}
+
 export type CoordinationTypeOption = {
   name: string;
   description?: string;
@@ -53,6 +68,8 @@ export type TaskReviewItem = {
   canStartAgent: boolean;
   /** User may interrupt a live/waiting agent session. */
   canInterrupt: boolean;
+  /** User may cancel a non-terminal task that is not mid-delivery review. */
+  canCancel: boolean;
   summaryLine: string;
 };
 
@@ -375,6 +392,36 @@ export function canInterruptTask(
 }
 
 /**
+ * User may cancel a task that is not already terminal and not awaiting delivery review.
+ * Prefer interrupt when a live session is bound; cancel is for queued / abandoned work.
+ */
+export function canCancelTask(
+  taskState: string,
+  session?: Pick<SessionProjection, "state" | "alive"> | null
+): boolean {
+  const s = taskState || "";
+  if (
+    s === "delivered" ||
+    s === "accepted" ||
+    s === "rejected" ||
+    s === "interrupted" ||
+    s === "cancelled" ||
+    s === "canceled"
+  ) {
+    return false;
+  }
+  if (session && session.alive) return false;
+  return (
+    s === "queued" ||
+    s === "pending" ||
+    s === "running" ||
+    s === "taken" ||
+    s === "waiting" ||
+    s === "failed"
+  );
+}
+
+/**
  * Enrich task list with delivery summary/commits + optional session projection.
  * Prefer matching activeDeliveryId; fall back to newest delivery for task id.
  * Prefer sessionId match for runtime status.
@@ -455,6 +502,7 @@ export function buildTaskReviewItems(
       canInterrupt: canInterruptTask(state, session, {
         hasSessionId: !!(task.sessionId || session?.sessionId),
       }),
+      canCancel: canCancelTask(state, session),
       summaryLine,
     };
   });

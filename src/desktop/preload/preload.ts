@@ -25,6 +25,10 @@ export type TentDesktopApi = {
   }) => Promise<unknown>;
   getFloatingStatus: () => Promise<unknown>;
   onStateChanged: (handler: (state: unknown) => void) => () => void;
+  /** Service SSE type fan-out — renderer must re-fetch projections, not trust payload. */
+  onServiceEvent: (
+    handler: (ev: { type: string; workspaceId?: string }) => void
+  ) => () => void;
 };
 
 const api: TentDesktopApi = {
@@ -51,6 +55,14 @@ const api: TentDesktopApi = {
     const listener = (_event: unknown, state: unknown) => handler(state);
     ipcRenderer.on(DESKTOP_IPC.onStateChanged, listener);
     return () => ipcRenderer.removeListener(DESKTOP_IPC.onStateChanged, listener);
+  },
+  onServiceEvent: (handler) => {
+    const listener = (
+      _event: unknown,
+      payload: { type: string; workspaceId?: string }
+    ) => handler(payload);
+    ipcRenderer.on(DESKTOP_IPC.onServiceEvent, listener);
+    return () => ipcRenderer.removeListener(DESKTOP_IPC.onServiceEvent, listener);
   },
 };
 

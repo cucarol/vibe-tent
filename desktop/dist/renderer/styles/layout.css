@@ -75,25 +75,45 @@
   flex: none;
 }
 
+/* PaneCollapse: always discoverable (not hover-only), still quiet */
 .collapse-edge {
-  opacity: 0.4;
+  opacity: 0.72;
   flex: none;
+  color: var(--color-muted);
 }
 
-.collapse-edge:hover,
+.collapse-edge:hover:not(:disabled),
 .collapse-edge:focus-visible {
   opacity: 1;
+  color: var(--color-text);
+}
+
+.collapse-edge:active:not(:disabled) {
+  opacity: 1;
+  background: var(--color-selected);
+}
+
+/* Expand chips in stage head — same grammar as IconButton */
+.rail-toggle {
+  opacity: 0.85;
+  color: var(--color-muted);
+}
+
+.rail-toggle:hover:not(:disabled),
+.rail-toggle:focus-visible {
+  opacity: 1;
+  color: var(--color-text);
 }
 
 .tree-panel .pane-head {
   gap: var(--space-1);
   padding: 0 var(--space-3) 0 var(--space-4);
-  align-items: flex-start;
-  height: auto;
-  min-height: 72px;
-  max-height: none;
-  padding-top: 22px;
-  padding-bottom: var(--space-3);
+  align-items: center;
+  height: var(--pane-head-height);
+  min-height: var(--pane-head-height);
+  max-height: var(--pane-head-height);
+  padding-top: 0;
+  padding-bottom: 0;
 }
 
 .tree-panel .pane-head-main {
@@ -252,8 +272,9 @@
   display: none;
 }
 
-.layout.is-left-collapsed #btn-expand-left,
-.layout.is-right-collapsed #btn-expand-right {
+/* Expand chips live in stage head; show only when not [hidden] (user collapse). */
+.layout.is-left-collapsed #btn-expand-left:not([hidden]),
+.layout.is-right-collapsed #btn-expand-right:not([hidden]) {
   display: inline-flex;
 }
 
@@ -326,23 +347,40 @@ body.is-resizing * {
 
 .menu-item {
   height: var(--size-control);
-  padding: 0 var(--space-3);
+  min-height: var(--size-control);
+  padding: 0 var(--control-pad-x);
   text-align: left;
   border: 1px solid transparent;
   border-radius: var(--radius);
   background: transparent;
   color: var(--color-text);
   font-size: var(--font-ui-small);
-  font-weight: 500;
+  font-weight: var(--font-weight-ui);
   width: 100%;
+  cursor: pointer;
 }
 
-.menu-item:hover {
+.menu-item:hover:not(:disabled) {
   background: var(--color-hover);
+}
+
+.menu-item:active:not(:disabled) {
+  background: var(--color-selected);
+}
+
+.menu-item:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.menu-item:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
 }
 
 .menu-item[aria-current="true"] {
   color: var(--color-accent);
+  font-weight: var(--font-weight-strong);
 }
 
 .menu-sep {

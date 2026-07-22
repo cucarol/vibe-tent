@@ -1,4 +1,7 @@
-/* primitives — extracted from main styles.css; pure structure, no visual redesign */
+/* primitives — shared control grammar (Button / IconButton / Field / status).
+ * Prefer tokens from tokens.css; avoid per-module magic sizes.
+ */
+
 /* —— 图标：统一 16 viewBox stroke —— */
 .ico {
   width: 16px;
@@ -8,10 +11,12 @@
   pointer-events: none;
 }
 
+/* —— IconButton —— */
 .icon-btn {
   width: var(--size-icon);
   height: var(--size-icon);
   min-width: var(--size-icon);
+  min-height: var(--size-icon);
   padding: 0;
   display: inline-flex;
   align-items: center;
@@ -22,11 +27,32 @@
   border: 1px solid transparent;
   line-height: 1;
   flex: none;
+  font-weight: var(--font-weight-ui);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease,
+    opacity 0.12s ease;
 }
 
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   background: var(--color-hover);
   color: var(--color-text);
+}
+
+.icon-btn:active:not(:disabled) {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+
+.icon-btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.icon-btn:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  background: transparent;
+  color: var(--color-faint);
 }
 
 .icon-btn[aria-expanded="true"] {
@@ -34,21 +60,51 @@
   color: var(--color-text);
 }
 
+.icon-btn.danger:hover:not(:disabled),
+.icon-btn.is-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 12%, var(--color-hover));
+  color: var(--color-danger);
+}
+
+/* —— Field (Input / Select) —— */
 .field {
   height: var(--size-control);
   min-height: var(--size-control);
   padding: 0 var(--space-2);
   font-size: var(--font-ui-small);
+  font-weight: var(--font-weight-ui);
   border: 1px solid var(--color-border);
   border-radius: var(--radius);
   background: var(--color-document);
   color: var(--color-text);
   min-width: 0;
+  line-height: var(--lh-tight);
+}
+
+.field:hover:not(:disabled):not(:focus) {
+  border-color: color-mix(in srgb, var(--color-border) 70%, var(--color-text) 30%);
+}
+
+.field:focus,
+.field:focus-visible {
+  border-color: color-mix(in srgb, var(--color-focus) 55%, var(--color-border));
+  outline: none;
+}
+
+.field:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.field:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+  color: var(--color-muted);
 }
 
 .field-compact {
-  height: 28px;
-  min-height: 28px;
+  height: var(--size-control-compact);
+  min-height: var(--size-control-compact);
   font-size: var(--font-ui-smaller);
   color: var(--color-muted);
   background: transparent;
@@ -57,46 +113,72 @@
   max-width: 100%;
 }
 
-.field-compact:hover,
+.field-compact:hover:not(:disabled),
 .field-compact:focus {
   border-color: var(--color-border);
   color: var(--color-text);
   background: color-mix(in srgb, var(--color-document) 70%, transparent);
 }
 
+/* —— Button —— */
 .btn {
   height: var(--size-control);
   min-height: var(--size-control);
-  padding: 0 var(--space-3);
+  padding: 0 var(--control-pad-x);
   font-size: var(--font-ui-small);
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
   border-radius: var(--radius);
   border: 1px solid var(--color-border);
   display: inline-flex;
   align-items: center;
   justify-content: center;
+  gap: var(--space-1);
   white-space: nowrap;
   flex: none;
+  line-height: 1;
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease, border-color 0.12s ease,
+    opacity 0.12s ease;
+}
+
+.btn:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: var(--focus-ring-offset);
+}
+
+.btn:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
 }
 
 .btn-secondary {
   background: var(--color-surface);
   color: var(--color-text);
+  border-color: var(--color-border);
 }
 
-.btn-secondary:hover {
+.btn-secondary:hover:not(:disabled) {
   background: var(--color-hover);
+}
+
+.btn-secondary:active:not(:disabled) {
+  background: var(--color-selected);
 }
 
 .btn-ghost {
   background: transparent;
   border-color: transparent;
   color: var(--color-muted);
-  font-weight: 500;
+  font-weight: var(--font-weight-ui);
 }
 
-.btn-ghost:hover {
+.btn-ghost:hover:not(:disabled) {
   background: var(--color-hover);
+  color: var(--color-text);
+}
+
+.btn-ghost:active:not(:disabled) {
+  background: var(--color-selected);
   color: var(--color-text);
 }
 
@@ -108,10 +190,48 @@ button.active.primary {
   color: var(--color-on-accent);
 }
 
-.btn-primary:hover,
-button.primary:hover {
+.btn-primary:hover:not(:disabled),
+button.primary:hover:not(:disabled) {
   background: var(--color-focus);
   border-color: var(--color-focus);
+}
+
+.btn-primary:active:not(:disabled),
+button.primary:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
+  border-color: color-mix(in srgb, var(--color-accent) 88%, var(--color-text));
+}
+
+.btn-primary:disabled,
+button.primary:disabled {
+  background: var(--color-accent);
+  border-color: var(--color-accent);
+  color: var(--color-on-accent);
+}
+
+/* Destructive / reject confirm — still paper-edit, not alarm chrome */
+.btn-danger {
+  background: transparent;
+  border-color: color-mix(in srgb, var(--color-danger) 40%, var(--color-border));
+  color: var(--color-danger);
+  font-weight: var(--font-weight-strong);
+}
+
+.btn-danger:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 10%, var(--color-surface));
+  border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border));
+}
+
+.btn-danger:active:not(:disabled) {
+  background: color-mix(in srgb, var(--color-danger) 16%, var(--color-surface));
+}
+
+.btn-quiet-save {
+  height: var(--size-control-compact) !important;
+  min-height: var(--size-control-compact) !important;
+  padding: 0 var(--space-3) !important;
+  font-size: var(--font-ui-smaller) !important;
+  margin-left: var(--space-1);
 }
 
 /* 微型状态语法 */
@@ -157,4 +277,3 @@ button.primary:hover {
 .count-badge[hidden] {
   display: none !important;
 }
-

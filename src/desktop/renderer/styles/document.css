@@ -1,5 +1,6 @@
-/* document — extracted from main styles.css; pure structure, no visual redesign */
-/* Tabs：字重 + 基线下划线，非胶囊 */
+/* document — tabs, toolbar, editor canvas (Markdown-first center). */
+
+/* Tabs：字重 + 基线下划线，非胶囊；关闭钮始终可发现、可点 */
 .tabs {
   display: flex;
   gap: 0;
@@ -14,20 +15,38 @@
 
 .tab {
   height: 100%;
-  padding: 0 var(--space-3);
+  max-width: 220px;
+  padding: 0 2px 0 var(--space-2);
   border-radius: 0;
   border: none;
   border-bottom: 2px solid transparent;
   background: transparent;
   color: var(--color-muted);
-  font-size: 13.5px;
-  font-weight: 500;
-  max-width: 200px;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  flex: 0 1 auto;
+  min-width: 0;
+}
+
+.tab-label {
+  height: 100%;
+  min-width: 0;
+  max-width: 168px;
+  padding: 0 var(--space-1);
+  border: none;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font-size: var(--font-ui-small);
+  font-weight: var(--font-weight-ui);
+  font-family: inherit;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
   display: inline-flex;
   align-items: center;
+  cursor: pointer;
 }
 
 .tab:hover {
@@ -39,9 +58,68 @@
   color: var(--color-text);
   border-bottom-color: var(--color-text);
   background: transparent;
-  font-weight: 600;
+}
+
+.tab.active .tab-label {
+  font-weight: var(--font-weight-brand);
   font-family: var(--font-brand);
-  font-size: 14.5px;
+  font-size: var(--font-ui-base);
+}
+
+/* Close is always visible (not hover-only); slightly stronger on hover/active */
+.tab-close {
+  width: var(--size-tab-close);
+  height: var(--size-tab-close);
+  min-width: var(--size-tab-close);
+  min-height: var(--size-tab-close);
+  padding: 0;
+  margin: 0 2px 0 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid transparent;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-muted);
+  opacity: 0.72;
+  flex: none;
+  cursor: pointer;
+  line-height: 1;
+  transition: background-color 0.12s ease, color 0.12s ease, opacity 0.12s ease;
+}
+
+.tab:hover .tab-close,
+.tab.active .tab-close {
+  opacity: 0.92;
+  color: var(--color-muted);
+}
+
+.tab-close:hover {
+  opacity: 1;
+  background: var(--color-hover);
+  color: var(--color-text);
+  border-color: transparent;
+}
+
+.tab-close:active {
+  background: var(--color-selected);
+  color: var(--color-text);
+}
+
+.tab-close:focus-visible {
+  opacity: 1;
+  outline: var(--focus-ring);
+  outline-offset: 0;
+}
+
+.tab-close:disabled {
+  opacity: var(--control-disabled-opacity);
+  cursor: not-allowed;
+}
+
+.tab-close .ico-close {
+  width: 12px;
+  height: 12px;
 }
 
 .doc-actions,
@@ -64,14 +142,6 @@
   color: var(--color-muted);
 }
 
-.btn-quiet-save {
-  height: 28px !important;
-  min-height: 28px !important;
-  padding: 0 var(--space-3) !important;
-  font-size: 12.5px !important;
-  margin-left: var(--space-1);
-}
-
 .segmented {
   display: inline-flex;
   height: var(--size-control);
@@ -91,7 +161,7 @@
   background: transparent;
   color: var(--color-muted);
   font-size: var(--font-ui-smaller);
-  font-weight: 500;
+  font-weight: var(--font-weight-ui);
 }
 
 .segmented button:last-child {
@@ -101,10 +171,10 @@
 .segmented button.active {
   background: var(--color-selected);
   color: var(--color-text);
-  font-weight: 600;
+  font-weight: var(--font-weight-strong);
 }
 
-.segmented button:hover {
+.segmented button:hover:not(:disabled) {
   background: var(--color-hover);
 }
 
@@ -116,7 +186,7 @@
 }
 
 .save-state .state-label {
-  font-size: 11px;
+  font-size: var(--font-ui-tiny);
   color: var(--color-muted);
 }
 
@@ -178,7 +248,7 @@ textarea.editor:focus {
 .preview h2,
 .preview h3 {
   font-family: var(--font-brand);
-  font-weight: 600;
+  font-weight: var(--font-weight-brand);
   letter-spacing: -0.01em;
   color: var(--color-text);
 }
@@ -218,7 +288,7 @@ textarea.editor:focus {
   font-size: 0.9em;
   background: color-mix(in srgb, var(--color-hover) 80%, transparent);
   padding: 0.1em 0.35em;
-  border-radius: 3px;
+  border-radius: var(--radius-sm);
 }
 
 .preview blockquote {
@@ -239,12 +309,18 @@ textarea.editor:focus {
 .empty-cta .empty-title {
   font-family: var(--font-brand);
   font-size: 20px;
-  font-weight: 600;
+  font-weight: var(--font-weight-brand);
   color: var(--color-text);
   margin: 0;
 }
 
 .empty-cta .empty-hint {
-  display: none;
+  margin: var(--space-2) 0 0;
+  font-size: var(--font-ui-small);
+  color: var(--color-muted);
+  font-weight: 400;
 }
 
+.empty-cta .empty-action {
+  margin: var(--space-4) 0 0;
+}

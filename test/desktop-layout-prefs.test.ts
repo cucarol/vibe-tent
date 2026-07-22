@@ -230,6 +230,12 @@ test("styles.css defines paper-edit semantic color tokens", async () => {
   assert.match(css, /cursor:\s*col-resize/);
   assert.match(css, /is-left-collapsed/);
   assert.match(css, /is-right-collapsed/);
+  // Shared control geometry tokens (Button / Tab / Tree / Section).
+  assert.match(css, /--size-control:/);
+  assert.match(css, /--size-tab-close:/);
+  assert.match(css, /--focus-ring:/);
+  assert.match(css, /\.btn-danger\b/);
+  assert.match(css, /\.collapse-edge\b/);
   // No yellow/amber-heavy legacy canvas as the primary app fill.
   assert.doesNotMatch(css, /--canvas-bg:\s*#e8e4d7/i);
 });

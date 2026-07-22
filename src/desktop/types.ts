@@ -66,4 +66,6 @@ export const DESKTOP_IPC = {
   getPrefs: "tent:get-prefs",
   setPrefs: "tent:set-prefs",
   onStateChanged: "tent:state-changed",
+  /** Fan-out of Local Service SSE envelope type (renderer re-fetches projections). */
+  onServiceEvent: "tent:service-event",
 } as const;

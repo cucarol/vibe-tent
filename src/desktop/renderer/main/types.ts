@@ -6,6 +6,13 @@ import type {
   ProfileOption,
   RoleOption,
 } from "../../workbench/collaboration-ui.js";
+import type {
+  A2AApprovalItem,
+  ProposalItem,
+  TaskInputItem,
+  ToolApprovalItem,
+  UserAskItem,
+} from "../../workbench/pending-interactions.js";
 
 export type ConceptNode = {
   id: string;
@@ -13,7 +20,12 @@ export type ConceptNode = {
   name: string;
   type: string;
   coordination: boolean;
+  /**
+   * Collaboration status from box.projection only (todo|doing|done).
+   * Never populated from docs.list frontmatter / owner.
+   */
   status?: string;
+  /** Assignee from box.projection only when an active task occupies the box. */
   assignee?: string;
   mode?: "editable" | "read-only" | "archived";
   tags?: string[];
@@ -35,34 +47,20 @@ export type TabView = {
   artifactRefs?: Array<{ kind: string; target: string; label?: string }>;
 };
 
-export type UserAskView = {
-  id: string;
-  taskPath: string;
-  sessionId?: string;
-  role?: string;
-  question: string;
-  choices?: Array<{ id: string; label: string }>;
-  createdAt: string;
+/** docs.backlinks hit for inspector (right rail only — not document body). */
+export type BacklinkView = {
+  cx: string;
+  name: string;
+  path: string;
+  context?: string;
 };
 
-export type A2AApprovalView = {
-  id: string;
-  taskPath: string;
-  role: string;
-  profileId: string;
-  createdAt: string;
-};
-
-export type ToolApprovalView = {
-  id: string;
-  sessionId: string;
-  taskPath?: string;
-  role?: string;
-  toolTitle: string;
-  options?: Array<{ optionId: string; kind?: string; name?: string }>;
-  createdAt: string;
-  expiresAt: string;
-};
+/** Normalized pending rows — see workbench/pending-interactions.ts. */
+export type UserAskView = UserAskItem;
+export type A2AApprovalView = A2AApprovalItem;
+export type ToolApprovalView = ToolApprovalItem;
+export type TaskInputView = TaskInputItem;
+export type ProposalView = ProposalItem;
 
 export type ShellState = {
   health: {

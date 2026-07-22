@@ -16,6 +16,7 @@ import {
   setDispatchRole,
   workspaceId,
 } from "./state.js";
+import { btnHtml } from "./ui.js";
 
 export type DispatchHost = {
   renderDispatchPanel: () => void;
@@ -67,7 +68,12 @@ export function renderDispatchPanel(): void {
         <textarea id="dispatch-prompt" rows="3" placeholder="写给目标 role 的任务说明…">${escapeHtml(dispatchPrompt)}</textarea>
       </div>
       <div class="row dispatch-actions">
-        <button type="button" class="btn btn-primary" id="btn-dispatch"${validation.ok ? "" : " disabled"}>派活</button>
+        ${btnHtml({
+          label: "派活",
+          variant: "primary",
+          id: "btn-dispatch",
+          disabled: !validation.ok,
+        })}
         ${
           validation.ok
             ? ""

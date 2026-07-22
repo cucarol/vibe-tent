@@ -2,6 +2,11 @@
 
 import { renderMarkdownToHtml, escapeHtml } from "../../../markdown/render.js";
 import { pickDefaultCoordinationType } from "../../workbench/collaboration-ui.js";
+import {
+  closeOpenTab,
+  documentEmptyCopy,
+  isCloseTabShortcut,
+} from "../../workbench/open-tabs.js";
 import { ICO } from "./icons.js";
 import { el, setError } from "./elements.js";
 import {
@@ -17,18 +22,144 @@ import {
   workspaceId,
 } from "./state.js";
 import type { TabView } from "./types.js";
+import { btnHtml, documentTabHtml, iconBtnHtml } from "./ui.js";
 
 export type DocumentHost = {
   renderAll: () => void;
   renderTabs: () => void;
   renderToolbar: () => void;
   loadCards: () => Promise<void>;
+  /** Empty-canvas left-click: mount workspace via main pick+workspace.mount. */
+  openWorkspace?: () => void | Promise<void>;
+  /** After open/select — refresh box.projection + backlinks for the active node. */
+  onConceptOpened?: (cx: string) => void | Promise<void>;
 };
 
 let host: DocumentHost | null = null;
+let documentChromeBound = false;
 
 export function bindDocumentHost(h: DocumentHost): void {
   host = h;
+  bindDocumentChrome();
+}
+
+/** Close button, middle-click, Ctrl/Cmd+W — once per renderer session. */
+function bindDocumentChrome(): void {
+  if (documentChromeBound) return;
+  documentChromeBound = true;
+
+  el.tabs.addEventListener("click", (ev) => {
+    const t = ev.target as HTMLElement | null;
+    const closeBtn = t?.closest<HTMLElement>("[data-close-tab]");
+    if (closeBtn) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      void closeTab(closeBtn.getAttribute("data-close-tab")!);
+      return;
+    }
+    const tabBtn = t?.closest<HTMLElement>("[data-tab]");
+    if (tabBtn && el.tabs.contains(tabBtn)) {
+      const cx = tabBtn.getAttribute("data-tab");
+      setActiveCx(cx);
+      host?.renderAll();
+      if (cx) void host?.onConceptOpened?.(cx);
+      focusActiveTab();
+    }
+  });
+
+  el.tabs.addEventListener("auxclick", (ev) => {
+    if (ev.button !== 1) return;
+    const t = ev.target as HTMLElement | null;
+    const tabEl = t?.closest<HTMLElement>("[data-tab], [data-tab-wrap], [data-close-tab]");
+    if (!tabEl || !el.tabs.contains(tabEl)) return;
+    const cx =
+      tabEl.getAttribute("data-close-tab") ||
+      tabEl.getAttribute("data-tab") ||
+      tabEl.getAttribute("data-tab-wrap");
+    if (!cx) return;
+    ev.preventDefault();
+    void closeTab(cx);
+  });
+
+  // Middle-click often fires auto-scroll; block on tab strip.
+  el.tabs.addEventListener("mousedown", (ev) => {
+    if (
+      ev.button === 1 &&
+      (ev.target as HTMLElement | null)?.closest("[data-tab], [data-tab-wrap], [data-close-tab]")
+    ) {
+      ev.preventDefault();
+    }
+  });
+
+  document.addEventListener("keydown", (ev) => {
+    if (!isCloseTabShortcut(ev)) return;
+    if (!activeCx || !localTabs.has(activeCx)) return;
+    // Only when workbench document chrome is relevant.
+    const surface = document.getElementById("app-root")?.dataset.surface;
+    if (surface && surface !== "workbench") return;
+    ev.preventDefault();
+    void closeTab(activeCx);
+  });
+
+  // Doc overflow menu: Escape + outside click (same exit contract as rail overflow).
+  document.addEventListener("click", (ev) => {
+    const t = ev.target as Node | null;
+    if (!t) return;
+    const wrap = el.toolbar.querySelector(".menu-wrap");
+    if (wrap?.contains(t)) return;
+    closeDocMoreMenu();
+  });
+  document.addEventListener("keydown", (ev) => {
+    if (ev.key === "Escape") closeDocMoreMenu();
+  });
+}
+
+function closeDocMoreMenu(): void {
+  const moreMenu = el.toolbar.querySelector<HTMLElement>("[data-doc-menu]");
+  const moreBtn = el.toolbar.querySelector<HTMLButtonElement>("[data-doc-more]");
+  if (moreMenu && !moreMenu.hidden) {
+    moreMenu.hidden = true;
+    moreBtn?.setAttribute("aria-expanded", "false");
+  }
+}
+
+/**
+ * Close a renderer-local tab. Does not delete/archive the Node.
+ * Dirty tabs ask once before discarding the buffer.
+ */
+export async function closeTab(cx: string): Promise<boolean> {
+  const tab = localTabs.get(cx);
+  if (!tab) return false;
+  if (tab.dirty) {
+    const ok = window.confirm(`「${tab.name}」有未保存更改，关闭将丢弃修改。仍要关闭？`);
+    if (!ok) return false;
+  }
+  const order = [...localTabs.keys()];
+  const result = closeOpenTab(order, cx, activeCx);
+  if (!result.closed) return false;
+  localTabs.delete(cx);
+  setActiveCx(result.activeCx);
+  host?.renderAll();
+  if (result.activeCx) void host?.onConceptOpened?.(result.activeCx);
+  // Move focus to the new active tab, or the stage when empty.
+  queueMicrotask(() => {
+    if (result.activeCx) focusActiveTab();
+    else {
+      const stage = document.getElementById("main-panel");
+      stage?.focus({ preventScroll: true });
+    }
+  });
+  return true;
+}
+
+function focusActiveTab(): void {
+  if (!activeCx) return;
+  const safe =
+    typeof CSS !== "undefined" && typeof CSS.escape === "function"
+      ? CSS.escape(activeCx)
+      : activeCx.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  const btn = el.tabs.querySelector<HTMLElement>(`[data-tab="${safe}"]`);
+  btn?.focus({ preventScroll: true });
 }
 
 export async function openConcept(cx: string): Promise<void> {
@@ -75,22 +206,24 @@ export async function openConcept(cx: string): Promise<void> {
   localTabs.set(tab.cx, tab);
   setActiveCx(tab.cx);
   host?.renderAll();
+  void host?.onConceptOpened?.(tab.cx);
 }
 
 export function renderTabs(): void {
   const tabs = [...localTabs.values()];
+  el.tabs.setAttribute("role", "tablist");
+  el.tabs.setAttribute("aria-label", "打开的文档");
   el.tabs.innerHTML = tabs
-    .map((t) => {
-      const active = t.cx === activeCx ? " active" : "";
-      return `<button type="button" class="tab${active}" data-tab="${escapeHtml(t.cx)}">${escapeHtml(t.name)}${t.dirty ? " ·" : ""}</button>`;
-    })
+    .map((t) =>
+      documentTabHtml({
+        cx: t.cx,
+        name: t.name,
+        active: t.cx === activeCx,
+        dirty: t.dirty,
+        closeIcon: ICO.close,
+      })
+    )
     .join("");
-  el.tabs.querySelectorAll<HTMLElement>("[data-tab]").forEach((btn) => {
-    btn.addEventListener("click", () => {
-      setActiveCx(btn.getAttribute("data-tab"));
-      host?.renderAll();
-    });
-  });
 }
 
 export function renderToolbar(): void {
@@ -104,20 +237,43 @@ export function renderToolbar(): void {
   const modeTitle = tab.mode === "preview" ? "切换到源码" : "切换到预览";
   // 克制工具组：模式图标 + dirty 时保存 + 更多；干净状态不提示「已保存」
   const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
+  const saveBtn =
+    tab.dirty && tab.nodeMode === "editable"
+      ? btnHtml({
+          label: "保存",
+          variant: "primary",
+          title: "保存",
+          attrs: 'data-act="save"',
+          extraClass: "btn-quiet-save",
+        })
+      : "";
   el.toolbar.innerHTML = `
-    <button type="button" class="icon-btn mode-toggle" data-act="toggle-mode" title="${modeTitle}" aria-label="${modeTitle}（${modeLabel}）">${modeIco}</button>
-    ${
-      tab.dirty && tab.nodeMode === "editable"
-        ? `<button type="button" data-act="save" class="btn btn-primary btn-quiet-save" title="保存">保存</button>`
-        : ""
-    }
+    ${iconBtnHtml({
+      icon: modeIco,
+      title: modeTitle,
+      ariaLabel: `${modeTitle}（${modeLabel}）`,
+      extraClass: "mode-toggle",
+      attrs: 'data-act="toggle-mode"',
+    })}
+    ${saveBtn}
     <div class="menu-wrap">
-      <button type="button" class="icon-btn" data-doc-more title="更多" aria-label="文档更多操作" aria-haspopup="menu">${ICO.more}</button>
+      ${iconBtnHtml({
+        icon: ICO.more,
+        title: "更多",
+        ariaLabel: "文档更多操作",
+        attrs: 'data-doc-more aria-haspopup="menu"',
+      })}
       <div class="menu" data-doc-menu role="menu" hidden>
         <button type="button" class="menu-item" role="menuitem" data-act="source"${tab.mode === "source" ? " aria-current=\"true\"" : ""}>源码</button>
         <button type="button" class="menu-item" role="menuitem" data-act="preview"${tab.mode === "preview" ? " aria-current=\"true\"" : ""}>预览</button>
         <div class="menu-sep" role="separator"></div>
         <button type="button" class="menu-item" role="menuitem" data-act="card">发出上下文卡</button>
+        <button type="button" class="menu-item" role="menuitem" data-act="fork" title="复制子树并重发 id">派生副本</button>
+        ${
+          tab.nodeMode === "editable"
+            ? `<button type="button" class="menu-item" role="menuitem" data-act="attach">导入附件…</button>`
+            : ""
+        }
         ${
           !tab.coordination
             ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升为协作框</button>`
@@ -176,6 +332,29 @@ async function onToolbar(act: string): Promise<void> {
     }
     return;
   }
+  if (act === "fork") {
+    if (tab.dirty) {
+      el.status.textContent = "请先保存或撤销当前修改，再派生副本。";
+      return;
+    }
+    try {
+      const result = (await window.tentDesktop.rpc("docs.fork", {
+        workspaceId,
+        id: tab.cx,
+      })) as { id?: string; cx?: string };
+      const newId = result.id || result.cx;
+      el.status.textContent = newId ? `已派生副本` : "已派生副本";
+      await reloadTree();
+      if (newId) await openConcept(newId);
+    } catch (err) {
+      setError(err);
+    }
+    return;
+  }
+  if (act === "attach") {
+    await onImportAttachment(tab);
+    return;
+  }
   if (act === "card") {
     await window.tentDesktop.pushContextCard({
       kind: "box",
@@ -185,6 +364,73 @@ async function onToolbar(act: string): Promise<void> {
     });
     await host?.loadCards();
   }
+}
+
+/** Pick a local file, base64-encode, and store via docs.importAttachment (no secret echo). */
+async function onImportAttachment(tab: TabView): Promise<void> {
+  if (!workspaceId) return;
+  if (tab.nodeMode !== "editable") {
+    el.status.textContent = "当前 Node 不是开放模式，不能导入附件。";
+    return;
+  }
+  const input = document.createElement("input");
+  input.type = "file";
+  input.hidden = true;
+  document.body.appendChild(input);
+  const file = await new Promise<File | null>((resolve) => {
+    input.addEventListener(
+      "change",
+      () => {
+        resolve(input.files?.[0] ?? null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.addEventListener(
+      "cancel",
+      () => {
+        resolve(null);
+        input.remove();
+      },
+      { once: true }
+    );
+    input.click();
+  });
+  if (!file) return;
+  try {
+    const bytesBase64 = await fileToBase64(file);
+    const result = (await window.tentDesktop.rpc("docs.importAttachment", {
+      workspaceId,
+      id: tab.cx,
+      fileName: file.name,
+      bytesBase64,
+    })) as { markdown?: string; relativePath?: string };
+    // Append markdown link into buffer when Service returns a snippet; user still saves.
+    if (result.markdown) {
+      const sep = tab.buffer.endsWith("\n") || tab.buffer.length === 0 ? "" : "\n";
+      tab.buffer = `${tab.buffer}${sep}\n${result.markdown}\n`;
+      tab.dirty = true;
+      host?.renderAll();
+    }
+    el.status.textContent = result.relativePath
+      ? `已导入附件 ${result.relativePath}（请保存正文）`
+      : "附件已导入";
+  } catch (err) {
+    setError(err);
+  }
+}
+
+function fileToBase64(file: File): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error("read failed"));
+    reader.onload = () => {
+      const dataUrl = String(reader.result || "");
+      const comma = dataUrl.indexOf(",");
+      resolve(comma >= 0 ? dataUrl.slice(comma + 1) : dataUrl);
+    };
+    reader.readAsDataURL(file);
+  });
 }
 
 export async function saveTab(tab: TabView): Promise<void> {
@@ -213,7 +459,23 @@ export async function saveTab(tab: TabView): Promise<void> {
 export function renderEditor(): void {
   const tab = activeCx ? localTabs.get(activeCx) : null;
   if (!tab) {
-    el.editor.innerHTML = '<div class="empty empty-cta"><p class="empty-title">打开工作区</p></div>';
+    const copy = documentEmptyCopy(!!workspaceId);
+    const hint = copy.hint
+      ? `<p class="empty-hint">${escapeHtml(copy.hint)}</p>`
+      : "";
+    const action =
+      copy.action === "open-workspace"
+        ? `<p class="empty-action">${btnHtml({
+            label: "打开工作区…",
+            variant: "primary",
+            attrs: 'data-empty-act="open-ws"',
+          })}</p>`
+        : "";
+    el.editor.innerHTML = `<div class="empty empty-cta" tabindex="-1"><p class="empty-title">${escapeHtml(copy.title)}</p>${hint}${action}</div>`;
+    el.editor.querySelector<HTMLElement>('[data-empty-act="open-ws"]')?.addEventListener(
+      "click",
+      () => void host?.openWorkspace?.()
+    );
     return;
   }
   if (tab.mode === "preview") {

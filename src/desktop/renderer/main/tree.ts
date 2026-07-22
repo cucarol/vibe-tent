@@ -1,6 +1,7 @@
 // Node tree + create-type rail (left pane content).
 
 import { escapeHtml } from "../../../markdown/render.js";
+import { boxStatusLabel } from "../../workbench/box-projection.js";
 import {
   pickDefaultCoordinationType,
   suggestBoxName,
@@ -16,6 +17,7 @@ import {
   reloadTree,
 } from "./state.js";
 import type { ConceptNode } from "./types.js";
+import { UI, treeRowClass } from "./ui.js";
 
 export type TreeHost = {
   openConcept: (cx: string) => Promise<void>;
@@ -49,38 +51,59 @@ export function renderCreateTypeSelect(): void {
 }
 
 export function renderTree(): void {
+  el.tree.setAttribute("role", "tree");
   el.tree.innerHTML = tree.length ? renderNodes(tree) : `<li class="muted">暂无概念</li>`;
   el.tree.querySelectorAll<HTMLElement>("[data-open]").forEach((node) => {
-    node.addEventListener("click", () => void host?.openConcept(node.getAttribute("data-open")!));
+    const open = () => void host?.openConcept(node.getAttribute("data-open")!);
+    node.addEventListener("click", open);
+    node.addEventListener("keydown", (ev) => {
+      if (ev.key === "Enter" || ev.key === " ") {
+        ev.preventDefault();
+        open();
+      }
+    });
   });
 }
 
-function nodeStatusMark(status?: string): string {
-  // 仅对进行中 / 待处理显示极弱标记；完成与普通节点默认无状态字
+function nodeStatusMark(status?: string, assignee?: string): string {
+  // Marks only from box.projection (todo|doing|done). done → no mark.
   if (!status) return "";
   const s = status.toLowerCase();
-  if (s === "done" || s === "completed" || s === "accepted" || s === "closed") return "";
-  if (s === "doing" || s === "running" || s === "in_progress" || s === "active") {
-    return `<span class="status-mark is-doing" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "done") return "";
+  const label = boxStatusLabel(s);
+  const title = assignee ? `${label} · ${assignee}` : label;
+  if (s === "doing") {
+    return `<span class="status-mark is-doing" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  if (s === "todo" || s === "pending" || s === "queued" || s === "open") {
-    return `<span class="status-mark is-todo" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  if (s === "todo") {
+    return `<span class="status-mark is-todo" title="${escapeHtml(title)}" aria-hidden="true"></span>`;
   }
-  // 其它协调状态：细点，不显示英文胶囊
-  return `<span class="status-mark" title="${escapeHtml(status)}" aria-hidden="true"></span>`;
+  // Unknown projection status: no invent — omit mark.
+  return "";
 }
 
 function renderNodes(nodes: ConceptNode[]): string {
   return nodes
     .map((n) => {
-      const mark = n.coordination ? nodeStatusMark(n.status) : "";
-      const active = n.id === activeCx ? " active" : "";
-      const archived = n.mode === "archived" ? " is-archived" : "";
+      // displayName (name) first; immutable id only in title/tooltip
+      const mark = n.coordination ? nodeStatusMark(n.status, n.assignee) : "";
+      const rowClass = treeRowClass({
+        active: n.id === activeCx,
+        archived: n.mode === "archived",
+      });
       const kids = n.children?.length ? `<ul>${renderNodes(n.children)}</ul>` : "";
+      const titleParts = [
+        n.name,
+        n.type,
+        n.mode || "editable",
+        n.coordination && n.status ? boxStatusLabel(n.status) : "",
+        n.assignee || "",
+        n.id,
+      ].filter(Boolean);
       return `<li>
-        <div class="tree-node${active}${archived}" data-open="${escapeHtml(n.id)}" title="${escapeHtml(n.id)} · ${escapeHtml(n.type)} · ${escapeHtml(n.mode || "editable")}">
-          <span class="tree-name">${escapeHtml(n.name)}</span>
-          <span class="tree-meta">${mark}</span>
+        <div class="${rowClass}" role="treeitem" tabindex="0" data-open="${escapeHtml(n.id)}" title="${escapeHtml(titleParts.join(" · "))}">
+          <span class="${UI.treeName}">${escapeHtml(n.name)}</span>
+          <span class="${UI.treeMeta}">${mark}</span>
         </div>
         ${kids}
       </li>`;

@@ -5,6 +5,7 @@ import { ServiceDocsClient } from "../client/service-docs-client.js";
 import { WorkspaceController, type WorkspaceSnapshot } from "../../markdown/workspace-controller.js";
 import type {
   AgentProfileProjection,
+  BoxProjection,
   DeliveryProjection,
   RoleRegistryEntryProjection,
   SessionProjection,
@@ -17,6 +18,12 @@ import type {
   WorkspaceSummary,
 } from "../types.js";
 import { ContextCardStore } from "./context-card-store.js";
+import {
+  applyBoxProjectionsToTree,
+  collectCoordinationBoxIds,
+  normalizeBoxProjection,
+  type BoxProjectionView,
+} from "./box-projection.js";
 import {
   buildStartSessionPayload,
   buildTaskReviewItems,
@@ -58,6 +65,8 @@ export type ShellSnapshot = {
   /** Selected machine-local profile id for start agent. */
   selectedProfileId: string | null;
   statusMessage: string | null;
+  /** box.projection by boxId — collab status truth for workbench consumers. */
+  boxProjections: BoxProjectionView[];
 };
 
 export class DesktopShellModel {
@@ -74,6 +83,7 @@ export class DesktopShellModel {
   private profiles: ProfileOption[] = [];
   private selectedProfileId: string | null = null;
   private statusMessage: string | null = null;
+  private boxProjections = new Map<string, BoxProjectionView>();
   private listeners = new Set<() => void>();
   readonly cards = new ContextCardStore();
 
@@ -89,11 +99,21 @@ export class DesktopShellModel {
   }
 
   getSnapshot(): ShellSnapshot {
+    const raw = this.controller?.getSnapshot() ?? null;
+    let workspace = raw;
+    if (raw) {
+      const stripped = stripTreeCollab(raw.tree as unknown as TreeNodeShape[]);
+      const overlaid = applyBoxProjectionsToTree(stripped, this.boxProjections);
+      workspace = {
+        ...raw,
+        tree: overlaid as unknown as typeof raw.tree,
+      };
+    }
     return {
       health: this.health,
       workspaces: this.workspaces,
       foregroundWorkspaceId: this.foregroundWorkspaceId,
-      workspace: this.controller?.getSnapshot() ?? null,
+      workspace,
       tasks: this.tasks,
       taskReview: buildTaskReviewItems(
         this.tasks.map((t) => ({
@@ -116,6 +136,7 @@ export class DesktopShellModel {
       profiles: this.profiles,
       selectedProfileId: this.selectedProfileId,
       statusMessage: this.statusMessage,
+      boxProjections: [...this.boxProjections.values()],
     };
   }
 
@@ -208,11 +229,46 @@ export class DesktopShellModel {
   async bindForeground(workspaceId: string): Promise<void> {
     if (!this.rpc) return;
     this.foregroundWorkspaceId = workspaceId;
+    this.boxProjections.clear();
     this.docs = new ServiceDocsClient({ rpc: this.rpc, workspaceId });
     this.controller = new WorkspaceController(this.docs);
     this.controller.subscribe(() => this.emit());
     await this.controller.refreshTree();
+    // refreshTasks also refreshes box.projection (task/delivery/session invalidation).
     await Promise.all([this.refreshTasks(), this.refreshRegistry(), this.refreshProfiles()]);
+    this.emit();
+  }
+
+  /**
+   * box.projection fan-out for coordination nodes in the current tree.
+   * Sole authority for status/assignee/activeTaskId on the shell snapshot tree.
+   */
+  async refreshBoxProjections(): Promise<void> {
+    if (!this.rpc || !this.foregroundWorkspaceId || !this.controller) {
+      this.boxProjections.clear();
+      this.emit();
+      return;
+    }
+    const snap = this.controller.getSnapshot();
+    const ids = collectCoordinationBoxIds((snap.tree ?? []) as TreeNodeShape[]);
+    if (ids.length === 0) {
+      this.boxProjections.clear();
+      this.emit();
+      return;
+    }
+    const ws = this.foregroundWorkspaceId;
+    const results = await Promise.all(
+      ids.map((id) =>
+        this.rpc!
+          .call<BoxProjection>("box.projection", { workspaceId: ws, id })
+          .then((raw) => normalizeBoxProjection(raw))
+          .catch(() => null)
+      )
+    );
+    this.boxProjections.clear();
+    for (const p of results) {
+      if (p) this.boxProjections.set(p.boxId, p);
+    }
     this.emit();
   }
 
@@ -249,6 +305,8 @@ export class DesktopShellModel {
       }));
       this.deliveries = deliveryResult.deliveries ?? [];
       this.sessions = sessionResult.sessions ?? [];
+      // Task/delivery/session changes invalidate box collab projection.
+      await this.refreshBoxProjections();
     } catch {
       this.tasks = [];
       this.deliveries = [];
@@ -376,4 +434,24 @@ export class DesktopShellModel {
   private emit(): void {
     for (const l of this.listeners) l();
   }
+}
+
+type TreeNodeShape = {
+  id: string;
+  coordination: boolean;
+  status?: string;
+  assignee?: string;
+  children?: TreeNodeShape[];
+  [key: string]: unknown;
+};
+
+/** Drop list-side collab fields before box.projection overlay. */
+function stripTreeCollab(nodes: TreeNodeShape[]): TreeNodeShape[] {
+  return nodes.map((n) => {
+    const { status: _s, assignee: _a, children, ...rest } = n;
+    return {
+      ...rest,
+      children: children ? stripTreeCollab(children) : children,
+    } as TreeNodeShape;
+  });
 }

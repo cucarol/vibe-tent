@@ -13,12 +13,15 @@ import { startLocalTentService } from "../src/service/service.js";
 import { createServiceClient } from "../src/service/client.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
 import {
+  ACTIONABLE_TASK_STATES,
   buildAcceptPayload,
   buildRejectPayload,
   buildStartSessionPayload,
   buildTaskReviewItems,
+  canCancelTask,
   canInterruptTask,
   canStartAgentOnTask,
+  isActionableTaskState,
   listCoordinationTypeNames,
   listCoordinationTypeOptions,
   listProfileOptions,
@@ -205,6 +208,8 @@ test("accept/reject payload builders and task review model", () => {
   assert.equal(items[1].canAcceptOrReject, false);
   assert.equal(items[1].canStartAgent, true);
   assert.equal(items[0].canStartAgent, false);
+  assert.equal(items[0].canCancel, false);
+  assert.equal(items[1].canCancel, true);
   assert.match(items[0].summaryLine, /待确认交付/);
 });
 
@@ -299,6 +304,16 @@ test("buildStartSessionPayload is user callerKind and never auto-dispatches", ()
   }
   assert.equal(buildStartSessionPayload("", "grok-acp-default").ok, false);
   assert.equal(buildStartSessionPayload("temp/x.md", "  ").ok, false);
+});
+
+test("actionable task states include failed for retry/cancel lists", () => {
+  assert.ok(ACTIONABLE_TASK_STATES.includes("failed"));
+  assert.equal(isActionableTaskState("failed"), true);
+  assert.equal(isActionableTaskState("accepted"), false);
+  assert.equal(isActionableTaskState("interrupted"), false);
+  assert.equal(canStartAgentOnTask("failed"), true);
+  assert.equal(canCancelTask("failed"), true);
+  assert.equal(canCancelTask("delivered"), false);
 });
 
 test("task/session state labels and start/interrupt gates", () => {
