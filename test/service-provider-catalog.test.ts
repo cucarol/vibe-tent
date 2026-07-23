@@ -29,14 +29,20 @@ import { PRODUCT_ACP_ADAPTER_IDS } from "../src/service/profiles.js";
 
 const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);
 
-/** Expected verification levels from repository evidence (mock suite / live E2E). */
+/**
+ * Expected verification levels from repository evidence.
+ * opt-in-live-probe = checked-in opt-in script exists (NOT full CI certification).
+ * mock-tested = offline mock only.
+ * live-verified must not be used merely because a script exists.
+ */
 const EXPECTED_LEVELS: Record<string, ProviderVerificationLevel> = {
-  "grok-acp": "live-e2e",
-  "codex-acp": "live-e2e",
-  "claude-acp": "live-e2e",
+  "grok-acp": "opt-in-live-probe",
+  "codex-acp": "opt-in-live-probe",
+  "claude-acp": "opt-in-live-probe",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "live-e2e",
-  "copilot-acp": "live-e2e",
+  "opencode-acp": "opt-in-live-probe",
+  "copilot-acp": "opt-in-live-probe",
+  "pi-acp": "mock-tested",
 };
 
 const EXPECTED_FOREGROUND = {
@@ -46,6 +52,7 @@ const EXPECTED_FOREGROUND = {
   "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
   "copilot-acp": "verified",
+  "pi-acp": "unverified",
 } as const;
 
 async function withService<T>(
@@ -65,13 +72,18 @@ test("CLIENT_METHODS includes provider.catalog", () => {
   assert.ok(CLIENT_METHODS.includes("provider.catalog"));
 });
 
-test("PROVIDER_VERIFICATION_LEVELS is the closed enum", () => {
+test("PROVIDER_VERIFICATION_LEVELS is the closed honest enum", () => {
   assert.deepEqual([...PROVIDER_VERIFICATION_LEVELS], [
     "adapter-implemented",
     "mock-tested",
-    "live-e2e",
+    "opt-in-live-probe",
+    "live-verified",
   ]);
-  assert.ok(isProviderVerificationLevel("live-e2e"));
+  assert.ok(isProviderVerificationLevel("opt-in-live-probe"));
+  assert.ok(isProviderVerificationLevel("live-verified"));
+  assert.ok(isProviderVerificationLevel("mock-tested"));
+  // Legacy / marketing names are not product levels.
+  assert.ok(!isProviderVerificationLevel("live-e2e"));
   assert.ok(!isProviderVerificationLevel("live-tested"));
   assert.ok(!isProviderVerificationLevel("mock"));
 });
@@ -120,8 +132,8 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     assert.ok(!("args" in entry));
   }
 
-  // Product short names present as adapterId prefixes (grok, codex, …).
-  const shortNames = ["grok", "codex", "claude", "antigravity", "copilot", "opencode"];
+  // Product short names present as adapterId prefixes.
+  const shortNames = ["grok", "codex", "claude", "antigravity", "copilot", "opencode", "pi"];
   for (const name of shortNames) {
     assert.ok(
       providers.some((p) => p.adapterId === `${name}-acp` || p.adapterId === name),
@@ -129,12 +141,20 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
     );
   }
 
-  // These adapters have checked-in real ACP/native CLI/ACP roundtrip probes.
-  const live = providers.filter((p) => p.verificationLevel === "live-e2e");
+  // Opt-in live probes exist for these adapters — not live-verified badges.
+  const optIn = providers.filter((p) => p.verificationLevel === "opt-in-live-probe");
   assert.deepEqual(
-    live.map((p) => p.adapterId),
+    optIn.map((p) => p.adapterId),
     ["grok-acp", "codex-acp", "claude-acp", "opencode-acp", "copilot-acp"]
   );
+  // Catalog must not claim live-verified merely because a script exists.
+  assert.equal(
+    providers.filter((p) => p.verificationLevel === "live-verified").length,
+    0
+  );
+  // Mock-only product adapters.
+  assert.equal(providerCatalogEntry("antigravity-acp")?.verificationLevel, "mock-tested");
+  assert.equal(providerCatalogEntry("pi-acp")?.verificationLevel, "mock-tested");
 
   // Resume evidence: verified loadSession bridges advertise canResume; Antigravity does not.
   assert.equal(providerCatalogEntry("grok-acp")?.canResume, true);
@@ -142,6 +162,7 @@ test("projectProviderCatalog covers every product adapter with closed levels", (
   assert.equal(providerCatalogEntry("codex-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("claude-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("copilot-acp")?.canResume, true);
+  assert.equal(providerCatalogEntry("pi-acp")?.canResume, true);
   assert.equal(providerCatalogEntry("antigravity-acp")?.canResume, false);
   assert.equal(providerCatalogEntry("fake-cli"), undefined);
   assert.equal(providerCatalogEntry("gemini-acp"), undefined);

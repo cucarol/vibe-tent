@@ -26,6 +26,10 @@ import {
   createCopilotAcpAdapter,
 } from "../adapters/copilot-acp/index.js";
 import {
+  PI_ACP_ADAPTER_ID,
+  createPiAcpAdapter,
+} from "../adapters/pi-acp/index.js";
+import {
   resolveAcpMcpServersWire,
   resolveAcpSkillMeta,
 } from "../adapters/acp/mcp-skills.js";
@@ -141,6 +145,7 @@ export class AgentRuntime implements AgentRuntimePort {
       createAntigravityAcpAdapter(),
       createOpenCodeAcpAdapter(),
       createCopilotAcpAdapter(),
+      createPiAcpAdapter(),
     ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
@@ -165,6 +170,9 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     if (!this.adapters.has(COPILOT_ACP_ADAPTER_ID)) {
       this.adapters.set(COPILOT_ACP_ADAPTER_ID, createCopilotAcpAdapter());
+    }
+    if (!this.adapters.has(PI_ACP_ADAPTER_ID)) {
+      this.adapters.set(PI_ACP_ADAPTER_ID, createPiAcpAdapter());
     }
 
     this.supervisor = new ProcessSupervisor({

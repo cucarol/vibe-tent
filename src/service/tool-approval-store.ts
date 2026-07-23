@@ -10,6 +10,19 @@ import {
   writeJsonAtomic,
 } from "../machine-state.js";
 
+/**
+ * Resolve workspace binding for an ACP tool approval.
+ * Fail closed: only the session row's workspace is authoritative.
+ * Never fall back to Desktop foreground workspace (wrong-mount risk).
+ */
+export function resolveToolApprovalWorkspaceId(
+  sessionWorkspace: string | null | undefined
+): string | null {
+  if (typeof sessionWorkspace !== "string") return null;
+  const workspaceId = sessionWorkspace.trim();
+  return workspaceId || null;
+}
+
 export type ToolApprovalStatus = "pending" | "approved" | "denied" | "expired";
 
 /** Safe option projection for UI — no secrets, no stdout tails. */

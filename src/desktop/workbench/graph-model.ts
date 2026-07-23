@@ -99,8 +99,13 @@ export function buildGraphSelectionView(args: {
 /** Human label for provider verificationLevel — never invents a stronger level. */
 export function verificationLevelLabel(level: string): string {
   switch (level) {
+    case "live-verified":
+      return "live verified (this machine)";
+    case "opt-in-live-probe":
+      return "opt-in live probe";
     case "live-e2e":
-      return "live E2E";
+      // Legacy wire value from older catalogs — map honestly, do not upgrade.
+      return "opt-in live probe (legacy live-e2e)";
     case "mock-tested":
       return "mock-tested";
     case "adapter-implemented":

@@ -4,11 +4,14 @@
  * Single backend source of truth for UI/client verification badges.
  * Entries cover PRODUCT_ACP_ADAPTER_IDS; canResume is derived from each
  * adapter's capabilities(). Verification levels remain a small product
- * registry (repository evidence: mock suite / live E2E) and are drift-tested
- * against the current product adapter set.
+ * registry (repository evidence: mock suite / opt-in live probe) and are
+ * drift-tested against the current product adapter set.
  *
  * Never secrets, env values, credentials, command lines, or machine-local
  * profile configuration. Profiles (`profile.*`) stay separate launch config.
+ *
+ * Honesty: "has a checked-in script" is at most opt-in-live-probe — never
+ * live-verified and never a claim of full CI certification on every host.
  */
 
 import type { ProviderAdapter } from "../adapters/types.js";
@@ -18,6 +21,7 @@ import { createClaudeAcpAdapter } from "../adapters/claude-acp/index.js";
 import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.js";
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
 import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
+import { createPiAcpAdapter } from "../adapters/pi-acp/index.js";
 import type {
   NativeForegroundLevel,
   ProviderCatalogEntry,
@@ -32,22 +36,28 @@ import {
 
 /**
  * Repository verification level per product adapterId.
- * Keep aligned with real test evidence (mock suites + opt-in live E2E).
+ * Keep aligned with real test evidence (mock suites + opt-in live probes).
  *
- * Level semantics:
+ * Level semantics (see types.ts PROVIDER_VERIFICATION_LEVELS):
  * - adapter-implemented — launch contract coded; no repository mock/live suite claim
  * - mock-tested — offline mock ACP suite covers launch/protocol
- * - live-e2e — checked-in opt-in live E2E exists and has passed against the provider
+ * - opt-in-live-probe — checked-in opt-in live script/probe exists; not CI-always
+ * - live-verified — reserved for machine-local durable proof (not used as a
+ *   static "script exists" badge)
  */
 const PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER: Readonly<
   Record<ProductAcpAdapterId, ProviderVerificationLevel>
 > = {
-  "grok-acp": "live-e2e",
-  "codex-acp": "live-e2e",
-  "claude-acp": "live-e2e",
+  // Checked-in opt-in: npm run test:grok-e2e (+ also in test:foreground-e2e).
+  "grok-acp": "opt-in-live-probe",
+  // Checked-in opt-in: npm run test:foreground-e2e with TENT_LIVE_PROVIDERS=…
+  "codex-acp": "opt-in-live-probe",
+  "claude-acp": "opt-in-live-probe",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "live-e2e",
-  "copilot-acp": "live-e2e",
+  "opencode-acp": "opt-in-live-probe",
+  "copilot-acp": "opt-in-live-probe",
+  // Mock suite + initialize/session-new probe evidence; no checked-in paid live E2E yet.
+  "pi-acp": "mock-tested",
 };
 
 const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
@@ -59,6 +69,29 @@ const NATIVE_FOREGROUND_BY_ADAPTER: Readonly<
   "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
   "copilot-acp": "verified",
+  // pi-acp maps loadSession + session-map to pi session files; native CLI
+  // hand-back not covered by Tent's foreground-e2e matrix yet.
+  "pi-acp": "unverified",
+};
+
+/** Optional non-secret catalog notes for honest UI copy. */
+const PROVIDER_CATALOG_NOTES: Readonly<
+  Partial<Record<ProductAcpAdapterId, string>>
+> = {
+  "grok-acp":
+    "mock suite + opt-in live E2E (test:grok-e2e); not automatic CI certification",
+  "codex-acp":
+    "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "claude-acp":
+    "mock suite + opt-in live probe (test:foreground-e2e); Node bridge may require ≥22",
+  "antigravity-acp":
+    "mock suite only; third-party agy-acp; canResume unproven",
+  "opencode-acp":
+    "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "copilot-acp":
+    "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "pi-acp":
+    "third-party pi-acp bridge; mock suite; initialize loadSession verified when pi is installed; no paid live E2E in default CI",
 };
 
 const LEVEL_SET = new Set<string>(PROVIDER_VERIFICATION_LEVELS);
@@ -81,6 +114,7 @@ export function defaultProductAcpAdapters(): ProviderAdapter[] {
     createAntigravityAcpAdapter(),
     createOpenCodeAcpAdapter(),
     createCopilotAcpAdapter(),
+    createPiAcpAdapter(),
   ];
 }
 
@@ -107,11 +141,13 @@ export function projectProviderCatalog(): ProviderCatalogProjection {
         `provider catalog missing verification level for product adapterId: ${adapterId}`
       );
     }
+    const notes = PROVIDER_CATALOG_NOTES[adapterId];
     providers.push({
       adapterId,
       verificationLevel,
       canResume: adapter.capabilities().canResume === true,
       nativeForeground: NATIVE_FOREGROUND_BY_ADAPTER[adapterId],
+      ...(notes ? { notes } : {}),
     });
   }
   return { providers };

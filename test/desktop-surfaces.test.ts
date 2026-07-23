@@ -118,7 +118,15 @@ test("buildGraphSelectionView never invents edges", () => {
 });
 
 test("verificationLevelLabel is closed and does not upgrade levels", () => {
-  assert.equal(verificationLevelLabel("live-e2e"), "live E2E");
+  assert.equal(verificationLevelLabel("opt-in-live-probe"), "opt-in live probe");
+  assert.equal(
+    verificationLevelLabel("live-verified"),
+    "live verified (this machine)"
+  );
+  assert.equal(
+    verificationLevelLabel("live-e2e"),
+    "opt-in live probe (legacy live-e2e)"
+  );
   assert.equal(verificationLevelLabel("mock-tested"), "mock-tested");
   assert.equal(verificationLevelLabel("adapter-implemented"), "adapter only");
   assert.equal(verificationLevelLabel("totally-verified"), "totally-verified");
@@ -128,7 +136,7 @@ test("mapProviderCatalogRows preserves authoritative verificationLevel", () => {
   const rows = mapProviderCatalogRows([
     {
       adapterId: "grok-acp",
-      verificationLevel: "live-e2e",
+      verificationLevel: "opt-in-live-probe",
       canResume: true,
       nativeForeground: "verified",
     },
@@ -143,16 +151,16 @@ test("mapProviderCatalogRows preserves authoritative verificationLevel", () => {
       nativeForeground: "unsupported",
     },
   ]);
-  assert.equal(rows[0]!.verificationLevel, "live-e2e");
-  assert.equal(rows[0]!.levelLabel, "live E2E");
+  assert.equal(rows[0]!.verificationLevel, "opt-in-live-probe");
+  assert.equal(rows[0]!.levelLabel, "opt-in live probe");
   assert.equal(rows[1]!.levelLabel, "mock-tested");
   assert.equal(rows[1]!.verificationLevel, "mock-tested");
-  assert.notEqual(rows[1]!.verificationLevel, "live-e2e");
+  assert.notEqual(rows[1]!.verificationLevel, "live-verified");
   assert.equal(rows[2]!.verificationLevel, "adapter-implemented");
   assert.equal(rows[2]!.levelLabel, "adapter only");
-  // UI must not upgrade non-Grok entries.
-  for (const row of rows.filter((r) => r.adapterId !== "grok-acp")) {
-    assert.notEqual(row.verificationLevel, "live-e2e");
+  // UI must not invent machine-local live-verified from weaker levels.
+  for (const row of rows) {
+    assert.notEqual(row.verificationLevel, "live-verified");
   }
 });
 
@@ -445,20 +453,25 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
     assert.ok(catalog.providers.length >= 1);
     for (const p of catalog.providers) {
       assert.ok(
-        ["adapter-implemented", "mock-tested", "live-e2e"].includes(p.verificationLevel),
+        [
+          "adapter-implemented",
+          "mock-tested",
+          "opt-in-live-probe",
+          "live-verified",
+        ].includes(p.verificationLevel),
         p.adapterId
       );
     }
     const rows = mapProviderCatalogRows(catalog.providers);
     assert.equal(rows.length, catalog.providers.length);
     // UI preserves the backend catalog instead of maintaining its own provider map.
-    const liveRows = rows.filter((r) => r.verificationLevel === "live-e2e");
-    const expectedLive = catalog.providers
-      .filter((p) => p.verificationLevel === "live-e2e")
+    const optInRows = rows.filter((r) => r.verificationLevel === "opt-in-live-probe");
+    const expectedOptIn = catalog.providers
+      .filter((p) => p.verificationLevel === "opt-in-live-probe")
       .map((p) => p.adapterId);
     assert.deepEqual(
-      liveRows.map((r) => r.adapterId),
-      expectedLive
+      optInRows.map((r) => r.adapterId),
+      expectedOptIn
     );
     for (const [index, row] of rows.entries()) {
       assert.equal(

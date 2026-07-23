@@ -226,9 +226,13 @@ test("profile.create/update/list/get skill+mcp whitelist + projection without se
     assert.ok(proj);
     assert.ok(Array.isArray(proj.skills));
     assert.ok(Array.isArray(proj.mcpServers));
+    // Honesty: skill projection is metadata / provider-dependent — not activation.
+    assert.equal(proj.skillsProjectionMode, "metadata-provider-dependent");
+    assert.match(String(proj.skillsNote || ""), /provider-dependent|not a claim of activation/i);
     const projJson = JSON.stringify(proj);
     assert.equal(projJson.includes("secret-value"), false);
     assert.equal(projJson.includes("Bearer "), false);
+    assert.equal(/activated|activation complete/i.test(projJson), false);
     // envKeys present as key names only
     assert.match(projJson, /MCP_API_KEY/);
 

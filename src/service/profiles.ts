@@ -22,6 +22,7 @@ import { CLAUDE_ACP_ADAPTER_ID } from "../adapters/claude-acp/index.js";
 import { ANTIGRAVITY_ACP_ADAPTER_ID } from "../adapters/antigravity-acp/index.js";
 import { OPENCODE_ACP_ADAPTER_ID } from "../adapters/opencode-acp/index.js";
 import { COPILOT_ACP_ADAPTER_ID } from "../adapters/copilot-acp/index.js";
+import { PI_ACP_ADAPTER_ID } from "../adapters/pi-acp/index.js";
 import {
   backupCorruptMachineFile,
   isNotFoundError,
@@ -61,6 +62,7 @@ export const CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
 export const ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
 export const OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
 export const COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
+export const PI_ACP_DEFAULT_PROFILE_ID = "pi-acp-default";
 
 /**
  * Explicit product-CRUD ACP adapter whitelist (not a universal provider router).
@@ -68,6 +70,7 @@ export const COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
  * Adapters are registered separately — this batch does not implement/seed non-grok providers.
  * Never include gemini-acp. antigravity-acp launches the separately installed
  * third-party agy-acp bridge; Tent never treats the official agy CLI as native ACP.
+ * pi-acp launches the third-party `pi-acp` bridge (spawns `pi --mode rpc`); not a stub.
  */
 export const PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
@@ -76,6 +79,7 @@ export const PRODUCT_ACP_ADAPTER_IDS = [
   "antigravity-acp",
   "opencode-acp",
   "copilot-acp",
+  "pi-acp",
 ] as const;
 
 export type ProductAcpAdapterId = (typeof PRODUCT_ACP_ADAPTER_IDS)[number];
@@ -98,6 +102,7 @@ const BUILTIN_DEFAULT_PROFILE_IDS = new Set<string>([
   ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
   OPENCODE_ACP_DEFAULT_PROFILE_ID,
   COPILOT_ACP_DEFAULT_PROFILE_ID,
+  PI_ACP_DEFAULT_PROFILE_ID,
 ]);
 
 export function isBuiltinDefaultProfileId(id: string): boolean {
@@ -569,6 +574,12 @@ export function defaultAgentProfiles(): AgentProfileConfig[] {
       displayNameKey: "profile.copilotAcp.default",
       acp: { permissionPolicy: "deny" },
     },
+    {
+      id: PI_ACP_DEFAULT_PROFILE_ID,
+      adapterId: PI_ACP_ADAPTER_ID,
+      displayNameKey: "profile.piAcp.default",
+      acp: { permissionPolicy: "deny" },
+    },
   ];
 }
 
@@ -620,6 +631,7 @@ const DISPLAY_NAME_BY_KEY: Record<string, string> = {
   "profile.antigravityAcp.default": "Antigravity ACP（agy-acp bridge）",
   "profile.openCodeAcp.default": "OpenCode ACP",
   "profile.copilotAcp.default": "GitHub Copilot ACP",
+  "profile.piAcp.default": "Pi ACP（pi-acp bridge）",
 };
 
 /**
@@ -627,6 +639,9 @@ const DISPLAY_NAME_BY_KEY: Record<string, string> = {
  * Non-secret fields only. Never includes env maps, API keys, tokens, or secret values.
  * Reads canonical `acp` bag (legacy grokAcp should already be migrated on load).
  * credentialRef is a vault id only; credentialExists is optional presence (no secret).
+ *
+ * Skills on this projection are name/path metadata only — not a claim that the
+ * provider will activate them. See skillsProjectionMode / skillsNote.
  */
 export function projectAgentProfile(
   profile: AgentProfileConfig,
@@ -666,7 +681,15 @@ export function projectAgentProfile(
     permissionPolicy: g?.permissionPolicy,
     promptTimeoutMs: g?.promptTimeoutMs,
     permissionTimeoutMs: g?.permissionTimeoutMs,
-    ...(skills !== undefined ? { skills } : {}),
+    ...(skills !== undefined
+      ? {
+          skills,
+          // Explicit honesty fields: metadata projection ≠ provider activation.
+          skillsProjectionMode: "metadata-provider-dependent" as const,
+          skillsNote:
+            "Skill name/path refs only (_meta.tent.skills). Provider-dependent; not a claim of activation.",
+        }
+      : {}),
     ...(mcpServers !== undefined ? { mcpServers } : {}),
   };
 }

@@ -22,6 +22,7 @@ import {
   mcpDraftsFromProjection,
   mcpSourceLine,
   PROFILE_NEXT_SESSION_TIP,
+  PROFILE_SKILLS_METADATA_TIP,
   profileDisplayLabel,
   removeMcpDraft,
   removeSkillDraft,
@@ -502,7 +503,7 @@ function renderProfiles(): string {
   return `
     <div class="settings-block">
       <div class="surface-section-head">Provider 验证级别</div>
-      <p class="faint">权威来源 provider.catalog · 忠实区分 adapter implemented / mock tested / live E2E · 仅 Grok 有 checked-in live E2E</p>
+      <p class="faint">权威来源 provider.catalog · 忠实区分 mock-tested / opt-in-live-probe / live-verified · 「有脚本」≠ 全面认证 · live-verified 仅指本机已证</p>
       ${providerNote}
     </div>
     <div class="settings-block">
@@ -601,7 +602,7 @@ function renderProfileEditor(p: AgentProfileProjection): string {
     </div>
     <div class="settings-block">
       <div class="surface-section-head">Skills</div>
-      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
+      <p class="faint">只保存 name/path/enabled · 不存 displayName · ${escapeHtml(PROFILE_SKILLS_METADATA_TIP)} · ${escapeHtml(PROFILE_NEXT_SESSION_TIP)}</p>
       ${skillList}
       <div class="settings-form settings-form-inline">
         <input id="skill-add-name" class="field" placeholder="skill name（id）" autocomplete="off" list="bundled-skill-list" />

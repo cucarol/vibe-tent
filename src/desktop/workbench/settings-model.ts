@@ -271,6 +271,13 @@ export function profileDisplayLabel(profile: {
 export const PROFILE_NEXT_SESSION_TIP =
   "本机启动配置 · Session 使用快照 · 改动下次会话生效";
 
+/**
+ * Honesty copy for profile skill refs: metadata projection only,
+ * provider-dependent — never claim skills are activated.
+ */
+export const PROFILE_SKILLS_METADATA_TIP =
+  "Skill 仅 name/path 元数据（_meta.tent.skills）· 是否生效取决于 provider · 不宣称已激活";
+
 /** Vault entry type shown in credentials UI (store has no multi-provider field). */
 export const CREDENTIAL_VAULT_TYPE = "secret";
 

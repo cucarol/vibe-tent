@@ -479,6 +479,7 @@ test("whitelist adapterId create + defaults; unknown/immutable/secret reject; le
       "antigravity-acp",
       "opencode-acp",
       "copilot-acp",
+      "pi-acp",
     ] as const;
 
     for (const adapterId of adapters) {

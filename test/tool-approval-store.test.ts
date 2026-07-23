@@ -10,9 +10,20 @@ import { test } from "node:test";
 import {
   ToolApprovalStore,
   makeToolApprovalId,
+  resolveToolApprovalWorkspaceId,
   type ToolPendingApproval,
 } from "../src/service/tool-approval-store.js";
 import { writeJsonAtomic } from "../src/machine-state.js";
+
+test("resolveToolApprovalWorkspaceId fails closed without session workspace", () => {
+  assert.equal(resolveToolApprovalWorkspaceId(undefined), null);
+  assert.equal(resolveToolApprovalWorkspaceId(null), null);
+  assert.equal(resolveToolApprovalWorkspaceId(""), null);
+  assert.equal(resolveToolApprovalWorkspaceId("   "), null);
+  assert.equal(resolveToolApprovalWorkspaceId("ws-real"), "ws-real");
+  assert.equal(resolveToolApprovalWorkspaceId("  ws-real  "), "ws-real");
+  // Foreground is intentionally not a parameter — callers must not pass it.
+});
 
 async function tempDir(prefix: string): Promise<string> {
   return fs.mkdtemp(path.join(os.tmpdir(), prefix));

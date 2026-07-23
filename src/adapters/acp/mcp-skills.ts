@@ -76,7 +76,10 @@ export interface AgentProfileMcpServer {
   headerCredentialRefs?: Record<string, string>;
 }
 
-/** Safe client projection (no secret values). */
+/**
+ * Safe client projection (no secret values).
+ * Name/path refs only — not a claim that the provider activated the skill.
+ */
 export type AgentProfileSkillProjection = {
   name: string;
   path?: string;

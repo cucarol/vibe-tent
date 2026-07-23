@@ -394,8 +394,19 @@ export type AgentProfileProjection = {
   permissionTimeoutMs?: number;
   /**
    * Skill name/path refs only — never SKILL.md bodies or secret values.
+   * Presence means Tent will project metadata to ACP (`_meta.tent.skills`);
+   * it does **not** mean the provider activated the skill.
    */
   skills?: import("../adapters/acp/mcp-skills.js").AgentProfileSkillProjection[];
+  /**
+   * How profile skills are applied at ACP session start.
+   * Always metadata / provider-dependent when skills are present — never "activated".
+   */
+  skillsProjectionMode?: "metadata-provider-dependent";
+  /**
+   * Short non-secret honesty note for clients/UI (skills metadata only).
+   */
+  skillsNote?: string;
   /**
    * MCP server descriptions with envKey/credentialRef *names* only — never secret values.
    */
@@ -406,11 +417,21 @@ export type AgentProfileProjection = {
  * Repository verification level for a product ACP adapter.
  * Authoritative values come only from service provider-catalog registry —
  * clients must not hardcode adapter → level maps.
+ *
+ * Honesty contract (do not upgrade in UI copy):
+ * - adapter-implemented — launch contract coded; no mock/live suite claim
+ * - mock-tested — offline mock ACP suite covers launch/protocol
+ * - opt-in-live-probe — checked-in opt-in live probe/script exists; NOT CI
+ *   certification and NOT "this machine is live-verified"
+ * - live-verified — durable evidence that a live path was proven on the
+ *   current operator machine (machine-local claim; static catalog rarely
+ *   uses this — never treat "has a script" as live-verified)
  */
 export const PROVIDER_VERIFICATION_LEVELS = [
   "adapter-implemented",
   "mock-tested",
-  "live-e2e",
+  "opt-in-live-probe",
+  "live-verified",
 ] as const;
 
 export type ProviderVerificationLevel =

@@ -6,5 +6,6 @@ export * from "./claude-acp/index.js";
 export * from "./antigravity-acp/index.js";
 export * from "./opencode-acp/index.js";
 export * from "./copilot-acp/index.js";
+export * from "./pi-acp/index.js";
 // Shared ACP stdio layer lives at ./acp — import directly to avoid
 // re-exporting DEFAULT_* timeouts that grok-acp / codex-acp / claude-acp also surface.

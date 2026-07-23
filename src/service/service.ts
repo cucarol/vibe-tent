@@ -22,6 +22,7 @@ import { generateServiceToken } from "./auth.js";
 import { A2AApprovalStore } from "./a2a-store.js";
 import {
   makeToolApprovalId,
+  resolveToolApprovalWorkspaceId,
   ToolApprovalStore,
 } from "./tool-approval-store.js";
 import { UserAskStore } from "./user-ask-store.js";
@@ -41,6 +42,7 @@ import { createClaudeAcpAdapter } from "../adapters/claude-acp/index.js";
 import { createAntigravityAcpAdapter } from "../adapters/antigravity-acp/index.js";
 import { createOpenCodeAcpAdapter } from "../adapters/opencode-acp/index.js";
 import { createCopilotAcpAdapter } from "../adapters/copilot-acp/index.js";
+import { createPiAcpAdapter } from "../adapters/pi-acp/index.js";
 import type { AcpPermissionAskHooks } from "../adapters/acp/index.js";
 import { createFakeAdapter } from "../adapters/fake/index.js";
 import { loadTaskEnvelopes } from "../core/task.js";
@@ -191,8 +193,10 @@ async function startOwnedLocalTentService(
       const runtime = runtimeHolder.current;
       if (!runtime) return "deny";
       const rec = await runtime.registry.read(info.sessionId);
-      const workspaceId =
-        rec?.workspace ?? workspaceHost.getForegroundId() ?? "";
+      // Fail closed: tool approval must bind the session's workspace only.
+      // Never guess workspaceHost.getForegroundId() — wrong workspace would
+      // project pending UI / approve to the incorrect Tent mount.
+      const workspaceId = resolveToolApprovalWorkspaceId(rec?.workspace);
       if (!workspaceId) return "deny";
 
       let taskPath: string | undefined;
@@ -280,6 +284,7 @@ async function startOwnedLocalTentService(
       createAntigravityAcpAdapter(acpPermissionHooks),
       createOpenCodeAcpAdapter(acpPermissionHooks),
       createCopilotAcpAdapter(acpPermissionHooks),
+      createPiAcpAdapter(acpPermissionHooks),
     ],
     resolveProfileEnv: async (profile) => {
       const ref =

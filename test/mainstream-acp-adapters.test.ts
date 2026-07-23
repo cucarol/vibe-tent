@@ -29,6 +29,10 @@ import {
   COPILOT_ACP_NPX_PACKAGE,
   createCopilotAcpAdapter,
 } from "../src/adapters/copilot-acp/index.js";
+import {
+  PI_ACP_NPX_PACKAGE,
+  createPiAcpAdapter,
+} from "../src/adapters/pi-acp/index.js";
 import type { ProviderAdapter } from "../src/adapters/types.js";
 import { defaultNpxLaunch } from "../src/adapters/acp/index.js";
 import type { RuntimeEvent } from "../src/runtime/types.js";
@@ -258,12 +262,52 @@ test("Copilot ACP may reuse local login or require an explicit env key", () => {
   );
 });
 
+test("Pi ACP resolves the third-party pi-acp npx bridge", () => {
+  const adapter = createPiAcpAdapter();
+  const launch = adapter.resolveLaunch({
+    sessionId: "ss-pi01",
+    profileId: "pi-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    extras: { acp: {} },
+  });
+  const npx = defaultNpxLaunch();
+  assert.equal(launch.command, npx.command);
+  assert.deepEqual(launch.args, [...npx.argsPrefix, "--yes", PI_ACP_NPX_PACKAGE]);
+  assert.equal(adapter.capabilities().canResume, true);
+});
+
+test("Pi ACP may reuse local pi login or require an explicit env key", () => {
+  const local = createPiAcpAdapter().resolveLaunch({
+    sessionId: "ss-pi02",
+    profileId: "pi-acp-default",
+    cwd: process.cwd(),
+    env: {},
+    extras: { acp: {} },
+  });
+  assert.equal(local.env.OPENAI_API_KEY, undefined);
+
+  const required = createPiAcpAdapter({ resolveEnvValue: () => undefined });
+  assert.throws(
+    () =>
+      required.resolveLaunch({
+        sessionId: "ss-pi03",
+        profileId: "pi-acp-default",
+        cwd: process.cwd(),
+        env: {},
+        extras: { acp: { envKey: "OPENAI_API_KEY" } },
+      }),
+    /省略 envKey 可复用本机 pi 登录/
+  );
+});
+
 for (const [name, adapter] of [
   ["Codex", createCodexAcpAdapter()],
   ["Claude", createClaudeAcpAdapter()],
   ["Antigravity", createAntigravityAcpAdapter()],
   ["OpenCode", createOpenCodeAcpAdapter()],
   ["Copilot", createCopilotAcpAdapter()],
+  ["Pi", createPiAcpAdapter()],
 ] as const satisfies ReadonlyArray<readonly [string, ProviderAdapter]>) {
   test(`${name} ACP managed session completes through the offline mock without authenticate`, async () => {
     const cwd = await tempDir(`tent-${name.toLowerCase()}-acp-`);
@@ -312,6 +356,7 @@ const RESUME_CAPABLE_MAINSTREAM: ReadonlyArray<
   ["Codex", createCodexAcpAdapter],
   ["Claude", createClaudeAcpAdapter],
   ["Copilot", createCopilotAcpAdapter],
+  ["Pi", createPiAcpAdapter],
 ];
 
 test("mainstream ACP loadSession adapters advertise canResume; Antigravity stays false", () => {

@@ -2550,7 +2550,7 @@ function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -2587,7 +2587,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../Tent/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -4716,13 +4716,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../Tent/node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../Tent/node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -4756,7 +4756,7 @@ function push(list2, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -4796,7 +4796,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -4814,12 +4814,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../Tent/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -4851,7 +4851,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../Tent/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -4873,7 +4873,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../Tent/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -4923,7 +4923,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../Tent/node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -5105,7 +5105,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../Tent/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -5115,7 +5115,7 @@ function classifyCharacter(code) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../Tent/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -5129,7 +5129,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -5260,7 +5260,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -5361,7 +5361,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -5376,7 +5376,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -5434,7 +5434,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -5460,7 +5460,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -5525,7 +5525,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -5708,7 +5708,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -5772,7 +5772,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -5887,7 +5887,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -6080,7 +6080,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../Tent/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -6233,7 +6233,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -6304,7 +6304,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../Tent/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -6396,7 +6396,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../Tent/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -6457,7 +6457,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../Tent/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -6519,7 +6519,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../Tent/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -6538,7 +6538,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -6624,7 +6624,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -6645,7 +6645,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -6736,7 +6736,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -6803,7 +6803,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -7182,7 +7182,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -7488,7 +7488,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -7714,7 +7714,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -7745,7 +7745,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -7767,7 +7767,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -7782,7 +7782,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -7821,7 +7821,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -7951,7 +7951,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -8043,7 +8043,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../Tent/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -8081,7 +8081,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../Tent/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -8220,7 +8220,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../Tent/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -8295,7 +8295,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -8618,7 +8618,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../Tent/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -8644,14 +8644,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../Tent/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../Tent/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -8730,7 +8730,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../Tent/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -8748,7 +8748,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -8774,7 +8774,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -14147,7 +14147,8 @@ function formatTaskInputPrompt(input) {
 var PROVIDER_VERIFICATION_LEVELS = [
   "adapter-implemented",
   "mock-tested",
-  "live-e2e"
+  "opt-in-live-probe",
+  "live-verified"
 ];
 var CLIENT_METHODS = [
   "service.health",
@@ -16943,6 +16944,115 @@ function createCopilotAcpAdapter(options) {
   return new CopilotAcpProviderAdapter(options);
 }
 
+// src/adapters/pi-acp/types.ts
+var PI_ACP_ADAPTER_ID = "pi-acp";
+var PI_ACP_NPX_PACKAGE = "pi-acp";
+
+// src/adapters/pi-acp/index.ts
+var PiAcpProviderAdapter = class {
+  constructor(options = {}) {
+    this.id = PI_ACP_ADAPTER_ID;
+    this.displayNameKey = "adapter.piAcp.displayName";
+    this.resolveEnvValue = options.resolveEnvValue ?? ((envKey, planEnv) => resolvePlanOrProcessEnv(envKey, planEnv));
+    this.onPermissionAsk = options.onPermissionAsk;
+  }
+  capabilities() {
+    return loadSessionAcpCapabilities("external-app");
+  }
+  /**
+   * Launch plan validation / env injection only.
+   * Real ACP needs bidirectional stdio — AgentRuntime uses startManagedSession.
+   */
+  resolveLaunch(plan) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const { command, args } = resolveNpxAcpLaunch({
+      planCommand: plan.command,
+      planArgs: plan.args,
+      executable: opts.executable,
+      defaultPackage: PI_ACP_NPX_PACKAGE
+    });
+    const env = {
+      ...plan.env,
+      TENT_SESSION_ID: plan.sessionId,
+      TENT_PROFILE_ID: plan.profileId
+    };
+    if (plan.roleName) env.TENT_ROLE_NAME = plan.roleName;
+    if (opts.envKey) {
+      const secret = this.resolveEnvValue(opts.envKey, plan.env);
+      if (!secret || !secret.trim()) {
+        throw new Error(
+          `\u672A\u914D\u7F6E\u73AF\u5883\u53D8\u91CF ${opts.envKey}\uFF1Api-acp profile \u660E\u786E\u8981\u6C42\u8BE5\u503C\uFF08\u4EC5 service \u8FDB\u7A0B / LaunchPlan.env\uFF09\u3002\u7701\u7565 envKey \u53EF\u590D\u7528\u672C\u673A pi \u767B\u5F55/\u914D\u7F6E\u3002`
+        );
+      }
+      env[opts.envKey] = secret;
+    }
+    return {
+      command,
+      args,
+      cwd: plan.cwd,
+      env,
+      stopSignal: "SIGTERM"
+    };
+  }
+  async startManagedSession(plan, emit2) {
+    const client = this.createClient(plan, emit2);
+    return startManagedAcpSession({ plan, emit: emit2, client });
+  }
+  /**
+   * Native ACP resume: new bridge process + session/load (never session/new).
+   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   */
+  async resumeManagedSession(plan, token, emit2) {
+    const providerSessionId = (token.providerSessionId ?? token.raw).trim();
+    if (!providerSessionId) {
+      throw new Error(
+        "pi-acp resume requires non-empty provider session id"
+      );
+    }
+    const client = this.createClient(plan, emit2);
+    return resumeManagedAcpSession({
+      plan,
+      emit: emit2,
+      client,
+      providerSessionId,
+      bootstrapPrompt: plan.bootstrapPrompt
+    });
+  }
+  createClient(plan, emit2) {
+    const opts = normalizeSharedAcpOpts(readAcpExtras(plan.extras));
+    const launch = this.resolveLaunch(plan);
+    const sessionProj = readAcpSessionProjection(plan.extras);
+    const imageOpts = readBootstrapImageClientOptions(plan);
+    const hooks = bindAcpPermissionHooks(plan.sessionId, opts.permissionPolicy, {
+      onPermissionAsk: this.onPermissionAsk
+    });
+    return new AcpClient({
+      command: launch.command,
+      args: launch.args,
+      cwd: launch.cwd,
+      env: launch.env,
+      sessionId: plan.sessionId,
+      promptTimeoutMs: opts.promptTimeoutMs,
+      permissionPolicy: opts.permissionPolicy,
+      mcpServers: sessionProj.mcpServers,
+      skills: sessionProj.skills,
+      ...imageOpts,
+      label: "Pi ACP",
+      emit: emit2,
+      onPermissionAsk: hooks.onPermissionAsk
+    });
+  }
+  parseResumeToken(raw) {
+    return parseAcpResumeToken(raw);
+  }
+  mapExit(code, signal) {
+    return mapAcpProcessExit(code, signal);
+  }
+};
+function createPiAcpAdapter(options) {
+  return new PiAcpProviderAdapter(options);
+}
+
 // src/service/credential-store.ts
 import * as fs12 from "node:fs/promises";
 import * as path11 from "node:path";
@@ -17473,13 +17583,15 @@ var CLAUDE_ACP_DEFAULT_PROFILE_ID = "claude-acp-default";
 var ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID = "antigravity-acp-default";
 var OPENCODE_ACP_DEFAULT_PROFILE_ID = "opencode-acp-default";
 var COPILOT_ACP_DEFAULT_PROFILE_ID = "copilot-acp-default";
+var PI_ACP_DEFAULT_PROFILE_ID = "pi-acp-default";
 var PRODUCT_ACP_ADAPTER_IDS = [
   "grok-acp",
   "codex-acp",
   "claude-acp",
   "antigravity-acp",
   "opencode-acp",
-  "copilot-acp"
+  "copilot-acp",
+  "pi-acp"
 ];
 var PRODUCT_ACP_ADAPTER_SET = new Set(PRODUCT_ACP_ADAPTER_IDS);
 function isProductAcpAdapterId(id) {
@@ -17492,7 +17604,8 @@ var BUILTIN_DEFAULT_PROFILE_IDS = /* @__PURE__ */ new Set([
   CLAUDE_ACP_DEFAULT_PROFILE_ID,
   ANTIGRAVITY_ACP_DEFAULT_PROFILE_ID,
   OPENCODE_ACP_DEFAULT_PROFILE_ID,
-  COPILOT_ACP_DEFAULT_PROFILE_ID
+  COPILOT_ACP_DEFAULT_PROFILE_ID,
+  PI_ACP_DEFAULT_PROFILE_ID
 ]);
 function isBuiltinDefaultProfileId(id) {
   return BUILTIN_DEFAULT_PROFILE_IDS.has(id);
@@ -17870,6 +17983,12 @@ function defaultAgentProfiles() {
       adapterId: COPILOT_ACP_ADAPTER_ID,
       displayNameKey: "profile.copilotAcp.default",
       acp: { permissionPolicy: "deny" }
+    },
+    {
+      id: PI_ACP_DEFAULT_PROFILE_ID,
+      adapterId: PI_ACP_ADAPTER_ID,
+      displayNameKey: "profile.piAcp.default",
+      acp: { permissionPolicy: "deny" }
     }
   ];
 }
@@ -17914,7 +18033,8 @@ var DISPLAY_NAME_BY_KEY = {
   "profile.claudeAcp.default": "Claude Agent ACP",
   "profile.antigravityAcp.default": "Antigravity ACP\uFF08agy-acp bridge\uFF09",
   "profile.openCodeAcp.default": "OpenCode ACP",
-  "profile.copilotAcp.default": "GitHub Copilot ACP"
+  "profile.copilotAcp.default": "GitHub Copilot ACP",
+  "profile.piAcp.default": "Pi ACP\uFF08pi-acp bridge\uFF09"
 };
 function projectAgentProfile(profile, opts) {
   const testOnly = isTestOnlyProfile(profile);
@@ -17940,7 +18060,12 @@ function projectAgentProfile(profile, opts) {
     permissionPolicy: g?.permissionPolicy,
     promptTimeoutMs: g?.promptTimeoutMs,
     permissionTimeoutMs: g?.permissionTimeoutMs,
-    ...skills !== void 0 ? { skills } : {},
+    ...skills !== void 0 ? {
+      skills,
+      // Explicit honesty fields: metadata projection ≠ provider activation.
+      skillsProjectionMode: "metadata-provider-dependent",
+      skillsNote: "Skill name/path refs only (_meta.tent.skills). Provider-dependent; not a claim of activation."
+    } : {},
     ...mcpServers !== void 0 ? { mcpServers } : {}
   };
 }
@@ -17963,12 +18088,16 @@ function projectAgentProfiles(profiles, opts) {
 
 // src/service/provider-catalog.ts
 var PROVIDER_VERIFICATION_LEVELS_BY_ADAPTER = {
-  "grok-acp": "live-e2e",
-  "codex-acp": "live-e2e",
-  "claude-acp": "live-e2e",
+  // Checked-in opt-in: npm run test:grok-e2e (+ also in test:foreground-e2e).
+  "grok-acp": "opt-in-live-probe",
+  // Checked-in opt-in: npm run test:foreground-e2e with TENT_LIVE_PROVIDERS=…
+  "codex-acp": "opt-in-live-probe",
+  "claude-acp": "opt-in-live-probe",
   "antigravity-acp": "mock-tested",
-  "opencode-acp": "live-e2e",
-  "copilot-acp": "live-e2e"
+  "opencode-acp": "opt-in-live-probe",
+  "copilot-acp": "opt-in-live-probe",
+  // Mock suite + initialize/session-new probe evidence; no checked-in paid live E2E yet.
+  "pi-acp": "mock-tested"
 };
 var NATIVE_FOREGROUND_BY_ADAPTER = {
   "grok-acp": "verified",
@@ -17976,7 +18105,19 @@ var NATIVE_FOREGROUND_BY_ADAPTER = {
   "claude-acp": "verified",
   "antigravity-acp": "unsupported",
   "opencode-acp": "verified",
-  "copilot-acp": "verified"
+  "copilot-acp": "verified",
+  // pi-acp maps loadSession + session-map to pi session files; native CLI
+  // hand-back not covered by Tent's foreground-e2e matrix yet.
+  "pi-acp": "unverified"
+};
+var PROVIDER_CATALOG_NOTES = {
+  "grok-acp": "mock suite + opt-in live E2E (test:grok-e2e); not automatic CI certification",
+  "codex-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "claude-acp": "mock suite + opt-in live probe (test:foreground-e2e); Node bridge may require \u226522",
+  "antigravity-acp": "mock suite only; third-party agy-acp; canResume unproven",
+  "opencode-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "copilot-acp": "mock suite + opt-in live probe (test:foreground-e2e); not automatic CI certification",
+  "pi-acp": "third-party pi-acp bridge; mock suite; initialize loadSession verified when pi is installed; no paid live E2E in default CI"
 };
 var LEVEL_SET = new Set(PROVIDER_VERIFICATION_LEVELS);
 function defaultProductAcpAdapters() {
@@ -17986,7 +18127,8 @@ function defaultProductAcpAdapters() {
     createClaudeAcpAdapter(),
     createAntigravityAcpAdapter(),
     createOpenCodeAcpAdapter(),
-    createCopilotAcpAdapter()
+    createCopilotAcpAdapter(),
+    createPiAcpAdapter()
   ];
 }
 function projectProviderCatalog() {
@@ -18007,11 +18149,13 @@ function projectProviderCatalog() {
         `provider catalog missing verification level for product adapterId: ${adapterId}`
       );
     }
+    const notes = PROVIDER_CATALOG_NOTES[adapterId];
     providers.push({
       adapterId,
       verificationLevel,
       canResume: adapter.capabilities().canResume === true,
-      nativeForeground: NATIVE_FOREGROUND_BY_ADAPTER[adapterId]
+      nativeForeground: NATIVE_FOREGROUND_BY_ADAPTER[adapterId],
+      ...notes ? { notes } : {}
     });
   }
   return { providers };
@@ -24473,6 +24617,11 @@ function makeWorkspaceId(workspaceRoot) {
 // src/service/tool-approval-store.ts
 import * as fs17 from "node:fs/promises";
 import * as path16 from "node:path";
+function resolveToolApprovalWorkspaceId(sessionWorkspace) {
+  if (typeof sessionWorkspace !== "string") return null;
+  const workspaceId = sessionWorkspace.trim();
+  return workspaceId || null;
+}
 function cloneApproval2(item) {
   return {
     ...item,
@@ -25543,7 +25692,8 @@ var AgentRuntime = class {
       createClaudeAcpAdapter(),
       createAntigravityAcpAdapter(),
       createOpenCodeAcpAdapter(),
-      createCopilotAcpAdapter()
+      createCopilotAcpAdapter(),
+      createPiAcpAdapter()
     ];
     for (const a of adapterList) {
       this.adapters.set(a.id, a);
@@ -25568,6 +25718,9 @@ var AgentRuntime = class {
     }
     if (!this.adapters.has(COPILOT_ACP_ADAPTER_ID)) {
       this.adapters.set(COPILOT_ACP_ADAPTER_ID, createCopilotAcpAdapter());
+    }
+    if (!this.adapters.has(PI_ACP_ADAPTER_ID)) {
+      this.adapters.set(PI_ACP_ADAPTER_ID, createPiAcpAdapter());
     }
     this.supervisor = new ProcessSupervisor({
       gracefulMs: options.gracefulMs ?? 2e3,
@@ -26985,7 +27138,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       const runtime2 = runtimeHolder.current;
       if (!runtime2) return "deny";
       const rec = await runtime2.registry.read(info.sessionId);
-      const workspaceId = rec?.workspace ?? workspaceHost.getForegroundId() ?? "";
+      const workspaceId = resolveToolApprovalWorkspaceId(rec?.workspace);
       if (!workspaceId) return "deny";
       let taskPath;
       let taskId;
@@ -27054,7 +27207,8 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
       createClaudeAcpAdapter(acpPermissionHooks),
       createAntigravityAcpAdapter(acpPermissionHooks),
       createOpenCodeAcpAdapter(acpPermissionHooks),
-      createCopilotAcpAdapter(acpPermissionHooks)
+      createCopilotAcpAdapter(acpPermissionHooks),
+      createPiAcpAdapter(acpPermissionHooks)
     ],
     resolveProfileEnv: async (profile) => {
       const ref = typeof profile.acp?.credentialRef === "string" ? profile.acp.credentialRef.trim() : "";
