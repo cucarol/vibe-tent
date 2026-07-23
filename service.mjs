@@ -252,6 +252,7 @@ var ORDER_PATH = "order.json";
 var MUTATION_LOCK_PATH = "mutation.lock";
 var RULES_PATH = "RULES.md";
 var WORKSPACE_SETTINGS_PATH = "settings.json";
+var ANNOTATIONS_PATH = "annotations.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var AGENT_PROFILES_TEMP_DIR = "agent-profiles";
@@ -269,6 +270,7 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
   MUTATION_LOCK_PATH,
   RULES_PATH,
   WORKSPACE_SETTINGS_PATH,
+  ANNOTATIONS_PATH,
   "index.md",
   "log.md"
 ]);
@@ -11778,6 +11780,367 @@ function isNotFound(error) {
   return typeof error === "object" && error !== null && "code" in error && error.code === "ENOENT";
 }
 
+// src/core/annotation.ts
+var ANNOTATION_ID_PREFIX = "an-";
+var AN_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+var AnnotationError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "AnnotationError";
+  }
+};
+var ANNOTATION_STATUSES = /* @__PURE__ */ new Set(["open", "resolved"]);
+function isRecord4(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRequiredString(value) {
+  return typeof value === "string" && value.length > 0;
+}
+function isNonNegativeInt(value) {
+  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+}
+function isValidDate(value) {
+  return Number.isFinite(Date.parse(value));
+}
+function cloneRecord(item) {
+  return { ...item };
+}
+function defaultClock() {
+  return { now: () => (/* @__PURE__ */ new Date()).toISOString() };
+}
+function makeAnnotationId(rand = Math.random, len = 8) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += AN_ALPHABET[Math.floor(rand() * AN_ALPHABET.length)];
+  }
+  return ANNOTATION_ID_PREFIX + s;
+}
+function makeUniqueAnnotationId(existing, rand = Math.random) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = makeAnnotationId(rand);
+    if (!existing.has(id)) return id;
+  }
+  return makeAnnotationId(rand, 12);
+}
+function isAnnotationId(id) {
+  return id.startsWith(ANNOTATION_ID_PREFIX) && id.length > ANNOTATION_ID_PREFIX.length;
+}
+function validateAnnotationAnchor(documentBody, quote, start, end) {
+  if (typeof quote !== "string" || quote.length === 0) {
+    throw new AnnotationError("INVALID_INPUT", "quote must be a non-empty string");
+  }
+  if (!Number.isInteger(start) || !Number.isInteger(end)) {
+    throw new AnnotationError("RANGE", "start/end must be integers");
+  }
+  if (start < 0 || end < 0 || start > end) {
+    throw new AnnotationError("RANGE", "start/end out of order or negative");
+  }
+  if (end > documentBody.length) {
+    throw new AnnotationError("RANGE", "annotation range exceeds document body");
+  }
+  const slice = documentBody.slice(start, end);
+  if (slice !== quote) {
+    throw new AnnotationError(
+      "QUOTE_MISMATCH",
+      "quote does not match document body at the given range"
+    );
+  }
+}
+function findQuoteOccurrences(body, quote) {
+  if (!quote) return [];
+  const hits = [];
+  let from = 0;
+  while (from <= body.length - quote.length) {
+    const idx = body.indexOf(quote, from);
+    if (idx === -1) break;
+    hits.push(idx);
+    from = idx + 1;
+  }
+  return hits;
+}
+function projectAnnotation(record, documentBody) {
+  const base = cloneRecord(record);
+  if (documentBody === null) {
+    return {
+      ...base,
+      anchorState: "orphan",
+      orphanReason: "missing-node"
+    };
+  }
+  const { quote, start, end } = record;
+  if (Number.isInteger(start) && Number.isInteger(end) && start >= 0 && end >= start && end <= documentBody.length && documentBody.slice(start, end) === quote) {
+    return {
+      ...base,
+      anchorState: "anchored",
+      currentStart: start,
+      currentEnd: end
+    };
+  }
+  const hits = findQuoteOccurrences(documentBody, quote);
+  if (hits.length === 0) {
+    return {
+      ...base,
+      anchorState: "orphan",
+      orphanReason: "quote-mismatch"
+    };
+  }
+  if (hits.length === 1) {
+    const currentStart2 = hits[0];
+    return {
+      ...base,
+      anchorState: "relocated",
+      currentStart: currentStart2,
+      currentEnd: currentStart2 + quote.length
+    };
+  }
+  let bestDist = Number.POSITIVE_INFINITY;
+  let bestStarts = [];
+  for (const hit of hits) {
+    const dist = Math.abs(hit - start);
+    if (dist < bestDist) {
+      bestDist = dist;
+      bestStarts = [hit];
+    } else if (dist === bestDist) {
+      bestStarts.push(hit);
+    }
+  }
+  if (bestStarts.length !== 1) {
+    return {
+      ...base,
+      anchorState: "orphan",
+      orphanReason: "ambiguous"
+    };
+  }
+  const currentStart = bestStarts[0];
+  return {
+    ...base,
+    anchorState: "relocated",
+    currentStart,
+    currentEnd: currentStart + quote.length
+  };
+}
+function parseAnnotation(value) {
+  if (!isRecord4(value)) return null;
+  const {
+    id,
+    nodeId,
+    quote,
+    start,
+    end,
+    documentEtag,
+    body,
+    author,
+    status,
+    createdAt,
+    updatedAt,
+    resolvedAt
+  } = value;
+  if (!isRequiredString(id) || !isAnnotationId(id) || !isRequiredString(nodeId) || !isRequiredString(quote) || !isNonNegativeInt(start) || !isNonNegativeInt(end) || end < start || !isRequiredString(documentEtag) || typeof body !== "string" || body.length === 0 || author !== "user" || typeof status !== "string" || !ANNOTATION_STATUSES.has(status) || !isRequiredString(createdAt) || !isRequiredString(updatedAt) || !isValidDate(createdAt) || !isValidDate(updatedAt) || resolvedAt !== void 0 && (typeof resolvedAt !== "string" || !isValidDate(resolvedAt))) {
+    return null;
+  }
+  return {
+    id,
+    nodeId,
+    quote,
+    start,
+    end,
+    documentEtag,
+    body,
+    author: "user",
+    status,
+    createdAt,
+    updatedAt,
+    ...resolvedAt !== void 0 ? { resolvedAt } : {}
+  };
+}
+function parseAnnotationFile(value) {
+  if (!isRecord4(value) || !Array.isArray(value.annotations)) return null;
+  const annotations = [];
+  for (const item of value.annotations) {
+    const parsed = parseAnnotation(item);
+    if (!parsed) return null;
+    annotations.push(parsed);
+  }
+  return { annotations };
+}
+function emptyFile() {
+  return { annotations: [] };
+}
+async function writeFileUnlocked(fs19, file) {
+  const ordered = {
+    annotations: file.annotations.map((a) => {
+      const row = {
+        id: a.id,
+        nodeId: a.nodeId,
+        quote: a.quote,
+        start: a.start,
+        end: a.end,
+        documentEtag: a.documentEtag,
+        body: a.body,
+        author: a.author,
+        status: a.status,
+        createdAt: a.createdAt,
+        updatedAt: a.updatedAt
+      };
+      if (a.resolvedAt !== void 0) row.resolvedAt = a.resolvedAt;
+      return row;
+    })
+  };
+  await fs19.writeFile(ANNOTATIONS_PATH, JSON.stringify(ordered, null, 2) + "\n");
+}
+async function loadAnnotations(fs19) {
+  if (!await fs19.exists(ANNOTATIONS_PATH)) {
+    return emptyFile();
+  }
+  try {
+    const parsed = JSON.parse(await fs19.readFile(ANNOTATIONS_PATH));
+    const file = parseAnnotationFile(parsed);
+    if (!file) {
+      throw new Error("invalid annotation file shape");
+    }
+    return {
+      annotations: file.annotations.map(cloneRecord)
+    };
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs19, ANNOTATIONS_PATH);
+    const reset = emptyFile();
+    await writeFileUnlocked(fs19, reset);
+    warnRegistryRecovered(
+      ANNOTATIONS_PATH,
+      backupPath,
+      "reset",
+      "IMPORTANT: annotations cannot be inferred; restore from the backup if needed."
+    );
+    return reset;
+  }
+}
+async function listAnnotationRecords(fs19, nodeId) {
+  const file = await loadAnnotations(fs19);
+  const rows = nodeId ? file.annotations.filter((a) => a.nodeId === nodeId) : file.annotations;
+  return rows.map(cloneRecord);
+}
+async function createAnnotation(fs19, input, opts) {
+  const clock = opts?.clock ?? defaultClock();
+  const rand = opts?.rand ?? Math.random;
+  if (!isRequiredString(input.nodeId)) {
+    throw new AnnotationError("INVALID_INPUT", "nodeId is required");
+  }
+  if (!isRequiredString(input.documentEtag)) {
+    throw new AnnotationError("INVALID_INPUT", "documentEtag is required");
+  }
+  if (typeof input.body !== "string" || input.body.trim().length === 0) {
+    throw new AnnotationError("INVALID_INPUT", "body must be a non-empty string");
+  }
+  if (typeof input.quote !== "string" || input.quote.length === 0) {
+    throw new AnnotationError("INVALID_INPUT", "quote must be a non-empty string");
+  }
+  validateAnnotationAnchor(input.documentBody, input.quote, input.start, input.end);
+  return withTentMutation(fs19, async () => {
+    const file = await loadAnnotations(fs19);
+    const existing = new Set(file.annotations.map((a) => a.id));
+    const now = clock.now();
+    const record = {
+      id: makeUniqueAnnotationId(existing, rand),
+      nodeId: input.nodeId,
+      quote: input.quote,
+      start: input.start,
+      end: input.end,
+      documentEtag: input.documentEtag,
+      body: input.body.trim(),
+      author: "user",
+      status: "open",
+      createdAt: now,
+      updatedAt: now
+    };
+    file.annotations.push(record);
+    await writeFileUnlocked(fs19, file);
+    return cloneRecord(record);
+  });
+}
+async function resolveAnnotation(fs19, id, opts) {
+  const clock = opts?.clock ?? defaultClock();
+  return withTentMutation(fs19, async () => {
+    const file = await loadAnnotations(fs19);
+    const idx = file.annotations.findIndex((a) => a.id === id);
+    if (idx < 0) {
+      throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
+    }
+    const current = file.annotations[idx];
+    if (current.status === "resolved") {
+      return cloneRecord(current);
+    }
+    const now = clock.now();
+    const next = {
+      ...current,
+      status: "resolved",
+      updatedAt: now,
+      resolvedAt: now
+    };
+    file.annotations[idx] = next;
+    await writeFileUnlocked(fs19, file);
+    return cloneRecord(next);
+  });
+}
+async function reopenAnnotation(fs19, id, opts) {
+  const clock = opts?.clock ?? defaultClock();
+  return withTentMutation(fs19, async () => {
+    const file = await loadAnnotations(fs19);
+    const idx = file.annotations.findIndex((a) => a.id === id);
+    if (idx < 0) {
+      throw new AnnotationError("NOT_FOUND", `Annotation not found: ${id}`);
+    }
+    const current = file.annotations[idx];
+    if (current.status === "open") {
+      const cleaned = {
+        id: current.id,
+        nodeId: current.nodeId,
+        quote: current.quote,
+        start: current.start,
+        end: current.end,
+        documentEtag: current.documentEtag,
+        body: current.body,
+        author: "user",
+        status: "open",
+        createdAt: current.createdAt,
+        updatedAt: current.updatedAt
+      };
+      if (current.resolvedAt !== void 0) {
+        file.annotations[idx] = cleaned;
+        await writeFileUnlocked(fs19, file);
+      }
+      return cloneRecord(file.annotations[idx]);
+    }
+    const now = clock.now();
+    const next = {
+      id: current.id,
+      nodeId: current.nodeId,
+      quote: current.quote,
+      start: current.start,
+      end: current.end,
+      documentEtag: current.documentEtag,
+      body: current.body,
+      author: "user",
+      status: "open",
+      createdAt: current.createdAt,
+      updatedAt: now
+    };
+    file.annotations[idx] = next;
+    await writeFileUnlocked(fs19, file);
+    return cloneRecord(next);
+  });
+}
+async function deleteAnnotation(fs19, id) {
+  return withTentMutation(fs19, async () => {
+    const file = await loadAnnotations(fs19);
+    const idx = file.annotations.findIndex((a) => a.id === id);
+    if (idx < 0) return null;
+    const [removed] = file.annotations.splice(idx, 1);
+    await writeFileUnlocked(fs19, file);
+    return removed ? cloneRecord(removed) : null;
+  });
+}
+
 // src/core/workspace.ts
 import * as nodePath3 from "node:path";
 import * as nodeFs from "node:fs/promises";
@@ -12476,20 +12839,20 @@ var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
 function cloneApproval(item) {
   return { ...item };
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString(value) {
+function isRequiredString2(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isOptionalString(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate(value) {
+function isValidDate2(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseA2AApproval(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord5(value)) return null;
   const {
     id,
     workspaceId,
@@ -12505,7 +12868,7 @@ function parseA2AApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString(id) || !isRequiredString(workspaceId) || !isRequiredString(taskPath) || !isRequiredString(role) || !isRequiredString(profileId) || !isRequiredString(createdAt) || !isValidDate(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString(taskId) || !isOptionalString(bootstrapPrompt) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate(resolvedAt)) {
+  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(taskPath) || !isRequiredString2(role) || !isRequiredString2(profileId) || !isRequiredString2(createdAt) || !isValidDate2(createdAt) || typeof policy !== "string" || !A2A_POLICIES.has(policy) || typeof callerKind !== "string" || !A2A_CALLER_KINDS.has(callerKind) || typeof status !== "string" || !A2A_APPROVAL_STATUSES.has(status) || !isOptionalString(taskId) || !isOptionalString(bootstrapPrompt) || !isOptionalString(resolvedAt) || !isOptionalString(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
     return null;
   }
   return {
@@ -12665,26 +13028,26 @@ var USER_ASK_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "cancelled"
 ]);
-function isRecord5(value) {
+function isRecord6(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString2(value) {
+function isRequiredString3(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isOptionalString2(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate2(value) {
+function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseChoice(value) {
-  if (!isRecord5(value) || !isRequiredString2(value.id) || !isRequiredString2(value.label)) {
+  if (!isRecord6(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
     return null;
   }
   return { id: value.id, label: value.label };
 }
 function parseAsk(value) {
-  if (!isRecord5(value)) return null;
+  if (!isRecord6(value)) return null;
   const {
     id,
     workspaceId,
@@ -12702,7 +13065,7 @@ function parseAsk(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString2(id) || !isRequiredString2(workspaceId) || !isRequiredString2(taskPath) || !isRequiredString2(question) || !isRequiredString2(createdAt) || !isRequiredString2(updatedAt) || !isValidDate2(createdAt) || !isValidDate2(updatedAt) || typeof status !== "string" || !USER_ASK_STATUSES.has(status) || !isOptionalString2(taskId) || !isOptionalString2(sessionId) || !isOptionalString2(role) || !isOptionalString2(answer) || !isOptionalString2(choiceId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate2(resolvedAt)) {
+  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(question) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !USER_ASK_STATUSES.has(status) || !isOptionalString2(taskId) || !isOptionalString2(sessionId) || !isOptionalString2(role) || !isOptionalString2(answer) || !isOptionalString2(choiceId) || !isOptionalString2(resolvedAt) || !isOptionalString2(resolvedBy) || resolvedAt !== void 0 && !isValidDate3(resolvedAt)) {
     return null;
   }
   let parsedChoices;
@@ -13035,20 +13398,20 @@ function normalizeTaskInputKind(kind) {
   if (kind === "review-feedback") return "review-feedback";
   return "user-input";
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString3(value) {
+function isRequiredString4(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isOptionalString3(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate3(value) {
+function isValidDate4(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseInput(value) {
-  if (!isRecord6(value)) return null;
+  if (!isRecord7(value)) return null;
   const {
     id,
     workspaceId,
@@ -13070,7 +13433,7 @@ function parseInput(value) {
     uncertainAt,
     resolvedBy
   } = value;
-  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(lastError) || !isOptionalString3(failedAt) || !isOptionalString3(uncertainAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate3(deliveredAt) || consumedAt !== void 0 && !isValidDate3(consumedAt) || cancelledAt !== void 0 && !isValidDate3(cancelledAt) || failedAt !== void 0 && !isValidDate3(failedAt) || uncertainAt !== void 0 && !isValidDate3(uncertainAt)) {
+  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(taskPath) || !isRequiredString4(createdAt) || !isRequiredString4(updatedAt) || !isValidDate4(createdAt) || !isValidDate4(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(lastError) || !isOptionalString3(failedAt) || !isOptionalString3(uncertainAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate4(deliveredAt) || consumedAt !== void 0 && !isValidDate4(consumedAt) || cancelledAt !== void 0 && !isValidDate4(cancelledAt) || failedAt !== void 0 && !isValidDate4(failedAt) || uncertainAt !== void 0 && !isValidDate4(uncertainAt)) {
     return null;
   }
   let parsedKind;
@@ -13085,7 +13448,7 @@ function parseInput(value) {
     if (!Array.isArray(contextRefs)) return null;
     parsedRefs = [];
     for (const r of contextRefs) {
-      if (!isRequiredString3(r)) return null;
+      if (!isRequiredString4(r)) return null;
       parsedRefs.push(r.trim());
     }
   }
@@ -13820,7 +14183,18 @@ var CLIENT_METHODS = [
    * preview is read-only; purge mutates via MutationBus and emits retention.purged only when files deleted.
    */
   "operationalRetention.preview",
-  "operationalRetention.purge"
+  "operationalRetention.purge",
+  /**
+   * Node Markdown underline annotations (划线注释) — first-class workspace records.
+   * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.
+   * Events are invalidation only (annotation.changed); never auto-inject Agent / TaskInput.
+   * list projects live relocate (anchored|relocated|orphan) without rewriting stored anchors.
+   */
+  "annotation.list",
+  "annotation.create",
+  "annotation.resolve",
+  "annotation.reopen",
+  "annotation.delete"
 ];
 function isClientMethod(method) {
   return CLIENT_METHODS.includes(method);
@@ -16530,7 +16904,7 @@ function normalizeMetadata(raw) {
   }
   return Object.keys(out).length > 0 ? out : void 0;
 }
-function isValidDate4(value) {
+function isValidDate5(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseCredentialRecord(value) {
@@ -16554,7 +16928,7 @@ function parseCredentialRecord(value) {
   if (typeof item.updatedAt !== "string" || item.updatedAt.length === 0) {
     return null;
   }
-  if (!isValidDate4(item.createdAt) || !isValidDate4(item.updatedAt)) {
+  if (!isValidDate5(item.createdAt) || !isValidDate5(item.updatedAt)) {
     return null;
   }
   let metaSrc = item.metadata;
@@ -17797,11 +18171,24 @@ async function dispatchMethod(ctx, method, params) {
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
         return operationalRetentionPurgeRpc(ctx, p);
+      case "annotation.list":
+        return annotationListRpc(ctx, p);
+      case "annotation.create":
+        return annotationCreateRpc(ctx, p);
+      case "annotation.resolve":
+        return annotationResolveRpc(ctx, p);
+      case "annotation.reopen":
+        return annotationReopenRpc(ctx, p);
+      case "annotation.delete":
+        return annotationDeleteRpc(ctx, p);
       default:
         throw new RpcError(-32601, `Method not found: ${method}`);
     }
   } catch (error) {
     if (error instanceof RpcError) throw error;
+    if (error instanceof AnnotationError) {
+      throw annotationErrorToRpc(error);
+    }
     if (error instanceof RetentionError || error instanceof Error && error.name === "RetentionError") {
       const code = error instanceof RetentionError ? error.code : error.code ?? "INVALID_KEEP_DAYS";
       throw new RpcError(-32602, error.message, { code });
@@ -21344,6 +21731,209 @@ function requireUserActor(p, surface) {
   }
   return actorRaw;
 }
+function annotationErrorToRpc(error) {
+  switch (error.code) {
+    case "NOT_FOUND":
+      return new RpcError(-32004, error.message, { code: error.code });
+    case "RANGE":
+    case "QUOTE_MISMATCH":
+    case "INVALID_INPUT":
+    case "INVALID_STATUS":
+      return new RpcError(-32602, error.message, { code: error.code });
+    default:
+      return new RpcError(-32602, error.message, { code: error.code });
+  }
+}
+function projectAnnotationWire(record, documentBody) {
+  return projectAnnotation(record, documentBody);
+}
+async function readConceptBody(mount, concept) {
+  const notePath = boxNotePath(concept.path);
+  const raw = await mount.env.fs.readFile(notePath);
+  const { body } = parseFrontmatter(raw);
+  return { body, raw, etag: contentEtag(raw) };
+}
+async function annotationListRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const nodeId = optionalString(p, "nodeId") ?? optionalString(p, "id") ?? optionalString(p, "boxId");
+  if (!nodeId) {
+    throw new RpcError(-32602, "annotation.list requires nodeId (or id / boxId)");
+  }
+  const tent = await loadTent(mount.env.fs);
+  const concept = tent.byId.get(nodeId) ?? null;
+  let documentBody = null;
+  if (concept) {
+    const note = await readConceptBody(mount, concept);
+    documentBody = note.body;
+  }
+  const records = await listAnnotationRecords(mount.env.fs, nodeId);
+  const annotations = records.map((r) => projectAnnotationWire(r, documentBody));
+  return { workspaceId, nodeId, annotations };
+}
+async function annotationCreateRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.create");
+  const nodeId = optionalString(p, "nodeId") ?? optionalString(p, "id") ?? optionalString(p, "boxId");
+  if (!nodeId) {
+    throw new RpcError(-32602, "annotation.create requires nodeId (or id / boxId)");
+  }
+  const quote = typeof p.quote === "string" ? p.quote : void 0;
+  const body = typeof p.body === "string" ? p.body : void 0;
+  if (quote === void 0 || quote.length === 0) {
+    throw new RpcError(-32602, "annotation.create requires non-empty quote");
+  }
+  if (body === void 0 || body.trim().length === 0) {
+    throw new RpcError(-32602, "annotation.create requires non-empty body");
+  }
+  const start = p.start;
+  const end = p.end;
+  if (typeof start !== "number" || !Number.isInteger(start)) {
+    throw new RpcError(-32602, "annotation.create requires integer start");
+  }
+  if (typeof end !== "number" || !Number.isInteger(end)) {
+    throw new RpcError(-32602, "annotation.create requires integer end");
+  }
+  const baseEtag = optionalString(p, "documentEtag") ?? optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  if (!baseEtag) {
+    throw new RpcError(-32602, "annotation.create requires documentEtag (or baseEtag)");
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = tent.byId.get(nodeId);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${nodeId}`);
+    }
+    const note = await readConceptBody(mount, concept);
+    if (baseEtag !== note.etag) {
+      throw new RpcError(-32009, "etag conflict", {
+        currentEtag: note.etag,
+        baseEtag,
+        path: concept.path,
+        nodeId
+      });
+    }
+    try {
+      const record = await createAnnotation(mount.env.fs, {
+        nodeId: concept.id,
+        quote,
+        start,
+        end,
+        documentEtag: note.etag,
+        body,
+        documentBody: note.body
+      });
+      const projection = projectAnnotationWire(record, note.body);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "create",
+          id: record.id,
+          nodeId: record.nodeId
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+async function annotationResolveRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.resolve");
+  const id = requireString(p, "id");
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const record = await resolveAnnotation(mount.env.fs, id);
+      const tent = await loadTent(mount.env.fs);
+      const concept = tent.byId.get(record.nodeId) ?? null;
+      let documentBody = null;
+      if (concept) {
+        documentBody = (await readConceptBody(mount, concept)).body;
+      }
+      const projection = projectAnnotationWire(record, documentBody);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "resolve",
+          id: record.id,
+          nodeId: record.nodeId
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+async function annotationReopenRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.reopen");
+  const id = requireString(p, "id");
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const record = await reopenAnnotation(mount.env.fs, id);
+      const tent = await loadTent(mount.env.fs);
+      const concept = tent.byId.get(record.nodeId) ?? null;
+      let documentBody = null;
+      if (concept) {
+        documentBody = (await readConceptBody(mount, concept)).body;
+      }
+      const projection = projectAnnotationWire(record, documentBody);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "reopen",
+          id: record.id,
+          nodeId: record.nodeId
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+async function annotationDeleteRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.delete");
+  const id = requireString(p, "id");
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const removed = await deleteAnnotation(mount.env.fs, id);
+      if (!removed) {
+        throw new RpcError(-32004, `Annotation not found: ${id}`);
+      }
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "delete",
+          id: removed.id,
+          nodeId: removed.nodeId
+        },
+        "self"
+      );
+      return { workspaceId, deleted: true, id: removed.id, nodeId: removed.nodeId };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
 function parseKeepTerminalTasksDays(p) {
   const v = p.keepTerminalTasksDays;
   try {
@@ -23386,20 +23976,20 @@ var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "expired"
 ]);
-function isRecord7(value) {
+function isRecord8(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
-function isRequiredString4(value) {
+function isRequiredString5(value) {
   return typeof value === "string" && value.trim().length > 0;
 }
 function isOptionalString4(value) {
   return value === void 0 || typeof value === "string";
 }
-function isValidDate5(value) {
+function isValidDate6(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
-  if (!isRecord7(value)) return null;
+  if (!isRecord8(value)) return null;
   const {
     id,
     workspaceId,
@@ -23416,12 +24006,12 @@ function parseApproval(value) {
     resolvedAt,
     resolvedBy
   } = value;
-  if (!isRequiredString4(id) || !isRequiredString4(workspaceId) || !isRequiredString4(sessionId) || !isRequiredString4(toolTitle) || !isRequiredString4(createdAt) || !isRequiredString4(expiresAt) || !isValidDate5(createdAt) || !isValidDate5(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString4(taskId) || !isOptionalString4(taskPath) || !isOptionalString4(role) || !isOptionalString4(toolCallId) || !isOptionalString4(resolvedAt) || !isOptionalString4(resolvedBy) || resolvedAt !== void 0 && !isValidDate5(resolvedAt)) {
+  if (!isRequiredString5(id) || !isRequiredString5(workspaceId) || !isRequiredString5(sessionId) || !isRequiredString5(toolTitle) || !isRequiredString5(createdAt) || !isRequiredString5(expiresAt) || !isValidDate6(createdAt) || !isValidDate6(expiresAt) || typeof status !== "string" || !TOOL_APPROVAL_STATUSES.has(status) || !Array.isArray(options) || !isOptionalString4(taskId) || !isOptionalString4(taskPath) || !isOptionalString4(role) || !isOptionalString4(toolCallId) || !isOptionalString4(resolvedAt) || !isOptionalString4(resolvedBy) || resolvedAt !== void 0 && !isValidDate6(resolvedAt)) {
     return null;
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord7(option) || !isRequiredString4(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
+    if (!isRecord8(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
       return null;
     }
     parsedOptions.push({

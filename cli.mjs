@@ -1110,6 +1110,7 @@ var ORDER_PATH = "order.json";
 var MUTATION_LOCK_PATH = "mutation.lock";
 var RULES_PATH = "RULES.md";
 var WORKSPACE_SETTINGS_PATH = "settings.json";
+var ANNOTATIONS_PATH = "annotations.json";
 var TEMP_DIR = "temp";
 var ATTACHMENTS_DIR = "attachments";
 var AGENT_PROFILES_TEMP_DIR = "agent-profiles";
@@ -1127,6 +1128,7 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
   MUTATION_LOCK_PATH,
   RULES_PATH,
   WORKSPACE_SETTINGS_PATH,
+  ANNOTATIONS_PATH,
   "index.md",
   "log.md"
 ]);
@@ -5028,6 +5030,42 @@ var ServiceClient = class {
       workspaceId,
       ...opts
     });
+  }
+  /**
+   * List Node Markdown underline annotations for a node (cx- identity).
+   * Projection includes live relocate state; does not rewrite stored anchors.
+   */
+  annotationList(workspaceId, nodeId) {
+    return this.call("annotation.list", { workspaceId, nodeId });
+  }
+  /**
+   * User-only create underline annotation (MutationBus).
+   * Validates range/quote against authoritative body; documentEtag uses docs.readForEdit etag.
+   * Events: annotation.changed (invalidation only). Never injects Agent / TaskInput.
+   */
+  annotationCreate(workspaceId, args) {
+    return this.call("annotation.create", {
+      workspaceId,
+      nodeId: args.nodeId,
+      quote: args.quote,
+      start: args.start,
+      end: args.end,
+      body: args.body,
+      documentEtag: args.documentEtag,
+      actor: args.actor ?? "user"
+    });
+  }
+  /** User-only resolve annotation (open → resolved). */
+  annotationResolve(workspaceId, id, actor = "user") {
+    return this.call("annotation.resolve", { workspaceId, id, actor });
+  }
+  /** User-only reopen annotation (resolved → open). */
+  annotationReopen(workspaceId, id, actor = "user") {
+    return this.call("annotation.reopen", { workspaceId, id, actor });
+  }
+  /** User-only delete annotation record. */
+  annotationDelete(workspaceId, id, actor = "user") {
+    return this.call("annotation.delete", { workspaceId, id, actor });
   }
   /**
    * Subscribe to SSE events. Returns an abort handle.
