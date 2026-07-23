@@ -3004,7 +3004,28 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
       "delivered"
     );
-    assert.equal((await svc.runtime.probe(sessionId)).alive, false);
+    // Force prior managed session terminal via public runtime stop API so this
+    // case is deterministic on the "prior dead → new ss-" restore path (no race
+    // on post-deliver stop side-effects).
+    const preStop = await svc.runtime.probe(sessionId);
+    if (preStop.alive || preStop.state === "live" || preStop.state === "starting") {
+      await svc.runtime.stopSession(sessionId, "user");
+    }
+    const priorProbe = await svc.runtime.probe(sessionId);
+    assert.equal(
+      priorProbe.alive,
+      false,
+      `prior session must be dead before reject-resume (state=${priorProbe.state})`
+    );
+    assert.ok(
+      priorProbe.state === "stopped" || priorProbe.state === "failed",
+      `prior session must be terminal; got state=${priorProbe.state}`
+    );
+    assert.equal(
+      (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
+      "delivered",
+      "explicit stop after deliver must leave task delivered for reject-resume"
+    );
 
     const rejected = await rpc(svc, "task.reject", {
       workspaceId,
@@ -3025,6 +3046,7 @@ test("reject-resume restores live managed session for agentProfile tasks", async
         sessionId?: string;
         text?: string;
       };
+      continued?: boolean;
     };
     assert.equal(body.state, "running");
     assert.equal(body.task.assigneeKind, "agentProfile");
@@ -3061,6 +3083,10 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       stored!.status === "delivered" || stored!.status === "pending",
       `unexpected review-feedback status: ${stored!.status}`
     );
+    // When inject succeeded, status is delivered once — no second pending row.
+    if (body.continued === true) {
+      assert.equal(stored!.status, "delivered");
+    }
     const cancelledPrior = await svc.ctx.taskInputs.cancelSession(
       sessionId,
       "test.prior-session-cleanup"

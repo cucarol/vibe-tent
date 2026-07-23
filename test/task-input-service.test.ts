@@ -726,9 +726,9 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       promptText: "FIRST_DELIVERY_CROSS_SESSION",
       followupText: "REWORK_ON_NEW_SESSION",
       promptDelayMs: 200,
-      // After managed deliver, service stops the process; reject-resume must
-      // allocate a new ss- (not rebind the dead prior). keepAlive only affects
-      // mock exit after prompt; stopSession still ends the managed handle.
+      // keepAlive keeps mock process up after prompt; harness explicitly
+      // stopSession(prior) after deliver so reject-resume is forced onto the
+      // dead-prior → new-ss- path (not the still-alive rebind path).
       keepAlive: true,
     }),
   ];
@@ -764,13 +764,35 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "first managed delivery before cross-session reject");
 
-    // Prior process is stopped after deliver — restore must create a new ss-.
+    // Deterministically force the prior managed session terminal before reject.
+    // Production often stops after managed deliver, but this case must not rely
+    // on that side-effect race: harness uses the public runtime stop API so
+    // restore is forced down the "prior dead → new ss-" path.
+    const preStop = await svc.runtime.probe(priorSessionId);
+    if (preStop.alive || preStop.state === "live" || preStop.state === "starting") {
+      await svc.runtime.stopSession(priorSessionId, "user");
+    }
     const priorProbe = await svc.runtime.probe(priorSessionId);
     assert.equal(
       priorProbe.alive,
       false,
-      "prior session must be dead so reject-resume takes new-session path"
+      `prior session must be dead so reject-resume takes new-session path (state=${priorProbe.state})`
     );
+    assert.ok(
+      priorProbe.state === "stopped" || priorProbe.state === "failed",
+      `prior session must be terminal; got state=${priorProbe.state}`
+    );
+
+    // Task must remain reject-resume-eligible (delivered), not failed by stop.
+    const beforeReject = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { state: string; sessionId?: string };
+    };
+    assert.equal(
+      beforeReject.task.state,
+      "delivered",
+      "stopping prior session after deliver must leave task delivered for reject-resume"
+    );
+    assert.equal(beforeReject.task.sessionId, priorSessionId);
 
     const exactNote = "  cross-session: fix and re-run  ";
     const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
@@ -798,6 +820,11 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       newSessionId,
       priorSessionId,
       "agentProfile/role restore after deliver must allocate a new session id"
+    );
+    assert.equal(
+      (await svc.runtime.probe(newSessionId)).alive,
+      true,
+      "restored session must be live"
     );
     assert.ok(rejected.input, "must create review-feedback TaskInput");
     assert.equal(rejected.input!.kind, "review-feedback");
@@ -858,11 +885,18 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
 
     const logRaw = await fs.readFile(logPath, "utf8");
     const log = JSON.parse(logRaw) as { prompts?: string[] };
-    const reviewPrompt = log.prompts?.find((p) =>
+    const reviewPrompts = (log.prompts ?? []).filter((p) =>
       p.includes("## Review Feedback")
     );
-    assert.ok(reviewPrompt, "new session must receive ## Review Feedback");
-    assert.ok(reviewPrompt!.includes(`text: ${exactNote}`));
+    assert.equal(
+      reviewPrompts.length,
+      1,
+      `review feedback must inject exactly once; got ${reviewPrompts.length}`
+    );
+    assert.ok(
+      reviewPrompts[0]!.includes(`text: ${exactNote}`),
+      "single inject must carry the exact review note"
+    );
   });
 });
 
