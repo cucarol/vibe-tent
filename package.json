@@ -32,11 +32,11 @@
     "dev": "node esbuild.config.mjs",
     "build:core": "tsc -p tsconfig.core.json",
     "typecheck:renderer-next": "tsc -p tsconfig.renderer-next.json --noEmit",
+    "test": "node scripts/run-tests.mjs full",
+    "test:fast": "node scripts/run-tests.mjs fast",
+    "test:integration": "node scripts/run-tests.mjs integration",
     "test:acp-images": "node --test --import tsx test/acp-image-prompt.test.ts",
     "test:renderer-next": "node --test --import tsx test/desktop-renderer-next-foundation.test.ts",
-    "test": "node --test --test-concurrency=4 --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/workspace-settings.test.ts test/workspace-agents.test.ts test/annotation-core.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/service-agent-profile-dispatch.test.ts test/service-sub-dispatch.test.ts test/service-box-projection.test.ts test/service-canvas-projections.test.ts test/service-provider-catalog.test.ts test/service-role-authority.test.ts test/service-proposal.test.ts test/service-retention.test.ts test/service-workspace-settings.test.ts test/service-workspace-agents.test.ts test/service-annotation.test.ts test/profile-catalog.test.ts test/profile-skills-mcp.test.ts test/credential-store.test.ts test/machine-skills.test.ts test/agent-hooks.test.ts test/markdown-links.test.ts test/markdown-workspace.test.ts test/attachment-gc.test.ts test/docs-rename.test.ts test/agent-runtime-b9a.test.ts test/acp-assistant-report.test.ts test/grok-acp-adapter.test.ts test/mainstream-acp-adapters.test.ts test/tool-approval-store.test.ts test/user-ask-store.test.ts test/user-ask-service.test.ts test/task-input-service.test.ts test/machine-state-hardening.test.ts test/task-lifecycle.test.ts test/retention.test.ts test/desktop-b5.test.ts test/desktop-b6-context-card-drag.test.ts test/desktop-collab-ui.test.ts test/desktop-layout-prefs.test.ts test/desktop-open-tabs.test.ts test/desktop-ui-contract.test.ts test/desktop-surfaces.test.ts test/desktop-renderer-next-foundation.test.ts test/cli-service-attach.test.ts test/agent-external-session.test.ts test/package.test.ts test/open-source.test.ts test/plugin.test.ts",
-    "test:core": "node --test --test-concurrency=4 --import tsx test/core.test.ts test/registry-core.test.ts test/type-registry.test.ts test/collaboration.test.ts test/workspace.test.ts test/workspace-settings.test.ts test/workspace-agents.test.ts test/annotation-core.test.ts test/b1-concept.test.ts test/service-b2.test.ts test/service-b5.test.ts test/service-agent-profile-dispatch.test.ts test/service-sub-dispatch.test.ts test/service-box-projection.test.ts test/service-canvas-projections.test.ts test/service-provider-catalog.test.ts test/service-role-authority.test.ts test/service-proposal.test.ts test/service-retention.test.ts test/service-workspace-settings.test.ts test/service-workspace-agents.test.ts test/service-annotation.test.ts test/profile-catalog.test.ts test/profile-skills-mcp.test.ts test/credential-store.test.ts test/machine-skills.test.ts test/agent-hooks.test.ts test/markdown-links.test.ts test/markdown-workspace.test.ts test/attachment-gc.test.ts test/docs-rename.test.ts test/agent-runtime-b9a.test.ts test/acp-assistant-report.test.ts test/grok-acp-adapter.test.ts test/mainstream-acp-adapters.test.ts test/tool-approval-store.test.ts test/user-ask-store.test.ts test/user-ask-service.test.ts test/task-input-service.test.ts test/machine-state-hardening.test.ts test/task-lifecycle.test.ts test/retention.test.ts test/desktop-b5.test.ts test/desktop-b6-context-card-drag.test.ts test/desktop-collab-ui.test.ts test/desktop-layout-prefs.test.ts test/desktop-open-tabs.test.ts test/desktop-ui-contract.test.ts test/desktop-surfaces.test.ts test/desktop-renderer-next-foundation.test.ts test/cli-service-attach.test.ts test/agent-external-session.test.ts",
-    "test:integration": "node --test --import tsx test/package.test.ts test/open-source.test.ts",
     "test:grok-e2e": "node --test --import tsx test/grok-acp-live.e2e.ts",
     "test:foreground-e2e": "node --test --import tsx test/mainstream-acp-cli-live.e2e.ts",
     "typecheck": "tsc -noEmit",
@@ -48,7 +48,7 @@
     "desktop:dev": "npm run desktop:build && electron .",
     "desktop:start": "electron .",
     "desktop:package": "node scripts/package-desktop.mjs",
-    "check": "npm run typecheck && npm run build && npm run build:desktop && npm run test:acp-images && npm test && npm run okf:check",
+    "check": "npm run typecheck && npm run build && npm run build:desktop && npm test && npm run okf:check",
     "prepack": "npm run check"
   },
   "keywords": [
