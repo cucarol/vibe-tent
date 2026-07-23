@@ -764,14 +764,11 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       return t.task.state === "delivered" ? t : null;
     }, 20_000, "first managed delivery before cross-session reject");
 
-    // Deterministically force the prior managed session terminal before reject.
-    // Production often stops after managed deliver, but this case must not rely
-    // on that side-effect race: harness uses the public runtime stop API so
-    // restore is forced down the "prior dead → new ss-" path.
-    const preStop = await svc.runtime.probe(priorSessionId);
-    if (preStop.alive || preStop.state === "live" || preStop.state === "starting") {
-      await svc.runtime.stopSession(priorSessionId, "user");
-    }
+    // Deterministically terminate the prior managed session via the public
+    // runtime stop API. Do not rely on post-deliver stop side-effects or probe
+    // timing: always stopSession, then assert terminal/dead before reject-resume
+    // so restore is forced down the "prior dead → new ss-" path.
+    await svc.runtime.stopSession(priorSessionId, "user");
     const priorProbe = await svc.runtime.probe(priorSessionId);
     assert.equal(
       priorProbe.alive,

@@ -3004,13 +3004,10 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       (await loadTaskEnvelope(svc.ctx.host.require(workspaceId).env.fs, taskPath)).state,
       "delivered"
     );
-    // Force prior managed session terminal via public runtime stop API so this
+    // Always terminate prior managed session via public runtime stop API so this
     // case is deterministic on the "prior dead → new ss-" restore path (no race
-    // on post-deliver stop side-effects).
-    const preStop = await svc.runtime.probe(sessionId);
-    if (preStop.alive || preStop.state === "live" || preStop.state === "starting") {
-      await svc.runtime.stopSession(sessionId, "user");
-    }
+    // on post-deliver stop side-effects or conditional probe checks).
+    await svc.runtime.stopSession(sessionId, "user");
     const priorProbe = await svc.runtime.probe(sessionId);
     assert.equal(
       priorProbe.alive,
