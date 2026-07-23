@@ -2996,6 +2996,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tasks = await loadTaskEnvelopes(env.fs);
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join2("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
+  const asSub = options.asSub === true;
+  const dispatcher = (options.dispatchedBy || "").trim();
+  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -3009,11 +3012,36 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
-      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      const owner = (existingOwner.fm.owner || "").trim();
+      const allowedBySub = subUnderDispatcher && owner === dispatcher && // Child itself must still be free; only ancestor ownership by dispatcher is ok.
+      existingOwner.id !== claim.box.id;
+      if (!allowedBySub) {
+        throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      }
     }
-    const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (subUnderDispatcher) {
+      if (claim.box.invalid) {
+        throw new Error(`Cannot dispatch: Invalid subtree: ${claim.box.invalidReason || "missing type definition"}`);
+      }
+      if (claim.box.archived) {
+        throw new Error("Cannot dispatch: Archived subtree cannot be claimed.");
+      }
+      if (claim.box.fm.owner) {
+        throw new Error(`Cannot dispatch: Already claimed by ${claim.box.fm.owner}.`);
+      }
+      const occupiedChild = findOccupiedDescendant(claim.box);
+      if (occupiedChild) {
+        throw new Error(
+          `Cannot dispatch: Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
+        );
+      }
+    } else {
+      const claimable = canClaim(claim.box);
+      if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks, {
+      allowAncestorClaimedBy: subUnderDispatcher ? dispatcher : void 0
+    });
     if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
   try {
@@ -3436,7 +3464,8 @@ function ownerCovering(box) {
   }
   return void 0;
 }
-function pendingClaimCovering(tent, box, tasks) {
+function pendingClaimCovering(tent, box, tasks, options) {
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   for (const task of tasks) {
     const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
     if (!active) continue;
@@ -3450,12 +3479,23 @@ function pendingClaimCovering(tent, box, tasks) {
         return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(claimed, box)) {
+        if (allowAncestorBy && task.role === allowAncestorBy) {
+          continue;
+        }
         return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(box, claimed)) {
         return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
     }
+  }
+  return void 0;
+}
+function findOccupiedDescendant(box) {
+  for (const child of box.children) {
+    if (child.fm.owner) return child;
+    const deep = findOccupiedDescendant(child);
+    if (deep) return deep;
   }
   return void 0;
 }

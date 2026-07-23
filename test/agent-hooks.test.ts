@@ -270,7 +270,12 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
   const first = await installAgentHooks({ home, agents: ["codex"] });
   assert.equal(first.results[0]!.status, "installed");
 
-  const after = (await readJson(hooksPath)) as Record<string, HookGroup[]>;
+  const afterRoot = (await readJson(hooksPath)) as {
+    description?: string;
+    hooks: Record<string, HookGroup[]>;
+  };
+  const after = afterRoot.hooks;
+  assert.equal(afterRoot.description, "Existing Codex hooks");
   assert.ok(Array.isArray(after.UserPromptSubmit));
   assert.equal(after.UserPromptSubmit.length, 1);
   assert.equal(
@@ -286,7 +291,8 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
   assert.equal(managed.command, "tent agent session-start --host codex");
   assert.equal(managedCommandHost(String(managed.command)), "codex");
   assert.equal(managed.statusMessage, TENT_HOOK_MARKER);
-  assert.equal(managed.async, false);
+  assert.equal(managed.async, undefined);
+  assert.equal(managed.timeout, 60);
   assert.equal(managed.type, "command");
 
   const leaveHandlers = after.Stop.flatMap((g) => g.hooks);
@@ -294,12 +300,13 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
     isManagedSessionEndForHost(String(h.command), "codex")
   )!;
   assert.equal(managedLeave.command, "tent agent session-end --host codex");
-  assert.equal(managedLeave.async, false);
+  assert.equal(managedLeave.async, undefined);
+  assert.equal(managedLeave.timeout, 60);
   assert.equal(managedLeave.statusMessage, TENT_HOOK_MARKER);
 
   const second = await installAgentHooks({ home, agents: ["codex"] });
   assert.equal(second.results[0]!.status, "skipped");
-  const after2 = (await readJson(hooksPath)) as typeof after;
+  const after2 = ((await readJson(hooksPath)) as typeof afterRoot).hooks;
   const startCount = after2.SessionStart.flatMap((g) => g.hooks).filter((h) =>
     isManagedSessionStartForHost(String(h.command), "codex")
   ).length;
@@ -310,7 +317,7 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
   );
 
   await removeAgentHooks({ home, agents: ["codex"] });
-  const afterRm = (await readJson(hooksPath)) as typeof after;
+  const afterRm = ((await readJson(hooksPath)) as typeof afterRoot).hooks;
   assert.ok(afterRm.UserPromptSubmit);
   assert.equal(
     afterRm.UserPromptSubmit[0]!.hooks[0]!.command,
@@ -318,6 +325,36 @@ test("Codex: install into hooks.json preserves foreign handlers; host=codex; JSO
   );
   assert.equal(afterRm.SessionStart, undefined);
   assert.equal(afterRm.Stop, undefined);
+});
+
+test("Codex: install migrates legacy root events; doctor rejects them first", async () => {
+  const home = await tempHome("tent-hooks-codex-legacy-");
+  const hooksPath = codexHooksPath(home);
+  await writeJson(hooksPath, {
+    SessionStart: [{ hooks: [{ type: "command", command: "echo legacy-start" }] }],
+    UserPromptSubmit: [{ hooks: [{ type: "command", command: "echo legacy-prompt" }] }],
+  });
+
+  const before = await doctorAgentHooks({ home, agents: ["codex"] });
+  assert.equal(before.results[0]!.status, "error");
+  assert.match(before.results[0]!.reason ?? "", /nested under \"hooks\"/);
+
+  const installed = await installAgentHooks({ home, agents: ["codex"] });
+  assert.equal(installed.results[0]!.status, "installed");
+  const root = (await readJson(hooksPath)) as {
+    hooks: Record<string, HookGroup[]>;
+    SessionStart?: unknown;
+  };
+  assert.equal(root.SessionStart, undefined);
+  assert.ok(root.hooks.SessionStart);
+  assert.ok(root.hooks.UserPromptSubmit);
+  assert.ok(allCommands(root.hooks, "SessionStart").includes("echo legacy-start"));
+  assert.ok(allCommands(root.hooks, "UserPromptSubmit").includes("echo legacy-prompt"));
+  const managed = root.hooks.SessionStart.flatMap((group) => group.hooks).find((handler) =>
+    isManagedSessionStartForHost(handler.command, "codex")
+  )!;
+  assert.equal(managed.async, undefined);
+  assert.equal(managed.timeout, 60);
 });
 
 test("Codex: doctor missing when hooks.json absent", async () => {
@@ -382,7 +419,11 @@ test("install all: lifecycle agents + unsupported; host params per agent", async
     )
   );
 
-  const codexHooks = (await readJson(codexHooksPath(home))) as Record<string, HookGroup[]>;
+  const codexHooks = (
+    (await readJson(codexHooksPath(home))) as {
+      hooks: Record<string, HookGroup[]>;
+    }
+  ).hooks;
   assert.ok(
     allCommands(codexHooks, "SessionStart").includes(
       "tent agent session-start --host codex"

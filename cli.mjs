@@ -404,7 +404,7 @@ async function installOne(agent, home, tentCommand) {
         configPath: codexHooksPath(home),
         mode: "install",
         tentCommand,
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true
       });
     case "antigravity":
@@ -439,7 +439,7 @@ async function doctorOne(agent, home, tentCommand) {
         configPath: codexHooksPath(home),
         mode: "doctor",
         tentCommand,
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true
       });
     case "antigravity":
@@ -472,7 +472,7 @@ async function removeOne(agent, home) {
         agent,
         configPath: codexHooksPath(home),
         mode: "remove",
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true
       });
     case "antigravity":
@@ -539,10 +539,22 @@ async function projectClaudeLike(options) {
     }
   }
   const nextRoot = { ...root };
+  const legacyCodexEvents = codexCommandShape ? migrateLegacyCodexEvents(nextRoot) : [];
   const hooksBag = wrapRoot ? asObject(nextRoot.hooks) : nextRoot;
   const hooks = wrapRoot ? { ...hooksBag } : { ...hooksBag };
   const presentBefore = detectManagedEvents(hooks, agent);
   if (mode === "doctor") {
+    if (legacyCodexEvents.length > 0) {
+      return {
+        agent,
+        support: "lifecycle",
+        status: "error",
+        path: configPath,
+        reason: `Invalid Codex hooks.json: event keys must be nested under "hooks" (found ${legacyCodexEvents.join(",")})`,
+        present: [],
+        missing: ["SessionStart", "Stop"]
+      };
+    }
     return doctorFromPresent(agent, configPath, presentBefore, existed);
   }
   if (mode === "remove") {
@@ -572,8 +584,9 @@ async function projectClaudeLike(options) {
   const leaveHandler = buildCommandHandler(leaveCmd, codexCommandShape === true);
   const addedEnter = ensureManagedEvent(hooks, "SessionStart", enterHandler, matchEnter);
   const addedLeave = ensureManagedEvent(hooks, "Stop", leaveHandler, matchLeave);
+  const normalizedCodexHandlers = codexCommandShape ? normalizeCodexManagedHandlers(hooks, agent) : false;
   const presentAfter = detectManagedEvents(hooks, agent);
-  if (!addedEnter && !addedLeave && presentAfter.length === 2) {
+  if (!addedEnter && !addedLeave && !normalizedCodexHandlers && presentAfter.length === 2 && legacyCodexEvents.length === 0) {
     return {
       agent,
       support: "lifecycle",
@@ -593,6 +606,68 @@ async function projectClaudeLike(options) {
     present: presentAfter,
     missing: missingEvents(presentAfter)
   };
+}
+function normalizeCodexManagedHandlers(hooks, agent) {
+  let changed = false;
+  const matches = {
+    SessionStart: (command) => isManagedSessionStartForHost(command, agent),
+    Stop: (command) => isManagedSessionEndForHost(command, agent)
+  };
+  for (const event of ["SessionStart", "Stop"]) {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue;
+    hooks[event] = groups.map((group) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return group;
+      const nextGroup = { ...group };
+      if (!Array.isArray(nextGroup.hooks)) return nextGroup;
+      nextGroup.hooks = nextGroup.hooks.map((handler) => {
+        if (!handler || typeof handler !== "object" || Array.isArray(handler)) return handler;
+        const nextHandler = { ...handler };
+        const command = typeof nextHandler.command === "string" ? nextHandler.command : null;
+        if (!matches[event](command)) return handler;
+        if ("async" in nextHandler) {
+          delete nextHandler.async;
+          changed = true;
+        }
+        if (nextHandler.timeout !== 60) {
+          nextHandler.timeout = 60;
+          changed = true;
+        }
+        if (nextHandler.statusMessage !== TENT_HOOK_MARKER) {
+          nextHandler.statusMessage = TENT_HOOK_MARKER;
+          changed = true;
+        }
+        return nextHandler;
+      });
+      return nextGroup;
+    });
+  }
+  return changed;
+}
+var CODEX_HOOK_EVENTS = [
+  "SessionStart",
+  "PreToolUse",
+  "PermissionRequest",
+  "PostToolUse",
+  "PreCompact",
+  "PostCompact",
+  "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
+  "Stop"
+];
+function migrateLegacyCodexEvents(root) {
+  const found = CODEX_HOOK_EVENTS.filter((event) => Array.isArray(root[event]));
+  if (found.length === 0) return [];
+  const hooks = { ...asObject(root.hooks) };
+  for (const event of found) {
+    const legacy = root[event];
+    const current = Array.isArray(hooks[event]) ? hooks[event] : [];
+    hooks[event] = [...current, ...legacy];
+    delete root[event];
+  }
+  root.hooks = hooks;
+  return found;
 }
 function doctorFromPresent(agent, configPath, present, existed) {
   const missing = missingEvents(present);
@@ -760,7 +835,7 @@ function buildCommandHandler(command, codexShape) {
     return {
       type: "command",
       command,
-      async: false,
+      timeout: 60,
       statusMessage: TENT_HOOK_MARKER
     };
   }
@@ -3004,6 +3079,9 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tasks = await loadTaskEnvelopes(env.fs);
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join3("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
+  const asSub = options.asSub === true;
+  const dispatcher = (options.dispatchedBy || "").trim();
+  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -3017,11 +3095,36 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
-      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      const owner = (existingOwner.fm.owner || "").trim();
+      const allowedBySub = subUnderDispatcher && owner === dispatcher && // Child itself must still be free; only ancestor ownership by dispatcher is ok.
+      existingOwner.id !== claim.box.id;
+      if (!allowedBySub) {
+        throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      }
     }
-    const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (subUnderDispatcher) {
+      if (claim.box.invalid) {
+        throw new Error(`Cannot dispatch: Invalid subtree: ${claim.box.invalidReason || "missing type definition"}`);
+      }
+      if (claim.box.archived) {
+        throw new Error("Cannot dispatch: Archived subtree cannot be claimed.");
+      }
+      if (claim.box.fm.owner) {
+        throw new Error(`Cannot dispatch: Already claimed by ${claim.box.fm.owner}.`);
+      }
+      const occupiedChild = findOccupiedDescendant(claim.box);
+      if (occupiedChild) {
+        throw new Error(
+          `Cannot dispatch: Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
+        );
+      }
+    } else {
+      const claimable = canClaim(claim.box);
+      if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks, {
+      allowAncestorClaimedBy: subUnderDispatcher ? dispatcher : void 0
+    });
     if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
   try {
@@ -3242,7 +3345,8 @@ function ownerCovering(box) {
   }
   return void 0;
 }
-function pendingClaimCovering(tent, box, tasks) {
+function pendingClaimCovering(tent, box, tasks, options) {
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   for (const task of tasks) {
     const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
     if (!active) continue;
@@ -3256,12 +3360,23 @@ function pendingClaimCovering(tent, box, tasks) {
         return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(claimed, box)) {
+        if (allowAncestorBy && task.role === allowAncestorBy) {
+          continue;
+        }
         return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(box, claimed)) {
         return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
     }
+  }
+  return void 0;
+}
+function findOccupiedDescendant(box) {
+  for (const child of box.children) {
+    if (child.fm.owner) return child;
+    const deep = findOccupiedDescendant(child);
+    if (deep) return deep;
   }
   return void 0;
 }

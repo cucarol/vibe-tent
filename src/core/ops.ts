@@ -129,6 +129,13 @@ async function dispatchUnlocked(
       : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
+  // asSub: dispatcher may hand a free child under its own active claim to a helper.
+  // Peer dispatch still forbids any owner/pending overlap (including ancestor claims).
+  const asSub = options.asSub === true;
+  const dispatcher = (options.dispatchedBy || "").trim();
+  const subUnderDispatcher =
+    asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+
   if (claim.root) {
     const occupied = occupiedBoxes(tent);
     if (occupied.length > 0) {
@@ -142,11 +149,41 @@ async function dispatchUnlocked(
     }
     const existingOwner = ownerCovering(claim.box);
     if (existingOwner) {
-      throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      const owner = (existingOwner.fm.owner || "").trim();
+      const allowedBySub =
+        subUnderDispatcher &&
+        owner === dispatcher &&
+        // Child itself must still be free; only ancestor ownership by dispatcher is ok.
+        existingOwner.id !== claim.box.id;
+      if (!allowedBySub) {
+        throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
+      }
     }
-    const claimable = canClaim(claim.box);
-    if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks);
+    if (subUnderDispatcher) {
+      // Child must be free of its own owner/descendant occupation; ancestor owned by
+      // dispatcher is the intended sub-under-claim pattern and is skipped above.
+      if (claim.box.invalid) {
+        throw new Error(`Cannot dispatch: Invalid subtree: ${claim.box.invalidReason || "missing type definition"}`);
+      }
+      if (claim.box.archived) {
+        throw new Error("Cannot dispatch: Archived subtree cannot be claimed.");
+      }
+      if (claim.box.fm.owner) {
+        throw new Error(`Cannot dispatch: Already claimed by ${claim.box.fm.owner}.`);
+      }
+      const occupiedChild = findOccupiedDescendant(claim.box);
+      if (occupiedChild) {
+        throw new Error(
+          `Cannot dispatch: Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
+        );
+      }
+    } else {
+      const claimable = canClaim(claim.box);
+      if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
+    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks, {
+      allowAncestorClaimedBy: subUnderDispatcher ? dispatcher : undefined,
+    });
     if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
   }
 
@@ -751,7 +788,13 @@ function ownerCovering(box: Box): Box | undefined {
   return undefined;
 }
 
-function pendingClaimCovering(tent: LoadedTent, box: Box, tasks: TaskEnvelope[]): { reason: string } | undefined {
+function pendingClaimCovering(
+  tent: LoadedTent,
+  box: Box,
+  tasks: TaskEnvelope[],
+  options?: { allowAncestorClaimedBy?: string }
+): { reason: string } | undefined {
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   for (const task of tasks) {
     // Any active task (queued/running/waiting/delivered) blocks overlapping dispatch.
     const active =
@@ -773,12 +816,26 @@ function pendingClaimCovering(tent: LoadedTent, box: Box, tasks: TaskEnvelope[])
         return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(claimed, box)) {
+        // asSub under the dispatcher's own active ancestor claim is allowed.
+        if (allowAncestorBy && task.role === allowAncestorBy) {
+          continue;
+        }
         return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
       if (isAncestor(box, claimed)) {
         return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
       }
     }
+  }
+  return undefined;
+}
+
+/** First descendant with an owner (not including the root box itself). */
+function findOccupiedDescendant(box: Box): Box | undefined {
+  for (const child of box.children) {
+    if (child.fm.owner) return child;
+    const deep = findOccupiedDescendant(child);
+    if (deep) return deep;
   }
   return undefined;
 }

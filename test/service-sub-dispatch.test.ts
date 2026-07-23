@@ -747,6 +747,93 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
   });
 });
 
+// ---- asSub under dispatcher's own active ancestor claim ----
+
+test("task.dispatch asSub: allowed under ancestor owned by dispatchedBy; peer still blocked", async () => {
+  const ws = await makeWorkspace("sub-under-claim");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!mounted.error, JSON.stringify(mounted.error));
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const parent = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "parent-goal",
+      type: "goal",
+    });
+    assert.ok(!parent.error, JSON.stringify(parent.error));
+    const parentId = (parent.result as { id: string; path: string }).id;
+    const parentPath = (parent.result as { path: string }).path;
+
+    const child = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "child-prompt",
+      type: "prompt",
+      parentPath,
+    });
+    assert.ok(!child.error, JSON.stringify(child.error));
+    const childId = (child.result as { id: string }).id;
+
+    const parentDispatch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: parentId,
+      role: "orchestrator",
+      prompt: "own the goal",
+    });
+    assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
+    const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath: parentTaskPath });
+
+    const peerBlocked = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: childId,
+      role: "helper",
+      prompt: "peer should fail",
+    });
+    assert.ok(peerBlocked.error);
+    assert.match(String(peerBlocked.error!.message), /already claimed by orchestrator/i);
+
+    const subOk = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: childId,
+      role: "helper",
+      prompt: "sub under dispatcher claim",
+      asSub: true,
+      dispatchedBy: "orchestrator",
+    });
+    assert.ok(!subOk.error, JSON.stringify(subOk.error));
+    const subResult = subOk.result as {
+      taskPath: string;
+      asSub?: boolean;
+      workspaceLane?: { branch?: string; targetBranch?: string };
+    };
+    assert.equal(subResult.asSub, true);
+    assert.equal(subResult.workspaceLane?.branch, "tent-role/helper");
+    assert.equal(subResult.workspaceLane?.targetBranch, "tent-role/orchestrator");
+
+    // Wrong dispatcher still blocked even with asSub.
+    const otherChild = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "child-prompt-2",
+      type: "prompt",
+      parentPath,
+    });
+    assert.ok(!otherChild.error, JSON.stringify(otherChild.error));
+    const wrongDispatcher = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: (otherChild.result as { id: string }).id,
+      role: "helper",
+      prompt: "wrong by",
+      asSub: true,
+      dispatchedBy: "executor",
+    });
+    assert.ok(wrongDispatcher.error);
+    assert.match(String(wrongDispatcher.error!.message), /already claimed by orchestrator/i);
+  });
+});
+
 // ---- CLI attach: --as-sub --by ----
 
 test("CLI tent task dispatch --as-sub --by wires RPC asSub", async () => {

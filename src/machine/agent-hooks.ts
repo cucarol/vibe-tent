@@ -281,7 +281,7 @@ async function installOne(
         configPath: codexHooksPath(home),
         mode: "install",
         tentCommand,
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true,
       });
     case "antigravity":
@@ -321,7 +321,7 @@ async function doctorOne(
         configPath: codexHooksPath(home),
         mode: "doctor",
         tentCommand,
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true,
       });
     case "antigravity":
@@ -355,7 +355,7 @@ async function removeOne(agent: AgentHookId, home: string): Promise<AgentHookAge
         agent,
         configPath: codexHooksPath(home),
         mode: "remove",
-        wrapRoot: false,
+        wrapRoot: true,
         codexCommandShape: true,
       });
     case "antigravity":
@@ -386,7 +386,7 @@ function unsupportedResult(agent: AgentHookId, reason: string): AgentHookAgentRe
 
 // ---------------------------------------------------------------------------
 // Shared Claude-compatible hooks bag projection
-// (Claude settings.json `hooks` key; Codex user hooks.json root)
+// (Claude settings.json and Codex hooks.json both store events under `hooks`.)
 // ---------------------------------------------------------------------------
 
 type JsonObject = Record<string, unknown>;
@@ -396,9 +396,9 @@ interface ProjectClaudeLikeOptions {
   configPath: string;
   mode: "install" | "doctor" | "remove";
   tentCommand?: string;
-  /** When true, hooks live under root.hooks (Claude settings). When false, root is the hooks bag (Codex hooks.json). */
+  /** Hooks live under root.hooks. Kept explicit for the shared writer. */
   wrapRoot: boolean;
-  /** Codex command handlers prefer async:false + timeoutSec in managed schema. */
+  /** Apply Codex hooks.json schema validation and legacy-shape migration. */
   codexCommandShape?: boolean;
 }
 
@@ -452,12 +452,26 @@ async function projectClaudeLike(
 
   // Never mutate permissions or non-hooks keys in place until we write a clone.
   const nextRoot: JsonObject = { ...root };
+  const legacyCodexEvents = codexCommandShape
+    ? migrateLegacyCodexEvents(nextRoot)
+    : [];
   const hooksBag = wrapRoot ? asObject(nextRoot.hooks) : nextRoot;
   // Working copy of the hooks bag (event → matcher groups).
   const hooks: JsonObject = wrapRoot ? { ...hooksBag } : { ...hooksBag };
 
   const presentBefore = detectManagedEvents(hooks, agent);
   if (mode === "doctor") {
+    if (legacyCodexEvents.length > 0) {
+      return {
+        agent,
+        support: "lifecycle",
+        status: "error",
+        path: configPath,
+        reason: `Invalid Codex hooks.json: event keys must be nested under \"hooks\" (found ${legacyCodexEvents.join(",")})`,
+        present: [],
+        missing: ["SessionStart", "Stop"],
+      };
+    }
     return doctorFromPresent(agent, configPath, presentBefore, existed);
   }
 
@@ -490,9 +504,18 @@ async function projectClaudeLike(
   const leaveHandler = buildCommandHandler(leaveCmd, codexCommandShape === true);
   const addedEnter = ensureManagedEvent(hooks, "SessionStart", enterHandler, matchEnter);
   const addedLeave = ensureManagedEvent(hooks, "Stop", leaveHandler, matchLeave);
+  const normalizedCodexHandlers = codexCommandShape
+    ? normalizeCodexManagedHandlers(hooks, agent)
+    : false;
   const presentAfter = detectManagedEvents(hooks, agent);
 
-  if (!addedEnter && !addedLeave && presentAfter.length === 2) {
+  if (
+    !addedEnter &&
+    !addedLeave &&
+    !normalizedCodexHandlers &&
+    presentAfter.length === 2 &&
+    legacyCodexEvents.length === 0
+  ) {
     return {
       agent,
       support: "lifecycle",
@@ -513,6 +536,75 @@ async function projectClaudeLike(
     present: presentAfter,
     missing: missingEvents(presentAfter),
   };
+}
+
+function normalizeCodexManagedHandlers(hooks: JsonObject, agent: AgentHookId): boolean {
+  let changed = false;
+  const matches: Record<HookLifecycleEvent, (command: string | null | undefined) => boolean> = {
+    SessionStart: (command) => isManagedSessionStartForHost(command, agent),
+    Stop: (command) => isManagedSessionEndForHost(command, agent),
+  };
+
+  for (const event of ["SessionStart", "Stop"] as const) {
+    const groups = hooks[event];
+    if (!Array.isArray(groups)) continue;
+    hooks[event] = groups.map((group) => {
+      if (!group || typeof group !== "object" || Array.isArray(group)) return group;
+      const nextGroup = { ...(group as JsonObject) };
+      if (!Array.isArray(nextGroup.hooks)) return nextGroup;
+      nextGroup.hooks = (nextGroup.hooks as unknown[]).map((handler) => {
+        if (!handler || typeof handler !== "object" || Array.isArray(handler)) return handler;
+        const nextHandler = { ...(handler as JsonObject) };
+        const command = typeof nextHandler.command === "string" ? nextHandler.command : null;
+        if (!matches[event](command)) return handler;
+
+        if ("async" in nextHandler) {
+          delete nextHandler.async;
+          changed = true;
+        }
+        if (nextHandler.timeout !== 60) {
+          nextHandler.timeout = 60;
+          changed = true;
+        }
+        if (nextHandler.statusMessage !== TENT_HOOK_MARKER) {
+          nextHandler.statusMessage = TENT_HOOK_MARKER;
+          changed = true;
+        }
+        return nextHandler;
+      });
+      return nextGroup;
+    });
+  }
+  return changed;
+}
+
+const CODEX_HOOK_EVENTS = [
+  "SessionStart",
+  "PreToolUse",
+  "PermissionRequest",
+  "PostToolUse",
+  "PreCompact",
+  "PostCompact",
+  "UserPromptSubmit",
+  "SubagentStart",
+  "SubagentStop",
+  "Stop",
+] as const;
+
+/** Move the pre-schema Codex shape (`SessionStart` at root) into root.hooks. */
+function migrateLegacyCodexEvents(root: JsonObject): string[] {
+  const found = CODEX_HOOK_EVENTS.filter((event) => Array.isArray(root[event]));
+  if (found.length === 0) return [];
+
+  const hooks = { ...asObject(root.hooks) };
+  for (const event of found) {
+    const legacy = root[event] as unknown[];
+    const current = Array.isArray(hooks[event]) ? (hooks[event] as unknown[]) : [];
+    hooks[event] = [...current, ...legacy];
+    delete root[event];
+  }
+  root.hooks = hooks;
+  return found;
 }
 
 function doctorFromPresent(
@@ -735,11 +827,11 @@ function pruneEmptyHookEvents(hooks: JsonObject): void {
 
 function buildCommandHandler(command: string, codexShape: boolean): JsonObject {
   if (codexShape) {
-    // Matches Codex ConfiguredHookHandler command shape (async required in managed schema).
+    // Codex currently parses `async` but skips asynchronous handlers, so omit it.
     return {
       type: "command",
       command,
-      async: false,
+      timeout: 60,
       statusMessage: TENT_HOOK_MARKER,
     };
   }
