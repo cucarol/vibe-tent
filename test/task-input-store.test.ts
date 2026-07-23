@@ -125,6 +125,65 @@ test("task input store: managed-inject pin blocks cancel until markDelivered (ra
   assert.match(prompt, /Use the tighter plan/);
 });
 
+test("task input store: rebindSession updates pending session; cancel old id leaves row; markDelivered can persist inject session", async () => {
+  const dataDir = await tempDir("tent-ti-rebind-");
+  const store = new TaskInputStore(dataDir);
+  const id = makeTaskInputId(() => 0.44);
+  const workspaceId = "ws-rebind";
+  const taskPath = "temp/r/tasks/rebind.md";
+  const oldSession = "ss-old";
+  const newSession = "ss-new";
+
+  await store.add(
+    pending({
+      id,
+      workspaceId,
+      taskPath,
+      sessionId: oldSession,
+      kind: "review-feedback",
+      text: "  rework note  ",
+    })
+  );
+
+  const rebound = await store.rebindSession(
+    id,
+    workspaceId,
+    taskPath,
+    newSession
+  );
+  assert.equal(rebound.status, "pending");
+  assert.equal(rebound.sessionId, newSession);
+  assert.equal(rebound.text, "  rework note  ");
+
+  // Idempotent rebind to same target.
+  const same = await store.rebindSession(
+    id,
+    workspaceId,
+    taskPath,
+    newSession
+  );
+  assert.equal(same.sessionId, newSession);
+
+  // cancelSession on the prior id must not touch the rebound pending row.
+  const cancelledOld = await store.cancelSession(oldSession, "session.exited");
+  assert.equal(cancelledOld.length, 0);
+  const still = await store.get(id, workspaceId, taskPath);
+  assert.equal(still?.status, "pending");
+  assert.equal(still?.sessionId, newSession);
+
+  // markDelivered can also persist the inject session (override path).
+  const delivered = await store.markDelivered(id, "service", {
+    sessionId: newSession,
+  });
+  assert.equal(delivered.status, "delivered");
+  assert.equal(delivered.sessionId, newSession);
+
+  await assert.rejects(
+    () => store.rebindSession(id, workspaceId, taskPath, "ss-later"),
+    /pending status/
+  );
+});
+
 test("task input store: review-feedback preserves exact note and formats ## Review Feedback", async () => {
   const dataDir = await tempDir("tent-ti-review-");
   const store = new TaskInputStore(dataDir);

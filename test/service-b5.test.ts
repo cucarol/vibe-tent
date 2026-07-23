@@ -3018,12 +3018,65 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       state: string;
       task: { state: string; sessionId?: string; assigneeKind?: string };
       session?: { sessionId: string };
+      input?: {
+        id: string;
+        kind?: string;
+        status: string;
+        sessionId?: string;
+        text?: string;
+      };
     };
     assert.equal(body.state, "running");
     assert.equal(body.task.assigneeKind, "agentProfile");
     assert.ok(body.session?.sessionId);
     assert.equal(body.task.sessionId, body.session!.sessionId);
     assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
+
+    // Cross-session gap: prior is dead → new ss-; review-feedback must rebind.
+    assert.notEqual(
+      body.session!.sessionId,
+      sessionId,
+      "reject-resume after deliver must allocate a new session id for agentProfile"
+    );
+    assert.ok(body.input, "reject-resume must return review-feedback TaskInput");
+    assert.equal(body.input!.kind, "review-feedback");
+    assert.equal(body.input!.text, "profile rework");
+    assert.equal(
+      body.input!.sessionId,
+      body.session!.sessionId,
+      "review-feedback must bind to restored session, not the prior stopped one"
+    );
+    assert.notEqual(body.input!.sessionId, sessionId);
+
+    const stored = await svc.ctx.taskInputs.get(
+      body.input!.id,
+      workspaceId,
+      taskPath
+    );
+    assert.ok(stored);
+    assert.equal(stored!.sessionId, body.session!.sessionId);
+    // fake-default may leave pending if follow-up inject unsupported; either way
+    // durable binding must be the new session (not cancelled via prior id).
+    assert.ok(
+      stored!.status === "delivered" || stored!.status === "pending",
+      `unexpected review-feedback status: ${stored!.status}`
+    );
+    const cancelledPrior = await svc.ctx.taskInputs.cancelSession(
+      sessionId,
+      "test.prior-session-cleanup"
+    );
+    assert.equal(
+      cancelledPrior.filter((row) => row.id === body.input!.id).length,
+      0,
+      "cancelSession(prior) must not cancel feedback rebound to new session"
+    );
+    const afterCancel = await svc.ctx.taskInputs.get(
+      body.input!.id,
+      workspaceId,
+      taskPath
+    );
+    assert.equal(afterCancel?.sessionId, body.session!.sessionId);
+    assert.notEqual(afterCancel?.status, "cancelled");
   });
 });
 

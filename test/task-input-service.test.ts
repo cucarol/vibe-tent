@@ -714,6 +714,158 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
   });
 });
 
+test("reject-resume: new session after dead prior rebinds review-feedback (not stranded on old ss-)", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-newss-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "FIRST_DELIVERY_CROSS_SESSION",
+      followupText: "REWORK_ON_NEW_SESSION",
+      promptDelayMs: 200,
+      // After managed deliver, service stops the process; reject-resume must
+      // allocate a new ss- (not rebind the dead prior). keepAlive only affects
+      // mock exit after prompt; stopSession still ends the managed handle.
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "reject-cross-session",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Cross-session reject-resume rebind",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+    const priorSessionId = started.session.sessionId;
+
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "first managed delivery before cross-session reject");
+
+    // Prior process is stopped after deliver — restore must create a new ss-.
+    const priorProbe = await svc.runtime.probe(priorSessionId);
+    assert.equal(
+      priorProbe.alive,
+      false,
+      "prior session must be dead so reject-resume takes new-session path"
+    );
+
+    const exactNote = "  cross-session: fix and re-run  ";
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: exactNote,
+    })) as {
+      state: string;
+      session?: { sessionId: string };
+      input?: {
+        id: string;
+        kind?: string;
+        status: string;
+        text?: string;
+        sessionId?: string;
+        taskPath: string;
+      };
+      continued?: boolean;
+      continueError?: string;
+    };
+
+    assert.equal(rejected.state, "running");
+    assert.ok(rejected.session?.sessionId, "must restore a live session");
+    const newSessionId = rejected.session!.sessionId;
+    assert.notEqual(
+      newSessionId,
+      priorSessionId,
+      "agentProfile/role restore after deliver must allocate a new session id"
+    );
+    assert.ok(rejected.input, "must create review-feedback TaskInput");
+    assert.equal(rejected.input!.kind, "review-feedback");
+    assert.equal(rejected.input!.text, exactNote);
+    assert.equal(
+      rejected.input!.sessionId,
+      newSessionId,
+      "review-feedback must bind to restored session, not the dead prior"
+    );
+    assert.notEqual(
+      rejected.input!.sessionId,
+      priorSessionId,
+      "must not leave feedback keyed to the stopped session"
+    );
+    assert.equal(
+      rejected.continued,
+      true,
+      `must inject into new session; continueError=${rejected.continueError ?? "none"}`
+    );
+    assert.equal(rejected.input!.status, "delivered");
+
+    // Durable store: cancelSession(old) must not rewrite the rebound row.
+    const cancelledOld = await svc.ctx.taskInputs.cancelSession(
+      priorSessionId,
+      "test.late-prior-exit"
+    );
+    assert.equal(
+      cancelledOld.length,
+      0,
+      "cancelSession(prior) must not touch feedback rebound to new session"
+    );
+    const stored = await svc.ctx.taskInputs.get(
+      rejected.input!.id,
+      workspaceId,
+      taskPath
+    );
+    assert.ok(stored);
+    assert.equal(stored!.sessionId, newSessionId);
+    assert.equal(stored!.status, "delivered");
+
+    // No duplicate pending review-feedback for this task.
+    const pending = (await client.taskInputListPending(
+      workspaceId,
+      taskPath
+    )) as { inputs: { id: string; kind?: string }[] };
+    assert.equal(
+      pending.inputs.filter((i) => i.kind === "review-feedback").length,
+      0,
+      "delivered review-feedback must not remain pending (no double-consume)"
+    );
+
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "rework delivery on new session");
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    const reviewPrompt = log.prompts?.find((p) =>
+      p.includes("## Review Feedback")
+    );
+    assert.ok(reviewPrompt, "new session must receive ## Review Feedback");
+    assert.ok(reviewPrompt!.includes(`text: ${exactNote}`));
+  });
+});
+
 test("reject-resume external (no session): review feedback stays pending for poll/ack", async () => {
   const ws = await makeWorkspace();
   await withService([], async (svc) => {

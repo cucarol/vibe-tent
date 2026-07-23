@@ -379,10 +379,67 @@ export class TaskInputStore {
     });
   }
 
-  /** Mark managed inject success: pending → delivered. */
+  /**
+   * Rebind a still-pending input to the session that will inject/consume it.
+   * Used after reject-resume creates a new ss- so review-feedback is not left
+   * keyed to a dead prior session (cancelSession / projection / poll honesty).
+   * Idempotent when sessionId already matches. Fail-loud on missing/scope/terminal.
+   */
+  async rebindSession(
+    id: string,
+    workspaceId: string,
+    taskPath: string,
+    sessionId: string
+  ): Promise<TaskInputRecord> {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.rebindSession requires workspaceId and taskPath"
+      );
+    }
+    const nextSession = sessionId?.trim();
+    if (!nextSession) {
+      throw new Error("TaskInput.rebindSession requires non-empty sessionId");
+    }
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+        throw new Error(`TaskInput not found: ${id}`);
+      }
+      if (item.status !== "pending") {
+        throw new Error(
+          `TaskInput.rebindSession requires pending status; got ${item.status}: ${id}`
+        );
+      }
+      if (item.sessionId === nextSession) {
+        return cloneInput(item);
+      }
+      const now = new Date().toISOString();
+      const rebound: TaskInputRecord = {
+        ...item,
+        sessionId: nextSession,
+        updatedAt: now,
+      };
+      const next = new Map(this.items);
+      next.set(id, rebound);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(rebound);
+    });
+  }
+
+  /**
+   * Mark managed inject success: pending → delivered.
+   * Optional sessionId persists the session that actually received the inject
+   * (e.g. reject-resume new ss- after sessionIdOverride).
+   */
   async markDelivered(
     id: string,
-    resolvedBy = "service"
+    resolvedBy = "service",
+    opts?: { sessionId?: string }
   ): Promise<TaskInputRecord> {
     if (this.closed) throw new Error("TaskInput store is closed");
     await this.ensureLoaded();
@@ -394,8 +451,10 @@ export class TaskInputStore {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = new Date().toISOString();
+      const injectSession = opts?.sessionId?.trim();
       const resolved: TaskInputRecord = {
         ...item,
+        ...(injectSession ? { sessionId: injectSession } : {}),
         status: "delivered",
         updatedAt: now,
         deliveredAt: now,

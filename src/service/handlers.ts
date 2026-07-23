@@ -2577,6 +2577,9 @@ export type ManagedTaskInputDelivery = {
  * - Persist is already done by the caller (TaskInputStore.add).
  * - Managed live/resume inject uses formatTaskInputPrompt (## User Input or
  *   ## Review Feedback) via the same transport as sendInput.
+ * - When sessionIdOverride differs from the stored row (reject-resume new ss-),
+ *   rebind the pending row to the inject target before pin/inject so durable
+ *   state matches the live session (no lost pending on a dead ss-, no double inject).
  * - FIFO: concurrent deliverManagedTaskInput for the same task never overlap
  *   turns or reorder; different tasks run concurrently.
  * - Failure: leave status=pending (do not cancel); surface continueError; later
@@ -2600,7 +2603,7 @@ async function deliverManagedTaskInput(
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
     // Re-read: interrupt/cancel may have cancelled this row while queued.
-    const latest = await ctx.taskInputs.get(
+    let latest = await ctx.taskInputs.get(
       item.id,
       item.workspaceId,
       item.taskPath
@@ -2621,9 +2624,30 @@ async function deliverManagedTaskInput(
       };
     }
 
+    // Persist inject target session when it differs from create-time binding
+    // (reject-resume often allocates a new ss- after review-feedback was created
+    // against the prior stopped session).
+    if ((latest.sessionId?.trim() || "") !== sessionId) {
+      try {
+        latest = await ctx.taskInputs.rebindSession(
+          latest.id,
+          latest.workspaceId,
+          latest.taskPath,
+          sessionId
+        );
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        return {
+          input: latest,
+          continued: false,
+          continueError: `TaskInput rebind to inject session failed: ${message}`,
+        };
+      }
+    }
+
     const forInject: TaskInputRecord = {
       ...latest,
-      sessionId: sessionId || latest.sessionId,
+      sessionId,
     };
 
     ctx.taskInputs.beginManagedInject(forInject.id);
@@ -2633,7 +2657,11 @@ async function deliverManagedTaskInput(
       continueResult = await continueManagedAfterTaskInput(ctx, forInject);
       if (continueResult.continued) {
         try {
-          finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service");
+          finalInput = await ctx.taskInputs.markDelivered(
+            forInject.id,
+            "service",
+            { sessionId }
+          );
           ctx.events.emit(
             "taskInput.delivered",
             forInject.workspaceId,
@@ -2937,10 +2965,23 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       workspaceId,
       taskPath,
     });
+    // review-feedback was created with the pre-restore sessionId (often stopped).
+    // Rebind to the live restore target before inject so cancelSession(old) and
+    // projections cannot strand feedback on a dead ss- while the task runs on new.
+    const restoredSessionId = restored.session.sessionId;
+    let boundReview = reviewInput;
+    if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
+      boundReview = await ctx.taskInputs.rebindSession(
+        reviewInput.id,
+        workspaceId,
+        taskPath,
+        restoredSessionId
+      );
+    }
     // After restore/create of the real session, inject ## Review Feedback via the
     // shared managed U2A delivery primitive (FIFO with other U2A for this task).
-    const delivery = await deliverManagedTaskInput(ctx, reviewInput, {
-      sessionIdOverride: restored.session.sessionId,
+    const delivery = await deliverManagedTaskInput(ctx, boundReview, {
+      sessionIdOverride: restoredSessionId,
     });
     return {
       workspaceId,
