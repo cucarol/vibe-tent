@@ -971,10 +971,191 @@ function isRoleId(id) {
   return id.startsWith(ROLE_ID_PREFIX) && id.length > ROLE_ID_PREFIX.length;
 }
 
+// src/core/task-model.ts
+var ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
+  "queued",
+  "running",
+  "waiting",
+  "delivered"
+]);
+var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
+  "accepted",
+  "rejected",
+  "interrupted",
+  "failed"
+]);
+function isActiveTaskState(state) {
+  return ACTIVE_TASK_STATES.has(state);
+}
+function stateToLegacyStatus(state) {
+  return state === "queued" ? "pending" : "taken";
+}
+function legacyStatusToState(status) {
+  return status === "pending" ? "queued" : "running";
+}
+function makeTaskId(rand = Math.random, len = 8) {
+  const stem = makeConceptId(rand, len).slice(3);
+  return `tk-${stem}`;
+}
+function makeDeliveryId(rand = Math.random, len = 8) {
+  const stem = makeConceptId(rand, len).slice(3);
+  return `dl-${stem}`;
+}
+function isTaskId(id) {
+  return id.startsWith("tk-") && id.length > 3;
+}
+function isDeliveryId(id) {
+  return id.startsWith("dl-") && id.length > 3;
+}
+var TaskLifecycleError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "TaskLifecycleError";
+  }
+};
+function assertTransition(from, event, to) {
+  const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
+  if (!ok) {
+    throw new TaskLifecycleError(
+      "INVALID_TRANSITION",
+      `Invalid task transition: ${from} --${event}\u2192 ${to}`
+    );
+  }
+}
+function allowedTransitions(from) {
+  switch (from) {
+    case "queued":
+      return [
+        { event: "claim", to: "running" },
+        { event: "cancel", to: "interrupted" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "running":
+      return [
+        { event: "wait", to: "waiting" },
+        { event: "deliver", to: "delivered" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "waiting":
+      return [
+        { event: "resume", to: "running" },
+        { event: "interrupt", to: "interrupted" },
+        { event: "fail", to: "failed" }
+      ];
+    case "delivered":
+      return [
+        { event: "accept", to: "accepted" },
+        { event: "reject-resume", to: "running" },
+        { event: "reject-terminal", to: "rejected" },
+        { event: "interrupt", to: "interrupted" }
+      ];
+    case "rejected":
+      return [];
+    default:
+      return [];
+  }
+}
+function projectBoxFromTask(input) {
+  if (input.active) return { status: "doing", clearAssignee: false };
+  if (input.terminalState === "accepted") return { status: "done", clearAssignee: true };
+  return { status: "todo", clearAssignee: true };
+}
+function resolveDeliverRouting(policy, decision) {
+  if (policy === "bypass") {
+    return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
+  }
+  if (policy === "manual") {
+    if (decision === "integrate") {
+      throw new TaskLifecycleError(
+        "POLICY_FORBIDS_AUTO_INTEGRATE",
+        "deliveryPolicy=manual forbids decision=integrate; use request-review or change policy."
+      );
+    }
+    return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+  }
+  if (!decision) {
+    throw new TaskLifecycleError(
+      "DECISION_REQUIRED",
+      "deliveryPolicy=agent-decide requires decision: integrate | request-review."
+    );
+  }
+  if (decision === "integrate") {
+    return {
+      autoIntegrate: true,
+      integrationMode: "agent-decided-integrate",
+      enterDelivered: false
+    };
+  }
+  return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
+}
+function assertReviewAuthority(input) {
+  const actor = input.actor.trim();
+  const submitter = input.submitterRole.trim();
+  const action = input.action ?? "accept";
+  if (!actor) {
+    throw new TaskLifecycleError(
+      "REVIEW_FORBIDDEN",
+      `task.${action} requires a non-empty actor.`
+    );
+  }
+  if (actor === submitter) {
+    throw new TaskLifecycleError(
+      "SELF_ACCEPT_FORBIDDEN",
+      `task.${action} actor must not equal delivery submitter (${submitter}).`
+    );
+  }
+  if (input.asSub !== true) return;
+  const dispatcher = (input.dispatchedBy || "").trim();
+  if (actor === "user") return;
+  if (dispatcher && actor === dispatcher) return;
+  throw new TaskLifecycleError(
+    "REVIEW_FORBIDDEN",
+    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
+  );
+}
+function evaluateA2A(input) {
+  if (input.callerKind === "user") return "allow";
+  const policy = input.policy ?? "deny";
+  if (policy === "deny") return "deny";
+  if (policy === "ask") return "ask";
+  if (input.profileAllowed === false) return "deny";
+  return "allow";
+}
+
 // src/core/claim.ts
+function envelopeIsActiveOccupation(task) {
+  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
+  return isActiveTaskState(state);
+}
 function canClaim(box, options) {
-  if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
-  if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  const structural = structuralClaimGate(box);
+  if (!structural.ok) return structural;
+  const tasks = options?.tasks;
+  const tent = options?.tent;
+  if (!tasks || tasks.length === 0 || !tent) {
+    return { ok: true };
+  }
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
+  const hit = findActiveOccupation(tent, box, tasks, {
+    allowAncestorClaimedBy: allowAncestorBy || void 0
+  });
+  if (!hit) return { ok: true };
+  return {
+    ok: false,
+    blocker: hit.blocker,
+    task: hit.task,
+    reason: hit.reason
+  };
+}
+function structuralClaimGate(box) {
+  if (box.invalid) {
+    return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
+  }
+  if (box.archived) {
+    return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
+  }
   if (!box.coordination) {
     return {
       ok: false,
@@ -982,50 +1163,67 @@ function canClaim(box, options) {
       reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
     };
   }
-  if (box.fm.owner) {
-    return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
-  }
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  let anc = box.parent;
-  while (anc) {
-    if (anc.fm.owner) {
-      if (allowAncestorBy && anc.fm.owner === allowAncestorBy) {
-        anc = anc.parent;
-        continue;
-      }
-      return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
-    }
-    anc = anc.parent;
-  }
-  const occupiedChild = findOccupied(box.children);
-  if (occupiedChild) {
-    return {
-      ok: false,
-      blocker: occupiedChild,
-      reason: `Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
-    };
-  }
   return { ok: true };
 }
-function findOccupied(boxes) {
-  for (const b of boxes) {
-    if (b.fm.owner) return b;
-    const deep = findOccupied(b.children);
-    if (deep) return deep;
+function findActiveOccupation(tent, box, tasks, options) {
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        return {
+          blocker: box,
+          task,
+          relation: "root",
+          reason: `Tent root is occupied by active task for ${task.role}.`
+        };
+      }
+      const claimed = tent.byId.get(claimId);
+      if (!claimed) continue;
+      if (claimed.id === box.id) {
+        return {
+          blocker: claimed,
+          task,
+          relation: "self",
+          reason: `${box.name} is already occupied by active task for ${task.role}.`
+        };
+      }
+      if (isAncestor(claimed, box)) {
+        if (allowAncestorBy && task.role === allowAncestorBy) {
+          continue;
+        }
+        return {
+          blocker: claimed,
+          task,
+          relation: "ancestor",
+          reason: `Ancestor ${claimed.name} is occupied by active task for ${task.role}.`
+        };
+      }
+      if (isAncestor(box, claimed)) {
+        return {
+          blocker: claimed,
+          task,
+          relation: "descendant",
+          reason: `Descendant ${claimed.name} is occupied by active task for ${task.role}.`
+        };
+      }
+    }
   }
   return void 0;
 }
-function occupiedBoxes(tent) {
-  const out = [];
-  for (const root of tent.roots) collect(root, out);
-  return out;
-}
-function collect(box, out) {
-  if (box.fm.owner) out.push(box);
-  for (const c of box.children) collect(c, out);
+function findAnyActiveTask(tasks) {
+  return tasks.find((t) => envelopeIsActiveOccupation(t));
 }
 function isFrozen(box) {
   return box.invalid || box.archived || box.locked;
+}
+function isAncestor(ancestor, child) {
+  let parent = child.parent;
+  while (parent) {
+    if (parent.id === ancestor.id) return true;
+    parent = parent.parent;
+  }
+  return false;
 }
 
 // src/core/tags.ts
@@ -1377,159 +1575,6 @@ async function writeJson(fs19, path21, value) {
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// src/core/task-model.ts
-var ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
-  "queued",
-  "running",
-  "waiting",
-  "delivered"
-]);
-var TERMINAL_TASK_STATES = /* @__PURE__ */ new Set([
-  "accepted",
-  "rejected",
-  "interrupted",
-  "failed"
-]);
-function isActiveTaskState(state) {
-  return ACTIVE_TASK_STATES.has(state);
-}
-function stateToLegacyStatus(state) {
-  return state === "queued" ? "pending" : "taken";
-}
-function legacyStatusToState(status) {
-  return status === "pending" ? "queued" : "running";
-}
-function makeTaskId(rand = Math.random, len = 8) {
-  const stem = makeConceptId(rand, len).slice(3);
-  return `tk-${stem}`;
-}
-function makeDeliveryId(rand = Math.random, len = 8) {
-  const stem = makeConceptId(rand, len).slice(3);
-  return `dl-${stem}`;
-}
-function isTaskId(id) {
-  return id.startsWith("tk-") && id.length > 3;
-}
-function isDeliveryId(id) {
-  return id.startsWith("dl-") && id.length > 3;
-}
-var TaskLifecycleError = class extends Error {
-  constructor(code, message2) {
-    super(message2);
-    this.code = code;
-    this.name = "TaskLifecycleError";
-  }
-};
-function assertTransition(from, event, to) {
-  const ok = allowedTransitions(from).some((t) => t.event === event && t.to === to);
-  if (!ok) {
-    throw new TaskLifecycleError(
-      "INVALID_TRANSITION",
-      `Invalid task transition: ${from} --${event}\u2192 ${to}`
-    );
-  }
-}
-function allowedTransitions(from) {
-  switch (from) {
-    case "queued":
-      return [
-        { event: "claim", to: "running" },
-        { event: "cancel", to: "interrupted" },
-        { event: "interrupt", to: "interrupted" }
-      ];
-    case "running":
-      return [
-        { event: "wait", to: "waiting" },
-        { event: "deliver", to: "delivered" },
-        { event: "interrupt", to: "interrupted" },
-        { event: "fail", to: "failed" }
-      ];
-    case "waiting":
-      return [
-        { event: "resume", to: "running" },
-        { event: "interrupt", to: "interrupted" },
-        { event: "fail", to: "failed" }
-      ];
-    case "delivered":
-      return [
-        { event: "accept", to: "accepted" },
-        { event: "reject-resume", to: "running" },
-        { event: "reject-terminal", to: "rejected" },
-        { event: "interrupt", to: "interrupted" }
-      ];
-    case "rejected":
-      return [];
-    default:
-      return [];
-  }
-}
-function projectBoxFromTask(input) {
-  if (input.active) return { status: "doing", clearAssignee: false };
-  if (input.terminalState === "accepted") return { status: "done", clearAssignee: true };
-  return { status: "todo", clearAssignee: true };
-}
-function resolveDeliverRouting(policy, decision) {
-  if (policy === "bypass") {
-    return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
-  }
-  if (policy === "manual") {
-    if (decision === "integrate") {
-      throw new TaskLifecycleError(
-        "POLICY_FORBIDS_AUTO_INTEGRATE",
-        "deliveryPolicy=manual forbids decision=integrate; use request-review or change policy."
-      );
-    }
-    return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
-  }
-  if (!decision) {
-    throw new TaskLifecycleError(
-      "DECISION_REQUIRED",
-      "deliveryPolicy=agent-decide requires decision: integrate | request-review."
-    );
-  }
-  if (decision === "integrate") {
-    return {
-      autoIntegrate: true,
-      integrationMode: "agent-decided-integrate",
-      enterDelivered: false
-    };
-  }
-  return { autoIntegrate: false, integrationMode: null, enterDelivered: true };
-}
-function assertReviewAuthority(input) {
-  const actor = input.actor.trim();
-  const submitter = input.submitterRole.trim();
-  const action = input.action ?? "accept";
-  if (!actor) {
-    throw new TaskLifecycleError(
-      "REVIEW_FORBIDDEN",
-      `task.${action} requires a non-empty actor.`
-    );
-  }
-  if (actor === submitter) {
-    throw new TaskLifecycleError(
-      "SELF_ACCEPT_FORBIDDEN",
-      `task.${action} actor must not equal delivery submitter (${submitter}).`
-    );
-  }
-  if (input.asSub !== true) return;
-  const dispatcher = (input.dispatchedBy || "").trim();
-  if (actor === "user") return;
-  if (dispatcher && actor === dispatcher) return;
-  throw new TaskLifecycleError(
-    "REVIEW_FORBIDDEN",
-    `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
-  );
-}
-function evaluateA2A(input) {
-  if (input.callerKind === "user") return "allow";
-  const policy = input.policy ?? "deny";
-  if (policy === "deny") return "deny";
-  if (policy === "ask") return "ask";
-  if (input.profileAllowed === false) return "deny";
-  return "allow";
 }
 
 // src/core/task.ts
@@ -2082,6 +2127,8 @@ async function taskClaim(env, taskPath, options = {}) {
       acceptedBy: box.fm.acceptedBy
     }));
     const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
+    const allTasks = await loadTaskEnvelopes(env.fs);
+    const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
       if (!box.coordination) {
         throw new Error(
@@ -2089,6 +2136,8 @@ async function taskClaim(env, taskPath, options = {}) {
         );
       }
       const claimable = canClaim(box, {
+        tent,
+        tasks: peerTasks,
         ...allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}
       });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
@@ -2337,7 +2386,7 @@ async function taskCancel(env, taskPath) {
 }
 function boxProjectionOf(task) {
   if (!task) return { status: "todo" };
-  const active = isActiveTaskState(task.state);
+  const active = envelopeIsActiveOccupation(task);
   const proj = projectBoxFromTask({
     active,
     terminalState: active ? void 0 : task.state
@@ -2346,7 +2395,7 @@ function boxProjectionOf(task) {
     status: proj.status,
     // assignee is the stable label (role name or profileId).
     assignee: proj.clearAssignee ? void 0 : task.role,
-    activeTaskId: task.id || task.path
+    activeTaskId: active ? task.id || task.path : void 0
   };
 }
 function deliveryDirForTask(task) {
@@ -2550,7 +2599,7 @@ function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -2587,7 +2636,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// ../../Tent/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -4716,13 +4765,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// ../../Tent/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// ../../Tent/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -4756,7 +4805,7 @@ function push(list2, items) {
   return items;
 }
 
-// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -4796,7 +4845,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -4814,12 +4863,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// ../../Tent/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -4851,7 +4900,7 @@ function regexCheck(regex) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -4873,7 +4922,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -4923,7 +4972,7 @@ function initializeContent(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -5105,7 +5154,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// ../../Tent/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -5115,7 +5164,7 @@ function classifyCharacter(code) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -5129,7 +5178,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -5260,7 +5309,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -5361,7 +5410,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -5376,7 +5425,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -5434,7 +5483,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -5460,7 +5509,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -5525,7 +5574,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -5708,7 +5757,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -5772,7 +5821,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -5887,7 +5936,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -6080,7 +6129,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -6233,7 +6282,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -6304,7 +6353,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -6396,7 +6445,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -6457,7 +6506,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -6519,7 +6568,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -6538,7 +6587,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -6624,7 +6673,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -6645,7 +6694,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -6736,7 +6785,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -6803,7 +6852,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -7182,7 +7231,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -7488,7 +7537,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -7714,7 +7763,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -7745,7 +7794,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -7767,7 +7816,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -7782,7 +7831,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -7821,7 +7870,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -7951,7 +8000,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -8043,7 +8092,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -8081,7 +8130,7 @@ function initializeFlow(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -8220,7 +8269,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -8295,7 +8344,7 @@ var disable = {
   null: []
 };
 
-// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -8618,7 +8667,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// ../../Tent/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -8644,14 +8693,14 @@ function parse(options) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -8730,7 +8779,7 @@ function preprocess() {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -8748,7 +8797,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -8774,7 +8823,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -9941,15 +9990,9 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
 async function assertRenameOccupationAllowed(env, tent, concept) {
-  if (concept.fm.owner || concept.locked || hasOwnerInSubtree(concept)) {
-    throw new Error(
-      `Cannot rename ${concept.name}: active claim/owner occupies this range; stamp or force-release first.`
-    );
-  }
   const tasks = await loadTaskEnvelopes(env.fs);
   for (const task of tasks) {
-    const active = isActiveTaskState(task.state) || task.status === "pending" || task.status === "taken";
-    if (!active) continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(concept.id) || task.claims.includes("root")) {
       throw new Error(
         `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
@@ -9965,10 +10008,6 @@ async function assertRenameOccupationAllowed(env, tent, concept) {
       }
     }
   }
-}
-function hasOwnerInSubtree(box) {
-  if (box.fm.owner) return true;
-  return box.children.some(hasOwnerInSubtree);
 }
 function isAncestorPath(ancestor, child) {
   if (!ancestor) return true;
@@ -10178,9 +10217,12 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const dispatcher = (options.dispatchedBy || "").trim();
   const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
   if (claim.root) {
-    const occupied = occupiedBoxes(tent);
-    if (occupied.length > 0) {
-      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
+    const blocker = findAnyActiveTask(tasks);
+    if (blocker) {
+      const claimLabel = blocker.claims.includes("root") ? "root" : blocker.claims[0] || "unknown";
+      throw new Error(
+        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
+      );
     }
   } else {
     if (!claim.box.coordination) {
@@ -10188,39 +10230,18 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
       );
     }
-    const existingOwner = ownerCovering(claim.box);
-    if (existingOwner) {
-      const owner = (existingOwner.fm.owner || "").trim();
-      const allowedBySub = subUnderDispatcher && owner === dispatcher && // Child itself must still be free; only ancestor ownership by dispatcher is ok.
-      existingOwner.id !== claim.box.id;
-      if (!allowedBySub) {
-        throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
-      }
+    const structural = structuralClaimGate(claim.box);
+    if (!structural.ok) {
+      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
     }
-    if (subUnderDispatcher) {
-      if (claim.box.invalid) {
-        throw new Error(`Cannot dispatch: Invalid subtree: ${claim.box.invalidReason || "missing type definition"}`);
-      }
-      if (claim.box.archived) {
-        throw new Error("Cannot dispatch: Archived subtree cannot be claimed.");
-      }
-      if (claim.box.fm.owner) {
-        throw new Error(`Cannot dispatch: Already claimed by ${claim.box.fm.owner}.`);
-      }
-      const occupiedChild = findOccupiedDescendant(claim.box);
-      if (occupiedChild) {
-        throw new Error(
-          `Cannot dispatch: Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
-        );
-      }
-    } else {
-      const claimable = canClaim(claim.box);
-      if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    }
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks, {
-      allowAncestorClaimedBy: subUnderDispatcher ? dispatcher : void 0
+    const claimable = canClaim(claim.box, {
+      tent,
+      tasks,
+      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
     });
-    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
+    if (!claimable.ok) {
+      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
   }
   try {
     const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
@@ -10363,7 +10384,13 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
   }
   if ("status" in patch) {
-    if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
+    const tasks = await loadTaskEnvelopes(env.fs);
+    const occupied = findActiveOccupation(tent, box, tasks);
+    if (occupied) {
+      throw new Error(
+        "Status for boxes with an active task can only be changed by completing or interrupting the task."
+      );
+    }
     if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
       throw new Error("Status must be todo, doing, or done.");
     }
@@ -10425,9 +10452,10 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     return;
   }
   if (next === "archived" || current !== "archived") {
-    if (isFrozen(box)) {
+    const tasks = await loadTaskEnvelopes(env.fs);
+    if (findActiveOccupation(tent, box, tasks)) {
       throw new Error(
-        next === "archived" ? "Claimed ranges cannot be archived; stamp or force-release the owner first." : "Claimed ranges cannot change mode; stamp or force-release the owner first."
+        next === "archived" ? "Ranges with an active task cannot be archived; complete or interrupt the task first." : "Ranges with an active task cannot change mode; complete or interrupt the task first."
       );
     }
   }
@@ -10485,58 +10513,12 @@ function assertRoleName(role) {
   assertRoleNameAvailable(name);
   return name;
 }
-function ownerCovering(box) {
-  if (box.fm.owner) return box;
-  let parent = box.parent;
-  while (parent) {
-    if (parent.fm.owner) return parent;
-    parent = parent.parent;
-  }
-  return void 0;
-}
-function pendingClaimCovering(tent, box, tasks, options) {
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  for (const task of tasks) {
-    const active = task.state ? task.state === "queued" || task.state === "running" || task.state === "waiting" || task.state === "delivered" : task.status === "pending" || task.status === "taken";
-    if (!active) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
-      }
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (claimed.id === box.id) {
-        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(claimed, box)) {
-        if (allowAncestorBy && task.role === allowAncestorBy) {
-          continue;
-        }
-        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(box, claimed)) {
-        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-    }
-  }
-  return void 0;
-}
-function findOccupiedDescendant(box) {
-  for (const child of box.children) {
-    if (child.fm.owner) return child;
-    const deep = findOccupiedDescendant(child);
-    if (deep) return deep;
-  }
-  return void 0;
-}
 function roleManifestClaims(tent, role, current, tasks) {
   const claims = /* @__PURE__ */ new Map();
-  for (const box of tent.byPath.values()) {
-    if (box.fm.owner === role) claims.set(box.id, box);
-  }
   for (const task of tasks) {
     if (taskAssigneeKind(task) !== "role") continue;
-    if (task.status !== "pending" || task.role !== role) continue;
+    if (task.role !== role) continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     for (const claimId of task.claims) {
       const box = tent.byId.get(claimId);
       if (box) claims.set(box.id, box);
@@ -10544,14 +10526,6 @@ function roleManifestClaims(tent, role, current, tasks) {
   }
   claims.set(current.id, current);
   return [...claims.values()];
-}
-function isAncestor(ancestor, child) {
-  let parent = child.parent;
-  while (parent) {
-    if (parent.id === ancestor.id) return true;
-    parent = parent.parent;
-  }
-  return false;
 }
 function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -10596,14 +10570,9 @@ async function promoteConceptUnlocked(env, conceptIdOrPath, toType) {
   return { id: concept.id, path: concept.path, fromType, toType: target };
 }
 async function assertPromoteWriteAllowed(env, tent, concept) {
-  if (concept.fm.owner || concept.locked) {
-    throw new Error(
-      `Cannot promote ${concept.name}: active claim/owner write-protects type changes; stamp or force-release first.`
-    );
-  }
   const tasks = await loadTaskEnvelopes(env.fs);
   for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(concept.id) || task.claims.includes("root")) {
       throw new Error(
         `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`
@@ -23737,8 +23706,7 @@ function assertDocsWriteAllowed(tent, conceptId, frontmatter, tasks) {
   const concept = tent.byId.get(conceptId);
   if (!concept) return;
   const active = hasActiveTaskForConcept(tent, conceptId, concept.path, tasks);
-  const occupied = active || !!concept.fm.owner || concept.locked;
-  if (!occupied) return;
+  if (!active) return;
   throw new RpcError(
     -32010,
     `docs.write cannot change collaboration projection fields while box has an active task: ${protectedHit.join(", ")}. Use task.* transitions.`,
@@ -23796,13 +23764,7 @@ function tagsFromFrontmatterData(data) {
 }
 function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
   for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
-    const state = task.state;
-    if (state && state !== "queued" && state !== "running" && state !== "waiting" && state !== "delivered") {
-      if (state === "accepted" || state === "interrupted" || state === "failed" || state === "rejected") {
-        continue;
-      }
-    }
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(conceptId) || task.claims.includes("root")) return true;
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);
