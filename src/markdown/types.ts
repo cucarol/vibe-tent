@@ -54,7 +54,12 @@ export type DocsWriteResult =
   | { ok: true; etag: string; cx: string; path: string }
   | {
       ok: false;
-      code: "etag_conflict" | "collab_field_protected" | "not_found" | "invalid";
+      code:
+        | "etag_required"
+        | "etag_conflict"
+        | "collab_field_protected"
+        | "not_found"
+        | "invalid";
       message: string;
       disk?: ConceptEditSnapshot;
     };

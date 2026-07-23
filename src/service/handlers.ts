@@ -928,6 +928,7 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
 async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
+  // Accept legacy alias `etag` as baseEtag; existing Node body/frontmatter writes require it.
   const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
   const rawInput = typeof p.raw === "string" ? p.raw : undefined;
   const body = typeof p.body === "string" ? p.body : undefined;
@@ -943,11 +944,22 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     const notePath = boxNotePath(concept.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
-    if (baseEtag && baseEtag !== currentEtag) {
+    // Forced optimistic concurrency for existing nodes (createNote / migrate / role-init are other paths).
+    if (!baseEtag) {
+      throw new RpcError(-32008, "docs.write requires baseEtag for existing nodes", {
+        code: "etag_required",
+        currentEtag,
+        path: concept.path,
+        id: concept.id,
+      });
+    }
+    if (baseEtag !== currentEtag) {
       throw new RpcError(-32009, "etag conflict", {
+        code: "etag_conflict",
         currentEtag,
         baseEtag,
         path: concept.path,
+        id: concept.id,
       });
     }
 
@@ -996,21 +1008,19 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     }
 
     const afterRaw = await mount.env.fs.readFile(notePath);
-    const after = parseFrontmatter(afterRaw);
     ctx.events.emit(
       "concept.changed",
       workspaceId,
       { id: concept.id, path: concept.path, reason: "docs.write" },
       "self"
     );
+    // Success: new etag only — clients already hold the written buffer; errors never include body.
     return {
       workspaceId,
       id: concept.id,
       cx: concept.id,
       path: concept.path,
       etag: contentEtag(afterRaw),
-      body: after.body,
-      raw: afterRaw,
     };
   });
 }

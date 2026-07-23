@@ -507,6 +507,7 @@ export const CLIENT_METHODS = [
   "docs.list",
   "docs.get",
   "docs.readForEdit",
+  /** Existing Node body/frontmatter write; requires baseEtag (-32008 missing / -32009 conflict). */
   "docs.write",
   "docs.createNote",
   "docs.promote",

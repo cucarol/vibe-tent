@@ -311,12 +311,13 @@ Open tabs, scroll, selection live in **machine-local** window state. They must n
 }
 ```
 
-`docs.write` / `writeBody` **must** supply `baseEtag`:
+`docs.write` / `writeBody` on an **existing Node** **must** supply a non-empty `baseEtag` (from `docs.readForEdit`; legacy param alias `etag` accepted). Create/bootstrap paths (`docs.createNote`, `new` / `migrate` / `role-init`) are separate; external file edits land via watcher as fact change, not via blind `docs.write`.
 
-1. Under mutation serialization, re-read disk and compute `diskEtag`.
-2. If `diskEtag !== baseEtag` → **conflict**: reject write; return disk and base snapshots.
-3. If the target is a box with an **active task** and the patch attempts to set projected collaboration fields (`status`/`assignee`/legacy `owner` in competition with Task API) → **reject** with a collaboration-field error (not a silent merge). Body text and non-projection frontmatter may still write.
-4. Else write, publish **`concept.changed`** (via **EventEnvelope** — architecture §5.2), update callers’ etag.
+1. Under mutation serialization, re-read disk and compute `diskEtag` (`sha256` content token).
+2. If `baseEtag` is missing/empty → **`-32008`** (`etag_required`): reject; error `data` includes `currentEtag`, `path`, `id` — **no body**.
+3. If `diskEtag !== baseEtag` → **`-32009`** (`etag_conflict`): reject; error `data` includes `currentEtag`, `baseEtag`, `path`, `id` — **no body**. Clients may re-`readForEdit` for a full disk snapshot when UI needs it.
+4. If the target is a box with an **active task** and the patch attempts to set projected collaboration fields (`status`/`assignee`/legacy `owner` in competition with Task API) → **reject** with a collaboration-field error (not a silent merge). Body text and non-projection frontmatter may still write (still with a valid `baseEtag`).
+5. Else write, publish **`concept.changed`** (via **EventEnvelope** — architecture §5.2), update callers’ etag.
 
 Structured mutations (promote, type change, controlled move, **fork**) continue to use core `withTentMutation` / service command path; they still must not silently clobber a dirty editor buffer (flush or explicit merge of frontmatter-only updates).
 
@@ -364,7 +365,7 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | --- | --- | --- |
 | `docs.list` / `docs.get` | Query | Concept projections |
 | `docs.readForEdit` | Query | Body + etag for editing |
-| `docs.write` | Command | Conditional write with `baseEtag`; **cannot** bypass active-task projections |
+| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections |
 | `docs.createNote` | Command | New concept (`cx-`, type, path) |
 | `docs.promote` | Command | Note → box in place |
 | `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |

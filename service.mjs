@@ -14175,6 +14175,7 @@ var CLIENT_METHODS = [
   "docs.list",
   "docs.get",
   "docs.readForEdit",
+  /** Existing Node body/frontmatter write; requires baseEtag (-32008 missing / -32009 conflict). */
   "docs.write",
   "docs.createNote",
   "docs.promote",
@@ -18866,11 +18867,21 @@ async function docsWrite(ctx, p) {
     const notePath = boxNotePath(concept.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
     const currentEtag = contentEtag(diskRaw);
-    if (baseEtag && baseEtag !== currentEtag) {
+    if (!baseEtag) {
+      throw new RpcError(-32008, "docs.write requires baseEtag for existing nodes", {
+        code: "etag_required",
+        currentEtag,
+        path: concept.path,
+        id: concept.id
+      });
+    }
+    if (baseEtag !== currentEtag) {
       throw new RpcError(-32009, "etag conflict", {
+        code: "etag_conflict",
         currentEtag,
         baseEtag,
-        path: concept.path
+        path: concept.path,
+        id: concept.id
       });
     }
     if (rawInput !== void 0) {
@@ -18911,7 +18922,6 @@ async function docsWrite(ctx, p) {
       }
     }
     const afterRaw = await mount.env.fs.readFile(notePath);
-    const after = parseFrontmatter(afterRaw);
     ctx.events.emit(
       "concept.changed",
       workspaceId,
@@ -18923,9 +18933,7 @@ async function docsWrite(ctx, p) {
       id: concept.id,
       cx: concept.id,
       path: concept.path,
-      etag: contentEtag(afterRaw),
-      body: after.body,
-      raw: afterRaw
+      etag: contentEtag(afterRaw)
     };
   });
 }

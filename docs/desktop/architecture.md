@@ -409,6 +409,7 @@ Conflict rule: if a peer proposal violates **sole service mutation**, **in-works
 | WorkspaceLane ≠ RuntimeWorkspace; no “workspace pointer” product term | §3.5 |
 | `ArtifactRef`, `EventEnvelope`, `A2APolicy`, machine-local `AgentProfile` | §5.2 |
 | Active-task projections not bypassable via `docs.write` | §5.3 |
+| Existing-node `docs.write` requires `baseEtag` (`-32008` / `-32009`) | concept-model §7.2 |
 | Task stores `sessionId` only; session row/token/PID machine-local | §3.2–3.3 |
 | Foreground single workspace; background multi-workspace | §2 |
 | Closing the window does not stop tasks | §2 |

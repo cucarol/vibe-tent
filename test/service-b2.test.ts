@@ -375,6 +375,33 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
       baseEtag: etag,
     });
     assert.ok(!written.error, JSON.stringify(written.error));
+    const writeResult = written.result as { etag: string; body?: string; raw?: string };
+    assert.ok(writeResult.etag);
+    assert.equal(writeResult.body, undefined);
+    assert.equal(writeResult.raw, undefined);
+
+    // Missing baseEtag → -32008 (distinct from conflict); data carries currentEtag, not body.
+    const missing = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      body: "blind overwrite\n",
+    });
+    assert.ok(missing.error);
+    assert.equal(missing.error!.code, -32008);
+    assert.match(missing.error!.message, /baseEtag|etag/i);
+    const missingData = missing.error!.data as {
+      code?: string;
+      currentEtag?: string;
+      path?: string;
+      id?: string;
+      body?: string;
+      raw?: string;
+    };
+    assert.equal(missingData.code, "etag_required");
+    assert.equal(missingData.currentEtag, writeResult.etag);
+    assert.equal(missingData.id, id);
+    assert.equal(missingData.body, undefined);
+    assert.equal(missingData.raw, undefined);
 
     const conflict = await rpc(svc, "docs.write", {
       workspaceId,
@@ -384,6 +411,18 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     });
     assert.ok(conflict.error);
     assert.equal(conflict.error!.code, -32009);
+    const conflictData = conflict.error!.data as {
+      code?: string;
+      currentEtag?: string;
+      baseEtag?: string;
+      body?: string;
+      raw?: string;
+    };
+    assert.equal(conflictData.code, "etag_conflict");
+    assert.equal(conflictData.currentEtag, writeResult.etag);
+    assert.equal(conflictData.baseEtag, etag);
+    assert.equal(conflictData.body, undefined);
+    assert.equal(conflictData.raw, undefined);
 
     const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
@@ -525,11 +564,15 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     assert.match(taskPath, /^temp\//);
 
-    // pending task occupies — cannot patch status via docs.write
+    // pending task occupies — cannot patch status via docs.write (still requires baseEtag)
+    const editPending = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+    assert.ok(!editPending.error, JSON.stringify(editPending.error));
+    const pendingEtag = (editPending.result as { etag: string }).etag;
     const blockedPending = await rpc(svc, "docs.write", {
       workspaceId,
       id: boxId,
       frontmatter: { status: "done" },
+      baseEtag: pendingEtag,
     });
     assert.ok(blockedPending.error);
     assert.equal(blockedPending.error!.code, -32010);
@@ -543,10 +586,14 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.equal(concept.status, "doing");
     assert.equal(concept.assignee, "executor");
 
+    const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
+    assert.ok(!editOwner.error, JSON.stringify(editOwner.error));
+    const ownerEtag = (editOwner.result as { etag: string }).etag;
     const blockedOwner = await rpc(svc, "docs.write", {
       workspaceId,
       id: boxId,
       frontmatter: { assignee: "hacker" },
+      baseEtag: ownerEtag,
     });
     assert.ok(blockedOwner.error);
     assert.equal(blockedOwner.error!.code, -32010);
@@ -591,10 +638,13 @@ test("docs.write tags auto-register; node remove keeps registry candidates (fron
     const idB = (b.result as { id: string }).id;
 
     // Structured frontmatter: new tag auto-registers in tags.json.
+    const editA0 = await rpc(svc, "docs.readForEdit", { workspaceId, id: idA });
+    assert.ok(!editA0.error, JSON.stringify(editA0.error));
     const writeA = await rpc(svc, "docs.write", {
       workspaceId,
       id: idA,
       frontmatter: { tags: ["svc-new", "shared"] },
+      baseEtag: (editA0.result as { etag: string }).etag,
     });
     assert.ok(!writeA.error, JSON.stringify(writeA.error));
 
@@ -609,18 +659,24 @@ test("docs.write tags auto-register; node remove keeps registry candidates (fron
     );
 
     // Second node shares tags.
+    const editB0 = await rpc(svc, "docs.readForEdit", { workspaceId, id: idB });
+    assert.ok(!editB0.error, JSON.stringify(editB0.error));
     const writeB = await rpc(svc, "docs.write", {
       workspaceId,
       id: idB,
       frontmatter: { tags: ["shared"] },
+      baseEtag: (editB0.result as { etag: string }).etag,
     });
     assert.ok(!writeB.error, JSON.stringify(writeB.error));
 
     // Drop exclusive tag from A — Node clears; registry still keeps svc-new for reuse.
+    const editA1 = await rpc(svc, "docs.readForEdit", { workspaceId, id: idA });
+    assert.ok(!editA1.error, JSON.stringify(editA1.error));
     const dropExclusive = await rpc(svc, "docs.write", {
       workspaceId,
       id: idA,
       frontmatter: { tags: [] },
+      baseEtag: (editA1.result as { etag: string }).etag,
     });
     assert.ok(!dropExclusive.error, JSON.stringify(dropExclusive.error));
     registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
@@ -696,10 +752,13 @@ test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () =>
     assert.ok(!okWrite.error, JSON.stringify(okWrite.error));
 
     // frontmatter cannot set mode
+    const editMode = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    assert.ok(!editMode.error, JSON.stringify(editMode.error));
     const badMode = await rpc(svc, "docs.write", {
       workspaceId,
       id,
       frontmatter: { mode: "read-only" },
+      baseEtag: (editMode.result as { etag: string }).etag,
     });
     assert.ok(badMode.error);
     assert.equal(badMode.error!.code, -32010);
@@ -709,6 +768,7 @@ test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () =>
     assert.ok(!setRo.error, JSON.stringify(setRo.error));
     assert.equal((setRo.result as { mode: string }).mode, "read-only");
 
+    // Mode gate runs before etag; missing baseEtag is still not a blind overwrite path for editable nodes.
     const blocked = await rpc(svc, "docs.write", {
       workspaceId,
       id,

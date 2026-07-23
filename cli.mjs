@@ -4738,6 +4738,10 @@ var ServiceClient = class {
   docsGet(workspaceId, idOrPath) {
     return this.call("docs.get", { workspaceId, ...idOrPath });
   }
+  /**
+   * Existing-node body/frontmatter write. baseEtag is required (from docs.readForEdit).
+   * Missing → -32008; stale → -32009. Errors carry currentEtag only (no body).
+   */
   docsWrite(workspaceId, args) {
     return this.call("docs.write", { workspaceId, ...args });
   }

@@ -140,9 +140,17 @@ export class ServiceDocsClient implements DocsClient {
       };
     } catch (err) {
       if (err instanceof ServiceRpcError) {
+        if (err.code === -32008) {
+          return {
+            ok: false,
+            code: "etag_required",
+            message: err.message || "docs.write requires baseEtag for existing nodes",
+          };
+        }
         if (err.code === -32009) {
           let disk: ConceptEditSnapshot | undefined;
           try {
+            // Optional full snapshot for conflict UI; RPC error itself only carries etag meta.
             disk = await this.readForEdit(input.cx);
           } catch {
             /* ignore */

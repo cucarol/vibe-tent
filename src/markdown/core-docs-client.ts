@@ -81,6 +81,13 @@ export class CoreDocsClient implements DocsClient {
       if (!box) {
         return { ok: false, code: "not_found", message: `Concept not found: ${input.cx}` };
       }
+      if (!input.baseEtag || !String(input.baseEtag).trim()) {
+        return {
+          ok: false,
+          code: "etag_required",
+          message: "docs.write requires baseEtag for existing nodes",
+        };
+      }
       const notePath = boxNotePath(box.path);
       const diskRaw = await this.env.fs.readFile(notePath);
       const diskEtag = contentEtag(diskRaw);

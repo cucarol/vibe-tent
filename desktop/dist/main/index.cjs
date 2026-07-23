@@ -800,6 +800,13 @@ var ServiceDocsClient = class {
       };
     } catch (err) {
       if (err instanceof ServiceRpcError) {
+        if (err.code === -32008) {
+          return {
+            ok: false,
+            code: "etag_required",
+            message: err.message || "docs.write requires baseEtag for existing nodes"
+          };
+        }
         if (err.code === -32009) {
           let disk;
           try {
