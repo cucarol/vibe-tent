@@ -39,13 +39,18 @@ export type AcpPermissionAskHooks = {
 };
 
 export class AcpManagedSession implements ManagedSession {
+  /** Depth of in-flight managed session/prompt turns (bootstrap + U2A). */
+  private turnBusyDepth = 0;
+  private bootstrapDone: Promise<void>;
+
   constructor(
     readonly sessionId: string,
     private readonly client: ManagedAcpClient,
-    private readonly bootstrapDone: Promise<void>,
     private readonly emit: (ev: RuntimeEvent) => void,
     private stopRequested = false
-  ) {}
+  ) {
+    this.bootstrapDone = Promise.resolve();
+  }
 
   get pid(): number | undefined {
     return this.client.pid;
@@ -57,6 +62,14 @@ export class AcpManagedSession implements ManagedSession {
 
   isAlive(): boolean {
     return !this.stopRequested && this.client.isAlive();
+  }
+
+  /**
+   * Turn busy ≠ session live. Session may remain alive between turns;
+   * busy means a managed prompt is still settling (tools/response not done).
+   */
+  isTurnBusy(): boolean {
+    return this.turnBusyDepth > 0;
   }
 
   /** Tests / callers may await bootstrap completion (prompt path finished). */
@@ -83,7 +96,9 @@ export class AcpManagedSession implements ManagedSession {
       cwd: "",
       env: {},
     };
-    await runManagedBootstrapPrompt(plan, this.emit, this.client, text);
+    await this.runTurn(() =>
+      runManagedBootstrapPrompt(plan, this.emit, this.client, text)
+    );
   }
 
   async stop(reason: StopReason): Promise<void> {
@@ -93,6 +108,26 @@ export class AcpManagedSession implements ManagedSession {
         ? reason
         : "interrupt"
     );
+  }
+
+  /**
+   * Start a background managed prompt and keep turn-busy until it settles.
+   * Used for bootstrap / post-load first prompt (fire-and-forget from startSession).
+   */
+  beginBackgroundTurn(work: () => Promise<void>): Promise<void> {
+    const turn = this.runTurn(work);
+    this.bootstrapDone = turn;
+    return turn;
+  }
+
+  /** Track turn busy/idle around one managed session/prompt. */
+  private async runTurn(work: () => Promise<void>): Promise<void> {
+    this.turnBusyDepth += 1;
+    try {
+      await work();
+    } finally {
+      this.turnBusyDepth = Math.max(0, this.turnBusyDepth - 1);
+    }
   }
 }
 
@@ -243,10 +278,14 @@ export async function startManagedAcpSession(
     throw err;
   }
 
-  const promptDone = bootstrap
-    ? runManagedBootstrapPrompt(plan, emit, client, bootstrap)
-    : Promise.resolve();
-  return new AcpManagedSession(plan.sessionId, client, promptDone, emit);
+  const session = new AcpManagedSession(plan.sessionId, client, emit);
+  // Session is live after connect; turn busy tracks the in-flight bootstrap only.
+  if (bootstrap) {
+    session.beginBackgroundTurn(() =>
+      runManagedBootstrapPrompt(plan, emit, client, bootstrap)
+    );
+  }
+  return session;
 }
 
 /**
@@ -274,11 +313,13 @@ export async function resumeManagedAcpSession(
 
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
   // Optional post-load prompt only — empty means stay live without auto-delivery.
-  const promptDone = bootstrap
-    ? runManagedBootstrapPrompt(plan, emit, client, bootstrap)
-    : Promise.resolve();
-
-  return new AcpManagedSession(plan.sessionId, client, promptDone, emit);
+  const session = new AcpManagedSession(plan.sessionId, client, emit);
+  if (bootstrap) {
+    session.beginBackgroundTurn(() =>
+      runManagedBootstrapPrompt(plan, emit, client, bootstrap)
+    );
+  }
+  return session;
 }
 
 export function parseAcpResumeToken(raw: string): ResumeToken {

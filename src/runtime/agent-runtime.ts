@@ -920,6 +920,12 @@ export class AgentRuntime implements AgentRuntimePort {
       return;
     }
 
+    // Record intentional stop *before* killing so a racing session.exited
+    // projection (seal-before-deliver) does not task.fail a still-running task.
+    if (SessionRegistry.isNonTerminal(record.state) || record.state === "starting") {
+      await this.registry.update(sessionId, { stopReason: reason });
+    }
+
     const managed = this.managed.get(sessionId);
     if (managed) {
       try {
@@ -984,6 +990,8 @@ export class AgentRuntime implements AgentRuntimePort {
 
     const managed = this.managed.get(sessionId);
     const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
+    const turnBusy =
+      typeof managed?.isTurnBusy === "function" ? managed.isTurnBusy() : false;
     const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
@@ -1010,6 +1018,7 @@ export class AgentRuntime implements AgentRuntimePort {
         state: updated.state,
         alive: false,
         resumeCapable,
+        turnBusy: false,
         lastError: updated.lastError,
         exitCode: updated.exitCode,
       };
@@ -1020,6 +1029,7 @@ export class AgentRuntime implements AgentRuntimePort {
       state: record.state,
       alive,
       resumeCapable,
+      turnBusy,
       pid: alive ? record.pid : undefined,
       lastError: record.lastError,
       exitCode: record.exitCode,

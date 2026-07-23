@@ -298,6 +298,7 @@ Agents submit task targets (role / **AgentProfile** id / capability). They never
 3. **No forge on failure.** Empty assistant text, ACP error, timeout, stop, or interrupt → **no** delivery; task/session projects `failed` or `interrupted` with recoverable semantics where applicable.
 4. **No double delivery.** Reconnect / duplicate `session.prompt_complete` / already `delivered|accepted|…` is ignored or fails loudly at lifecycle authority — never two ready deliveries.
 5. **Tool permissionPolicy** remains `deny|ask|allow` (default **deny**). Tool-less tasks must still complete via the managed report path.
+6. **Turn settle before Delivery.** `session.prompt_complete` is only the visible end-of-prompt signal. Local Service must **seal** the managed turn (stop process / clear turn-busy; cancel pending tool asks) **before** publishing Delivery. Session `live` alone is not turn-done; post-response tool/write/commit must not race dispatcher rebase or user accept. `stop-after-deliver` semantics remain (role slot free; resume metadata retained), ordered as seal-then-deliver.
 
 ---
 

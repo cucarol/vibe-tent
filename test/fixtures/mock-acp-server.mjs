@@ -64,6 +64,17 @@ const lateHistoryMs = Number(process.env.MOCK_ACP_LATE_HISTORY_MS || "0");
 const failLoad = process.env.MOCK_ACP_FAIL_LOAD === "1";
 const knownSessionId =
   process.env.MOCK_ACP_KNOWN_SESSION_ID || "mock-acp-session-1";
+/**
+ * After session/prompt JSON-RPC result is written, optionally schedule a late
+ * worktree mutation (write marker file). Used to prove Delivery is sealed only
+ * after the process can no longer mutate — not on a sleep. If the bridge is
+ * killed first, the timer dies with the process and the marker never appears.
+ */
+const postResponseTailMs = Math.max(
+  0,
+  Number(process.env.MOCK_ACP_POST_RESPONSE_TAIL_MS || "0") || 0
+);
+const postResponseTailPath = process.env.MOCK_ACP_POST_RESPONSE_TAIL_PATH || "";
 
 const log = {
   argv: process.argv.slice(1),
@@ -140,6 +151,24 @@ function notifyUpdate(update) {
     method: "session/update",
     params: { update },
   });
+}
+
+/** Schedule a post-response tail write; process death cancels it with the event loop. */
+function schedulePostResponseTail() {
+  if (postResponseTailMs <= 0 || !postResponseTailPath) return;
+  setTimeout(() => {
+    try {
+      fs.writeFileSync(
+        postResponseTailPath,
+        `POST_RESPONSE_TAIL ${new Date().toISOString()}\n`,
+        "utf8"
+      );
+      log.postResponseTailWritten = true;
+      flushLog();
+    } catch {
+      // ignore
+    }
+  }, postResponseTailMs);
 }
 
 let nextServerId = 9000;
@@ -427,6 +456,9 @@ rl.on("line", (line) => {
         id: msg.id,
         result: { stopReason: stopReasonEnv },
       });
+      // Visible Delivery trigger (prompt result) is already on the wire; any
+      // further tool/write must not be allowed to race a published Delivery.
+      schedulePostResponseTail();
       flushLog();
       if (!keepAlive) {
         setTimeout(() => process.exit(0), 50);
@@ -464,6 +496,7 @@ rl.on("line", (line) => {
       id: promptId,
       result: { stopReason: "end_turn" },
     });
+    schedulePostResponseTail();
     flushLog();
     if (!keepAlive) {
       setTimeout(() => process.exit(0), 50);

@@ -65,6 +65,12 @@ export interface ManagedSession {
   /** Provider-native session id (e.g. ACP sessionId); machine-local only. */
   readonly providerSessionId?: string;
   isAlive(): boolean;
+  /**
+   * Internal turn fact (not session liveness): true while a managed
+   * session/prompt (bootstrap or U2A follow-up) is in flight.
+   * Session may stay live/idle between turns; missing impl → not busy.
+   */
+  isTurnBusy?(): boolean;
   stop(reason: StopReason): Promise<void>;
   /**
    * Optional follow-up session/prompt on a live managed session (U2A resume).

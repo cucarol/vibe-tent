@@ -217,6 +217,12 @@ export type SessionProjection = {
   /** PID is machine-local diagnostic; clients may show status only. */
   alive: boolean;
   resumeCapable: boolean;
+  /**
+   * Managed turn in flight (session/prompt settling). Distinct from `alive`:
+   * a live role session may be turn-idle between prompts. Optional for wire
+   * compatibility; omitted/false when no managed turn is busy.
+   */
+  turnBusy?: boolean;
   lastTaskId?: string;
   workspace?: string;
   /** Stable pull-host key when registered via externalKey (hooks / GUI). */

@@ -3846,6 +3846,7 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
+      turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
       externalKey: recordExternalKey(rec),
@@ -3870,6 +3871,7 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
     externalKey: recordExternalKey(rec),
@@ -5040,6 +5042,21 @@ function managedDeliverKey(sessionId: string, taskPath: string): string {
   return `${sessionId}::${taskPath}`;
 }
 
+/** True while seal-before-deliver holds the in-flight lock for this session+task. */
+function isManagedAutoDeliverSealing(
+  sessionId: string,
+  taskPath: string,
+  taskId?: string
+): boolean {
+  if (managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskPath))) {
+    return true;
+  }
+  if (taskId && managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskId))) {
+    return true;
+  }
+  return false;
+}
+
 function projectionRetryDelayMs(): number {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
@@ -5283,11 +5300,18 @@ async function projectRuntimeEventOnce(
         // Intentional interrupt is already terminal before stopSession emits exited,
         // so it never enters this active-task branch.
         //
-        // stopReason=user is the post-managed-deliver stop path. Delivery already
-        // succeeded; a late session.exited must not task.fail rework occupation
-        // when reject-resume has returned the same task to running (still briefly
-        // bound to the prior sessionId before rebind, or matching lastTaskId).
+        // stopReason=user is the managed deliver seal / post-deliver stop path.
+        // Seal-before-deliver stops while task is still running; a late or concurrent
+        // session.exited must not task.fail that occupation (or reject-resume rework
+        // still briefly bound to the prior sessionId / lastTaskId).
         if (ev.type === "session.exited" && rec?.stopReason === "user") {
+          continue;
+        }
+        // In-flight auto-deliver seal: stopReason may race child exit; never fail.
+        if (
+          ev.type === "session.exited" &&
+          isManagedAutoDeliverSealing(ev.sessionId, task.path, task.id)
+        ) {
           continue;
         }
         await failTaskFromRuntime(ctx, {
@@ -5408,7 +5432,10 @@ async function failTaskFromRuntime(
  * - empty/error already filtered by adapter; still refuse empty here
  * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
  * - production auto-collects pending commits from the task's authoritative role lane
- * - only after successful taskDeliver, stop the managed session so the role is free
+ * - **Atomic boundary:** seal the managed turn (stop process / cancel tool asks)
+ *   *before* publishing Delivery so post-response tool/write/commit cannot race
+ *   dispatcher rebase or user accept. turn busy/idle is an internal fact; session
+ *   live alone is not "turn done".
  */
 async function tryManagedAutoDeliver(
   ctx: HandlerContext,
@@ -5436,21 +5463,50 @@ async function tryManagedAutoDeliver(
   }
   managedAutoDeliverInFlight.add(key);
 
-  let deliveredOk = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
 
+    // Preflight: only seal/deliver while the task is still the active occupation
+    // for this session. Avoid killing an already-rebound reject-resume session.
+    const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+    if (!pre || pre.state !== "running") {
+      return;
+    }
+    if (pre.sessionId && pre.sessionId !== input.sessionId) {
+      return;
+    }
+    const existingReady = await loadDeliveries(mount.env.fs, {
+      taskId: pre.id || input.taskPath,
+    });
+    if (existingReady.some((d) => d.status === "ready")) {
+      managedAutoDeliverDone.add(key);
+      return;
+    }
+
     // Outside the mutation bus: capture-once baseline for legacy Git-lane tasks
     // missing roleBranchBase. Nested mutations.run would deadlock.
     if (input.commits === undefined) {
-      const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-      if (pre && pre.state === "running") {
-        await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
-      }
+      await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
     }
 
-    // Re-load authority state under mutation bus.
+    // Seal turn BEFORE Delivery: process must not keep mutating the worktree
+    // after the task enters delivered. stop-after-deliver semantics preserved
+    // (role slot freed; registry resume metadata retained) but ordered first.
+    const sealed = await sealManagedSessionBeforeDelivery(ctx, {
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      taskPath: input.taskPath,
+    });
+    if (!sealed) {
+      // Leave task running for retry; do not publish a Delivery while the
+      // agent process may still write/commit.
+      throw new Error(
+        "managed session could not be sealed before auto-deliver (process still mutable)"
+      );
+    }
+
+    // Re-load authority state under mutation bus after seal.
     await ctx.mutations.run(input.workspaceId, async () => {
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
 
@@ -5474,6 +5530,7 @@ async function tryManagedAutoDeliver(
 
       // Collect pending role-lane commits unless the caller supplied an explicit list
       // (tests only). Production always auto-collects via the authoritative lane contract.
+      // Collection runs after seal so tail commits after end_turn cannot appear.
       let commits = input.commits;
       if (commits === undefined) {
         commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
@@ -5495,7 +5552,6 @@ async function tryManagedAutoDeliver(
       });
 
       managedAutoDeliverDone.add(key);
-      deliveredOk = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
         "delivery.updated",
@@ -5511,17 +5567,15 @@ async function tryManagedAutoDeliver(
       );
     });
 
-    // Free the role slot only after successful delivery. Stop failure must not
-    // roll back delivery; keep registry resume metadata and emit diagnostics.
-    if (deliveredOk) {
-      await stopManagedSessionAfterDelivery(ctx, {
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        taskPath: input.taskPath,
-      });
-    }
+    // Idempotent safety: seal already stopped; re-run cleanup if a race left
+    // the process alive (must not roll back a successful Delivery).
+    await stopManagedSessionAfterDelivery(ctx, {
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      taskPath: input.taskPath,
+    });
   } catch (err) {
-    // Deliver / integrate / collection failure must NOT terminal-fail the task.
+    // Deliver / integrate / collection / seal failure must NOT terminal-fail the task.
     // Keep running/occupation so the user can retry; expose via session diagnostics/event.
     // Only session.failed (launch/process) maps task → failed.
     const message = err instanceof Error ? err.message : String(err);
@@ -5592,9 +5646,89 @@ async function collectManagedDeliveryCommits(
 }
 
 /**
- * After successful managed delivery, stop the runtime session so the same role
- * can accept a new task. Registry row stays (resume metadata). Stop errors are
- * diagnostic-only — delivery already committed and must not roll back.
+ * Seal the managed turn before publishing Delivery.
+ * Stops the process (and cancels pending tool asks / U2A rows) so post-response
+ * worktree mutations cannot land after the task enters delivered.
+ * Returns true when the session is no longer able to mutate (dead / terminal).
+ * Returns false only when a stop was required and the process is still alive.
+ *
+ * Registry resume metadata is retained (stopReason=user). Managed-inject pins
+ * keep in-flight TaskInput rows non-cancelable across this window.
+ */
+async function sealManagedSessionBeforeDelivery(
+  ctx: HandlerContext,
+  input: { workspaceId: string; sessionId: string; taskPath: string }
+): Promise<boolean> {
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+      // ignore
+    }
+    try {
+      // Only pending inputs cancel; managed-inject pin / delivered stay.
+      await cancelTaskInputsForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+      // ignore
+    }
+    const probe = await ctx.runtime.probe(input.sessionId);
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+      await ctx.runtime.stopSession(input.sessionId, "user");
+    }
+    const after = await ctx.runtime.probe(input.sessionId);
+    // Sealed when process is dead. turnBusy must also be false when handle remains.
+    return !after.alive && !after.turnBusy;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `managed session seal before deliver failed: ${message}`,
+      });
+    } catch {
+      // registry row may already be gone
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        runtimeEvent: "session.seal_before_deliver.failed",
+        error: message,
+        taskFailed: false,
+      },
+      "service"
+    );
+    try {
+      const after = await ctx.runtime.probe(input.sessionId);
+      return !after.alive && !after.turnBusy;
+    } catch {
+      // No probe: treat as sealed only when session is gone entirely.
+      return true;
+    }
+  }
+}
+
+/**
+ * After successful managed delivery, ensure the runtime session is stopped so
+ * the same role can accept a new task. Usually a no-op after seal-before-deliver.
+ * Registry row stays (resume metadata). Stop errors are diagnostic-only —
+ * delivery already committed and must not roll back.
  */
 async function stopManagedSessionAfterDelivery(
   ctx: HandlerContext,

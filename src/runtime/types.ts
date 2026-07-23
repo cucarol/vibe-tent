@@ -130,6 +130,12 @@ export interface SessionProbe {
   pid?: number;
   lastError?: string;
   exitCode?: number | null;
+  /**
+   * Internal turn fact (managed ACP only). True while a session/prompt is
+   * settling. Distinct from `alive`: a live role session may be turn-idle
+   * between prompts. Omitted / false when no managed turn is in flight.
+   */
+  turnBusy?: boolean;
 }
 
 /** Durable machine-local session row (architecture §3.3 / agent-runtime §6). */

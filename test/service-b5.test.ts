@@ -65,6 +65,13 @@ function mockAcpProfile(
     /** Spontaneous child death after session/new (no pending prompt required). */
     dieAfterSessionMs?: number;
     dieExitCode?: number;
+    /**
+     * After session/prompt result is written, schedule a late worktree write.
+     * Seal-before-deliver must kill the process so this marker never appears
+     * once the task is delivered (no sleep-based "stability").
+     */
+    postResponseTailMs?: number;
+    postResponseTailPath?: string;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -87,6 +94,12 @@ function mockAcpProfile(
             MOCK_ACP_DIE_EXIT_CODE: String(opts.dieExitCode ?? 1),
             // Hang on prompt if it arrives before death — spontaneous path still fires.
             MOCK_ACP_PROMPT_MODE: "interrupt",
+          }
+        : {}),
+      ...(opts.postResponseTailMs != null && opts.postResponseTailPath
+        ? {
+            MOCK_ACP_POST_RESPONSE_TAIL_MS: String(opts.postResponseTailMs),
+            MOCK_ACP_POST_RESPONSE_TAIL_PATH: opts.postResponseTailPath,
           }
         : {}),
       CPA_GROK_API_KEY: "test-key-not-real",
@@ -1026,6 +1039,105 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         mockAcpProfile("mock-acp-managed", {
           logPath,
           promptText: reportText,
+        }),
+      ],
+    }
+  );
+});
+
+test("P0: Delivery only after turn seal — post-response tail write cannot land after delivered", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("seal-before-deliver");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-seal-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const tailMarker = path.join(ws, "POST_RESPONSE_TAIL_MARKER.txt");
+  const reportText = "SEAL_BEFORE_DELIVER_REPORT";
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "prove post-response worktree mutation cannot race Delivery",
+        deliveryPolicy: "manual",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-seal",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      // Wait for Delivery via real prompt_complete projection (no sleep forge).
+      const delivered = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "delivered" ? task : null;
+      }, 20_000, "task delivered after sealed turn");
+
+      assert.equal(delivered.state, "delivered");
+
+      // At the moment Delivery is published, the managed process must already
+      // be sealed (not alive). Poll only observes authority state — no sleep.
+      const probe = await rpc(svc, "session.get", {
+        workspaceId,
+        sessionId,
+      });
+      assert.ok(!probe.error, JSON.stringify(probe.error));
+      const session = (
+        probe.result as {
+          session: { alive?: boolean; state?: string; turnBusy?: boolean };
+        }
+      ).session;
+      assert.equal(
+        session.alive,
+        false,
+        "session must not stay process-alive after Delivery (sealed)"
+      );
+      assert.notEqual(session.turnBusy, true, "turn must be idle after Delivery");
+
+      // Marker path: if seal failed, mock would write this after prompt result.
+      // Absence is the real proof — not a fixed delay.
+      let markerExists = false;
+      try {
+        await fs.access(tailMarker);
+        markerExists = true;
+      } catch {
+        markerExists = false;
+      }
+      assert.equal(
+        markerExists,
+        false,
+        "post-response tail write must not land after/during Delivery seal"
+      );
+
+      const list = await rpc(svc, "delivery.list", { workspaceId });
+      const deliveries = (
+        list.result as { deliveries: Array<{ summary: string; status: string }> }
+      ).deliveries;
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0].summary, reportText);
+      assert.equal(deliveries[0].status, "ready");
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-seal", {
+          logPath,
+          promptText: reportText,
+          keepAlive: true,
+          // Tail is long enough that without seal-before-deliver it would
+          // clearly write after prompt_complete. Seal kills the process first.
+          postResponseTailMs: 2_500,
+          postResponseTailPath: tailMarker,
         }),
       ],
     }
@@ -2512,11 +2624,15 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
     const rec = await svc.runtime.registry.read(sessionId);
     assert.ok(rec?.lastError, "session registry lastError surfaces the failure");
     assert.match(rec!.lastError!, /managed auto-deliver failed/);
-    // Session must stay non-terminal so the role remains occupied until retry succeeds.
+    // Seal-before-deliver stops the process before publishing Delivery. On
+    // integrate failure the task stays running (retryable) but the managed
+    // process is already sealed — no post-failure worktree mutation from that turn.
     assert.ok(
-      rec!.state === "live" || rec!.state === "starting" || rec!.state === "waiting-user",
-      `expected live session after integrate failure, got ${rec!.state}`
+      rec!.state === "stopped" || rec!.state === "failed",
+      `expected sealed session after integrate failure, got ${rec!.state}`
     );
+    const probe = await svc.runtime.probe(sessionId);
+    assert.equal(probe.alive, false, "sealed process must not stay alive after failed deliver");
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
   });
@@ -2536,6 +2652,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       prompt: "auto-collect then review",
       deliveryPolicy: "manual",
     });
+    assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
     const started = await rpc(svc, "task.startSession", {
@@ -3212,7 +3329,11 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
     );
     const session = await svc.runtime.registry.read(sessionId);
     assert.match(session?.lastError ?? "", /managed auto-deliver failed/);
-    assert.ok(session && session.state !== "stopped" && session.state !== "failed");
+    // Turn was sealed before the failed collection/deliver; process is dead,
+    // task remains running for startSession retry (no forged zero-commit delivery).
+    assert.ok(session && (session.state === "stopped" || session.state === "failed"));
+    const probe = await svc.runtime.probe(sessionId);
+    assert.equal(probe.alive, false);
   });
 });
 
