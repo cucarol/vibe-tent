@@ -81,6 +81,74 @@ export type BoxProjection = {
   activeTaskId?: string;
 };
 
+/**
+ * Workspace-level graph node summary for Working-set Canvas (`graph.projection`).
+ * Stable identity + document meta only — never includes body / bodyPreview.
+ */
+export type GraphNodeSummary = {
+  id: string;
+  path: string;
+  name: string;
+  type: string;
+  tags: string[];
+  coordination: boolean;
+  mode: NodeMode;
+  archived: boolean;
+  invalid: boolean;
+  /** Optional frontmatter title when present. */
+  title?: string;
+};
+
+/** Tree parent→child edge (roots use parentId = null). */
+export type GraphParentEdge = {
+  parentId: string | null;
+  childId: string;
+};
+
+/**
+ * Markdown or wiki concept link edge.
+ * Resolved edges set `toId`; unresolved edges keep explicit `unresolved` and omit `toId`.
+ * Never silently drop unresolvable concept-link candidates.
+ */
+export type GraphLinkEdge = {
+  fromId: string;
+  /** Present only when the link resolves to exactly one concept. */
+  toId?: string;
+  raw: string;
+  label?: string;
+  /**
+   * Explicit unresolved payload when the outbound concept link cannot be resolved.
+   * `raw` mirrors authoring form; `target` is the normalized resolution key when available.
+   */
+  unresolved?: {
+    raw: string;
+    target?: string;
+  };
+};
+
+/**
+ * Read-only workspace graph projection for Canvas.
+ * Edges are partitioned into parent / markdown / wiki; no placement state.
+ */
+export type GraphProjection = {
+  workspaceId: string;
+  nodes: GraphNodeSummary[];
+  edges: {
+    parent: GraphParentEdge[];
+    markdown: GraphLinkEdge[];
+    wiki: GraphLinkEdge[];
+  };
+};
+
+/**
+ * Batch box collaboration projection (`box.projections`).
+ * `projections` order matches the input `ids` order one-for-one.
+ */
+export type BoxProjectionsResult = {
+  workspaceId: string;
+  projections: BoxProjection[];
+};
+
 export type TaskProjection = {
   path: string;
   id?: string;
@@ -408,6 +476,21 @@ export const CLIENT_METHODS = [
    * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
    */
   "box.projection",
+  /**
+   * Batch box collaboration projection (same item semantics as box.projection).
+   * Params: workspaceId + ids: string[] (stable cx- handles).
+   * Result: { workspaceId, projections } with projections ordered as ids.
+   * Avoids UI N+1 fan-out; does not invent a second collab state machine.
+   */
+  "box.projections",
+  /**
+   * Workspace-level graph projection for Working-set Canvas.
+   * Params: workspaceId.
+   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki } }.
+   * Node summaries only (no body); unresolved markdown/wiki links kept explicitly.
+   * Placement / view state is never projected or persisted here.
+   */
+  "graph.projection",
   /** Proposal triage — separate from task delivery review (task-api §3). */
   "proposal.list",
   "proposal.submit",

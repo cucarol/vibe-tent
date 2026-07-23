@@ -2,7 +2,9 @@
 
 import type {
   BoxProjection,
+  BoxProjectionsResult,
   EventEnvelope,
+  GraphProjection,
   ProviderCatalogProjection,
 } from "./types.js";
 import { AUTH_TOKEN_HEADER } from "./auth.js";
@@ -561,6 +563,23 @@ export class ServiceClient {
     idOrPath: { id?: string; path?: string; boxId?: string }
   ) {
     return this.call<BoxProjection>("box.projection", { workspaceId, ...idOrPath });
+  }
+
+  /**
+   * Batch box collaboration projection — same item semantics as box.projection.
+   * `ids` order is preserved in the returned `projections` array.
+   */
+  boxProjections(workspaceId: string, ids: string[]) {
+    return this.call<BoxProjectionsResult>("box.projections", { workspaceId, ids });
+  }
+
+  /**
+   * Workspace-level graph projection for Working-set Canvas.
+   * Node summaries + parent / markdown / wiki edges; no body, no placement.
+   * Unresolved concept links are retained with explicit unresolved payload.
+   */
+  graphProjection(workspaceId: string) {
+    return this.call<GraphProjection>("graph.projection", { workspaceId });
   }
 
   // ---- convenience: proposal (triage; separate from delivery review) ----

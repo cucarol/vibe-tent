@@ -122,7 +122,12 @@ import {
 import { SessionRegistry } from "../runtime/session-registry.js";
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
-import { buildBacklinkIndex } from "../markdown/links.js";
+import {
+  buildBacklinkIndex,
+  extractOutLinksDetailed,
+  indexFromBoxes,
+  resolveOutLink,
+} from "../markdown/links.js";
 import { contentEtag } from "./etag.js";
 import type { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
@@ -154,8 +159,13 @@ import {
   RPC_LIFECYCLE,
   type ArtifactRef,
   type BoxProjection,
+  type BoxProjectionsResult,
   type ConceptProjection,
   type DeliveryProjection,
+  type GraphLinkEdge,
+  type GraphNodeSummary,
+  type GraphParentEdge,
+  type GraphProjection,
   type ProposalProjection,
   type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
@@ -360,6 +370,10 @@ export async function dispatchMethod(
         return deliveryGet(ctx, p);
       case "box.projection":
         return boxProjectionRpc(ctx, p);
+      case "box.projections":
+        return boxProjectionsRpc(ctx, p);
+      case "graph.projection":
+        return graphProjectionRpc(ctx, p);
       case "proposal.list":
         return proposalList(ctx, p);
       case "proposal.submit":
@@ -3483,6 +3497,71 @@ async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>)
   const tent = await loadTent(mount.env.fs);
   // Same id/path/boxId resolver conventions as docs.get (missing/duplicate → -32004).
   const concept = resolveConcept(tent, p);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  return projectBoxCollaboration(workspaceId, concept, tasks);
+}
+
+/**
+ * Batch box collaboration projection — same item semantics as box.projection.
+ * Input `ids` order is preserved in `projections` (stable for UI working-set).
+ * Loads tent + task envelopes once to avoid N+1.
+ */
+async function boxProjectionsRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<BoxProjectionsResult> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const idsRaw = p.ids;
+  if (!Array.isArray(idsRaw)) {
+    throw new RpcError(-32602, "box.projections requires ids: string[]");
+  }
+  const ids: string[] = [];
+  for (let i = 0; i < idsRaw.length; i++) {
+    const id = idsRaw[i];
+    if (typeof id !== "string" || !id.trim()) {
+      throw new RpcError(-32602, `box.projections ids[${i}] must be a non-empty string`);
+    }
+    ids.push(id);
+  }
+
+  const tent = await loadTent(mount.env.fs);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const projections: BoxProjection[] = [];
+  for (const id of ids) {
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    projections.push(projectBoxCollaboration(workspaceId, concept, tasks));
+  }
+  return { workspaceId, projections };
+}
+
+/**
+ * Workspace-level graph projection for Working-set Canvas.
+ * Nodes: stable summaries only (no body). Edges: parent + markdown + wiki.
+ * Unresolved concept links are retained with explicit unresolved payload.
+ */
+async function graphProjectionRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<GraphProjection> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  return buildGraphProjection(workspaceId, tent);
+}
+
+/**
+ * Shared single-item box collaboration projection (box.projection item semantics).
+ * `tasks` is the full envelope list so batch callers can reuse one load.
+ */
+function projectBoxCollaboration(
+  workspaceId: string,
+  concept: import("../core/types.js").Box,
+  tasks: TaskEnvelope[]
+): BoxProjection {
   if (concept.invalid) {
     throw new RpcError(
       -32004,
@@ -3490,7 +3569,7 @@ async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>)
       { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
     );
   }
-  const activeTask = await findActiveTaskForBox(mount.env.fs, concept.id);
+  const activeTask = tasks.find((t) => t.claims.includes(concept.id) && isActiveTaskState(t.state));
   if (activeTask) {
     const fromTask = boxProjectionOf(activeTask);
     const out: BoxProjection = {
@@ -3510,6 +3589,93 @@ async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>)
     boxId: concept.id,
     status,
   };
+}
+
+/**
+ * Build workspace graph projection from loaded tent.
+ * Reuses markdown link parser + concept index (no ad-hoc regex).
+ * Node order: depth-first tree walk (stable). Edge order: DFS source + extract order.
+ */
+function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProjection {
+  const nodes: GraphNodeSummary[] = [];
+  const parentEdges: GraphParentEdge[] = [];
+  const markdownEdges: GraphLinkEdge[] = [];
+  const wikiEdges: GraphLinkEdge[] = [];
+
+  // DFS over roots for stable node + parent edge order.
+  const visit = (box: import("../core/types.js").Box, parentId: string | null): void => {
+    nodes.push(projectGraphNodeSummary(box));
+    parentEdges.push({ parentId, childId: box.id });
+    for (const child of box.children) visit(child, box.id);
+  };
+  for (const root of tent.roots) visit(root, null);
+
+  // Reuse markdown link parser + concept index (same as docs.backlinks / resolve path).
+  // OkfConcept.id is notePath-stem; OkfConcept.boxId is the stable cx- handle.
+  // Graph nodes are keyed by box.id (cx-), so resolved edges must map via boxId/path.
+  const conceptIndex = indexFromBoxes(tent.byId.values());
+  const emitLinks = (box: import("../core/types.js").Box): void => {
+    const notePath = boxNotePath(box.path);
+    for (const link of extractOutLinksDetailed(box.body)) {
+      // Artifacts / external schemes are not concept graph edges (concept-model §6.1).
+      if (link.kind === "artifact") continue;
+      const resolved = resolveOutLink(conceptIndex, link, notePath);
+      const edge: GraphLinkEdge = {
+        fromId: box.id,
+        raw: link.raw,
+      };
+      if (link.label) edge.label = link.label;
+
+      // Prefer stable cx- via path/id lookup; never emit path-stem as node id.
+      const targetBox =
+        (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : undefined) ??
+        (resolved.targetCx ? tent.byId.get(resolved.targetCx) : undefined);
+
+      if (resolved.kind === "unresolved" || !targetBox) {
+        // Explicit unresolved — never silent-drop concept-link candidates.
+        // If resolveOutLink thought it resolved but we cannot map to a tent box,
+        // still surface unresolved rather than inventing a foreign id.
+        const target =
+          (link as { conceptTarget?: string }).conceptTarget ??
+          resolved.targetPath ??
+          (resolved.targetCx && resolved.targetCx !== link.raw ? resolved.targetCx : undefined);
+        edge.unresolved = target ? { raw: link.raw, target } : { raw: link.raw };
+      } else {
+        edge.toId = targetBox.id;
+      }
+      if (link.kind === "wiki") wikiEdges.push(edge);
+      else markdownEdges.push(edge);
+    }
+    for (const child of box.children) emitLinks(child);
+  };
+  for (const root of tent.roots) emitLinks(root);
+
+  return {
+    workspaceId,
+    nodes,
+    edges: {
+      parent: parentEdges,
+      markdown: markdownEdges,
+      wiki: wikiEdges,
+    },
+  };
+}
+
+function projectGraphNodeSummary(box: import("../core/types.js").Box): GraphNodeSummary {
+  const title = typeof box.fm.title === "string" ? box.fm.title : undefined;
+  const node: GraphNodeSummary = {
+    id: box.id,
+    path: box.path,
+    name: box.name,
+    type: box.type,
+    tags: box.tags,
+    coordination: box.coordination,
+    mode: box.mode,
+    archived: box.archived,
+    invalid: box.invalid,
+  };
+  if (title) node.title = title;
+  return node;
 }
 
 // ---- proposal triage (separate from task delivery review) ----
