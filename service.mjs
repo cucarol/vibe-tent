@@ -1029,11 +1029,85 @@ function isFrozen(box) {
 }
 
 // src/core/tags.ts
+async function loadTagRegistry(fs19) {
+  if (!await fs19.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+  try {
+    return normalizeRegistry2(JSON.parse(await fs19.readFile(TAGS_REGISTRY_PATH)));
+  } catch {
+    const backupPath = await backupCorruptRegistry(fs19, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs19);
+    await saveTagRegistryUnlocked(fs19, recovered);
+    warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
+    return recovered;
+  }
+}
+async function saveTagRegistryUnlocked(fs19, registry) {
+  await fs19.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+}
+async function addRegistryTagUnlocked(fs19, name) {
+  const tag = normalizeTagName(name);
+  const registry = await loadTagRegistry(fs19);
+  if (!registry.tags.includes(tag)) {
+    registry.tags.push(tag);
+    await saveTagRegistryUnlocked(fs19, registry);
+  }
+}
+async function syncTagRegistryAfterBoxTagsChange(fs19, previousTags, nextTags) {
+  await withTentMutation(fs19, async () => {
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs19, previousTags, nextTags);
+  });
+}
+async function syncTagRegistryAfterBoxTagsChangeUnlocked(fs19, previousTags, nextTags) {
+  const previous2 = new Set(normalizeTagList(previousTags));
+  const next = normalizeTagList(nextTags);
+  const added = next.filter((tag) => !previous2.has(tag));
+  for (const tag of added) {
+    await addRegistryTagUnlocked(fs19, tag);
+  }
+}
 function normalizeTagName(name) {
   const tag = name.trim();
   if (!tag) throw new Error("Tag name cannot be empty.");
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
+}
+function normalizeRegistry2(value) {
+  if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
+  const tags = [];
+  for (const valueTag of value.tags) {
+    if (typeof valueTag !== "string") continue;
+    try {
+      tags.push(normalizeTagName(valueTag));
+    } catch {
+    }
+  }
+  return { tags: uniqueSorted(tags) };
+}
+async function recoverTagRegistryFromBoxes(fs19) {
+  const tent = await loadTent(fs19);
+  const tags = [];
+  for (const box of tent.byPath.values()) {
+    tags.push(...box.tags);
+  }
+  return { tags: uniqueSorted(tags) };
+}
+function normalizeTagList(values) {
+  const tags = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    try {
+      const tag = normalizeTagName(value);
+      if (!tags.includes(tag)) tags.push(tag);
+    } catch {
+    }
+  }
+  return uniqueSorted(tags);
+}
+function uniqueSorted(values) {
+  return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // src/core/skillRoleRegistry.ts
@@ -1161,13 +1235,13 @@ function findRoleIndex(roles, ref) {
   return roles.findIndex((role) => role.name === key);
 }
 function normalizeRolesRegistryWithMigration(value) {
-  const root = isRecord2(value) ? value : {};
+  const root = isRecord3(value) ? value : {};
   const roles = [];
   let migrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
-      if (!isRecord2(item)) continue;
+      if (!isRecord3(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
       const role = normalizeRoleDefinition(item, {
@@ -1252,7 +1326,7 @@ function normalizeA2APolicy(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord2(value)) throw new Error("role.cli must be an object.");
+  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
   if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
@@ -1301,7 +1375,7 @@ async function writeJson(fs19, path21, value) {
   if (!await fs19.exists(".tent")) await fs19.mkdir(".tent");
   await fs19.writeFile(path21, JSON.stringify(value, null, 2) + "\n");
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -10294,7 +10368,9 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
       throw new Error("Status must be todo, doing, or done.");
     }
   }
-  if ("tags" in patch) {
+  const tagsTouched = "tags" in patch;
+  const previousTags = box.tags.slice();
+  if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
   const boxFile = boxNotePath(boxPath);
@@ -10304,6 +10380,10 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     else data[k] = v;
   }
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  if (tagsTouched) {
+    const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
+  }
 }
 async function patchBody(env, boxPath, newBody, loadedTent) {
   await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
@@ -11571,7 +11651,7 @@ function isDeliveryPolicyValue(value) {
   return value === "manual" || value === "bypass" || value === "agent-decide";
 }
 function normalizeWorkspaceSettings(value) {
-  if (!isRecord3(value)) {
+  if (!isRecord4(value)) {
     return { ...DEFAULT_SETTINGS };
   }
   const out = { ...value };
@@ -11605,7 +11685,7 @@ async function loadWorkspaceSettings(fs19) {
 }
 async function updateWorkspaceSettings(fs19, patch) {
   return withTentMutation(fs19, async () => {
-    if (!isRecord3(patch)) {
+    if (!isRecord4(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
@@ -11663,14 +11743,14 @@ function stableStringify(value) {
 }
 function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (!isRecord3(value)) return value;
+  if (!isRecord4(value)) return value;
   const out = {};
   for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
     out[key] = sortKeysDeep(value[key]);
   }
   return out;
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -11798,7 +11878,7 @@ var AnnotationError = class extends Error {
   }
 };
 var ANNOTATION_STATUSES = /* @__PURE__ */ new Set(["open", "resolved"]);
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isRequiredString(value) {
@@ -11928,7 +12008,7 @@ function projectAnnotation(record, documentBody) {
   };
 }
 function parseAnnotation(value) {
-  if (!isRecord4(value)) return null;
+  if (!isRecord5(value)) return null;
   const {
     id,
     nodeId,
@@ -11962,7 +12042,7 @@ function parseAnnotation(value) {
   };
 }
 function parseAnnotationFile(value) {
-  if (!isRecord4(value) || !Array.isArray(value.annotations)) return null;
+  if (!isRecord5(value) || !Array.isArray(value.annotations)) return null;
   const annotations = [];
   for (const item of value.annotations) {
     const parsed = parseAnnotation(item);
@@ -12879,7 +12959,7 @@ var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
 function cloneApproval(item) {
   return { ...item };
 }
-function isRecord5(value) {
+function isRecord6(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString2(value) {
@@ -12892,7 +12972,7 @@ function isValidDate2(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseA2AApproval(value) {
-  if (!isRecord5(value)) return null;
+  if (!isRecord6(value)) return null;
   const {
     id,
     workspaceId,
@@ -13068,7 +13148,7 @@ var USER_ASK_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "cancelled"
 ]);
-function isRecord6(value) {
+function isRecord7(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString3(value) {
@@ -13081,13 +13161,13 @@ function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseChoice(value) {
-  if (!isRecord6(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
+  if (!isRecord7(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
     return null;
   }
   return { id: value.id, label: value.label };
 }
 function parseAsk(value) {
-  if (!isRecord6(value)) return null;
+  if (!isRecord7(value)) return null;
   const {
     id,
     workspaceId,
@@ -13438,7 +13518,7 @@ function normalizeTaskInputKind(kind) {
   if (kind === "review-feedback") return "review-feedback";
   return "user-input";
 }
-function isRecord7(value) {
+function isRecord8(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString4(value) {
@@ -13451,7 +13531,7 @@ function isValidDate4(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseInput(value) {
-  if (!isRecord7(value)) return null;
+  if (!isRecord8(value)) return null;
   const {
     id,
     workspaceId,
@@ -18665,6 +18745,11 @@ async function docsWrite(ctx, p) {
       }
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
+      await syncTagRegistryAfterBoxTagsChange(
+        mount.env.fs,
+        concept.tags,
+        tagsFromFrontmatterData(nextParsed.data)
+      );
     } else {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
@@ -23545,6 +23630,10 @@ function assertRawDocsWriteReserved(disk, next) {
     { fields: hard }
   );
 }
+function tagsFromFrontmatterData(data) {
+  if (!Array.isArray(data.tags)) return [];
+  return data.tags.filter((item) => typeof item === "string");
+}
 function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
   for (const task of tasks) {
     if (task.status !== "pending" && task.status !== "taken") continue;
@@ -24388,7 +24477,7 @@ var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "expired"
 ]);
-function isRecord8(value) {
+function isRecord9(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString5(value) {
@@ -24401,7 +24490,7 @@ function isValidDate6(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
-  if (!isRecord8(value)) return null;
+  if (!isRecord9(value)) return null;
   const {
     id,
     workspaceId,
@@ -24423,7 +24512,7 @@ function parseApproval(value) {
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord8(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
+    if (!isRecord9(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
       return null;
     }
     parsedOptions.push({

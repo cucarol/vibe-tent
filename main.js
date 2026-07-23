@@ -964,6 +964,14 @@ async function removeRegistryTag(fs, name) {
     }
   });
 }
+async function syncTagRegistryAfterBoxTagsChangeUnlocked(fs, previousTags, nextTags) {
+  const previous = new Set(normalizeTagList(previousTags));
+  const next = normalizeTagList(nextTags);
+  const added = next.filter((tag) => !previous.has(tag));
+  for (const tag of added) {
+    await addRegistryTagUnlocked(fs, tag);
+  }
+}
 function normalizeTagName(name) {
   const tag = name.trim();
   if (!tag) throw new Error("Tag name cannot be empty.");
@@ -997,6 +1005,18 @@ async function recoverTagRegistryFromBoxes(fs) {
     tags.push(...box.tags);
   }
   return { tags: uniqueSorted(tags) };
+}
+function normalizeTagList(values) {
+  const tags = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    try {
+      const tag = normalizeTagName(value);
+      if (!tags.includes(tag)) tags.push(tag);
+    } catch {
+    }
+  }
+  return uniqueSorted(tags);
 }
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
@@ -3309,7 +3329,9 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
       throw new Error("Status must be todo, doing, or done.");
     }
   }
-  if ("tags" in patch) {
+  const tagsTouched = "tags" in patch;
+  const previousTags = box.tags.slice();
+  if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
   const boxFile = boxNotePath(boxPath);
@@ -3319,6 +3341,10 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     else data[k] = v;
   }
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  if (tagsTouched) {
+    const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
+  }
 }
 async function patchBody(env, boxPath, newBody, loadedTent) {
   await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
