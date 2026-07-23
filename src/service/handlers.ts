@@ -2431,8 +2431,9 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
 /**
  * U2A: user-only one-shot text and/or contextRefs to a running/waiting task.
  * Does not answer pending UserAsk; does not write chat history or mutate profiles.
- * Managed: inject fixed-format ## User Input into the same session when live.
- * External: poll taskInput.listPending / get + taskInput.ack (workspaceId+taskPath).
+ * RPC returns after durable accept (status=pending, accepted=true) — never waits
+ * for the provider Agent turn. Managed inject runs on a per-task FIFO background
+ * worker (status processing → delivered|failed). External: poll taskInput.* .
  *
  * Managed inject for one (workspaceId, taskPath) is FIFO-serialized with other
  * U2A items (including lifecycle review-feedback). Unrelated tasks stay concurrent.
@@ -2512,19 +2513,28 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     "self"
   );
 
-  // Shared managed U2A delivery (FIFO per task). External: leave pending for poll.
-  const delivery = await deliverManagedTaskInput(ctx, input, {
-    sessionIdOverride: current.sessionId,
-  });
+  // Fast accept: durable pending is the contract. Managed inject runs on the
+  // per-task FIFO in the background — RPC must not await the full Agent turn
+  // (CLI false timeouts). External / no session: leave pending for poll+ack.
+  const hasManagedSession = !!(current.sessionId?.trim());
+  if (hasManagedSession) {
+    enqueueManagedTaskInputBackground(ctx, input, {
+      sessionIdOverride: current.sessionId,
+    });
+  }
 
   return {
     workspaceId,
     taskPath,
     task: projectTask(current),
     state: current.state,
-    input: projectTaskInput(delivery.input),
-    continued: delivery.continued,
-    continueError: delivery.continueError,
+    input: projectTaskInput(input),
+    /** Durable row accepted; does not mean provider turn finished. */
+    accepted: true,
+    /** True when a managed session is bound and background inject was scheduled. */
+    enqueued: hasManagedSession,
+    /** Always false on accept — poll taskInput.get / events for delivered|failed. */
+    continued: false,
   };
 }
 
@@ -2554,9 +2564,13 @@ function parseContextRefs(raw: unknown): string[] {
  * Per-(workspaceId, taskPath) FIFO for managed U2A inject turns.
  * Not process-wide: unrelated tasks remain concurrent.
  * Failure of one item does not drop later queued items (MutationBus catch-through).
- * Process-local only; pending rows survive restart for external poll / retry inject.
+ * Process-local only; open rows survive restart for external poll / retry inject.
  */
 const managedTaskInputQueue = new MutationBus();
+
+/** In-flight background deliver promises (sendInput path). Must not go unhandled. */
+const managedTaskInputBackgroundInflight = new Set<Promise<unknown>>();
+let managedTaskInputAccepting = true;
 
 function managedTaskInputQueueKey(
   workspaceId: string,
@@ -2572,20 +2586,107 @@ export type ManagedTaskInputDelivery = {
 };
 
 /**
+ * Track a background U2A delivery so rejections never become unhandled and
+ * service shutdown can drain in-flight work before runtime teardown.
+ */
+function trackManagedTaskInputBackground(work: Promise<unknown>): void {
+  managedTaskInputBackgroundInflight.add(work);
+  void work.then(
+    () => {
+      managedTaskInputBackgroundInflight.delete(work);
+    },
+    (err) => {
+      managedTaskInputBackgroundInflight.delete(work);
+      const message = err instanceof Error ? err.message : String(err);
+      // Last-resort log: deliverManagedTaskInput already markFailed when possible.
+      console.error(`[taskInput] background managed deliver failed: ${message}`);
+    }
+  );
+}
+
+/**
+ * Fire-and-forget managed inject after durable accept (task.sendInput).
+ * Per-task FIFO still serializes turns; RPC does not await this promise.
+ */
+function enqueueManagedTaskInputBackground(
+  ctx: HandlerContext,
+  item: TaskInputRecord,
+  opts?: { sessionIdOverride?: string }
+): void {
+  if (!managedTaskInputAccepting) {
+    // Shutdown in progress: leave durable pending/failed for next process.
+    return;
+  }
+  const work = deliverManagedTaskInput(ctx, item, opts).then(
+    () => undefined,
+    async (err) => {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        const latest = await ctx.taskInputs.get(
+          item.id,
+          item.workspaceId,
+          item.taskPath
+        );
+        if (
+          latest &&
+          (latest.status === "pending" ||
+            latest.status === "processing" ||
+            latest.status === "failed")
+        ) {
+          await ctx.taskInputs.markFailed(item.id, message, "service");
+        }
+      } catch {
+        // store may be closed during shutdown
+      }
+      throw err;
+    }
+  );
+  trackManagedTaskInputBackground(work);
+}
+
+/**
+ * Drain background sendInput delivers before runtime/store shutdown.
+ * Reject-resume and other awaited callers are not tracked here.
+ * After drain, new background enqueues are ignored (rows stay durable).
+ */
+export async function drainManagedTaskInputBackgroundForShutdown(): Promise<void> {
+  managedTaskInputAccepting = false;
+  const pending = [...managedTaskInputBackgroundInflight];
+  if (pending.length === 0) return;
+  await Promise.allSettled(pending);
+}
+
+/**
+ * Re-enable background accept (service start / tests after in-process stop).
+ * Clears the inflight set only when empty — does not abort live work.
+ */
+export function enableManagedTaskInputBackgroundAccept(): void {
+  managedTaskInputAccepting = true;
+}
+
+/** Test helper: re-enable accept and drop inflight tracking (process-local). */
+export function resetManagedTaskInputBackgroundForTests(): void {
+  managedTaskInputAccepting = true;
+  managedTaskInputBackgroundInflight.clear();
+}
+
+/**
  * Shared U2A delivery primitive for managed ACP and external pending.
  *
  * - Persist is already done by the caller (TaskInputStore.add).
  * - Managed live/resume inject uses formatTaskInputPrompt (## User Input or
  *   ## Review Feedback) via the same transport as sendInput.
  * - When sessionIdOverride differs from the stored row (reject-resume new ss-),
- *   rebind the pending row to the inject target before pin/inject so durable
+ *   rebind the pending/failed row to the inject target before pin/inject so durable
  *   state matches the live session (no lost pending on a dead ss-, no double inject).
  * - FIFO: concurrent deliverManagedTaskInput for the same task never overlap
  *   turns or reorder; different tasks run concurrently.
- * - Failure: leave status=pending (do not cancel); surface continueError; later
- *   queue items still run. Lifecycle interrupt/cancel keeps pending-only semantics.
- * - managed-inject pin preserved across inject→markDelivered race with
- *   session.prompt_complete cleanup.
+ * - Failure: status=failed with lastError (not dropped); later queue items still run.
+ *   Lifecycle interrupt/cancel cancels pending|failed only (not processing/delivered).
+ * - managed-inject pin + processing status preserved across inject→markDelivered race
+ *   with session.prompt_complete cleanup.
+ * - task.sendInput enqueues this in the background; task.reject --resume still awaits
+ *   it so review-feedback restore stays on the reject RPC boundary.
  */
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
@@ -2615,8 +2716,8 @@ async function deliverManagedTaskInput(
         continueError: `TaskInput disappeared before managed inject: ${item.id}`,
       };
     }
-    if (latest.status !== "pending") {
-      // Already delivered/consumed/cancelled — do not re-inject.
+    if (latest.status !== "pending" && latest.status !== "failed") {
+      // Already processing/delivered/consumed/cancelled — do not re-inject.
       return {
         input: latest,
         continued: latest.status === "delivered",
@@ -2637,12 +2738,34 @@ async function deliverManagedTaskInput(
         );
       } catch (err) {
         const message = err instanceof Error ? err.message : String(err);
+        try {
+          latest = await ctx.taskInputs.markFailed(
+            latest.id,
+            `TaskInput rebind to inject session failed: ${message}`,
+            "service"
+          );
+        } catch {
+          // keep prior row
+        }
         return {
           input: latest,
           continued: false,
           continueError: `TaskInput rebind to inject session failed: ${message}`,
         };
       }
+    }
+
+    // Claim for background/awaited inject so projections show processing and
+    // cancel skips mid-turn rows.
+    try {
+      latest = await ctx.taskInputs.markProcessing(latest.id);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      return {
+        input: latest,
+        continued: false,
+        continueError: `TaskInput markProcessing failed: ${message}`,
+      };
     }
 
     const forInject: TaskInputRecord = {
@@ -2676,11 +2799,34 @@ async function deliverManagedTaskInput(
           );
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
+          try {
+            finalInput = await ctx.taskInputs.markFailed(
+              forInject.id,
+              `managed inject ok but markDelivered failed: ${message}`,
+              "service"
+            );
+          } catch {
+            // leave processing if store closed
+          }
           return {
-            input: forInject,
+            input: finalInput,
             continued: true,
             continueError: `managed inject ok but markDelivered failed: ${message}`,
           };
+        }
+      } else {
+        // Inject did not complete — retain as failed (not dropped) for retry.
+        const failMsg =
+          continueResult.error ||
+          "managed inject did not continue; external agent may poll taskInput";
+        try {
+          finalInput = await ctx.taskInputs.markFailed(
+            forInject.id,
+            failMsg,
+            "service"
+          );
+        } catch {
+          // store closed / already terminal
         }
       }
     } finally {
@@ -4864,6 +5010,8 @@ function projectTaskInput(item: TaskInputRecord) {
     deliveredAt: item.deliveredAt,
     consumedAt: item.consumedAt,
     cancelledAt: item.cancelledAt,
+    lastError: item.lastError,
+    failedAt: item.failedAt,
     resolvedBy: item.resolvedBy,
   };
 }

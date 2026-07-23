@@ -12,19 +12,26 @@ import {
 } from "../machine-state.js";
 
 /**
- * pending    — created; waiting for managed inject and/or external poll
+ * pending    — accepted/enqueued; waiting for managed inject and/or external poll
+ * processing — background managed inject in flight (per-task FIFO worker)
  * delivered  — injected into a managed session (same-session follow-up); already processed
+ * failed     — managed inject failed; retained (not dropped) for retry / diagnostics
  * consumed   — external agent formally acked (poll+ack path)
- * cancelled  — interrupt / fail / session cleanup of still-pending inputs only
+ * cancelled  — interrupt / fail / session cleanup of still-open inputs only
  *
  * Managed inject race: sendFollowUpPrompt awaits the full turn, so session.prompt_complete
- * can auto-deliver and run cancelSession/cancelTask while the row is still pending and
- * markDelivered has not run yet. Inputs in the managed-inject in-flight set are treated
- * as non-cancelable (same as delivered for cleanup) until markDelivered/endManagedInject.
+ * can auto-deliver and run cancelSession/cancelTask while the row is still open and
+ * markDelivered has not run yet. Inputs in the managed-inject in-flight set (and
+ * status=processing) are treated as non-cancelable until markDelivered/endManagedInject.
+ *
+ * Restart: persisted `processing` rows are reloaded as `pending` (retryable; no phantom
+ * in-flight worker after process death). `failed` survives restart with lastError.
  */
 export type TaskInputStatus =
   | "pending"
+  | "processing"
   | "delivered"
+  | "failed"
   | "consumed"
   | "cancelled";
 
@@ -59,6 +66,9 @@ export interface TaskInputRecord {
   deliveredAt?: string;
   consumedAt?: string;
   cancelledAt?: string;
+  /** Present when status=failed (or last managed inject diagnostic). */
+  lastError?: string;
+  failedAt?: string;
   resolvedBy?: string;
 }
 
@@ -75,10 +85,26 @@ function cloneInput(item: TaskInputRecord): TaskInputRecord {
 
 const TASK_INPUT_STATUSES = new Set<TaskInputStatus>([
   "pending",
+  "processing",
   "delivered",
+  "failed",
   "consumed",
   "cancelled",
 ]);
+
+/** Open rows: still eligible for managed inject / external poll (not terminal). */
+export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
+  return (
+    status === "pending" || status === "processing" || status === "failed"
+  );
+}
+
+/** Cancel-eligible: not yet delivered/consumed and not mid-inject. */
+export function isTaskInputCancelEligibleStatus(
+  status: TaskInputStatus
+): boolean {
+  return status === "pending" || status === "failed";
+}
 
 const TASK_INPUT_KINDS = new Set<TaskInputKind>([
   "user-input",
@@ -127,6 +153,8 @@ function parseInput(value: unknown): TaskInputRecord | null {
     deliveredAt,
     consumedAt,
     cancelledAt,
+    lastError,
+    failedAt,
     resolvedBy,
   } = value;
   if (
@@ -146,10 +174,13 @@ function parseInput(value: unknown): TaskInputRecord | null {
     !isOptionalString(deliveredAt) ||
     !isOptionalString(consumedAt) ||
     !isOptionalString(cancelledAt) ||
+    !isOptionalString(lastError) ||
+    !isOptionalString(failedAt) ||
     !isOptionalString(resolvedBy) ||
     (deliveredAt !== undefined && !isValidDate(deliveredAt)) ||
     (consumedAt !== undefined && !isValidDate(consumedAt)) ||
-    (cancelledAt !== undefined && !isValidDate(cancelledAt))
+    (cancelledAt !== undefined && !isValidDate(cancelledAt)) ||
+    (failedAt !== undefined && !isValidDate(failedAt))
   ) {
     return null;
   }
@@ -203,12 +234,18 @@ function parseInput(value: unknown): TaskInputRecord | null {
     ...(parsedRefs !== undefined && parsedRefs.length > 0
       ? { contextRefs: parsedRefs }
       : {}),
-    status: status as TaskInputStatus,
+    // Process death leaves processing rows without a live worker — re-open as pending.
+    status:
+      (status as TaskInputStatus) === "processing"
+        ? "pending"
+        : (status as TaskInputStatus),
     createdAt,
     updatedAt,
     ...(deliveredAt !== undefined ? { deliveredAt } : {}),
     ...(consumedAt !== undefined ? { consumedAt } : {}),
     ...(cancelledAt !== undefined ? { cancelledAt } : {}),
+    ...(typeof lastError === "string" ? { lastError } : {}),
+    ...(failedAt !== undefined ? { failedAt } : {}),
     ...(resolvedBy !== undefined ? { resolvedBy } : {}),
   };
 }
@@ -316,8 +353,9 @@ export class TaskInputStore {
   }
 
   /**
-   * Pending inputs for external poll.
+   * Open inputs for external poll (pending + failed; not mid-inject processing).
    * Always scoped by workspaceId + taskPath — no machine-global inbox.
+   * `failed` remains visible so agents can ack/retry and nothing is dropped.
    */
   async listPending(
     workspaceId: string,
@@ -332,7 +370,7 @@ export class TaskInputStore {
     return [...this.items.values()]
       .filter(
         (i) =>
-          i.status === "pending" &&
+          (i.status === "pending" || i.status === "failed") &&
           i.workspaceId === workspaceId &&
           i.taskPath === taskPath
       )
@@ -409,9 +447,10 @@ export class TaskInputStore {
       if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
         throw new Error(`TaskInput not found: ${id}`);
       }
-      if (item.status !== "pending") {
+      // Allow rebind on open rows that are not mid-inject (pending/failed).
+      if (item.status !== "pending" && item.status !== "failed") {
         throw new Error(
-          `TaskInput.rebindSession requires pending status; got ${item.status}: ${id}`
+          `TaskInput.rebindSession requires pending or failed status; got ${item.status}: ${id}`
         );
       }
       if (item.sessionId === nextSession) {
@@ -432,7 +471,39 @@ export class TaskInputStore {
   }
 
   /**
-   * Mark managed inject success: pending → delivered.
+   * Claim a pending/failed row for background managed inject: → processing.
+   * Clears prior lastError/failedAt. Fail-loud if missing or not open for claim.
+   */
+  async markProcessing(id: string): Promise<TaskInputRecord> {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.status !== "pending" && item.status !== "failed") {
+        throw new Error(
+          `TaskInput.markProcessing requires pending or failed; got ${item.status}: ${id}`
+        );
+      }
+      const now = new Date().toISOString();
+      const nextRow: TaskInputRecord = {
+        ...item,
+        status: "processing",
+        updatedAt: now,
+      };
+      delete nextRow.lastError;
+      delete nextRow.failedAt;
+      const next = new Map(this.items);
+      next.set(id, nextRow);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(nextRow);
+    });
+  }
+
+  /**
+   * Mark managed inject success: pending|processing → delivered.
    * Optional sessionId persists the session that actually received the inject
    * (e.g. reject-resume new ss- after sessionIdOverride).
    */
@@ -447,7 +518,7 @@ export class TaskInputStore {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
       if (!item) throw new Error(`TaskInput not found: ${id}`);
-      if (item.status !== "pending") {
+      if (item.status !== "pending" && item.status !== "processing") {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = new Date().toISOString();
@@ -460,6 +531,8 @@ export class TaskInputStore {
         deliveredAt: now,
         resolvedBy,
       };
+      delete resolved.lastError;
+      delete resolved.failedAt;
       const next = new Map(this.items);
       next.set(id, resolved);
       await this.persistSnapshot(next);
@@ -469,8 +542,94 @@ export class TaskInputStore {
   }
 
   /**
-   * External agent formal ack: pending|delivered → consumed.
+   * Mark managed inject failure: processing|pending → failed (never drop).
+   * Retained for poll visibility, diagnostics, and later retry enqueue.
+   */
+  async markFailed(
+    id: string,
+    error: string,
+    resolvedBy = "service"
+  ): Promise<TaskInputRecord> {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (
+        item.status !== "pending" &&
+        item.status !== "processing" &&
+        item.status !== "failed"
+      ) {
+        throw new Error(
+          `TaskInput.markFailed requires open status; got ${item.status}: ${id}`
+        );
+      }
+      const now = new Date().toISOString();
+      const message = (error || "managed inject failed").trim() || "managed inject failed";
+      const resolved: TaskInputRecord = {
+        ...item,
+        status: "failed",
+        updatedAt: now,
+        failedAt: now,
+        lastError: message,
+        resolvedBy,
+      };
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(resolved);
+    });
+  }
+
+  /**
+   * Re-open a failed (or stuck) row as pending for retry. Does not re-inject.
+   */
+  async markPendingForRetry(
+    id: string,
+    workspaceId: string,
+    taskPath: string
+  ): Promise<TaskInputRecord> {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.markPendingForRetry requires workspaceId and taskPath"
+      );
+    }
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+        throw new Error(`TaskInput not found: ${id}`);
+      }
+      if (item.status !== "failed" && item.status !== "pending") {
+        throw new Error(
+          `TaskInput.markPendingForRetry requires failed or pending; got ${item.status}: ${id}`
+        );
+      }
+      if (item.status === "pending") return cloneInput(item);
+      const now = new Date().toISOString();
+      const nextRow: TaskInputRecord = {
+        ...item,
+        status: "pending",
+        updatedAt: now,
+      };
+      // Keep lastError for diagnostics until a successful deliver clears it.
+      const next = new Map(this.items);
+      next.set(id, nextRow);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(nextRow);
+    });
+  }
+
+  /**
+   * External agent formal ack: pending|failed|delivered → consumed.
    * Scoped by workspaceId+taskPath; fail-loud on unknown id, scope mismatch, or terminal.
+   * Mid-inject processing cannot be acked (wait for deliver/fail).
    */
   async ack(
     id: string,
@@ -492,7 +651,11 @@ export class TaskInputStore {
       if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
         throw new Error(`TaskInput not found: ${id}`);
       }
-      if (item.status !== "pending" && item.status !== "delivered") {
+      if (
+        item.status !== "pending" &&
+        item.status !== "failed" &&
+        item.status !== "delivered"
+      ) {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = new Date().toISOString();
@@ -513,9 +676,9 @@ export class TaskInputStore {
   }
 
   /**
-   * Cancel only still-pending inputs for one (workspace, task).
-   * Delivered inputs were already processed (managed inject) and must remain delivered.
-   * Pending rows pinned by beginManagedInject are skipped (inject→markDelivered window).
+   * Cancel open (pending/failed) inputs for one (workspace, task).
+   * Delivered/processing stay: delivered already processed; processing is in-flight.
+   * Rows pinned by beginManagedInject are skipped (inject→markDelivered window).
    */
   async cancelTask(
     workspaceId: string,
@@ -531,7 +694,7 @@ export class TaskInputStore {
         if (
           item.workspaceId !== workspaceId ||
           item.taskPath !== taskPath ||
-          item.status !== "pending" ||
+          !isTaskInputCancelEligibleStatus(item.status) ||
           this.managedInjectInFlight.has(item.id)
         ) {
           continue;
@@ -555,9 +718,9 @@ export class TaskInputStore {
   }
 
   /**
-   * Cancel only still-pending inputs bound to a session.
-   * Never rewrites delivered/consumed rows (session stop after managed deliver).
-   * Pending rows pinned by beginManagedInject are skipped (same race as cancelTask).
+   * Cancel open (pending/failed) inputs bound to a session.
+   * Never rewrites delivered/consumed/processing rows.
+   * Rows pinned by beginManagedInject are skipped (same race as cancelTask).
    */
   async cancelSession(
     sessionId: string,
@@ -571,7 +734,7 @@ export class TaskInputStore {
       for (const item of this.items.values()) {
         if (
           item.sessionId !== sessionId ||
-          item.status !== "pending" ||
+          !isTaskInputCancelEligibleStatus(item.status) ||
           this.managedInjectInFlight.has(item.id)
         ) {
           continue;
@@ -605,10 +768,14 @@ export class TaskInputStore {
     snapshot: Map<string, TaskInputRecord>
   ): Promise<void> {
     const items = [...snapshot.values()];
-    // Keep unprocessed + a bounded tail of terminal rows.
-    // "delivered" is open for optional external ack, not cancel-eligible.
+    // Keep open + delivered + a bounded tail of terminal rows.
+    // processing/failed/pending survive restart; processing reloads as pending.
     const open = items.filter(
-      (i) => i.status === "pending" || i.status === "delivered"
+      (i) =>
+        i.status === "pending" ||
+        i.status === "processing" ||
+        i.status === "failed" ||
+        i.status === "delivered"
     );
     const terminal = items
       .filter((i) => i.status === "consumed" || i.status === "cancelled")

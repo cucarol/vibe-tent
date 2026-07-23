@@ -180,8 +180,68 @@ test("task input store: rebindSession updates pending session; cancel old id lea
 
   await assert.rejects(
     () => store.rebindSession(id, workspaceId, taskPath, "ss-later"),
-    /pending status/
+    /pending or failed status/
   );
+});
+
+test("task input store: processing/failed projection; reload processing→pending; cancel skips processing", async () => {
+  const dataDir = await tempDir("tent-ti-proc-");
+  const store = new TaskInputStore(dataDir);
+  const id = makeTaskInputId(() => 0.77);
+  const workspaceId = "ws-proc";
+  const taskPath = "temp/r/tasks/proc.md";
+  const sessionId = "ss-proc";
+
+  await store.add(
+    pending({
+      id,
+      workspaceId,
+      taskPath,
+      sessionId,
+      text: "in flight",
+    })
+  );
+
+  const processing = await store.markProcessing(id);
+  assert.equal(processing.status, "processing");
+
+  const pendingList = await store.listPending(workspaceId, taskPath);
+  assert.equal(
+    pendingList.length,
+    0,
+    "processing must not appear in listPending"
+  );
+
+  const cancelledWhileProc = await store.cancelTask(
+    workspaceId,
+    taskPath,
+    "interrupt"
+  );
+  assert.equal(
+    cancelledWhileProc.length,
+    0,
+    "cancel must skip processing rows"
+  );
+
+  // Simulate process restart: processing reloads as pending.
+  const reloaded = new TaskInputStore(dataDir);
+  const afterReload = await reloaded.get(id, workspaceId, taskPath);
+  assert.equal(afterReload?.status, "pending");
+
+  await reloaded.markProcessing(id);
+  const failed = await reloaded.markFailed(id, "inject blew up", "service");
+  assert.equal(failed.status, "failed");
+  assert.equal(failed.lastError, "inject blew up");
+  assert.ok(failed.failedAt);
+
+  const open = await reloaded.listPending(workspaceId, taskPath);
+  assert.equal(open.length, 1);
+  assert.equal(open[0]!.status, "failed");
+
+  // Failed is cancel-eligible.
+  const cancelled = await reloaded.cancelTask(workspaceId, taskPath, "cleanup");
+  assert.equal(cancelled.length, 1);
+  assert.equal(cancelled[0]!.status, "cancelled");
 });
 
 test("task input store: review-feedback preserves exact note and formats ## Review Feedback", async () => {

@@ -544,22 +544,37 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       contextRefs: [created.id],
     })) as {
       input: { id: string; status: string };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
       continueError?: string;
     };
-    assert.equal(
-      sent.continued,
-      true,
-      `expected managed continue; continueError=${sent.continueError ?? "none"}`
+    // RPC is durable accept only — must not wait for the provider turn.
+    assert.equal(sent.accepted, true);
+    assert.equal(sent.enqueued, true);
+    assert.equal(sent.continued, false);
+    assert.ok(
+      sent.input.status === "pending" || sent.input.status === "processing",
+      `accept status should be pending|processing, got ${sent.input.status}`
     );
-    // sendFollowUpPrompt awaits the full turn; prompt_complete may have already
-    // auto-delivered and run cancelSession while the row was still pending.
-    // beginManagedInject must keep that window non-cancelable so status is delivered.
-    assert.equal(
-      sent.input.status,
-      "delivered",
-      "managed inject success must mark delivered even when prompt_complete races markDelivered"
-    );
+
+    // Background FIFO inject → delivered (pin keeps race with prompt_complete safe).
+    const inputDelivered = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        sent.input.id
+      )) as { input: { status: string; deliveredAt?: string; lastError?: string } };
+      if (got.input.status === "delivered") return got.input;
+      if (got.input.status === "failed") {
+        throw new Error(
+          `managed inject failed: ${got.input.lastError ?? "unknown"}`
+        );
+      }
+      return null;
+    }, 20_000, "TaskInput delivered after background inject");
+    assert.equal(inputDelivered.status, "delivered");
+    assert.ok(inputDelivered.deliveredAt);
 
     const delivered = await pollUntil(async () => {
       const t = (await client.taskGet(workspaceId, taskPath)) as {
@@ -1024,21 +1039,53 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
 
     await client.taskResume(workspaceId, taskPath);
 
+    const tAccept0 = Date.now();
     const p1 = client.taskSendInput(workspaceId, taskPath, { text: "FIRST_U2A" });
     // Start second while first is still in-flight.
     await new Promise((r) => setTimeout(r, 30));
     const p2 = client.taskSendInput(workspaceId, taskPath, { text: "SECOND_U2A" });
     const [r1, r2] = (await Promise.all([p1, p2])) as [
-      { input: { id: string; status: string; text?: string }; continued?: boolean },
-      { input: { id: string; status: string; text?: string }; continued?: boolean },
+      {
+        input: { id: string; status: string; text?: string };
+        accepted?: boolean;
+        enqueued?: boolean;
+        continued?: boolean;
+      },
+      {
+        input: { id: string; status: string; text?: string };
+        accepted?: boolean;
+        enqueued?: boolean;
+        continued?: boolean;
+      },
     ];
+    const acceptElapsed = Date.now() - tAccept0;
 
-    assert.equal(r1.continued, true);
-    assert.equal(r2.continued, true);
-    assert.equal(r1.input.status, "delivered");
-    assert.equal(r2.input.status, "delivered");
+    // Both accepts return before two full turns (delay 400ms each).
+    assert.ok(
+      acceptElapsed < 700,
+      `sendInput RPC must not await full FIFO turns; elapsed=${acceptElapsed}ms`
+    );
+    assert.equal(r1.accepted, true);
+    assert.equal(r2.accepted, true);
+    assert.equal(r1.enqueued, true);
+    assert.equal(r2.enqueued, true);
+    assert.equal(r1.continued, false);
+    assert.equal(r2.continued, false);
     assert.equal(r1.input.text, "FIRST_U2A");
     assert.equal(r2.input.text, "SECOND_U2A");
+
+    // Background FIFO still delivers in order without dropping the second item.
+    await pollUntil(async () => {
+      const a = (await client.taskInputGet(workspaceId, taskPath, r1.input.id)) as {
+        input: { status: string };
+      };
+      const b = (await client.taskInputGet(workspaceId, taskPath, r2.input.id)) as {
+        input: { status: string };
+      };
+      return a.input.status === "delivered" && b.input.status === "delivered"
+        ? true
+        : null;
+    }, 20_000, "both FIFO inputs delivered");
 
     const logRaw = await fs.readFile(logPath, "utf8");
     const log = JSON.parse(logRaw) as { prompts?: string[] };
@@ -1165,32 +1212,55 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
       client.taskSendInput(workspaceId, taskA, { text: "INPUT_A" }),
       client.taskSendInput(workspaceId, taskB, { text: "INPUT_B" }),
     ])) as [
-      { continued?: boolean; input: { status: string }; continueError?: string },
-      { continued?: boolean; input: { status: string }; continueError?: string },
+      {
+        accepted?: boolean;
+        enqueued?: boolean;
+        continued?: boolean;
+        input: { id: string; status: string };
+      },
+      {
+        accepted?: boolean;
+        enqueued?: boolean;
+        continued?: boolean;
+        input: { id: string; status: string };
+      },
     ];
-    const elapsed = Date.now() - t0;
+    const acceptElapsed = Date.now() - t0;
 
-    assert.equal(
-      ra.continued,
-      true,
-      `A continueError=${ra.continueError ?? "none"}`
+    assert.equal(ra.accepted, true);
+    assert.equal(rb.accepted, true);
+    assert.equal(ra.enqueued, true);
+    assert.equal(rb.enqueued, true);
+    assert.equal(ra.continued, false);
+    assert.equal(rb.continued, false);
+    // Accept must return well under one full turn delay (900ms).
+    assert.ok(
+      acceptElapsed < 700,
+      `sendInput accept must not await provider turns; elapsed=${acceptElapsed}ms`
     );
-    assert.equal(
-      rb.continued,
-      true,
-      `B continueError=${rb.continueError ?? "none"}`
-    );
-    assert.equal(ra.input.status, "delivered");
-    assert.equal(rb.input.status, "delivered");
+
+    const settleStart = Date.now();
+    await pollUntil(async () => {
+      const a = (await client.taskInputGet(workspaceId, taskA, ra.input.id)) as {
+        input: { status: string };
+      };
+      const b = (await client.taskInputGet(workspaceId, taskB, rb.input.id)) as {
+        input: { status: string };
+      };
+      return a.input.status === "delivered" && b.input.status === "delivered"
+        ? true
+        : null;
+    }, 20_000, "both concurrent task inputs delivered");
+    const settleElapsed = Date.now() - settleStart;
     // Follow-up delay 900ms; process-wide serial ≈ 1800ms+. Concurrent ~900–1400ms.
     assert.ok(
-      elapsed < 1_600,
-      `unrelated tasks must not be process-wide serialized; elapsed=${elapsed}ms`
+      settleElapsed < 1_600,
+      `unrelated tasks must not be process-wide serialized; settleElapsed=${settleElapsed}ms`
     );
   });
 });
 
-test("managed U2A: failed inject leaves item pending and does not orphan later queue items", async () => {
+test("managed U2A: failed inject leaves item failed (not dropped) and does not orphan later queue items", async () => {
   const ws = await makeWorkspace();
   await withService([], async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
@@ -1222,32 +1292,54 @@ test("managed U2A: failed inject leaves item pending and does not orphan later q
       text: "WILL_FAIL_INJECT",
     })) as {
       input: { id: string; status: string };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
-      continueError?: string;
     };
+    assert.equal(first.accepted, true);
+    assert.equal(first.enqueued, true);
     assert.equal(first.continued, false);
-    assert.equal(first.input.status, "pending", "failed inject must not cancel/drop item");
-    assert.ok(first.continueError, "failure must surface continueError");
+    // Accept is immediate; background marks failed (not cancelled/dropped).
+    const firstFailed = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        first.input.id
+      )) as { input: { status: string; lastError?: string } };
+      return got.input.status === "failed" ? got.input : null;
+    }, 10_000, "first input failed after inject");
+    assert.ok(firstFailed.lastError, "failure must retain lastError");
 
     const second = (await client.taskSendInput(workspaceId, taskPath, {
       text: "STILL_QUEUED_AFTER_FAIL",
     })) as {
       input: { id: string; status: string };
-      continued?: boolean;
+      accepted?: boolean;
     };
-    // Also fails inject (same dead session) but must still be accepted + pending —
+    // Also fails inject (same dead session) but must still be accepted —
     // failure of first must not orphan/drop the later queue item.
-    assert.equal(second.input.status, "pending");
+    assert.equal(second.accepted, true);
     assert.notEqual(second.input.id, first.input.id);
 
+    await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        second.input.id
+      )) as { input: { status: string } };
+      return got.input.status === "failed" ? true : null;
+    }, 10_000, "second input failed after inject");
+
     const pending = (await client.taskInputListPending(workspaceId, taskPath)) as {
-      inputs: { id: string; text?: string }[];
+      inputs: { id: string; text?: string; status: string }[];
     };
+    // failed rows remain poll-visible (not dropped).
     assert.equal(pending.inputs.length, 2);
     const texts = pending.inputs.map((i) => i.text).sort();
     assert.deepEqual(texts, ["STILL_QUEUED_AFTER_FAIL", "WILL_FAIL_INJECT"].sort());
+    assert.ok(pending.inputs.every((i) => i.status === "failed"));
 
-    // Lifecycle interrupt still cancels only pending (both items).
+    // Lifecycle interrupt still cancels open failed rows.
     await client.taskInterrupt(workspaceId, taskPath);
     const after = (await client.taskInputListPending(workspaceId, taskPath)) as {
       inputs: unknown[];
@@ -1261,4 +1353,217 @@ test("managed U2A: failed inject leaves item pending and does not orphan later q
     )) as { input: { status: string } };
     assert.equal(got1.input.status, "cancelled");
   });
+});
+
+test("task.sendInput: RPC returns accepted before managed turn finishes; status projects processing→delivered", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-async-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "BOOTSTRAP_ASYNC",
+      followupText: "AFTER_ASYNC_INPUT",
+      // Long turn so accept-vs-delivered gap is measurable.
+      promptDelayMs: 1_200,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "async-accept",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "async accept path",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+
+    await pollUntil(async () => {
+      const sessions = (await client.sessionList(workspaceId)) as {
+        sessions: { sessionId: string; alive: boolean }[];
+      };
+      return sessions.sessions.find(
+        (s) => s.sessionId === started.session.sessionId && s.alive
+      );
+    }, 15_000, "session alive");
+
+    await client.taskWait(workspaceId, taskPath, "user-input", "hold async");
+    await pollUntil(async () => {
+      try {
+        const logRaw = await fs.readFile(logPath, "utf8");
+        const log = JSON.parse(logRaw) as { prompts?: string[] };
+        const t = (await client.taskGet(workspaceId, taskPath)) as {
+          task: { state: string };
+        };
+        return log.prompts &&
+          log.prompts.length >= 1 &&
+          t.task.state === "waiting"
+          ? log
+          : null;
+      } catch {
+        return null;
+      }
+    }, 15_000, "bootstrap done while waiting");
+    await client.taskResume(workspaceId, taskPath);
+
+    const t0 = Date.now();
+    const sent = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "ASYNC_BODY",
+    })) as {
+      accepted?: boolean;
+      enqueued?: boolean;
+      continued?: boolean;
+      input: { id: string; status: string };
+    };
+    const rpcMs = Date.now() - t0;
+
+    assert.equal(sent.accepted, true);
+    assert.equal(sent.enqueued, true);
+    assert.equal(sent.continued, false);
+    // Must return far under the follow-up turn delay (1200ms).
+    assert.ok(
+      rpcMs < 600,
+      `sendInput must return accepted without waiting turn; rpcMs=${rpcMs}`
+    );
+    assert.ok(
+      sent.input.status === "pending" || sent.input.status === "processing",
+      `got ${sent.input.status}`
+    );
+
+    // Eventually processing (or delivered if very fast) is visible; then delivered.
+    await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        sent.input.id
+      )) as { input: { status: string } };
+      return got.input.status === "processing" ||
+        got.input.status === "delivered"
+        ? got.input.status
+        : null;
+    }, 5_000, "processing or delivered projection");
+
+    const final = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        sent.input.id
+      )) as { input: { status: string; deliveredAt?: string } };
+      return got.input.status === "delivered" ? got.input : null;
+    }, 20_000, "async input delivered");
+    assert.equal(final.status, "delivered");
+    assert.ok(final.deliveredAt);
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    assert.ok(
+      (log.prompts ?? []).some((p) => p.includes("ASYNC_BODY")),
+      "background inject must still reach ACP"
+    );
+  });
+});
+
+test("task.sendInput: service stop drains background work without unhandled rejection", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-drain-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "BOOT_DRAIN",
+      followupText: "FOLLOW_DRAIN",
+      promptDelayMs: 800,
+      keepAlive: true,
+    }),
+  ];
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-drain-data-"));
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    profiles,
+  });
+  try {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "drain-item",
+      type: "prompt",
+    })) as { id: string };
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "drain semantics",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+
+    await pollUntil(async () => {
+      const sessions = (await client.sessionList(workspaceId)) as {
+        sessions: { sessionId: string; alive: boolean }[];
+      };
+      return sessions.sessions.find(
+        (s) => s.sessionId === started.session.sessionId && s.alive
+      );
+    }, 15_000, "session alive for drain");
+
+    await client.taskWait(workspaceId, taskPath, "user-input", "hold drain");
+    await pollUntil(async () => {
+      try {
+        const logRaw = await fs.readFile(logPath, "utf8");
+        const log = JSON.parse(logRaw) as { prompts?: string[] };
+        const t = (await client.taskGet(workspaceId, taskPath)) as {
+          task: { state: string };
+        };
+        return log.prompts &&
+          log.prompts.length >= 1 &&
+          t.task.state === "waiting"
+          ? true
+          : null;
+      } catch {
+        return null;
+      }
+    }, 15_000, "bootstrap parked");
+    await client.taskResume(workspaceId, taskPath);
+
+    const sent = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "DRAIN_ME",
+    })) as { accepted?: boolean; input: { id: string } };
+    assert.equal(sent.accepted, true);
+
+    // Stop while background inject may still be running — must not throw from
+    // unhandled rejection; drain settles or leaves durable state.
+    await svc.stop();
+  } finally {
+    try {
+      await svc.stop();
+    } catch {
+      // already stopped
+    }
+  }
 });

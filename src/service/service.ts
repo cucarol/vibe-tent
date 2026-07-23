@@ -5,7 +5,12 @@ import { createServiceHttpServer, type ServiceHttpServer } from "./http-server.j
 import { EventBus } from "./events.js";
 import { MutationBus } from "./mutation-bus.js";
 import { WorkspaceHost } from "./workspace-host.js";
-import { mapRuntimeEventToService, type HandlerContext } from "./handlers.js";
+import {
+  drainManagedTaskInputBackgroundForShutdown,
+  enableManagedTaskInputBackgroundAccept,
+  mapRuntimeEventToService,
+  type HandlerContext,
+} from "./handlers.js";
 import {
   defaultServiceDataDir,
   removeServiceEndpoint,
@@ -156,6 +161,8 @@ async function startOwnedLocalTentService(
   await userAsks.ensureLoaded();
   const taskInputs = new TaskInputStore(dataDir);
   await taskInputs.ensureLoaded();
+  // Process-local: previous in-process stop may have drained background U2A.
+  enableManagedTaskInputBackgroundAccept();
 
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector,
@@ -427,6 +434,10 @@ async function startOwnedLocalTentService(
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
+        // Drain background task.sendInput injects before closing the store /
+        // runtime so promises are not unhandled and mid-turn work can settle
+        // to delivered|failed (or remain durable pending for restart).
+        await attempt(() => drainManagedTaskInputBackgroundForShutdown(), true);
         await attempt(() => taskInputs.shutdown(), true);
         await attempt(() => runtime.shutdown(), true);
         await attempt(() => drainRuntimeProjections());

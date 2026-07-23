@@ -371,15 +371,19 @@ export async function runTaskCommand(
             taskPath?: string;
             state?: string;
             input?: { id?: string; status?: string };
+            accepted?: boolean;
+            enqueued?: boolean;
             continued?: boolean;
             continueError?: string;
           };
           return (
-            `✓ TaskInput sent via service RPC\n` +
+            `✓ TaskInput accepted via service RPC\n` +
             `taskPath: ${row.taskPath ?? taskPath}\n` +
             (row.state ? `state: ${row.state}\n` : "") +
             (row.input?.id ? `inputId: ${row.input.id}\n` : "") +
             (row.input?.status ? `inputStatus: ${row.input.status}\n` : "") +
+            (row.accepted != null ? `accepted: ${row.accepted}\n` : "") +
+            (row.enqueued != null ? `enqueued: ${row.enqueued}\n` : "") +
             (row.continued != null ? `continued: ${row.continued}\n` : "") +
             (row.continueError ? `continueError: ${row.continueError}\n` : "")
           );
