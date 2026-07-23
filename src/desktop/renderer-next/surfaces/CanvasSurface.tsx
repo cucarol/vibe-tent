@@ -10,7 +10,7 @@ export type CanvasSurfaceProps = {
 
 /**
  * Canvas-first stage host. Mounts a CanvasEngine adapter into a host node.
- * Outline remains outside this surface (always reachable chrome).
+ * Outline is shell drawer chrome, not part of this stage surface.
  */
 export function CanvasSurface(props: CanvasSurfaceProps) {
   const { engine, document } = props;

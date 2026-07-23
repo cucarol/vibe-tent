@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   PlaceholderCanvasEngine,
   type CanvasEngine,
@@ -8,6 +8,14 @@ import {
   createEmptyCanvasDocument,
   type CanvasDocument,
 } from "../types/identity.js";
+import {
+  OUTLINE_PANEL_ID,
+  OUTLINE_TOGGLE_ID,
+  closeOutline,
+  createDefaultOutlineChrome,
+  toggleOutline,
+  type OutlineChromeState,
+} from "../types/outline.js";
 import {
   APP_SURFACES,
   defaultAppSurface,
@@ -25,11 +33,17 @@ export type AppShellProps = {
   initialDocument?: CanvasDocument;
   /** Initial stage surface. */
   initialSurface?: AppSurfaceId;
+  /** Initial Outline chrome (default collapsed). */
+  initialOutline?: OutlineChromeState;
 };
 
 /**
  * Canvas-first single-window app shell.
- * Rail + Outline (always on) + stage surfaces; no multi-window product model.
+ * Rail + stage surfaces; Outline is a default-collapsed drawer/overlay
+ * invoked from rail or chrome — not a permanent grid column.
+ *
+ * Open / expand / locate-entity interfaces live in `types/outline.ts`
+ * (`OutlineChromeState` + pure helpers). Shell owns the open flag and a11y.
  */
 export function AppShell(props: AppShellProps = {}) {
   const gateway = useMemo(
@@ -46,10 +60,49 @@ export function AppShell(props: AppShellProps = {}) {
   const [document] = useState<CanvasDocument>(
     () => props.initialDocument ?? createEmptyCanvasDocument()
   );
+  const [outline, setOutline] = useState<OutlineChromeState>(
+    () => props.initialOutline ?? createDefaultOutlineChrome()
+  );
+
+  const handleToggleOutline = useCallback(() => {
+    setOutline((prev) => toggleOutline(prev));
+  }, []);
+
+  const handleCloseOutline = useCallback(() => {
+    setOutline((prev) => closeOutline(prev));
+  }, []);
+
+  useEffect(() => {
+    if (!outline.open) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        setOutline((prev) => closeOutline(prev));
+      }
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [outline.open]);
 
   return (
-    <div className="tn-app" data-shell="renderer-next" data-surface={surface}>
+    <div
+      className="tn-app"
+      data-shell="renderer-next"
+      data-surface={surface}
+      data-outline-open={outline.open ? "true" : "false"}
+    >
       <nav className="tn-rail" aria-label="Surfaces">
+        <button
+          id={OUTLINE_TOGGLE_ID}
+          type="button"
+          data-outline-toggle="rail"
+          aria-expanded={outline.open}
+          aria-controls={OUTLINE_PANEL_ID}
+          title="Outline"
+          onClick={handleToggleOutline}
+        >
+          Outline
+        </button>
         {APP_SURFACES.map((s) => (
           <button
             key={s.id}
@@ -64,9 +117,17 @@ export function AppShell(props: AppShellProps = {}) {
         ))}
       </nav>
 
-      <Outline />
-
       <header className="tn-chrome" data-region="chrome">
+        <button
+          type="button"
+          data-outline-toggle="chrome"
+          aria-expanded={outline.open}
+          aria-controls={OUTLINE_PANEL_ID}
+          title="Outline"
+          onClick={handleToggleOutline}
+        >
+          Outline
+        </button>
         <strong>帷幄 · Tent</strong>
         <span className="tn-chrome-surface" data-testid="active-surface">
           {surface}
@@ -89,6 +150,8 @@ export function AppShell(props: AppShellProps = {}) {
         <span aria-hidden="true">·</span>
         <span>Service sole authority · events invalidate only</span>
       </footer>
+
+      <Outline chrome={outline} onClose={handleCloseOutline} />
     </div>
   );
 }

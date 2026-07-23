@@ -1,6 +1,7 @@
 /**
  * Structural shell layout for the next renderer.
  * No visual redesign / brand palette — geometry and landmarks only.
+ * Outline is a drawer/overlay (default collapsed), not a permanent grid column.
  */
 
 *,
@@ -23,13 +24,14 @@ body,
 .tn-app {
   display: grid;
   grid-template-rows: auto 1fr auto;
-  grid-template-columns: auto auto 1fr;
+  grid-template-columns: auto 1fr;
   grid-template-areas:
-    "rail outline chrome"
-    "rail outline stage"
-    "rail outline status";
+    "rail chrome"
+    "rail stage"
+    "rail status";
   height: 100%;
   min-height: 0;
+  position: relative;
 }
 
 .tn-rail {
@@ -41,17 +43,36 @@ body,
   gap: var(--tn-space-1);
   padding: var(--tn-space-2);
   background: var(--tn-color-chrome-bg);
+  z-index: 2;
+}
+
+/* Drawer/overlay — not a grid column. Default closed (not in DOM when closed). */
+.tn-outline-scrim {
+  position: fixed;
+  inset: 0;
+  border: 0;
+  padding: 0;
+  margin: 0;
+  background: transparent;
+  cursor: default;
+  z-index: 10;
 }
 
 .tn-outline {
-  grid-area: outline;
+  position: fixed;
+  top: 0;
+  bottom: 0;
+  left: var(--tn-layout-rail-width);
   width: var(--tn-layout-outline-width);
   min-width: 160px;
+  max-width: min(var(--tn-layout-outline-width), 90vw);
   border-right: 1px solid var(--tn-color-border);
   display: flex;
   flex-direction: column;
   min-height: 0;
   background: var(--tn-color-panel-bg);
+  z-index: 11;
+  box-shadow: 0 0 0 1px var(--tn-color-border);
 }
 
 .tn-chrome {
@@ -104,7 +125,8 @@ body,
 }
 
 .tn-rail button,
-.tn-chrome button {
+.tn-chrome button,
+.tn-outline button {
   font: inherit;
   cursor: pointer;
   border: 1px solid transparent;
@@ -121,6 +143,12 @@ body,
   font-weight: var(--tn-font-weight-strong);
 }
 
+.tn-rail button[aria-expanded="true"],
+.tn-chrome button[aria-expanded="true"] {
+  border-color: var(--tn-color-border-strong);
+  font-weight: var(--tn-font-weight-strong);
+}
+
 .tn-rail button:focus-visible,
 .tn-chrome button:focus-visible,
 .tn-outline button:focus-visible {
@@ -129,6 +157,10 @@ body,
 }
 
 .tn-outline-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--tn-space-2);
   padding: var(--tn-space-3);
   border-bottom: 1px solid var(--tn-color-border);
   font-weight: var(--tn-font-weight-strong);
@@ -140,6 +172,10 @@ body,
   font-size: var(--tn-font-ui-small);
   overflow: auto;
   flex: 1;
+}
+
+.tn-outline-body p + p {
+  margin-top: var(--tn-space-2);
 }
 
 .canvas-engine-placeholder {

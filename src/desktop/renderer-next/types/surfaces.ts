@@ -1,6 +1,6 @@
 /**
  * App surfaces for the Canvas-first single-window shell.
- * Outline is always reachable chrome, not a surface you "navigate away" from.
+ * Outline is drawer/overlay chrome (default collapsed), not a stage surface.
  */
 
 export type AppSurfaceId =

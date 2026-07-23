@@ -44,3 +44,16 @@ export {
   type CanvasEngineMount,
   type CanvasViewport,
 } from "./canvas/engine.js";
+export {
+  OUTLINE_PANEL_ID,
+  OUTLINE_TOGGLE_ID,
+  closeOutline,
+  createDefaultOutlineChrome,
+  isOutlineOpen,
+  locateOutlineEntity,
+  openOutline,
+  setOutlineExpanded,
+  toggleOutline,
+  toggleOutlineExpanded,
+  type OutlineChromeState,
+} from "./types/outline.js";

@@ -9,17 +9,27 @@ import { test } from "node:test";
 import {
   APP_SURFACE_IDS,
   APP_SURFACES,
+  OUTLINE_PANEL_ID,
+  OUTLINE_TOGGLE_ID,
   PlaceholderCanvasEngine,
   ServiceGateway,
+  closeOutline,
+  createDefaultOutlineChrome,
   createEmptyCanvasDocument,
   defaultAppSurface,
   invalidationFromEvent,
   isAppSurfaceId,
   isLayoutIntent,
   isLifecycleIntent,
+  isOutlineOpen,
   isReversibleDomainIntent,
   listPlacementIds,
+  locateOutlineEntity,
+  openOutline,
   placementEntityRef,
+  setOutlineExpanded,
+  toggleOutline,
+  toggleOutlineExpanded,
   undoPolicyOf,
   type UiIntent,
 } from "../src/desktop/renderer-next/index.js";
@@ -213,6 +223,7 @@ test("renderer-next source tree is split and avoids forbidden deps", async () =>
     "canvas/engine.ts",
     "types/identity.ts",
     "types/intent.ts",
+    "types/outline.ts",
     "types/surfaces.ts",
     "styles/tokens.css",
     "styles/shell.css",
@@ -236,6 +247,9 @@ test("renderer-next source tree is split and avoids forbidden deps", async () =>
   assert.doesNotMatch(allSrc, /tailwind/i);
   assert.doesNotMatch(allSrc, /from ["']zustand["']|from ["']redux["']|@reduxjs/i);
   assert.doesNotMatch(allSrc, /from ["']@mui\/|from ["']antd["']/i);
+  // Product copy must not claim Outline is a permanent always-on column.
+  assert.doesNotMatch(allSrc, /always[- ]?on/i);
+  assert.doesNotMatch(allSrc, /always reachable/i);
 });
 
 test("tokens.css defines semantic structure without a locked brand hex palette", async () => {
@@ -277,6 +291,65 @@ test("ADR documents foundation boundary", async () => {
   assert.match(adr, /placementId/);
   assert.match(adr, /renderer-next/);
   assert.match(adr, /default Electron entry/);
+  assert.match(adr, /drawer\/overlay|default-collapsed/i);
+  assert.doesNotMatch(adr, /always-on|always reachable/i);
+});
+
+test("Outline chrome defaults collapsed with open/expand/locate interfaces", () => {
+  const initial = createDefaultOutlineChrome();
+  assert.equal(isOutlineOpen(initial), false);
+  assert.deepEqual(initial.expandedIds, []);
+  assert.equal(initial.currentEntityRef, null);
+
+  const opened = openOutline(initial);
+  assert.equal(isOutlineOpen(opened), true);
+  assert.equal(isOutlineOpen(closeOutline(opened)), false);
+
+  const toggled = toggleOutline(initial);
+  assert.equal(toggled.open, true);
+  assert.equal(toggleOutline(toggled).open, false);
+
+  const expanded = setOutlineExpanded(initial, "node-a", true);
+  assert.deepEqual(expanded.expandedIds, ["node-a"]);
+  assert.deepEqual(
+    toggleOutlineExpanded(expanded, "node-a").expandedIds,
+    []
+  );
+
+  const located = locateOutlineEntity(initial, "cx-demo");
+  assert.equal(located.open, true);
+  assert.equal(located.currentEntityRef, "cx-demo");
+  // Locate does not invent tree nodes — only points chrome at an entityRef.
+  assert.deepEqual(located.expandedIds, []);
+});
+
+test("Outline is drawer/overlay chrome with a11y hooks, not a grid column", async () => {
+  const shellCss = await read("src/desktop/renderer-next/styles/shell.css");
+  assert.match(shellCss, /\.tn-outline\s*\{[^}]*position:\s*fixed/s);
+  assert.match(shellCss, /\.tn-outline-scrim/);
+  // Grid is rail + stage only (no permanent outline column).
+  assert.match(
+    shellCss,
+    /grid-template-areas:\s*"rail chrome"\s*"rail stage"\s*"rail status"/
+  );
+  // grid-area assignments must not reserve a permanent outline track.
+  assert.doesNotMatch(shellCss, /grid-area:\s*outline\b/);
+
+  const shell = await read("src/desktop/renderer-next/shell/AppShell.tsx");
+  assert.match(shell, /aria-expanded=\{outline\.open\}/);
+  assert.match(shell, /aria-controls=\{OUTLINE_PANEL_ID\}/);
+  assert.match(shell, /Escape/);
+  assert.match(shell, /data-outline-toggle="rail"/);
+  assert.match(shell, /data-outline-toggle="chrome"/);
+  assert.match(shell, /OUTLINE_TOGGLE_ID/);
+  assert.equal(OUTLINE_PANEL_ID, "tn-outline-panel");
+  assert.equal(OUTLINE_TOGGLE_ID, "tn-outline-toggle");
+
+  const outline = await read("src/desktop/renderer-next/shell/Outline.tsx");
+  assert.match(outline, /data-outline-close/);
+  assert.match(outline, /onClose/);
+  assert.match(outline, /id=\{OUTLINE_PANEL_ID\}/);
+  assert.match(outline, /if \(!chrome\.open\) return null/);
 });
 
 test("React stays a desktop devDependency, not a published runtime dep", async () => {

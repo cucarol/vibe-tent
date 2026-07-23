@@ -9,7 +9,7 @@ export function FocusWorkspaceSurface() {
     <SurfacePlaceholder
       surfaceId="focus-workspace"
       title="Focus Workspace"
-      description="Focused Markdown editing and collaboration context for the current entity. Outline stays reachable; Service projections own status, assignee, and task facts."
+      description="Focused Markdown editing and collaboration context for the current entity. Outline opens as shell drawer chrome; Service projections own status, assignee, and task facts."
     />
   );
 }
