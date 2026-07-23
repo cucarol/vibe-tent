@@ -1,0 +1,26 @@
+{
+  "buildMs": 1.7,
+  "domainNodes": 291,
+  "placements": 291,
+  "edges": 398,
+  "edgeKinds": {
+    "parent": 283,
+    "resolved-link": 79,
+    "unresolved-link": 34,
+    "visual-annotation": 2
+  },
+  "canvasDocumentBytes": 28678,
+  "domainProjectionBytes": 84054,
+  "visualGroups": 2,
+  "annotations": 2,
+  "samplePlacement": {
+    "placementId": "pl-cx-root000",
+    "entityRef": "cx-root000",
+    "x": 80,
+    "y": 80,
+    "width": 200,
+    "height": 72,
+    "visualGroupId": "vg-core"
+  },
+  "note": "entityRef != placementId; CanvasDocument excludes domain tree/body"
+}
