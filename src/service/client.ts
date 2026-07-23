@@ -3,8 +3,10 @@
 import type {
   BoxProjection,
   BoxProjectionsResult,
+  DeliveryProjection,
   EventEnvelope,
   GraphProjection,
+  PendingInteractionListResult,
   ProviderCatalogProjection,
 } from "./types.js";
 import { AUTH_TOKEN_HEADER } from "./auth.js";
@@ -554,6 +556,28 @@ export class ServiceClient {
   }
 
   /**
+   * List deliveries for a workspace (optional taskId / boxId / role filters).
+   * Read projection only — review still uses task.accept / task.reject.
+   */
+  deliveryList(
+    workspaceId: string,
+    opts?: { taskId?: string; boxId?: string; role?: string }
+  ) {
+    return this.call<{ workspaceId: string; deliveries: DeliveryProjection[] }>(
+      "delivery.list",
+      { workspaceId, ...opts }
+    );
+  }
+
+  /** Get one delivery by id within a workspace. */
+  deliveryGet(workspaceId: string, id: string) {
+    return this.call<{ workspaceId: string; delivery: DeliveryProjection }>(
+      "delivery.get",
+      { workspaceId, id }
+    );
+  }
+
+  /**
    * Stable box collaboration projection (task-api §2.3).
    * Resolve by id, boxId, or path (same conventions as docs.get).
    * Active task is authoritative; without one, only persisted done is preserved.
@@ -717,6 +741,17 @@ export class ServiceClient {
   /** User-only: deny a business ask; resumes task for rework/observe. */
   userAskDeny(askId: string, actor = "user") {
     return this.call("userAsk.deny", { askId, actor });
+  }
+
+  /**
+   * Unified A2U pending read projection for one workspace.
+   * Aggregates UserAsk / A2A / toolApproval / ready Delivery.
+   * Resolve actions stay on domain RPCs — no interaction.resolve.
+   */
+  interactionListPending(workspaceId: string) {
+    return this.call<PendingInteractionListResult>("interaction.listPending", {
+      workspaceId,
+    });
   }
 
   /**

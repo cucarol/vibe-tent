@@ -46,6 +46,7 @@ test("CLIENT_METHODS covers all pending closed-loop RPCs used by Desktop", () =>
     "userAsk.get",
     "userAsk.reply",
     "userAsk.deny",
+    "interaction.listPending",
     "taskInput.listPending",
     "taskInput.get",
     "taskInput.ack",

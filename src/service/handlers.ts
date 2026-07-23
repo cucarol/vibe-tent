@@ -178,6 +178,12 @@ import {
   type GraphNodeSummary,
   type GraphParentEdge,
   type GraphProjection,
+  type PendingA2AInteraction,
+  type PendingDeliveryInteraction,
+  type PendingInteractionItem,
+  type PendingInteractionListResult,
+  type PendingToolApprovalInteraction,
+  type PendingUserAskInteraction,
   type ProposalProjection,
   type ProviderCatalogProjection,
   type RoleRegistryEntryProjection,
@@ -422,6 +428,8 @@ export async function dispatchMethod(
         return userAskReplyRpc(ctx, p);
       case "userAsk.deny":
         return userAskDenyRpc(ctx, p);
+      case "interaction.listPending":
+        return interactionListPending(ctx, p);
       case "taskInput.listPending":
         return taskInputListPending(ctx, p);
       case "taskInput.get":
@@ -4701,6 +4709,184 @@ async function userAskListPending(ctx: HandlerContext, p: Record<string, unknown
   const workspaceId = optionalString(p, "workspaceId");
   const pending = await ctx.userAsks.listPending(workspaceId);
   return { asks: pending.map(projectUserAsk) };
+}
+
+/**
+ * Workspace-scoped unified A2U pending projection.
+ * Aggregates four domain sources only — no new store, no resolve verbs, no
+ * copied state events. Any source failure fails the whole RPC (fail-loud).
+ */
+async function interactionListPending(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<PendingInteractionListResult> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  // Ensure the workspace is mounted before any store/fs read so missing mounts
+  // fail with the same contract as delivery.list rather than a partial inbox.
+  const mount = ctx.host.require(workspaceId);
+
+  let asks: Awaited<ReturnType<typeof ctx.userAsks.listPending>>;
+  let a2aApprovals: Awaited<ReturnType<typeof ctx.a2a.listPending>>;
+  let toolApprovals: Awaited<ReturnType<typeof ctx.toolApprovals.listPending>>;
+  let deliveries: Awaited<ReturnType<typeof loadDeliveries>>;
+  try {
+    // Parallel reads are independent; reject if any source fails.
+    const settled = await Promise.all([
+      ctx.userAsks.listPending(workspaceId),
+      ctx.a2a.listPending(workspaceId),
+      ctx.toolApprovals.listPending(workspaceId),
+      loadDeliveries(mount.env.fs),
+    ]);
+    asks = settled[0];
+    a2aApprovals = settled[1];
+    toolApprovals = settled[2];
+    deliveries = settled[3];
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32000,
+      `interaction.listPending failed to load pending sources: ${message}`,
+      { workspaceId }
+    );
+  }
+
+  // Task envelopes supply optional boxId/sessionId pointers for rows that
+  // only store taskPath / taskId. Missing envelopes leave pointers undefined.
+  let tasksByPath = new Map<string, TaskEnvelope>();
+  let tasksById = new Map<string, TaskEnvelope>();
+  try {
+    const tasks = await loadTaskEnvelopes(mount.env.fs);
+    tasksByPath = new Map(tasks.map((t) => [t.path, t]));
+    tasksById = new Map(
+      tasks.filter((t): t is TaskEnvelope & { id: string } => !!t.id).map((t) => [t.id, t])
+    );
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32000,
+      `interaction.listPending failed to load task envelopes: ${message}`,
+      { workspaceId }
+    );
+  }
+
+  const items: PendingInteractionItem[] = [];
+
+  for (const ask of asks) {
+    const task = tasksByPath.get(ask.taskPath) ?? (ask.taskId ? tasksById.get(ask.taskId) : undefined);
+    const item: PendingUserAskInteraction = {
+      kind: "userAsk",
+      id: ask.id,
+      workspaceId: ask.workspaceId,
+      createdAt: ask.createdAt,
+      taskPath: ask.taskPath,
+      ...(ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {}),
+      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      ...(ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {}),
+      ...(ask.sessionId ?? task?.sessionId
+        ? { sessionId: ask.sessionId ?? task?.sessionId }
+        : {}),
+      question: ask.question,
+      ...(ask.choices?.length ? { choices: ask.choices.map((c) => ({ id: c.id, label: c.label })) } : {}),
+    };
+    items.push(item);
+  }
+
+  for (const approval of a2aApprovals) {
+    const task =
+      tasksByPath.get(approval.taskPath) ??
+      (approval.taskId ? tasksById.get(approval.taskId) : undefined);
+    const item: PendingA2AInteraction = {
+      kind: "a2a",
+      id: approval.id,
+      workspaceId: approval.workspaceId,
+      createdAt: approval.createdAt,
+      taskPath: approval.taskPath,
+      ...(approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {}),
+      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      role: approval.role,
+      ...(task?.sessionId ? { sessionId: task.sessionId } : {}),
+      profileId: approval.profileId,
+      policy: approval.policy,
+      callerKind: approval.callerKind,
+    };
+    items.push(item);
+  }
+
+  for (const approval of toolApprovals) {
+    const task = approval.taskPath
+      ? tasksByPath.get(approval.taskPath)
+      : approval.taskId
+        ? tasksById.get(approval.taskId)
+        : undefined;
+    // Safe fields only — projectToolApproval already omits raw tool args/secrets.
+    const projected = projectToolApproval(approval);
+    const item: PendingToolApprovalInteraction = {
+      kind: "toolApproval",
+      id: projected.id,
+      workspaceId: projected.workspaceId,
+      createdAt: projected.createdAt,
+      sessionId: projected.sessionId,
+      ...(projected.taskPath ? { taskPath: projected.taskPath } : {}),
+      ...(projected.taskId
+        ? { taskId: projected.taskId }
+        : task?.id
+          ? { taskId: task.id }
+          : {}),
+      ...(task?.claims?.[0] ? { boxId: task.claims[0] } : {}),
+      ...(projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {}),
+      toolTitle: projected.toolTitle,
+      options: projected.options.map((o) => ({
+        optionId: o.optionId,
+        ...(o.kind ? { kind: o.kind } : {}),
+        ...(o.name ? { name: o.name } : {}),
+      })),
+      ...(projected.expiresAt ? { expiresAt: projected.expiresAt } : {}),
+    };
+    items.push(item);
+  }
+
+  for (const delivery of deliveries) {
+    if (delivery.status !== "ready") continue;
+    const task = tasksById.get(delivery.taskId);
+    const item: PendingDeliveryInteraction = {
+      kind: "delivery",
+      id: delivery.id,
+      workspaceId,
+      createdAt: delivery.createdAt ?? delivery.updatedAt ?? "",
+      taskId: delivery.taskId,
+      boxId: delivery.boxId,
+      role: delivery.role,
+      path: delivery.path,
+      status: "ready",
+      ...(task?.path ? { taskPath: task.path } : {}),
+      ...(task?.sessionId ? { sessionId: task.sessionId } : {}),
+    };
+    items.push(item);
+  }
+
+  items.sort(comparePendingInteraction);
+
+  const counts = {
+    userAsk: 0,
+    a2a: 0,
+    toolApproval: 0,
+    delivery: 0,
+    total: items.length,
+  };
+  for (const item of items) {
+    counts[item.kind] += 1;
+  }
+
+  return { workspaceId, items, counts };
+}
+
+/** Stable sort: createdAt ASC, then kind, then id. */
+function comparePendingInteraction(a: PendingInteractionItem, b: PendingInteractionItem): number {
+  const byTime = a.createdAt.localeCompare(b.createdAt);
+  if (byTime !== 0) return byTime;
+  const byKind = a.kind.localeCompare(b.kind);
+  if (byKind !== 0) return byKind;
+  return a.id.localeCompare(b.id);
 }
 
 async function userAskGet(ctx: HandlerContext, p: Record<string, unknown>) {

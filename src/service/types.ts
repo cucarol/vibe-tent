@@ -194,6 +194,96 @@ export type DeliveryProjection = {
 };
 
 /**
+ * Unified A2U pending projection kinds (workspace inbox).
+ * Facts remain in domain stores / task lifecycle — this is aggregation only.
+ */
+export type PendingInteractionKind =
+  | "userAsk"
+  | "a2a"
+  | "toolApproval"
+  | "delivery";
+
+/** Shared entity pointers + stable identity for one pending A2U item. */
+export type PendingInteractionBase = {
+  kind: PendingInteractionKind;
+  id: string;
+  workspaceId: string;
+  createdAt: string;
+  taskPath?: string;
+  taskId?: string;
+  boxId?: string;
+  role?: string;
+  sessionId?: string;
+};
+
+/** A2U business UserAsk — question + choices only; no chat transcript. */
+export type PendingUserAskInteraction = PendingInteractionBase & {
+  kind: "userAsk";
+  taskPath: string;
+  question: string;
+  choices?: Array<{ id: string; label: string }>;
+};
+
+/** A2A spawn approval — profile gate; not tool permission. */
+export type PendingA2AInteraction = PendingInteractionBase & {
+  kind: "a2a";
+  taskPath: string;
+  role: string;
+  profileId: string;
+  policy?: string;
+  callerKind?: string;
+};
+
+/**
+ * ACP tool permission — safe title/options only.
+ * Never projects tool raw args, secrets, or stdout.
+ */
+export type PendingToolApprovalInteraction = PendingInteractionBase & {
+  kind: "toolApproval";
+  sessionId: string;
+  toolTitle: string;
+  options: Array<{ optionId: string; kind?: string; name?: string }>;
+  expiresAt?: string;
+};
+
+/**
+ * Ready Delivery awaiting review.
+ * Entity pointers only — does not project delivery summary body.
+ */
+export type PendingDeliveryInteraction = PendingInteractionBase & {
+  kind: "delivery";
+  taskId: string;
+  boxId: string;
+  role: string;
+  path: string;
+  status: "ready";
+};
+
+export type PendingInteractionItem =
+  | PendingUserAskInteraction
+  | PendingA2AInteraction
+  | PendingToolApprovalInteraction
+  | PendingDeliveryInteraction;
+
+export type PendingInteractionCounts = {
+  userAsk: number;
+  a2a: number;
+  toolApproval: number;
+  delivery: number;
+  total: number;
+};
+
+/**
+ * Workspace-scoped unified pending list (interaction.listPending).
+ * Sorted by createdAt, then kind, then id. Single-source failure fails the RPC.
+ */
+export type PendingInteractionListResult = {
+  workspaceId: string;
+  items: PendingInteractionItem[];
+  counts: PendingInteractionCounts;
+};
+
+/**
  * Proposal projection for triage — separate from task delivery review.
  * Maps core Proposal; status is pending | accepted | rejected.
  */
@@ -527,6 +617,14 @@ export const CLIENT_METHODS = [
   "userAsk.get",
   "userAsk.reply",
   "userAsk.deny",
+  /**
+   * Unified A2U pending read projection (workspace-scoped).
+   * Aggregates pending UserAsk, A2A spawn approval, ACP tool approval, and
+   * status=ready Delivery. No new store / state machine; resolve stays on
+   * domain RPCs (userAsk.* / a2a.resolve / toolApproval.* / task.accept|reject).
+   * Fail-loud on any source failure — never a partial authoritative inbox.
+   */
+  "interaction.listPending",
   /**
    * U2A task input (one-shot append) — machine-local; not chat.
    * send is user-only; listPending/get/ack require workspaceId+taskPath (no global inbox).
