@@ -7,7 +7,9 @@
  * Env:
  *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
  *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer", "## User Input", or "## Review Feedback" (default MOCK_ACP_PROMPT_TEXT)
- *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing session/prompt (default 0)
+ *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing bootstrap session/prompt (default 0)
+ *   MOCK_ACP_FOLLOWUP_DELAY_MS — delay before completing U2A follow-up prompts (default 0)
+ *   MOCK_ACP_FOLLOWUP_HANG — "1" never answer User Input / User Answer / Review Feedback (hang until SIGTERM)
  *   MOCK_ACP_REQUEST_PERMISSION — "1" to send session/request_permission before prompt result
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
@@ -38,6 +40,12 @@ const promptDelayMs = Math.max(
   0,
   Number(process.env.MOCK_ACP_PROMPT_DELAY_MS || "0") || 0
 );
+const followupDelayMs = Math.max(
+  0,
+  Number(process.env.MOCK_ACP_FOLLOWUP_DELAY_MS || "0") || 0
+);
+/** Hang U2A follow-ups forever (until SIGTERM) — shutdown must not wait full promptTimeout. */
+const followupHang = process.env.MOCK_ACP_FOLLOWUP_HANG === "1";
 const requestPermission = process.env.MOCK_ACP_REQUEST_PERMISSION === "1";
 const permissionCount = Math.max(
   1,
@@ -465,11 +473,22 @@ rl.on("line", (line) => {
       }
     };
 
-    // Bootstrap only: delay keeps task running so ask/sendInput can park first.
-    // Follow-ups complete immediately so prompt_complete can race markDelivered
+    // Hang U2A follow-ups until SIGTERM (service shutdown interrupt test).
+    // Log the prompt first so tests can assert inject was attempted.
+    if (isUserFollowUp && followupHang) {
+      flushLog();
+      return;
+    }
+
+    // Bootstrap delay keeps task running so ask/sendInput can park first.
+    // Follow-up delay is opt-in (default 0) so prompt_complete can race markDelivered
     // (managed inject pin must keep pending rows non-cancelable in that window).
-    if (promptDelayMs > 0 && !isUserFollowUp) {
+    if (!isUserFollowUp && promptDelayMs > 0) {
       setTimeout(finishPrompt, promptDelayMs);
+      return;
+    }
+    if (isUserFollowUp && followupDelayMs > 0) {
+      setTimeout(finishPrompt, followupDelayMs);
       return;
     }
     finishPrompt();

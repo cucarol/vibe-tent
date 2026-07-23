@@ -184,7 +184,70 @@ test("task input store: rebindSession updates pending session; cancel old id lea
   );
 });
 
-test("task input store: processing/failed projection; reload processing→pending; cancel skips processing", async () => {
+test("task input store: uncertain is at-most-once (no listPending, no cancel, no retry, survives restart)", async () => {
+  const dataDir = await tempDir("tent-ti-uncertain-");
+  const store = new TaskInputStore(dataDir);
+  const id = makeTaskInputId(() => 0.66);
+  const workspaceId = "ws-unc";
+  const taskPath = "temp/r/tasks/unc.md";
+  const sessionId = "ss-unc";
+
+  await store.add(
+    pending({
+      id,
+      workspaceId,
+      taskPath,
+      sessionId,
+      text: "already sent",
+    })
+  );
+  await store.markProcessing(id);
+
+  const uncertain = await store.markUncertain(
+    id,
+    "managed inject ok but markDelivered failed: disk full",
+    "service",
+    { sessionId }
+  );
+  assert.equal(uncertain.status, "uncertain");
+  assert.equal(
+    uncertain.lastError,
+    "managed inject ok but markDelivered failed: disk full"
+  );
+  assert.ok(uncertain.uncertainAt);
+  assert.equal(uncertain.sessionId, sessionId);
+  assert.equal(uncertain.failedAt, undefined);
+
+  const open = await store.listPending(workspaceId, taskPath);
+  assert.equal(open.length, 0, "uncertain must not appear as retryable open");
+
+  const cancelled = await store.cancelTask(workspaceId, taskPath, "interrupt");
+  assert.equal(cancelled.length, 0, "uncertain is not cancel-eligible");
+  const still = await store.get(id, workspaceId, taskPath);
+  assert.equal(still?.status, "uncertain");
+
+  await assert.rejects(
+    () => store.markPendingForRetry(id, workspaceId, taskPath),
+    /uncertain \(at-most-once/
+  );
+  await assert.rejects(
+    () => store.markProcessing(id),
+    /pending or failed/
+  );
+
+  // Restart: uncertain must not reload as pending (would risk double inject).
+  const reloaded = new TaskInputStore(dataDir);
+  const afterReload = await reloaded.get(id, workspaceId, taskPath);
+  assert.equal(afterReload?.status, "uncertain");
+  assert.ok(afterReload?.uncertainAt);
+  assert.match(afterReload?.lastError ?? "", /markDelivered failed/);
+
+  // Ack is cleanup only — does not re-inject.
+  const consumed = await reloaded.ack(id, workspaceId, taskPath, "executor");
+  assert.equal(consumed.status, "consumed");
+});
+
+test("task input store: processing reloads uncertain; true inject failure stays retryable", async () => {
   const dataDir = await tempDir("tent-ti-proc-");
   const store = new TaskInputStore(dataDir);
   const id = makeTaskInputId(() => 0.77);
@@ -223,13 +286,25 @@ test("task input store: processing/failed projection; reload processing→pendin
     "cancel must skip processing rows"
   );
 
-  // Simulate process restart: processing reloads as pending.
+  // The provider boundary is unknowable after a crash: never silently re-inject.
   const reloaded = new TaskInputStore(dataDir);
   const afterReload = await reloaded.get(id, workspaceId, taskPath);
-  assert.equal(afterReload?.status, "pending");
+  assert.equal(afterReload?.status, "uncertain");
+  assert.ok(afterReload?.uncertainAt);
+  await assert.rejects(() => reloaded.markProcessing(id), /pending or failed/);
 
-  await reloaded.markProcessing(id);
-  const failed = await reloaded.markFailed(id, "inject blew up", "service");
+  const failedId = makeTaskInputId(() => 0.25);
+  await reloaded.add(
+    pending({
+      id: failedId,
+      workspaceId,
+      taskPath,
+      sessionId,
+      text: "fails before provider accept",
+    })
+  );
+  await reloaded.markProcessing(failedId);
+  const failed = await reloaded.markFailed(failedId, "inject blew up", "service");
   assert.equal(failed.status, "failed");
   assert.equal(failed.lastError, "inject blew up");
   assert.ok(failed.failedAt);

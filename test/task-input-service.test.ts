@@ -33,9 +33,15 @@ function mockAcpProfile(
     promptText?: string;
     followupText?: string;
     promptDelayMs?: number;
+    /** Delay only U2A follow-up prompts (bootstrap unaffected). */
+    followupDelayMs?: number;
+    /** Never complete U2A follow-ups (hang until SIGTERM). */
+    hangFollowup?: boolean;
     keepAlive?: boolean;
     /** Hang bootstrap (no auto-deliver); U2A follow-ups still complete. */
     hangBootstrap?: boolean;
+    /** Override profile promptTimeoutMs (default 15s). */
+    promptTimeoutMs?: number;
   }
 ): import("../src/runtime/types.js").AgentProfileConfig {
   return {
@@ -53,7 +59,12 @@ function mockAcpProfile(
       ...(opts.promptDelayMs != null
         ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) }
         : {}),
-      // interrupt hangs bootstrap; follow-ups (User Input / Review Feedback) still ok.
+      ...(opts.followupDelayMs != null
+        ? { MOCK_ACP_FOLLOWUP_DELAY_MS: String(opts.followupDelayMs) }
+        : {}),
+      ...(opts.hangFollowup ? { MOCK_ACP_FOLLOWUP_HANG: "1" } : {}),
+      // interrupt hangs bootstrap; follow-ups (User Input / Review Feedback) still ok
+      // unless hangFollowup is set.
       MOCK_ACP_PROMPT_MODE: opts.hangBootstrap ? "interrupt" : "ok",
       CPA_GROK_API_KEY: "test-key-not-real",
     },
@@ -61,7 +72,7 @@ function mockAcpProfile(
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
       permissionPolicy: "deny",
-      promptTimeoutMs: 15_000,
+      promptTimeoutMs: opts.promptTimeoutMs ?? 15_000,
       permissionTimeoutMs: 500,
     },
   };
@@ -1566,4 +1577,192 @@ test("task.sendInput: service stop drains background work without unhandled reje
       // already stopped
     }
   }
+});
+
+test("task.sendInput: hung follow-up turns stop promptly; durable row retained; no unhandled", async () => {
+  // Provider hangs on U2A follow-up. Old order drained before runtime.shutdown and
+  // could wait full promptTimeout (profile 30min / test 20s). New order interrupts
+  // runtime first, then bounded drain; store stays writable until drain ends.
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-hang-log-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "BOOT_HANG",
+      followupText: "SHOULD_NOT_FINISH",
+      // Park bootstrap long enough to taskWait before auto-delivery races.
+      promptDelayMs: 2_500,
+      hangFollowup: true,
+      keepAlive: true,
+      // Large timeout proves we do not wait for it on stop.
+      promptTimeoutMs: 20_000,
+    }),
+  ];
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-hang-data-"));
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    profiles,
+  });
+  let inputId = "";
+  let workspaceId = "";
+  let taskPath = "";
+  try {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "hang-item",
+      type: "prompt",
+    })) as { id: string };
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "hang shutdown",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    taskPath = dispatched.taskPath;
+    const started = (await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    })) as { session: { sessionId: string } };
+
+    await pollUntil(async () => {
+      const sessions = (await client.sessionList(workspaceId)) as {
+        sessions: { sessionId: string; alive: boolean }[];
+      };
+      return sessions.sessions.find(
+        (s) => s.sessionId === started.session.sessionId && s.alive
+      );
+    }, 15_000, "session alive for hang");
+
+    // Park before bootstrap prompt_complete can deliver (delay=2500ms).
+    await client.taskWait(workspaceId, taskPath, "user-input", "hold hang");
+    await pollUntil(async () => {
+      try {
+        const logRaw = await fs.readFile(logPath, "utf8");
+        const log = JSON.parse(logRaw) as { prompts?: string[] };
+        const t = (await client.taskGet(workspaceId, taskPath)) as {
+          task: { state: string };
+        };
+        return log.prompts &&
+          log.prompts.length >= 1 &&
+          t.task.state === "waiting"
+          ? true
+          : null;
+      } catch {
+        return null;
+      }
+    }, 15_000, "bootstrap parked for hang");
+    await client.taskResume(workspaceId, taskPath);
+
+    const sent = (await client.taskSendInput(workspaceId, taskPath, {
+      text: "HANG_U2A",
+    })) as { accepted?: boolean; input: { id: string } };
+    assert.equal(sent.accepted, true);
+    inputId = sent.input.id;
+
+    // Inject claimed (processing) and mock saw the follow-up — then hangs.
+    await pollUntil(async () => {
+      try {
+        const got = (await client.taskInputGet(
+          workspaceId,
+          taskPath,
+          sent.input.id
+        )) as { input: { status: string } };
+        const logRaw = await fs.readFile(logPath, "utf8");
+        const log = JSON.parse(logRaw) as { prompts?: string[] };
+        const saw = (log.prompts ?? []).some((p) => p.includes("HANG_U2A"));
+        return got.input.status === "processing" && saw ? true : null;
+      } catch {
+        return null;
+      }
+    }, 15_000, "hang follow-up in processing");
+
+    const t0 = Date.now();
+    await svc.stop();
+    const stopMs = Date.now() - t0;
+    // Must finish well under promptTimeout (20s); allow room for process kill +
+    // bounded drain (5s) — still far below a full prompt wait.
+    assert.ok(
+      stopMs < 12_000,
+      `stop must not wait full promptTimeout; stopMs=${stopMs}`
+    );
+
+    // Durable record retained (not dropped). After interrupt, status is
+    // failed/pending/uncertain/delivered — never missing from the store file.
+    const { TaskInputStore } = await import("../src/service/task-input-store.js");
+    const store = new TaskInputStore(dataDir);
+    const row = await store.get(inputId, workspaceId, taskPath);
+    assert.ok(row, "TaskInput row must survive shutdown");
+    assert.ok(
+      row.status === "pending" ||
+        row.status === "processing" ||
+        row.status === "failed" ||
+        row.status === "delivered" ||
+        row.status === "uncertain" ||
+        row.status === "cancelled",
+      `unexpected status after hung shutdown: ${row.status}`
+    );
+  } finally {
+    try {
+      await svc.stop();
+    } catch {
+      // already stopped
+    }
+  }
+});
+
+test("task.sendInput: inject-ok + markDelivered failure → uncertain (no re-inject)", async () => {
+  // Unit-level path via store + deliver semantics is covered in task-input-store.
+  // Here: simulate post-inject confirmation failure by marking uncertain and
+  // proving a subsequent deliverManaged path would skip (status not pending/failed).
+  const { TaskInputStore, makeTaskInputId } = await import(
+    "../src/service/task-input-store.js"
+  );
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-unc-svc-"));
+  const store = new TaskInputStore(dataDir);
+  const id = makeTaskInputId(() => 0.21);
+  const workspaceId = "ws-unc-svc";
+  const taskPath = "temp/r/tasks/unc-svc.md";
+  const now = new Date().toISOString();
+  await store.add({
+    id,
+    workspaceId,
+    taskPath,
+    sessionId: "ss-unc",
+    text: "once only",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await store.markProcessing(id);
+  const u = await store.markUncertain(
+    id,
+    "managed inject ok but markDelivered failed: EIO",
+    "service"
+  );
+  assert.equal(u.status, "uncertain");
+
+  // listPending must not surface for ordinary retry / recovery inject.
+  const open = await store.listPending(workspaceId, taskPath);
+  assert.equal(open.length, 0);
+
+  // Second "retry" claim must fail — at-most-once.
+  await assert.rejects(() => store.markProcessing(id), /pending or failed/);
+  await assert.rejects(
+    () => store.markPendingForRetry(id, workspaceId, taskPath),
+    /uncertain/
+  );
+
+  // Restart still blocks re-inject.
+  const reloaded = new TaskInputStore(dataDir);
+  const again = await reloaded.get(id, workspaceId, taskPath);
+  assert.equal(again?.status, "uncertain");
+  await assert.rejects(() => reloaded.markProcessing(id), /pending or failed/);
 });

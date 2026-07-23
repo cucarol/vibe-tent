@@ -8,6 +8,7 @@ import { WorkspaceHost } from "./workspace-host.js";
 import {
   drainManagedTaskInputBackgroundForShutdown,
   enableManagedTaskInputBackgroundAccept,
+  stopManagedTaskInputBackgroundAccept,
   mapRuntimeEventToService,
   type HandlerContext,
 } from "./handlers.js";
@@ -434,12 +435,18 @@ async function startOwnedLocalTentService(
         // children so service-owned waiters/timers cannot outlive shutdown.
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
-        // Drain background task.sendInput injects before closing the store /
-        // runtime so promises are not unhandled and mid-turn work can settle
-        // to delivered|failed (or remain durable pending for restart).
-        await attempt(() => drainManagedTaskInputBackgroundForShutdown(), true);
-        await attempt(() => taskInputs.shutdown(), true);
+        // U2A shutdown order (bounded, no full promptTimeout wait):
+        // 1) stop accepting new background enqueues
+        // 2) interrupt/stop runtime so hung session/prompt can settle
+        // 3) bounded drain of in-flight managed injects (store still writable)
+        // 4) close task-input store last so markDelivered|failed|uncertain can land
+        stopManagedTaskInputBackgroundAccept();
         await attempt(() => runtime.shutdown(), true);
+        await attempt(
+          () => drainManagedTaskInputBackgroundForShutdown(5_000),
+          true
+        );
+        await attempt(() => taskInputs.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
         await attempt(() => workspaceHost.dispose());

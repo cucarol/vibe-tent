@@ -15,7 +15,9 @@ import {
  * pending    — accepted/enqueued; waiting for managed inject and/or external poll
  * processing — background managed inject in flight (per-task FIFO worker)
  * delivered  — injected into a managed session (same-session follow-up); already processed
- * failed     — managed inject failed; retained (not dropped) for retry / diagnostics
+ * failed     — managed inject failed before provider accept; retained for retry / diagnostics
+ * uncertain  — provider inject succeeded but durable delivered mark failed (at-most-once).
+ *              Must NOT auto/manual-retry inject; may ack for cleanup / diagnostics only.
  * consumed   — external agent formally acked (poll+ack path)
  * cancelled  — interrupt / fail / session cleanup of still-open inputs only
  *
@@ -24,14 +26,17 @@ import {
  * markDelivered has not run yet. Inputs in the managed-inject in-flight set (and
  * status=processing) are treated as non-cancelable until markDelivered/endManagedInject.
  *
- * Restart: persisted `processing` rows are reloaded as `pending` (retryable; no phantom
- * in-flight worker after process death). `failed` survives restart with lastError.
+ * Restart: persisted `processing` rows are reloaded as `uncertain`. The process may
+ * have died after the provider accepted the prompt but before the delivered mark, so
+ * reopening them as retryable would violate at-most-once delivery. `failed` /
+ * `uncertain` survive restart as-is.
  */
 export type TaskInputStatus =
   | "pending"
   | "processing"
   | "delivered"
   | "failed"
+  | "uncertain"
   | "consumed"
   | "cancelled";
 
@@ -66,9 +71,15 @@ export interface TaskInputRecord {
   deliveredAt?: string;
   consumedAt?: string;
   cancelledAt?: string;
-  /** Present when status=failed (or last managed inject diagnostic). */
+  /** Present when status=failed|uncertain (or last managed inject diagnostic). */
   lastError?: string;
   failedAt?: string;
+  /**
+   * When status=uncertain: wall time of the at-most-once / unconfirmed delivery mark.
+   * Distinct from failedAt so diagnostics do not conflate true inject failure with
+   * "sent but confirmation disk write failed".
+   */
+  uncertainAt?: string;
   resolvedBy?: string;
 }
 
@@ -88,18 +99,25 @@ const TASK_INPUT_STATUSES = new Set<TaskInputStatus>([
   "processing",
   "delivered",
   "failed",
+  "uncertain",
   "consumed",
   "cancelled",
 ]);
 
-/** Open rows: still eligible for managed inject / external poll (not terminal). */
+/**
+ * Open rows: still eligible for managed inject / external poll (not terminal).
+ * `uncertain` is intentionally excluded — at-most-once; no automatic re-inject.
+ */
 export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
   return (
     status === "pending" || status === "processing" || status === "failed"
   );
 }
 
-/** Cancel-eligible: not yet delivered/consumed and not mid-inject. */
+/**
+ * Cancel-eligible: not yet delivered/consumed/uncertain and not mid-inject.
+ * Uncertain is terminal for inject (already sent); cancel must not rewrite it.
+ */
 export function isTaskInputCancelEligibleStatus(
   status: TaskInputStatus
 ): boolean {
@@ -155,6 +173,7 @@ function parseInput(value: unknown): TaskInputRecord | null {
     cancelledAt,
     lastError,
     failedAt,
+    uncertainAt,
     resolvedBy,
   } = value;
   if (
@@ -176,11 +195,13 @@ function parseInput(value: unknown): TaskInputRecord | null {
     !isOptionalString(cancelledAt) ||
     !isOptionalString(lastError) ||
     !isOptionalString(failedAt) ||
+    !isOptionalString(uncertainAt) ||
     !isOptionalString(resolvedBy) ||
     (deliveredAt !== undefined && !isValidDate(deliveredAt)) ||
     (consumedAt !== undefined && !isValidDate(consumedAt)) ||
     (cancelledAt !== undefined && !isValidDate(cancelledAt)) ||
-    (failedAt !== undefined && !isValidDate(failedAt))
+    (failedAt !== undefined && !isValidDate(failedAt)) ||
+    (uncertainAt !== undefined && !isValidDate(uncertainAt))
   ) {
     return null;
   }
@@ -216,6 +237,8 @@ function parseInput(value: unknown): TaskInputRecord | null {
     return null;
   }
 
+  const persistedStatus = status as TaskInputStatus;
+  const restoredUncertain = persistedStatus === "processing";
   return {
     id,
     workspaceId,
@@ -234,18 +257,25 @@ function parseInput(value: unknown): TaskInputRecord | null {
     ...(parsedRefs !== undefined && parsedRefs.length > 0
       ? { contextRefs: parsedRefs }
       : {}),
-    // Process death leaves processing rows without a live worker — re-open as pending.
-    status:
-      (status as TaskInputStatus) === "processing"
-        ? "pending"
-        : (status as TaskInputStatus),
+    // A crashed processing turn has an unknowable provider boundary. Preserve
+    // at-most-once semantics by requiring review instead of silently re-injecting.
+    status: restoredUncertain ? "uncertain" : persistedStatus,
     createdAt,
     updatedAt,
     ...(deliveredAt !== undefined ? { deliveredAt } : {}),
     ...(consumedAt !== undefined ? { consumedAt } : {}),
     ...(cancelledAt !== undefined ? { cancelledAt } : {}),
-    ...(typeof lastError === "string" ? { lastError } : {}),
+    ...(typeof lastError === "string"
+      ? { lastError }
+      : restoredUncertain
+        ? { lastError: "service restarted while managed inject was processing" }
+        : {}),
     ...(failedAt !== undefined ? { failedAt } : {}),
+    ...(uncertainAt !== undefined
+      ? { uncertainAt }
+      : restoredUncertain
+        ? { uncertainAt: updatedAt }
+        : {}),
     ...(resolvedBy !== undefined ? { resolvedBy } : {}),
   };
 }
@@ -494,6 +524,7 @@ export class TaskInputStore {
       };
       delete nextRow.lastError;
       delete nextRow.failedAt;
+      delete nextRow.uncertainAt;
       const next = new Map(this.items);
       next.set(id, nextRow);
       await this.persistSnapshot(next);
@@ -533,6 +564,7 @@ export class TaskInputStore {
       };
       delete resolved.lastError;
       delete resolved.failedAt;
+      delete resolved.uncertainAt;
       const next = new Map(this.items);
       next.set(id, resolved);
       await this.persistSnapshot(next);
@@ -544,6 +576,7 @@ export class TaskInputStore {
   /**
    * Mark managed inject failure: processing|pending → failed (never drop).
    * Retained for poll visibility, diagnostics, and later retry enqueue.
+   * Do not use when the provider already accepted the inject — use markUncertain.
    */
   async markFailed(
     id: string,
@@ -575,6 +608,52 @@ export class TaskInputStore {
         lastError: message,
         resolvedBy,
       };
+      delete resolved.uncertainAt;
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(resolved);
+    });
+  }
+
+  /**
+   * At-most-once uncertain delivery: provider inject already succeeded, but durable
+   * markDelivered failed. Terminal for re-inject — not listPending, not cancel-eligible,
+   * not markPendingForRetry. Survives restart as uncertain (never reloads as pending).
+   */
+  async markUncertain(
+    id: string,
+    error: string,
+    resolvedBy = "service",
+    opts?: { sessionId?: string }
+  ): Promise<TaskInputRecord> {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.status !== "pending" && item.status !== "processing") {
+        throw new Error(
+          `TaskInput.markUncertain requires pending or processing; got ${item.status}: ${id}`
+        );
+      }
+      const now = new Date().toISOString();
+      const message =
+        (error || "managed inject ok but delivery confirmation failed")
+          .trim() || "managed inject ok but delivery confirmation failed";
+      const injectSession = opts?.sessionId?.trim();
+      const resolved: TaskInputRecord = {
+        ...item,
+        ...(injectSession ? { sessionId: injectSession } : {}),
+        status: "uncertain",
+        updatedAt: now,
+        uncertainAt: now,
+        lastError: message,
+        resolvedBy,
+      };
+      delete resolved.failedAt;
       const next = new Map(this.items);
       next.set(id, resolved);
       await this.persistSnapshot(next);
@@ -585,6 +664,7 @@ export class TaskInputStore {
 
   /**
    * Re-open a failed (or stuck) row as pending for retry. Does not re-inject.
+   * Uncertain is refused — already-sent rows must not re-enter the inject path.
    */
   async markPendingForRetry(
     id: string,
@@ -604,6 +684,11 @@ export class TaskInputStore {
       if (!item) throw new Error(`TaskInput not found: ${id}`);
       if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
         throw new Error(`TaskInput not found: ${id}`);
+      }
+      if (item.status === "uncertain") {
+        throw new Error(
+          `TaskInput.markPendingForRetry refuses uncertain (at-most-once; already sent): ${id}`
+        );
       }
       if (item.status !== "failed" && item.status !== "pending") {
         throw new Error(
@@ -627,9 +712,10 @@ export class TaskInputStore {
   }
 
   /**
-   * External agent formal ack: pending|failed|delivered → consumed.
+   * External agent formal ack: pending|failed|delivered|uncertain → consumed.
    * Scoped by workspaceId+taskPath; fail-loud on unknown id, scope mismatch, or terminal.
-   * Mid-inject processing cannot be acked (wait for deliver/fail).
+   * Mid-inject processing cannot be acked (wait for deliver/fail/uncertain).
+   * Ack of uncertain is cleanup only — it does not re-inject.
    */
   async ack(
     id: string,
@@ -654,7 +740,8 @@ export class TaskInputStore {
       if (
         item.status !== "pending" &&
         item.status !== "failed" &&
-        item.status !== "delivered"
+        item.status !== "delivered" &&
+        item.status !== "uncertain"
       ) {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
@@ -768,13 +855,15 @@ export class TaskInputStore {
     snapshot: Map<string, TaskInputRecord>
   ): Promise<void> {
     const items = [...snapshot.values()];
-    // Keep open + delivered + a bounded tail of terminal rows.
-    // processing/failed/pending survive restart; processing reloads as pending.
+    // Keep open + delivered + uncertain + a bounded tail of terminal rows.
+    // processing/failed/pending/uncertain survive restart; processing reloads as uncertain.
+    // uncertain must remain durable (at-most-once evidence after process death).
     const open = items.filter(
       (i) =>
         i.status === "pending" ||
         i.status === "processing" ||
         i.status === "failed" ||
+        i.status === "uncertain" ||
         i.status === "delivered"
     );
     const terminal = items

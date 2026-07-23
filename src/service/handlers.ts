@@ -2645,15 +2645,48 @@ function enqueueManagedTaskInputBackground(
 }
 
 /**
- * Drain background sendInput delivers before runtime/store shutdown.
- * Reject-resume and other awaited callers are not tracked here.
- * After drain, new background enqueues are ignored (rows stay durable).
+ * Stop accepting new background sendInput enqueues (rows stay durable pending/failed).
+ * Call before runtime.shutdown so late RPC paths do not schedule new injects.
  */
-export async function drainManagedTaskInputBackgroundForShutdown(): Promise<void> {
+export function stopManagedTaskInputBackgroundAccept(): void {
+  managedTaskInputAccepting = false;
+}
+
+/**
+ * Bounded drain of background sendInput delivers after runtime interrupt/shutdown
+ * has already been requested so hung provider turns can settle without waiting a
+ * full promptTimeout. Reject-resume awaited callers are not tracked here.
+ * After stopManagedTaskInputBackgroundAccept, new background enqueues are ignored.
+ *
+ * @param timeoutMs max wait for in-flight work (default 5s). Remaining promises
+ *   stay tracked until they settle (tracked catch prevents unhandled rejection);
+ *   durable store rows are not dropped when the timeout fires.
+ */
+export async function drainManagedTaskInputBackgroundForShutdown(
+  timeoutMs = 5_000
+): Promise<void> {
   managedTaskInputAccepting = false;
   const pending = [...managedTaskInputBackgroundInflight];
   if (pending.length === 0) return;
-  await Promise.allSettled(pending);
+  const bound =
+    typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0
+      ? timeoutMs
+      : 5_000;
+  if (bound === 0) {
+    await Promise.allSettled(pending);
+    return;
+  }
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, bound);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
 }
 
 /**
@@ -2717,10 +2750,12 @@ async function deliverManagedTaskInput(
       };
     }
     if (latest.status !== "pending" && latest.status !== "failed") {
-      // Already processing/delivered/consumed/cancelled — do not re-inject.
+      // Already processing/delivered/uncertain/consumed/cancelled — do not re-inject.
+      // uncertain is at-most-once (provider already accepted); never treat as open retry.
       return {
         input: latest,
-        continued: latest.status === "delivered",
+        continued:
+          latest.status === "delivered" || latest.status === "uncertain",
         continueError: `TaskInput already ${latest.status}; skip managed inject`,
       };
     }
@@ -2798,15 +2833,31 @@ async function deliverManagedTaskInput(
             "service"
           );
         } catch (err) {
+          // Provider already accepted the inject — never markFailed (that would
+          // re-open ordinary retry / listPending and risk a second inject).
           const message = err instanceof Error ? err.message : String(err);
           try {
-            finalInput = await ctx.taskInputs.markFailed(
+            finalInput = await ctx.taskInputs.markUncertain(
               forInject.id,
               `managed inject ok but markDelivered failed: ${message}`,
+              "service",
+              { sessionId }
+            );
+            ctx.events.emit(
+              "taskInput.uncertain",
+              forInject.workspaceId,
+              {
+                inputId: finalInput.id,
+                taskPath: finalInput.taskPath,
+                sessionId: finalInput.sessionId,
+                kind: normalizeTaskInputKind(finalInput.kind),
+                status: finalInput.status,
+                lastError: finalInput.lastError,
+              },
               "service"
             );
           } catch {
-            // leave processing if store closed
+            // leave processing if store closed mid-shutdown
           }
           return {
             input: finalInput,
@@ -5012,6 +5063,7 @@ function projectTaskInput(item: TaskInputRecord) {
     cancelledAt: item.cancelledAt,
     lastError: item.lastError,
     failedAt: item.failedAt,
+    uncertainAt: item.uncertainAt,
     resolvedBy: item.resolvedBy,
   };
 }
