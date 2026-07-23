@@ -568,6 +568,100 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
   });
 });
 
+test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", async () => {
+  const ws = await makeWorkspace();
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    const a = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "tag-node-a",
+      type: "note",
+    });
+    assert.ok(!a.error, JSON.stringify(a.error));
+    const idA = (a.result as { id: string }).id;
+
+    const b = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "tag-node-b",
+      type: "note",
+    });
+    assert.ok(!b.error, JSON.stringify(b.error));
+    const idB = (b.result as { id: string }).id;
+
+    // Structured frontmatter: new tag auto-registers in tags.json.
+    const writeA = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: idA,
+      frontmatter: { tags: ["svc-new", "shared"] },
+    });
+    assert.ok(!writeA.error, JSON.stringify(writeA.error));
+
+    const tagsPath = path.join(ws, ".tent", "tags.json");
+    let registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
+    assert.deepEqual(registry.tags, ["shared", "svc-new"]);
+
+    const gotA = await rpc(svc, "docs.get", { workspaceId, id: idA });
+    assert.deepEqual(
+      (gotA.result as { concept: { tags: string[] } }).concept.tags,
+      ["shared", "svc-new"]
+    );
+
+    // Second node shares tags.
+    const writeB = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: idB,
+      frontmatter: { tags: ["shared"] },
+    });
+    assert.ok(!writeB.error, JSON.stringify(writeB.error));
+
+    // Drop exclusive tag from A — prune svc-new; keep shared (still on B).
+    const dropExclusive = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: idA,
+      frontmatter: { tags: [] },
+    });
+    assert.ok(!dropExclusive.error, JSON.stringify(dropExclusive.error));
+    registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
+    assert.deepEqual(registry.tags, ["shared"]);
+
+    // Raw docs.write: add a brand-new tag; registry must register it too.
+    const editB = await rpc(svc, "docs.readForEdit", { workspaceId, id: idB });
+    assert.ok(!editB.error, JSON.stringify(editB.error));
+    const { etag, raw } = editB.result as { etag: string; raw: string };
+    const { parseFrontmatter, serializeFrontmatter } = await import("../src/core/frontmatter.js");
+    const parsed = parseFrontmatter(raw);
+    parsed.data.tags = ["shared", "from-raw"];
+    const nextRaw = serializeFrontmatter(parsed.data, parsed.body);
+    const rawWrite = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: idB,
+      raw: nextRaw,
+      baseEtag: etag,
+    });
+    assert.ok(!rawWrite.error, JSON.stringify(rawWrite.error));
+    registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
+    assert.deepEqual(registry.tags, ["from-raw", "shared"]);
+
+    // Last shared user removes shared via raw — prune only when unused.
+    const editB2 = await rpc(svc, "docs.readForEdit", { workspaceId, id: idB });
+    const etag2 = (editB2.result as { etag: string }).etag;
+    const raw2 = (editB2.result as { raw: string }).raw;
+    const parsed2 = parseFrontmatter(raw2);
+    delete parsed2.data.tags;
+    const clearRaw = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: idB,
+      raw: serializeFrontmatter(parsed2.data, parsed2.body),
+      baseEtag: etag2,
+    });
+    assert.ok(!clearRaw.error, JSON.stringify(clearRaw.error));
+    registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
+    assert.deepEqual(registry.tags, []);
+  });
+});
+
 test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {

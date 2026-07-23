@@ -89,6 +89,65 @@ export async function removeRegistryTag(fs: FsAdapter, name: string): Promise<vo
   });
 }
 
+/**
+ * After one box's frontmatter tags change (patchBox / docs.write / raw write), keep
+ * tags.json aligned with Node facts without a second Service-side registry writer.
+ *
+ * - Newly used tags are auto-registered (pick-list).
+ * - Removed tags are pruned only when no other usable box still carries them.
+ * - Registry-only tags (tag-new, never on a Node) are left alone.
+ *
+ * Caller that already holds the mutation lock must use the Unlocked form.
+ */
+export async function syncTagRegistryAfterBoxTagsChange(
+  fs: FsAdapter,
+  previousTags: readonly string[],
+  nextTags: readonly string[],
+  usage: { excludeBoxId: string; tent: { byId: Map<string, Box> } }
+): Promise<void> {
+  await withTentMutation(fs, async () => {
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs, previousTags, nextTags, usage);
+  });
+}
+
+/** Mutation-lock-free form for nested Core writers (patchBoxUnlocked, etc.). */
+export async function syncTagRegistryAfterBoxTagsChangeUnlocked(
+  fs: FsAdapter,
+  previousTags: readonly string[],
+  nextTags: readonly string[],
+  usage: { excludeBoxId: string; tent: { byId: Map<string, Box> } }
+): Promise<void> {
+  const previous = new Set(normalizeTagList(previousTags));
+  const next = new Set(normalizeTagList(nextTags));
+  const added = [...next].filter((tag) => !previous.has(tag));
+  const removed = [...previous].filter((tag) => !next.has(tag));
+  if (added.length === 0 && removed.length === 0) return;
+
+  for (const tag of added) {
+    await addRegistryTagUnlocked(fs, tag);
+  }
+
+  if (removed.length === 0) return;
+
+  const stillUsed = new Set<string>();
+  for (const tag of next) stillUsed.add(tag);
+  for (const box of usage.tent.byId.values()) {
+    if (box.id === usage.excludeBoxId) continue;
+    for (const tag of box.tags) {
+      if (removed.includes(tag)) stillUsed.add(tag);
+    }
+  }
+
+  const toPrune = removed.filter((tag) => !stillUsed.has(tag));
+  if (toPrune.length === 0) return;
+
+  const registry = await loadTagRegistry(fs);
+  const pruned = registry.tags.filter((tag) => !toPrune.includes(tag));
+  if (pruned.length !== registry.tags.length) {
+    await saveTagRegistryUnlocked(fs, { tags: pruned });
+  }
+}
+
 export function findBoxesByTag(tent: { byId: Map<string, Box> }, name: string): Box[] {
   const tag = normalizeTagName(name);
   return [...tent.byId.values()]
@@ -133,6 +192,20 @@ async function recoverTagRegistryFromBoxes(fs: FsAdapter): Promise<TagRegistry> 
     tags.push(...box.tags);
   }
   return { tags: uniqueSorted(tags) };
+}
+
+function normalizeTagList(values: readonly string[]): string[] {
+  const tags: string[] = [];
+  for (const value of values) {
+    if (typeof value !== "string") continue;
+    try {
+      const tag = normalizeTagName(value);
+      if (!tags.includes(tag)) tags.push(tag);
+    } catch {
+      // ignore invalid names; writers normalize before persist
+    }
+  }
+  return uniqueSorted(tags);
 }
 
 function uniqueSorted(values: string[]): string[] {

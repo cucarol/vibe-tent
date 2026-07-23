@@ -9,7 +9,14 @@ import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType, NodeMode } from "./types.js";
 import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
-import { addRegistryTag, addTag, removeRegistryTag, removeTag, normalizeTagName } from "./tags.js";
+import {
+  addRegistryTag,
+  addTag,
+  removeRegistryTag,
+  removeTag,
+  normalizeTagName,
+  syncTagRegistryAfterBoxTagsChangeUnlocked,
+} from "./tags.js";
 import { typeExists } from "./typeRegistry.js";
 import { assertRoleNameAvailable, loadRolesRegistry } from "./skillRoleRegistry.js";
 import {
@@ -549,7 +556,9 @@ async function patchBoxUnlocked(
       throw new Error("Status must be todo, doing, or done.");
     }
   }
-  if ("tags" in patch) {
+  const tagsTouched = "tags" in patch;
+  const previousTags = box.tags.slice();
+  if (tagsTouched) {
     patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
   }
   const boxFile = boxNotePath(boxPath);
@@ -559,6 +568,13 @@ async function patchBoxUnlocked(
     else data[k] = v;
   }
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  if (tagsTouched) {
+    const nextTags = Array.isArray(patch.tags) ? (patch.tags as string[]) : [];
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags, {
+      excludeBoxId: box.id,
+      tent,
+    });
+  }
 }
 
 /** 改框正文(note)。保留 frontmatter 原样。 */

@@ -200,6 +200,41 @@ test("tags 注册表:自动登记、摘除、级联剥离与检索", async () =>
   assert.doesNotMatch(raw, /^tags:/m);
 });
 
+test("patchBox tags: registry auto-registers and prunes only when unused", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  const { patchBox } = await import("../src/core/ops.js");
+  const env = { fs: fsa, clock: { now: () => "t" }, tentName: "wqb" } as const;
+
+  // New tag via frontmatter patch must appear in tags.json pick-list.
+  await patchBox(env as any, "prompt/表达式任务书", { tags: ["from-patch"] });
+  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["from-patch"]);
+  let tent = await loadTent(fsa);
+  assert.deepEqual(tent.byId.get("bx-p1")?.tags, ["from-patch"]);
+
+  // Shared tag: second node keeps it after first drops it.
+  await patchBox(env as any, "output/alpha仓库指针", { tags: ["from-patch", "shared"] });
+  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["from-patch", "shared"]);
+  await patchBox(env as any, "prompt/表达式任务书", { tags: [] });
+  tent = await loadTent(fsa);
+  assert.deepEqual(tent.byId.get("bx-p1")?.tags, []);
+  assert.deepEqual(tent.byId.get("bx-o1")?.tags, ["from-patch", "shared"]);
+  assert.deepEqual(
+    (await loadTagRegistry(fsa)).tags,
+    ["from-patch", "shared"],
+    "must not prune tags still used by another node",
+  );
+
+  // Last user gone → prune; registry-only tags (never on a node) stay.
+  await addRegistryTag(fsa, "registry-only");
+  await patchBox(env as any, "output/alpha仓库指针", { tags: [] });
+  assert.deepEqual(
+    (await loadTagRegistry(fsa)).tags,
+    ["registry-only"],
+    "orphan node tags pruned; tag-new style registry-only kept",
+  );
+});
+
 test("role 注册表:core 创建修改删除与 scaffold 模板写入", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-registry-"));
   const fsa = new NodeFs(dir);

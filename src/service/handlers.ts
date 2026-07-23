@@ -9,6 +9,7 @@ import {
   patchBox,
   setNodeMode,
 } from "../core/ops.js";
+import { syncTagRegistryAfterBoxTagsChange } from "../core/tags.js";
 import { isContentMutable } from "../core/tree.js";
 import type { NodeMode } from "../core/types.js";
 import { promoteConcept } from "../core/concept.js";
@@ -967,6 +968,13 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       }
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
+      // Keep tags.json pick-list aligned with Node frontmatter via Core (not Service JSON).
+      await syncTagRegistryAfterBoxTagsChange(
+        mount.env.fs,
+        concept.tags,
+        tagsFromFrontmatterData(nextParsed.data),
+        { excludeBoxId: concept.id, tent }
+      );
     } else {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
@@ -975,6 +983,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
 
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
+        // patchBox → Core syncTagRegistryAfterBoxTagsChange when tags present
         await patchBox(mount.env, concept.path, frontmatter, tent);
       }
       if (body !== undefined) {
@@ -7561,6 +7570,12 @@ function assertRawDocsWriteReserved(
     `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
     { fields: hard }
   );
+}
+
+/** Best-effort tag list from raw frontmatter for Core registry sync (normalize in Core). */
+function tagsFromFrontmatterData(data: Record<string, unknown>): string[] {
+  if (!Array.isArray(data.tags)) return [];
+  return data.tags.filter((item): item is string => typeof item === "string");
 }
 
 function hasActiveTaskForConcept(
