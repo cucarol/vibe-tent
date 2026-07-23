@@ -13,6 +13,11 @@ export const MUTATION_LOCK_PATH = "mutation.lock";
 export const RULES_PATH = "RULES.md";
 /** Workspace collaboration settings (defaultDeliveryPolicy, extensible). */
 export const WORKSPACE_SETTINGS_PATH = "settings.json";
+/**
+ * First-class Node Markdown underline annotations (划线注释).
+ * Independent of concept body / frontmatter / Task envelopes.
+ */
+export const ANNOTATIONS_PATH = "annotations.json";
 export const TEMP_DIR = "temp";
 export const ATTACHMENTS_DIR = "attachments";
 /**
@@ -38,6 +43,7 @@ export const SYSTEM_REGISTRY_FILES = new Set([
   MUTATION_LOCK_PATH,
   RULES_PATH,
   WORKSPACE_SETTINGS_PATH,
+  ANNOTATIONS_PATH,
   "index.md",
   "log.md",
 ]);

@@ -368,8 +368,38 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | `docs.search` / `docs.backlinks` / `docs.resolveLink` | Query | Navigation |
 | `docs.importAttachment` | Command | Params: `workspaceId`, concept `id`\|`path`\|`boxId`, `fileName`, `bytesBase64`. Store **original bytes** under `attachments/<cx>/…`; return `{ relativePath, markdown, artifactRef }` |
 | `docs.watch` / events | Events | `concept.changed` \| `concept.removed` \| conflict signals (EventEnvelope) |
+| `annotation.list` | Query | Per-node underline annotations with live relocate projection (`anchored` \| `relocated` \| `orphan`) |
+| `annotation.create` / `resolve` / `reopen` / `delete` | Command | User-only first-class annotation records (MutationBus); never write markers into body |
 
-Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries. Clients use **`docs.*`** and **`task.*`** only; **`AgentRuntimePort.*`** is service-internal.
+### 8.1 Underline annotations (划线注释)
+
+Product boundary: annotations are **first-class workspace records**, independent of Markdown body markers, Node frontmatter attributes, and Task. Default path does **not** inject Agent; UI may later turn a comment into `task.sendInput` explicitly.
+
+Persistence (system root, not concept body):
+
+| Field | Notes |
+| --- | --- |
+| `id` | Stable `an-…` |
+| `nodeId` | Concept identity (`cx-`); path-independent |
+| `quote` / `start` / `end` | Create-time anchor into **body** (half-open offsets) |
+| `documentEtag` | Same etag family as `docs.readForEdit` (hash of on-disk note raw) |
+| `body` | Plain comment text |
+| `author` | Always `user` in this batch |
+| `status` | `open` \| `resolved` |
+| timestamps | `createdAt` / `updatedAt` / optional `resolvedAt` |
+
+**Create validation:** non-empty quote/body; range in body; `body.slice(start,end) === quote`; optional `documentEtag` must match current disk etag or RPC rejects with etag conflict. Does not mutate the Node file.
+
+**List/read projection (relocate, non-mutating):**
+
+1. If Node missing → `anchorState=orphan`, `orphanReason=missing-node`.
+2. Else if stored offsets still match quote → `anchored`.
+3. Else find quote occurrences in current body: unique hit, or unique nearest to original `start` → `relocated` with `currentStart`/`currentEnd`.
+4. No hit → `orphan`/`quote-mismatch`; equal-distance multi-hit → `orphan`/`ambiguous`.
+
+Projection **must not** auto-edit the document or silently rewrite persisted anchors.
+
+Document subsystem **does not** implement: `task.dispatch` / claim / deliver / accept, A2A spawn, or adapter process control. It may **render** operational Markdown supplied by collaboration queries. Clients use **`docs.*`**, **`annotation.*`**, and **`task.*`**; **`AgentRuntimePort.*`** is service-internal.
 
 ---
 

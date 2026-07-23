@@ -780,6 +780,61 @@ export class ServiceClient {
   }
 
   /**
+   * List Node Markdown underline annotations for a node (cx- identity).
+   * Projection includes live relocate state; does not rewrite stored anchors.
+   */
+  annotationList(
+    workspaceId: string,
+    nodeId: string
+  ) {
+    return this.call("annotation.list", { workspaceId, nodeId });
+  }
+
+  /**
+   * User-only create underline annotation (MutationBus).
+   * Validates range/quote against authoritative body; documentEtag uses docs.readForEdit etag.
+   * Events: annotation.changed (invalidation only). Never injects Agent / TaskInput.
+   */
+  annotationCreate(
+    workspaceId: string,
+    args: {
+      nodeId: string;
+      quote: string;
+      start: number;
+      end: number;
+      body: string;
+      documentEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call("annotation.create", {
+      workspaceId,
+      nodeId: args.nodeId,
+      quote: args.quote,
+      start: args.start,
+      end: args.end,
+      body: args.body,
+      documentEtag: args.documentEtag,
+      actor: args.actor ?? "user",
+    });
+  }
+
+  /** User-only resolve annotation (open → resolved). */
+  annotationResolve(workspaceId: string, id: string, actor = "user") {
+    return this.call("annotation.resolve", { workspaceId, id, actor });
+  }
+
+  /** User-only reopen annotation (resolved → open). */
+  annotationReopen(workspaceId: string, id: string, actor = "user") {
+    return this.call("annotation.reopen", { workspaceId, id, actor });
+  }
+
+  /** User-only delete annotation record. */
+  annotationDelete(workspaceId: string, id: string, actor = "user") {
+    return this.call("annotation.delete", { workspaceId, id, actor });
+  }
+
+  /**
    * Subscribe to SSE events. Returns an abort handle.
    * Requires a global EventSource-compatible environment; for Node tests prefer
    * fetch streaming or EventBus in-process.

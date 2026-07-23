@@ -541,6 +541,17 @@ export const CLIENT_METHODS = [
    */
   "operationalRetention.preview",
   "operationalRetention.purge",
+  /**
+   * Node Markdown underline annotations (划线注释) — first-class workspace records.
+   * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.
+   * Events are invalidation only (annotation.changed); never auto-inject Agent / TaskInput.
+   * list projects live relocate (anchored|relocated|orphan) without rewriting stored anchors.
+   */
+  "annotation.list",
+  "annotation.create",
+  "annotation.resolve",
+  "annotation.reopen",
+  "annotation.delete",
 ] as const;
 
 export type ClientMethod = (typeof CLIENT_METHODS)[number];

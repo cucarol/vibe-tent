@@ -92,6 +92,17 @@ import {
   type WorkspaceAgentsFile,
 } from "../core/workspace-agents.js";
 import {
+  AnnotationError,
+  createAnnotation,
+  deleteAnnotation,
+  listAnnotationRecords,
+  projectAnnotation,
+  reopenAnnotation,
+  resolveAnnotation,
+  type AnnotationProjection,
+  type AnnotationRecord,
+} from "../core/annotation.js";
+import {
   TaskLifecycleError,
   isActiveTaskState,
   type A2APolicy,
@@ -420,11 +431,24 @@ export async function dispatchMethod(
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
         return operationalRetentionPurgeRpc(ctx, p);
+      case "annotation.list":
+        return annotationListRpc(ctx, p);
+      case "annotation.create":
+        return annotationCreateRpc(ctx, p);
+      case "annotation.resolve":
+        return annotationResolveRpc(ctx, p);
+      case "annotation.reopen":
+        return annotationReopenRpc(ctx, p);
+      case "annotation.delete":
+        return annotationDeleteRpc(ctx, p);
       default:
         throw new RpcError(-32601, `Method not found: ${method}`);
     }
   } catch (error) {
     if (error instanceof RpcError) throw error;
+    if (error instanceof AnnotationError) {
+      throw annotationErrorToRpc(error);
+    }
     if (
       error instanceof RetentionError ||
       (error instanceof Error && error.name === "RetentionError")
@@ -5184,6 +5208,254 @@ function requireUserActor(p: Record<string, unknown>, surface: string): string {
     );
   }
   return actorRaw;
+}
+
+// ---- annotation.* (Node Markdown 划线注释; workspace-first-class; user-only) ----
+
+function annotationErrorToRpc(error: AnnotationError): RpcError {
+  switch (error.code) {
+    case "NOT_FOUND":
+      return new RpcError(-32004, error.message, { code: error.code });
+    case "RANGE":
+    case "QUOTE_MISMATCH":
+    case "INVALID_INPUT":
+    case "INVALID_STATUS":
+      return new RpcError(-32602, error.message, { code: error.code });
+    default:
+      return new RpcError(-32602, error.message, { code: error.code });
+  }
+}
+
+function projectAnnotationWire(
+  record: AnnotationRecord,
+  documentBody: string | null
+): AnnotationProjection {
+  return projectAnnotation(record, documentBody);
+}
+
+async function readConceptBody(
+  mount: { env: { fs: import("../core/adapter.js").FsAdapter } },
+  concept: { path: string; body?: string }
+): Promise<{ body: string; raw: string; etag: string }> {
+  const notePath = boxNotePath(concept.path);
+  const raw = await mount.env.fs.readFile(notePath);
+  const { body } = parseFrontmatter(raw);
+  return { body, raw, etag: contentEtag(raw) };
+}
+
+/**
+ * List annotations for a Node (required nodeId / id / boxId).
+ * Projection relocates by quote against live body; missing Node → orphan/missing-node.
+ * Does not rewrite stored anchors.
+ */
+async function annotationListRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const nodeId =
+    optionalString(p, "nodeId") ??
+    optionalString(p, "id") ??
+    optionalString(p, "boxId");
+  if (!nodeId) {
+    throw new RpcError(-32602, "annotation.list requires nodeId (or id / boxId)");
+  }
+
+  const tent = await loadTent(mount.env.fs);
+  const concept = tent.byId.get(nodeId) ?? null;
+  let documentBody: string | null = null;
+  if (concept) {
+    const note = await readConceptBody(mount, concept);
+    documentBody = note.body;
+  }
+
+  const records = await listAnnotationRecords(mount.env.fs, nodeId);
+  const annotations = records.map((r) => projectAnnotationWire(r, documentBody));
+  return { workspaceId, nodeId, annotations };
+}
+
+/**
+ * User-only create. Validates range/quote against authoritative Node body.
+ * Rejects empty quote/body, OOB range, etag conflict. MutationBus; event invalidation only.
+ */
+async function annotationCreateRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.create");
+
+  const nodeId =
+    optionalString(p, "nodeId") ??
+    optionalString(p, "id") ??
+    optionalString(p, "boxId");
+  if (!nodeId) {
+    throw new RpcError(-32602, "annotation.create requires nodeId (or id / boxId)");
+  }
+
+  const quote = typeof p.quote === "string" ? p.quote : undefined;
+  const body = typeof p.body === "string" ? p.body : undefined;
+  if (quote === undefined || quote.length === 0) {
+    throw new RpcError(-32602, "annotation.create requires non-empty quote");
+  }
+  if (body === undefined || body.trim().length === 0) {
+    throw new RpcError(-32602, "annotation.create requires non-empty body");
+  }
+
+  const start = p.start;
+  const end = p.end;
+  if (typeof start !== "number" || !Number.isInteger(start)) {
+    throw new RpcError(-32602, "annotation.create requires integer start");
+  }
+  if (typeof end !== "number" || !Number.isInteger(end)) {
+    throw new RpcError(-32602, "annotation.create requires integer end");
+  }
+
+  const baseEtag =
+    optionalString(p, "documentEtag") ??
+    optionalString(p, "baseEtag") ??
+    optionalString(p, "etag");
+  if (!baseEtag) {
+    throw new RpcError(-32602, "annotation.create requires documentEtag (or baseEtag)");
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = tent.byId.get(nodeId);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${nodeId}`);
+    }
+    const note = await readConceptBody(mount, concept);
+    if (baseEtag !== note.etag) {
+      throw new RpcError(-32009, "etag conflict", {
+        currentEtag: note.etag,
+        baseEtag,
+        path: concept.path,
+        nodeId,
+      });
+    }
+
+    try {
+      const record = await createAnnotation(mount.env.fs, {
+        nodeId: concept.id,
+        quote,
+        start,
+        end,
+        documentEtag: note.etag,
+        body,
+        documentBody: note.body,
+      });
+      const projection = projectAnnotationWire(record, note.body);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "create",
+          id: record.id,
+          nodeId: record.nodeId,
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+
+async function annotationResolveRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.resolve");
+  const id = requireString(p, "id");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const record = await resolveAnnotation(mount.env.fs, id);
+      const tent = await loadTent(mount.env.fs);
+      const concept = tent.byId.get(record.nodeId) ?? null;
+      let documentBody: string | null = null;
+      if (concept) {
+        documentBody = (await readConceptBody(mount, concept)).body;
+      }
+      const projection = projectAnnotationWire(record, documentBody);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "resolve",
+          id: record.id,
+          nodeId: record.nodeId,
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+
+async function annotationReopenRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.reopen");
+  const id = requireString(p, "id");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const record = await reopenAnnotation(mount.env.fs, id);
+      const tent = await loadTent(mount.env.fs);
+      const concept = tent.byId.get(record.nodeId) ?? null;
+      let documentBody: string | null = null;
+      if (concept) {
+        documentBody = (await readConceptBody(mount, concept)).body;
+      }
+      const projection = projectAnnotationWire(record, documentBody);
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "reopen",
+          id: record.id,
+          nodeId: record.nodeId,
+        },
+        "self"
+      );
+      return { workspaceId, annotation: projection };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
+}
+
+async function annotationDeleteRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  requireUserActor(p, "annotation.delete");
+  const id = requireString(p, "id");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    try {
+      const removed = await deleteAnnotation(mount.env.fs, id);
+      if (!removed) {
+        throw new RpcError(-32004, `Annotation not found: ${id}`);
+      }
+      ctx.events.emit(
+        "annotation.changed",
+        workspaceId,
+        {
+          action: "delete",
+          id: removed.id,
+          nodeId: removed.nodeId,
+        },
+        "self"
+      );
+      return { workspaceId, deleted: true, id: removed.id, nodeId: removed.nodeId };
+    } catch (error) {
+      if (error instanceof AnnotationError) throw annotationErrorToRpc(error);
+      throw error;
+    }
+  });
 }
 
 /** Validate keepTerminalTasksDays at the RPC boundary (default applied in core if omitted). */
