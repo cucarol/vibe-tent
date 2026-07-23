@@ -200,7 +200,7 @@ test("tags 注册表:自动登记、摘除、级联剥离与检索", async () =>
   assert.doesNotMatch(raw, /^tags:/m);
 });
 
-test("patchBox tags: registry auto-registers and prunes only when unused", async () => {
+test("patchBox tags: auto-registers new tags; node remove keeps registry candidates", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const { patchBox } = await import("../src/core/ops.js");
@@ -212,7 +212,7 @@ test("patchBox tags: registry auto-registers and prunes only when unused", async
   let tent = await loadTent(fsa);
   assert.deepEqual(tent.byId.get("bx-p1")?.tags, ["from-patch"]);
 
-  // Shared tag: second node keeps it after first drops it.
+  // Shared tag on second node; first node drops tags — registry still keeps both.
   await patchBox(env as any, "output/alpha仓库指针", { tags: ["from-patch", "shared"] });
   assert.deepEqual((await loadTagRegistry(fsa)).tags, ["from-patch", "shared"]);
   await patchBox(env as any, "prompt/表达式任务书", { tags: [] });
@@ -222,17 +222,23 @@ test("patchBox tags: registry auto-registers and prunes only when unused", async
   assert.deepEqual(
     (await loadTagRegistry(fsa)).tags,
     ["from-patch", "shared"],
-    "must not prune tags still used by another node",
+    "removing tags from a node must not prune tags.json",
   );
 
-  // Last user gone → prune; registry-only tags (never on a node) stay.
+  // Last node also clears tags — still retain registry candidates for reuse.
   await addRegistryTag(fsa, "registry-only");
   await patchBox(env as any, "output/alpha仓库指针", { tags: [] });
+  tent = await loadTent(fsa);
+  assert.deepEqual(tent.byId.get("bx-o1")?.tags, []);
   assert.deepEqual(
     (await loadTagRegistry(fsa)).tags,
-    ["registry-only"],
-    "orphan node tags pruned; tag-new style registry-only kept",
+    ["from-patch", "registry-only", "shared"],
+    "orphan node tags stay in pick-list until removeRegistryTag",
   );
+
+  // Explicit registry delete is the only path that drops candidates (+ cascade).
+  await removeRegistryTag(fsa, "from-patch");
+  assert.deepEqual((await loadTagRegistry(fsa)).tags, ["registry-only", "shared"]);
 });
 
 test("role 注册表:core 创建修改删除与 scaffold 模板写入", async () => {

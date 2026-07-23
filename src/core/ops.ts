@@ -570,10 +570,7 @@ async function patchBoxUnlocked(
   await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? (patch.tags as string[]) : [];
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags, {
-      excludeBoxId: box.id,
-      tent,
-    });
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
   }
 }
 

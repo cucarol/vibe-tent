@@ -968,12 +968,12 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       }
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
-      // Keep tags.json pick-list aligned with Node frontmatter via Core (not Service JSON).
+      // Auto-register newly used tags into tags.json via Core (not Service JSON).
+      // Node detach does not prune the registry; only removeRegistryTag deletes.
       await syncTagRegistryAfterBoxTagsChange(
         mount.env.fs,
         concept.tags,
-        tagsFromFrontmatterData(nextParsed.data),
-        { excludeBoxId: concept.id, tent }
+        tagsFromFrontmatterData(nextParsed.data)
       );
     } else {
       if (frontmatter) {
@@ -983,7 +983,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
 
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
-        // patchBox → Core syncTagRegistryAfterBoxTagsChange when tags present
+        // patchBox → Core auto-registers new tags when present
         await patchBox(mount.env, concept.path, frontmatter, tent);
       }
       if (body !== undefined) {

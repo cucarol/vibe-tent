@@ -568,7 +568,7 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
   });
 });
 
-test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", async () => {
+test("docs.write tags auto-register; node remove keeps registry candidates (frontmatter + raw)", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -616,7 +616,7 @@ test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", asyn
     });
     assert.ok(!writeB.error, JSON.stringify(writeB.error));
 
-    // Drop exclusive tag from A — prune svc-new; keep shared (still on B).
+    // Drop exclusive tag from A — Node clears; registry still keeps svc-new for reuse.
     const dropExclusive = await rpc(svc, "docs.write", {
       workspaceId,
       id: idA,
@@ -624,7 +624,7 @@ test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", asyn
     });
     assert.ok(!dropExclusive.error, JSON.stringify(dropExclusive.error));
     registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
-    assert.deepEqual(registry.tags, ["shared"]);
+    assert.deepEqual(registry.tags, ["shared", "svc-new"]);
 
     // Raw docs.write: add a brand-new tag; registry must register it too.
     const editB = await rpc(svc, "docs.readForEdit", { workspaceId, id: idB });
@@ -642,9 +642,9 @@ test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", asyn
     });
     assert.ok(!rawWrite.error, JSON.stringify(rawWrite.error));
     registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
-    assert.deepEqual(registry.tags, ["from-raw", "shared"]);
+    assert.deepEqual(registry.tags, ["from-raw", "shared", "svc-new"]);
 
-    // Last shared user removes shared via raw — prune only when unused.
+    // Last node removes remaining tags via raw — candidates stay until removeRegistryTag.
     const editB2 = await rpc(svc, "docs.readForEdit", { workspaceId, id: idB });
     const etag2 = (editB2.result as { etag: string }).etag;
     const raw2 = (editB2.result as { raw: string }).raw;
@@ -658,7 +658,10 @@ test("docs.write tags keep registry pick-list in sync (frontmatter + raw)", asyn
     });
     assert.ok(!clearRaw.error, JSON.stringify(clearRaw.error));
     registry = JSON.parse(await fs.readFile(tagsPath, "utf8")) as { tags: string[] };
-    assert.deepEqual(registry.tags, []);
+    assert.deepEqual(registry.tags, ["from-raw", "shared", "svc-new"]);
+
+    const gotB = await rpc(svc, "docs.get", { workspaceId, id: idB });
+    assert.deepEqual((gotB.result as { concept: { tags: string[] } }).concept.tags, []);
   });
 });
 

@@ -90,23 +90,22 @@ export async function removeRegistryTag(fs: FsAdapter, name: string): Promise<vo
 }
 
 /**
- * After one box's frontmatter tags change (patchBox / docs.write / raw write), keep
- * tags.json aligned with Node facts without a second Service-side registry writer.
+ * After one box's frontmatter tags change (patchBox / docs.write / raw write),
+ * auto-register any newly used tags into tags.json so the pick-list grows.
  *
- * - Newly used tags are auto-registered (pick-list).
- * - Removed tags are pruned only when no other usable box still carries them.
- * - Registry-only tags (tag-new, never on a Node) are left alone.
+ * Does **not** prune the registry when a Node drops a tag — same contract as
+ * `removeTag`: Node detach only. Global delete + cascade remains explicit
+ * `removeRegistryTag`. No other-Node scan is required.
  *
  * Caller that already holds the mutation lock must use the Unlocked form.
  */
 export async function syncTagRegistryAfterBoxTagsChange(
   fs: FsAdapter,
   previousTags: readonly string[],
-  nextTags: readonly string[],
-  usage: { excludeBoxId: string; tent: { byId: Map<string, Box> } }
+  nextTags: readonly string[]
 ): Promise<void> {
   await withTentMutation(fs, async () => {
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs, previousTags, nextTags, usage);
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(fs, previousTags, nextTags);
   });
 }
 
@@ -114,37 +113,13 @@ export async function syncTagRegistryAfterBoxTagsChange(
 export async function syncTagRegistryAfterBoxTagsChangeUnlocked(
   fs: FsAdapter,
   previousTags: readonly string[],
-  nextTags: readonly string[],
-  usage: { excludeBoxId: string; tent: { byId: Map<string, Box> } }
+  nextTags: readonly string[]
 ): Promise<void> {
   const previous = new Set(normalizeTagList(previousTags));
-  const next = new Set(normalizeTagList(nextTags));
-  const added = [...next].filter((tag) => !previous.has(tag));
-  const removed = [...previous].filter((tag) => !next.has(tag));
-  if (added.length === 0 && removed.length === 0) return;
-
+  const next = normalizeTagList(nextTags);
+  const added = next.filter((tag) => !previous.has(tag));
   for (const tag of added) {
     await addRegistryTagUnlocked(fs, tag);
-  }
-
-  if (removed.length === 0) return;
-
-  const stillUsed = new Set<string>();
-  for (const tag of next) stillUsed.add(tag);
-  for (const box of usage.tent.byId.values()) {
-    if (box.id === usage.excludeBoxId) continue;
-    for (const tag of box.tags) {
-      if (removed.includes(tag)) stillUsed.add(tag);
-    }
-  }
-
-  const toPrune = removed.filter((tag) => !stillUsed.has(tag));
-  if (toPrune.length === 0) return;
-
-  const registry = await loadTagRegistry(fs);
-  const pruned = registry.tags.filter((tag) => !toPrune.includes(tag));
-  if (pruned.length !== registry.tags.length) {
-    await saveTagRegistryUnlocked(fs, { tags: pruned });
   }
 }
 
