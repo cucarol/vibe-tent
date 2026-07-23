@@ -2470,7 +2470,7 @@ function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -2507,7 +2507,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../Tent/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -4636,13 +4636,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../Tent/node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../Tent/node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -4676,7 +4676,7 @@ function push(list2, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -4716,7 +4716,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -4734,12 +4734,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../Tent/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -4771,7 +4771,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../Tent/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -4793,7 +4793,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../Tent/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -4843,7 +4843,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../Tent/node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -5025,7 +5025,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../Tent/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -5035,7 +5035,7 @@ function classifyCharacter(code) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../Tent/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -5049,7 +5049,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -5180,7 +5180,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -5281,7 +5281,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -5296,7 +5296,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -5354,7 +5354,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -5380,7 +5380,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -5445,7 +5445,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -5628,7 +5628,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -5692,7 +5692,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -5807,7 +5807,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -6000,7 +6000,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../Tent/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -6153,7 +6153,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -6224,7 +6224,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../Tent/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -6316,7 +6316,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../Tent/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -6377,7 +6377,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../Tent/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -6439,7 +6439,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../Tent/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -6458,7 +6458,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -6544,7 +6544,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -6565,7 +6565,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -6656,7 +6656,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -6723,7 +6723,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -7102,7 +7102,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -7408,7 +7408,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -7634,7 +7634,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -7665,7 +7665,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -7687,7 +7687,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -7702,7 +7702,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -7741,7 +7741,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -7871,7 +7871,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -7963,7 +7963,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../Tent/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -8001,7 +8001,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../Tent/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -8140,7 +8140,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../Tent/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -8215,7 +8215,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -8538,7 +8538,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../Tent/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -8564,14 +8564,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../Tent/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../Tent/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -8650,7 +8650,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../Tent/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -8668,7 +8668,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -8694,7 +8694,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -13245,8 +13245,58 @@ var TaskInputStore = class {
       return cloneInput(stored);
     });
   }
-  /** Mark managed inject success: pending → delivered. */
-  async markDelivered(id, resolvedBy = "service") {
+  /**
+   * Rebind a still-pending input to the session that will inject/consume it.
+   * Used after reject-resume creates a new ss- so review-feedback is not left
+   * keyed to a dead prior session (cancelSession / projection / poll honesty).
+   * Idempotent when sessionId already matches. Fail-loud on missing/scope/terminal.
+   */
+  async rebindSession(id, workspaceId, taskPath, sessionId) {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.rebindSession requires workspaceId and taskPath"
+      );
+    }
+    const nextSession = sessionId?.trim();
+    if (!nextSession) {
+      throw new Error("TaskInput.rebindSession requires non-empty sessionId");
+    }
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+        throw new Error(`TaskInput not found: ${id}`);
+      }
+      if (item.status !== "pending") {
+        throw new Error(
+          `TaskInput.rebindSession requires pending status; got ${item.status}: ${id}`
+        );
+      }
+      if (item.sessionId === nextSession) {
+        return cloneInput(item);
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const rebound = {
+        ...item,
+        sessionId: nextSession,
+        updatedAt: now
+      };
+      const next = new Map(this.items);
+      next.set(id, rebound);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(rebound);
+    });
+  }
+  /**
+   * Mark managed inject success: pending → delivered.
+   * Optional sessionId persists the session that actually received the inject
+   * (e.g. reject-resume new ss- after sessionIdOverride).
+   */
+  async markDelivered(id, resolvedBy = "service", opts) {
     if (this.closed) throw new Error("TaskInput store is closed");
     await this.ensureLoaded();
     return this.enqueue(async () => {
@@ -13257,8 +13307,10 @@ var TaskInputStore = class {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
+      const injectSession = opts?.sessionId?.trim();
       const resolved = {
         ...item,
+        ...injectSession ? { sessionId: injectSession } : {},
         status: "delivered",
         updatedAt: now,
         deliveredAt: now,
@@ -14976,12 +15028,14 @@ function sleep(ms) {
 // src/adapters/acp/managed-session.ts
 var DEFAULT_BOOTSTRAP = "Tent session started. Read the task envelope via Tent Task API; do not invent missing content.";
 var AcpManagedSession = class {
-  constructor(sessionId, client, bootstrapDone, emit2, stopRequested = false) {
+  constructor(sessionId, client, emit2, stopRequested = false) {
     this.sessionId = sessionId;
     this.client = client;
-    this.bootstrapDone = bootstrapDone;
     this.emit = emit2;
     this.stopRequested = stopRequested;
+    /** Depth of in-flight managed session/prompt turns (bootstrap + U2A). */
+    this.turnBusyDepth = 0;
+    this.bootstrapDone = Promise.resolve();
   }
   get pid() {
     return this.client.pid;
@@ -14991,6 +15045,13 @@ var AcpManagedSession = class {
   }
   isAlive() {
     return !this.stopRequested && this.client.isAlive();
+  }
+  /**
+   * Turn busy ≠ session live. Session may remain alive between turns;
+   * busy means a managed prompt is still settling (tools/response not done).
+   */
+  isTurnBusy() {
+    return this.turnBusyDepth > 0;
   }
   /** Tests / callers may await bootstrap completion (prompt path finished). */
   async waitBootstrap() {
@@ -15013,13 +15074,33 @@ var AcpManagedSession = class {
       cwd: "",
       env: {}
     };
-    await runManagedBootstrapPrompt(plan, this.emit, this.client, text3);
+    await this.runTurn(
+      () => runManagedBootstrapPrompt(plan, this.emit, this.client, text3)
+    );
   }
   async stop(reason) {
     this.stopRequested = true;
     await this.client.stop(
       reason === "user" || reason === "interrupt" || reason === "shutdown" ? reason : "interrupt"
     );
+  }
+  /**
+   * Start a background managed prompt and keep turn-busy until it settles.
+   * Used for bootstrap / post-load first prompt (fire-and-forget from startSession).
+   */
+  beginBackgroundTurn(work) {
+    const turn = this.runTurn(work);
+    this.bootstrapDone = turn;
+    return turn;
+  }
+  /** Track turn busy/idle around one managed session/prompt. */
+  async runTurn(work) {
+    this.turnBusyDepth += 1;
+    try {
+      await work();
+    } finally {
+      this.turnBusyDepth = Math.max(0, this.turnBusyDepth - 1);
+    }
   }
 };
 async function stopAcpClientQuiet(client) {
@@ -15088,8 +15169,13 @@ async function startManagedAcpSession(input) {
     await stopAcpClientQuiet(client);
     throw err;
   }
-  const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
-  return new AcpManagedSession(plan.sessionId, client, promptDone, emit2);
+  const session = new AcpManagedSession(plan.sessionId, client, emit2);
+  if (bootstrap) {
+    session.beginBackgroundTurn(
+      () => runManagedBootstrapPrompt(plan, emit2, client, bootstrap)
+    );
+  }
+  return session;
 }
 async function resumeManagedAcpSession(input) {
   const { plan, emit: emit2, client, providerSessionId } = input;
@@ -15105,8 +15191,13 @@ async function resumeManagedAcpSession(input) {
     throw new Error(message2);
   }
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
-  const promptDone = bootstrap ? runManagedBootstrapPrompt(plan, emit2, client, bootstrap) : Promise.resolve();
-  return new AcpManagedSession(plan.sessionId, client, promptDone, emit2);
+  const session = new AcpManagedSession(plan.sessionId, client, emit2);
+  if (bootstrap) {
+    session.beginBackgroundTurn(
+      () => runManagedBootstrapPrompt(plan, emit2, client, bootstrap)
+    );
+  }
+  return session;
 }
 function parseAcpResumeToken(raw) {
   return { raw, providerSessionId: raw };
@@ -19240,7 +19331,7 @@ async function deliverManagedTaskInput(ctx, item, opts) {
   }
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
-    const latest = await ctx.taskInputs.get(
+    let latest = await ctx.taskInputs.get(
       item.id,
       item.workspaceId,
       item.taskPath
@@ -19259,9 +19350,26 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         continueError: `TaskInput already ${latest.status}; skip managed inject`
       };
     }
+    if ((latest.sessionId?.trim() || "") !== sessionId) {
+      try {
+        latest = await ctx.taskInputs.rebindSession(
+          latest.id,
+          latest.workspaceId,
+          latest.taskPath,
+          sessionId
+        );
+      } catch (err) {
+        const message2 = err instanceof Error ? err.message : String(err);
+        return {
+          input: latest,
+          continued: false,
+          continueError: `TaskInput rebind to inject session failed: ${message2}`
+        };
+      }
+    }
     const forInject = {
       ...latest,
-      sessionId: sessionId || latest.sessionId
+      sessionId
     };
     ctx.taskInputs.beginManagedInject(forInject.id);
     let continueResult;
@@ -19270,7 +19378,11 @@ async function deliverManagedTaskInput(ctx, item, opts) {
       continueResult = await continueManagedAfterTaskInput(ctx, forInject);
       if (continueResult.continued) {
         try {
-          finalInput = await ctx.taskInputs.markDelivered(forInject.id, "service");
+          finalInput = await ctx.taskInputs.markDelivered(
+            forInject.id,
+            "service",
+            { sessionId }
+          );
           ctx.events.emit(
             "taskInput.delivered",
             forInject.workspaceId,
@@ -19362,6 +19474,22 @@ async function continueManagedAfterTaskInput(ctx, item) {
     return { continued: false, error: message2 };
   }
 }
+async function assertManagedTurnIdleForPublicDeliver(ctx, task) {
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) return;
+  const probe = await ctx.runtime.probe(sessionId);
+  if (probe.turnBusy !== true) return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: managed session ${sessionId} still has an in-flight turn (turnBusy); task remains ${task.state} with no ready Delivery until the turn settles`,
+    {
+      code: "TURN_BUSY",
+      sessionId,
+      taskPath: task.path,
+      turnBusy: true
+    }
+  );
+}
 async function taskDeliverRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -19374,6 +19502,7 @@ async function taskDeliverRpc(ctx, p) {
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+    await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
     const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
     const result = await taskDeliver(mount.env, taskPath, {
       summary,
@@ -19516,8 +19645,18 @@ async function taskRejectRpc(ctx, p) {
       workspaceId,
       taskPath
     });
-    const delivery = await deliverManagedTaskInput(ctx, reviewInput, {
-      sessionIdOverride: restored.session.sessionId
+    const restoredSessionId = restored.session.sessionId;
+    let boundReview = reviewInput;
+    if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
+      boundReview = await ctx.taskInputs.rebindSession(
+        reviewInput.id,
+        workspaceId,
+        taskPath,
+        restoredSessionId
+      );
+    }
+    const delivery = await deliverManagedTaskInput(ctx, boundReview, {
+      sessionIdOverride: restoredSessionId
     });
     return {
       workspaceId,
@@ -20075,6 +20214,7 @@ async function sessionList(ctx, p) {
       assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
+      turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
       externalKey: recordExternalKey(rec),
@@ -20098,6 +20238,7 @@ async function sessionGet(ctx, p) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
     externalKey: recordExternalKey(rec),
@@ -20946,6 +21087,15 @@ var runtimeProjectionTestHooks = null;
 function managedDeliverKey(sessionId, taskPath) {
   return `${sessionId}::${taskPath}`;
 }
+function isManagedAutoDeliverSealing(sessionId, taskPath, taskId) {
+  if (managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskPath))) {
+    return true;
+  }
+  if (taskId && managedAutoDeliverInFlight.has(managedDeliverKey(sessionId, taskId))) {
+    return true;
+  }
+  return false;
+}
 function projectionRetryDelayMs() {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
@@ -21105,6 +21255,9 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
         if (ev.type === "session.exited" && rec?.stopReason === "user") {
           continue;
         }
+        if (ev.type === "session.exited" && isManagedAutoDeliverSealing(ev.sessionId, task.path, task.id)) {
+          continue;
+        }
         await failTaskFromRuntime(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
@@ -21195,15 +21348,35 @@ async function tryManagedAutoDeliver(ctx, input) {
     return;
   }
   managedAutoDeliverInFlight.add(key);
-  let deliveredOk = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
+    const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+    if (!pre || pre.state !== "running") {
+      return;
+    }
+    if (pre.sessionId && pre.sessionId !== input.sessionId) {
+      return;
+    }
+    const existingReady = await loadDeliveries(mount.env.fs, {
+      taskId: pre.id || input.taskPath
+    });
+    if (existingReady.some((d) => d.status === "ready")) {
+      managedAutoDeliverDone.add(key);
+      return;
+    }
     if (input.commits === void 0) {
-      const pre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
-      if (pre && pre.state === "running") {
-        await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
-      }
+      await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
+    }
+    const sealed = await sealManagedSessionBeforeDelivery(ctx, {
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      taskPath: input.taskPath
+    });
+    if (!sealed) {
+      throw new Error(
+        "managed session could not be sealed before auto-deliver (process still mutable)"
+      );
     }
     await ctx.mutations.run(input.workspaceId, async () => {
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -21235,7 +21408,6 @@ async function tryManagedAutoDeliver(ctx, input) {
         ...commits.length > 0 ? { commits } : {}
       });
       managedAutoDeliverDone.add(key);
-      deliveredOk = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
         "delivery.updated",
@@ -21250,13 +21422,11 @@ async function tryManagedAutoDeliver(ctx, input) {
         "self"
       );
     });
-    if (deliveredOk) {
-      await stopManagedSessionAfterDelivery(ctx, {
-        workspaceId: input.workspaceId,
-        sessionId: input.sessionId,
-        taskPath: input.taskPath
-      });
-    }
+    await stopManagedSessionAfterDelivery(ctx, {
+      workspaceId: input.workspaceId,
+      sessionId: input.sessionId,
+      taskPath: input.taskPath
+    });
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     try {
@@ -21307,6 +21477,64 @@ async function collectManagedDeliveryCommits(workspaceRoot, task) {
   const contract = await resolveIntegrationContract(workspaceRoot, task);
   const pending = await listPendingRoleCommits(contract, base);
   return pending.map((commit) => commit.ref);
+}
+async function sealManagedSessionBeforeDelivery(ctx, input) {
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+    }
+    try {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+    }
+    try {
+      await cancelTaskInputsForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "session.stop_after_deliver"
+      );
+    } catch {
+    }
+    const probe = await ctx.runtime.probe(input.sessionId);
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+      await ctx.runtime.stopSession(input.sessionId, "user");
+    }
+    const after = await ctx.runtime.probe(input.sessionId);
+    return !after.alive && !after.turnBusy;
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    try {
+      await ctx.runtime.registry.update(input.sessionId, {
+        lastError: `managed session seal before deliver failed: ${message2}`
+      });
+    } catch {
+    }
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        runtimeEvent: "session.seal_before_deliver.failed",
+        error: message2,
+        taskFailed: false
+      },
+      "service"
+    );
+    try {
+      const after = await ctx.runtime.probe(input.sessionId);
+      return !after.alive && !after.turnBusy;
+    } catch {
+      return true;
+    }
+  }
 }
 async function stopManagedSessionAfterDelivery(ctx, input) {
   try {
@@ -24576,6 +24804,9 @@ var AgentRuntime = class {
       });
       return;
     }
+    if (SessionRegistry.isNonTerminal(record.state) || record.state === "starting") {
+      await this.registry.update(sessionId, { stopReason: reason });
+    }
     const managed = this.managed.get(sessionId);
     if (managed) {
       try {
@@ -24632,6 +24863,7 @@ var AgentRuntime = class {
     }
     const managed = this.managed.get(sessionId);
     const alive = managed ? managed.isAlive() : this.supervisor.isAlive(sessionId);
+    const turnBusy = typeof managed?.isTurnBusy === "function" ? managed.isTurnBusy() : false;
     const profile = this.profiles.get(record.profileId);
     const adapter = this.adapters.get(record.adapterId);
     const resumeCapable = Boolean(
@@ -24650,6 +24882,7 @@ var AgentRuntime = class {
         state: updated.state,
         alive: false,
         resumeCapable,
+        turnBusy: false,
         lastError: updated.lastError,
         exitCode: updated.exitCode
       };
@@ -24659,6 +24892,7 @@ var AgentRuntime = class {
       state: record.state,
       alive,
       resumeCapable,
+      turnBusy,
       pid: alive ? record.pid : void 0,
       lastError: record.lastError,
       exitCode: record.exitCode
