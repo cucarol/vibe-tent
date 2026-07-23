@@ -11,7 +11,7 @@ import {
   canClaim,
   envelopeIsActiveOccupation,
   findActiveOccupation,
-  occupiedBoxesFromTasks,
+  findAnyActiveTask,
   structuralClaimGate,
 } from "./claim.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
@@ -151,12 +151,15 @@ async function dispatchUnlocked(
     asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
 
   if (claim.root) {
-    const occupied = occupiedBoxesFromTasks(tent, tasks);
-    if (occupied.length > 0) {
-      const hit = findActiveOccupation(tent, occupied[0], tasks);
-      const who = hit?.task.role || "unknown";
+    // Root occupies the whole tent. Sole oracle: any active Task envelope
+    // (including claims=[root], which occupiedBoxesFromTasks intentionally skips).
+    const blocker = findAnyActiveTask(tasks);
+    if (blocker) {
+      const claimLabel = blocker.claims.includes("root")
+        ? "root"
+        : blocker.claims[0] || "unknown";
       throw new Error(
-        `Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${who}).`
+        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
       );
     }
   } else {

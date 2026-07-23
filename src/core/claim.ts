@@ -162,12 +162,35 @@ export function boxHasDirectActiveTask(
   );
 }
 
+/**
+ * Active task that claims tent root (`claims` includes `"root"`).
+ * Root occupation covers the entire tent and must not be skipped by box-only scans.
+ */
+export function findActiveRootTask(
+  tasks: readonly TaskEnvelope[]
+): TaskEnvelope | undefined {
+  return tasks.find(
+    (t) => envelopeIsActiveOccupation(t) && t.claims.includes("root")
+  );
+}
+
+/**
+ * Any active task envelope (root or box claim). Used when dispatching tent root:
+ * root occupies the whole tent, so any active task blocks a second root dispatch.
+ */
+export function findAnyActiveTask(
+  tasks: readonly TaskEnvelope[]
+): TaskEnvelope | undefined {
+  return tasks.find((t) => envelopeIsActiveOccupation(t));
+}
+
 /** Boxes that currently host a direct active-task claim (for status / panels). */
 export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnvelope[]): Box[] {
   const out = new Map<string, Box>();
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
     for (const claimId of task.claims) {
+      // Root is not a box id; callers that need tent-root occupation use findActiveRootTask.
       if (claimId === "root") continue;
       const box = tent.byId.get(claimId);
       if (box) out.set(box.id, box);

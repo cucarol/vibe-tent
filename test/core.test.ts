@@ -5,7 +5,14 @@ import * as fs from "node:fs/promises";
 import * as path from "node:path";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
-import { canClaim, isFrozen } from "../src/core/claim.js";
+import {
+  canClaim,
+  findActiveOccupation,
+  findActiveRootTask,
+  findAnyActiveTask,
+  isFrozen,
+  occupiedBoxesFromTasks,
+} from "../src/core/claim.js";
 import { buildManifest, manifestToYaml } from "../src/core/manifest.js";
 import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { syncOkfBundle } from "../src/core/okf.js";
@@ -131,6 +138,80 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
   const tent2 = await loadTent(fsa);
   const tasks2 = await loadTaskEnvelopes(fsa);
   assert.equal(canClaim(tent2.byId.get("bx-g2")!, { tent: tent2, tasks: tasks2 }).ok, true);
+});
+
+test("occupation oracle: root claim covers tent (root-vs-root / root-vs-box / box-vs-root / asSub)", async () => {
+  const dir = await makeTent();
+  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
+  await fs.mkdir(path.join(dir, "temp", "reviewer", "tasks"), { recursive: true });
+  const fsa = new NodeFs(dir);
+  const tent = await loadTent(fsa);
+
+  // Seed active root occupation (claims=[root] is not a box id).
+  await fs.writeFile(
+    path.join(dir, "temp", "executor", "tasks", "task-root.md"),
+    [
+      "---",
+      "type: task",
+      "id: tk-rootocc",
+      "status: taken",
+      "state: running",
+      "role: executor",
+      "claims: [root]",
+      "manifest: temp/executor/manifest.yml",
+      "---",
+      "# root",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  let tasks = await loadTaskEnvelopes(fsa);
+
+  // occupiedBoxesFromTasks is box-panel only — must not pretend root is free for occupation.
+  assert.equal(occupiedBoxesFromTasks(tent, tasks).length, 0);
+  assert.ok(findActiveRootTask(tasks), "root task must be visible via root oracle");
+  assert.ok(findAnyActiveTask(tasks), "any-active oracle sees root task (root-vs-root)");
+
+  // root-vs-box: any box claim is blocked.
+  const box = tent.byId.get("bx-p1")!;
+  const rootHit = findActiveOccupation(tent, box, tasks);
+  assert.equal(rootHit?.relation, "root");
+  assert.equal(canClaim(box, { tent, tasks }).ok, false);
+
+  // asSub must not bypass root occupation even when allowAncestor matches the holder.
+  assert.equal(
+    canClaim(box, { tent, tasks, allowAncestorClaimedBy: "executor" }).ok,
+    false,
+    "asSub cannot bypass claims=[root]"
+  );
+
+  // Clear root; seed a box claim — box-vs-root: any active box blocks tent-root occupation.
+  await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-root.md"));
+  await fs.writeFile(
+    path.join(dir, "temp", "reviewer", "tasks", "task-box.md"),
+    [
+      "---",
+      "type: task",
+      "id: tk-boxocc",
+      "status: pending",
+      "state: queued",
+      "role: reviewer",
+      "claims: [bx-p1]",
+      "manifest: temp/reviewer/manifest.yml",
+      "---",
+      "# box",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  tasks = await loadTaskEnvelopes(fsa);
+  assert.equal(findActiveRootTask(tasks), undefined);
+  const anyBox = findAnyActiveTask(tasks);
+  assert.ok(anyBox);
+  assert.equal(anyBox!.role, "reviewer");
+  assert.deepEqual([...anyBox!.claims], ["bx-p1"]);
+  // Panel helper still lists the box; root oracle stays empty.
+  assert.equal(occupiedBoxesFromTasks(tent, tasks).map((b) => b.id).join(","), "bx-p1");
 });
 
 test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () => {

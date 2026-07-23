@@ -292,6 +292,66 @@ test("lifecycle: second active task on same box is rejected (envelope oracle)", 
   assert.ok(r2.taskPath);
 });
 
+test("lifecycle: active root claim blocks box dispatch (root-vs-box)", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  await e.fs.writeFile(
+    "temp/executor/tasks/task-root-active.md",
+    [
+      "---",
+      "type: task",
+      "id: tk-root1",
+      "status: taken",
+      "state: running",
+      "role: executor",
+      "claims: [root]",
+      "manifest: temp/executor/manifest.yml",
+      "---",
+      "# root occupation",
+      "",
+    ].join("\n")
+  );
+  await assert.rejects(
+    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "blocked by root" }),
+    /Tent root is occupied by active task|Cannot dispatch/
+  );
+  await assert.rejects(
+    () => dispatch(e as any, "bx-o1", "reviewer", { userPrompt: "also blocked" }),
+    /Tent root is occupied by active task|Cannot dispatch/
+  );
+});
+
+test("lifecycle: asSub cannot bypass active root occupation", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  await e.fs.writeFile(
+    "temp/architect/tasks/task-root-arch.md",
+    [
+      "---",
+      "type: task",
+      "id: tk-rootarch",
+      "status: taken",
+      "state: running",
+      "role: architect",
+      "claims: [root]",
+      "manifest: temp/architect/manifest.yml",
+      "---",
+      "# root by architect",
+      "",
+    ].join("\n")
+  );
+  // asSub under the root holder still must not open a child box — root is tent-wide.
+  await assert.rejects(
+    () =>
+      dispatch(e as any, "bx-p1", "helper", {
+        userPrompt: "sub under root holder",
+        asSub: true,
+        dispatchedBy: "architect",
+      }),
+    /Tent root is occupied by active task|Cannot dispatch/
+  );
+});
+
 test("lifecycle: legacy envelope without state still occupies via status", async () => {
   const dir = await makeTent();
   const e = env(dir);
