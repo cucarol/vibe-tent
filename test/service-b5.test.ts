@@ -3090,6 +3090,149 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
   });
 });
 
+test("P0: dirty task worktree refuses managed auto-deliver and public task.deliver (tracked + untracked)", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("p0-dirty-worktree-refuse");
+  await initGitOnWorkspace(ws);
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "must not deliver with dirty role worktree",
+      deliveryPolicy: "manual",
+    });
+    assert.ok(!d.error, JSON.stringify(d.error));
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    // One committed change (would be collectable) plus uncommitted tracked + untracked.
+    const sourceRef = await roleCommit(
+      ws,
+      "executor",
+      "committed-before-dirty.txt",
+      "committed\n",
+      "committed before dirty"
+    );
+    const contract = await ensureRoleWorkspace(ws, "executor");
+    await fs.writeFile(
+      path.join(contract.worktree, "committed-before-dirty.txt"),
+      "tracked dirty edit\n"
+    );
+    await fs.writeFile(
+      path.join(contract.worktree, "UNTRACKED_DIRTY.txt"),
+      "untracked dirty\n"
+    );
+    // Main must stay clean: gate inspects task/role worktree only.
+    const mainDirty = (await git(ws, "status", "--porcelain")).trim();
+    assert.equal(mainDirty, "", "main workspace must remain clean for this regression");
+
+    const diag: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.type === "session.state") diag.push(ev.payload as Record<string, unknown>);
+    });
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "DIRTY_SHOULD_NOT_DELIVER",
+    });
+    unsub();
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal(
+      (got.result as { task: { state: string } }).task.state,
+      "running",
+      "dirty auto-deliver must keep task running (retryable)"
+    );
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ status: string; summary: string; commits?: string[] }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 0, "dirty worktree must not publish any Delivery");
+    assert.equal(
+      deliveries.some((x) => /DIRTY_SHOULD_NOT_DELIVER/.test(x.summary)),
+      false
+    );
+
+    const failEv = diag.find((p) => p.runtimeEvent === "session.prompt_complete.failed");
+    assert.ok(failEv, "must emit session diagnostics for dirty refusal");
+    assert.equal(failEv!.taskFailed, false);
+    assert.equal(failEv!.errorCode, "WORKTREE_DIRTY");
+    assert.match(String(failEv!.error ?? ""), /WORKTREE_DIRTY|uncommitted|dirty/i);
+
+    const rec = await svc.runtime.registry.read(sessionId);
+    assert.ok(rec?.lastError);
+    assert.match(rec!.lastError!, /managed auto-deliver failed/);
+    assert.match(rec!.lastError!, /uncommitted|dirty/i);
+
+    // Public path must refuse the same dirty worktree with stable error code.
+    const manual = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "PREMATURE_DIRTY_MANUAL",
+      commits: [sourceRef],
+    });
+    assert.ok(manual.error, "public deliver must fail-loud on dirty worktree");
+    assert.match(String(manual.error.message ?? ""), /uncommitted|dirty/i);
+    const manualData = manual.error.data as
+      | { code?: string; trackedDirty?: boolean; untrackedDirty?: boolean }
+      | undefined;
+    assert.equal(manualData?.code, "WORKTREE_DIRTY");
+    assert.equal(manualData?.trackedDirty, true);
+    assert.equal(manualData?.untrackedDirty, true);
+
+    const mid = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((mid.result as { task: { state: string } }).task.state, "running");
+    const midList = await rpc(svc, "delivery.list", { workspaceId });
+    assert.equal(
+      (midList.result as { deliveries: unknown[] }).deliveries.length,
+      0,
+      "public dirty refuse must not leave a Delivery"
+    );
+
+    // Clean worktree: commit remaining edits, then auto-deliver succeeds with full SHA set.
+    await git(contract.worktree, "add", "committed-before-dirty.txt", "UNTRACKED_DIRTY.txt");
+    await git(contract.worktree, "commit", "-q", "-m", "commit dirty edits");
+    const cleanRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+    assert.equal((await git(contract.worktree, "status", "--porcelain")).trim(), "");
+
+    resetManagedAutoDeliverDedupForTests();
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "CLEAN_AFTER_COMMIT_OK",
+    });
+
+    const after = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((after.result as { task: { state: string } }).task.state, "delivered");
+    const afterList = await rpc(svc, "delivery.list", { workspaceId });
+    const afterDeliveries = (
+      afterList.result as {
+        deliveries: Array<{ summary: string; status: string; commits: string[] }>;
+      }
+    ).deliveries;
+    assert.equal(afterDeliveries.length, 1);
+    assert.equal(afterDeliveries[0].summary, "CLEAN_AFTER_COMMIT_OK");
+    assert.equal(afterDeliveries[0].status, "ready");
+    assert.ok(afterDeliveries[0].commits.includes(sourceRef));
+    assert.ok(afterDeliveries[0].commits.includes(cleanRef));
+  });
+});
+
 test("P0 fix: managed auto-collect excludes pre-session role commits; includes active-window commits", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("p0-macp-base-scope");

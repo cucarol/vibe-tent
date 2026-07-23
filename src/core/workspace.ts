@@ -212,6 +212,51 @@ export async function ensureTaskWorkspace(
   };
 }
 
+/** Dirtiness of one exact Git worktree path (tracked + untracked). */
+export interface WorktreeDirtiness {
+  dirty: boolean;
+  worktree: string;
+  trackedDirty: boolean;
+  untrackedDirty: boolean;
+  /** Truncated porcelain sample for diagnostics (never a full dump). */
+  sample: string;
+  /** Number of porcelain lines observed. */
+  changeCount: number;
+}
+
+/**
+ * Inspect uncommitted changes in one authoritative task/role worktree.
+ * Only runs `git status --porcelain` in that worktree path — never checks or
+ * mutates main / other lanes. Empty porcelain → clean.
+ */
+export async function inspectWorktreeDirtiness(worktree: string): Promise<WorktreeDirtiness> {
+  const cwd = nodePath.resolve(worktree);
+  // Porcelain is relative to this worktree's working tree only.
+  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
+  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
+  let trackedDirty = false;
+  let untrackedDirty = false;
+  for (const line of lines) {
+    // `?? path` = untracked; everything else is staged/unstaged tracked change.
+    if (line.startsWith("??") || line.startsWith("!")) {
+      untrackedDirty = true;
+    } else {
+      trackedDirty = true;
+    }
+  }
+  const sampleLines = lines.slice(0, 8);
+  const sample =
+    sampleLines.join("\n") + (lines.length > sampleLines.length ? `\n…(+${lines.length - sampleLines.length} more)` : "");
+  return {
+    dirty: lines.length > 0,
+    worktree: cwd,
+    trackedDirty,
+    untrackedDirty,
+    sample,
+    changeCount: lines.length,
+  };
+}
+
 /**
  * Integrate selected commits into contract.targetBranch.
  *

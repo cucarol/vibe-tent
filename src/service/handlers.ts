@@ -116,6 +116,7 @@ import {
   ensureRoleWorkspaceIfGit,
   ensureTaskWorkspace,
   ensureTaskWorkspaceIfGit,
+  inspectWorktreeDirtiness,
   integrateWorkspaceCommits,
   isGitWorkspace,
   isSameWorkspaceRoot,
@@ -3033,6 +3034,73 @@ async function assertManagedTurnIdleForPublicDeliver(
   );
 }
 
+/**
+ * Resolve the exact task/role worktree path for dirtiness inspection only.
+ * Prefer envelope.worktree when present; otherwise ensure the lane (same helpers
+ * as startSession). Intentionally does **not** re-validate envelope workspace /
+ * targetBranch / branch contract — that stays on accept/integrate so existing
+ * mismatch fail-loud paths are unchanged.
+ */
+async function resolveTaskWorktreeForDirtyCheck(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<{ worktree: string; branch?: string } | undefined> {
+  const hasRecordedLane = Boolean(
+    task.workspace || task.worktree || task.branch || task.targetBranch
+  );
+  if (!hasRecordedLane) return undefined;
+  if (!(await isGitWorkspace(workspaceRoot))) return undefined;
+
+  const envelopeWt = task.worktree?.trim();
+  if (envelopeWt) {
+    return {
+      worktree: nodePath.resolve(envelopeWt),
+      branch: task.branch,
+    };
+  }
+
+  // Lane recorded without worktree path: recreate via the same ensure* helpers.
+  const mountedRoot = nodePath.resolve(workspaceRoot);
+  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const lane = isProfile
+    ? await ensureTaskWorkspace(mountedRoot, task.id || task.path)
+    : await ensureRoleWorkspace(mountedRoot, task.role);
+  return { worktree: lane.worktree, branch: lane.branch };
+}
+
+/**
+ * Refuse ready Delivery when the authoritative task/role Git worktree still has
+ * uncommitted tracked or untracked changes. Prevents publishing stale commits
+ * while agent edits remain uncommitted. Non-Git / no-lane tasks pass through.
+ * Checks only the task lane worktree — never main or sibling lanes.
+ */
+async function assertTaskWorktreeCleanForDeliver(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<void> {
+  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task);
+  if (!lane) return;
+  const status = await inspectWorktreeDirtiness(lane.worktree);
+  if (!status.dirty) return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: task worktree has uncommitted changes at ${lane.worktree} ` +
+      `(${status.changeCount} change(s); tracked=${status.trackedDirty} untracked=${status.untrackedDirty}); ` +
+      `commit or discard them, then retry delivery (task remains ${task.state}, no ready Delivery)`,
+    {
+      code: "WORKTREE_DIRTY",
+      taskPath: task.path,
+      taskId: task.id,
+      worktree: lane.worktree,
+      ...(lane.branch ? { branch: lane.branch } : {}),
+      trackedDirty: status.trackedDirty,
+      untrackedDirty: status.untrackedDirty,
+      changeCount: status.changeCount,
+      dirtySample: status.sample,
+    }
+  );
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -3052,6 +3120,8 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     // turn is still busy (tools/write/commit may still race). Task stays
     // running; no ready Delivery is published.
     await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+    // Same gate for public deliver: dirty task worktree must not publish stale commits.
+    await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
     const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
 
     const result = await taskDeliver(mount.env, taskPath, {
@@ -6031,6 +6101,11 @@ async function tryManagedAutoDeliver(
         return;
       }
 
+      // Seal-after, publish-before: refuse dirty task worktree so uncommitted
+      // agent edits cannot be skipped in favor of stale already-committed SHAs.
+      // Fail-loud keeps task running for commit-then-retry (same as public deliver).
+      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+
       // Collect pending role-lane commits unless the caller supplied an explicit list
       // (tests only). Production always auto-collects via the authoritative lane contract.
       // Collection runs after seal so tail commits after end_turn cannot appear.
@@ -6078,10 +6153,20 @@ async function tryManagedAutoDeliver(
       taskPath: input.taskPath,
     });
   } catch (err) {
-    // Deliver / integrate / collection / seal failure must NOT terminal-fail the task.
-    // Keep running/occupation so the user can retry; expose via session diagnostics/event.
-    // Only session.failed (launch/process) maps task → failed.
+    // Deliver / integrate / collection / seal / dirty-worktree failure must NOT
+    // terminal-fail the task. Keep running/occupation so the user can retry;
+    // expose via session diagnostics/event. Only session.failed (launch/process)
+    // maps task → failed.
     const message = err instanceof Error ? err.message : String(err);
+    const errorCode =
+      err instanceof RpcError &&
+      err.data &&
+      typeof err.data === "object" &&
+      typeof (err.data as { code?: unknown }).code === "string"
+        ? (err.data as { code: string }).code
+        : err instanceof TaskLifecycleError
+          ? err.code
+          : undefined;
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
@@ -6105,6 +6190,7 @@ async function tryManagedAutoDeliver(
             taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
             error: message,
+            ...(errorCode ? { errorCode } : {}),
             // Explicit: task remains non-terminal for retry.
             taskFailed: false,
           },
