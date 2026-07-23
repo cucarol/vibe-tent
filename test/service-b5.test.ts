@@ -3428,12 +3428,22 @@ test("reject-resume restores live managed session for agentProfile tasks", async
     );
     assert.ok(stored);
     assert.equal(stored!.sessionId, body.session!.sessionId);
-    // fake-default may leave pending if follow-up inject unsupported; either way
-    // durable binding must be the new session (not cancelled via prior id).
+    // fake-default may leave pending or record a retryable failed row when
+    // follow-up inject is unsupported; either way durable binding must be the
+    // new session (not cancelled via prior id) and the feedback stays visible.
     assert.ok(
-      stored!.status === "delivered" || stored!.status === "pending",
+      stored!.status === "delivered" ||
+        stored!.status === "pending" ||
+        stored!.status === "failed",
       `unexpected review-feedback status: ${stored!.status}`
     );
+    if (stored!.status === "failed") {
+      const retryable = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+      assert.ok(
+        retryable.some((row) => row.id === stored!.id),
+        "failed review-feedback must remain visible for retry/poll"
+      );
+    }
     // When inject succeeded, status is delivered once — no second pending row.
     if (body.continued === true) {
       assert.equal(stored!.status, "delivered");
