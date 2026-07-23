@@ -62,6 +62,8 @@ function mockAcpProfile(
     requestPermission?: boolean;
     permissionTimeoutMs?: number;
     keepAlive?: boolean;
+    /** Delay bootstrap session/prompt completion so turnBusy stays true. */
+    promptDelayMs?: number;
     /** Spontaneous child death after session/new (no pending prompt required). */
     dieAfterSessionMs?: number;
     dieExitCode?: number;
@@ -88,6 +90,9 @@ function mockAcpProfile(
         : {}),
       ...(opts.stopReason ? { MOCK_ACP_STOP_REASON: opts.stopReason } : {}),
       ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
+      ...(opts.promptDelayMs != null
+        ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) }
+        : {}),
       ...(opts.dieAfterSessionMs != null
         ? {
             MOCK_ACP_DIE_AFTER_SESSION_MS: String(opts.dieAfterSessionMs),
@@ -108,7 +113,8 @@ function mockAcpProfile(
       model: DEFAULT_GROK_MODEL,
       envKey: "CPA_GROK_API_KEY",
       permissionPolicy: opts.permissionPolicy ?? "deny",
-      promptTimeoutMs: 8_000,
+      // Busy-turn tests need the bootstrap prompt to outlive manual deliver probes.
+      promptTimeoutMs: Math.max(8_000, (opts.promptDelayMs ?? 0) + 4_000),
       permissionTimeoutMs: opts.permissionTimeoutMs ?? 500,
     },
   };
@@ -1142,6 +1148,237 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
       ],
     }
   );
+});
+
+test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle still allows", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("manual-deliver-turn-busy");
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-busy-deliver-"));
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+  const tailMarker = path.join(ws, "BUSY_TURN_TAIL_MARKER.txt");
+  // Long enough that manual deliver probes run while bootstrap turn is open;
+  // process stays alive (keepAlive) so turnBusy is the authority signal.
+  const promptDelayMs = 4_000;
+  const reportText = "BUSY_TURN_AUTO_REPORT";
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "manual deliver must not publish during busy managed turn",
+        deliveryPolicy: "manual",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "mock-acp-busy-deliver",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } })
+        .session.sessionId;
+
+      // Wait until the managed turn is actually busy (not merely session live).
+      await pollUntil(async () => {
+        const probe = await rpc(svc, "session.get", { workspaceId, sessionId });
+        if (probe.error) return null;
+        const session = (
+          probe.result as {
+            session: { alive?: boolean; turnBusy?: boolean };
+          }
+        ).session;
+        return session.alive && session.turnBusy === true ? session : null;
+      }, 8_000, "managed turnBusy during bootstrap");
+
+      // Accident path: agent calls public deliver while the same turn is still open.
+      const manualDeliver = await rpc(svc, "task.deliver", {
+        workspaceId,
+        taskPath,
+        summary: "PREMATURE_MANUAL_DELIVER",
+      });
+      assert.ok(manualDeliver.error, "busy turn must fail-loud on task.deliver");
+      assert.match(
+        String(manualDeliver.error.message ?? ""),
+        /turnBusy|in-flight turn/i
+      );
+      const deliverData = manualDeliver.error.data as
+        | { code?: string; turnBusy?: boolean }
+        | undefined;
+      assert.equal(deliverData?.code, "TURN_BUSY");
+      assert.equal(deliverData?.turnBusy, true);
+
+      // Same gate for requestReview (agent-decide / explicit review queue path).
+      const manualReview = await rpc(svc, "task.requestReview", {
+        workspaceId,
+        taskPath,
+        summary: "PREMATURE_REQUEST_REVIEW",
+      });
+      assert.ok(manualReview.error, "busy turn must fail-loud on task.requestReview");
+      assert.match(
+        String(manualReview.error.message ?? ""),
+        /turnBusy|in-flight turn/i
+      );
+      const reviewData = manualReview.error.data as { code?: string } | undefined;
+      assert.equal(reviewData?.code, "TURN_BUSY");
+
+      // Authority: still running, no ready Delivery while turn is open / settling.
+      const mid = await rpc(svc, "task.get", { workspaceId, taskPath });
+      assert.ok(!mid.error, JSON.stringify(mid.error));
+      assert.equal(
+        (mid.result as { task: { state: string } }).task.state,
+        "running",
+        "task must remain running after refused public deliver"
+      );
+      const midList = await rpc(svc, "delivery.list", { workspaceId });
+      const midDeliveries = (
+        midList.result as { deliveries: Array<{ status: string; summary: string }> }
+      ).deliveries;
+      assert.equal(
+        midDeliveries.filter((x) => x.status === "ready").length,
+        0,
+        "no ready Delivery before turn settles"
+      );
+      assert.equal(
+        midDeliveries.some((x) =>
+          /PREMATURE_MANUAL_DELIVER|PREMATURE_REQUEST_REVIEW/.test(x.summary)
+        ),
+        false,
+        "premature manual summaries must not appear as Delivery"
+      );
+
+      // Tail write is scheduled only after mock prompt result; while we refused
+      // early it must not exist yet. Seal-before-auto-deliver later kills the
+      // process so the marker also must not appear after Delivery.
+      let markerDuringBusy = false;
+      try {
+        await fs.access(tailMarker);
+        markerDuringBusy = true;
+      } catch {
+        markerDuringBusy = false;
+      }
+      assert.equal(
+        markerDuringBusy,
+        false,
+        "tail mutation must not land while public deliver is refused"
+      );
+
+      // Auto path still seals then delivers after the turn completes.
+      const delivered = await pollUntil(async () => {
+        const g = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const task = (g.result as { task: { state: string } }).task;
+        return task.state === "delivered" ? task : null;
+      }, 20_000, "auto-deliver after busy turn settles");
+      assert.equal(delivered.state, "delivered");
+
+      const afterProbe = await rpc(svc, "session.get", {
+        workspaceId,
+        sessionId,
+      });
+      assert.ok(!afterProbe.error, JSON.stringify(afterProbe.error));
+      const afterSession = (
+        afterProbe.result as {
+          session: { alive?: boolean; turnBusy?: boolean };
+        }
+      ).session;
+      assert.equal(afterSession.alive, false, "auto seal stops process");
+      assert.notEqual(afterSession.turnBusy, true, "turn idle after Delivery");
+
+      let markerAfter = false;
+      try {
+        await fs.access(tailMarker);
+        markerAfter = true;
+      } catch {
+        markerAfter = false;
+      }
+      assert.equal(
+        markerAfter,
+        false,
+        "post-response tail must not land after sealed auto-Delivery"
+      );
+
+      const list = await rpc(svc, "delivery.list", { workspaceId });
+      const deliveries = (
+        list.result as { deliveries: Array<{ summary: string; status: string }> }
+      ).deliveries;
+      assert.equal(deliveries.length, 1);
+      assert.equal(deliveries[0].status, "ready");
+      assert.equal(deliveries[0].summary, reportText);
+    },
+    {
+      profiles: [
+        mockAcpProfile("mock-acp-busy-deliver", {
+          logPath,
+          promptText: reportText,
+          keepAlive: true,
+          promptDelayMs,
+          postResponseTailMs: 2_500,
+          postResponseTailPath: tailMarker,
+        }),
+      ],
+    }
+  );
+
+  // Idle managed session + still-running task: public manual deliver allowed.
+  // Fake adapter has no turnBusy depth; covers external/idle path without
+  // racing auto seal (no managed ACP prompt_complete).
+  const wsIdle = await makeWorkspace("manual-deliver-idle");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, wsIdle);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "idle manual deliver still ok",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } })
+      .session.sessionId;
+
+    const probe = await rpc(svc, "session.get", { workspaceId, sessionId });
+    assert.ok(!probe.error, JSON.stringify(probe.error));
+    const session = (
+      probe.result as { session: { turnBusy?: boolean } }
+    ).session;
+    assert.notEqual(session.turnBusy, true, "fake/idle session is not turnBusy");
+
+    const running = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal(
+      (running.result as { task: { state: string } }).task.state,
+      "running"
+    );
+
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "IDLE_MANUAL_DELIVER_OK",
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { state: string }).state, "delivered");
+
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const deliveries = (
+      list.result as { deliveries: Array<{ summary: string; status: string }> }
+    ).deliveries;
+    assert.equal(deliveries.length, 1);
+    assert.equal(deliveries[0].summary, "IDLE_MANUAL_DELIVER_OK");
+    assert.equal(deliveries[0].status, "ready");
+  });
 });
 
 test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => {

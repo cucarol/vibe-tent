@@ -2785,6 +2785,33 @@ export function resetManagedTaskInputQueueForTests(): void {
   void managedTaskInputQueue;
 }
 
+/**
+ * Public task.deliver / task.requestReview must not publish a ready Delivery
+ * while the bound managed session still has an in-flight turn. Auto-deliver
+ * seals first (turnBusy → false) then calls core taskDeliver directly — it
+ * never relies on this RPC gate. External / idle sessions pass through.
+ */
+async function assertManagedTurnIdleForPublicDeliver(
+  ctx: HandlerContext,
+  task: { sessionId?: string; path: string; state: string }
+): Promise<void> {
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) return;
+  const probe = await ctx.runtime.probe(sessionId);
+  if (probe.turnBusy !== true) return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: managed session ${sessionId} still has an in-flight turn (turnBusy); ` +
+      `task remains ${task.state} with no ready Delivery until the turn settles`,
+    {
+      code: "TURN_BUSY",
+      sessionId,
+      taskPath: task.path,
+      turnBusy: true,
+    }
+  );
+}
+
 async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -2800,6 +2827,10 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+    // Fail-loud authority: do not honor caller "I'm done" while the managed
+    // turn is still busy (tools/write/commit may still race). Task stays
+    // running; no ready Delivery is published.
+    await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
     const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
 
     const result = await taskDeliver(mount.env, taskPath, {
