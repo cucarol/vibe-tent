@@ -1,0 +1,69 @@
+/**
+ * Semantic design tokens for the next renderer foundation.
+ *
+ * Structure only — no final brand color palette.
+ * Values use system / CSS color keywords so variables resolve in isolation;
+ * product theming is a later UI pass (do not treat these as locked hex).
+ */
+
+:root {
+  /* Surfaces (semantic roles) */
+  --tn-color-app-bg: Canvas;
+  --tn-color-stage-bg: Canvas;
+  --tn-color-panel-bg: Canvas;
+  --tn-color-chrome-bg: Canvas;
+  --tn-color-elevated-bg: Canvas;
+
+  --tn-color-text-primary: CanvasText;
+  --tn-color-text-secondary: GrayText;
+  --tn-color-text-faint: GrayText;
+  --tn-color-text-on-accent: Canvas;
+
+  --tn-color-border: GrayText;
+  --tn-color-border-strong: CanvasText;
+  --tn-color-hover: Highlight;
+  --tn-color-selected: Highlight;
+  --tn-color-accent: LinkText;
+  --tn-color-accent-soft: Highlight;
+  --tn-color-focus: Highlight;
+  --tn-color-success: LinkText;
+  --tn-color-warning: CanvasText;
+  --tn-color-danger: CanvasText;
+  --tn-color-running: LinkText;
+
+  /* Layout geometry (semantic slots) */
+  --tn-layout-outline-width: 240px;
+  --tn-layout-rail-width: 52px;
+  --tn-layout-focus-min: 360px;
+  --tn-layout-stage-min: 480px;
+  --tn-splitter-size: 6px;
+
+  /* Spacing scale */
+  --tn-space-1: 4px;
+  --tn-space-2: 8px;
+  --tn-space-3: 12px;
+  --tn-space-4: 16px;
+  --tn-space-5: 24px;
+  --tn-space-6: 32px;
+
+  /* Control geometry */
+  --tn-size-icon: 28px;
+  --tn-size-control: 32px;
+  --tn-size-control-compact: 28px;
+  --tn-radius-sm: 3px;
+  --tn-radius-md: 6px;
+
+  /* Type roles */
+  --tn-font-ui: system-ui, sans-serif;
+  --tn-font-body: system-ui, sans-serif;
+  --tn-font-mono: ui-monospace, monospace;
+  --tn-font-ui-base: 14px;
+  --tn-font-ui-small: 12px;
+  --tn-font-weight-ui: 500;
+  --tn-font-weight-strong: 600;
+
+  /* Focus / disabled semantics */
+  --tn-focus-ring: 2px solid currentColor;
+  --tn-focus-ring-offset: 1px;
+  --tn-control-disabled-opacity: 0.42;
+}

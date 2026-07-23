@@ -12,6 +12,7 @@ async function clean() {
   await fs.mkdir(path.join(outRoot, "main"), { recursive: true });
   await fs.mkdir(path.join(outRoot, "preload"), { recursive: true });
   await fs.mkdir(path.join(outRoot, "renderer"), { recursive: true });
+  await fs.mkdir(path.join(outRoot, "renderer-next"), { recursive: true });
 }
 
 async function copyRendererStatic() {
@@ -22,6 +23,20 @@ async function copyRendererStatic() {
   // Layered CSS parts referenced by styles.css @import (file:// / asar relative).
   const stylesSrc = path.join(srcDir, "styles");
   const stylesOut = path.join(outRoot, "renderer", "styles");
+  await fs.mkdir(stylesOut, { recursive: true });
+  for (const name of await fs.readdir(stylesSrc)) {
+    if (!name.endsWith(".css")) continue;
+    await fs.copyFile(path.join(stylesSrc, name), path.join(stylesOut, name));
+  }
+}
+
+/** Isolated React next renderer — not the default Electron load path. */
+async function copyRendererNextStatic() {
+  const srcDir = path.join(root, "src", "desktop", "renderer-next");
+  const outDir = path.join(outRoot, "renderer-next");
+  await fs.copyFile(path.join(srcDir, "index.html"), path.join(outDir, "index.html"));
+  const stylesSrc = path.join(srcDir, "styles");
+  const stylesOut = path.join(outDir, "styles");
   await fs.mkdir(stylesOut, { recursive: true });
   for (const name of await fs.readdir(stylesSrc)) {
     if (!name.endsWith(".css")) continue;
@@ -58,7 +73,7 @@ async function build() {
     logLevel: "info",
   });
 
-  // Renderer modules (browser)
+  // Renderer modules (browser) — current default workbench
   await esbuild.build({
     entryPoints: [
       path.join(root, "src/desktop/renderer/main-ui.ts"),
@@ -74,7 +89,27 @@ async function build() {
     logLevel: "info",
   });
 
+  // Isolated next renderer (React). Output only under renderer-next/;
+  // Electron default mainHtml still points at desktop/dist/renderer/index.html.
+  await esbuild.build({
+    entryPoints: [path.join(root, "src/desktop/renderer-next/main.tsx")],
+    bundle: true,
+    platform: "browser",
+    format: "esm",
+    target: "es2022",
+    outfile: path.join(outRoot, "renderer-next", "main.js"),
+    sourcemap: true,
+    logLevel: "info",
+    loader: {
+      ".tsx": "tsx",
+      ".ts": "ts",
+      ".css": "css",
+    },
+    jsx: "automatic",
+  });
+
   await copyRendererStatic();
+  await copyRendererNextStatic();
 
   // Package entry for electron .
   await fs.writeFile(
@@ -91,7 +126,7 @@ async function build() {
     "utf8"
   );
 
-  console.log("Desktop build complete → desktop/dist");
+  console.log("Desktop build complete → desktop/dist (renderer + renderer-next)");
 }
 
 build().catch((err) => {
