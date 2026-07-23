@@ -2,6 +2,8 @@
  * Outline drawer/overlay chrome for the single-window shell.
  * Default collapsed; opened from rail/chrome. Not a stage surface.
  * Real tree projection binds later via ServiceGateway — foundation only.
+ *
+ * Panel stays in the DOM (hidden when closed) so aria-controls targets remain valid.
  */
 
 import type { OutlineChromeState } from "../types/outline.js";
@@ -21,28 +23,31 @@ export function Outline(props: OutlineProps) {
     onClose,
     subtitle = "Concept / box tree placeholder · open from rail or chrome",
   } = props;
-
-  if (!chrome.open) return null;
+  const open = chrome.open;
 
   return (
     <>
-      <button
-        type="button"
-        className="tn-outline-scrim"
-        data-region="outline-scrim"
-        aria-label="Close Outline"
-        tabIndex={-1}
-        onClick={onClose}
-      />
+      {open ? (
+        <button
+          type="button"
+          className="tn-outline-scrim"
+          data-region="outline-scrim"
+          aria-label="Close Outline"
+          tabIndex={-1}
+          onClick={onClose}
+        />
+      ) : null}
       <aside
         id={OUTLINE_PANEL_ID}
         className="tn-outline"
         data-region="outline"
-        data-outline-open="true"
+        data-outline-open={open ? "true" : "false"}
         data-current-entity={chrome.currentEntityRef ?? undefined}
         role="dialog"
-        aria-modal="true"
+        aria-modal={open ? true : undefined}
         aria-label="Outline"
+        hidden={!open}
+        inert={!open ? true : undefined}
       >
         <div className="tn-outline-head">
           <span>Outline</span>
@@ -61,7 +66,7 @@ export function Outline(props: OutlineProps) {
           <p>
             Tree projection will bind to ServiceGateway (docs.tree +
             box.projection). Expand keys and current entity are local chrome
-            state only.
+            state only — no RPC in this foundation.
           </p>
           <p data-testid="outline-current-entity">
             Current entity: {chrome.currentEntityRef ?? "—"}
@@ -69,6 +74,15 @@ export function Outline(props: OutlineProps) {
           <p data-testid="outline-expanded-count">
             Expanded nodes: {chrome.expandedIds.length}
           </p>
+          {chrome.expandedIds.length > 0 ? (
+            <ul data-testid="outline-expanded-ids" className="tn-outline-expanded-list">
+              {chrome.expandedIds.map((id) => (
+                <li key={id} data-expanded-node={id}>
+                  {id}
+                </li>
+              ))}
+            </ul>
+          ) : null}
         </div>
       </aside>
     </>

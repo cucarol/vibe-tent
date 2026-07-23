@@ -35,6 +35,13 @@ export type AppShellProps = {
   initialSurface?: AppSurfaceId;
   /** Initial Outline chrome (default collapsed). */
   initialOutline?: OutlineChromeState;
+  /**
+   * Optional controlled Outline chrome. When set with `onOutlineChange`, the
+   * shell reports open/toggle/close so hosts can apply expand/locate helpers
+   * from `types/outline.ts` without inventing a real tree.
+   */
+  outline?: OutlineChromeState;
+  onOutlineChange?: (next: OutlineChromeState) => void;
 };
 
 /**
@@ -60,29 +67,39 @@ export function AppShell(props: AppShellProps = {}) {
   const [document] = useState<CanvasDocument>(
     () => props.initialDocument ?? createEmptyCanvasDocument()
   );
-  const [outline, setOutline] = useState<OutlineChromeState>(
+  const [internalOutline, setInternalOutline] = useState<OutlineChromeState>(
     () => props.initialOutline ?? createDefaultOutlineChrome()
+  );
+  const controlled = props.outline !== undefined;
+  const outline = controlled ? props.outline! : internalOutline;
+
+  const commitOutline = useCallback(
+    (next: OutlineChromeState) => {
+      if (props.onOutlineChange) props.onOutlineChange(next);
+      if (!controlled) setInternalOutline(next);
+    },
+    [controlled, props.onOutlineChange]
   );
 
   const handleToggleOutline = useCallback(() => {
-    setOutline((prev) => toggleOutline(prev));
-  }, []);
+    commitOutline(toggleOutline(outline));
+  }, [commitOutline, outline]);
 
   const handleCloseOutline = useCallback(() => {
-    setOutline((prev) => closeOutline(prev));
-  }, []);
+    commitOutline(closeOutline(outline));
+  }, [commitOutline, outline]);
 
   useEffect(() => {
     if (!outline.open) return;
     const onKeyDown = (event: KeyboardEvent) => {
       if (event.key === "Escape") {
         event.preventDefault();
-        setOutline((prev) => closeOutline(prev));
+        commitOutline(closeOutline(outline));
       }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [outline.open]);
+  }, [outline, commitOutline]);
 
   return (
     <div

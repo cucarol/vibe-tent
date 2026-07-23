@@ -349,7 +349,9 @@ test("Outline is drawer/overlay chrome with a11y hooks, not a grid column", asyn
   assert.match(outline, /data-outline-close/);
   assert.match(outline, /onClose/);
   assert.match(outline, /id=\{OUTLINE_PANEL_ID\}/);
-  assert.match(outline, /if \(!chrome\.open\) return null/);
+  // Panel remains addressable for aria-controls when collapsed.
+  assert.match(outline, /hidden=\{!open\}/);
+  assert.doesNotMatch(outline, /if \(!chrome\.open\) return null/);
 });
 
 test("React stays a desktop devDependency, not a published runtime dep", async () => {
