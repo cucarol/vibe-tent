@@ -747,9 +747,9 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
   });
 });
 
-// ---- asSub under dispatcher's own active ancestor claim ----
+// ---- asSub under dispatcher's own active ancestor task ----
 
-test("task.dispatch asSub: allowed under ancestor owned by dispatchedBy; peer still blocked", async () => {
+test("task.dispatch asSub: allowed under dispatcher's active ancestor task; peer still blocked", async () => {
   const ws = await makeWorkspace("sub-under-claim");
   await initGitOnWorkspace(ws);
 
@@ -793,7 +793,10 @@ test("task.dispatch asSub: allowed under ancestor owned by dispatchedBy; peer st
       prompt: "peer should fail",
     });
     assert.ok(peerBlocked.error);
-    assert.match(String(peerBlocked.error!.message), /already claimed by orchestrator/i);
+    assert.match(
+      String(peerBlocked.error!.message),
+      /ancestor .* occupied by active task for orchestrator/i
+    );
 
     const subOk = await rpc(svc, "task.dispatch", {
       workspaceId,
@@ -830,7 +833,10 @@ test("task.dispatch asSub: allowed under ancestor owned by dispatchedBy; peer st
       dispatchedBy: "executor",
     });
     assert.ok(wrongDispatcher.error);
-    assert.match(String(wrongDispatcher.error!.message), /already claimed by orchestrator/i);
+    assert.match(
+      String(wrongDispatcher.error!.message),
+      /ancestor .* occupied by active task for orchestrator/i
+    );
   });
 });
 
