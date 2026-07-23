@@ -2,14 +2,13 @@
 // On any post-move failure: restore every completed note write, then restore the tree.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { isFrozen } from "./claim.js";
+import { envelopeIsActiveOccupation, isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex, resolveConcept, type OkfConcept } from "./okf.js";
 import { normalizeTarget } from "../markdown/links.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateBoxName } from "./scaffold.js";
-import { isActiveTaskState } from "./task-model.js";
 import { loadTaskEnvelopes } from "./task.js";
 import type { Box } from "./types.js";
 import {
@@ -265,16 +264,10 @@ async function assertRenameOccupationAllowed(
   tent: LoadedTent,
   concept: Box
 ): Promise<void> {
-  if (concept.fm.owner || concept.locked || hasOwnerInSubtree(concept)) {
-    throw new Error(
-      `Cannot rename ${concept.name}: active claim/owner occupies this range; stamp or force-release first.`
-    );
-  }
+  // Occupation oracle = active task envelopes only (stale owner is not a rename lock).
   const tasks = await loadTaskEnvelopes(env.fs);
   for (const task of tasks) {
-    const active =
-      isActiveTaskState(task.state) || task.status === "pending" || task.status === "taken";
-    if (!active) continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(concept.id) || task.claims.includes("root")) {
       throw new Error(
         `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
@@ -290,11 +283,6 @@ async function assertRenameOccupationAllowed(
       }
     }
   }
-}
-
-function hasOwnerInSubtree(box: Box): boolean {
-  if (box.fm.owner) return true;
-  return box.children.some(hasOwnerInSubtree);
 }
 
 function isAncestorPath(ancestor: string, child: string): boolean {

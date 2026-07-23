@@ -3,6 +3,7 @@
 import { withTentMutation } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import type { OpsEnv } from "./ops-context.js";
+import { envelopeIsActiveOccupation } from "./claim.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { typeHasCoordination } from "./typeRegistry.js";
 import { assertContentMutable, boxNotePath, isUsableBox, loadTent, type LoadedTent } from "./tree.js";
@@ -65,14 +66,10 @@ async function promoteConceptUnlocked(
 }
 
 async function assertPromoteWriteAllowed(env: OpsEnv, tent: LoadedTent, concept: Box): Promise<void> {
-  if (concept.fm.owner || concept.locked) {
-    throw new Error(
-      `Cannot promote ${concept.name}: active claim/owner write-protects type changes; stamp or force-release first.`
-    );
-  }
+  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
   const tasks = await loadTaskEnvelopes(env.fs);
   for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(concept.id) || task.claims.includes("root")) {
       throw new Error(
         `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`

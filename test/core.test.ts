@@ -12,6 +12,7 @@ import { syncOkfBundle } from "../src/core/okf.js";
 import { createDelivery } from "../src/core/delivery.js";
 import { loadTaskEnvelope, loadTaskEnvelopes, relayPromptForTask } from "../src/core/task.js";
 import { cli, makeTent } from "./helpers.js";
+// loadTaskEnvelopes used by occupation tests
 
 test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
   const parent = await fs.mkdtemp(path.join(os.tmpdir(), "tent-nodefs-"));
@@ -76,32 +77,60 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
     path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
     "---\nid: bx-g3\ntype: goal\n---\n",
   );
-  const tent = await loadTent(new NodeFs(dir));
+  // Seed an active task envelope claiming bx-g2 (oracle), independent of residual owner.
+  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"),
+    [
+      "---",
+      "type: task",
+      "id: tk-activeg2",
+      "status: taken",
+      "state: running",
+      "role: executor",
+      "claims: [bx-g2]",
+      "manifest: temp/executor/manifest.yml",
+      "---",
+      "# Task",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
+  const fsa = new NodeFs(dir);
+  const tent = await loadTent(fsa);
+  const tasks = await loadTaskEnvelopes(fsa);
 
-  const g1 = tent.byId.get("bx-g1")!; // 子孙 g2 已被 executor 占
-  const check = canClaim(g1);
+  const g1 = tent.byId.get("bx-g1")!; // 子孙 g2 被 active task 占
+  const check = canClaim(g1, { tent, tasks });
   assert.equal(check.ok, false);
   assert.ok(check.blocker?.id === "bx-g2");
   assert.equal(isFrozen(g1), false, "有占用子孙的祖先不冻结");
+  // Residual owner on g2 still projects lock for UI/compat, but claim oracle is task.
   assert.equal(g1.locked, false);
   assert.equal(g1.lockSource, undefined);
   assert.equal(g1.lockOwner, undefined);
 
   const g2 = tent.byId.get("bx-g2")!;
-  assert.equal(canClaim(g2).ok, false, "自己已被占");
-  assert.equal(isFrozen(g2), true, "占用框自身冻结");
+  assert.equal(canClaim(g2, { tent, tasks }).ok, false, "自己已被 active task 占");
+  assert.equal(isFrozen(g2), true, "占用框自身冻结 (legacy owner lock projection)");
   assert.equal(g2.locked, true);
   assert.equal(g2.lockSource, "self");
   assert.equal(g2.lockOwner, "executor");
 
   const g3 = tent.byId.get("bx-g3")!;
-  const descendantCheck = canClaim(g3);
+  const descendantCheck = canClaim(g3, { tent, tasks });
   assert.equal(descendantCheck.ok, false, "占用框的子孙仍不能被重复认领");
   assert.equal(descendantCheck.blocker?.id, "bx-g2");
-  assert.equal(isFrozen(g3), true, "占用框的子孙冻结");
+  assert.equal(isFrozen(g3), true, "占用框的子孙冻结 (legacy owner lock projection)");
   assert.equal(g3.locked, true);
   assert.equal(g3.lockSource, "ancestor");
   assert.equal(g3.lockOwner, "executor");
+
+  // Stale owner alone (no active task) must not block claim.
+  await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"));
+  const tent2 = await loadTent(fsa);
+  const tasks2 = await loadTaskEnvelopes(fsa);
+  assert.equal(canClaim(tent2.byId.get("bx-g2")!, { tent: tent2, tasks: tasks2 }).ok, true);
 });
 
 test("loadTent:缺省根排序按稳定名称,不再按 zone 排名", async () => {
@@ -226,17 +255,17 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
 
   await assert.rejects(
     () => dispatch(env as any, "bx-p1", "analyst", "重复派活"),
-    /already awaiting delivery to analyst\./,
+    /already occupied by active task for analyst\./,
     "同一框 pending envelope 也算占位",
   );
   await assert.rejects(
     () => dispatch(env as any, "bx-p2", "analyst", "对子孙重复派活"),
-    /Ancestor 表达式任务书 is awaiting delivery to analyst\./,
+    /Ancestor 表达式任务书 is occupied by active task for analyst\./,
     "pending envelope 挡住子孙",
   );
   await assert.rejects(
     () => dispatch(env as any, "bx-promptzone", "analyst", "对祖先重复派活"),
-    /Descendant 表达式任务书 is awaiting delivery to analyst\./,
+    /Descendant 表达式任务书 is occupied by active task for analyst\./,
     "pending envelope 挡住祖先",
   );
 
@@ -457,6 +486,25 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
 
 test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", async () => {
   const dir = await makeTent();
+  // Occupation oracle = active task envelope (residual owner alone is not a move lock).
+  await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
+  await fs.writeFile(
+    path.join(dir, "temp", "executor", "tasks", "task-move-g2.md"),
+    [
+      "---",
+      "type: task",
+      "id: tk-moveg2",
+      "status: taken",
+      "state: running",
+      "role: executor",
+      "claims: [bx-g2]",
+      "manifest: temp/executor/manifest.yml",
+      "---",
+      "# Task",
+      "",
+    ].join("\n"),
+    "utf8"
+  );
   const env = {
     fs: new NodeFs(dir),
     git: { run: async () => "" },
@@ -466,13 +514,14 @@ test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", asyn
   const { placeBox } = await import("../src/core/ops.js");
   await assert.rejects(
     () => placeBox(env as any, "goal/挖新alpha/写表达式", "prompt", { mode: "inside" }),
-    /Claimed ranges cannot be moved/,
+    /active task cannot be moved|Ranges with an active task cannot be moved/,
   );
   await assert.rejects(
     () => placeBox(env as any, "prompt/旧站资料", "goal/挖新alpha/写表达式", { mode: "inside" }),
-    /Cannot move into a claimed range/,
+    /Cannot move into a range occupied by an active task/,
   );
 
+  // Ancestor of an occupied box may still move (subtree moves with it).
   await placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" });
   const tent = await loadTent(new NodeFs(dir));
   const prompt = tent.byId.get("bx-promptzone")!;

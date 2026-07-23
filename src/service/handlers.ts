@@ -103,6 +103,7 @@ import {
   type AnnotationProjection,
   type AnnotationRecord,
 } from "../core/annotation.js";
+import { envelopeIsActiveOccupation } from "../core/claim.js";
 import {
   TaskLifecycleError,
   isActiveTaskState,
@@ -7534,9 +7535,9 @@ function assertDocsWriteAllowed(
   const concept = tent.byId.get(conceptId);
   if (!concept) return;
 
+  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
   const active = hasActiveTaskForConcept(tent, conceptId, concept.path, tasks);
-  const occupied = active || !!concept.fm.owner || concept.locked;
-  if (!occupied) return;
+  if (!active) return;
 
   throw new RpcError(
     -32010,
@@ -7618,21 +7619,7 @@ function hasActiveTaskForConcept(
   tasks: import("../core/task.js").TaskEnvelope[]
 ): boolean {
   for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
-    // Prefer full state when available
-    const state = task.state;
-    if (
-      state &&
-      state !== "queued" &&
-      state !== "running" &&
-      state !== "waiting" &&
-      state !== "delivered"
-    ) {
-      // terminal legacy taken may still show status=taken after interrupt — check state
-      if (state === "accepted" || state === "interrupted" || state === "failed" || state === "rejected") {
-        continue;
-      }
-    }
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(conceptId) || task.claims.includes("root")) return true;
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);

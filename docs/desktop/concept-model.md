@@ -96,12 +96,15 @@ status: todo           # todo | doing | done — doing/assignee projected from a
 | `id` | Required; `cx-…` after migration |
 | `type` | Required, non-empty; resolved via type registry |
 | `tags` | Optional; never replace type or hierarchy |
-| `status` | Only meaningful for coordination-enabled types |
-| `assignee` | Projection of active task (Task API); not a competing owner fact |
+| `status` | Long-lived summary for coordination-enabled types (`todo` / `doing` / `done`). Lifecycle may update it; **not** a claim/dispatch mutex |
+| `assignee` | API projection of the active task only; not an independent owner fact |
+| legacy `owner` | Compatible residual field; may still be written as a projection; **not** runtime occupation authority |
 | `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
 | Readable/writable axes | Honor contract per type/box; orthogonal to `coordination` |
 
-**Active-task write guard:** when a box has an active task, ordinary **`docs.write`** (and equivalent body/frontmatter patches) **must not** change projected collaboration fields (`status` when service-owned as `doing`, `assignee`, legacy `owner`). Service rejects those field patches; clients use Task API transitions. Non-projection body edits remain allowed subject to etag concurrency.
+**Occupation authority:** only an **active Task envelope** occupies a box for mutual exclusion and for `box.projection` assignee/`activeTaskId`. See Task API §2.3.
+
+**Active-task write guard:** when a box has an **active task**, ordinary **`docs.write`** (and equivalent body/frontmatter patches) **must not** change projected collaboration fields (`status` while task-owned as `doing`, `assignee`, legacy `owner`). Service rejects those field patches; clients use Task API transitions. Residual `owner` without an active task does **not** arm this guard. Non-projection body edits remain allowed subject to etag concurrency.
 
 ---
 

@@ -225,6 +225,18 @@ test("box.projection: stale owner/doing without active task → todo, no assigne
     assert.equal(proj.status, "todo");
     assert.equal(proj.assignee, undefined);
     assert.equal(proj.activeTaskId, undefined);
+
+    // Stale owner must not block a new dispatch (occupation oracle = active task only).
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId,
+      role: "executor",
+      prompt: "reclaim after orphan owner",
+    })) as { taskPath: string };
+    assert.ok(dispatched.taskPath);
+    const after = (await client.boxProjection(workspaceId, { id: boxId })) as BoxProjectionResult;
+    assert.equal(after.status, "doing");
+    assert.equal(after.assignee, "executor");
+    assert.ok(after.activeTaskId);
   });
 });
 

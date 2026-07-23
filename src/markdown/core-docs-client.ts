@@ -5,6 +5,7 @@ import { createBox, forkNode } from "../core/ops.js";
 import { promoteConcept } from "../core/concept.js";
 import { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, boxNotePath, type LoadedTent } from "../core/tree.js";
+import { envelopeIsActiveOccupation } from "../core/claim.js";
 import { loadTaskEnvelopes } from "../core/task.js";
 import type { Box } from "../core/types.js";
 import { withTentMutation } from "../core/adapter.js";
@@ -338,10 +339,10 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 }
 
 async function hasActiveTask(env: OpsEnv, tent: LoadedTent, box: Box): Promise<boolean> {
-  if (box.fm.owner || box.locked) return true;
+  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
   const tasks = await loadTaskEnvelopes(env.fs);
   for (const task of tasks) {
-    if (task.status !== "pending" && task.status !== "taken") continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
     if (task.claims.includes(box.id) || task.claims.includes("root")) return true;
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);

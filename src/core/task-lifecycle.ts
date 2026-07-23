@@ -1,9 +1,10 @@
 // Task lifecycle API (B4) — claim / wait / deliver / accept / reject / interrupt.
 // Uses existing envelope files under temp/<role>/tasks and delivery records.
-// Box status/owner remain projections written via frontmatter (B1/B2 compatible).
+// Runtime occupation oracle = active Task envelope only.
+// Box status/owner remain optional frontmatter projections (legacy-compatible summary).
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { canClaim } from "./claim.js";
+import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
 import {
   createDeliveryUnlocked,
   loadDeliveries,
@@ -30,7 +31,6 @@ import {
   assertReviewAuthority,
   assertTransition,
   evaluateA2A,
-  isActiveTaskState,
   projectBoxFromTask,
   resolveDeliverRouting,
   TaskLifecycleError,
@@ -110,10 +110,15 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
 
     // asSub: helper may claim a free child under dispatchedBy's active ancestor occupation.
     // Peer claims still require a fully free ancestor/descendant chain.
+    // Occupation oracle = active Task envelopes only (not stale frontmatter owner).
     const allowAncestorClaimedBy =
       taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role
         ? task.dispatchedBy
         : undefined;
+
+    const allTasks = await loadTaskEnvelopes(env.fs);
+    // Exclude this task itself (still queued) so claim is not blocked by its own envelope.
+    const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
 
     for (const box of claimedBoxes) {
       if (!box.coordination) {
@@ -122,6 +127,8 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
         );
       }
       const claimable = canClaim(box, {
+        tent,
+        tasks: peerTasks,
         ...(allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}),
       });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
@@ -456,10 +463,10 @@ export function assertA2AAllow(input: TaskStartSessionGateInput): void {
   }
 }
 
-/** Find active operational task for a box (full state, not only owner). */
+/** Find active operational task for a box (envelope oracle; not frontmatter owner). */
 export async function findActiveTaskForBox(fs: FsAdapter, boxId: string): Promise<TaskEnvelope | undefined> {
   const tasks = await loadTaskEnvelopes(fs);
-  return tasks.find((t) => t.claims.includes(boxId) && isActiveTaskState(t.state));
+  return tasks.find((t) => t.claims.includes(boxId) && envelopeIsActiveOccupation(t));
 }
 
 export function boxProjectionOf(task: TaskEnvelope | undefined): {
@@ -468,7 +475,7 @@ export function boxProjectionOf(task: TaskEnvelope | undefined): {
   activeTaskId?: string;
 } {
   if (!task) return { status: "todo" };
-  const active = isActiveTaskState(task.state);
+  const active = envelopeIsActiveOccupation(task);
   const proj = projectBoxFromTask({
     active,
     terminalState: active ? undefined : task.state,
@@ -477,7 +484,7 @@ export function boxProjectionOf(task: TaskEnvelope | undefined): {
     status: proj.status,
     // assignee is the stable label (role name or profileId).
     assignee: proj.clearAssignee ? undefined : task.role,
-    activeTaskId: task.id || task.path,
+    activeTaskId: active ? task.id || task.path : undefined,
   };
 }
 

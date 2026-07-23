@@ -186,17 +186,26 @@ Rules:
 - Default reject path is **rework**: `delivered → running` with review note, matching current “reject keeps occupation”.
 - Adapter process events never write box frontmatter; the service maps them into `running | waiting | failed`.
 
-### 2.3 Box projection
+### 2.3 Occupation oracle and box projection
 
-| Condition | `box.status` | `box.assignee` |
-| --- | --- | --- |
-| No active task; never completed | `todo` (or prior user-set non-doing value) | empty |
-| Active task present | `doing` | task.assignee |
-| Last terminal state `accepted`, no new task | `done` | empty |
-| After `interrupt` / terminal `rejected` without rework | `todo` | empty |
-| After `failed` (unrecoverable) | `todo` | empty |
+**Single runtime oracle:** active Task envelopes (`queued | running | waiting | delivered`, including legacy envelopes that only carry `status: pending|taken` and derive `state`) are the **only** mutual-exclusion source for `task.dispatch` / `task.claim` and for write-protecting projected collab fields.
 
-**Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task—including via ordinary **`docs.write`** / frontmatter body patches. While an active task occupies the box, service/core **must reject** competing writes to projected collaboration fields (`status` when service-owned as `doing`, `assignee`, legacy `owner`). Use Task API transitions only. Migration may synthesize a running task from orphan `owner` or force-idle before cutover.
+| Source | Role |
+| --- | --- |
+| Active Task envelope (`claims` + lifecycle `state`) | **Mutex + assignee + `activeTaskId`** |
+| Node `status` (`todo` / `doing` / `done`) | Long-lived **user-visible summary**; lifecycle may project it; **not** a mutex |
+| Legacy frontmatter `owner` | **Compatible read / gradual retire**; lifecycle may still project it on claim/accept; **never** blocks dispatch/claim when no active task remains |
+
+| Condition | `box.status` (projection) | `box.assignee` | `activeTaskId` |
+| --- | --- | --- | --- |
+| No active task; never completed | `todo` (or prior durable non-doing summary) | empty | empty |
+| Active task present | `doing` | task assignee label | task id/path |
+| Last terminal state `accepted`, no new task | `done` | empty | empty |
+| After `interrupt` / terminal `rejected` without rework | `todo` | empty | empty |
+| After `failed` (unrecoverable) | `todo` | empty | empty |
+| Stale `owner` / `status: doing` **without** active task | `todo` | empty | empty |
+
+**Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task—including via ordinary **`docs.write`** / frontmatter body patches. While an **active task** occupies the box, service/core **must reject** competing writes to projected collaboration fields. Use Task API transitions only. Orphan residual `owner` without an active task **must not** pretend occupation and **must not** block a new dispatch/claim.
 
 ### 2.4 Parallelism and `docs.fork`
 
@@ -252,8 +261,8 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `annotation.list` / `annotation.create` / `annotation.resolve` / `annotation.reopen` / `annotation.delete` — Node Markdown **underline annotations** (划线注释). First-class records under system root (`annotations.json`), keyed by `nodeId` (not path). Mutations are **user-only** via MutationBus. Create validates body range/quote + `documentEtag` (docs etag family). List projects live relocate (`anchored` \| `relocated` \| `orphan`) without rewriting stored anchors or the document. Events: `annotation.changed` (invalidation only; payload `action`, `id`, `nodeId`). Not chat, not Task, not auto Agent inject — UI may later map a comment to `task.sendInput` explicitly.
 - `box.projection({ workspaceId, id | path | boxId })` → `{ workspaceId, boxId, status, assignee?, activeTaskId? }`
   - Same concept selector conventions as `docs.get` (`id` / `boxId` / `path`); missing, duplicate-id, or structurally invalid concepts fail cleanly instead of projecting misleading state.
-  - Active task is authoritative: `status=doing`, `assignee` = task role, `activeTaskId` set.
-  - With no active task: preserve `done` only when the box's current persisted status is `done`; stale `doing` / owner must project `todo` with no assignee (never pretend occupation).
+  - **Active task envelope is the sole occupation oracle:** `status=doing`, `assignee` = task role/profile label, `activeTaskId` set.
+  - With no active task: preserve `done` only when the box's current persisted status is `done`; stale `doing` / residual `owner` must project `todo` with no assignee (never pretend occupation). Node `status` remains a durable summary field, not a mutex.
 - `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `userAsk.pending` / `userAsk.resolved`, `taskInput.pending` / `taskInput.delivered` / `taskInput.consumed` / `taskInput.cancelled`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), `annotation.changed` (after successful annotation create/resolve/reopen/delete; payload `action`, `id`, `nodeId`), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.

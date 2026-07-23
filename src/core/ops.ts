@@ -7,7 +7,13 @@ import { makeUniqueConceptId } from "./id.js";
 import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType, NodeMode } from "./types.js";
-import { canClaim, isFrozen, occupiedBoxes } from "./claim.js";
+import {
+  canClaim,
+  envelopeIsActiveOccupation,
+  findActiveOccupation,
+  occupiedBoxesFromTasks,
+  structuralClaimGate,
+} from "./claim.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
 import {
   addRegistryTag,
@@ -136,17 +142,22 @@ async function dispatchUnlocked(
       : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
-  // asSub: dispatcher may hand a free child under its own active claim to a helper.
-  // Peer dispatch still forbids any owner/pending overlap (including ancestor claims).
+  // asSub: dispatcher may hand a free child under its own active task to a helper.
+  // Peer dispatch forbids any active-task overlap (including ancestor claims).
+  // Stale frontmatter owner is NOT a mutex — only active Task envelopes are.
   const asSub = options.asSub === true;
   const dispatcher = (options.dispatchedBy || "").trim();
   const subUnderDispatcher =
     asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
 
   if (claim.root) {
-    const occupied = occupiedBoxes(tent);
+    const occupied = occupiedBoxesFromTasks(tent, tasks);
     if (occupied.length > 0) {
-      throw new Error(`Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${occupied[0].fm.owner}).`);
+      const hit = findActiveOccupation(tent, occupied[0], tasks);
+      const who = hit?.task.role || "unknown";
+      throw new Error(
+        `Cannot dispatch: Tent root already has an active claim ${occupied[0].name} (${who}).`
+      );
     }
   } else {
     if (!claim.box.coordination) {
@@ -154,44 +165,19 @@ async function dispatchUnlocked(
         `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
       );
     }
-    const existingOwner = ownerCovering(claim.box);
-    if (existingOwner) {
-      const owner = (existingOwner.fm.owner || "").trim();
-      const allowedBySub =
-        subUnderDispatcher &&
-        owner === dispatcher &&
-        // Child itself must still be free; only ancestor ownership by dispatcher is ok.
-        existingOwner.id !== claim.box.id;
-      if (!allowedBySub) {
-        throw new Error(`Cannot dispatch: ${existingOwner.name} is already claimed by ${existingOwner.fm.owner}.`);
-      }
+    const structural = structuralClaimGate(claim.box);
+    if (!structural.ok) {
+      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
     }
-    if (subUnderDispatcher) {
-      // Child must be free of its own owner/descendant occupation; ancestor owned by
-      // dispatcher is the intended sub-under-claim pattern and is skipped above.
-      if (claim.box.invalid) {
-        throw new Error(`Cannot dispatch: Invalid subtree: ${claim.box.invalidReason || "missing type definition"}`);
-      }
-      if (claim.box.archived) {
-        throw new Error("Cannot dispatch: Archived subtree cannot be claimed.");
-      }
-      if (claim.box.fm.owner) {
-        throw new Error(`Cannot dispatch: Already claimed by ${claim.box.fm.owner}.`);
-      }
-      const occupiedChild = findOccupiedDescendant(claim.box);
-      if (occupiedChild) {
-        throw new Error(
-          `Cannot dispatch: Descendant ${occupiedChild.name} is already claimed by ${occupiedChild.fm.owner}.`
-        );
-      }
-    } else {
-      const claimable = canClaim(claim.box);
-      if (!claimable.ok) throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    }
-    const pendingBlocker = pendingClaimCovering(tent, claim.box, tasks, {
-      allowAncestorClaimedBy: subUnderDispatcher ? dispatcher : undefined,
+    // Single occupation oracle: active task envelopes (self / ancestor / descendant).
+    const claimable = canClaim(claim.box, {
+      tent,
+      tasks,
+      ...(subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}),
     });
-    if (pendingBlocker) throw new Error(`Cannot dispatch: ${pendingBlocker.reason}`);
+    if (!claimable.ok) {
+      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
   }
 
   try {
@@ -461,14 +447,33 @@ async function placeBoxUnlocked(
   if (!moved) throw new Error(`Box not found: ${fromPath}.`);
   if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
   assertContentMutable(moved, "moved");
-  if (isFrozen(moved)) throw new Error("Claimed ranges cannot be moved; stamp or force-release the owner first.");
+  // Occupation oracle = active tasks (stale owner / locked-from-owner is not a move lock).
+  // Freeze model (matches historical isFrozen): a box is frozen when it is the claim
+  // root or sits under a claim root — not when it merely has an occupied descendant.
+  // Thus ancestors of an occupied box may still move (the claim moves with the subtree).
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const movedHit = findActiveOccupation(before, moved, tasks);
+  if (
+    movedHit &&
+    (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")
+  ) {
+    throw new Error("Ranges with an active task cannot be moved; complete or interrupt the task first.");
+  }
+  if (moved.invalid || moved.archived) {
+    throw new Error("Invalid or archived boxes cannot be moved.");
+  }
   const movedId = moved.id;
   const movedName = fromPath.slice(fromPath.lastIndexOf("/") + 1);
 
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
   if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
   if (parentBox) assertContentMutable(parentBox, "used as move parent");
-  if (parentBox && isFrozen(parentBox)) throw new Error("Cannot move into a claimed range; stamp or force-release the owner first.");
+  // Target parent is blocked only when the parent itself (or its ancestor) is occupied —
+  // a claimed sibling/descendant under the parent does not freeze the parent slot.
+  const parentHit = parentBox ? findActiveOccupation(before, parentBox, tasks) : undefined;
+  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
+    throw new Error("Cannot move into a range occupied by an active task; complete or interrupt the task first.");
+  }
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
     throw new Error("Cannot move a box into its own subtree.");
   }
@@ -551,7 +556,15 @@ async function patchBoxUnlocked(
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
   }
   if ("status" in patch) {
-    if (box.fm.owner) throw new Error("Status for claimed boxes can only be changed by completing or force-releasing.");
+    // Status is a long-lived user summary, not a mutex — but while an active task
+    // occupies the box, collaboration status is projected by task.* only.
+    const tasks = await loadTaskEnvelopes(env.fs);
+    const occupied = findActiveOccupation(tent, box, tasks);
+    if (occupied) {
+      throw new Error(
+        "Status for boxes with an active task can only be changed by completing or interrupting the task."
+      );
+    }
     if (patch.status !== undefined && !["todo", "doing", "done"].includes(String(patch.status))) {
       throw new Error("Status must be todo, doing, or done.");
     }
@@ -642,14 +655,15 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode): 
     return;
   }
 
-  // archived root may restore to editable without frozen check (same as restoreBox today).
-  // Other mode transitions still respect freeze (claimed ranges).
+  // archived root may restore to editable without occupation check (same as restoreBox today).
+  // Other mode transitions block only while an active task occupies the range.
   if (next === "archived" || current !== "archived") {
-    if (isFrozen(box)) {
+    const tasks = await loadTaskEnvelopes(env.fs);
+    if (findActiveOccupation(tent, box, tasks)) {
       throw new Error(
         next === "archived"
-          ? "Claimed ranges cannot be archived; stamp or force-release the owner first."
-          : "Claimed ranges cannot change mode; stamp or force-release the owner first."
+          ? "Ranges with an active task cannot be archived; complete or interrupt the task first."
+          : "Ranges with an active task cannot change mode; complete or interrupt the task first."
       );
     }
   }
@@ -791,77 +805,14 @@ function assertRoleName(role: string): string {
   return name;
 }
 
-function ownerCovering(box: Box): Box | undefined {
-  if (box.fm.owner) return box;
-  let parent = box.parent;
-  while (parent) {
-    if (parent.fm.owner) return parent;
-    parent = parent.parent;
-  }
-  return undefined;
-}
-
-function pendingClaimCovering(
-  tent: LoadedTent,
-  box: Box,
-  tasks: TaskEnvelope[],
-  options?: { allowAncestorClaimedBy?: string }
-): { reason: string } | undefined {
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  for (const task of tasks) {
-    // Any active task (queued/running/waiting/delivered) blocks overlapping dispatch.
-    const active =
-      task.state
-        ? task.state === "queued" ||
-          task.state === "running" ||
-          task.state === "waiting" ||
-          task.state === "delivered"
-        : task.status === "pending" || task.status === "taken";
-    if (!active) continue;
-    // taken/running already projects owner; still block by task for topology consistency.
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        return { reason: `Tent root is awaiting delivery to ${task.role}.` };
-      }
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (claimed.id === box.id) {
-        return { reason: `${box.name} is already awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(claimed, box)) {
-        // asSub under the dispatcher's own active ancestor claim is allowed.
-        if (allowAncestorBy && task.role === allowAncestorBy) {
-          continue;
-        }
-        return { reason: `Ancestor ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-      if (isAncestor(box, claimed)) {
-        return { reason: `Descendant ${claimed.name} is awaiting delivery to ${task.role}.` };
-      }
-    }
-  }
-  return undefined;
-}
-
-/** First descendant with an owner (not including the root box itself). */
-function findOccupiedDescendant(box: Box): Box | undefined {
-  for (const child of box.children) {
-    if (child.fm.owner) return child;
-    const deep = findOccupiedDescendant(child);
-    if (deep) return deep;
-  }
-  return undefined;
-}
-
 function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks: TaskEnvelope[]): Box[] {
   const claims = new Map<string, Box>();
-  for (const box of tent.byPath.values()) {
-    if (box.fm.owner === role) claims.set(box.id, box);
-  }
   for (const task of tasks) {
     // Only durable role tasks share multi-claim aggregation; profile tasks are one-shot.
     if (taskAssigneeKind(task) !== "role") continue;
-    if (task.status !== "pending" || task.role !== role) continue;
+    if (task.role !== role) continue;
+    // Active occupation only — do not re-accumulate from stale frontmatter owner.
+    if (!envelopeIsActiveOccupation(task)) continue;
     for (const claimId of task.claims) {
       const box = tent.byId.get(claimId);
       if (box) claims.set(box.id, box);
@@ -869,15 +820,6 @@ function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks:
   }
   claims.set(current.id, current);
   return [...claims.values()];
-}
-
-function isAncestor(ancestor: Box, child: Box): boolean {
-  let parent = child.parent;
-  while (parent) {
-    if (parent.id === ancestor.id) return true;
-    parent = parent.parent;
-  }
-  return false;
 }
 
 function requireBoxById(tent: LoadedTent, boxId: string): Box {

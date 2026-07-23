@@ -100,6 +100,8 @@ async function exists(target: string): Promise<boolean> {
 }
 
 function activeClaimBoxes(tent: LoadedTent): Box[] {
+  // Residual frontmatter owner for human status text only — not occupation oracle.
+  // Prefer task list above for true pending occupation.
   return [...tent.byId.values()]
     .filter((box) => !!box.fm.owner)
     .sort((a, b) => a.path.localeCompare(b.path));

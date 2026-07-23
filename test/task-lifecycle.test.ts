@@ -259,6 +259,70 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   assert.equal(task.state, "interrupted");
 });
 
+test("lifecycle: stale frontmatter owner does not block dispatch/claim", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  // bx-g2 fixture has residual owner=executor / status=doing with no task envelope.
+  const r = await dispatch(e as any, "bx-g2", "reviewer", {
+    userPrompt: "reclaim after orphan owner",
+  });
+  assert.ok(r.taskPath);
+  const claimed = await taskClaim(e as any, r.taskPath);
+  assert.equal(claimed.state, "running");
+  const box = (await loadTent(e.fs)).byId.get("bx-g2")!;
+  // Lifecycle projects current assignee; residual owner is overwritten, not treated as mutex.
+  assert.equal(box.fm.owner, "reviewer");
+  assert.equal(box.fm.status, "doing");
+  const active = await findActiveTaskForBox(e.fs, "bx-g2");
+  assert.ok(active);
+  assert.equal(active!.role, "reviewer");
+});
+
+test("lifecycle: second active task on same box is rejected (envelope oracle)", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  const r1 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "first" });
+  assert.equal((await loadTaskEnvelope(e.fs, r1.taskPath)).state, "queued");
+  await assert.rejects(
+    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "overlap" }),
+    /already occupied by active task|Cannot dispatch/
+  );
+  // Peer claim of a different free box still works (bx-o1 is outside p1 subtree).
+  const r2 = await dispatch(e as any, "bx-o1", "reviewer", { userPrompt: "other box" });
+  assert.ok(r2.taskPath);
+});
+
+test("lifecycle: legacy envelope without state still occupies via status", async () => {
+  const dir = await makeTent();
+  const e = env(dir);
+  await e.fs.writeFile(
+    "temp/executor/tasks/task-legacy-only.md",
+    [
+      "---",
+      "type: task",
+      "id: tk-legacy1",
+      "status: pending",
+      "role: executor",
+      "claims: [bx-p1]",
+      "manifest: temp/executor/manifest.yml",
+      "---",
+      "# legacy",
+      "",
+    ].join("\n")
+  );
+  // loadTaskEnvelope normalizes state from legacy status when missing.
+  const legacy = await loadTaskEnvelope(e.fs, "temp/executor/tasks/task-legacy-only.md");
+  assert.equal(legacy.state, "queued");
+  await assert.rejects(
+    () => dispatch(e as any, "bx-p1", "reviewer", { userPrompt: "blocked by legacy" }),
+    /already occupied by active task|Cannot dispatch/
+  );
+  const proj = boxProjectionOf(legacy);
+  assert.equal(proj.status, "doing");
+  assert.equal(proj.assignee, "executor");
+  assert.ok(proj.activeTaskId);
+});
+
 test("lifecycle: taskFail releases occupation; idempotent; re-dispatch same box", async () => {
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
