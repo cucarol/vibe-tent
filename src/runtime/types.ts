@@ -20,7 +20,9 @@ export type RuntimeEvent =
   | { type: "session.stdout_tail"; sessionId: string; text: string }
   /**
    * Managed ACP: first session/prompt finished successfully (end_turn).
-   * `assistantText` is the accumulated agent_message_chunk body only (not thoughts).
+   * `assistantText` is the final user-facing assistant reply only: last non-empty
+   * contiguous agent_message_chunk segment after tool/status/thought separators
+   * (not intermediate narrations, thoughts, or tool/status diagnostics).
    * Local Service may auto-deliver this as the task report — never a chat-UI message.
    */
   | {

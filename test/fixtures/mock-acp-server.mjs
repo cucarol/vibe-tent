@@ -5,7 +5,10 @@
  * NEVER contacts api.x.ai or any network. Refuse if asked to.
  *
  * Env:
- *   MOCK_ACP_PROMPT_TEXT — text chunk to stream (default "MOCK_ACP_OK")
+ *   MOCK_ACP_PROMPT_TEXT — final assistant message text (default "MOCK_ACP_OK")
+ *   MOCK_ACP_INTERMEDIATE_TEXT — optional pre-tool assistant narration; when set,
+ *     stream this agent_message_chunk before tool_call, then PROMPT_TEXT after tools
+ *     (regression: Delivery.summary must keep only the final segment)
  *   MOCK_ACP_FOLLOWUP_TEXT — text for prompts containing "## User Answer", "## User Input", or "## Review Feedback" (default MOCK_ACP_PROMPT_TEXT)
  *   MOCK_ACP_PROMPT_DELAY_MS — delay before completing bootstrap session/prompt (default 0)
  *   MOCK_ACP_FOLLOWUP_DELAY_MS — delay before completing U2A follow-up prompts (default 0)
@@ -34,6 +37,8 @@ for (const arg of process.argv) {
 }
 
 const promptText = process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
+/** Pre-tool assistant narration (empty = single final message only, legacy path). */
+const intermediateText = process.env.MOCK_ACP_INTERMEDIATE_TEXT || "";
 const followupText =
   process.env.MOCK_ACP_FOLLOWUP_TEXT || process.env.MOCK_ACP_PROMPT_TEXT || "MOCK_ACP_OK";
 const promptDelayMs = Math.max(
@@ -181,6 +186,8 @@ function schedulePostResponseTail() {
 
 let nextServerId = 9000;
 const pendingPermission = new Map();
+/** When multi-segment intermediate mode is active, final text after permission settle. */
+const pendingFinalMessageByPromptId = new Map();
 
 const rl = readline.createInterface({ input: process.stdin });
 rl.on("line", (line) => {
@@ -409,13 +416,25 @@ rl.on("line", (line) => {
         return;
       }
 
-      // Stream thought + optional message + tool call updates.
+      // Realistic multi-burst turn:
+      // thought → optional intermediate assistant update → tool → final assistant reply.
+      // Delivery.summary must use only the last non-empty agent_message segment.
       notifyUpdate({
         sessionUpdate: "agent_thought_chunk",
         content: { type: "text", text: "thinking..." },
       });
       const modeForThis = isUserFollowUp ? "ok" : promptMode;
-      if (modeForThis !== "empty") {
+      const hasIntermediate =
+        !isUserFollowUp &&
+        typeof intermediateText === "string" &&
+        intermediateText.length > 0;
+      if (modeForThis !== "empty" && hasIntermediate) {
+        notifyUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: intermediateText },
+        });
+      } else if (modeForThis !== "empty" && !hasIntermediate) {
+        // Legacy single-message path: final text before tools (still one segment).
         notifyUpdate({
           sessionUpdate: "agent_message_chunk",
           content: { type: "text", text: activePromptText },
@@ -429,6 +448,9 @@ rl.on("line", (line) => {
       });
 
       if (requestPermission && !isUserFollowUp) {
+        if (modeForThis !== "empty" && hasIntermediate) {
+          pendingFinalMessageByPromptId.set(msg.id, activePromptText);
+        }
         for (let i = 0; i < permissionCount; i += 1) {
           const permId = nextServerId++;
           const suffix = permissionCount > 1 ? `_${i + 1}` : "";
@@ -459,6 +481,13 @@ rl.on("line", (line) => {
         toolCallId: "tc-1",
         status: "completed",
       });
+      // After tools: final user-facing report (multi-segment path only).
+      if (modeForThis !== "empty" && hasIntermediate) {
+        notifyUpdate({
+          sessionUpdate: "agent_message_chunk",
+          content: { type: "text", text: activePromptText },
+        });
+      }
       write({
         jsonrpc: "2.0",
         id: msg.id,
@@ -509,6 +538,14 @@ rl.on("line", (line) => {
     if ([...pendingPermission.values()].includes(promptId)) {
       flushLog();
       return;
+    }
+    const finalAfterTools = pendingFinalMessageByPromptId.get(promptId);
+    pendingFinalMessageByPromptId.delete(promptId);
+    if (typeof finalAfterTools === "string" && finalAfterTools.length > 0) {
+      notifyUpdate({
+        sessionUpdate: "agent_message_chunk",
+        content: { type: "text", text: finalAfterTools },
+      });
     }
     write({
       jsonrpc: "2.0",

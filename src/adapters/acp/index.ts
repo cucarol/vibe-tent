@@ -10,6 +10,11 @@ export {
   type AcpStartResult,
 } from "./client.js";
 export {
+  isAssistantMessageChunkKind,
+  sealAssistantMessageSegment,
+  selectFinalAssistantReport,
+} from "./assistant-report.js";
+export {
   DEFAULT_PERMISSION_TIMEOUT_MS,
   DEFAULT_PROMPT_TIMEOUT_MS,
   type AcpAuthenticateParams,

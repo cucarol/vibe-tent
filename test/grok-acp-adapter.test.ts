@@ -1147,6 +1147,65 @@ test("mock ACP: prompt_complete emits assistant_message only (not thoughts)", as
   await runtime.shutdown();
 });
 
+test("mock ACP: multi-segment turn keeps only final assistant reply in prompt_complete", async () => {
+  const dataDir = await tempDir("tent-grok-pc-seg-");
+  const cwd = await tempDir("tent-grok-cwd-");
+  const logPath = path.join(dataDir, "mock-acp-log.json");
+
+  const adapter = createGrokAcpAdapter({
+    resolveApiKey: () => "test-key",
+  });
+  const runtime = createAgentRuntime({
+    dataDir,
+    adapters: [adapter],
+    profiles: [
+      {
+        ...mockProfile("grok-pc-seg", { logPath, apiKey: "test-key" }),
+        env: {
+          ...mockProfile("grok-pc-seg", { logPath, apiKey: "test-key" }).env,
+          MOCK_ACP_INTERMEDIATE_TEXT:
+            "I'll inspect the codebase and draft a plan first…",
+          MOCK_ACP_PROMPT_TEXT: "FINAL_DELIVERY_REPORT_ONLY",
+          MOCK_ACP_KEEP_ALIVE: "1",
+        },
+      },
+    ],
+  });
+  const events: RuntimeEvent[] = [];
+  runtime.subscribeAll((e) => events.push(e));
+
+  const sessionId = "ss-acpseg1";
+  await runtime.startSession({
+    sessionId,
+    profileId: "grok-pc-seg",
+    cwd,
+    bootstrapPrompt: "user near-field: multi-burst turn",
+  });
+  await waitFor(events, "session.live", sessionId);
+  const complete = (await waitFor(
+    events,
+    "session.prompt_complete",
+    sessionId,
+    8000
+  )) as Extract<RuntimeEvent, { type: "session.prompt_complete" }>;
+  // Delivery report must be the post-tool final segment only.
+  assert.equal(complete.assistantText, "FINAL_DELIVERY_REPORT_ONLY");
+  assert.doesNotMatch(complete.assistantText, /inspect the codebase|thinking|read_file/i);
+  // Intermediate narration still surfaces as diagnostics, not delivery text.
+  assert.ok(
+    events.some(
+      (e) =>
+        e.type === "session.stdout_tail" &&
+        e.sessionId === sessionId &&
+        /inspect the codebase/.test(e.text)
+    )
+  );
+  assert.equal(complete.stopReason, "end_turn");
+
+  await runtime.stopSession(sessionId, "user");
+  await runtime.shutdown();
+});
+
 test("mock ACP: empty assistant does not emit prompt_complete", async () => {
   const dataDir = await tempDir("tent-grok-empty-");
   const cwd = await tempDir("tent-grok-cwd-");

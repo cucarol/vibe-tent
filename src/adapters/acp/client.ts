@@ -22,6 +22,11 @@ import {
   type BootstrapImageRef,
   projectBootstrapImagesToAcpPrompt,
 } from "./image-prompt.js";
+import {
+  isAssistantMessageChunkKind,
+  sealAssistantMessageSegment,
+  selectFinalAssistantReport,
+} from "./assistant-report.js";
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
@@ -126,8 +131,15 @@ export class AcpClient {
   private lines: readline.Interface | null = null;
   private nextId = 1;
   private pending = new Map<number, Pending>();
-  /** Accumulated agent_message_chunk only — used as managed delivery report. */
-  private assistantText = "";
+  /**
+   * Sealed assistant message segments for the in-flight session/prompt.
+   * Contiguous agent_message_chunk text forms one segment; tool/status/thought
+   * (and any other non-message update) seals the open segment. Delivery summary
+   * is the last non-empty segment (see selectFinalAssistantReport).
+   */
+  private assistantMessageSegments: string[] = [];
+  /** Open (unsealed) agent_message_chunk buffer for the current segment. */
+  private assistantMessageCurrent = "";
   private stderrTail = "";
   private closed = false;
   private stopRequested = false;
@@ -203,7 +215,7 @@ export class AcpClient {
   }
 
   get lastAssistantText(): string {
-    return this.assistantText;
+    return this.finalizeAssistantReport();
   }
 
   get lastStderrTail(): string {
@@ -227,6 +239,42 @@ export class AcpClient {
     } catch {
       return false;
     }
+  }
+
+  /**
+   * Seal any open segment and return the managed delivery report for this turn:
+   * last non-empty assistant message segment (not intermediate narrations).
+   */
+  private finalizeAssistantReport(): string {
+    if (this.assistantMessageCurrent) {
+      const sealed = sealAssistantMessageSegment(
+        this.assistantMessageSegments,
+        this.assistantMessageCurrent
+      );
+      this.assistantMessageSegments = sealed.segments;
+      this.assistantMessageCurrent = sealed.current;
+    }
+    return selectFinalAssistantReport(this.assistantMessageSegments);
+  }
+
+  /** Reset per-prompt accumulation (never mix reconnect/retry chunks). */
+  private resetAssistantReport(): void {
+    this.assistantMessageSegments = [];
+    this.assistantMessageCurrent = "";
+  }
+
+  /**
+   * Non-message session/update kinds seal the open assistant segment so later
+   * message chunks become a new final-report candidate.
+   */
+  private sealOpenAssistantSegment(): void {
+    if (!this.assistantMessageCurrent) return;
+    const sealed = sealAssistantMessageSegment(
+      this.assistantMessageSegments,
+      this.assistantMessageCurrent
+    );
+    this.assistantMessageSegments = sealed.segments;
+    this.assistantMessageCurrent = sealed.current;
   }
 
   /**
@@ -301,7 +349,7 @@ export class AcpClient {
             `${this.label} session/load requires providerSessionId (resume token)`
           );
         }
-        this.assistantText = "";
+        this.resetAssistantReport();
         this.quarantiningLoadReplay = true;
         this.lastLoadReplayUpdateAt = Date.now();
         try {
@@ -316,7 +364,7 @@ export class AcpClient {
           await this.waitForLoadReplayQuiescence();
         } finally {
           this.quarantiningLoadReplay = false;
-          this.assistantText = "";
+          this.resetAssistantReport();
         }
         this.providerSessionId = loadId;
         providerSessionId = loadId;
@@ -357,7 +405,8 @@ export class AcpClient {
    * Send session/prompt with managed bootstrap (Context Card + user prompt).
    * Optional image refs are projected only when live initialize advertised
    * promptCapabilities.image === true; otherwise Markdown pointers + a short note.
-   * Accumulates agent_message_chunk only for the final report text.
+   * Collects agent_message_chunk segments; delivery report is the last non-empty
+   * segment after tool/status/thought separators (shared assistant-report contract).
    * Safe to call after connect(); failures throw (caller emits session.failed).
    */
   async sendPrompt(bootstrapPrompt: string): Promise<AcpStartResult> {
@@ -369,7 +418,7 @@ export class AcpClient {
       throw new Error(`${this.label} 进程不可用`);
     }
     // Fresh accumulation per prompt — never mix reconnect/retry chunks.
-    this.assistantText = "";
+    this.resetAssistantReport();
     this.collectingPromptResponse = true;
     try {
       const promptTimeout =
@@ -399,7 +448,7 @@ export class AcpClient {
         pid,
         providerSessionId: this.providerSessionId,
         stopReason: result.stopReason,
-        assistantText: this.assistantText.trim(),
+        assistantText: this.finalizeAssistantReport(),
       };
     } catch (err) {
       if (this.stopRequested) {
@@ -657,15 +706,20 @@ export class AcpClient {
     // this client are neither delivery text nor user-facing diagnostics.
     if (!this.collectingPromptResponse) return;
     const kind = update.sessionUpdate ?? "";
-    if (kind === "agent_message_chunk" && update.content?.text) {
-      // Final report body only — thoughts are diagnostics, not delivery summary.
-      this.assistantText += update.content.text;
+    if (isAssistantMessageChunkKind(kind) && update.content?.text) {
+      // Contiguous message chunks form one segment; other updates seal it.
+      // Delivery summary uses only the last non-empty segment at prompt end.
+      this.assistantMessageCurrent += update.content.text;
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
         text: `[${kind}] ${update.content.text}`,
       });
       return;
+    }
+    // Any non-message update seals the open segment (tool/status/thought/…).
+    if (kind) {
+      this.sealOpenAssistantSegment();
     }
     if (kind === "agent_thought_chunk" && update.content?.text) {
       this.options.emit({

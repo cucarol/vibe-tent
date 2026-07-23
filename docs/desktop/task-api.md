@@ -290,12 +290,12 @@ Agents submit task targets (role / **AgentProfile** id / capability). They never
 
 | Path | Who starts | Bootstrap | Claim | Report / deliver |
 | --- | --- | --- | --- | --- |
-| **Managed ACP** (`task.startSession`) | Local Service after A2A | Context Card **pointer** + near-field **user prompt** (task envelope `## User Prompt` only — not box/manifest bodies) | Service claims (user path) before spawn; agent must **not** claim | Service captures final ACP assistant response (`agent_message_chunk` until `end_turn`) and calls **the same** `task.deliver` with `summary` = that reply. Agent does **not** need `tent task deliver`. |
+| **Managed ACP** (`task.startSession`) | Local Service after A2A | Context Card **pointer** + near-field **user prompt** (task envelope `## User Prompt` only — not box/manifest bodies) | Service claims (user path) before spawn; agent must **not** claim | Service captures the **final** ACP assistant reply (last non-empty contiguous `agent_message_chunk` segment after tool/status/thought separators; not intermediate narrations) and calls **the same** `task.deliver` with `summary` = that reply. Agent does **not** need `tent task deliver`. |
 | **External / relay** (clipboard, pull-host) | Human / external session | `relayPrompt` (claim → get → deliver CLI steps) | Agent runs `tent task claim` | Agent runs `tent task deliver --summary …` |
 
 **Managed invariants:**
 
-1. **Report ≡ final assistant reply.** Tent does not invent a second “report” channel; delivery.summary is that text.
+1. **Report ≡ final assistant reply.** Tent does not invent a second “report” channel; delivery.summary is that text only — not intermediate assistant updates, thoughts, or tool/status diagnostics concatenated into one blob.
 2. **No auto-accept.** `deliveryPolicy=manual` → `delivered` + ready delivery pending user review. `bypass` / `agent-decide` use existing policy routing only (`agent-decide` without an integrate decision defaults to **request-review**).
 3. **No forge on failure.** Empty assistant text, ACP error, timeout, stop, or interrupt → **no** delivery; task/session projects `failed` or `interrupted` with recoverable semantics where applicable.
 4. **No double delivery.** Reconnect / duplicate `session.prompt_complete` / already `delivered|accepted|…` is ignored or fails loudly at lifecycle authority — never two ready deliveries.

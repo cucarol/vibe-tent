@@ -206,8 +206,8 @@ Clipboard / dispatch **relayPrompt** is separate: external manual agents still `
 
 | Step | Owner |
 | --- | --- |
-| Accumulate `agent_message_chunk` during `session/prompt` | `GrokAcpClient` (thoughts are diagnostics only) |
-| On successful `end_turn` with non-empty text | Adapter emits `session.prompt_complete` |
+| Segment `agent_message_chunk` during `session/prompt`; delivery text = last non-empty segment after tool/status/thought seals | Shared `AcpClient` / assistant-report contract (thoughts & tools are diagnostics only) |
+| On successful `end_turn` with non-empty final segment | Adapter emits `session.prompt_complete` |
 | On empty / ACP error / timeout / stop / interrupt / non-`end_turn` | Emit `session.failed` or leave interrupted — **no** delivery |
 | Map `session.prompt_complete` → `task.deliver` | Local Service (`mapRuntimeEventToService`) — same lifecycle as CLI deliver |
 | Dedup | In-process key `sessionId::taskPath` + lifecycle authority (ready delivery / non-running state) |

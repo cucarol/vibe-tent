@@ -153,7 +153,7 @@ type RuntimeEvent =
   | {
       type: "session.prompt_complete";
       sessionId: string;
-      assistantText: string; // agent_message_chunk only — managed delivery report
+      assistantText: string; // final assistant reply only (last non-empty agent_message segment)
       stopReason?: string;
     };
 ```
@@ -176,7 +176,7 @@ Client-visible session projections may be wrapped in the shared **EventEnvelope*
 | `session.live` | keep/ensure `running` when bound; bind **`task.sessionId`** (id reference only) |
 | `session.waiting_user` | `task.wait` with reason + summary (user-input / external) |
 | `session.exited` (expected) | no auto-accept; managed path may already have delivered via `session.prompt_complete` |
-| `session.prompt_complete` | managed ACP only: successful `session/prompt` `end_turn` with non-empty `agent_message_chunk` text. Local Service **seals the turn first** (stop managed process / cancel pending tool asks; turn busy→idle) then auto-calls core `task.deliver` (summary=assistantText). Delivery must never publish while the same turn can still mutate the worktree. Public `task.deliver` / `task.requestReview` also refuse when `probe.turnBusy` is true. Empty/error/interrupt must **not** emit this event |
+| `session.prompt_complete` | managed ACP only: successful `session/prompt` `end_turn` with non-empty **final** assistant reply (`assistantText` = last non-empty contiguous `agent_message_chunk` segment; intermediate narrations / thoughts / tool status excluded). Local Service **seals the turn first** (stop managed process / cancel pending tool asks; turn busy→idle) then auto-calls core `task.deliver` (summary=assistantText). Delivery must never publish while the same turn can still mutate the worktree. Public `task.deliver` / `task.requestReview` also refuse when `probe.turnBusy` is true. Empty/error/interrupt must **not** emit this event |
 | `session.failed` / dead probe unrecoverable | `failed` or recoverable `waiting` per service policy |
 | `session.stdout_tail` | diagnostics only; **never** product chat transcript |
 
