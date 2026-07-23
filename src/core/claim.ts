@@ -11,8 +11,17 @@ export interface ClaimCheck {
   reason?: string;
 }
 
+export interface CanClaimOptions {
+  /**
+   * asSub claim under a dispatcher that already owns an ancestor:
+   * allow only when every occupied ancestor is owned by this durable role.
+   * Child itself and descendants must still be free (peer mutual exclusion).
+   */
+  allowAncestorClaimedBy?: string;
+}
+
 /** 能否把 box 认领给某角色?检查 coordination、box 自身、祖先、子孙是否已被占。 */
-export function canClaim(box: Box): ClaimCheck {
+export function canClaim(box: Box, options?: CanClaimOptions): ClaimCheck {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (!box.coordination) {
@@ -25,10 +34,16 @@ export function canClaim(box: Box): ClaimCheck {
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   // 祖先被占?
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
+      // Sub under dispatcher's own active ancestor claim is allowed.
+      if (allowAncestorBy && anc.fm.owner === allowAncestorBy) {
+        anc = anc.parent;
+        continue;
+      }
       return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;

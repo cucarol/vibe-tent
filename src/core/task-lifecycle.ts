@@ -108,13 +108,22 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       acceptedBy: box.fm.acceptedBy,
     }));
 
+    // asSub: helper may claim a free child under dispatchedBy's active ancestor occupation.
+    // Peer claims still require a fully free ancestor/descendant chain.
+    const allowAncestorClaimedBy =
+      taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role
+        ? task.dispatchedBy
+        : undefined;
+
     for (const box of claimedBoxes) {
       if (!box.coordination) {
         throw new Error(
           `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
         );
       }
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, {
+        ...(allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}),
+      });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
 

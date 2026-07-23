@@ -899,6 +899,164 @@ test("CLI tent task dispatch --as-sub --by wires RPC asSub", async () => {
   }
 });
 
+// ---- Full parent → sub → parent → main artifact inheritance ----
+
+test("parent inherits accepted sub commits: main ends with both parent and sub artifacts", async () => {
+  const ws = await makeWorkspace("parent-inherits-sub");
+  await initGitOnWorkspace(ws);
+  const mainHeadBefore = (await git(ws, "rev-parse", "HEAD")).trim();
+
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!mounted.error, JSON.stringify(mounted.error));
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    // 1. Git workspace: parent goal + child prompt.
+    const parent = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "parent-goal",
+      type: "goal",
+    });
+    assert.ok(!parent.error, JSON.stringify(parent.error));
+    const parentId = (parent.result as { id: string; path: string }).id;
+    const parentPath = (parent.result as { path: string }).path;
+
+    const child = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "child-prompt",
+      type: "prompt",
+      parentPath,
+    });
+    assert.ok(!child.error, JSON.stringify(child.error));
+    const childId = (child.result as { id: string }).id;
+
+    // 2. Orchestrator dispatch + claim parent.
+    const parentDispatch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: parentId,
+      role: "orchestrator",
+      prompt: "own the goal; delegate child",
+      deliveryPolicy: "manual",
+    });
+    assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
+    const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
+    const parentLane = (
+      parentDispatch.result as {
+        workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string };
+      }
+    ).workspaceLane;
+    assert.ok(parentLane?.worktree, "parent must have orchestrator role lane");
+    assert.equal(parentLane?.branch, "tent-role/orchestrator");
+    assert.equal(parentLane?.targetBranch, "main");
+    const parentClaim = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: parentTaskPath,
+    });
+    assert.ok(!parentClaim.error, JSON.stringify(parentClaim.error));
+
+    // 3. Orchestrator dispatches helper asSub under the claimed parent.
+    const subDispatch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: childId,
+      role: "helper",
+      prompt: "produce sub artifact for parent",
+      asSub: true,
+      dispatchedBy: "orchestrator",
+      deliveryPolicy: "manual",
+    });
+    assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
+    const subTaskPath = (subDispatch.result as { taskPath: string }).taskPath;
+    const subLane = (
+      subDispatch.result as {
+        workspaceLane?: { worktree?: string; branch?: string; targetBranch?: string };
+      }
+    ).workspaceLane;
+    assert.equal(subLane?.branch, "tent-role/helper");
+    assert.equal(subLane?.targetBranch, "tent-role/orchestrator");
+    assert.ok(subLane?.worktree);
+    const subClaim = await rpc(svc, "task.claim", {
+      workspaceId,
+      taskPath: subTaskPath,
+    });
+    assert.ok(!subClaim.error, JSON.stringify(subClaim.error));
+
+    // 4. Helper ships sub artifact on its lane → deliver → orchestrator accept.
+    await fs.writeFile(path.join(subLane!.worktree!, "sub-artifact.txt"), "sub-work\n");
+    await git(subLane!.worktree!, "add", "sub-artifact.txt");
+    await git(subLane!.worktree!, "commit", "-q", "-m", "helper sub artifact");
+    const subCommit = (await git(subLane!.worktree!, "rev-parse", "HEAD")).trim();
+
+    const subDelivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath: subTaskPath,
+      summary: "sub artifact ready",
+      commits: [subCommit],
+    });
+    assert.ok(!subDelivered.error, JSON.stringify(subDelivered.error));
+    assert.equal((subDelivered.result as { state: string }).state, "delivered");
+
+    const subAccepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath: subTaskPath,
+      actor: "orchestrator",
+      commits: [subCommit],
+    });
+    assert.ok(!subAccepted.error, JSON.stringify(subAccepted.error));
+    assert.equal((subAccepted.result as { state: string }).state, "accepted");
+
+    // Sub commit lives on orchestrator worktree; main is still unchanged.
+    assert.equal(
+      (await fs.readFile(path.join(parentLane!.worktree!, "sub-artifact.txt"), "utf8")).replace(
+        /\r\n/g,
+        "\n"
+      ),
+      "sub-work\n"
+    );
+    assert.equal((await git(ws, "branch", "--show-current")).trim(), "main");
+    assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), mainHeadBefore);
+    assert.equal(await pathExists(path.join(ws, "sub-artifact.txt")), false);
+    assert.equal(await pathExists(path.join(ws, "parent-artifact.txt")), false);
+
+    // 5. Orchestrator adds parent artifact on the same lane (which already has sub),
+    // delivers tip only (realistic manual path), user accept/integrate to main.
+    await fs.writeFile(path.join(parentLane!.worktree!, "parent-artifact.txt"), "parent-work\n");
+    await git(parentLane!.worktree!, "add", "parent-artifact.txt");
+    await git(parentLane!.worktree!, "commit", "-q", "-m", "orchestrator parent artifact");
+    const parentCommit = (await git(parentLane!.worktree!, "rev-parse", "HEAD")).trim();
+
+    const parentDelivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath: parentTaskPath,
+      summary: "parent ready with delegated sub work",
+      commits: [parentCommit],
+    });
+    assert.ok(!parentDelivered.error, JSON.stringify(parentDelivered.error));
+    assert.equal((parentDelivered.result as { state: string }).state, "delivered");
+
+    const parentAccepted = await rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath: parentTaskPath,
+      actor: "user",
+      commits: [parentCommit],
+    });
+    assert.ok(!parentAccepted.error, JSON.stringify(parentAccepted.error));
+    assert.equal((parentAccepted.result as { state: string }).state, "accepted");
+
+    // 6. Final main must contain both real artifacts (no dropped sub product).
+    assert.equal((await git(ws, "branch", "--show-current")).trim(), "main");
+    assert.notEqual((await git(ws, "rev-parse", "HEAD")).trim(), mainHeadBefore);
+    assert.equal(
+      (await fs.readFile(path.join(ws, "parent-artifact.txt"), "utf8")).replace(/\r\n/g, "\n"),
+      "parent-work\n"
+    );
+    assert.equal(
+      (await fs.readFile(path.join(ws, "sub-artifact.txt"), "utf8")).replace(/\r\n/g, "\n"),
+      "sub-work\n",
+      "main must keep accepted sub artifact after parent integrate (no dropped product)"
+    );
+  });
+});
+
 // ---- Peer profile regression: deferred lane still holds after asSub feature ----
 
 test("peer profile dispatch still defers lane; startSession creates tent-task", async () => {

@@ -509,6 +509,16 @@ async function completeFastForwardRef(
   const lastRef = commits.at(-1);
   if (!lastRef || lastRef === targetRef) return undefined;
   if (!(await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef]))) return undefined;
+
+  // Single tip that is a complete descendant of target: fast-forward to the tip.
+  // This preserves intermediate history already on the role lane (e.g. accepted
+  // sub commits that land under the parent tip). Cherry-picking only the tip
+  // would drop those intermediate products. Multi-commit lists still require a
+  // complete contiguous interval so intentional gaps stay on the cherry-pick path.
+  if (commits.length === 1) {
+    return lastRef;
+  }
+
   const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`]))
     .split(/\r?\n/)
     .map((ref) => ref.trim())
