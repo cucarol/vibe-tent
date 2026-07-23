@@ -91,6 +91,8 @@ async function build() {
 
   // Isolated next renderer (React). Output only under renderer-next/;
   // Electron default mainHtml still points at desktop/dist/renderer/index.html.
+  // Always emit a production React build (minify + NODE_ENV) so the tracked
+  // dist artifact stays lean and never ships react-dom.development.js.
   await esbuild.build({
     entryPoints: [path.join(root, "src/desktop/renderer-next/main.tsx")],
     bundle: true,
@@ -99,7 +101,11 @@ async function build() {
     target: "es2022",
     outfile: path.join(outRoot, "renderer-next", "main.js"),
     sourcemap: true,
+    minify: true,
     logLevel: "info",
+    define: {
+      "process.env.NODE_ENV": '"production"',
+    },
     loader: {
       ".tsx": "tsx",
       ".ts": "ts",

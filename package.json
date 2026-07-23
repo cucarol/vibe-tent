@@ -86,12 +86,12 @@
     "electron-builder": "^26.0.12",
     "esbuild": "^0.28.1",
     "obsidian": "^1.7.2",
+    "react": "^19.2.8",
+    "react-dom": "^19.2.8",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },
   "dependencies": {
-    "mdast-util-from-markdown": "^2.0.3",
-    "react": "^19.2.8",
-    "react-dom": "^19.2.8"
+    "mdast-util-from-markdown": "^2.0.3"
   }
 }

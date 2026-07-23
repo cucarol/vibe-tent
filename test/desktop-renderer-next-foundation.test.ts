@@ -278,3 +278,47 @@ test("ADR documents foundation boundary", async () => {
   assert.match(adr, /renderer-next/);
   assert.match(adr, /default Electron entry/);
 });
+
+test("React stays a desktop devDependency, not a published runtime dep", async () => {
+  const pkg = JSON.parse(await read("package.json")) as {
+    dependencies?: Record<string, string>;
+    devDependencies?: Record<string, string>;
+  };
+  assert.equal(pkg.dependencies?.react, undefined);
+  assert.equal(pkg.dependencies?.["react-dom"], undefined);
+  assert.ok(pkg.devDependencies?.react);
+  assert.ok(pkg.devDependencies?.["react-dom"]);
+  assert.ok(pkg.devDependencies?.["@types/react"]);
+  assert.ok(pkg.devDependencies?.["@types/react-dom"]);
+});
+
+test("renderer-next build target forces production React + minify", async () => {
+  const build = await read("scripts/build-desktop.mjs");
+  assert.match(build, /renderer-next/);
+  assert.match(build, /minify:\s*true/);
+  assert.match(build, /process\.env\.NODE_ENV.*production/);
+  // Guard against regressing to a dual-effect-less remount-on-every-document path
+  // only in the committed source; dist is rebuilt by build:desktop.
+  const canvasSrc = await read(
+    "src/desktop/renderer-next/surfaces/CanvasSurface.tsx"
+  );
+  assert.match(canvasSrc, /engine\.setDocument\(document\)/);
+  assert.match(canvasSrc, /}, \[engine\]\);/);
+});
+
+test("tracked renderer-next dist is production React (no development build)", async () => {
+  const distPath = path.join(root, "desktop/dist/renderer-next/main.js");
+  const exists = await fs
+    .access(distPath)
+    .then(() => true)
+    .catch(() => false);
+  if (!exists) {
+    // Full check runs build:desktop first; pure unit runs may skip dist.
+    return;
+  }
+  const dist = await fs.readFile(distPath, "utf8");
+  assert.doesNotMatch(dist, /react-dom\.development\.js/);
+  assert.doesNotMatch(dist, /react\.development\.js/);
+  // Production React still identifies itself; development path must be absent.
+  assert.ok(dist.length > 0);
+});
