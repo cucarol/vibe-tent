@@ -972,7 +972,7 @@ function isRoleId(id) {
 }
 
 // src/core/claim.ts
-function canClaim(box) {
+function canClaim(box, options) {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (!box.coordination) {
@@ -985,9 +985,14 @@ function canClaim(box) {
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
+      if (allowAncestorBy && anc.fm.owner === allowAncestorBy) {
+        anc = anc.parent;
+        continue;
+      }
       return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;
@@ -2002,13 +2007,16 @@ async function taskClaim(env, taskPath, options = {}) {
       status: box.fm.status,
       acceptedBy: box.fm.acceptedBy
     }));
+    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
     for (const box of claimedBoxes) {
       if (!box.coordination) {
         throw new Error(
           `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
         );
       }
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, {
+        ...allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}
+      });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     try {
@@ -2253,10 +2261,6 @@ async function taskCancel(env, taskPath) {
     await env.fs.remove(taskPath);
   });
 }
-async function findActiveTaskForBox(fs19, boxId) {
-  const tasks = await loadTaskEnvelopes(fs19);
-  return tasks.find((t) => t.claims.includes(boxId) && isActiveTaskState(t.state));
-}
 function boxProjectionOf(task) {
   if (!task) return { status: "todo" };
   const active = isActiveTaskState(task.state);
@@ -2472,7 +2476,7 @@ function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
 
-// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
+// node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -2509,7 +2513,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// ../../Tent/node_modules/character-entities/index.js
+// node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -4638,13 +4642,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// ../../Tent/node_modules/decode-named-character-reference/index.js
+// node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// ../../Tent/node_modules/micromark-util-chunked/index.js
+// node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -4678,7 +4682,7 @@ function push(list2, items) {
   return items;
 }
 
-// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
+// node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -4718,7 +4722,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
+// node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -4736,12 +4740,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
+// node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// ../../Tent/node_modules/micromark-util-character/index.js
+// node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -4773,7 +4777,7 @@ function regexCheck(regex) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-space/index.js
+// node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -4795,7 +4799,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/content.js
+// node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -4845,7 +4849,7 @@ function initializeContent(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/document.js
+// node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -5027,7 +5031,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// ../../Tent/node_modules/micromark-util-classify-character/index.js
+// node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -5037,7 +5041,7 @@ function classifyCharacter(code) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-resolve-all/index.js
+// node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
@@ -5051,7 +5055,7 @@ function resolveAll(constructs2, events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
+// node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -5182,7 +5186,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
+// node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -5283,7 +5287,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
+// node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -5298,7 +5302,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
+// node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -5356,7 +5360,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
+// node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -5382,7 +5386,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
+// node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -5447,7 +5451,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
+// node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -5630,7 +5634,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
+// node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -5694,7 +5698,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
+// node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -5809,7 +5813,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -6002,7 +6006,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-subtokenize/index.js
+// node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -6155,7 +6159,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
+// node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -6226,7 +6230,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-destination/index.js
+// node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -6318,7 +6322,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-label/index.js
+// node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -6379,7 +6383,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-title/index.js
+// node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -6441,7 +6445,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// ../../Tent/node_modules/micromark-factory-whitespace/index.js
+// node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -6460,7 +6464,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
+// node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -6546,7 +6550,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -6567,7 +6571,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
+// node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -6658,7 +6662,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
+// node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -6725,7 +6729,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
+// node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -7104,7 +7108,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
+// node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -7410,7 +7414,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
+// node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -7636,7 +7640,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
+// node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -7667,7 +7671,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
+// node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -7689,7 +7693,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
+// node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -7704,7 +7708,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
+// node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -7743,7 +7747,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
+// node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -7873,7 +7877,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
+// node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -7965,7 +7969,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/flow.js
+// node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -8003,7 +8007,7 @@ function initializeFlow(effects) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/initialize/text.js
+// node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -8142,7 +8146,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/constructs.js
+// node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -8217,7 +8221,7 @@ var disable = {
   null: []
 };
 
-// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
+// node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -8540,7 +8544,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// ../../Tent/node_modules/micromark/lib/parse.js
+// node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -8566,14 +8570,14 @@ function parse(options) {
   }
 }
 
-// ../../Tent/node_modules/micromark/lib/postprocess.js
+// node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// ../../Tent/node_modules/micromark/lib/preprocess.js
+// node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -8652,7 +8656,7 @@ function preprocess() {
   }
 }
 
-// ../../Tent/node_modules/micromark-util-decode-string/index.js
+// node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -8670,7 +8674,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
+// node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -8696,7 +8700,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
+// node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -9434,6 +9438,9 @@ function extractOutLinksDetailed(body) {
     }
   });
   return out;
+}
+function indexFromBoxes(boxes) {
+  return buildConceptIndex(boxes);
 }
 function resolveOutLink(index2, link2, fromNotePath) {
   if (link2.kind === "artifact") {
@@ -12244,6 +12251,31 @@ async function ensureTaskWorkspace(workspace, taskId) {
     targetBranch
   };
 }
+async function inspectWorktreeDirtiness(worktree) {
+  const cwd = nodePath3.resolve(worktree);
+  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
+  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
+  let trackedDirty = false;
+  let untrackedDirty = false;
+  for (const line of lines) {
+    if (line.startsWith("??") || line.startsWith("!")) {
+      untrackedDirty = true;
+    } else {
+      trackedDirty = true;
+    }
+  }
+  const sampleLines = lines.slice(0, 8);
+  const sample = sampleLines.join("\n") + (lines.length > sampleLines.length ? `
+\u2026(+${lines.length - sampleLines.length} more)` : "");
+  return {
+    dirty: lines.length > 0,
+    worktree: cwd,
+    trackedDirty,
+    untrackedDirty,
+    sample,
+    changeCount: lines.length
+  };
+}
 async function integrateWorkspaceCommits(contract, refs) {
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
   if (commits.length === 0) return [];
@@ -12271,7 +12303,8 @@ async function integrateWorkspaceCommits(contract, refs) {
   const fastForwardRef = await completeFastForwardRef(
     root,
     originalRef,
-    resolved.map((item) => item.fullRef)
+    resolved.map((item) => item.fullRef),
+    contract.branch
   );
   if (fastForwardRef) {
     try {
@@ -12410,10 +12443,17 @@ async function findAncestorIntegration(root, sourceRef, targetBranch) {
   }
   return void 0;
 }
-async function completeFastForwardRef(root, targetRef, commits) {
+async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
   const lastRef = commits.at(-1);
   if (!lastRef || lastRef === targetRef) return void 0;
   if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
+    return void 0;
+  }
+  if (commits.length === 1) {
+    return lastRef;
+  }
   const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
   if (range.length !== commits.length) return void 0;
   const supplied = new Set(commits);
@@ -14140,6 +14180,21 @@ var CLIENT_METHODS = [
    * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
    */
   "box.projection",
+  /**
+   * Batch box collaboration projection (same item semantics as box.projection).
+   * Params: workspaceId + ids: string[] (stable cx- handles).
+   * Result: { workspaceId, projections } with projections ordered as ids.
+   * Avoids UI N+1 fan-out; does not invent a second collab state machine.
+   */
+  "box.projections",
+  /**
+   * Workspace-level graph projection for Working-set Canvas.
+   * Params: workspaceId.
+   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki } }.
+   * Node summaries only (no body); unresolved markdown/wiki links kept explicitly.
+   * Placement / view state is never projected or persisted here.
+   */
+  "graph.projection",
   /** Proposal triage — separate from task delivery review (task-api §3). */
   "proposal.list",
   "proposal.submit",
@@ -14170,6 +14225,14 @@ var CLIENT_METHODS = [
   "userAsk.get",
   "userAsk.reply",
   "userAsk.deny",
+  /**
+   * Unified A2U pending read projection (workspace-scoped).
+   * Aggregates pending UserAsk, A2A spawn approval, ACP tool approval, and
+   * status=ready Delivery. No new store / state machine; resolve stays on
+   * domain RPCs (userAsk.* / a2a.resolve / toolApproval.* / task.accept|reject).
+   * Fail-loud on any source failure — never a partial authoritative inbox.
+   */
+  "interaction.listPending",
   /**
    * U2A task input (one-shot append) — machine-local; not chat.
    * send is user-only; listPending/get/ack require workspaceId+taskPath (no global inbox).
@@ -14889,6 +14952,25 @@ import * as readline from "node:readline";
 var DEFAULT_PROMPT_TIMEOUT_MS = 30 * 6e4;
 var DEFAULT_PERMISSION_TIMEOUT_MS = 12e4;
 
+// src/adapters/acp/assistant-report.ts
+function selectFinalAssistantReport(segments) {
+  for (let i = segments.length - 1; i >= 0; i -= 1) {
+    const text3 = typeof segments[i] === "string" ? segments[i].trim() : "";
+    if (text3) return text3;
+  }
+  return "";
+}
+function sealAssistantMessageSegment(segments, current) {
+  const body = typeof current === "string" ? current : "";
+  if (body.trim()) {
+    segments.push(body);
+  }
+  return { segments, current: "" };
+}
+function isAssistantMessageChunkKind(kind) {
+  return kind === "agent_message_chunk";
+}
+
 // src/adapters/acp/client.ts
 var LOAD_REPLAY_QUIET_MS = 100;
 var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
@@ -14899,8 +14981,15 @@ var AcpClient = class {
     this.lines = null;
     this.nextId = 1;
     this.pending = /* @__PURE__ */ new Map();
-    /** Accumulated agent_message_chunk only — used as managed delivery report. */
-    this.assistantText = "";
+    /**
+     * Sealed assistant message segments for the in-flight session/prompt.
+     * Contiguous agent_message_chunk text forms one segment; tool/status/thought
+     * (and any other non-message update) seals the open segment. Delivery summary
+     * is the last non-empty segment (see selectFinalAssistantReport).
+     */
+    this.assistantMessageSegments = [];
+    /** Open (unsealed) agent_message_chunk buffer for the current segment. */
+    this.assistantMessageCurrent = "";
     this.stderrTail = "";
     this.closed = false;
     this.stopRequested = false;
@@ -14961,7 +15050,7 @@ var AcpClient = class {
     return this.providerSessionId;
   }
   get lastAssistantText() {
-    return this.assistantText;
+    return this.finalizeAssistantReport();
   }
   get lastStderrTail() {
     return this.stderrTail;
@@ -14982,6 +15071,39 @@ var AcpClient = class {
     } catch {
       return false;
     }
+  }
+  /**
+   * Seal any open segment and return the managed delivery report for this turn:
+   * last non-empty assistant message segment (not intermediate narrations).
+   */
+  finalizeAssistantReport() {
+    if (this.assistantMessageCurrent) {
+      const sealed = sealAssistantMessageSegment(
+        this.assistantMessageSegments,
+        this.assistantMessageCurrent
+      );
+      this.assistantMessageSegments = sealed.segments;
+      this.assistantMessageCurrent = sealed.current;
+    }
+    return selectFinalAssistantReport(this.assistantMessageSegments);
+  }
+  /** Reset per-prompt accumulation (never mix reconnect/retry chunks). */
+  resetAssistantReport() {
+    this.assistantMessageSegments = [];
+    this.assistantMessageCurrent = "";
+  }
+  /**
+   * Non-message session/update kinds seal the open assistant segment so later
+   * message chunks become a new final-report candidate.
+   */
+  sealOpenAssistantSegment() {
+    if (!this.assistantMessageCurrent) return;
+    const sealed = sealAssistantMessageSegment(
+      this.assistantMessageSegments,
+      this.assistantMessageCurrent
+    );
+    this.assistantMessageSegments = sealed.segments;
+    this.assistantMessageCurrent = sealed.current;
   }
   /**
    * Spawn ACP process + initialize/authenticate, then session/new or session/load.
@@ -15034,7 +15156,7 @@ var AcpClient = class {
             `${this.label} session/load requires providerSessionId (resume token)`
           );
         }
-        this.assistantText = "";
+        this.resetAssistantReport();
         this.quarantiningLoadReplay = true;
         this.lastLoadReplayUpdateAt = Date.now();
         try {
@@ -15049,7 +15171,7 @@ var AcpClient = class {
           await this.waitForLoadReplayQuiescence();
         } finally {
           this.quarantiningLoadReplay = false;
-          this.assistantText = "";
+          this.resetAssistantReport();
         }
         this.providerSessionId = loadId;
         providerSessionId = loadId;
@@ -15085,7 +15207,8 @@ var AcpClient = class {
    * Send session/prompt with managed bootstrap (Context Card + user prompt).
    * Optional image refs are projected only when live initialize advertised
    * promptCapabilities.image === true; otherwise Markdown pointers + a short note.
-   * Accumulates agent_message_chunk only for the final report text.
+   * Collects agent_message_chunk segments; delivery report is the last non-empty
+   * segment after tool/status/thought separators (shared assistant-report contract).
    * Safe to call after connect(); failures throw (caller emits session.failed).
    */
   async sendPrompt(bootstrapPrompt) {
@@ -15096,7 +15219,7 @@ var AcpClient = class {
     if (pid == null) {
       throw new Error(`${this.label} \u8FDB\u7A0B\u4E0D\u53EF\u7528`);
     }
-    this.assistantText = "";
+    this.resetAssistantReport();
     this.collectingPromptResponse = true;
     try {
       const promptTimeout = this.options.promptTimeoutMs ?? DEFAULT_PROMPT_TIMEOUT_MS;
@@ -15116,7 +15239,7 @@ var AcpClient = class {
         pid,
         providerSessionId: this.providerSessionId,
         stopReason: result.stopReason,
-        assistantText: this.assistantText.trim()
+        assistantText: this.finalizeAssistantReport()
       };
     } catch (err) {
       if (this.stopRequested) {
@@ -15325,14 +15448,17 @@ var AcpClient = class {
     }
     if (!this.collectingPromptResponse) return;
     const kind = update.sessionUpdate ?? "";
-    if (kind === "agent_message_chunk" && update.content?.text) {
-      this.assistantText += update.content.text;
+    if (isAssistantMessageChunkKind(kind) && update.content?.text) {
+      this.assistantMessageCurrent += update.content.text;
       this.options.emit({
         type: "session.stdout_tail",
         sessionId: this.options.sessionId,
         text: `[${kind}] ${update.content.text}`
       });
       return;
+    }
+    if (kind) {
+      this.sealOpenAssistantSegment();
     }
     if (kind === "agent_thought_chunk" && update.content?.text) {
       this.options.emit({
@@ -18125,6 +18251,10 @@ async function dispatchMethod(ctx, method, params) {
         return deliveryGet(ctx, p);
       case "box.projection":
         return boxProjectionRpc(ctx, p);
+      case "box.projections":
+        return boxProjectionsRpc(ctx, p);
+      case "graph.projection":
+        return graphProjectionRpc(ctx, p);
       case "proposal.list":
         return proposalList(ctx, p);
       case "proposal.submit":
@@ -18161,6 +18291,8 @@ async function dispatchMethod(ctx, method, params) {
         return userAskReplyRpc(ctx, p);
       case "userAsk.deny":
         return userAskDenyRpc(ctx, p);
+      case "interaction.listPending":
+        return interactionListPending(ctx, p);
       case "taskInput.listPending":
         return taskInputListPending(ctx, p);
       case "taskInput.get":
@@ -20169,6 +20301,45 @@ async function assertManagedTurnIdleForPublicDeliver(ctx, task) {
     }
   );
 }
+async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
+  const hasRecordedLane = Boolean(
+    task.workspace || task.worktree || task.branch || task.targetBranch
+  );
+  if (!hasRecordedLane) return void 0;
+  if (!await isGitWorkspace(workspaceRoot)) return void 0;
+  const envelopeWt = task.worktree?.trim();
+  if (envelopeWt) {
+    return {
+      worktree: nodePath5.resolve(envelopeWt),
+      branch: task.branch
+    };
+  }
+  const mountedRoot = nodePath5.resolve(workspaceRoot);
+  const isProfile = taskAssigneeKind(task) === "agentProfile";
+  const lane = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path) : await ensureRoleWorkspace(mountedRoot, task.role);
+  return { worktree: lane.worktree, branch: lane.branch };
+}
+async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task) {
+  const lane = await resolveTaskWorktreeForDirtyCheck(workspaceRoot, task);
+  if (!lane) return;
+  const status = await inspectWorktreeDirtiness(lane.worktree);
+  if (!status.dirty) return;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: task worktree has uncommitted changes at ${lane.worktree} (${status.changeCount} change(s); tracked=${status.trackedDirty} untracked=${status.untrackedDirty}); commit or discard them, then retry delivery (task remains ${task.state}, no ready Delivery)`,
+    {
+      code: "WORKTREE_DIRTY",
+      taskPath: task.path,
+      taskId: task.id,
+      worktree: lane.worktree,
+      ...lane.branch ? { branch: lane.branch } : {},
+      trackedDirty: status.trackedDirty,
+      untrackedDirty: status.untrackedDirty,
+      changeCount: status.changeCount,
+      dirtySample: status.sample
+    }
+  );
+}
 async function taskDeliverRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -20182,6 +20353,7 @@ async function taskDeliverRpc(ctx, p) {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
     await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+    await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
     const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
     const result = await taskDeliver(mount.env, taskPath, {
       summary,
@@ -20766,6 +20938,43 @@ async function boxProjectionRpc(ctx, p) {
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
   const concept = resolveConcept3(tent, p);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  return projectBoxCollaboration(workspaceId, concept, tasks);
+}
+async function boxProjectionsRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const idsRaw = p.ids;
+  if (!Array.isArray(idsRaw)) {
+    throw new RpcError(-32602, "box.projections requires ids: string[]");
+  }
+  const ids = [];
+  for (let i = 0; i < idsRaw.length; i++) {
+    const id = idsRaw[i];
+    if (typeof id !== "string" || !id.trim()) {
+      throw new RpcError(-32602, `box.projections ids[${i}] must be a non-empty string`);
+    }
+    ids.push(id);
+  }
+  const tent = await loadTent(mount.env.fs);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const projections = [];
+  for (const id of ids) {
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    projections.push(projectBoxCollaboration(workspaceId, concept, tasks));
+  }
+  return { workspaceId, projections };
+}
+async function graphProjectionRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  return buildGraphProjection(workspaceId, tent);
+}
+function projectBoxCollaboration(workspaceId, concept, tasks) {
   if (concept.invalid) {
     throw new RpcError(
       -32004,
@@ -20773,7 +20982,7 @@ async function boxProjectionRpc(ctx, p) {
       { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
     );
   }
-  const activeTask = await findActiveTaskForBox(mount.env.fs, concept.id);
+  const activeTask = tasks.find((t) => t.claims.includes(concept.id) && isActiveTaskState(t.state));
   if (activeTask) {
     const fromTask = boxProjectionOf(activeTask);
     const out = {
@@ -20791,6 +21000,67 @@ async function boxProjectionRpc(ctx, p) {
     boxId: concept.id,
     status
   };
+}
+function buildGraphProjection(workspaceId, tent) {
+  const nodes = [];
+  const parentEdges = [];
+  const markdownEdges = [];
+  const wikiEdges = [];
+  const visit = (box, parentId) => {
+    nodes.push(projectGraphNodeSummary(box));
+    parentEdges.push({ parentId, childId: box.id });
+    for (const child of box.children) visit(child, box.id);
+  };
+  for (const root of tent.roots) visit(root, null);
+  const conceptIndex = indexFromBoxes(tent.byId.values());
+  const emitLinks = (box) => {
+    const notePath = boxNotePath(box.path);
+    for (const link2 of extractOutLinksDetailed(box.body)) {
+      if (link2.kind === "artifact") continue;
+      const resolved = resolveOutLink(conceptIndex, link2, notePath);
+      const edge = {
+        fromId: box.id,
+        raw: link2.raw
+      };
+      if (link2.label) edge.label = link2.label;
+      const targetBox = (resolved.targetPath ? tent.byPath.get(resolved.targetPath) : void 0) ?? (resolved.targetCx ? tent.byId.get(resolved.targetCx) : void 0);
+      if (resolved.kind === "unresolved" || !targetBox) {
+        const target = link2.conceptTarget ?? resolved.targetPath ?? (resolved.targetCx && resolved.targetCx !== link2.raw ? resolved.targetCx : void 0);
+        edge.unresolved = target ? { raw: link2.raw, target } : { raw: link2.raw };
+      } else {
+        edge.toId = targetBox.id;
+      }
+      if (link2.kind === "wiki") wikiEdges.push(edge);
+      else markdownEdges.push(edge);
+    }
+    for (const child of box.children) emitLinks(child);
+  };
+  for (const root of tent.roots) emitLinks(root);
+  return {
+    workspaceId,
+    nodes,
+    edges: {
+      parent: parentEdges,
+      markdown: markdownEdges,
+      wiki: wikiEdges
+    }
+  };
+}
+function projectGraphNodeSummary(box) {
+  const title = typeof box.fm.title === "string" ? box.fm.title : void 0;
+  const node2 = {
+    id: box.id,
+    path: box.path,
+    name: box.name,
+    type: box.type,
+    tags: box.tags,
+    coordination: box.coordination,
+    mode: box.mode,
+    archived: box.archived,
+    invalid: box.invalid
+  };
+  if (title) node2.title = title;
+  return node2;
 }
 async function proposalList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -21295,6 +21565,145 @@ async function userAskListPending(ctx, p) {
   const workspaceId = optionalString(p, "workspaceId");
   const pending = await ctx.userAsks.listPending(workspaceId);
   return { asks: pending.map(projectUserAsk) };
+}
+async function interactionListPending(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  let asks;
+  let a2aApprovals;
+  let toolApprovals;
+  let deliveries;
+  try {
+    const settled = await Promise.all([
+      ctx.userAsks.listPending(workspaceId),
+      ctx.a2a.listPending(workspaceId),
+      ctx.toolApprovals.listPending(workspaceId),
+      loadDeliveries(mount.env.fs)
+    ]);
+    asks = settled[0];
+    a2aApprovals = settled[1];
+    toolApprovals = settled[2];
+    deliveries = settled[3];
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32e3,
+      `interaction.listPending failed to load pending sources: ${message2}`,
+      { workspaceId }
+    );
+  }
+  let tasksByPath = /* @__PURE__ */ new Map();
+  let tasksById = /* @__PURE__ */ new Map();
+  try {
+    const tasks = await loadTaskEnvelopes(mount.env.fs);
+    tasksByPath = new Map(tasks.map((t) => [t.path, t]));
+    tasksById = new Map(
+      tasks.filter((t) => !!t.id).map((t) => [t.id, t])
+    );
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new RpcError(
+      -32e3,
+      `interaction.listPending failed to load task envelopes: ${message2}`,
+      { workspaceId }
+    );
+  }
+  const items = [];
+  for (const ask of asks) {
+    const task = tasksByPath.get(ask.taskPath) ?? (ask.taskId ? tasksById.get(ask.taskId) : void 0);
+    const item = {
+      kind: "userAsk",
+      id: ask.id,
+      workspaceId: ask.workspaceId,
+      createdAt: ask.createdAt,
+      taskPath: ask.taskPath,
+      ...ask.taskId ? { taskId: ask.taskId } : task?.id ? { taskId: task.id } : {},
+      ...task?.claims?.[0] ? { boxId: task.claims[0] } : {},
+      ...ask.role ?? task?.role ? { role: ask.role ?? task?.role } : {},
+      ...ask.sessionId ?? task?.sessionId ? { sessionId: ask.sessionId ?? task?.sessionId } : {},
+      question: ask.question,
+      ...ask.choices?.length ? { choices: ask.choices.map((c) => ({ id: c.id, label: c.label })) } : {}
+    };
+    items.push(item);
+  }
+  for (const approval of a2aApprovals) {
+    const task = tasksByPath.get(approval.taskPath) ?? (approval.taskId ? tasksById.get(approval.taskId) : void 0);
+    const item = {
+      kind: "a2a",
+      id: approval.id,
+      workspaceId: approval.workspaceId,
+      createdAt: approval.createdAt,
+      taskPath: approval.taskPath,
+      ...approval.taskId ? { taskId: approval.taskId } : task?.id ? { taskId: task.id } : {},
+      ...task?.claims?.[0] ? { boxId: task.claims[0] } : {},
+      role: approval.role,
+      ...task?.sessionId ? { sessionId: task.sessionId } : {},
+      profileId: approval.profileId,
+      policy: approval.policy,
+      callerKind: approval.callerKind
+    };
+    items.push(item);
+  }
+  for (const approval of toolApprovals) {
+    const task = approval.taskPath ? tasksByPath.get(approval.taskPath) : approval.taskId ? tasksById.get(approval.taskId) : void 0;
+    const projected = projectToolApproval(approval);
+    const item = {
+      kind: "toolApproval",
+      id: projected.id,
+      workspaceId: projected.workspaceId,
+      createdAt: projected.createdAt,
+      sessionId: projected.sessionId,
+      ...projected.taskPath ? { taskPath: projected.taskPath } : {},
+      ...projected.taskId ? { taskId: projected.taskId } : task?.id ? { taskId: task.id } : {},
+      ...task?.claims?.[0] ? { boxId: task.claims[0] } : {},
+      ...projected.role ?? task?.role ? { role: projected.role ?? task?.role } : {},
+      toolTitle: projected.toolTitle,
+      options: projected.options.map((o) => ({
+        optionId: o.optionId,
+        ...o.kind ? { kind: o.kind } : {},
+        ...o.name ? { name: o.name } : {}
+      })),
+      ...projected.expiresAt ? { expiresAt: projected.expiresAt } : {}
+    };
+    items.push(item);
+  }
+  for (const delivery of deliveries) {
+    if (delivery.status !== "ready") continue;
+    const task = tasksById.get(delivery.taskId);
+    const item = {
+      kind: "delivery",
+      id: delivery.id,
+      workspaceId,
+      createdAt: delivery.createdAt ?? delivery.updatedAt ?? "",
+      taskId: delivery.taskId,
+      boxId: delivery.boxId,
+      role: delivery.role,
+      path: delivery.path,
+      status: "ready",
+      ...task?.path ? { taskPath: task.path } : {},
+      ...task?.sessionId ? { sessionId: task.sessionId } : {}
+    };
+    items.push(item);
+  }
+  items.sort(comparePendingInteraction);
+  const counts = {
+    userAsk: 0,
+    a2a: 0,
+    toolApproval: 0,
+    delivery: 0,
+    total: items.length
+  };
+  for (const item of items) {
+    counts[item.kind] += 1;
+  }
+  return { workspaceId, items, counts };
+}
+function comparePendingInteraction(a, b) {
+  const byTime = a.createdAt.localeCompare(b.createdAt);
+  if (byTime !== 0) return byTime;
+  const byKind = a.kind.localeCompare(b.kind);
+  if (byKind !== 0) return byKind;
+  return a.id.localeCompare(b.id);
 }
 async function userAskGet(ctx, p) {
   const askId = requireString(p, "askId");
@@ -22278,6 +22687,7 @@ async function tryManagedAutoDeliver(ctx, input) {
         managedAutoDeliverDone.add(key);
         return;
       }
+      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
       let commits = input.commits;
       if (commits === void 0) {
         commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
@@ -22314,6 +22724,7 @@ async function tryManagedAutoDeliver(ctx, input) {
     });
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
+    const errorCode = err instanceof RpcError && err.data && typeof err.data === "object" && typeof err.data.code === "string" ? err.data.code : err instanceof TaskLifecycleError ? err.code : void 0;
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
@@ -22334,6 +22745,7 @@ async function tryManagedAutoDeliver(ctx, input) {
             taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
             error: message2,
+            ...errorCode ? { errorCode } : {},
             // Explicit: task remains non-terminal for retry.
             taskFailed: false
           },

@@ -1832,7 +1832,7 @@ function isLegacyBoxId(id) {
 }
 
 // src/core/claim.ts
-function canClaim(box) {
+function canClaim(box, options) {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (!box.coordination) {
@@ -1845,9 +1845,14 @@ function canClaim(box) {
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
+      if (allowAncestorBy && anc.fm.owner === allowAncestorBy) {
+        anc = anc.parent;
+        continue;
+      }
       return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;
@@ -2259,6 +2264,9 @@ async function collectTaskFiles(fs9, taskDir, tasks) {
 }
 function taskAssigneeKind(task) {
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+}
+function taskAsSub(task) {
+  return task.asSub === true;
 }
 async function loadTaskEnvelope(fs9, path9) {
   if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
@@ -2747,13 +2755,16 @@ async function taskClaim(env, taskPath, options = {}) {
       status: box.fm.status,
       acceptedBy: box.fm.acceptedBy
     }));
+    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
     for (const box of claimedBoxes) {
       if (!box.coordination) {
         throw new Error(
           `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
         );
       }
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, {
+        ...allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}
+      });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     try {
@@ -3626,7 +3637,8 @@ async function integrateWorkspaceCommits(contract, refs) {
   const fastForwardRef = await completeFastForwardRef(
     root,
     originalRef,
-    resolved.map((item) => item.fullRef)
+    resolved.map((item) => item.fullRef),
+    contract.branch
   );
   if (fastForwardRef) {
     try {
@@ -3732,10 +3744,17 @@ async function findAncestorIntegration(root, sourceRef, targetBranch) {
   }
   return void 0;
 }
-async function completeFastForwardRef(root, targetRef, commits) {
+async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
   const lastRef = commits.at(-1);
   if (!lastRef || lastRef === targetRef) return void 0;
   if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
+    return void 0;
+  }
+  if (commits.length === 1) {
+    return lastRef;
+  }
   const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
   if (range.length !== commits.length) return void 0;
   const supplied = new Set(commits);
@@ -4892,12 +4911,44 @@ var ServiceClient = class {
     return this.call("task.get", { workspaceId, taskPath });
   }
   /**
+   * List deliveries for a workspace (optional taskId / boxId / role filters).
+   * Read projection only — review still uses task.accept / task.reject.
+   */
+  deliveryList(workspaceId, opts) {
+    return this.call(
+      "delivery.list",
+      { workspaceId, ...opts }
+    );
+  }
+  /** Get one delivery by id within a workspace. */
+  deliveryGet(workspaceId, id) {
+    return this.call(
+      "delivery.get",
+      { workspaceId, id }
+    );
+  }
+  /**
    * Stable box collaboration projection (task-api §2.3).
    * Resolve by id, boxId, or path (same conventions as docs.get).
    * Active task is authoritative; without one, only persisted done is preserved.
    */
   boxProjection(workspaceId, idOrPath) {
     return this.call("box.projection", { workspaceId, ...idOrPath });
+  }
+  /**
+   * Batch box collaboration projection — same item semantics as box.projection.
+   * `ids` order is preserved in the returned `projections` array.
+   */
+  boxProjections(workspaceId, ids) {
+    return this.call("box.projections", { workspaceId, ids });
+  }
+  /**
+   * Workspace-level graph projection for Working-set Canvas.
+   * Node summaries + parent / markdown / wiki edges; no body, no placement.
+   * Unresolved concept links are retained with explicit unresolved payload.
+   */
+  graphProjection(workspaceId) {
+    return this.call("graph.projection", { workspaceId });
   }
   // ---- convenience: proposal (triage; separate from delivery review) ----
   proposalList(workspaceId, opts) {
@@ -4984,6 +5035,16 @@ var ServiceClient = class {
   /** User-only: deny a business ask; resumes task for rework/observe. */
   userAskDeny(askId, actor = "user") {
     return this.call("userAsk.deny", { askId, actor });
+  }
+  /**
+   * Unified A2U pending read projection for one workspace.
+   * Aggregates UserAsk / A2A / toolApproval / ready Delivery.
+   * Resolve actions stay on domain RPCs — no interaction.resolve.
+   */
+  interactionListPending(workspaceId) {
+    return this.call("interaction.listPending", {
+      workspaceId
+    });
   }
   /**
    * U2A pending one-shot inputs for external poll.

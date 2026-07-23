@@ -1363,7 +1363,7 @@ var init_skillRoleRegistry = __esm({
 });
 
 // src/core/claim.ts
-function canClaim(box) {
+function canClaim(box, options) {
   if (box.invalid) return { ok: false, blocker: box, reason: `Invalid subtree: ${box.invalidReason || "missing type definition"}` };
   if (box.archived) return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   if (!box.coordination) {
@@ -1376,9 +1376,14 @@ function canClaim(box) {
   if (box.fm.owner) {
     return { ok: false, blocker: box, reason: `Already claimed by ${box.fm.owner}.` };
   }
+  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
   let anc = box.parent;
   while (anc) {
     if (anc.fm.owner) {
+      if (allowAncestorBy && anc.fm.owner === allowAncestorBy) {
+        anc = anc.parent;
+        continue;
+      }
       return { ok: false, blocker: anc, reason: `Ancestor ${anc.name} is already claimed by ${anc.fm.owner}.` };
     }
     anc = anc.parent;
@@ -2033,13 +2038,16 @@ async function taskClaim(env, taskPath, options = {}) {
       status: box.fm.status,
       acceptedBy: box.fm.acceptedBy
     }));
+    const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
     for (const box of claimedBoxes) {
       if (!box.coordination) {
         throw new Error(
           `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
         );
       }
-      const claimable = canClaim(box);
+      const claimable = canClaim(box, {
+        ...allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}
+      });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     try {
@@ -4013,7 +4021,8 @@ async function integrateWorkspaceCommits(contract, refs) {
   const fastForwardRef = await completeFastForwardRef(
     root,
     originalRef,
-    resolved.map((item) => item.fullRef)
+    resolved.map((item) => item.fullRef),
+    contract.branch
   );
   if (fastForwardRef) {
     try {
@@ -4150,10 +4159,17 @@ async function findAncestorIntegration(root, sourceRef, targetBranch) {
   }
   return void 0;
 }
-async function completeFastForwardRef(root, targetRef, commits) {
+async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
   const lastRef = commits.at(-1);
   if (!lastRef || lastRef === targetRef) return void 0;
   if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
+    return void 0;
+  }
+  if (commits.length === 1) {
+    return lastRef;
+  }
   const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
   if (range.length !== commits.length) return void 0;
   const supplied = new Set(commits);
