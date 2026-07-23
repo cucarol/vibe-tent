@@ -2647,7 +2647,8 @@ function trackManagedTaskInputBackground(work: Promise<unknown>): void {
 }
 
 /**
- * Fire-and-forget managed inject after durable accept (task.sendInput).
+ * Fire-and-forget managed inject after durable accept
+ * (task.sendInput and task.reject resume:true review-feedback).
  * Per-task FIFO still serializes turns; RPC does not await this promise.
  */
 function enqueueManagedTaskInputBackground(
@@ -2687,17 +2688,18 @@ function enqueueManagedTaskInputBackground(
 }
 
 /**
- * Stop accepting new background sendInput enqueues (rows stay durable pending/failed).
- * Call before runtime.shutdown so late RPC paths do not schedule new injects.
+ * Stop accepting new background U2A enqueues (sendInput + reject-resume review
+ * feedback; rows stay durable pending/failed). Call before runtime.shutdown so
+ * late RPC paths do not schedule new injects.
  */
 export function stopManagedTaskInputBackgroundAccept(): void {
   managedTaskInputAccepting = false;
 }
 
 /**
- * Bounded drain of background sendInput delivers after runtime interrupt/shutdown
- * has already been requested so hung provider turns can settle without waiting a
- * full promptTimeout. Reject-resume awaited callers are not tracked here.
+ * Bounded drain of background U2A delivers (sendInput + reject-resume review
+ * feedback) after runtime interrupt/shutdown has already been requested so hung
+ * provider turns can settle without waiting a full promptTimeout.
  * After stopManagedTaskInputBackgroundAccept, new background enqueues are ignored.
  *
  * @param timeoutMs max wait for in-flight work (default 5s). Remaining promises
@@ -2760,8 +2762,9 @@ export function resetManagedTaskInputBackgroundForTests(): void {
  *   Lifecycle interrupt/cancel cancels pending|failed only (not processing/delivered).
  * - managed-inject pin + processing status preserved across inject→markDelivered race
  *   with session.prompt_complete cleanup.
- * - task.sendInput enqueues this in the background; task.reject --resume still awaits
- *   it so review-feedback restore stays on the reject RPC boundary.
+ * - task.sendInput and task.reject(resume:true) both enqueue this in the background
+ *   after durable accept + (for reject) session restore; neither RPC awaits the
+ *   full Agent turn. Poll taskInput.get / events for processing→delivered|failed|uncertain.
  */
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
@@ -3225,6 +3228,26 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   });
 }
 
+/**
+ * task.reject — reject delivery; default resume rework.
+ *
+ * resume:false (or --no-resume): terminal collaboration only; no session restore,
+ * no review U2A. Same Delivery single-track as before.
+ *
+ * resume:true: same async accept contract as task.sendInput for the review note:
+ *   1) core reject → running occupation
+ *   2) durable review-feedback TaskInput (pending)
+ *   3) managed session restore/bind when sessionId present (still on RPC path —
+ *      restore failure parks waiting(external) and fails the RPC; never leave
+ *      running with a dead managed process)
+ *   4) return accepted/processing quickly — do **not** await the full Agent turn
+ *   5) background per-task FIFO inject (## Review Feedback); status/events
+ *      queryable via taskInput.*; failed is retryable, uncertain is at-most-once,
+ *      already processing/delivered/uncertain skips re-inject (no double inject)
+ *
+ * External / no sessionId: core rework + pending review-feedback for poll+ack.
+ * Role/profile restore semantics and Delivery authority are unchanged.
+ */
 async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -3291,6 +3314,10 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       delivery: projectDelivery(result.delivery),
       state: result.task.state,
       input: projectTaskInput(reviewInput),
+      /** Durable review-feedback accepted; no managed inject scheduled. */
+      accepted: true,
+      enqueued: false,
+      /** Always false on accept — external agents poll taskInput.* */
       continued: false,
     };
   }
@@ -3305,7 +3332,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       taskPath,
     });
     // review-feedback was created with the pre-restore sessionId (often stopped).
-    // Rebind to the live restore target before inject so cancelSession(old) and
+    // Rebind to the live restore target before enqueue so cancelSession(old) and
     // projections cannot strand feedback on a dead ss- while the task runs on new.
     const restoredSessionId = restored.session.sessionId;
     let boundReview = reviewInput;
@@ -3317,9 +3344,11 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         restoredSessionId
       );
     }
-    // After restore/create of the real session, inject ## Review Feedback via the
-    // shared managed U2A delivery primitive (FIFO with other U2A for this task).
-    const delivery = await deliverManagedTaskInput(ctx, boundReview, {
+    // Fast accept: durable pending + live session bind are the RPC contract.
+    // Managed inject of ## Review Feedback runs on the per-task FIFO in the
+    // background — same as task.sendInput. Do not await the full Agent turn
+    // (CLI/fetch headers timeout would otherwise false-fail a still-running turn).
+    enqueueManagedTaskInputBackground(ctx, boundReview, {
       sessionIdOverride: restoredSessionId,
     });
     return {
@@ -3329,9 +3358,13 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
       session: restored.session,
-      input: projectTaskInput(delivery.input),
-      continued: delivery.continued,
-      continueError: delivery.continueError,
+      input: projectTaskInput(boundReview),
+      /** Durable row + restore accepted; does not mean provider turn finished. */
+      accepted: true,
+      /** Managed session restored and background inject scheduled. */
+      enqueued: true,
+      /** Always false on accept — poll taskInput.get / events for delivered|failed. */
+      continued: false,
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);

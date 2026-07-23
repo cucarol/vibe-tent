@@ -3540,6 +3540,8 @@ test("reject-resume restores live managed session for agentProfile tasks", async
         sessionId?: string;
         text?: string;
       };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
     };
     assert.equal(body.state, "running");
@@ -3563,33 +3565,47 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       "review-feedback must bind to restored session, not the prior stopped one"
     );
     assert.notEqual(body.input!.sessionId, sessionId);
-
-    const stored = await svc.ctx.taskInputs.get(
-      body.input!.id,
-      workspaceId,
-      taskPath
-    );
-    assert.ok(stored);
-    assert.equal(stored!.sessionId, body.session!.sessionId);
-    // fake-default may leave pending or record a retryable failed row when
-    // follow-up inject is unsupported; either way durable binding must be the
-    // new session (not cancelled via prior id) and the feedback stays visible.
+    // Async accept: RPC does not wait for inject; continued is always false.
+    assert.equal(body.accepted, true);
+    assert.equal(body.enqueued, true);
+    assert.equal(body.continued, false);
     assert.ok(
-      stored!.status === "delivered" ||
-        stored!.status === "pending" ||
-        stored!.status === "failed",
-      `unexpected review-feedback status: ${stored!.status}`
+      body.input!.status === "pending" || body.input!.status === "processing",
+      `accept status should be pending|processing, got ${body.input!.status}`
     );
-    if (stored!.status === "failed") {
+
+    // Background inject settles to a terminal-or-retryable durable status.
+    const settled = await pollUntil(async () => {
+      const stored = await svc.ctx.taskInputs.get(
+        body.input!.id,
+        workspaceId,
+        taskPath
+      );
+      if (!stored) return null;
+      if (
+        stored.status === "delivered" ||
+        stored.status === "failed" ||
+        stored.status === "uncertain"
+      ) {
+        return stored;
+      }
+      return null;
+    }, 15_000, "review-feedback background inject settles");
+    assert.equal(settled.sessionId, body.session!.sessionId);
+    // fake-default may leave failed when follow-up inject is unsupported;
+    // durable binding must still be the new session (not cancelled via prior id).
+    assert.ok(
+      settled.status === "delivered" ||
+        settled.status === "failed" ||
+        settled.status === "uncertain",
+      `unexpected review-feedback status: ${settled.status}`
+    );
+    if (settled.status === "failed") {
       const retryable = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
       assert.ok(
-        retryable.some((row) => row.id === stored!.id),
+        retryable.some((row) => row.id === settled.id),
         "failed review-feedback must remain visible for retry/poll"
       );
-    }
-    // When inject succeeded, status is delivered once — no second pending row.
-    if (body.continued === true) {
-      assert.equal(stored!.status, "delivered");
     }
     const cancelledPrior = await svc.ctx.taskInputs.cancelSession(
       sessionId,

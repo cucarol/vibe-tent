@@ -664,6 +664,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       profileId: "mock-ti",
       callerKind: "user",
     })) as { session: { sessionId: string } };
+    void started;
 
     // First managed delivery (bootstrap).
     await pollUntil(async () => {
@@ -674,6 +675,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     }, 20_000, "first managed delivery");
 
     const exactNote = "  please fix the edge case and re-run tests  ";
+    const t0 = Date.now();
     const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
       resume: true,
       note: exactNote,
@@ -687,9 +689,12 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
         text?: string;
         taskPath: string;
       };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
       continueError?: string;
     };
+    const rpcMs = Date.now() - t0;
 
     assert.equal(rejected.state, "running");
     assert.ok(rejected.session?.sessionId, "reject-resume must restore a session");
@@ -697,16 +702,42 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
     assert.equal(rejected.input!.kind, "review-feedback");
     assert.equal(rejected.input!.text, exactNote, "review note must be preserved exactly");
     assert.equal(rejected.input!.taskPath, taskPath);
+    // Same async accept contract as task.sendInput — durable accept + enqueue only.
+    assert.equal(rejected.accepted, true);
+    assert.equal(rejected.enqueued, true);
     assert.equal(
       rejected.continued,
-      true,
-      `review feedback must inject into restored session; continueError=${rejected.continueError ?? "none"}`
+      false,
+      "reject-resume must not await the full Agent turn on the RPC"
     );
-    assert.equal(
-      rejected.input!.status,
-      "delivered",
-      "managed inject of review feedback must mark delivered"
+    assert.ok(
+      rejected.input!.status === "pending" ||
+        rejected.input!.status === "processing",
+      `accept status should be pending|processing, got ${rejected.input!.status}`
     );
+    // Restore is on the RPC path; inject is background — still well under turn delay.
+    assert.ok(
+      rpcMs < 5_000,
+      `reject-resume accept must return without waiting full turn; rpcMs=${rpcMs}`
+    );
+
+    // Background FIFO inject → delivered.
+    const inputDelivered = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        rejected.input!.id
+      )) as { input: { status: string; deliveredAt?: string; lastError?: string } };
+      if (got.input.status === "delivered") return got.input;
+      if (got.input.status === "failed") {
+        throw new Error(
+          `review-feedback inject failed: ${got.input.lastError ?? "unknown"}`
+        );
+      }
+      return null;
+    }, 20_000, "review-feedback delivered after background inject");
+    assert.equal(inputDelivered.status, "delivered");
+    assert.ok(inputDelivered.deliveredAt);
 
     // Follow-up after review should re-deliver.
     await pollUntil(async () => {
@@ -832,6 +863,8 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
         sessionId?: string;
         taskPath: string;
       };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
       continueError?: string;
     };
@@ -862,12 +895,35 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       priorSessionId,
       "must not leave feedback keyed to the stopped session"
     );
+    assert.equal(rejected.accepted, true);
+    assert.equal(rejected.enqueued, true);
     assert.equal(
       rejected.continued,
-      true,
-      `must inject into new session; continueError=${rejected.continueError ?? "none"}`
+      false,
+      "RPC returns before background inject completes"
     );
-    assert.equal(rejected.input!.status, "delivered");
+    assert.ok(
+      rejected.input!.status === "pending" ||
+        rejected.input!.status === "processing",
+      `got ${rejected.input!.status}`
+    );
+
+    // Background inject → delivered (rebind already done before enqueue).
+    const inputDelivered = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        rejected.input!.id
+      )) as { input: { status: string; sessionId?: string; lastError?: string } };
+      if (got.input.status === "delivered") return got.input;
+      if (got.input.status === "failed") {
+        throw new Error(
+          `review-feedback inject failed: ${got.input.lastError ?? "unknown"}`
+        );
+      }
+      return null;
+    }, 20_000, "cross-session review-feedback delivered");
+    assert.equal(inputDelivered.sessionId, newSessionId);
 
     // Durable store: cancelSession(old) must not rewrite the rebound row.
     const cancelledOld = await svc.ctx.taskInputs.cancelSession(
@@ -953,11 +1009,15 @@ test("reject-resume external (no session): review feedback stays pending for pol
     })) as {
       state: string;
       input?: { id: string; kind?: string; status: string; text?: string };
+      accepted?: boolean;
+      enqueued?: boolean;
       continued?: boolean;
       session?: unknown;
     };
 
     assert.equal(rejected.state, "running");
+    assert.equal(rejected.accepted, true);
+    assert.equal(rejected.enqueued, false);
     assert.equal(rejected.continued, false);
     assert.ok(!rejected.session, "external path has no managed session restore");
     assert.ok(rejected.input);
@@ -980,6 +1040,453 @@ test("reject-resume external (no session): review feedback stays pending for pol
       "executor"
     )) as { input: { status: string } };
     assert.equal(acked.input.status, "consumed");
+  });
+});
+
+test("reject-resume: slow follow-up returns accepted without headers-timeout wait", async () => {
+  // Provider follow-up is slow (1.5s). Old path awaited the full turn on the
+  // reject RPC and could trip CLI/fetch headers timeouts. New path restores +
+  // durable-accepts quickly; inject finishes in the background.
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-slow-")),
+    "mock-acp.json"
+  );
+  const followupDelayMs = 1_500;
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "FIRST_SLOW_REJECT",
+      followupText: "REWORK_SLOW_DONE",
+      promptDelayMs: 150,
+      followupDelayMs,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "reject-slow-turn",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Slow reject-resume inject",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    });
+
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "first delivery before slow reject");
+
+    const t0 = Date.now();
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: "SLOW_REVIEW_NOTE",
+    })) as {
+      accepted?: boolean;
+      enqueued?: boolean;
+      continued?: boolean;
+      state: string;
+      session?: { sessionId: string };
+      input: { id: string; status: string; kind?: string };
+    };
+    const rpcMs = Date.now() - t0;
+
+    assert.equal(rejected.accepted, true);
+    assert.equal(rejected.enqueued, true);
+    assert.equal(rejected.continued, false);
+    assert.equal(rejected.state, "running");
+    assert.ok(rejected.session?.sessionId);
+    assert.equal(rejected.input.kind, "review-feedback");
+    // Must return far under the follow-up turn delay (headers-timeout safety).
+    assert.ok(
+      rpcMs < followupDelayMs - 200,
+      `reject-resume must not wait slow turn; rpcMs=${rpcMs} followupDelayMs=${followupDelayMs}`
+    );
+    assert.ok(
+      rejected.input.status === "pending" ||
+        rejected.input.status === "processing",
+      `got ${rejected.input.status}`
+    );
+
+    // Background still completes to delivered.
+    const final = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        rejected.input.id
+      )) as { input: { status: string; deliveredAt?: string } };
+      return got.input.status === "delivered" ? got.input : null;
+    }, 20_000, "slow reject-resume background delivered");
+    assert.ok(final.deliveredAt);
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    assert.ok(
+      (log.prompts ?? []).some((p) => p.includes("SLOW_REVIEW_NOTE")),
+      "background inject must still reach ACP after fast accept"
+    );
+  });
+});
+
+test("reject-resume: background completion projects processing → delivered", async () => {
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-bg-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "FIRST_BG_REJECT",
+      followupText: "BG_REWORK_OK",
+      promptDelayMs: 150,
+      followupDelayMs: 800,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "reject-bg-complete",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Background reject inject",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    });
+
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "first delivery for bg reject");
+
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: "BG_COMPLETE_NOTE",
+    })) as {
+      accepted?: boolean;
+      continued?: boolean;
+      input: { id: string; status: string };
+    };
+    assert.equal(rejected.accepted, true);
+    assert.equal(rejected.continued, false);
+
+    // Eventually processing (or delivered if very fast) is visible; then delivered.
+    await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        rejected.input.id
+      )) as { input: { status: string } };
+      return got.input.status === "processing" ||
+        got.input.status === "delivered"
+        ? got.input.status
+        : null;
+    }, 5_000, "reject-resume processing or delivered projection");
+
+    const final = await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        rejected.input.id
+      )) as { input: { status: string; deliveredAt?: string } };
+      return got.input.status === "delivered" ? got.input : null;
+    }, 20_000, "reject-resume async input delivered");
+    assert.equal(final.status, "delivered");
+    assert.ok(final.deliveredAt);
+
+    // Rework delivery still single-track after background inject.
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "rework delivery after bg review-feedback");
+  });
+});
+
+test("reject-resume: failed inject stays retryable; uncertain is at-most-once", async () => {
+  // True inject failure retains failed (listPending + markPendingForRetry ok).
+  // Uncertain (inject ok, markDelivered failed) never re-injects.
+  const { TaskInputStore, makeTaskInputId } = await import(
+    "../src/service/task-input-store.js"
+  );
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-fail-"));
+  const store = new TaskInputStore(dataDir);
+  const workspaceId = "ws-reject-fail";
+  const taskPath = "temp/r/tasks/reject-fail.md";
+  const now = new Date().toISOString();
+
+  const failedId = makeTaskInputId(() => 0.31);
+  await store.add({
+    id: failedId,
+    workspaceId,
+    taskPath,
+    sessionId: "ss-reject-fail",
+    kind: "review-feedback",
+    text: "retry me",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await store.markProcessing(failedId);
+  const failed = await store.markFailed(
+    failedId,
+    "managed inject did not continue; external agent may poll taskInput",
+    "service"
+  );
+  assert.equal(failed.status, "failed");
+  assert.ok(failed.lastError);
+  const openFailed = await store.listPending(workspaceId, taskPath);
+  assert.ok(
+    openFailed.some((r) => r.id === failedId),
+    "failed review-feedback must remain poll-visible for retry"
+  );
+  const retried = await store.markPendingForRetry(failedId, workspaceId, taskPath);
+  assert.equal(retried.status, "pending");
+  // Claim again for a second inject attempt (no double-inject while processing).
+  await store.markProcessing(failedId);
+  await assert.rejects(
+    () => store.markProcessing(failedId),
+    /pending or failed/,
+    "processing row must not be re-claimed (duplicate inject protection)"
+  );
+
+  const uncertainId = makeTaskInputId(() => 0.32);
+  await store.add({
+    id: uncertainId,
+    workspaceId,
+    taskPath,
+    sessionId: "ss-reject-unc",
+    kind: "review-feedback",
+    text: "once only after inject-ok",
+    status: "pending",
+    createdAt: now,
+    updatedAt: now,
+  });
+  await store.markProcessing(uncertainId);
+  const uncertain = await store.markUncertain(
+    uncertainId,
+    "managed inject ok but markDelivered failed: EIO",
+    "service"
+  );
+  assert.equal(uncertain.status, "uncertain");
+  const openUnc = await store.listPending(workspaceId, taskPath);
+  assert.equal(
+    openUnc.filter((r) => r.id === uncertainId).length,
+    0,
+    "uncertain must not appear as retryable open"
+  );
+  await assert.rejects(
+    () => store.markProcessing(uncertainId),
+    /pending or failed/
+  );
+  await assert.rejects(
+    () => store.markPendingForRetry(uncertainId, workspaceId, taskPath),
+    /uncertain/
+  );
+  // Restart: uncertain stays uncertain (no re-inject as pending).
+  const reloaded = new TaskInputStore(dataDir);
+  const again = await reloaded.get(uncertainId, workspaceId, taskPath);
+  assert.equal(again?.status, "uncertain");
+  await assert.rejects(() => reloaded.markProcessing(uncertainId), /pending or failed/);
+});
+
+test("reject-resume: second reject while rework running is rejected (no double inject)", async () => {
+  // Lifecycle: reject only from delivered. A second reject while rework is
+  // running fails loud — does not create a second review-feedback or re-inject.
+  const ws = await makeWorkspace();
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-dup-")),
+    "mock-acp.json"
+  );
+  const profiles = [
+    mockAcpProfile("mock-ti", {
+      logPath,
+      promptText: "FIRST_DUP_REJECT",
+      followupText: "REWORK_DUP",
+      // Slow inject so second reject races while first feedback is in flight.
+      promptDelayMs: 150,
+      followupDelayMs: 1_200,
+      keepAlive: true,
+    }),
+  ];
+
+  await withService(profiles, async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "reject-dup-protect",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Double reject protection",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+
+    await client.taskStartSession(workspaceId, {
+      taskPath,
+      profileId: "mock-ti",
+      callerKind: "user",
+    });
+
+    await pollUntil(async () => {
+      const t = (await client.taskGet(workspaceId, taskPath)) as {
+        task: { state: string };
+      };
+      return t.task.state === "delivered" ? t : null;
+    }, 20_000, "first delivery for dup reject");
+
+    const first = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: true,
+      note: "FIRST_FEEDBACK_ONLY",
+    })) as {
+      accepted?: boolean;
+      input: { id: string };
+      state: string;
+    };
+    assert.equal(first.accepted, true);
+    assert.equal(first.state, "running");
+
+    // Immediate second reject while occupation is rework/running — must fail.
+    await assert.rejects(
+      () =>
+        client.taskReject(workspaceId, taskPath, "user", {
+          resume: true,
+          note: "SECOND_MUST_NOT_INJECT",
+        }),
+      /delivered|reject|state/i
+    );
+
+    // First row still present with the original note (no second accept).
+    const firstRow = (await client.taskInputGet(
+      workspaceId,
+      taskPath,
+      first.input.id
+    )) as { input: { id: string; text?: string; kind?: string } };
+    assert.equal(firstRow.input.kind, "review-feedback");
+    assert.equal(firstRow.input.text, "FIRST_FEEDBACK_ONLY");
+
+    // listPending may omit mid-inject processing; after settle only the first id.
+    await pollUntil(async () => {
+      const got = (await client.taskInputGet(
+        workspaceId,
+        taskPath,
+        first.input.id
+      )) as { input: { status: string } };
+      return got.input.status === "delivered" || got.input.status === "failed"
+        ? got.input.status
+        : null;
+    }, 20_000, "single review-feedback settles");
+
+    const pending = (await client.taskInputListPending(
+      workspaceId,
+      taskPath
+    )) as { inputs: { id: string; kind?: string; text?: string }[] };
+    assert.equal(
+      pending.inputs.filter(
+        (i) =>
+          i.kind === "review-feedback" && i.text === "SECOND_MUST_NOT_INJECT"
+      ).length,
+      0,
+      "second reject must not leave a review-feedback row"
+    );
+
+    const logRaw = await fs.readFile(logPath, "utf8");
+    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    const reviewPrompts = (log.prompts ?? []).filter((p) =>
+      p.includes("## Review Feedback")
+    );
+    assert.ok(
+      reviewPrompts.length <= 1,
+      `review feedback inject at most once; got ${reviewPrompts.length}`
+    );
+    assert.ok(
+      !(log.prompts ?? []).some((p) => p.includes("SECOND_MUST_NOT_INJECT")),
+      "second reject note must never inject"
+    );
+  });
+});
+
+test("reject --no-resume: terminal reject without review-feedback or session restore", async () => {
+  const ws = await makeWorkspace();
+  await withService([], async (svc) => {
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const mounted = (await client.mount(ws)) as { workspaceId: string };
+    const workspaceId = mounted.workspaceId;
+    const created = (await client.docsCreateNote(workspaceId, {
+      name: "no-resume-item",
+      type: "prompt",
+    })) as { id: string };
+
+    const dispatched = (await client.taskDispatch(workspaceId, {
+      boxId: created.id,
+      role: "executor",
+      prompt: "Terminal reject path",
+      deliveryPolicy: "manual",
+    })) as { taskPath: string };
+    const taskPath = dispatched.taskPath;
+    await client.taskClaim(workspaceId, taskPath);
+    await client.taskDeliver(workspaceId, taskPath, {
+      summary: "will reject terminal",
+    });
+
+    const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
+      resume: false,
+      note: "no rework",
+    })) as {
+      state: string;
+      input?: unknown;
+      accepted?: boolean;
+      session?: unknown;
+    };
+    assert.equal(rejected.state, "rejected");
+    assert.ok(!rejected.input, "terminal reject must not create review-feedback");
+    assert.ok(!rejected.session);
+    assert.ok(rejected.accepted === undefined);
+
+    const pending = (await client.taskInputListPending(
+      workspaceId,
+      taskPath
+    )) as { inputs: unknown[] };
+    assert.equal(pending.inputs.length, 0);
   });
 });
 

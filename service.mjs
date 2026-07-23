@@ -20572,6 +20572,10 @@ async function taskRejectRpc(ctx, p) {
       delivery: projectDelivery(result.delivery),
       state: result.task.state,
       input: projectTaskInput(reviewInput),
+      /** Durable review-feedback accepted; no managed inject scheduled. */
+      accepted: true,
+      enqueued: false,
+      /** Always false on accept — external agents poll taskInput.* */
       continued: false
     };
   }
@@ -20591,7 +20595,7 @@ async function taskRejectRpc(ctx, p) {
         restoredSessionId
       );
     }
-    const delivery = await deliverManagedTaskInput(ctx, boundReview, {
+    enqueueManagedTaskInputBackground(ctx, boundReview, {
       sessionIdOverride: restoredSessionId
     });
     return {
@@ -20601,9 +20605,13 @@ async function taskRejectRpc(ctx, p) {
       delivery: projectDelivery(result.delivery),
       state: restored.task.state,
       session: restored.session,
-      input: projectTaskInput(delivery.input),
-      continued: delivery.continued,
-      continueError: delivery.continueError
+      input: projectTaskInput(boundReview),
+      /** Durable row + restore accepted; does not mean provider turn finished. */
+      accepted: true,
+      /** Managed session restored and background inject scheduled. */
+      enqueued: true,
+      /** Always false on accept — poll taskInput.get / events for delivered|failed. */
+      continued: false
     };
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
