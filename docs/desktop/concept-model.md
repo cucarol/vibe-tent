@@ -388,7 +388,7 @@ Persistence (system root, not concept body):
 | `status` | `open` \| `resolved` |
 | timestamps | `createdAt` / `updatedAt` / optional `resolvedAt` |
 
-**Create validation:** non-empty quote/body; range in body; `body.slice(start,end) === quote`; optional `documentEtag` must match current disk etag or RPC rejects with etag conflict. Does not mutate the Node file.
+**Create validation:** non-empty quote/body; range in body; `body.slice(start,end) === quote`; required `documentEtag` must match current disk etag or RPC rejects with etag conflict. Does not mutate the Node file.
 
 **List/read projection (relocate, non-mutating):**
 
