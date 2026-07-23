@@ -13017,10 +13017,16 @@ function cloneInput(item) {
 }
 var TASK_INPUT_STATUSES = /* @__PURE__ */ new Set([
   "pending",
+  "processing",
   "delivered",
+  "failed",
+  "uncertain",
   "consumed",
   "cancelled"
 ]);
+function isTaskInputCancelEligibleStatus(status) {
+  return status === "pending" || status === "failed";
+}
 var TASK_INPUT_KINDS = /* @__PURE__ */ new Set([
   "user-input",
   "review-feedback"
@@ -13059,9 +13065,12 @@ function parseInput(value) {
     deliveredAt,
     consumedAt,
     cancelledAt,
+    lastError,
+    failedAt,
+    uncertainAt,
     resolvedBy
   } = value;
-  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate3(deliveredAt) || consumedAt !== void 0 && !isValidDate3(consumedAt) || cancelledAt !== void 0 && !isValidDate3(cancelledAt)) {
+  if (!isRequiredString3(id) || !isRequiredString3(workspaceId) || !isRequiredString3(taskPath) || !isRequiredString3(createdAt) || !isRequiredString3(updatedAt) || !isValidDate3(createdAt) || !isValidDate3(updatedAt) || typeof status !== "string" || !TASK_INPUT_STATUSES.has(status) || !isOptionalString3(taskId) || !isOptionalString3(sessionId) || !isOptionalString3(role) || !isOptionalString3(text3) || !isOptionalString3(deliveredAt) || !isOptionalString3(consumedAt) || !isOptionalString3(cancelledAt) || !isOptionalString3(lastError) || !isOptionalString3(failedAt) || !isOptionalString3(uncertainAt) || !isOptionalString3(resolvedBy) || deliveredAt !== void 0 && !isValidDate3(deliveredAt) || consumedAt !== void 0 && !isValidDate3(consumedAt) || cancelledAt !== void 0 && !isValidDate3(cancelledAt) || failedAt !== void 0 && !isValidDate3(failedAt) || uncertainAt !== void 0 && !isValidDate3(uncertainAt)) {
     return null;
   }
   let parsedKind;
@@ -13087,6 +13096,8 @@ function parseInput(value) {
   if (resolvedKind === "review-feedback" && text3 !== void 0 && typeof text3 !== "string") {
     return null;
   }
+  const persistedStatus = status;
+  const restoredUncertain = persistedStatus === "processing";
   return {
     id,
     workspaceId,
@@ -13100,12 +13111,17 @@ function parseInput(value) {
       text: resolvedKind === "review-feedback" ? text3 : text3.trim()
     } : {},
     ...parsedRefs !== void 0 && parsedRefs.length > 0 ? { contextRefs: parsedRefs } : {},
-    status,
+    // A crashed processing turn has an unknowable provider boundary. Preserve
+    // at-most-once semantics by requiring review instead of silently re-injecting.
+    status: restoredUncertain ? "uncertain" : persistedStatus,
     createdAt,
     updatedAt,
     ...deliveredAt !== void 0 ? { deliveredAt } : {},
     ...consumedAt !== void 0 ? { consumedAt } : {},
     ...cancelledAt !== void 0 ? { cancelledAt } : {},
+    ...typeof lastError === "string" ? { lastError } : restoredUncertain ? { lastError: "service restarted while managed inject was processing" } : {},
+    ...failedAt !== void 0 ? { failedAt } : {},
+    ...uncertainAt !== void 0 ? { uncertainAt } : restoredUncertain ? { uncertainAt: updatedAt } : {},
     ...resolvedBy !== void 0 ? { resolvedBy } : {}
   };
 }
@@ -13197,8 +13213,9 @@ var TaskInputStore = class {
     });
   }
   /**
-   * Pending inputs for external poll.
+   * Open inputs for external poll (pending + failed; not mid-inject processing).
    * Always scoped by workspaceId + taskPath — no machine-global inbox.
+   * `failed` remains visible so agents can ack/retry and nothing is dropped.
    */
   async listPending(workspaceId, taskPath) {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
@@ -13208,7 +13225,7 @@ var TaskInputStore = class {
     }
     await this.ensureLoaded();
     return [...this.items.values()].filter(
-      (i) => i.status === "pending" && i.workspaceId === workspaceId && i.taskPath === taskPath
+      (i) => (i.status === "pending" || i.status === "failed") && i.workspaceId === workspaceId && i.taskPath === taskPath
     ).map(cloneInput);
   }
   /**
@@ -13270,9 +13287,9 @@ var TaskInputStore = class {
       if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
         throw new Error(`TaskInput not found: ${id}`);
       }
-      if (item.status !== "pending") {
+      if (item.status !== "pending" && item.status !== "failed") {
         throw new Error(
-          `TaskInput.rebindSession requires pending status; got ${item.status}: ${id}`
+          `TaskInput.rebindSession requires pending or failed status; got ${item.status}: ${id}`
         );
       }
       if (item.sessionId === nextSession) {
@@ -13292,7 +13309,39 @@ var TaskInputStore = class {
     });
   }
   /**
-   * Mark managed inject success: pending → delivered.
+   * Claim a pending/failed row for background managed inject: → processing.
+   * Clears prior lastError/failedAt. Fail-loud if missing or not open for claim.
+   */
+  async markProcessing(id) {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.status !== "pending" && item.status !== "failed") {
+        throw new Error(
+          `TaskInput.markProcessing requires pending or failed; got ${item.status}: ${id}`
+        );
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const nextRow = {
+        ...item,
+        status: "processing",
+        updatedAt: now
+      };
+      delete nextRow.lastError;
+      delete nextRow.failedAt;
+      delete nextRow.uncertainAt;
+      const next = new Map(this.items);
+      next.set(id, nextRow);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(nextRow);
+    });
+  }
+  /**
+   * Mark managed inject success: pending|processing → delivered.
    * Optional sessionId persists the session that actually received the inject
    * (e.g. reject-resume new ss- after sessionIdOverride).
    */
@@ -13303,7 +13352,7 @@ var TaskInputStore = class {
       if (this.closed) throw new Error("TaskInput store is closed");
       const item = this.items.get(id);
       if (!item) throw new Error(`TaskInput not found: ${id}`);
-      if (item.status !== "pending") {
+      if (item.status !== "pending" && item.status !== "processing") {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -13316,6 +13365,9 @@ var TaskInputStore = class {
         deliveredAt: now,
         resolvedBy
       };
+      delete resolved.lastError;
+      delete resolved.failedAt;
+      delete resolved.uncertainAt;
       const next = new Map(this.items);
       next.set(id, resolved);
       await this.persistSnapshot(next);
@@ -13324,8 +13376,125 @@ var TaskInputStore = class {
     });
   }
   /**
-   * External agent formal ack: pending|delivered → consumed.
+   * Mark managed inject failure: processing|pending → failed (never drop).
+   * Retained for poll visibility, diagnostics, and later retry enqueue.
+   * Do not use when the provider already accepted the inject — use markUncertain.
+   */
+  async markFailed(id, error, resolvedBy = "service") {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.status !== "pending" && item.status !== "processing" && item.status !== "failed") {
+        throw new Error(
+          `TaskInput.markFailed requires open status; got ${item.status}: ${id}`
+        );
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const message2 = (error || "managed inject failed").trim() || "managed inject failed";
+      const resolved = {
+        ...item,
+        status: "failed",
+        updatedAt: now,
+        failedAt: now,
+        lastError: message2,
+        resolvedBy
+      };
+      delete resolved.uncertainAt;
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(resolved);
+    });
+  }
+  /**
+   * At-most-once uncertain delivery: provider inject already succeeded, but durable
+   * markDelivered failed. Terminal for re-inject — not listPending, not cancel-eligible,
+   * not markPendingForRetry. Survives restart as uncertain (never reloads as pending).
+   */
+  async markUncertain(id, error, resolvedBy = "service", opts) {
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.status !== "pending" && item.status !== "processing") {
+        throw new Error(
+          `TaskInput.markUncertain requires pending or processing; got ${item.status}: ${id}`
+        );
+      }
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const message2 = (error || "managed inject ok but delivery confirmation failed").trim() || "managed inject ok but delivery confirmation failed";
+      const injectSession = opts?.sessionId?.trim();
+      const resolved = {
+        ...item,
+        ...injectSession ? { sessionId: injectSession } : {},
+        status: "uncertain",
+        updatedAt: now,
+        uncertainAt: now,
+        lastError: message2,
+        resolvedBy
+      };
+      delete resolved.failedAt;
+      const next = new Map(this.items);
+      next.set(id, resolved);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(resolved);
+    });
+  }
+  /**
+   * Re-open a failed (or stuck) row as pending for retry. Does not re-inject.
+   * Uncertain is refused — already-sent rows must not re-enter the inject path.
+   */
+  async markPendingForRetry(id, workspaceId, taskPath) {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.markPendingForRetry requires workspaceId and taskPath"
+      );
+    }
+    if (this.closed) throw new Error("TaskInput store is closed");
+    await this.ensureLoaded();
+    return this.enqueue(async () => {
+      if (this.closed) throw new Error("TaskInput store is closed");
+      const item = this.items.get(id);
+      if (!item) throw new Error(`TaskInput not found: ${id}`);
+      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+        throw new Error(`TaskInput not found: ${id}`);
+      }
+      if (item.status === "uncertain") {
+        throw new Error(
+          `TaskInput.markPendingForRetry refuses uncertain (at-most-once; already sent): ${id}`
+        );
+      }
+      if (item.status !== "failed" && item.status !== "pending") {
+        throw new Error(
+          `TaskInput.markPendingForRetry requires failed or pending; got ${item.status}: ${id}`
+        );
+      }
+      if (item.status === "pending") return cloneInput(item);
+      const now = (/* @__PURE__ */ new Date()).toISOString();
+      const nextRow = {
+        ...item,
+        status: "pending",
+        updatedAt: now
+      };
+      const next = new Map(this.items);
+      next.set(id, nextRow);
+      await this.persistSnapshot(next);
+      this.items = next;
+      return cloneInput(nextRow);
+    });
+  }
+  /**
+   * External agent formal ack: pending|failed|delivered|uncertain → consumed.
    * Scoped by workspaceId+taskPath; fail-loud on unknown id, scope mismatch, or terminal.
+   * Mid-inject processing cannot be acked (wait for deliver/fail/uncertain).
+   * Ack of uncertain is cleanup only — it does not re-inject.
    */
   async ack(id, workspaceId, taskPath, resolvedBy) {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
@@ -13342,7 +13511,7 @@ var TaskInputStore = class {
       if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
         throw new Error(`TaskInput not found: ${id}`);
       }
-      if (item.status !== "pending" && item.status !== "delivered") {
+      if (item.status !== "pending" && item.status !== "failed" && item.status !== "delivered" && item.status !== "uncertain") {
         throw new Error(`TaskInput already ${item.status}: ${id}`);
       }
       const now = (/* @__PURE__ */ new Date()).toISOString();
@@ -13362,9 +13531,9 @@ var TaskInputStore = class {
     });
   }
   /**
-   * Cancel only still-pending inputs for one (workspace, task).
-   * Delivered inputs were already processed (managed inject) and must remain delivered.
-   * Pending rows pinned by beginManagedInject are skipped (inject→markDelivered window).
+   * Cancel open (pending/failed) inputs for one (workspace, task).
+   * Delivered/processing stay: delivered already processed; processing is in-flight.
+   * Rows pinned by beginManagedInject are skipped (inject→markDelivered window).
    */
   async cancelTask(workspaceId, taskPath, resolvedBy = "service") {
     await this.ensureLoaded();
@@ -13373,7 +13542,7 @@ var TaskInputStore = class {
       const cancelled = [];
       const now = (/* @__PURE__ */ new Date()).toISOString();
       for (const item of this.items.values()) {
-        if (item.workspaceId !== workspaceId || item.taskPath !== taskPath || item.status !== "pending" || this.managedInjectInFlight.has(item.id)) {
+        if (item.workspaceId !== workspaceId || item.taskPath !== taskPath || !isTaskInputCancelEligibleStatus(item.status) || this.managedInjectInFlight.has(item.id)) {
           continue;
         }
         const row = {
@@ -13394,9 +13563,9 @@ var TaskInputStore = class {
     });
   }
   /**
-   * Cancel only still-pending inputs bound to a session.
-   * Never rewrites delivered/consumed rows (session stop after managed deliver).
-   * Pending rows pinned by beginManagedInject are skipped (same race as cancelTask).
+   * Cancel open (pending/failed) inputs bound to a session.
+   * Never rewrites delivered/consumed/processing rows.
+   * Rows pinned by beginManagedInject are skipped (same race as cancelTask).
    */
   async cancelSession(sessionId, resolvedBy = "service") {
     await this.ensureLoaded();
@@ -13405,7 +13574,7 @@ var TaskInputStore = class {
       const cancelled = [];
       const now = (/* @__PURE__ */ new Date()).toISOString();
       for (const item of this.items.values()) {
-        if (item.sessionId !== sessionId || item.status !== "pending" || this.managedInjectInFlight.has(item.id)) {
+        if (item.sessionId !== sessionId || !isTaskInputCancelEligibleStatus(item.status) || this.managedInjectInFlight.has(item.id)) {
           continue;
         }
         const row = {
@@ -13434,7 +13603,7 @@ var TaskInputStore = class {
   async persistSnapshot(snapshot) {
     const items = [...snapshot.values()];
     const open2 = items.filter(
-      (i) => i.status === "pending" || i.status === "delivered"
+      (i) => i.status === "pending" || i.status === "processing" || i.status === "failed" || i.status === "uncertain" || i.status === "delivered"
     );
     const terminal = items.filter((i) => i.status === "consumed" || i.status === "cancelled").sort(
       (a, b) => (b.consumedAt || b.cancelledAt || b.updatedAt || "").localeCompare(
@@ -19286,17 +19455,24 @@ async function taskSendInputRpc(ctx, p) {
     },
     "self"
   );
-  const delivery = await deliverManagedTaskInput(ctx, input, {
-    sessionIdOverride: current.sessionId
-  });
+  const hasManagedSession = !!current.sessionId?.trim();
+  if (hasManagedSession) {
+    enqueueManagedTaskInputBackground(ctx, input, {
+      sessionIdOverride: current.sessionId
+    });
+  }
   return {
     workspaceId,
     taskPath,
     task: projectTask(current),
     state: current.state,
-    input: projectTaskInput(delivery.input),
-    continued: delivery.continued,
-    continueError: delivery.continueError
+    input: projectTaskInput(input),
+    /** Durable row accepted; does not mean provider turn finished. */
+    accepted: true,
+    /** True when a managed session is bound and background inject was scheduled. */
+    enqueued: hasManagedSession,
+    /** Always false on accept — poll taskInput.get / events for delivered|failed. */
+    continued: false
   };
 }
 function parseContextRefs(raw) {
@@ -19321,8 +19497,74 @@ function parseContextRefs(raw) {
   return refs;
 }
 var managedTaskInputQueue = new MutationBus();
+var managedTaskInputBackgroundInflight = /* @__PURE__ */ new Set();
+var managedTaskInputAccepting = true;
 function managedTaskInputQueueKey(workspaceId, taskPath) {
   return `${workspaceId}\0${taskPath}`;
+}
+function trackManagedTaskInputBackground(work) {
+  managedTaskInputBackgroundInflight.add(work);
+  void work.then(
+    () => {
+      managedTaskInputBackgroundInflight.delete(work);
+    },
+    (err) => {
+      managedTaskInputBackgroundInflight.delete(work);
+      const message2 = err instanceof Error ? err.message : String(err);
+      console.error(`[taskInput] background managed deliver failed: ${message2}`);
+    }
+  );
+}
+function enqueueManagedTaskInputBackground(ctx, item, opts) {
+  if (!managedTaskInputAccepting) {
+    return;
+  }
+  const work = deliverManagedTaskInput(ctx, item, opts).then(
+    () => void 0,
+    async (err) => {
+      const message2 = err instanceof Error ? err.message : String(err);
+      try {
+        const latest = await ctx.taskInputs.get(
+          item.id,
+          item.workspaceId,
+          item.taskPath
+        );
+        if (latest && (latest.status === "pending" || latest.status === "processing" || latest.status === "failed")) {
+          await ctx.taskInputs.markFailed(item.id, message2, "service");
+        }
+      } catch {
+      }
+      throw err;
+    }
+  );
+  trackManagedTaskInputBackground(work);
+}
+function stopManagedTaskInputBackgroundAccept() {
+  managedTaskInputAccepting = false;
+}
+async function drainManagedTaskInputBackgroundForShutdown(timeoutMs = 5e3) {
+  managedTaskInputAccepting = false;
+  const pending = [...managedTaskInputBackgroundInflight];
+  if (pending.length === 0) return;
+  const bound = typeof timeoutMs === "number" && Number.isFinite(timeoutMs) && timeoutMs >= 0 ? timeoutMs : 5e3;
+  if (bound === 0) {
+    await Promise.allSettled(pending);
+    return;
+  }
+  let timer;
+  try {
+    await Promise.race([
+      Promise.allSettled(pending),
+      new Promise((resolve14) => {
+        timer = setTimeout(resolve14, bound);
+      })
+    ]);
+  } finally {
+    if (timer !== void 0) clearTimeout(timer);
+  }
+}
+function enableManagedTaskInputBackgroundAccept() {
+  managedTaskInputAccepting = true;
 }
 async function deliverManagedTaskInput(ctx, item, opts) {
   const sessionId = opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "" || void 0;
@@ -19343,10 +19585,10 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         continueError: `TaskInput disappeared before managed inject: ${item.id}`
       };
     }
-    if (latest.status !== "pending") {
+    if (latest.status !== "pending" && latest.status !== "failed") {
       return {
         input: latest,
-        continued: latest.status === "delivered",
+        continued: latest.status === "delivered" || latest.status === "uncertain",
         continueError: `TaskInput already ${latest.status}; skip managed inject`
       };
     }
@@ -19360,12 +19602,30 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         );
       } catch (err) {
         const message2 = err instanceof Error ? err.message : String(err);
+        try {
+          latest = await ctx.taskInputs.markFailed(
+            latest.id,
+            `TaskInput rebind to inject session failed: ${message2}`,
+            "service"
+          );
+        } catch {
+        }
         return {
           input: latest,
           continued: false,
           continueError: `TaskInput rebind to inject session failed: ${message2}`
         };
       }
+    }
+    try {
+      latest = await ctx.taskInputs.markProcessing(latest.id);
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      return {
+        input: latest,
+        continued: false,
+        continueError: `TaskInput markProcessing failed: ${message2}`
+      };
     }
     const forInject = {
       ...latest,
@@ -19397,11 +19657,43 @@ async function deliverManagedTaskInput(ctx, item, opts) {
           );
         } catch (err) {
           const message2 = err instanceof Error ? err.message : String(err);
+          try {
+            finalInput = await ctx.taskInputs.markUncertain(
+              forInject.id,
+              `managed inject ok but markDelivered failed: ${message2}`,
+              "service",
+              { sessionId }
+            );
+            ctx.events.emit(
+              "taskInput.uncertain",
+              forInject.workspaceId,
+              {
+                inputId: finalInput.id,
+                taskPath: finalInput.taskPath,
+                sessionId: finalInput.sessionId,
+                kind: normalizeTaskInputKind(finalInput.kind),
+                status: finalInput.status,
+                lastError: finalInput.lastError
+              },
+              "service"
+            );
+          } catch {
+          }
           return {
-            input: forInject,
+            input: finalInput,
             continued: true,
             continueError: `managed inject ok but markDelivered failed: ${message2}`
           };
+        }
+      } else {
+        const failMsg = continueResult.error || "managed inject did not continue; external agent may poll taskInput";
+        try {
+          finalInput = await ctx.taskInputs.markFailed(
+            forInject.id,
+            failMsg,
+            "service"
+          );
+        } catch {
         }
       }
     } finally {
@@ -20963,6 +21255,9 @@ function projectTaskInput(item) {
     deliveredAt: item.deliveredAt,
     consumedAt: item.consumedAt,
     cancelledAt: item.cancelledAt,
+    lastError: item.lastError,
+    failedAt: item.failedAt,
+    uncertainAt: item.uncertainAt,
     resolvedBy: item.resolvedBy
   };
 }
@@ -25578,6 +25873,7 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
   await userAsks.ensureLoaded();
   const taskInputs = new TaskInputStore(dataDir);
   await taskInputs.ensureLoaded();
+  enableManagedTaskInputBackgroundAccept();
   const credentials = new CredentialStore(dataDir, {
     protector: options.credentialProtector
   });
@@ -25784,8 +26080,13 @@ async function startOwnedLocalTentService(options, dataDir, serviceLease, regist
         await attempt(() => httpServer.close());
         await attempt(() => toolApprovals.shutdown(), true);
         await attempt(() => userAsks.shutdown(), true);
-        await attempt(() => taskInputs.shutdown(), true);
+        stopManagedTaskInputBackgroundAccept();
         await attempt(() => runtime.shutdown(), true);
+        await attempt(
+          () => drainManagedTaskInputBackgroundForShutdown(5e3),
+          true
+        );
+        await attempt(() => taskInputs.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
         await attempt(() => workspaceHost.dispose());

@@ -5541,11 +5541,13 @@ state: ${row.state ?? "waiting"}
         });
         return okPrint(result, json, (r) => {
           const row = r;
-          return `\u2713 TaskInput sent via service RPC
+          return `\u2713 TaskInput accepted via service RPC
 taskPath: ${row.taskPath ?? taskPath}
 ` + (row.state ? `state: ${row.state}
 ` : "") + (row.input?.id ? `inputId: ${row.input.id}
 ` : "") + (row.input?.status ? `inputStatus: ${row.input.status}
+` : "") + (row.accepted != null ? `accepted: ${row.accepted}
+` : "") + (row.enqueued != null ? `enqueued: ${row.enqueued}
 ` : "") + (row.continued != null ? `continued: ${row.continued}
 ` : "") + (row.continueError ? `continueError: ${row.continueError}
 ` : "");
