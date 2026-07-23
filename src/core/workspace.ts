@@ -256,7 +256,8 @@ export async function integrateWorkspaceCommits(
   const fastForwardRef = await completeFastForwardRef(
     root,
     originalRef,
-    resolved.map((item) => item.fullRef)
+    resolved.map((item) => item.fullRef),
+    contract.branch
   );
   if (fastForwardRef) {
     try {
@@ -504,17 +505,29 @@ async function findAncestorIntegration(
 async function completeFastForwardRef(
   root: string,
   targetRef: string,
-  commits: string[]
+  commits: string[],
+  sourceBranch: string
 ): Promise<string | undefined> {
   const lastRef = commits.at(-1);
   if (!lastRef || lastRef === targetRef) return undefined;
   if (!(await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef]))) return undefined;
 
-  // Single tip that is a complete descendant of target: fast-forward to the tip.
-  // This preserves intermediate history already on the role lane (e.g. accepted
-  // sub commits that land under the parent tip). Cherry-picking only the tip
-  // would drop those intermediate products. Multi-commit lists still require a
-  // complete contiguous interval so intentional gaps stay on the cherry-pick path.
+  // Tip must be reachable from the task source branch (contract.branch).
+  // target being an ancestor of the tip is not enough: an arbitrary target-
+  // descendant on another branch must not drag foreign intermediate commits
+  // into the target via whole-interval fast-forward. Fall back to precise
+  // cherry-pick for those cases.
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!(await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef]))) {
+    return undefined;
+  }
+
+  // Single tip that is a complete descendant of target *and* on the source
+  // branch: fast-forward to the tip. This preserves intermediate history
+  // already on the role lane (e.g. accepted sub commits under the parent tip).
+  // Cherry-picking only the tip would drop those intermediate products.
+  // Multi-commit lists still require a complete contiguous interval so
+  // intentional gaps stay on the cherry-pick path.
   if (commits.length === 1) {
     return lastRef;
   }

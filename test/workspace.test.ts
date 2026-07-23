@@ -216,6 +216,65 @@ test("workspace integration:commit gaps keep the cherry-pick path", async () => 
   assert.equal(normalizeLf(await fs.readFile(path.join(workspace, "last.txt"), "utf8")), "last\n");
 });
 
+test("workspace integration:off-source tip does not whole-interval fast-forward", async () => {
+  // Negative boundary: tip is a target descendant but NOT on contract.branch.
+  // Whole-interval FF would drag foreign intermediate commits; must cherry-pick
+  // the tip only (or otherwise leave intermediates out).
+  const workspace = await makeGitWorkspace("tent-workspace-ff-off-source-");
+  const { ensureRoleWorkspace, integrateWorkspaceCommits } = await import("../src/core/workspace.js");
+  const contract = await ensureRoleWorkspace(workspace, "reviewer");
+  const mainBefore = (await git(workspace, "rev-parse", "main")).trim();
+
+  // Foreign lineage: main → middle → tip (tip is target descendant, not on role).
+  await git(workspace, "checkout", "-q", "-b", "foreign-lane");
+  await commitFile(workspace, "foreign-middle.txt", "middle\n", "foreign middle");
+  const foreignTip = await commitFile(workspace, "foreign-tip.txt", "tip\n", "foreign tip");
+  await git(workspace, "checkout", "-q", "main");
+
+  assert.equal(
+    (await git(workspace, "rev-parse", `refs/heads/${contract.branch}`)).trim(),
+    mainBefore,
+    "role source branch stays at pre-foreign tip"
+  );
+  // merge-base --is-ancestor exits 0 when true; throws (non-zero) when false.
+  await git(workspace, "merge-base", "--is-ancestor", mainBefore, foreignTip);
+  await assert.rejects(
+    () =>
+      git(
+        workspace,
+        "merge-base",
+        "--is-ancestor",
+        foreignTip,
+        `refs/heads/${contract.branch}`,
+      ),
+    /./,
+    "foreign tip is not reachable from the task source branch",
+  );
+
+  const integrated = await integrateWorkspaceCommits(contract, [foreignTip]);
+  const mainAfter = (await git(workspace, "rev-parse", "main")).trim();
+
+  assert.notEqual(
+    mainAfter,
+    foreignTip,
+    "must not whole-interval fast-forward an off-source tip"
+  );
+  assert.equal(
+    await pathExists(path.join(workspace, "foreign-middle.txt")),
+    false,
+    "must not drag foreign intermediate commits into target"
+  );
+  assert.equal(
+    normalizeLf(await fs.readFile(path.join(workspace, "foreign-tip.txt"), "utf8")),
+    "tip\n",
+    "exact tip content still lands via precise cherry-pick"
+  );
+  assert.equal(integrated.length, 1);
+  assert.equal(integrated[0].sourceRef, foreignTip);
+  assert.notEqual(integrated[0].integratedRef, foreignTip);
+  assert.equal(integrated[0].alreadyIntegrated, false);
+});
+
 test("listRoleCommitsStrict / listPendingRoleCommits: fail-loud + skip already-integrated", async () => {
   const workspace = await makeGitWorkspace("tent-pending-commits-");
   const {
