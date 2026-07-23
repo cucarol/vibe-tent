@@ -73,6 +73,16 @@ body,
   background: var(--tn-color-panel-bg);
   z-index: 11;
   box-shadow: 0 0 0 1px var(--tn-color-border);
+  /* Overlay stage/Canvas when open; does not occupy a permanent grid column. */
+}
+
+.tn-outline[hidden] {
+  display: none;
+}
+
+.tn-outline-expanded-list {
+  margin: var(--tn-space-2) 0 0;
+  padding-left: var(--tn-space-4);
 }
 
 .tn-chrome {
