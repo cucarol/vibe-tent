@@ -17,6 +17,7 @@
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
+ *   MOCK_ACP_FAIL_NEW — "1" reject session/new with safe + secret-shaped data
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
  *   MOCK_ACP_LOAD_SESSION — "1" advertise agentCapabilities.loadSession (default 0)
  *   MOCK_ACP_HISTORY_TEXT — history agent_message_chunk text on session/load (default "HISTORY_REPLAY")
@@ -58,6 +59,7 @@ const permissionCount = Math.max(
 );
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
+const failNew = process.env.MOCK_ACP_FAIL_NEW === "1";
 /** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
@@ -237,6 +239,23 @@ rl.on("line", (line) => {
     const params = msg.params ?? {};
     // Never log secret values from mcpServers env/headers — names + counts only.
     log.news.push(summarizeSessionStartParams(params));
+    if (failNew) {
+      process.stderr.write("mock bridge session initialization failed\n");
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: "Internal error",
+          data: {
+            reason: "mock provider unavailable",
+            token: "must-not-leak",
+          },
+        },
+      });
+      flushLog();
+      return;
+    }
     if (!Array.isArray(params.mcpServers)) {
       write({
         jsonrpc: "2.0",

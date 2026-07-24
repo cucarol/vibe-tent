@@ -15054,6 +15054,39 @@ function isAssistantMessageChunkKind(kind) {
 // src/adapters/acp/client.ts
 var LOAD_REPLAY_QUIET_MS = 100;
 var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
+var RPC_ERROR_DATA_MAX_CHARS = 600;
+var RPC_ERROR_SAFE_KEYS = /* @__PURE__ */ new Set([
+  "code",
+  "kind",
+  "message",
+  "reason",
+  "stderr",
+  "type"
+]);
+function formatRpcError(error) {
+  const message2 = error.message || "ACP JSON-RPC error";
+  const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
+  const data = summarizeRpcErrorData(error.data);
+  return `${message2}${code}${data ? ` (${data})` : ""}`;
+}
+function summarizeRpcErrorData(data) {
+  if (data == null) return void 0;
+  if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") {
+    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) {
+    return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
+  }
+  const safe = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!RPC_ERROR_SAFE_KEYS.has(key)) continue;
+    if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      safe[key] = value == null ? null : typeof value === "string" ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
+    }
+  }
+  if (Object.keys(safe).length === 0) return void 0;
+  return `data=${JSON.stringify(safe).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+}
 var AcpClient = class {
   constructor(options) {
     this.options = options;
@@ -15513,9 +15546,7 @@ var AcpClient = class {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message2 && message2.error) {
-      pending.reject(
-        new Error(message2.error.message || JSON.stringify(message2.error))
-      );
+      pending.reject(new Error(formatRpcError(message2.error)));
     } else {
       pending.resolve(("result" in message2 ? message2.result : void 0) ?? {});
     }
@@ -16544,7 +16575,8 @@ function createCodexAcpAdapter(options) {
 
 // src/adapters/claude-acp/types.ts
 var CLAUDE_ACP_ADAPTER_ID = "claude-acp";
-var CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+var CLAUDE_ACP_NPX_VERSION = "0.62.0";
+var CLAUDE_ACP_NPX_PACKAGE = `@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_NPX_VERSION}`;
 
 // src/adapters/claude-acp/index.ts
 var ClaudeAcpProviderAdapter = class {

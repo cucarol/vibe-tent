@@ -30,6 +30,60 @@ import {
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
+const RPC_ERROR_DATA_MAX_CHARS = 600;
+const RPC_ERROR_SAFE_KEYS = new Set([
+  "code",
+  "kind",
+  "message",
+  "reason",
+  "stderr",
+  "type",
+]);
+
+function formatRpcError(error: NonNullable<AcpJsonRpcResponse["error"]>): string {
+  const message = error.message || "ACP JSON-RPC error";
+  const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
+  const data = summarizeRpcErrorData(error.data);
+  return `${message}${code}${data ? ` (${data})` : ""}`;
+}
+
+/**
+ * Keep provider diagnostics useful without persisting arbitrary payloads.
+ * ACP error data may contain tool args, headers, prompts, or credentials.
+ */
+function summarizeRpcErrorData(data: unknown): string | undefined {
+  if (data == null) return undefined;
+  if (
+    typeof data === "string" ||
+    typeof data === "number" ||
+    typeof data === "boolean"
+  ) {
+    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) {
+    return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
+  }
+
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (!RPC_ERROR_SAFE_KEYS.has(key)) continue;
+    if (
+      value == null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      safe[key] =
+        value == null
+          ? null
+          : typeof value === "string"
+          ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS)
+          : value;
+    }
+  }
+  if (Object.keys(safe).length === 0) return undefined;
+  return `data=${JSON.stringify(safe).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+}
 
 export type AcpClientOptions = {
   command: string;
@@ -688,9 +742,7 @@ export class AcpClient {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message && message.error) {
-      pending.reject(
-        new Error(message.error.message || JSON.stringify(message.error))
-      );
+      pending.reject(new Error(formatRpcError(message.error)));
     } else {
       pending.resolve(("result" in message ? message.result : undefined) ?? {});
     }

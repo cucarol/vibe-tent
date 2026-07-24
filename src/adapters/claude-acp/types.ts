@@ -26,5 +26,9 @@ export interface ClaudeAcpProfileOptions extends AcpProfileOptions {}
 
 export const CLAUDE_ACP_ADAPTER_ID = "claude-acp";
 
-/** npm package launched via npx for the official Claude Agent ACP bridge. */
-export const CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+/** Known-good bridge release; never let an existing profile drift with npm `latest`. */
+export const CLAUDE_ACP_NPX_VERSION = "0.62.0";
+
+/** npm package spec launched via npx for the official Claude Agent ACP bridge. */
+export const CLAUDE_ACP_NPX_PACKAGE =
+  `@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_NPX_VERSION}`;
