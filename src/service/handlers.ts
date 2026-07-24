@@ -6054,7 +6054,8 @@ async function projectRuntimeEventOnce(
       stopReason: rec?.stopReason,
       task: boundTaskForTerminal,
     });
-    if (!retainInputsOnTerminal) {
+    if (!retainInputsOnTerminal && !boundTaskForTerminal) {
+      // Unbound session: no task mutation can own cleanup, so cancel by session.
       // Pending business UserAsks bound to this session are cancelled (not answered).
       await cancelUserAsksForSession(
         ctx,
@@ -6182,9 +6183,9 @@ async function projectRuntimeEventOnce(
  * Single core path for runtime→task failed: taskFail (occupation release) +
  * idempotent session stop. Duplicate failure/exit events are safe.
  *
- * Re-reads the envelope before cancelling U2A rows so a late session.failed
- * cannot cancel durable review-feedback after reject-resume park, or demote a
- * task that has already left the active pre-delivery occupation.
+ * Re-reads and mutates under one workspace lock so a late session.failed cannot
+ * cancel durable review-feedback after reject-resume park, or demote a task
+ * that has already left the active pre-delivery occupation.
  */
 async function failTaskFromRuntime(
   ctx: HandlerContext,
@@ -6199,71 +6200,7 @@ async function failTaskFromRuntime(
   const mount = ctx.host.get(input.workspaceId);
   if (!mount) return;
 
-  // Authority check first: never cancel durable inputs / occupation when the
-  // task is no longer an active pre-delivery failure candidate.
-  const currentPre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(
-    () => null
-  );
-  if (!currentPre) return;
-  if (
-    currentPre.state !== "running" &&
-    currentPre.state !== "waiting" &&
-    currentPre.state !== "failed"
-  ) {
-    // delivered / accepted / rejected / interrupted — session terminal is diagnostic.
-    return;
-  }
-  if (
-    currentPre.state === "waiting" &&
-    isRejectResumeParkedWait(currentPre)
-  ) {
-    // Park owns occupation + review-feedback retention; do not task.fail.
-    return;
-  }
-  if (input.sessionId && currentPre.sessionId && currentPre.sessionId !== input.sessionId) {
-    // Task already rebound to another session — prior ss- terminal is diagnostic.
-    return;
-  }
-
-  // Stop managed process first when still live (idempotent).
-  await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
-  await cancelTaskInputsForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
-  if (input.sessionId) {
-    try {
-      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
-    } catch {
-      // ignore
-    }
-    try {
-      await cancelUserAsksForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "task.fail"
-      );
-    } catch {
-      // ignore
-    }
-    try {
-      await cancelTaskInputsForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "task.fail"
-      );
-    } catch {
-      // ignore
-    }
-    try {
-      const probe = await ctx.runtime.probe(input.sessionId);
-      if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
-        await ctx.runtime.stopSession(input.sessionId, "interrupt");
-      }
-    } catch {
-      // already dead / already stopped
-    }
-  }
-
+  let appliedFailure = false;
   await ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
     const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -6277,11 +6214,46 @@ async function failTaskFromRuntime(
     if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
       return;
     }
+    // The authority check and all durable cleanup share the same mutation
+    // boundary. Delivery/reject-resume cannot interleave between this read and
+    // cancellation of TaskInputs/UserAsks.
+    await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
+    await cancelTaskInputsForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
+    if (input.sessionId) {
+      await cancelUserAsksForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "task.fail"
+      );
+      await cancelTaskInputsForSession(
+        ctx,
+        input.workspaceId,
+        input.sessionId,
+        "task.fail"
+      );
+    }
     const failed = await taskFail(mount.env, input.taskPath, {
       summary: input.summary,
     });
     emitTaskState(ctx, input.workspaceId, failed, input.reason);
+    appliedFailure = true;
   });
+
+  if (!appliedFailure || !input.sessionId) return;
+  try {
+    await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+  } catch {
+    // ignore
+  }
+  try {
+    const probe = await ctx.runtime.probe(input.sessionId);
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+      await ctx.runtime.stopSession(input.sessionId, "interrupt");
+    }
+  } catch {
+    // already dead / already stopped
+  }
 }
 
 /** True when reject-resume park owns this waiting(external) occupation. */

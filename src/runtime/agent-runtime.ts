@@ -967,7 +967,10 @@ export class AgentRuntime implements AgentRuntimePort {
       await this.registry.update(sessionId, {
         stopReason: reason,
         pid: undefined,
-        state: current.state === "failed" ? "failed" : "stopped",
+        // A provider may report "failed/interrupted" while honoring Tent's
+        // explicit stop. The provider message remains diagnostic in lastError,
+        // but the lifecycle outcome is an intentional stop.
+        state: "stopped",
       });
     }
   }
