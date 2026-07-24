@@ -294,11 +294,12 @@ CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `
 Prompt/provider failure paths must leave **task / session / process** consistent:
 
 1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` so no live orphan remains.
-2. Service maps `session.failed` through core **`taskFail`**: `running|waiting → failed`, clears `wait`, and **releases box occupation** (`owner`/`assignee` cleared, service-owned `doing` → `todo`).
-3. `failed` is terminal non-active: the **same box** can be re-dispatched without manual frontmatter edits or `docs.fork`.
-4. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error). Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
-5. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal). Service maps that to `taskFail` + occupation release — probe must not claim a live orphan.
-6. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
+2. Service maps `session.failed` through core **`taskFail` only while the bound task is still pre-delivery active** (`running` / non-parked `waiting`): clears `wait` and **releases box occupation** (`owner`/`assignee` cleared, service-owned `doing` → `todo`).
+3. **Session terminal is diagnostic** once Task is already `delivered` / `accepted` / `rejected`, after intentional seal/post-deliver stop (`stopReason=user`, including adapter `session.failed` "interrupted"), or after reject-resume park `waiting(external)`. Do not demote a published Delivery or cancel durable review-feedback.
+4. `failed` is terminal non-active: the **same box** can be re-dispatched without manual frontmatter edits or `docs.fork`.
+5. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error). Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
+6. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal). Service maps that to `taskFail` + occupation release when still pre-delivery — probe must not claim a live orphan.
+7. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
 
 ## Lifecycle
 
@@ -311,7 +312,7 @@ Prompt/provider failure paths must leave **task / session / process** consistent
 | Tool approve once / deny / timeout | Resume or cancel tool; clear pending (timeout → store `expired`; late approve fails) |
 | `session.prompt_complete` | Service auto-deliver (see above) |
 | Spontaneous child exit | Terminal runtime event even with no pending RPC; deduped vs prompt failure / intentional stop |
-| `session.failed` | Stop process (idempotent) → `taskFail` + occupation release |
+| `session.failed` | Stop process (idempotent) → `taskFail` + occupation release **only** for pre-delivery active tasks; otherwise Session diagnostic only |
 | PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
 
 ## Verification (dev)

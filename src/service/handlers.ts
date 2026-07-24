@@ -6038,42 +6038,23 @@ async function projectRuntimeEventOnce(
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     // Pending tool approvals must not hang after process death.
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    // Intentional stop after managed deliver (stopReason=user) already cancelled
-    // pending asks/inputs synchronously in stopManagedSessionAfterDelivery.
-    // Re-running cancel here races reject-resume: core reject returns the task to
-    // running and creates review-feedback still keyed to the prior sessionId
-    // before rebind — a late session.exited must not cancel that new U2A row.
-    const intentionalPostDeliverStop =
-      ev.type === "session.exited" && rec?.stopReason === "user";
-    // Native reject-resume may emit session.failed while review-feedback is already
-    // keyed to this ss-; park/fail-loud retains the input. Cover both in-flight
-    // resume and already-parked waiting(external) (late projection after park).
-    let rejectResumeRetainInputs =
-      rejectResumeNativeInFlight.has(ev.sessionId);
-    if (!rejectResumeRetainInputs && rec?.lastTaskId && rec.workspace) {
-      try {
-        const mountForRetain = ctx.host.get(rec.workspace);
-        if (mountForRetain) {
-          const tasksForRetain = await loadTaskEnvelopes(mountForRetain.env.fs);
-          const bound = tasksForRetain.find(
-            (t) =>
-              (t.id === rec.lastTaskId || t.path === rec.lastTaskId) &&
-              (!t.sessionId || t.sessionId === ev.sessionId)
-          );
-          if (
-            bound?.state === "waiting" &&
-            bound.wait?.reason === "external" &&
-            typeof bound.wait.summary === "string" &&
-            bound.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
-          ) {
-            rejectResumeRetainInputs = true;
-          }
-        }
-      } catch {
-        // best-effort retain only
-      }
-    }
-    if (!intentionalPostDeliverStop && !rejectResumeRetainInputs) {
+    // Session terminal is diagnostic for inputs when:
+    // - intentional seal/post-deliver stop (stopReason=user) — adapter may emit
+    //   session.failed ("interrupted") rather than session.exited;
+    // - native reject-resume in flight or already parked waiting(external);
+    // - bound task already published a Delivery / is otherwise collaboration-terminal.
+    // Late terminal events must not cancel durable review-feedback or demote Delivery.
+    const boundTaskForTerminal = await loadBoundTaskForSessionTerminal(
+      ctx,
+      rec,
+      ev.sessionId
+    );
+    const retainInputsOnTerminal = shouldRetainInputsOnSessionTerminal({
+      sessionId: ev.sessionId,
+      stopReason: rec?.stopReason,
+      task: boundTaskForTerminal,
+    });
+    if (!retainInputsOnTerminal) {
       // Pending business UserAsks bound to this session are cancelled (not answered).
       await cancelUserAsksForSession(
         ctx,
@@ -6142,36 +6123,17 @@ async function projectRuntimeEventOnce(
         (ev.type === "session.failed" || ev.type === "session.exited") &&
         (task.state === "running" || task.state === "waiting")
       ) {
-        // Any terminal session without a delivery releases the task occupation.
-        // Intentional interrupt is already terminal before stopSession emits exited,
-        // so it never enters this active-task branch.
-        //
-        // stopReason=user is the managed deliver seal / post-deliver stop path.
-        // Seal-before-deliver stops while task is still running; a late or concurrent
-        // session.exited must not task.fail that occupation (or reject-resume rework
-        // still briefly bound to the prior sessionId / lastTaskId).
-        if (ev.type === "session.exited" && rec?.stopReason === "user") {
-          continue;
-        }
-        // In-flight auto-deliver seal: stopReason may race child exit; never fail.
+        // Session terminal → task.fail only while the task is still the active
+        // pre-delivery occupation. Once Delivery is published, reject-resume has
+        // parked waiting(external), or seal/post-deliver intentionally stopped
+        // the process, session terminal is diagnostic only.
         if (
-          ev.type === "session.exited" &&
-          isManagedAutoDeliverSealing(ev.sessionId, task.path, task.id)
-        ) {
-          continue;
-        }
-        // Native reject-resume: resumeSession failure must not task.fail the rework
-        // occupation; parkTaskAfterRejectResumeFailure owns waiting(external).
-        if (rejectResumeNativeInFlight.has(ev.sessionId)) {
-          continue;
-        }
-        // After park, a late session.failed may still arrive for the same ss-;
-        // keep occupation in waiting(external) for user retry / interrupt.
-        if (
-          task.state === "waiting" &&
-          task.wait?.reason === "external" &&
-          typeof task.wait.summary === "string" &&
-          task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
+          shouldSkipTaskFailOnSessionTerminal({
+            sessionId: ev.sessionId,
+            eventType: ev.type,
+            stopReason: rec?.stopReason,
+            task,
+          })
         ) {
           continue;
         }
@@ -6219,6 +6181,10 @@ async function projectRuntimeEventOnce(
 /**
  * Single core path for runtime→task failed: taskFail (occupation release) +
  * idempotent session stop. Duplicate failure/exit events are safe.
+ *
+ * Re-reads the envelope before cancelling U2A rows so a late session.failed
+ * cannot cancel durable review-feedback after reject-resume park, or demote a
+ * task that has already left the active pre-delivery occupation.
  */
 async function failTaskFromRuntime(
   ctx: HandlerContext,
@@ -6232,6 +6198,32 @@ async function failTaskFromRuntime(
 ): Promise<void> {
   const mount = ctx.host.get(input.workspaceId);
   if (!mount) return;
+
+  // Authority check first: never cancel durable inputs / occupation when the
+  // task is no longer an active pre-delivery failure candidate.
+  const currentPre = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(
+    () => null
+  );
+  if (!currentPre) return;
+  if (
+    currentPre.state !== "running" &&
+    currentPre.state !== "waiting" &&
+    currentPre.state !== "failed"
+  ) {
+    // delivered / accepted / rejected / interrupted — session terminal is diagnostic.
+    return;
+  }
+  if (
+    currentPre.state === "waiting" &&
+    isRejectResumeParkedWait(currentPre)
+  ) {
+    // Park owns occupation + review-feedback retention; do not task.fail.
+    return;
+  }
+  if (input.sessionId && currentPre.sessionId && currentPre.sessionId !== input.sessionId) {
+    // Task already rebound to another session — prior ss- terminal is diagnostic.
+    return;
+  }
 
   // Stop managed process first when still live (idempotent).
   await cancelUserAsksForTask(ctx, input.workspaceId, input.taskPath, "task.fail");
@@ -6279,11 +6271,128 @@ async function failTaskFromRuntime(
       // delivered / terminal other — do not force fail
       return;
     }
+    if (current.state === "waiting" && isRejectResumeParkedWait(current)) {
+      return;
+    }
+    if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
+      return;
+    }
     const failed = await taskFail(mount.env, input.taskPath, {
       summary: input.summary,
     });
     emitTaskState(ctx, input.workspaceId, failed, input.reason);
   });
+}
+
+/** True when reject-resume park owns this waiting(external) occupation. */
+function isRejectResumeParkedWait(task: TaskEnvelope): boolean {
+  return (
+    task.state === "waiting" &&
+    task.wait?.reason === "external" &&
+    typeof task.wait.summary === "string" &&
+    task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
+  );
+}
+
+/**
+ * Collaboration-terminal task states: Session death is diagnostic only.
+ * Includes published Delivery (`delivered`) and post-review terminals.
+ */
+function isTaskCollaborationTerminal(task: TaskEnvelope): boolean {
+  return (
+    task.state === "delivered" ||
+    task.state === "accepted" ||
+    task.state === "rejected" ||
+    task.state === "interrupted" ||
+    task.state === "failed"
+  );
+}
+
+/**
+ * Load the task still bound to this session for terminal input-retain decisions.
+ * Best-effort: missing mount/row → undefined (caller falls back to cancel).
+ */
+async function loadBoundTaskForSessionTerminal(
+  ctx: HandlerContext,
+  rec: { lastTaskId?: string; workspace?: string } | null | undefined,
+  sessionId: string
+): Promise<TaskEnvelope | undefined> {
+  if (!rec?.lastTaskId) return undefined;
+  try {
+    const mountInfos = ctx.host.list();
+    for (const info of mountInfos) {
+      if (rec.workspace && info.workspaceId !== rec.workspace) continue;
+      const mount = ctx.host.get(info.workspaceId);
+      if (!mount) continue;
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      const currentTask = tasks.find((t) => {
+        if (t.id !== rec.lastTaskId && t.path !== rec.lastTaskId) return false;
+        return !t.sessionId || t.sessionId === sessionId;
+      });
+      return currentTask ?? tasks.find((t) => t.sessionId === sessionId);
+    }
+  } catch {
+    // best-effort
+  }
+  return undefined;
+}
+
+/**
+ * Whether session terminal cleanup must retain durable TaskInputs / UserAsks.
+ * stopReason=user covers seal-before-deliver and post-deliver stop even when the
+ * adapter reports session.failed ("interrupted") instead of session.exited.
+ */
+function shouldRetainInputsOnSessionTerminal(input: {
+  sessionId: string;
+  stopReason?: string;
+  task?: TaskEnvelope;
+}): boolean {
+  if (input.stopReason === "user") return true;
+  if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
+  if (!input.task) return false;
+  if (isRejectResumeParkedWait(input.task)) return true;
+  // Published Delivery / post-review terminal: session death is diagnostic.
+  if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
+    return true;
+  }
+  // Already-failed task: still cancel leftover pending rows (cleanup), unless
+  // this was a reject-resume park (handled above).
+  return false;
+}
+
+/**
+ * Whether runtime terminal must skip task.fail for this bound task.
+ * Preserves legitimate running/waiting (non-park) failure behavior.
+ */
+function shouldSkipTaskFailOnSessionTerminal(input: {
+  sessionId: string;
+  eventType: "session.failed" | "session.exited";
+  stopReason?: string;
+  task: TaskEnvelope;
+}): boolean {
+  // Intentional seal / post-deliver stop — adapter may emit failed or exited.
+  if (input.stopReason === "user") return true;
+  // In-flight auto-deliver seal: stopReason may race child exit.
+  if (
+    input.eventType === "session.exited" &&
+    isManagedAutoDeliverSealing(input.sessionId, input.task.path, input.task.id)
+  ) {
+    return true;
+  }
+  if (
+    input.eventType === "session.failed" &&
+    isManagedAutoDeliverSealing(input.sessionId, input.task.path, input.task.id)
+  ) {
+    return true;
+  }
+  if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
+  if (isRejectResumeParkedWait(input.task)) return true;
+  // Defensive: collaboration-terminal tasks never enter the fail branch via
+  // the outer state filter, but keep the invariant local and explicit.
+  if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
+    return true;
+  }
+  return false;
 }
 
 /**

@@ -3899,6 +3899,259 @@ test("reject-resume native load failure parks waiting; no new session; input ret
   );
 });
 
+test("late session.failed after reject-resume park keeps waiting + review-feedback", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("reject-resume-late-failed", {
+    executor: "allow",
+  }, { executor: ["mock-rr-late-fail"] });
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-rr-late-")),
+    "mock-acp.json"
+  );
+  const profile = mockAcpProfile("mock-rr-late-fail", {
+    logPath,
+    promptText: "LATE_FAIL_PARK",
+    keepAlive: true,
+    loadSession: true,
+    failLoad: true,
+  });
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "late failed must not demote park",
+        deliveryPolicy: "manual",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-rr-late-fail",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      await invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "LATE_FAIL_PARK",
+      });
+      await svc.runtime.stopSession(sessionId, "user");
+      assert.equal((await svc.runtime.probe(sessionId)).resumeCapable, true);
+
+      const rejected = await rpc(svc, "task.reject", {
+        workspaceId,
+        taskPath,
+        actor: "user",
+        resume: true,
+        note: "retain after late session.failed",
+      });
+      assert.ok(rejected.error, "native load failure must fail the RPC");
+      assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+
+      const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
+      const parkedTask = (
+        parked.result as {
+          task: {
+            state: string;
+            wait?: { reason?: string; summary?: string };
+            sessionId?: string;
+          };
+        }
+      ).task;
+      assert.equal(parkedTask.state, "waiting");
+      assert.equal(parkedTask.wait?.reason, "external");
+      assert.ok(
+        parkedTask.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
+      );
+
+      const beforeInputs = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+      const beforeReview = beforeInputs.find((row) => row.kind === "review-feedback");
+      assert.ok(beforeReview, "review-feedback present after park");
+      assert.notEqual(beforeReview!.status, "cancelled");
+
+      // Real self-hosting race: resume already parked, in-flight marker cleared,
+      // then a late session.failed for the same ss- arrives (adapter Internal error).
+      await svc.runtime.registry.update(sessionId, {
+        state: "failed",
+        lastError: "Internal error",
+        pid: undefined,
+      });
+      await mapRuntimeEventToService(svc.ctx, {
+        type: "session.failed",
+        sessionId,
+        error: "Internal error",
+      });
+
+      const after = await rpc(svc, "task.get", { workspaceId, taskPath });
+      const afterTask = (
+        after.result as {
+          task: {
+            state: string;
+            wait?: { reason?: string; summary?: string };
+            sessionId?: string;
+            activeDeliveryId?: string;
+          };
+        }
+      ).task;
+      assert.equal(
+        afterTask.state,
+        "waiting",
+        "late session.failed must not demote parked reject-resume occupation"
+      );
+      assert.equal(afterTask.wait?.reason, "external");
+      assert.ok(
+        afterTask.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY),
+        afterTask.wait?.summary
+      );
+      assert.equal(afterTask.sessionId, sessionId);
+
+      const afterInputs = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+      const afterReview = afterInputs.find((row) => row.kind === "review-feedback");
+      assert.ok(afterReview, "review-feedback must survive late session.failed");
+      assert.equal(afterReview!.id, beforeReview!.id);
+      assert.equal(afterReview!.text, "retain after late session.failed");
+      assert.notEqual(afterReview!.status, "cancelled");
+      assert.ok(
+        afterReview!.status === "pending" || afterReview!.status === "failed",
+        `unexpected status ${afterReview!.status}`
+      );
+    },
+    { profiles: [profile] }
+  );
+});
+
+test("late session.failed after managed Delivery is diagnostic only", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("late-failed-after-deliver", {
+    executor: "allow",
+  });
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "delivery then late session.failed",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId,
+      assistantText: "CLEAN_DELIVERY_REPORT",
+    });
+
+    const delivered = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const deliveredTask = (
+      delivered.result as {
+        task: { state: string; activeDeliveryId?: string; sessionId?: string };
+      }
+    ).task;
+    assert.equal(deliveredTask.state, "delivered");
+    assert.ok(deliveredTask.activeDeliveryId, "Delivery must remain published");
+
+    // Self-hosting shape: seal stopReason=user, adapter still reports session.failed
+    // ("session interrupted…") after Delivery is already on disk. Session may
+    // show failed; Task + Delivery authority must not be demoted.
+    await svc.runtime.registry.update(sessionId, {
+      state: "failed",
+      stopReason: "user",
+      lastError: "session interrupted: session interrupted before prompt completed",
+      pid: undefined,
+    });
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId,
+      error: "session interrupted: session interrupted before prompt completed",
+    });
+
+    const after = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const afterTask = (
+      after.result as {
+        task: { state: string; activeDeliveryId?: string };
+      }
+    ).task;
+    assert.equal(afterTask.state, "delivered", "must not demote published Delivery");
+    assert.equal(afterTask.activeDeliveryId, deliveredTask.activeDeliveryId);
+
+    // listPending emptiness after a clean managed turn is normal consumption
+    // (delivered/consumed rows are not listed) — not evidence of task.fail cancel.
+    const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+    assert.equal(pending.length, 0);
+  });
+});
+
+test("session.failed still fails a live running task (pre-delivery)", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("legit-session-failed");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "real failure path",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    const sent = await rpc(svc, "task.sendInput", {
+      workspaceId,
+      taskPath,
+      text: "should cancel on real fail",
+    });
+    assert.ok(!sent.error, JSON.stringify(sent.error));
+    const inputId = (sent.result as { input: { id: string } }).input.id;
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId,
+      error: "provider crashed mid-turn",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (got.result as { task: { state: string } }).task;
+    assert.equal(task.state, "failed", "pre-delivery session.failed must task.fail");
+
+    const input = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
+    assert.ok(input);
+    assert.equal(input!.status, "cancelled");
+  });
+});
+
 test("reject-resume allocates new session only when prior is not resumeCapable", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-not-capable");
