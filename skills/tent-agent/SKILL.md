@@ -1,11 +1,11 @@
 ---
 name: tent-agent
-description: Unified Tent entry for any Agent: create or enter a Tent, initialize or resume a role, bind external sessions, and drive the task lifecycle.
+description: Unified Tent (帷幄) entry for any Agent: create or enter a Tent, initialize or resume a role, bind external sessions, and drive the task lifecycle.
 ---
 
 # tent-agent
 
-Use this skill whenever an agent creates, joins, or resumes work inside a Tent workspace. It is the **single V0.2 model-side entry**; the former two Tent skills are retired.
+Use this skill whenever an agent creates, joins, or resumes work inside a Tent (帷幄) workspace. `帷幄` is the Chinese product name and should be treated as an alias of Tent. This is the **single V0.2 model-side entry**; the former two Tent skills are retired.
 
 Details live under `references/` — keep this file short and cache-friendly.
 
@@ -79,6 +79,14 @@ Orientation (read-only): `tent status`, `tent roles`, `tent tree`.
 - A dispatcher **may** `send-input` to a subordinate task it owns as writer.
 - Managed ACP may inject U2A as `## User Input` / review feedback; external agents poll + ack.
 - `ask-user` is not chat and not tool-permission UI.
+
+## Capture confirmed decisions
+
+- During design, review, or planning work, treat an explicit user confirmation as durable project context.
+- Immediately after an explicit confirmation, write the conclusion into the nearest existing relevant Node through the authorized Tent mutation path; only then move to the next topic.
+- Do not create one new Decision Node per conversational detail. Extend the current architecture, lifecycle, or feature Node instead.
+- If no writable relevant Node exists, preserve the exact conclusion in the Delivery summary and state that it still needs placement.
+- Before Delivery, check whether any confirmed conclusion still exists only in the conversation. Place it in a relevant Node or list it explicitly as unplaced in the Delivery summary.
 
 ### Managed ACP vs external / relay
 
