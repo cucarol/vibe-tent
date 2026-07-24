@@ -95,6 +95,15 @@ tent task user-ask deny <askId>
 
 Wait for the reply through the service; do not busy-loop inventing answers.
 
+## Confirmed decisions
+
+During design, review, or planning, treat explicit user confirmation as durable project context:
+
+- Write the conclusion promptly through the authorized Tent mutation path into the nearest relevant writable Node.
+- Prefer extending the current architecture, lifecycle, or feature Node; do not create one Node per conversational detail.
+- If no suitable writable Node exists, preserve the conclusion in the Delivery summary and mark it as unplaced.
+- Before Delivery, check that confirmed decisions do not exist only in chat.
+
 ## External session CLI
 
 Verified public surface (sibling lifecycle CLI):

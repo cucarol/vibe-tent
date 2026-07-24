@@ -5,16 +5,13 @@ description: Unified Tent (帷幄) entry for any Agent: create or enter a Tent, 
 
 # tent-agent
 
-Use this skill whenever an agent creates, joins, or resumes work inside a Tent (帷幄) workspace. `帷幄` is the Chinese product name and should be treated as an alias of Tent. This is the **single V0.2 model-side entry**; the former two Tent skills are retired.
+Use this skill whenever an agent creates, joins, or resumes work inside a Tent (帷幄) workspace. `帷幄` is the Chinese product name and should be treated as an alias of Tent. This is the **single V0.2 model-side entry**.
 
 Details live under `references/` — keep this file short and cache-friendly.
 
 ## When to use
 
-- You need to create a Tent in a workspace that does not yet have `.tent/`.
-- You are inside (or should attach to) a workspace that has `.tent/`.
-- Bootstrap / Context Card / relay prompt points at a task envelope under `.tent/temp/…`.
-- You need claim → work → deliver, or mid-task A2U / U2A.
+Use for Tent creation/entry, `.tent/temp/…` task envelopes, claim → work → deliver, and mid-task A2U/U2A.
 
 ## Create or initialize
 
@@ -82,11 +79,7 @@ Orientation (read-only): `tent status`, `tent roles`, `tent tree`.
 
 ## Capture confirmed decisions
 
-- During design, review, or planning work, treat an explicit user confirmation as durable project context.
-- Immediately after an explicit confirmation, write the conclusion into the nearest existing relevant Node through the authorized Tent mutation path; only then move to the next topic.
-- Do not create one new Decision Node per conversational detail. Extend the current architecture, lifecycle, or feature Node instead.
-- If no writable relevant Node exists, preserve the exact conclusion in the Delivery summary and state that it still needs placement.
-- Before Delivery, check whether any confirmed conclusion still exists only in the conversation. Place it in a relevant Node or list it explicitly as unplaced in the Delivery summary.
+Persist explicit user confirmations in the nearest relevant writable Node as you go; extend an existing Node instead of creating one per detail. Before Delivery, place any remaining confirmed decisions or list them as unplaced. See `references/task-cli.md`.
 
 ### Managed ACP vs external / relay
 

@@ -40,6 +40,8 @@ function mockAcpProfile(
     keepAlive?: boolean;
     /** Hang bootstrap (no auto-deliver); U2A follow-ups still complete. */
     hangBootstrap?: boolean;
+    /** Advertise agentCapabilities.loadSession (native resume). */
+    loadSession?: boolean;
     /** Override profile promptTimeoutMs (default 15s). */
     promptTimeoutMs?: number;
   }
@@ -63,6 +65,7 @@ function mockAcpProfile(
         ? { MOCK_ACP_FOLLOWUP_DELAY_MS: String(opts.followupDelayMs) }
         : {}),
       ...(opts.hangFollowup ? { MOCK_ACP_FOLLOWUP_HANG: "1" } : {}),
+      ...(opts.loadSession ? { MOCK_ACP_LOAD_SESSION: "1" } : {}),
       // interrupt hangs bootstrap; follow-ups (User Input / Review Feedback) still ok
       // unless hangFollowup is set.
       MOCK_ACP_PROMPT_MODE: opts.hangBootstrap ? "interrupt" : "ok",
@@ -639,6 +642,8 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       // Bootstrap completes quickly; follow-up is the review inject.
       promptDelayMs: 200,
       keepAlive: true,
+      // Native load so stopped prior resumes same ss- + provider token.
+      loadSession: true,
     }),
   ];
 
@@ -771,22 +776,21 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
   });
 });
 
-test("reject-resume: new session after dead prior rebinds review-feedback (not stranded on old ss-)", async () => {
+test("reject-resume: native resume keeps same sessionId; review-feedback injects once", async () => {
   const ws = await makeWorkspace();
   const logPath = path.join(
-    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-newss-log-")),
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-ti-reject-native-log-")),
     "mock-acp.json"
   );
   const profiles = [
     mockAcpProfile("mock-ti", {
       logPath,
-      promptText: "FIRST_DELIVERY_CROSS_SESSION",
-      followupText: "REWORK_ON_NEW_SESSION",
+      promptText: "FIRST_DELIVERY_NATIVE_RESUME",
+      followupText: "REWORK_ON_NATIVE_RESUME",
       promptDelayMs: 200,
-      // keepAlive keeps mock process up after prompt; harness explicitly
-      // stopSession(prior) after deliver so reject-resume is forced onto the
-      // dead-prior → new-ss- path (not the still-alive rebind path).
+      // keepAlive + explicit stop forces dead prior; loadSession enables same-ss resume.
       keepAlive: true,
+      loadSession: true,
     }),
   ];
 
@@ -795,14 +799,14 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
     const mounted = (await client.mount(ws)) as { workspaceId: string };
     const workspaceId = mounted.workspaceId;
     const created = (await client.docsCreateNote(workspaceId, {
-      name: "reject-cross-session",
+      name: "reject-native-resume",
       type: "prompt",
     })) as { id: string };
 
     const dispatched = (await client.taskDispatch(workspaceId, {
       boxId: created.id,
       role: "executor",
-      prompt: "Cross-session reject-resume rebind",
+      prompt: "Native reject-resume same session",
       deliveryPolicy: "manual",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
@@ -819,19 +823,21 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
         task: { state: string };
       };
       return t.task.state === "delivered" ? t : null;
-    }, 20_000, "first managed delivery before cross-session reject");
+    }, 20_000, "first managed delivery before native reject-resume");
+
+    const beforeToken = (await svc.runtime.registry.read(priorSessionId))?.resumeToken;
+    assert.ok(beforeToken, "provider token must exist before stop");
 
     // Deterministically terminate the prior managed session via the public
-    // runtime stop API. Do not rely on post-deliver stop side-effects or probe
-    // timing: always stopSession, then assert terminal/dead before reject-resume
-    // so restore is forced down the "prior dead → new ss-" path.
+    // runtime stop API so restore takes the native resume path (not alive rebind).
     await svc.runtime.stopSession(priorSessionId, "user");
     const priorProbe = await svc.runtime.probe(priorSessionId);
     assert.equal(
       priorProbe.alive,
       false,
-      `prior session must be dead so reject-resume takes new-session path (state=${priorProbe.state})`
+      `prior session must be dead so reject-resume takes native resume path (state=${priorProbe.state})`
     );
+    assert.equal(priorProbe.resumeCapable, true, JSON.stringify(priorProbe));
     assert.ok(
       priorProbe.state === "stopped" || priorProbe.state === "failed",
       `prior session must be terminal; got state=${priorProbe.state}`
@@ -848,7 +854,7 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
     );
     assert.equal(beforeReject.task.sessionId, priorSessionId);
 
-    const exactNote = "  cross-session: fix and re-run  ";
+    const exactNote = "  native-resume: fix and re-run  ";
     const rejected = (await client.taskReject(workspaceId, taskPath, "user", {
       resume: true,
       note: exactNote,
@@ -871,29 +877,28 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
 
     assert.equal(rejected.state, "running");
     assert.ok(rejected.session?.sessionId, "must restore a live session");
-    const newSessionId = rejected.session!.sessionId;
-    assert.notEqual(
-      newSessionId,
+    assert.equal(
+      rejected.session!.sessionId,
       priorSessionId,
-      "agentProfile/role restore after deliver must allocate a new session id"
+      "resumeCapable dead prior must reuse the same Tent sessionId"
     );
     assert.equal(
-      (await svc.runtime.probe(newSessionId)).alive,
+      (await svc.runtime.probe(priorSessionId)).alive,
       true,
       "restored session must be live"
+    );
+    assert.equal(
+      (await svc.runtime.registry.read(priorSessionId))?.resumeToken,
+      beforeToken,
+      "provider token must continue"
     );
     assert.ok(rejected.input, "must create review-feedback TaskInput");
     assert.equal(rejected.input!.kind, "review-feedback");
     assert.equal(rejected.input!.text, exactNote);
     assert.equal(
       rejected.input!.sessionId,
-      newSessionId,
-      "review-feedback must bind to restored session, not the dead prior"
-    );
-    assert.notEqual(
-      rejected.input!.sessionId,
       priorSessionId,
-      "must not leave feedback keyed to the stopped session"
+      "review-feedback must bind to resumed session"
     );
     assert.equal(rejected.accepted, true);
     assert.equal(rejected.enqueued, true);
@@ -923,25 +928,15 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
       }
       return null;
     }, 20_000, "cross-session review-feedback delivered");
-    assert.equal(inputDelivered.sessionId, newSessionId);
+    assert.equal(inputDelivered.sessionId, priorSessionId);
 
-    // Durable store: cancelSession(old) must not rewrite the rebound row.
-    const cancelledOld = await svc.ctx.taskInputs.cancelSession(
-      priorSessionId,
-      "test.late-prior-exit"
-    );
-    assert.equal(
-      cancelledOld.length,
-      0,
-      "cancelSession(prior) must not touch feedback rebound to new session"
-    );
     const stored = await svc.ctx.taskInputs.get(
       rejected.input!.id,
       workspaceId,
       taskPath
     );
     assert.ok(stored);
-    assert.equal(stored!.sessionId, newSessionId);
+    assert.equal(stored!.sessionId, priorSessionId);
     assert.equal(stored!.status, "delivered");
 
     // No duplicate pending review-feedback for this task.
@@ -960,10 +955,24 @@ test("reject-resume: new session after dead prior rebinds review-feedback (not s
         task: { state: string };
       };
       return t.task.state === "delivered" ? t : null;
-    }, 20_000, "rework delivery on new session");
+    }, 20_000, "rework delivery on native resumed session");
 
+    // New bridge process rewrites MOCK_ACP_LOG — assert load (not new) + one inject.
     const logRaw = await fs.readFile(logPath, "utf8");
-    const log = JSON.parse(logRaw) as { prompts?: string[] };
+    const log = JSON.parse(logRaw) as {
+      prompts?: string[];
+      loads?: unknown[];
+      news?: unknown[];
+    };
+    assert.ok(
+      Array.isArray(log.loads) && log.loads.length >= 1,
+      "must native session/load"
+    );
+    assert.equal(
+      Array.isArray(log.news) ? log.news.length : 0,
+      0,
+      "resumed bridge must not call session/new"
+    );
     const reviewPrompts = (log.prompts ?? []).filter((p) =>
       p.includes("## Review Feedback")
     );
@@ -1061,6 +1070,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       promptDelayMs: 150,
       followupDelayMs,
       keepAlive: true,
+      loadSession: true,
     }),
   ];
 
@@ -1159,6 +1169,7 @@ test("reject-resume: background completion projects processing → delivered", a
       promptDelayMs: 150,
       followupDelayMs: 800,
       keepAlive: true,
+      loadSession: true,
     }),
   ];
 
@@ -1341,6 +1352,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
       promptDelayMs: 150,
       followupDelayMs: 1_200,
       keepAlive: true,
+      loadSession: true,
     }),
   ];
 

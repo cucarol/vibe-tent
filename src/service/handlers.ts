@@ -2764,9 +2764,9 @@ export function resetManagedTaskInputBackgroundForTests(): void {
  * - Persist is already done by the caller (TaskInputStore.add).
  * - Managed live/resume inject uses formatTaskInputPrompt (## User Input or
  *   ## Review Feedback) via the same transport as sendInput.
- * - When sessionIdOverride differs from the stored row (reject-resume new ss-),
- *   rebind the pending/failed row to the inject target before pin/inject so durable
- *   state matches the live session (no lost pending on a dead ss-, no double inject).
+ * - When sessionIdOverride differs from the stored row (reject-resume new ss- only
+ *   when prior was not resume-capable), rebind the pending/failed row to the inject
+ *   target before pin/inject so durable state matches the live session.
  * - FIFO: concurrent deliverManagedTaskInput for the same task never overlap
  *   turns or reorder; different tasks run concurrently.
  * - Failure: status=failed with lastError (not dropped); later queue items still run.
@@ -2817,8 +2817,7 @@ async function deliverManagedTaskInput(
     }
 
     // Persist inject target session when it differs from create-time binding
-    // (reject-resume often allocates a new ss- after review-feedback was created
-    // against the prior stopped session).
+    // (reject-resume may allocate a new ss- when prior was not resume-capable).
     if ((latest.sessionId?.trim() || "") !== sessionId) {
       try {
         latest = await ctx.taskInputs.rebindSession(
@@ -5815,6 +5814,13 @@ const managedAutoDeliverInFlight = new Set<string>();
 const managedAutoDeliverDone = new Set<string>();
 
 /**
+ * Session ids currently inside reject-resume native resumeSession.
+ * A failed resume emits session.failed while the rework task is already running;
+ * projection must not terminally task.fail that occupation — park/fail-loud owns it.
+ */
+const rejectResumeNativeInFlight = new Set<string>();
+
+/**
  * Per-session projection queue (key = sessionId). Different sessions proceed
  * independently; failures do not poison later events for the same session.
  * Reuses MutationBus bookkeeping (bounded tails, catch-through).
@@ -6039,7 +6045,35 @@ async function projectRuntimeEventOnce(
     // before rebind — a late session.exited must not cancel that new U2A row.
     const intentionalPostDeliverStop =
       ev.type === "session.exited" && rec?.stopReason === "user";
-    if (!intentionalPostDeliverStop) {
+    // Native reject-resume may emit session.failed while review-feedback is already
+    // keyed to this ss-; park/fail-loud retains the input. Cover both in-flight
+    // resume and already-parked waiting(external) (late projection after park).
+    let rejectResumeRetainInputs =
+      rejectResumeNativeInFlight.has(ev.sessionId);
+    if (!rejectResumeRetainInputs && rec?.lastTaskId && rec.workspace) {
+      try {
+        const mountForRetain = ctx.host.get(rec.workspace);
+        if (mountForRetain) {
+          const tasksForRetain = await loadTaskEnvelopes(mountForRetain.env.fs);
+          const bound = tasksForRetain.find(
+            (t) =>
+              (t.id === rec.lastTaskId || t.path === rec.lastTaskId) &&
+              (!t.sessionId || t.sessionId === ev.sessionId)
+          );
+          if (
+            bound?.state === "waiting" &&
+            bound.wait?.reason === "external" &&
+            typeof bound.wait.summary === "string" &&
+            bound.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
+          ) {
+            rejectResumeRetainInputs = true;
+          }
+        }
+      } catch {
+        // best-effort retain only
+      }
+    }
+    if (!intentionalPostDeliverStop && !rejectResumeRetainInputs) {
       // Pending business UserAsks bound to this session are cancelled (not answered).
       await cancelUserAsksForSession(
         ctx,
@@ -6123,6 +6157,21 @@ async function projectRuntimeEventOnce(
         if (
           ev.type === "session.exited" &&
           isManagedAutoDeliverSealing(ev.sessionId, task.path, task.id)
+        ) {
+          continue;
+        }
+        // Native reject-resume: resumeSession failure must not task.fail the rework
+        // occupation; parkTaskAfterRejectResumeFailure owns waiting(external).
+        if (rejectResumeNativeInFlight.has(ev.sessionId)) {
+          continue;
+        }
+        // After park, a late session.failed may still arrive for the same ss-;
+        // keep occupation in waiting(external) for user retry / interrupt.
+        if (
+          task.state === "waiting" &&
+          task.wait?.reason === "external" &&
+          typeof task.wait.summary === "string" &&
+          task.wait.summary.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
         ) {
           continue;
         }
@@ -6622,6 +6671,7 @@ async function stopManagedSessionAfterDelivery(
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
+  rejectResumeNativeInFlight.clear();
 }
 
 /** Drop managed auto-deliver success/in-flight markers for one session+task pair. */
@@ -6639,9 +6689,12 @@ export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
   "驳回续跑未能恢复 managed session。可重新 startSession，或 interrupt 任务；occupation 保持。";
 
 /**
- * After core reject(resume) for a managed task: resume the prior ss- when
- * resumeCapable, otherwise start a trackable new session. Reuses the same
- * profile/cwd/role identity checks as task.startSession.
+ * After core reject(resume) for a managed task:
+ * - alive → rebind the same Tent sessionId
+ * - stopped + resumeCapable → native runtime.resumeSession (same ss- + provider token)
+ * - not resumeCapable → trackable new ss-
+ * Native resume failure is fail-loud (no silent session/new); caller parks waiting(external).
+ * Review feedback is injected once after restore via deliverManagedTaskInput.
  */
 async function restoreManagedSessionAfterRejectResume(
   ctx: HandlerContext,
@@ -6721,19 +6774,15 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  // Restore/create a live managed process without an auto-delivering bootstrap.
+  // Restore a live managed process without an auto-delivering bootstrap.
   // Review note is injected next as U2A ## Review Feedback via deliverManagedTaskInput
   // (not embedded in bootstrap — not a second prompt channel).
   // Explicit empty string skips the first session/prompt so the session stays live.
-  //
-  // Prefer rebind when still alive; otherwise always start a trackable new ss-.
-  // Native resumeSession is intentionally not used here: a failed resume emits
-  // session.failed which would task.fail the rework occupation before U2A inject.
-  // U2A delivery is the sole carrier of review feedback.
   const sessionBootstrap = "";
 
+  let probe: Awaited<ReturnType<typeof ctx.runtime.probe>> | undefined;
   try {
-    const probe = await ctx.runtime.probe(priorSessionId);
+    probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
       // Still live (unusual after managed deliver stop) — rebind only.
       const bound = await ctx.mutations.run(input.workspaceId, async () => {
@@ -6773,7 +6822,63 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  // New trackable session when prior is stopped / not live.
+  // Stopped / not live: prefer native resume when the prior row is resume-capable.
+  // Never silently fall back to session/new if native resume fails — fail loud.
+  if (probe?.resumeCapable) {
+    // Hold until success return or parkTaskAfterRejectResumeFailure so a racing
+    // session.failed cannot terminally fail the rework task.
+    rejectResumeNativeInFlight.add(priorSessionId);
+    try {
+      const handle = await ctx.runtime.resumeSession({
+        sessionId: priorSessionId,
+        runtimeWorkspace: { cwd },
+        cwd,
+        bootstrapPrompt: sessionBootstrap,
+        lastTaskId: task.id || input.taskPath,
+      });
+      // Same ss- after rework: clear deliver dedup so the next prompt_complete can deliver.
+      clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+
+      const bound = await ctx.mutations.run(input.workspaceId, async () => {
+        ctx.host.markSelfWrite(input.workspaceId);
+        const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          sessionId: handle.sessionId,
+          updatedAt: mount.env.clock.now(),
+        });
+        emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
+        ctx.events.emit(
+          "session.state",
+          input.workspaceId,
+          {
+            sessionId: handle.sessionId,
+            state: handle.state,
+            profileId: handle.profileId,
+            taskPath: input.taskPath,
+            reason: "task.reject.resume.native",
+          },
+          "self"
+        );
+        return next;
+      });
+
+      rejectResumeNativeInFlight.delete(priorSessionId);
+      return {
+        task: bound,
+        session: {
+          sessionId: handle.sessionId,
+          profileId: handle.profileId,
+          adapterId: handle.adapterId,
+          state: handle.state,
+          cwd,
+        },
+      };
+    } catch (err) {
+      // Leave rejectResumeNativeInFlight set; parkTaskAfterRejectResumeFailure clears it.
+      throw err;
+    }
+  }
+
+  // Not resume-capable: allocate a trackable new session (honest independent context).
   const handle = await ctx.runtime.startSession({
     sessionId: makeSessionId(),
     profileId,
@@ -6837,52 +6942,61 @@ async function parkTaskAfterRejectResumeFailure(
   }
 ): Promise<void> {
   const mount = ctx.host.get(input.workspaceId);
-  if (!mount) return;
-
-  if (input.sessionId) {
-    try {
-      await ctx.runtime.registry.update(input.sessionId, {
-        lastError: `reject-resume restore failed: ${input.message}`,
-      });
-    } catch {
-      // registry row may be gone
-    }
+  if (!mount) {
+    if (input.sessionId) rejectResumeNativeInFlight.delete(input.sessionId);
+    return;
   }
 
-  await ctx.mutations.run(input.workspaceId, async () => {
-    ctx.host.markSelfWrite(input.workspaceId);
-    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-    if (current.state !== "running" && current.state !== "waiting") return;
-
-    const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
-    let next = current;
-    if (current.state === "running") {
-      next = await taskWait(mount.env, input.taskPath, {
-        reason: "external",
-        summary,
-      });
-    } else {
-      next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-        state: "waiting",
-        wait: { reason: "external", summary },
-        updatedAt: mount.env.clock.now(),
-      });
+  try {
+    if (input.sessionId) {
+      try {
+        await ctx.runtime.registry.update(input.sessionId, {
+          lastError: `reject-resume restore failed: ${input.message}`,
+        });
+      } catch {
+        // registry row may be gone
+      }
     }
-    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume.failed");
-    ctx.events.emit(
-      "session.state",
-      input.workspaceId,
-      {
-        sessionId: input.sessionId,
-        taskPath: input.taskPath,
-        taskState: next.state,
-        runtimeEvent: "task.reject.resume.failed",
-        error: input.message,
-        taskFailed: false,
-      },
-      "service"
-    );
-  });
+
+    await ctx.mutations.run(input.workspaceId, async () => {
+      ctx.host.markSelfWrite(input.workspaceId);
+      const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+      if (current.state !== "running" && current.state !== "waiting") return;
+
+      const summary = `${REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY} (${input.message})`;
+      let next = current;
+      if (current.state === "running") {
+        next = await taskWait(mount.env, input.taskPath, {
+          reason: "external",
+          summary,
+        });
+      } else {
+        next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+          state: "waiting",
+          wait: { reason: "external", summary },
+          updatedAt: mount.env.clock.now(),
+        });
+      }
+      emitTaskState(ctx, input.workspaceId, next, "task.reject.resume.failed");
+      ctx.events.emit(
+        "session.state",
+        input.workspaceId,
+        {
+          sessionId: input.sessionId,
+          taskPath: input.taskPath,
+          taskState: next.state,
+          runtimeEvent: "task.reject.resume.failed",
+          error: input.message,
+          taskFailed: false,
+        },
+        "service"
+      );
+    });
+  } finally {
+    // Clear after park so late session.failed projections see waiting summary
+    // skip (or still hit this marker if they race the park mutation).
+    if (input.sessionId) rejectResumeNativeInFlight.delete(input.sessionId);
+  }
 }
 
 /**
