@@ -105,6 +105,7 @@ test("Codex ACP fails loud when an explicitly configured key is missing", () => 
 });
 
 test("Claude ACP resolves the official npx bridge and permits local-login mode", () => {
+  assert.equal(CLAUDE_ACP_NPX_PACKAGE, "@agentclientprotocol/claude-agent-acp@0.62.0");
   const adapter = createClaudeAcpAdapter();
   const launch = adapter.resolveLaunch({
     sessionId: "ss-claude01",

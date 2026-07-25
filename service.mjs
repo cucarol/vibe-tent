@@ -16581,7 +16581,7 @@ function createCodexAcpAdapter(options) {
 
 // src/adapters/claude-acp/types.ts
 var CLAUDE_ACP_ADAPTER_ID = "claude-acp";
-var CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp";
+var CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.62.0";
 
 // src/adapters/claude-acp/index.ts
 var ClaudeAcpProviderAdapter = class {

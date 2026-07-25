@@ -1,4 +1,4 @@
-// Claude ACP ProviderAdapter — npx @agentclientprotocol/claude-agent-acp bridge.
+// Claude ACP ProviderAdapter — pinned official claude-agent-acp bridge via npx.
 // No ACP authenticate RPC; relies on local Claude login and/or injected env when envKey set.
 // Never starts real npx/network in tests — LaunchPlan command/args override to mock.
 
@@ -72,8 +72,8 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    // Verified 2026-07-21: @agentclientprotocol/claude-agent-acp@0.60.0 initialize
-    // advertises agentCapabilities.loadSession; sessionId is ACP-native (CLI resume-homologous).
+    // Verified 2026-07-25: @agentclientprotocol/claude-agent-acp@0.62.0 advertises
+    // load + resume; provider session ids are native Claude session ids.
     return loadSessionAcpCapabilities("external-app");
   }
 

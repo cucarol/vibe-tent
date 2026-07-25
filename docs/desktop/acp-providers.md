@@ -19,7 +19,7 @@ Tent exposes a small, explicit set of coding-agent ACP adapters. It is not a uni
 | --- | --- | --- | --- |
 | `grok-acp` | Local Grok executable in ACP stdio mode | CPA/Grok key and base URL from service process env | `opt-in-live-probe` — mock suite + `npm run test:grok-e2e` |
 | `codex-acp` | `npx --yes @agentclientprotocol/codex-acp` | Existing Codex/ChatGPT login, or explicit `envKey` injected through `DEFAULT_AUTH_REQUEST` | `opt-in-live-probe` — mock suite + `npm run test:foreground-e2e` |
-| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp` | Existing Claude login, or an explicitly configured process `envKey` | `opt-in-live-probe` — mock suite + `test:foreground-e2e` (bridge may need Node ≥22) |
+| `claude-acp` | `npx --yes @agentclientprotocol/claude-agent-acp@0.62.0` | Existing Claude login, or an explicitly configured process `envKey` | `opt-in-live-probe` — mock suite + `test:foreground-e2e` (bridge may need Node ≥22) |
 | `antigravity-acp` | Separately installed third-party `agy-acp` bridge | Bridge/`agy` local authentication, plus optional explicit process `envKey` | `mock-tested` only |
 | `opencode-acp` | Native `opencode acp` | OpenCode's local provider configuration, plus optional explicit process `envKey` | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
 | `copilot-acp` | `npx --yes @github/copilot --acp --stdio` | Existing Copilot/`gh` login, plus optional explicit process `envKey` | `opt-in-live-probe` — mock suite + `test:foreground-e2e` |
