@@ -196,6 +196,7 @@ import {
   SEMANTIC_DOCS_WRITE_FIELDS,
   RPC_A2A_ASK,
   RPC_A2A_DENIED,
+  RPC_COLLAB_AMBIGUOUS,
   RPC_LIFECYCLE,
   type ArtifactRef,
   type BoxProjection,
@@ -4936,6 +4937,7 @@ async function boxProjectionsRpc(
  * V0.2 Node-keyed collaboration projection (task-api §2.3).
  * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
  * No universal todo/doing/done; idle → null task/session/delivery.
+ * Session probe: only unique sessionIds from selected active tasks (never all machine sessions).
  */
 async function nodeCollaborationRpc(
   ctx: HandlerContext,
@@ -4945,13 +4947,24 @@ async function nodeCollaborationRpc(
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
   const concept = resolveConcept(tent, p);
+  if (concept.invalid) {
+    throw new RpcError(
+      -32004,
+      `Concept is invalid and has no collaboration projection: ${concept.path}`,
+      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+    );
+  }
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
-  const sessionsById = await loadSessionSummariesForCollaboration(ctx);
-  return projectNodeCollaboration(
+  const selected = resolveDirectActiveTaskForNode(concept.id, tasks);
+  const sessionsById = await loadSessionSummariesForCollaboration(
+    ctx,
+    selected ? collectExplicitSessionIds([selected]) : []
+  );
+  return projectNodeCollaborationFromSelected(
     workspaceId,
-    concept,
-    tasks,
+    concept.id,
+    selected,
     deliveries,
     sessionsById
   );
@@ -4960,7 +4973,7 @@ async function nodeCollaborationRpc(
 /**
  * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
  * Input `ids` order is preserved in `items`. Empty ids → empty items.
- * Loads tent + tasks + deliveries + sessions once (no N+1 RPC or path inference).
+ * Loads tent + tasks + deliveries once; probes only unique explicit sessionIds (no N+1 by node).
  */
 async function nodeCollaborationsRpc(
   ctx: HandlerContext,
@@ -4988,33 +5001,61 @@ async function nodeCollaborationsRpc(
   const tent = await loadTent(mount.env.fs);
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
-  const sessionsById = await loadSessionSummariesForCollaboration(ctx);
 
-  const items: NodeCollaboration[] = [];
+  // Resolve selected active tasks first (fail-loud on multi-active), then probe sessions.
+  const selectedByNodeId = new Map<string, TaskEnvelope | null>();
   for (const id of ids) {
+    if (selectedByNodeId.has(id)) continue; // duplicate ids share one resolution
     const concept = tent.byId.get(id);
     if (!concept) {
       throw new RpcError(-32004, `Concept not found: ${id}`);
     }
+    if (concept.invalid) {
+      throw new RpcError(
+        -32004,
+        `Concept is invalid and has no collaboration projection: ${concept.path}`,
+        { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+      );
+    }
+    selectedByNodeId.set(id, resolveDirectActiveTaskForNode(id, tasks));
+  }
+
+  const sessionsById = await loadSessionSummariesForCollaboration(
+    ctx,
+    collectExplicitSessionIds([...selectedByNodeId.values()])
+  );
+
+  const items: NodeCollaboration[] = [];
+  for (const id of ids) {
     items.push(
-      projectNodeCollaboration(workspaceId, concept, tasks, deliveries, sessionsById)
+      projectNodeCollaborationFromSelected(
+        workspaceId,
+        id,
+        selectedByNodeId.get(id) ?? null,
+        deliveries,
+        sessionsById
+      )
     );
   }
   return { workspaceId, items };
 }
 
 /**
- * Probe sessions once for the batch. Keyed by session id only — never by path/name.
+ * Probe only the given session ids (unique). Idle / unrelated sessions incur no probe.
+ * Missing registry rows are omitted (stale task.sessionId → session: null).
  */
 async function loadSessionSummariesForCollaboration(
-  ctx: HandlerContext
+  ctx: HandlerContext,
+  sessionIds: readonly string[]
 ): Promise<Map<string, NodeCollaborationSessionSummary>> {
   const byId = new Map<string, NodeCollaborationSessionSummary>();
-  const all = await ctx.runtime.registry.list();
-  for (const rec of all) {
-    const probe = await ctx.runtime.probe(rec.id);
-    byId.set(rec.id, {
-      id: rec.id,
+  for (const sessionId of sessionIds) {
+    if (byId.has(sessionId)) continue;
+    const rec = await ctx.runtime.registry.read(sessionId);
+    if (!rec) continue;
+    const probe = await ctx.runtime.probe(sessionId);
+    byId.set(sessionId, {
+      id: sessionId,
       state: probe.state,
       alive: probe.alive,
       turnBusy: probe.turnBusy === true,
@@ -5023,37 +5064,58 @@ async function loadSessionSummariesForCollaboration(
   return byId;
 }
 
+/** Unique non-empty sessionIds from selected active tasks only. */
+function collectExplicitSessionIds(
+  selected: ReadonlyArray<TaskEnvelope | null | undefined>
+): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const task of selected) {
+    const sid = task?.sessionId?.trim();
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    out.push(sid);
+  }
+  return out;
+}
+
 /**
- * Shared single-item V0.2 Node collaboration projection.
- * - At most one directly-claiming nonterminal Task (claims includes node id).
- * - No ancestor-derived occupation; no todo/doing/done mapping.
- * - Session/Delivery only when Task carries explicit sessionId / activeDeliveryId.
- * - Invalid concepts fail loud; Node FM is never consulted.
+ * Exactly zero or one directly-claiming active Task for a Node.
+ * Multiple matches are corrupted operational state — fail loud with stable RPC code + task ids.
+ * Never silently selects load-order first.
  */
-function projectNodeCollaboration(
+function resolveDirectActiveTaskForNode(
+  nodeId: string,
+  tasks: readonly TaskEnvelope[]
+): TaskEnvelope | null {
+  const matches = tasks.filter(
+    (t) => t.claims.includes(nodeId) && isActiveTaskState(t.state)
+  );
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0]!;
+  const taskIds = matches.map((t) => t.id || t.path);
+  throw new RpcError(
+    RPC_COLLAB_AMBIGUOUS,
+    `Multiple active tasks directly claim node ${nodeId}: ${taskIds.join(", ")}`,
+    { nodeId, taskIds }
+  );
+}
+
+/**
+ * Build one V0.2 Node collaboration item from an already-selected direct active task.
+ * Session/Delivery only when Task carries explicit sessionId / activeDeliveryId that resolve.
+ */
+function projectNodeCollaborationFromSelected(
   workspaceId: string,
-  concept: import("../core/types.js").Box,
-  tasks: TaskEnvelope[],
+  nodeId: string,
+  activeTask: TaskEnvelope | null,
   deliveries: import("../core/delivery.js").DeliveryRecord[],
   sessionsById: ReadonlyMap<string, NodeCollaborationSessionSummary>
 ): NodeCollaboration {
-  if (concept.invalid) {
-    throw new RpcError(
-      -32004,
-      `Concept is invalid and has no collaboration projection: ${concept.path}`,
-      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
-    );
-  }
-
-  // Direct claim only — ancestor occupation must not paint this Node.
-  const activeTask = tasks.find(
-    (t) => t.claims.includes(concept.id) && isActiveTaskState(t.state)
-  );
-
   if (!activeTask) {
     return {
       workspaceId,
-      nodeId: concept.id,
+      nodeId,
       task: null,
       session: null,
       delivery: null,
@@ -5089,7 +5151,7 @@ function projectNodeCollaboration(
 
   return {
     workspaceId,
-    nodeId: concept.id,
+    nodeId,
     task: taskSummary,
     session,
     delivery,

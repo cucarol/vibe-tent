@@ -905,3 +905,8 @@ export const RPC_UNAUTHORIZED = -32001;
 export const RPC_A2A_DENIED = -32020;
 export const RPC_A2A_ASK = -32021;
 export const RPC_LIFECYCLE = -32022;
+/**
+ * Corrupted operational state: more than one directly-claiming active Task on one Node.
+ * `node.collaboration(s)` fails loud with `{ nodeId, taskIds }` — never picks first by path order.
+ */
+export const RPC_COLLAB_AMBIGUOUS = -32023;

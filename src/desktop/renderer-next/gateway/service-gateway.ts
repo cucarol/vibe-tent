@@ -52,7 +52,6 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
     return { keys: ["docs.tree", "docs.get"], event, reason: type };
   }
   if (type.startsWith("task.") || type.startsWith("delivery.") || type.startsWith("session.")) {
-    // V0.2 collab truth is node.collaboration(s); box.projection remains only as a migration key.
     return {
       keys: ["task.list", "node.collaboration", "node.collaborations", "session.list"],
       event,

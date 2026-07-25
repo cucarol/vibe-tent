@@ -310,7 +310,7 @@ packages/
 | --- | --- |
 | External tent under vault/`_tents` + separate code root linkage | Tent **inside** the workspace at **`.tent/`** |
 | `bx-` handles | `cx-` handles (full map in migration report) |
-| `owner` / `status` on Node FM | stripped on migrate; collab chips from `node.collaboration` (V0.2); `box.projection` deprecated |
+| `owner` / `status` on Node FM | stripped on migrate; collab chips from `node.collaboration` (V0.2) |
 | temp `report` without id | `delivery` (`dl-`) under task (per Task API contract) |
 | Dual mental model / dual UI | Single location model only |
 | Product term “workspace pointer” | Retired; use **WorkspaceLane** (task) / **RuntimeWorkspace** (runtime) / in-workspace tent |

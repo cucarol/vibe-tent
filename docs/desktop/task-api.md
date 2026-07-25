@@ -206,14 +206,14 @@ Rules:
 
 Rules:
 
-- Project **at most one** Task per Node; match is **direct** `claims.includes(nodeId)` only — never ancestor-derived paint.
+- Project **at most one** Task per Node; match is **direct** `claims.includes(nodeId)` only — never ancestor/descendant-derived paint.
+- **Multiple** directly-claiming active Tasks on one Node is corrupted operational state: RPC fails loud (`RPC_COLLAB_AMBIGUOUS` / `-32023`) with `{ nodeId, taskIds }` — never silently picks load-order first.
 - Project **raw Task.state** (no Node-level todo/doing/done).
-- Attach Session (`id` / `state` / `alive` / `turnBusy`) and Delivery (`id` / `status`) **only** through explicit Task ids — never path/name/time inference.
-- Batch `node.collaborations({ ids })` preserves input order; empty `ids` → empty `items`; loads tent/tasks/sessions/deliveries **once** per batch (no N+1).
+- Attach Session (`id` / `state` / `alive` / `turnBusy`) and Delivery (`id` / `status`) **only** through explicit Task ids — never path/name/time inference. Stale ids that do not resolve project `session`/`delivery` as `null` while keeping the Task pointer.
+- Batch `node.collaborations({ ids })` preserves input order (including duplicate ids); empty `ids` → empty `items`.
+- Load tent + tasks + deliveries **once** per batch. Session probe only unique `sessionId`s from selected active tasks for the requested Node ids — idle / unrelated machine sessions incur no probe (no N+1 by node).
 - Missing / invalid Node ids fail loud (`-32004` / invalid concept).
 - Entities stay separate: no Node owner/status/coordination fields on the wire.
-
-**Deprecated (migration only):** `box.projection` / `box.projections` still map active/accepted history to `todo|doing|done`. New docs, tests, and UI contracts must treat **`node.*` as the V0.2 truth**.
 
 **Forbidden:** UI or agents writing `assignee` / legacy `owner`/`status` on Nodes—including via ordinary **`docs.write`** / frontmatter body patches. Collaboration progress is Task/Session/Delivery (+ `node.collaboration`) only. Residual disk keys without an active task **must not** pretend occupation.
 
@@ -271,15 +271,14 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `annotation.list` / `annotation.create` / `annotation.resolve` / `annotation.reopen` / `annotation.delete` — Node Markdown **underline annotations** (划线注释). First-class records under system root (`annotations.json`), keyed by `nodeId` (not path). Mutations are **user-only** via MutationBus. Create validates body range/quote + `documentEtag` (docs etag family). List projects live relocate (`anchored` \| `relocated` \| `orphan`) without rewriting stored anchors or the document. Events: `annotation.changed` (invalidation only; payload `action`, `id`, `nodeId`). Not chat, not Task, not auto Agent inject — UI may later map a comment to `task.sendInput` explicitly.
 - `node.collaboration({ workspaceId, id | path | boxId })` → `{ workspaceId, nodeId, task, session, delivery }`
   - **V0.2 truth** for Canvas / UI collab chips. Same concept selector conventions as `docs.get`; missing or invalid concepts fail cleanly.
-  - `task` is at most one **directly-claiming** nonterminal Task (raw state + assignee + optional session/delivery ids), or `null` when idle.
-  - `session` / `delivery` are nullable summaries attached **only** via `task.sessionId` / `task.activeDeliveryId`.
-- `node.collaborations({ workspaceId, ids })` → `{ workspaceId, items }` with `items` ordered as `ids`; empty `ids` → empty `items`; one load of tent/tasks/sessions/deliveries per call.
-- `box.projection` / `box.projections` — **deprecated** migration shims (legacy `todo|doing|done`); do not use for new UI contracts.
+  - `task` is at most one **directly-claiming** nonterminal Task (raw state + assignee + optional session/delivery ids), or `null` when idle. Multi-active direct claims → `-32023` with `{ nodeId, taskIds }`.
+  - `session` / `delivery` are nullable summaries attached **only** via `task.sessionId` / `task.activeDeliveryId` (probe only those session ids).
+- `node.collaborations({ workspaceId, ids })` → `{ workspaceId, items }` with `items` ordered as `ids`; empty `ids` → empty `items`; one tent/task/delivery load; session probes only unique explicit ids from selected tasks.
 - `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `userAsk.pending` / `userAsk.resolved`, `taskInput.pending` / `taskInput.delivered` / `taskInput.consumed` / `taskInput.cancelled`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), `annotation.changed` (after successful annotation create/resolve/reopen/delete; payload `action`, `id`, `nodeId`), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **Event invalidation:** `task.*` / `delivery.*` / `session.*` invalidate `node.collaboration` / `node.collaborations` (and task/session list bags). Events are never a second truth source.
 
-**No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
+**No** separate Node-collab event channel. Concept identity changes use `concept.*` only.
 
 ### 3.3 CLI compatibility aliases
 
@@ -573,7 +572,7 @@ One-shot cutover; no long-lived dual aliases.
 | Legacy | New |
 | --- | --- |
 | `bx-*` | `cx-*` |
-| `box.fm.owner` / `status` | **stripped on migrate**; use active task `assignee` / `box.projection` |
+| `box.fm.owner` / `status` | **stripped on migrate**; collab chips from `node.collaboration` (raw Task + Session/Delivery pointers) |
 | envelope `pending` / `taken` | task `queued` / `running` |
 | `temp/.../reports/<boxId>.md` + `DeliveryReport` | **removed** — only `delivery` (`dl-`) on the task |
 | `force-release` | interrupt/cancel active tasks for the box (no FM write) |
