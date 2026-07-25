@@ -107,7 +107,7 @@ Native structural move is available as user-only Service RPC **`docs.move`** (Mu
 3. **Stale path:** `expectedPath` is required. If `concept.path !== expectedPath` → `-32009` with `{ code: "path_stale", currentPath, expectedPath, id }` (tree identity, not body etag).
 4. **Position:** `{ mode: "inside" }` appends under parent; `{ mode: "before"|"after", siblingId }` inserts among destination siblings (sibling must already live under that parent).
 5. **Same-parent reorder:** updates id-keyed `order.json` only — **no** filesystem move, **no** link rewrite.
-6. **Reparent:** moves the folder tree; builds subtree `pathMap`; rewrites path-based Markdown/wiki links (same engine as rename); rolls back notes + tree + order on post-move failure.
+6. **Reparent:** moves the folder tree; builds subtree `pathMap`; rewrites path-based Markdown/wiki links (same engine as rename). Planning resolves link targets against the **pre-move** note path, then restyles `./`/`../` from the **post-move** note path so depth-changing reparents keep relatives valid — including outbound relatives to unmoved peers (targets outside `pathMap`). Absolute/wiki path forms still remap via `pathMap` only. Rolls back notes + tree + order on post-move failure.
 7. **Occupancy (placeBox freeze, not rename):** block when the moved node or target parent is occupied as `self` | `ancestor` | `root`. Ancestors of an occupied descendant **may** still move (claim moves with the subtree). Active Task envelopes only — not retired Node owner/status.
 8. **Safety:** refuse cycle (into own subtree), name collision at destination, invalid/archived moved or parent, operational/system paths.
 9. **Events:** emit exactly one `concept.changed` (`reason: docs.move`) with `id`, `path`, `oldPath`, `pathMap`.

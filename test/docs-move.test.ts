@@ -9,6 +9,8 @@ import { createBox, moveNode } from "../src/core/ops.js";
 import { loadTent } from "../src/core/tree.js";
 import { loadOrder, saveOrder, ROOT_KEY } from "../src/core/order.js";
 import { scaffoldInWorkspace, scaffoldTent } from "../src/core/scaffold.js";
+import { buildConceptIndex } from "../src/core/okf.js";
+import { rewriteConceptLinks } from "../src/core/renameOps.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
 import { createServiceClient } from "../src/service/client.js";
@@ -111,6 +113,140 @@ test("moveNode: reparent keeps cx-, moves subtree, rewrites path links", async (
   const hub = await fsa.readFile("hub/hub.md");
   assert.match(hub, /dest\/child/);
   assert.doesNotMatch(hub, /parent\/child\/child\.md/);
+});
+
+test("moveNode: depth-changing reparent restyles ./ and ../ inside moved subtree", async () => {
+  // Reviewer probe (dl-f9qmacqr): parent/child → dest/nest/child must not corrupt relatives.
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-depth-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  const env = envFor(fsa);
+  await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
+  const childId = await createBox(env as any, {
+    parentPath: "parent",
+    name: "child",
+    type: "prompt",
+  });
+  const grandId = await createBox(env as any, {
+    parentPath: "parent/child",
+    name: "grand",
+    type: "prompt",
+  });
+  const peerId = await createBox(env as any, { parentPath: "", name: "peer", type: "prompt" });
+  const destId = await createBox(env as any, { parentPath: "", name: "dest", type: "prompt" });
+  const nestId = await createBox(env as any, {
+    parentPath: "dest",
+    name: "nest",
+    type: "prompt",
+  });
+  void grandId;
+  void peerId;
+  void nestId;
+
+  await fsa.writeFile(
+    "parent/child/child.md",
+    [
+      "---",
+      `id: ${childId}`,
+      "type: prompt",
+      "---",
+      "",
+      "[G](./grand/grand.md)",
+      "[P](../../peer/peer.md)",
+      "[Abs](parent/child/grand/grand.md)",
+      "[[parent/child/grand]]",
+      "",
+    ].join("\n")
+  );
+
+  const result = await moveNode(env as any, childId, nestId, { mode: "inside" });
+  assert.equal(result.path, "dest/nest/child");
+  assert.equal(await fsa.exists("dest/nest/child/child.md"), true);
+
+  const body = await fsa.readFile("dest/nest/child/child.md");
+  // Relative to moved descendant: still a single-step child link (not pre-move-restyled junk).
+  assert.match(body, /\[G\]\(\.\/grand\/grand\.md\)/);
+  assert.doesNotMatch(body, /\[G\]\(\.\.\/\.\.\/dest\/nest\/child\/grand/);
+  // Relative outbound to unmoved peer: restyled for new depth.
+  assert.match(body, /\[P\]\(\.\.\/\.\.\/\.\.\/peer\/peer\.md\)/);
+  assert.doesNotMatch(body, /\[P\]\(\.\.\/\.\.\/peer\/peer\.md\)/);
+  // Absolute + wiki still remap via pathMap.
+  assert.match(body, /\[Abs\]\(dest\/nest\/child\/grand\/grand\.md\)/);
+  assert.match(body, /\[\[dest\/nest\/child\/grand\]\]/);
+  assert.doesNotMatch(body, /parent\/child\/grand/);
+});
+
+test("moveNode: reparent to root restyles outbound relative to unmoved peer", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-root-rel-"));
+  const fsa = new NodeFs(dir);
+  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
+  const env = envFor(fsa);
+  await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
+  const childId = await createBox(env as any, {
+    parentPath: "parent",
+    name: "child",
+    type: "prompt",
+  });
+  await createBox(env as any, { parentPath: "parent/child", name: "grand", type: "prompt" });
+  await createBox(env as any, { parentPath: "", name: "peer", type: "prompt" });
+
+  await fsa.writeFile(
+    "parent/child/child.md",
+    [
+      "---",
+      `id: ${childId}`,
+      "type: prompt",
+      "---",
+      "",
+      "Peer [P](../../peer/peer.md).",
+      "Abs [G](parent/child/grand/grand.md).",
+      "Wiki [[parent/child/grand]].",
+      "",
+    ].join("\n")
+  );
+
+  await moveNode(env as any, childId, null, { mode: "inside" });
+  assert.equal(await fsa.exists("child/child.md"), true);
+  const body = await fsa.readFile("child/child.md");
+  assert.match(body, /\[P\]\(\.\.\/peer\/peer\.md\)/);
+  assert.doesNotMatch(body, /\.\.\/\.\.\/peer/);
+  assert.match(body, /\[G\]\(child\/grand\/grand\.md\)/);
+  assert.match(body, /\[\[child\/grand\]\]/);
+});
+
+test("rewriteConceptLinks: restyleFromNotePath fixes relatives when source moves", () => {
+  const pathMap = new Map([
+    ["parent/child", "dest/nest/child"],
+    ["parent/child/child", "dest/nest/child/child"],
+    ["parent/child/grand", "dest/nest/child/grand"],
+    ["parent/child/grand/grand", "dest/nest/child/grand/grand"],
+  ]);
+  const body = [
+    "[G](./grand/grand.md)",
+    "[P](../../peer/peer.md)",
+    "[Abs](parent/child/grand/grand.md)",
+    "[[parent/child/grand]]",
+  ].join("\n");
+  const out = rewriteConceptLinks(
+    body,
+    "parent/child/child.md",
+    pathMap,
+    "child",
+    "child",
+    {
+      renameBoxId: "cx-child",
+      conceptIndex: buildConceptIndex([] as any),
+      restyleFromNotePath: "dest/nest/child/child.md",
+    }
+  );
+  assert.equal(out.changed, true);
+  assert.match(out.body, /\[G\]\(\.\/grand\/grand\.md\)/);
+  assert.match(out.body, /\[P\]\(\.\.\/\.\.\/\.\.\/peer\/peer\.md\)/);
+  assert.match(out.body, /\[Abs\]\(dest\/nest\/child\/grand\/grand\.md\)/);
+  assert.match(out.body, /\[\[dest\/nest\/child\/grand\]\]/);
+  // Must not restyle relatives as if still under parent/child.
+  assert.doesNotMatch(out.body, /\[G\]\(\.\.\/\.\.\/dest/);
+  assert.doesNotMatch(out.body, /\[P\]\(\.\.\/\.\.\/peer\/peer\.md\)/);
 });
 
 test("moveNode: same-parent reorder is order-only (no link rewrite)", async () => {

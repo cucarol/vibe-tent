@@ -209,6 +209,7 @@ async function moveNodeUnlocked(
   };
 
   // Display name unchanged on reparent — path links rewrite; bare names stay.
+  // Resolve relatives against pre-move note path; restyle from post-move path so depth changes stay valid.
   const plannedWrites: PlannedWrite[] = [];
   const rewrittenNotes: string[] = [];
   for (const box of tent.byPath.values()) {
@@ -219,23 +220,20 @@ async function moveNodeUnlocked(
     if (typeof data.id === "string" && data.id !== box.id) {
       throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
     }
-    const rewritten = rewriteConceptLinks(
-      body,
-      notePath,
-      pathMap,
-      movedName,
-      movedName,
-      rewriteOpts
-    );
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+      ...rewriteOpts,
+      restyleFromNotePath,
+    });
     if (!rewritten.changed) continue;
-    const afterPath = pathMap.get(box.path) ?? box.path;
     plannedWrites.push({
-      writePath: boxNotePath(afterPath),
+      writePath: restyleFromNotePath,
       originalPath: notePath,
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder),
     });
-    rewrittenNotes.push(afterPath);
+    rewrittenNotes.push(afterBoxPath);
   }
 
   const orderBefore = await loadOrder(env.fs);

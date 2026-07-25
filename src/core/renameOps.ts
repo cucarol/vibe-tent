@@ -120,7 +120,7 @@ async function renameNodeUnlocked(
     conceptIndex,
   };
 
-  // Plan rewrites against pre-move paths; snapshot original bytes for every touched note.
+  // Plan rewrites: resolve from pre-move note path; restyle relatives from post-move path when moved.
   const plannedWrites: PlannedWrite[] = [];
   const rewrittenNotes: string[] = [];
   for (const box of tent.byPath.values()) {
@@ -131,16 +131,20 @@ async function renameNodeUnlocked(
     if (typeof data.id === "string" && data.id !== box.id) {
       throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
     }
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, rewriteOpts);
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+      ...rewriteOpts,
+      restyleFromNotePath,
+    });
     if (!rewritten.changed) continue;
-    const afterPath = pathMap.get(box.path) ?? box.path;
     plannedWrites.push({
-      writePath: boxNotePath(afterPath),
+      writePath: restyleFromNotePath,
       originalPath: notePath,
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder),
     });
-    rewrittenNotes.push(afterPath);
+    rewrittenNotes.push(afterBoxPath);
   }
 
   await env.fs.move(oldPath, newPath);
@@ -322,15 +326,26 @@ async function ensureIdentityFileName(
 }
 
 export type RewriteConceptLinksOptions = {
-  /** Immutable cx- of the node being renamed. */
+  /** Immutable cx- of the node being renamed/moved. */
   renameBoxId: string;
   /** Pre-rename concept index (name resolution uses Tent's unique-match rules). */
   conceptIndex: Map<string, OkfConcept[]>;
+  /**
+   * Note path used when restyling `./` and `../` destinations after a tree move.
+   * Resolve still uses `fromNotePath` (pre-move disk location). When the note itself
+   * moves, pass the post-move note path so relatives stay valid at the write location.
+   * Defaults to `fromNotePath`.
+   */
+  restyleFromNotePath?: string;
 };
 
 /**
  * Rewrite Markdown / wiki destinations that targeted a moved path.
  * Unqualified wiki/name targets rewrite only when resolution uniquely targets the renamed node.
+ *
+ * Relative (`./` / `../`) links are resolved against `fromNotePath`, then restyled from
+ * `opts.restyleFromNotePath` (post-move when the source note moves). Outbound relatives to
+ * unmoved targets are restyled when source depth/path changes even if the target is outside pathMap.
  */
 export function rewriteConceptLinks(
   body: string,
@@ -379,8 +394,9 @@ export function rewriteConceptLinks(
 }
 
 /**
- * Map a link destination to its post-rename form.
- * - Path-like targets (/, ./, ../, multi-segment): rewrite via pathMap only.
+ * Map a link destination to its post-move/rename form.
+ * - Path-like targets: resolve against pre-move fromNotePath; apply pathMap; restyle from restyleFromNotePath.
+ * - Relative links with a moved source: restyle even when the absolute target is outside pathMap.
  * - Unqualified bare names: rewrite only when Tent resolveConcept uniquely hits renameBoxId.
  */
 function mapLinkTarget(
@@ -399,17 +415,29 @@ function mapLinkTarget(
     return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
   }
 
-  const normalized = normalizeTarget(pathPart, fromNotePath);
-  const newAbs = resolveMappedPath(normalized, pathMap, oldPaths);
-  if (!newAbs) return undefined;
+  const restyleFrom = opts?.restyleFromNotePath ?? fromNotePath;
+  const sourceMoved = restyleFrom.replace(/\\/g, "/") !== fromNotePath.replace(/\\/g, "/");
+  const isRelativeForm = pathPart.startsWith("./") || pathPart.startsWith("../");
 
+  // Resolve against the pre-move note path (link text was authored there).
+  const normalized = normalizeTarget(pathPart, fromNotePath);
+  const mapped = resolveMappedPath(normalized, pathMap, oldPaths);
+
+  // Absolute / multi-segment system-root paths only rewrite on pathMap hits.
+  // Relative forms also restyle when the source note itself moved (depth/path change).
+  if (!mapped && !(isRelativeForm && sourceMoved)) {
+    return undefined;
+  }
+
+  const newAbs = mapped ?? normalized;
   const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
   const absTarget = sourceHadMd
     ? newAbs.endsWith(".md")
       ? newAbs
       : `${newAbs}.md`
     : newAbs.replace(/\.md$/i, "");
-  const styled = restyleRelative(pathPart, fromNotePath, absTarget, sourceHadMd);
+  const styled = restyleRelative(pathPart, restyleFrom, absTarget, sourceHadMd);
+  if (styled === pathPart) return undefined;
   return styled + tail;
 }
 
