@@ -12258,16 +12258,20 @@ async function ensureRoleWorkspace(workspace, role) {
   }
   return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
 }
-async function ensureTaskWorkspaceIfGit(workspace, taskId) {
+async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
   if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureTaskWorkspace(workspace, taskId);
+  return ensureTaskWorkspace(workspace, taskId, options);
 }
-async function ensureTaskWorkspace(workspace, taskId) {
+async function ensureTaskWorkspace(workspace, taskId, options = {}) {
   const root = nodePath3.resolve(workspace);
   await assertGitWorkspace(root);
   const id = taskId.trim();
   if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  const targetBranch = await resolveTargetBranch(root);
+  const requestedTarget = options.targetBranch?.trim();
+  const targetBranch = requestedTarget || await resolveTargetBranch(root);
+  if (requestedTarget && !await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`])) {
+    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
+  }
   const taskSlug = safeComponent(id);
   const branch = `tent-task/${taskSlug}`;
   const worktree = nodePath3.join(
@@ -19916,8 +19920,11 @@ async function taskDispatch(ctx, p) {
         workspaceLane2 = { ...assigneeLane, targetBranch: dispatcherLane.branch };
       } else {
         preallocatedTaskId = makeTaskId();
-        const taskLane = await ensureTaskWorkspace(mount.workspaceRoot, preallocatedTaskId);
-        workspaceLane2 = { ...taskLane, targetBranch: dispatcherLane.branch };
+        workspaceLane2 = await ensureTaskWorkspace(
+          mount.workspaceRoot,
+          preallocatedTaskId,
+          { targetBranch: dispatcherLane.branch }
+        );
       }
     } else if (assigneeKind === "role") {
       workspaceLane2 = await ensureRoleWorkspaceIfGit(mount.workspaceRoot, assigneeLabel);
@@ -20593,7 +20600,16 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
   }
   const mountedRoot = nodePath5.resolve(workspaceRoot);
   const isProfile = taskAssigneeKind(task) === "agentProfile";
-  const lane = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path) : await ensureRoleWorkspace(mountedRoot, task.role);
+  let targetBranch = task.targetBranch?.trim();
+  if (isProfile && taskAsSub(task)) {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    if (dispatcher && dispatcher !== "user") {
+      targetBranch = (await ensureRoleWorkspace(mountedRoot, dispatcher)).branch;
+    }
+  }
+  const lane = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
+    ...targetBranch ? { targetBranch } : {}
+  }) : await ensureRoleWorkspace(mountedRoot, task.role);
   return { worktree: lane.worktree, branch: lane.branch };
 }
 async function assertTaskWorktreeCleanForDeliver(workspaceRoot, task) {
@@ -23650,7 +23666,25 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     }
   }
   const isProfile = taskAssigneeKind(task) === "agentProfile";
-  const real = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path) : await ensureRoleWorkspace(mountedRoot, task.role);
+  let dispatcherLane;
+  if (taskAsSub(task)) {
+    const dispatcher = (task.dispatchedBy || "").trim();
+    const label2 = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
+    if (!dispatcher || dispatcher === "user") {
+      throw new Error(
+        `Sub task envelope missing durable dispatchedBy for ${label2}; cannot resolve targetBranch`
+      );
+    }
+    dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
+    if (task.targetBranch && task.targetBranch !== dispatcherLane.branch) {
+      throw new Error(
+        `Task envelope targetBranch mismatch for ${label2}: envelope=${task.targetBranch} expected=${dispatcherLane.branch}`
+      );
+    }
+  }
+  const real = isProfile ? await ensureTaskWorkspace(mountedRoot, task.id || task.path, {
+    ...dispatcherLane ? { targetBranch: dispatcherLane.branch } : {}
+  }) : await ensureRoleWorkspace(mountedRoot, task.role);
   const label = isProfile ? `task ${task.id || task.path}` : `role ${task.role}`;
   if (task.branch && task.branch !== real.branch) {
     throw new Error(
@@ -23667,18 +23701,6 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     }
   }
   if (taskAsSub(task)) {
-    const dispatcher = (task.dispatchedBy || "").trim();
-    if (!dispatcher || dispatcher === "user") {
-      throw new Error(
-        `Sub task envelope missing durable dispatchedBy for ${label}; cannot resolve targetBranch`
-      );
-    }
-    const dispatcherLane = await ensureRoleWorkspace(mountedRoot, dispatcher);
-    if (task.targetBranch && task.targetBranch !== dispatcherLane.branch) {
-      throw new Error(
-        `Task envelope targetBranch mismatch for ${label}: envelope=${task.targetBranch} expected=${dispatcherLane.branch}`
-      );
-    }
     if (dispatcherLane.branch === real.branch) {
       throw new Error(
         `Sub task targetBranch must not equal assignee branch for ${label}: ${dispatcherLane.branch}`
@@ -23710,6 +23732,23 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       return current;
     }
     const isProfile = taskAssigneeKind(current) === "agentProfile";
+    let taskTargetBranch;
+    if (isProfile && taskAsSub(current)) {
+      const dispatcher = (current.dispatchedBy || "").trim();
+      if (!dispatcher || dispatcher === "user") {
+        throw new Error(
+          `Sub task ${current.id || current.path} is missing a durable dispatcher role.`
+        );
+      }
+      const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
+      taskTargetBranch = dispatcherLane.branch;
+      const recordedTarget = current.targetBranch?.trim();
+      if (recordedTarget && recordedTarget !== taskTargetBranch) {
+        throw new Error(
+          `Task envelope targetBranch mismatch: envelope=${recordedTarget} expected=${taskTargetBranch}`
+        );
+      }
+    }
     const lane = currentLaneComplete ? {
       workspace: current.workspace,
       worktree: current.worktree,
@@ -23717,21 +23756,13 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       targetBranch: current.targetBranch
     } : isProfile ? await ensureTaskWorkspaceIfGit(
       mount.workspaceRoot,
-      current.id || current.path
+      current.id || current.path,
+      { ...taskTargetBranch ? { targetBranch: taskTargetBranch } : {} }
     ) : await ensureRoleWorkspaceIfGit(mount.workspaceRoot, current.role);
     if (!lane) return current;
     let targetBranch = lane.targetBranch;
     if (taskAsSub(current)) {
-      const existingTarget = (current.targetBranch || "").trim();
-      if (existingTarget) {
-        targetBranch = existingTarget;
-      } else {
-        const dispatcher = (current.dispatchedBy || "").trim();
-        if (dispatcher && dispatcher !== "user") {
-          const dispatcherLane = await ensureRoleWorkspace(mount.workspaceRoot, dispatcher);
-          targetBranch = dispatcherLane.branch;
-        }
-      }
+      targetBranch = taskTargetBranch || (current.targetBranch || "").trim() || lane.targetBranch;
     }
     const patch = {
       updatedAt: mount.env.clock.now()

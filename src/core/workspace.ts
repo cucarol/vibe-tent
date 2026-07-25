@@ -162,21 +162,35 @@ export async function ensureRoleWorkspace(
  */
 export async function ensureTaskWorkspaceIfGit(
   workspace: string,
-  taskId: string
+  taskId: string,
+  options: EnsureTaskWorkspaceOptions = {}
 ): Promise<RoleWorkspaceContract | undefined> {
   if (!(await isGitWorkspace(workspace))) return undefined;
-  return ensureTaskWorkspace(workspace, taskId);
+  return ensureTaskWorkspace(workspace, taskId, options);
+}
+
+export interface EnsureTaskWorkspaceOptions {
+  /** Exact local branch used as the base when the task lane is first created. */
+  targetBranch?: string;
 }
 
 export async function ensureTaskWorkspace(
   workspace: string,
-  taskId: string
+  taskId: string,
+  options: EnsureTaskWorkspaceOptions = {}
 ): Promise<RoleWorkspaceContract> {
   const root = nodePath.resolve(workspace);
   await assertGitWorkspace(root);
   const id = taskId.trim();
   if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  const targetBranch = await resolveTargetBranch(root);
+  const requestedTarget = options.targetBranch?.trim();
+  const targetBranch = requestedTarget || await resolveTargetBranch(root);
+  if (
+    requestedTarget &&
+    !(await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`]))
+  ) {
+    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
+  }
   const taskSlug = safeComponent(id);
   const branch = `tent-task/${taskSlug}`;
   const worktree = nodePath.join(

@@ -379,6 +379,15 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
   const ws = await makeWorkspace("sub-profile-git");
   await initGitOnWorkspace(ws);
 
+  // Make the dispatcher tip observably different from main. The task lane must
+  // start from this exact commit, not merely record the branch in its envelope.
+  const dispatcher = await ensureRoleWorkspace(ws, "orchestrator");
+  await fs.writeFile(path.join(dispatcher.worktree, "dispatcher-base.txt"), "dispatcher\n");
+  await git(dispatcher.worktree, "add", "dispatcher-base.txt");
+  await git(dispatcher.worktree, "commit", "-q", "-m", "dispatcher-only base");
+  const dispatcherHead = (await git(dispatcher.worktree, "rev-parse", "HEAD")).trim();
+  assert.notEqual(dispatcherHead, (await git(ws, "rev-parse", "main")).trim());
+
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws, "profile-sub");
 
@@ -395,11 +404,25 @@ test("task.dispatch asSub profile: tent-task lane at dispatch; peer profile stay
     const subResult = sub.result as {
       taskPath: string;
       asSub?: boolean;
-      workspaceLane?: { branch?: string; targetBranch?: string };
+      workspaceLane?: { branch?: string; targetBranch?: string; worktree?: string };
     };
     assert.equal(subResult.asSub, true);
     assert.match(subResult.workspaceLane?.branch || "", /^tent-task\//);
     assert.equal(subResult.workspaceLane?.targetBranch, "tent-role/orchestrator");
+    assert.ok(subResult.workspaceLane?.worktree);
+    assert.equal(
+      (await git(subResult.workspaceLane!.worktree!, "rev-parse", "HEAD")).trim(),
+      dispatcherHead
+    );
+    assert.equal(
+      (
+        await fs.readFile(
+          path.join(subResult.workspaceLane!.worktree!, "dispatcher-base.txt"),
+          "utf8"
+        )
+      ).replace(/\r\n/g, "\n"),
+      "dispatcher\n"
+    );
 
     const envFs = new NodeFs(path.join(ws, ".tent"));
     const task = await loadTaskEnvelope(envFs, subResult.taskPath);
