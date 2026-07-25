@@ -159,7 +159,7 @@ export function renderGraph(): void {
     .map((n) => {
       const active = n.id === selectedId ? " is-active" : "";
       const pad = 8 + n.depth * 14;
-      const kind = n.coordination ? "协作" : n.type;
+      const kind = n.type;
       return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.id)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
         <span class="graph-node-name">${escapeHtml(n.name)}</span>
         <span class="muted graph-node-kind">${escapeHtml(kind)}</span>

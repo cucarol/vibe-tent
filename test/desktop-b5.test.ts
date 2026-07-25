@@ -68,7 +68,7 @@ test("ContextCardStore + drag text/plain payload is stable pointer prompt", () =
   assert.match(list[0].text, /text\/plain|contextRef|Tent contextCard/);
 });
 
-test("ServiceDocsClient over real Local Service: list/open/write/search/promote", async () => {
+test("ServiceDocsClient over real Local Service: list/open/write/search", async () => {
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-data-"));
   const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
@@ -100,11 +100,6 @@ test("ServiceDocsClient over real Local Service: list/open/write/search/promote"
     const hits = await docs.search("from desk v2");
     assert.ok(hits.some((h) => h.cx === created.cx));
 
-    // docs.promote retired in V0.2
-    await assert.rejects(
-      () => docs.promote(created.cx, "goal"),
-      /docs\.promote is retired|retired in V0\.2|Method not found/,
-    );
 
     const bin = new Uint8Array([0x00, 0x01, 0xff, 0xfe]);
     const att = await docs.importAttachment(created.cx, "desk.bin", bin);

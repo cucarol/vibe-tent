@@ -259,9 +259,6 @@ export class ServiceClient {
   docsFork(workspaceId: string, idOrPath: { id?: string; path?: string; boxId?: string }) {
     return this.call("docs.fork", { workspaceId, ...idOrPath });
   }
-  docsPromote(workspaceId: string, idOrPath: { id?: string; path?: string }, toType: string) {
-    return this.call("docs.promote", { workspaceId, ...idOrPath, toType });
-  }
   /**
    * User-only atomic concept rename (MutationBus).
    * Resolve by id/path/boxId; pass newName only — cx- is immutable.
@@ -274,7 +271,7 @@ export class ServiceClient {
     return this.call("docs.rename", { workspaceId, ...args });
   }
   /**
-   * Set Node mode (editable | read-only | archived). Sole mode mutation client surface.
+   * Set Node mode (editable | archived). Sole mode mutation client surface.
    */
   docsSetMode(
     workspaceId: string,
@@ -282,7 +279,7 @@ export class ServiceClient {
       id?: string;
       path?: string;
       boxId?: string;
-      mode: "editable" | "read-only" | "archived";
+      mode: "editable" | "archived";
     }
   ) {
     return this.call("docs.setMode", { workspaceId, ...args });

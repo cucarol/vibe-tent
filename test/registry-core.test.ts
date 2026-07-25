@@ -254,7 +254,7 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
       output: { tier: "base" },
       reference: { tier: "modifier" },
       asset: { tier: "modifier" },
-      task: { tier: "modifier", readable: true, writable: false, color: "orange" },
+      task: { tier: "modifier" },
     },
     rolesRegistry: {
       roles: [

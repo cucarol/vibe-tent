@@ -14,12 +14,19 @@ import type {
   UserAskItem,
 } from "../../workbench/pending-interactions.js";
 
+/**
+ * Tree row model for legacy main UI.
+ * `coordination` is a local usable alias (!invalid && !archived) — not Core wire.
+ */
 export type ConceptNode = {
   id: string;
   path: string;
   name: string;
   type: string;
+  /** Local usable flag for collab UI (legacy name). */
   coordination: boolean;
+  invalid?: boolean;
+  archived?: boolean;
   /**
    * Collaboration status from box.projection only (todo|doing|done).
    * Never populated from docs.list frontmatter / owner.
@@ -27,7 +34,7 @@ export type ConceptNode = {
   status?: string;
   /** Assignee from box.projection only when an active task occupies the box. */
   assignee?: string;
-  mode?: "editable" | "read-only" | "archived";
+  mode?: "editable" | "archived";
   tags?: string[];
   children?: ConceptNode[];
 };
@@ -37,12 +44,13 @@ export type TabView = {
   path: string;
   name: string;
   type: string;
+  /** Local usable flag for collab UI (legacy name). */
   coordination: boolean;
   etag: string;
   buffer: string;
   dirty: boolean;
   mode: "source" | "preview";
-  nodeMode: "editable" | "read-only" | "archived";
+  nodeMode: "editable" | "archived";
   frontmatter: Record<string, unknown>;
   artifactRefs?: Array<{ kind: string; target: string; label?: string }>;
 };

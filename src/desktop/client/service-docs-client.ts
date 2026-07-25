@@ -68,7 +68,6 @@ export class ServiceDocsClient implements DocsClient {
       path: string;
       name?: string;
       type?: string;
-      coordination?: boolean;
       body: string;
       raw?: string;
       etag: string;
@@ -91,21 +90,12 @@ export class ServiceDocsClient implements DocsClient {
     const type =
       result.type ??
       (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
-    const coordination =
-      result.coordination ??
-      (type === "goal" ||
-        type.startsWith("goal-") ||
-        type === "prompt" ||
-        type.startsWith("prompt-") ||
-        type === "output" ||
-        type.startsWith("output-"));
 
     return {
       cx,
       path: result.path,
       name,
       type,
-      coordination,
       body: result.body,
       frontmatter: result.frontmatter ?? {},
       raw,
@@ -189,28 +179,6 @@ export class ServiceDocsClient implements DocsClient {
     return { cx: result.id, path: result.path };
   }
 
-  async promote(
-    cxOrPath: string,
-    toType: string
-  ): Promise<{ cx: string; path: string; fromType: string; toType: string }> {
-    const result = await this.rpc.call<{
-      id: string;
-      path: string;
-      fromType: string;
-      toType: string;
-    }>("docs.promote", {
-      workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
-      toType,
-    });
-    return {
-      cx: result.id,
-      path: result.path,
-      fromType: result.fromType,
-      toType: result.toType,
-    };
-  }
-
   async fork(cxOrPath: string): Promise<{ cx: string }> {
     const result = await this.rpc.call<{ id: string }>("docs.fork", {
       workspaceId: this.workspaceId,
@@ -243,7 +211,7 @@ export class ServiceDocsClient implements DocsClient {
 
   async setMode(
     cxOrPath: string,
-    mode: "editable" | "read-only" | "archived"
+    mode: "editable" | "archived"
   ): Promise<unknown> {
     return this.rpc.call("docs.setMode", {
       workspaceId: this.workspaceId,
@@ -329,18 +297,26 @@ function idOrPathParams(cxOrPath: string): Record<string, string> {
 
 function normalizeProjection(c: ConceptProjection): ConceptProjection {
   const mode =
-    c.mode === "read-only" || c.mode === "archived" || c.mode === "editable"
+    c.mode === "archived" || c.mode === "editable"
       ? c.mode
-      : c.archived
-        ? "archived"
-        : "editable";
+      : c.mode === "read-only"
+        ? "editable"
+        : c.archived
+          ? "archived"
+          : "editable";
   return {
-    ...c,
-    children: (c.children ?? []).map(normalizeProjection),
+    id: c.id,
+    path: c.path,
+    name: c.name,
+    type: c.type,
     tags: c.tags ?? [],
+    title: c.title,
     mode,
     archived: mode === "archived" || !!c.archived,
     invalid: !!c.invalid,
+    bodyPreview: c.bodyPreview,
+    children: (c.children ?? []).map(normalizeProjection),
+    artifactRefs: c.artifactRefs,
   };
 }
 

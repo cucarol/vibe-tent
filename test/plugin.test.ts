@@ -6,7 +6,7 @@ import {
   pendingDispatches,
 } from "../src/plugin/pending-dispatch.js";
 import type { TaskEnvelope } from "../src/core/task.js";
-import { baseDefinitionCoordination, typeAllowsWorkspacePointer } from "../src/core/typeRegistry.js";
+import { DEFAULT_TYPE_REGISTRY } from "../src/core/typeRegistry.js";
 import { mergeSettings } from "../src/plugin/settings-model.js";
 import * as uiModel from "../src/plugin/ui-model.js";
 import {
@@ -244,13 +244,8 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.deepEqual(settings.newTentDefaults.typeRegistry.prompt, { tier: "base" });
   assert.ok(settings.newTentDefaults.typeRegistry.output);
   assert.deepEqual(settings.newTentDefaults.typeRegistry.output, { tier: "base" });
-  assert.equal(
-    baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.output),
-    true,
-    "wire-compat coordination helper remains true for known types"
-  );
-  assert.equal(typeAllowsWorkspacePointer("output", settings.newTentDefaults.typeRegistry), false, "workspacePointer 运行时退役");
-  assert.equal(settings.newTentDefaults.typeRegistry.repo, undefined, "custom primary bases are not kept");
+  
+    assert.equal(settings.newTentDefaults.typeRegistry.repo, undefined, "custom primary bases are not kept");
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   const migratedRoleId = settings.newTentDefaults.rolesRegistry.roles[0].id;
   assert.ok(migratedRoleId);
@@ -274,10 +269,8 @@ test("plugin settings:default type registry is V0.2 goal|prompt|output", () => {
   assert.deepEqual(reg.output, { tier: "base" });
   assert.equal(reg.note, undefined);
   assert.equal(reg.artifact, undefined);
-  // Deprecated helpers: known types report coordination wire-compat; workspacePointer always false.
-  assert.equal(baseDefinitionCoordination(reg.goal), true);
-  assert.equal(baseDefinitionCoordination(reg.output), true);
-  assert.equal(typeAllowsWorkspacePointer("output", reg), false);
+  assert.ok(DEFAULT_TYPE_REGISTRY.goal);
+  assert.equal(DEFAULT_TYPE_REGISTRY.goal.tier ?? "base", "base");
 });
 
 test("plugin surfaces: no workspacePointer registry/settings write path", async () => {
@@ -297,11 +290,10 @@ test("plugin surfaces: no workspacePointer registry/settings write path", async 
     // Retired product phrase must not reappear in user-facing plugin copy/prompts
     assert.doesNotMatch(src, /workspace pointer/i);
   }
-  // coordination is the live lifecycle axis exposed by settings/registry UI
+  // Type chrome / coordination capability UI removed from plugin settings/registry.
   const [registryPane, settingsSrc, , viewSrc] = sources;
-  assert.match(registryPane, /coordination/);
-  assert.match(settingsSrc, /setBaseCoordination/);
-  assert.match(settingsSrc, /baseDefinitionCoordination/);
+  assert.doesNotMatch(registryPane, /updateTypeMetadata|baseDefinitionCoordination|setBaseCoordination/);
+  assert.doesNotMatch(settingsSrc, /setBaseCoordination|baseDefinitionCoordination/);
   // genesis clipboard prompt uses in-workspace / workspace-root language
   assert.match(viewSrc, /workspace root/i);
   assert.match(viewSrc, /in-workspace/i);

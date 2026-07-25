@@ -66,9 +66,10 @@ function renderTree(nodes: WorkspaceSnapshot["tree"], activeCx: string | null, d
   if (!nodes.length) return depth === 0 ? `<p class="muted">No concepts</p>` : "";
   const items = nodes
     .map((n) => {
-      const badge = n.coordination
-        ? `<span class="badge box">${escapeHtml(n.status || "box")}</span>`
-        : `<span class="badge note">note</span>`;
+      const usable = !n.invalid && !n.archived;
+      const badge = usable
+        ? `<span class="badge box">${escapeHtml(n.type)}</span>`
+        : `<span class="badge note">${n.archived ? "archived" : "invalid"}</span>`;
       const active = n.id === activeCx ? " active" : "";
       const kids = n.children?.length ? renderTree(n.children, activeCx, depth + 1) : "";
       return `<li class="tree-node${active}">
@@ -146,15 +147,6 @@ function renderEditor(controller: WorkspaceController, cx: string): string {
         <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
         <button type="submit">Save</button>
       </form>
-      ${
-        !tab.coordination
-          ? `<form method="POST" action="/action" class="inline">
-        <input type="hidden" name="op" value="promote" />
-        <input type="hidden" name="cx" value="${escapeHtml(cx)}" />
-        <button type="submit">Promote → goal</button>
-      </form>`
-          : ""
-      }
       <span class="muted">${tab.dirty ? "dirty" : "clean"} · etag ${escapeHtml(tab.etag.slice(0, 8))}</span>
     </div>`;
 
@@ -199,7 +191,6 @@ function renderMeta(tab: NonNullable<ReturnType<WorkspaceController["getActiveTa
       <dt>cx</dt><dd><code>${escapeHtml(tab.cx)}</code></dd>
       <dt>path</dt><dd>${escapeHtml(tab.path)}</dd>
       <dt>type</dt><dd>${escapeHtml(tab.type)}</dd>
-      <dt>coordination</dt><dd>${tab.coordination ? "true" : "false"}</dd>
     </dl>
     ${artifacts}
   </div>`;

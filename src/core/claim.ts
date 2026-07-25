@@ -44,7 +44,7 @@ export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
 
 /**
  * 能否把 box 认领给某角色?
- * 结构门：coordination / invalid / archived。
+ * 结构门：invalid / archived（isUsableBox）。
  * 占用门：仅 active task envelope 子树互斥（不含 stale owner）。
  */
 export function canClaim(box: Box, options?: CanClaimOptions): ClaimCheck {

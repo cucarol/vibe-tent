@@ -4,8 +4,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
-import { loadTent } from "../src/core/tree.js";
-import { promoteConcept } from "../src/core/concept.js";
+import { isUsableBox, loadTent } from "../src/core/tree.js";
 import {
   IMPORT_STAGING_DIR_PREFIX,
   importExternalTentRoot,
@@ -16,7 +15,6 @@ import {
 } from "../src/core/migration.js";
 import { scaffoldInWorkspace, scaffoldTent } from "../src/core/scaffold.js";
 import { makeConceptId, isConceptId, isLegacyBoxId } from "../src/core/id.js";
-import { typeHasCoordination } from "../src/core/typeRegistry.js";
 import { createBox } from "../src/core/ops.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
@@ -65,8 +63,8 @@ test("loadTent:temp 与 operational 不进 concept 索引", async () => {
   assert.equal(tent.roots.every((r) => r.path !== "temp"), true);
 });
 
-test("promoteConcept: V0.2 退役；可用 concept wire-compat coordination=true", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-promote-"));
+test("createBox usable concept: no coordination/R/W projection", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-usable-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = { fs: fsa, clock: { now: () => "t" }, tentName: "x", rand: () => 0.2 };
@@ -75,17 +73,10 @@ test("promoteConcept: V0.2 退役；可用 concept wire-compat coordination=true
   const before = await loadTent(fsa);
   const idea = before.byId.get(id)!;
   assert.equal(idea.type, "prompt");
-  assert.equal(idea.coordination, true, "usable boxes project coordination=true for UI wire-compat");
-  assert.equal(idea.readable.value, true);
-  assert.equal(idea.writable.value, true);
-  // typeHasCoordination is deprecated identity for known registry types (not a product gate)
-  assert.equal(typeHasCoordination("prompt", before.typeRegistry), true);
-  assert.equal(typeHasCoordination("goal", before.typeRegistry), true);
-
-  await assert.rejects(
-    () => promoteConcept(env as any, id, "goal"),
-    /promoteConcept is retired|retired in V0\.2/,
-  );
+  assert.equal(isUsableBox(idea), true);
+  assert.equal("coordination" in idea, false);
+  assert.equal("readable" in idea, false);
+  assert.equal("writable" in idea, false);
 });
 
 test("migration:bx→cx 与 note/artifact→prompt/output 纯函数 + 落盘", async () => {
@@ -129,7 +120,7 @@ test("migration:bx→cx 与 note/artifact→prompt/output 纯函数 + 落盘", a
   const tent = await loadTent(fsa);
   assert.equal(tent.byId.has("cx-leg001"), true);
   assert.equal(tent.byId.get("cx-leg001")!.type, "output");
-  assert.equal(tent.byId.get("cx-leg001")!.coordination, true);
+  assert.equal(isUsableBox(tent.byId.get("cx-leg001")!), true);
   assert.equal(tent.typeRegistry.note, undefined);
   assert.equal(tent.typeRegistry.artifact, undefined);
   assert.ok(tent.typeRegistry.prompt);
@@ -359,8 +350,8 @@ test("dispatch/claim:V0.2 无 coordination 门；prompt 与 output 均可认领"
   // Structural gate only: valid non-archived concepts are claimable (type is semantic)
   assert.equal(canClaim(tent.byId.get(promptId)!).ok, true);
   assert.equal(canClaim(tent.byId.get(outputId)!).ok, true);
-  assert.equal(tent.byId.get(promptId)!.coordination, true);
-  assert.equal(tent.byId.get(outputId)!.coordination, true);
+  assert.equal(isUsableBox(tent.byId.get(promptId)!), true);
+  assert.equal(isUsableBox(tent.byId.get(outputId)!), true);
 
   const result = await dispatch(env as any, promptId, "reviewer", "do prompt");
   assert.match(result.taskPath, /temp\/reviewer\/tasks\//);
@@ -370,20 +361,6 @@ test("dispatch/claim:V0.2 无 coordination 门；prompt 与 output 均可认领"
   assert.equal(after.byId.get(promptId)!.fm.status, "doing");
 });
 
-test("promoteConcept: 即使 active task 存在也仅报退役，不再走写保护路径", async () => {
-  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-promote-lock-"));
-  const fsa = new NodeFs(dir);
-  await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
-  const env = { fs: fsa, clock: { now: () => "2026-07-12T00:00:00.000Z" }, tentName: "x", tentRoot: dir, rand: () => 0.4 };
-  const id = await createBox(env as any, { parentPath: "", name: "job", type: "prompt" });
-  const { dispatch } = await import("../src/core/ops.js");
-  await dispatch(env as any, id, "reviewer", "work");
-
-  await assert.rejects(
-    () => promoteConcept(env as any, id, "goal"),
-    /promoteConcept is retired|retired in V0\.2/,
-  );
-});
 
 test("CLI makeEnv:无 system root 明确失败，不回退 cwd", async () => {
   const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-nosys-")));

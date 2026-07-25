@@ -442,7 +442,7 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     assert.equal(conflictData.body, undefined);
     assert.equal(conflictData.raw, undefined);
 
-    // docs.promote retired in V0.2
+    // docs.promote removed from CLIENT_METHODS in V0.2
     const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
       id,
@@ -450,7 +450,10 @@ test("docs.createNote / list / get / write with etag; promote retired + fork", a
     });
     assert.ok(promoted.error);
     assert.equal(promoted.error!.code, -32601);
-    assert.match(promoted.error!.message, /docs\.promote is retired|retired in V0\.2/);
+    assert.match(
+      promoted.error!.message,
+      /docs\.promote is retired|retired in V0\.2|Method not found/
+    );
 
     // Type change uses ordinary docs.write frontmatter path
     const editType = await rpc(svc, "docs.readForEdit", { workspaceId, id });
@@ -615,9 +618,19 @@ test("task.dispatch + task.claim project doing; docs.write blocks collab fields"
     assert.equal((claimed.result as { state: string }).state, "running");
 
     const got = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (got.result as { concept: { status?: string; assignee?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.equal(concept.assignee, "executor");
+    const concept = (got.result as {
+      concept: { status?: string; assignee?: string; invalid?: boolean; archived?: boolean };
+    }).concept;
+    // ConceptProjection no longer exposes Node FM owner/status; collab truth is box.projection.
+    assert.equal("status" in concept ? concept.status : undefined, undefined);
+    assert.equal("assignee" in concept ? concept.assignee : undefined, undefined);
+    assert.equal(concept.invalid, false);
+    assert.equal(concept.archived, false);
+    const boxProj = await rpc(svc, "box.projection", { workspaceId, id: boxId });
+    assert.ok(!boxProj.error, JSON.stringify(boxProj.error));
+    const proj = boxProj.result as { status?: string; assignee?: string };
+    assert.equal(proj.status, "doing");
+    assert.equal(proj.assignee, "executor");
 
     const editOwner = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
     assert.ok(!editOwner.error, JSON.stringify(editOwner.error));

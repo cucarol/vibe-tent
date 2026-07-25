@@ -22,7 +22,6 @@ export type TabState = {
   path: string;
   name: string;
   type: string;
-  coordination: boolean;
   etag: string;
   buffer: string;
   savedRaw: string;
@@ -96,7 +95,6 @@ export class WorkspaceController {
       path: snap.path,
       name: snap.name,
       type: snap.type,
-      coordination: snap.coordination,
       etag: snap.etag,
       buffer: snap.raw,
       savedRaw: snap.raw,
@@ -249,20 +247,6 @@ export class WorkspaceController {
     this.statusMessage = `Created note ${created.path}`;
     this.emit();
     return created.cx;
-  }
-
-  async promoteActive(toType = "goal"): Promise<void> {
-    const tab = this.getActiveTab();
-    if (!tab) return;
-    if (tab.dirty) {
-      const ok = await this.save(tab.cx);
-      if (!ok) return;
-    }
-    const result = await this.docs.promote(tab.cx, toType);
-    await this.refreshTree();
-    await this.openConcept(result.cx);
-    this.statusMessage = `Promoted to ${result.toType}`;
-    this.emit();
   }
 
   /** Apply external concept.changed: reload clean tabs only. */

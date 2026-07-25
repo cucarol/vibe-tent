@@ -663,8 +663,7 @@ export class TentView extends ItemView {
       wrap.addClass("tent-zone");
       const known = ["goal", "prompt", "output"].includes(box.name);
       wrap.addClass("tent-zone-" + (known ? box.name : "custom"));
-      const topTypeDef = this.tent!.typeRegistry[box.type];
-      wrap.style.setProperty("--zone-color", typeColorValue(topTypeDef?.color));
+      wrap.style.setProperty("--zone-color", typeColorValue(undefined));
     } else if (hasKids) {
       wrap.addClass("tent-subframe");
     }
@@ -737,15 +736,13 @@ export class TentView extends ItemView {
           this.registryUi.markedTypes.has(split.modifier)
         );
         if (showBase) {
-          const baseDef = this.tent!.typeRegistry[split.base];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.base });
-          tw.style.setProperty("--tent-type-color", typeColorValue(baseDef?.color));
+          tw.style.setProperty("--tent-type-color", typeColorValue(undefined));
         }
         if (showModifier && split.modifier) {
           if (showBase) meta.createSpan({ cls: "tent-meta-type-join", text: "-" });
-          const modDef = this.tent!.typeRegistry[split.modifier];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.modifier });
-          tw.style.setProperty("--tent-type-color", typeColorValue(modDef?.color));
+          tw.style.setProperty("--tent-type-color", typeColorValue(undefined));
         }
       }
       if (showRole && owner) {
@@ -1062,17 +1059,6 @@ export class TentView extends ItemView {
       });
       baseSel.onchange = () => applyType(baseSel.value, modSel.value);
       modSel.onchange = () => applyType(baseSel.value, modSel.value);
-
-      // 读写:可视切换(点击循环 继承→开→关),深底,靠右(非下拉)
-      const rwItem = editor.createDiv({ cls: "tent-prop-item" });
-      rwItem.createSpan({ cls: "tent-item-label", text: "R/W" });
-      const rwWrap = rwItem.createDiv({ cls: "tent-rw-mini-wrap" });
-      drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
-        await this.patchBoxIncremental(box, { readable: v });
-      });
-      drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
-        await this.patchBoxIncremental(box, { writable: v });
-      });
 
       // status:四段可视切换(非下拉),深底,靠右(owner 已移到标题行)
       const soItem = editor.createDiv({ cls: "tent-prop-item" });
@@ -1684,7 +1670,9 @@ export class TentView extends ItemView {
     intro.createDiv({ cls: "tent-content-title", text: "笔记正文" });
     intro.createDiv({
       cls: "tent-content-meta",
-      text: box.readable.value ? "派活时作为此框上下文提供给 agent" : "仅供 user 查看",
+      text: !box.invalid && !box.archived
+        ? "派活时作为此框上下文提供给 agent"
+        : "无效或已封存节点不可进入协作",
     });
     const ta = el.createEl("textarea", { cls: "tent-notebox" });
     ta.value = box.body.trim();

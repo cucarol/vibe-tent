@@ -12,13 +12,11 @@ import {
   loadTypeRegistry,
   normalizeRegistry,
   typeExists,
-  typeAllowsWorkspacePointer,
 } from "../src/core/typeRegistry.js";
 import {
   createPrimaryType,
   createSecondaryType,
   deleteCustomType,
-  updateTypeMetadata,
 } from "../src/core/typeManagement.js";
 import { makeTent } from "./helpers.js";
 
@@ -38,14 +36,15 @@ test("V0.2 defaults: goal|prompt|output + reference|asset only", async () => {
   assert.equal(tent.typeRegistry.asset?.tier, "modifier");
   assert.equal(tent.typeRegistry.note, undefined);
   assert.equal(tent.typeRegistry.artifact, undefined);
-  assert.equal(typeAllowsWorkspacePointer("output", tent.typeRegistry), false);
-
+  
   const goal = tent.byId.get("bx-g2")!;
   assert.equal(goal.type, "goal");
-  assert.equal(goal.coordination, true, "usable concepts project coordination wire-compat");
+  assert.equal(goal.invalid, false);
+  assert.equal(goal.archived, false);
   assert.equal(goal.mode, "editable");
-  assert.equal(goal.readable.value, true);
-  assert.equal(goal.writable.value, true);
+  assert.equal("coordination" in goal, false);
+  assert.equal("readable" in goal, false);
+  assert.equal("writable" in goal, false);
 
   const out = tent.byId.get("bx-o1")!;
   assert.equal(out.type, "output");
@@ -99,10 +98,6 @@ test("cannot create primary; can create custom secondary", async () => {
   await createSecondaryType(fsa, "snippet", {});
   const registry = await loadTypeRegistry(fsa);
   assert.equal(registry.snippet?.tier, "modifier");
-  await assert.rejects(
-    () => updateTypeMetadata(fsa, "type", "goal", { workspacePointer: true }),
-    /workspacePointer capability is retired/
-  );
   await deleteCustomType(fsa, "type", "snippet", "snippet");
   assert.equal((await loadTypeRegistry(fsa)).snippet, undefined);
 });

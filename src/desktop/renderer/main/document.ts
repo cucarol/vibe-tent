@@ -1,7 +1,6 @@
 // Document workspace: tabs, toolbar, source/preview editor.
 
 import { renderMarkdownToHtml, escapeHtml } from "../../../markdown/render.js";
-import { pickDefaultCoordinationType } from "../../workbench/collaboration-ui.js";
 import {
   closeOpenTab,
   documentEmptyCopy,
@@ -11,7 +10,6 @@ import { ICO } from "./icons.js";
 import { el, setError } from "./elements.js";
 import {
   activeCx,
-  coordinationTypes,
   findConcept,
   localTabs,
   reconstruct,
@@ -172,8 +170,7 @@ export async function openConcept(cx: string): Promise<void> {
     path: string;
     name?: string;
     type?: string;
-    coordination?: boolean;
-    mode?: "editable" | "read-only" | "archived";
+    mode?: "editable" | "archived" | "read-only";
     body: string;
     raw?: string;
     etag: string;
@@ -189,17 +186,25 @@ export async function openConcept(cx: string): Promise<void> {
     return;
   }
 
+  const concept = findConcept(tree, edit.id);
+  const rawMode = edit.mode || concept?.mode || "editable";
+  const nodeMode: TabView["nodeMode"] =
+    rawMode === "archived" ? "archived" : "editable";
+  const usable =
+    concept?.coordination ??
+    (!concept?.invalid && nodeMode !== "archived");
+
   const tab: TabView = {
     cx: edit.id,
     path: edit.path,
     name: edit.name || edit.path.split("/").pop() || edit.path,
-    type: edit.type || String(edit.frontmatter?.type || "note"),
-    coordination: !!edit.coordination,
+    type: edit.type || String(edit.frontmatter?.type || "prompt"),
+    coordination: usable,
     etag: edit.etag,
     buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
     dirty: false,
     mode: existing?.mode ?? "source",
-    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
+    nodeMode,
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs,
   };
@@ -232,7 +237,6 @@ export function renderToolbar(): void {
     el.toolbar.innerHTML = "";
     return;
   }
-  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   const modeLabel = tab.mode === "preview" ? "预览" : "源码";
   const modeTitle = tab.mode === "preview" ? "切换到源码" : "切换到预览";
   // 克制工具组：模式图标 + dirty 时保存 + 更多；干净状态不提示「已保存」
@@ -274,11 +278,6 @@ export function renderToolbar(): void {
             ? `<button type="button" class="menu-item" role="menuitem" data-act="attach">导入附件…</button>`
             : ""
         }
-        ${
-          !tab.coordination
-            ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="提升为 ${escapeHtml(promoteTarget)}">提升为协作框</button>`
-            : ""
-        }
       </div>
     </div>
   `;
@@ -313,23 +312,6 @@ async function onToolbar(act: string): Promise<void> {
   }
   if (act === "save") {
     await saveTab(tab);
-    return;
-  }
-  if (act === "promote") {
-    if (tab.dirty) await saveTab(tab);
-    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
-    try {
-      await window.tentDesktop.rpc("docs.promote", {
-        workspaceId,
-        id: tab.cx,
-        toType,
-      });
-      el.status.textContent = `已提升为 ${toType}`;
-      await openConcept(tab.cx);
-      await reloadTree();
-    } catch (err) {
-      setError(err);
-    }
     return;
   }
   if (act === "fork") {

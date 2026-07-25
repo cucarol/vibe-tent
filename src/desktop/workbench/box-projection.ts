@@ -17,11 +17,22 @@ export type BoxProjectionView = {
 
 export type TreeNodeLike = {
   id: string;
-  coordination: boolean;
+  /** @deprecated Local UI only; prefer invalid/archived usable check. */
+  coordination?: boolean;
+  invalid?: boolean;
+  archived?: boolean;
+  mode?: string;
   status?: string;
   assignee?: string;
   children?: TreeNodeLike[];
 };
+
+function isUsableTreeNode(n: TreeNodeLike): boolean {
+  if (n.invalid) return false;
+  if (n.archived || n.mode === "archived") return false;
+  if (typeof n.coordination === "boolean") return n.coordination;
+  return true;
+}
 
 /** Chinese labels for box.projection status (tree marks + inspector). */
 export function boxStatusLabel(status: BoxStatus | string | undefined): string {
@@ -67,12 +78,12 @@ export function normalizeBoxProjection(raw: unknown): BoxProjectionView | null {
   return out;
 }
 
-/** Collect coordination box ids (depth-first) for box.projection fan-out. */
+/** Collect usable box ids (depth-first) for box.projection fan-out. */
 export function collectCoordinationBoxIds(nodes: readonly TreeNodeLike[]): string[] {
   const ids: string[] = [];
   const walk = (list: readonly TreeNodeLike[]) => {
     for (const n of list) {
-      if (n.coordination && n.id) ids.push(n.id);
+      if (isUsableTreeNode(n) && n.id) ids.push(n.id);
       if (n.children?.length) walk(n.children);
     }
   };
@@ -82,7 +93,7 @@ export function collectCoordinationBoxIds(nodes: readonly TreeNodeLike[]): strin
 
 /**
  * Strip any list/frontmatter collab fields, then overlay box.projection.
- * Non-coordination nodes never carry status/assignee.
+ * Unusable (invalid/archived) nodes never carry status/assignee.
  */
 export function applyBoxProjectionsToTree<T extends TreeNodeLike>(
   nodes: T[],
@@ -99,7 +110,7 @@ function applyOne<T extends TreeNodeLike>(
     ? node.children.map((c) => applyOne(c as T, byBoxId))
     : node.children;
 
-  if (!node.coordination) {
+  if (!isUsableTreeNode(node)) {
     const cleared = { ...node, children } as T;
     delete (cleared as TreeNodeLike).status;
     delete (cleared as TreeNodeLike).assignee;

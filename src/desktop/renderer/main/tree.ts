@@ -36,7 +36,7 @@ export function renderCreateTypeSelect(): void {
     el.createType.innerHTML = `<option value="">无可协调类型</option>`;
     el.createType.disabled = true;
     el.btnNewBox.disabled = true;
-    el.btnNewBox.title = "当前 types 注册表没有 coordination=true 的一级类型";
+    el.btnNewBox.title = "当前 types 注册表没有一级（base）类型";
     return;
   }
   el.createType.disabled = false;

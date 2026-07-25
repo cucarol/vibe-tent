@@ -2,7 +2,6 @@
 
 import type { OpsEnv } from "../core/ops-context.js";
 import { createBox, forkNode } from "../core/ops.js";
-import { promoteConcept } from "../core/concept.js";
 import { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, boxNotePath, type LoadedTent } from "../core/tree.js";
 import { envelopeIsActiveOccupation } from "../core/claim.js";
@@ -65,7 +64,6 @@ export class CoreDocsClient implements DocsClient {
       path: box.path,
       name: box.name,
       type: box.type,
-      coordination: box.coordination,
       body,
       frontmatter: data,
       raw,
@@ -102,7 +100,6 @@ export class CoreDocsClient implements DocsClient {
             path: box.path,
             name: box.name,
             type: box.type,
-            coordination: box.coordination,
             body,
             frontmatter: data,
             raw: diskRaw,
@@ -183,19 +180,6 @@ export class CoreDocsClient implements DocsClient {
     }
     const got = await this.get(cx);
     return { cx, path: got?.path ?? input.name };
-  }
-
-  async promote(
-    cxOrPath: string,
-    toType: string
-  ): Promise<{ cx: string; path: string; fromType: string; toType: string }> {
-    const result = await promoteConcept(this.env, cxOrPath, toType);
-    return {
-      cx: result.id,
-      path: result.path,
-      fromType: result.fromType,
-      toType: result.toType,
-    };
   }
 
   async fork(cxOrPath: string): Promise<{ cx: string }> {
@@ -305,9 +289,6 @@ function toProjection(box: Box, withChildren: boolean): ConceptProjection {
     name: box.name,
     type: box.type,
     tags: box.tags,
-    coordination: box.coordination,
-    status: box.fm.status,
-    assignee: typeof box.fm.owner === "string" ? box.fm.owner : undefined,
     title,
     mode: box.mode,
     archived: box.archived,

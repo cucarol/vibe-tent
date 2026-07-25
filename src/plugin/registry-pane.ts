@@ -7,19 +7,17 @@ import {
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
 import {
-  createPrimaryType,
+  createSecondaryType,
   deleteCustomType,
   inspectTypeDeletion,
-  updateTypeMetadata,
 } from "../core/typeManagement.js";
 import {
-  baseDefinitionCoordination,
   type TypeDefinition,
   type TypeRegistry,
   type TypeTier,
 } from "../core/typeRegistry.js";
 import { TYPE_COLORS, typeColorValue } from "./colors.js";
-import { drawRwSegment, roleColorValue } from "./ui-controls.js";
+import { roleColorValue } from "./ui-controls.js";
 import type { RegistryPaneState, RegistrySection } from "./ui-model.js";
 export { createRegistryPaneState } from "./ui-model.js";
 
@@ -117,12 +115,12 @@ function drawVisibilityPanel(
       chips.createSpan({ cls: "reg-vis-empty", text: "—" });
       return;
     }
-    for (const [name, definition] of definitions) {
+    for (const [name] of definitions) {
       drawChip(
         chips,
         name,
         state.markedTypes.has(name),
-        typeColorValue(definition.color),
+        typeColorValue(undefined),
         () => toggleSetValue(state.markedTypes, name)
       );
     }
@@ -242,29 +240,14 @@ function drawTypeRow(
     cls: "registry-item-wrapper" + (open ? " drawer-open" : ""),
   });
   const row = wrapper.createDiv({ cls: "reg-card" });
-  row.style.setProperty("--accent-color", typeColorValue(definition.color));
   row.createSpan({ cls: "item-name", text: name });
-  row.createSpan({ cls: "reg-desc", text: definition.description || "" });
+  row.createSpan({
+    cls: "reg-desc",
+    text: `tier:${definition.tier ?? "base"}`,
+  });
 
   const rightArea = row.createDiv({ cls: "row-right-area" });
-  drawRwCapsule(
-    rightArea.createDiv({ cls: "item-indicators" }),
-    definition.readable,
-    definition.writable,
-    definition.tier === "modifier" ? undefined : baseDefinitionCoordination(definition) === true
-  );
   const actions = rightArea.createDiv({ cls: "row-actions" });
-  const edit = actions.createEl("button", {
-    cls: "registry-edit-btn" + (open ? " active" : ""),
-  });
-  edit.setAttr("type", "button");
-  setIcon(edit, "settings");
-  addTooltip(edit, "编辑颜色 / 读写");
-  edit.onclick = (event) => {
-    event.stopPropagation();
-    state.openEditor = open ? null : editKey;
-    context.redraw();
-  };
 
   const deleteKey = `type:${section}:${name}`;
   const deletePending = context.getPendingDelete() === deleteKey;
@@ -296,39 +279,6 @@ function drawTypeRow(
     context.setPendingDelete(deleteKey);
     context.redraw();
   };
-
-  if (open) drawTypeEditDrawer(wrapper, context, name, definition);
-}
-
-function drawRwCapsule(
-  host: HTMLElement,
-  readable: boolean | undefined,
-  writable: boolean | undefined,
-  coordination?: boolean
-): void {
-  const capsule = host.createSpan({ cls: "rw-cap" });
-  const label = (state: boolean | undefined) => (
-    state === undefined ? "继承" : state ? "开" : "关"
-  );
-  const coordinationTip =
-    coordination === undefined
-      ? ""
-      : ` · coordination:${label(coordination)}`;
-  addTooltip(capsule, `readable:${label(readable)} · writable:${label(writable)}${coordinationTip}`);
-  const drawPart = (key: string, value: boolean | undefined) => {
-    const className = value === undefined ? "is-inherit" : value ? "is-on" : "is-off";
-    const symbol = value === undefined ? "—" : value ? "√" : "✕";
-    const part = capsule.createSpan({ cls: `rw-part ${className}` });
-    part.createSpan({ cls: "rw-k", text: key });
-    part.createSpan({ cls: "rw-s", text: symbol });
-  };
-  drawPart("R", readable);
-  capsule.createSpan({ cls: "rw-dot", text: "·" });
-  drawPart("W", writable);
-  if (coordination !== undefined) {
-    capsule.createSpan({ cls: "rw-dot", text: "·" });
-    drawPart("协", coordination);
-  }
 }
 
 function drawPalette(
@@ -377,67 +327,6 @@ function autoGrowTextarea(textarea: HTMLTextAreaElement): void {
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
 
-function drawTypeEditDrawer(
-  wrapper: HTMLElement,
-  context: RegistryPaneContext,
-  name: string,
-  definition: TypeDefinition
-): void {
-  const drawer = wrapper.createDiv({
-    cls: "registry-item-edit-drawer type-drawer",
-  });
-  const isModifier = definition.tier === "modifier";
-
-  drawPalette(drawLabelRow(drawer, "颜色"), definition.color || "", async (color) => {
-    await updateTypeMetadata(context.fs, "type", name, { color });
-    await context.refresh();
-  });
-
-  const rw = drawLabelRow(drawer, "R/W").createDiv({ cls: "tent-drawer-rw" });
-  drawRwSegment(rw, "readable", definition.readable, async (value) => {
-    await updateTypeMetadata(context.fs, "type", name, {
-      readable: isModifier ? value ?? "inherit" : value ?? false,
-    });
-    await context.refresh();
-  }, isModifier);
-  drawRwSegment(rw, "writable", definition.writable, async (value) => {
-    await updateTypeMetadata(context.fs, "type", name, {
-      writable: isModifier ? value ?? "inherit" : value ?? false,
-    });
-    await context.refresh();
-  }, isModifier);
-
-  if (!isModifier) {
-    const coordination = drawLabelRow(drawer, "协作").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(
-      coordination,
-      "coordination",
-      baseDefinitionCoordination(definition) === true,
-      async (value) => {
-        await updateTypeMetadata(context.fs, "type", name, {
-          coordination: value === true,
-        });
-        await context.refresh();
-      },
-      false
-    );
-  }
-
-  const description = drawLabelRow(drawer, "描述").createEl("textarea", {
-    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
-    attr: { rows: "1" },
-  });
-  description.value = definition.description || "";
-  description.oninput = () => autoGrowTextarea(description);
-  description.onblur = async () => {
-    const value = description.value.trim();
-    if (value === (definition.description || "")) return;
-    await updateTypeMetadata(context.fs, "type", name, { description: value });
-    await context.refresh();
-  };
-  window.setTimeout(() => autoGrowTextarea(description), 0);
-}
-
 function drawNewTypeForm(
   section: HTMLElement,
   context: RegistryPaneContext,
@@ -445,23 +334,19 @@ function drawNewTypeForm(
   tier: TypeTier
 ): void {
   const card = section.createDiv({ cls: "tent-newform" });
-  const form: {
-    name: string;
-    description: string;
-    readable: boolean | undefined;
-    writable: boolean | undefined;
-    coordination: boolean;
-    color: string;
-  } = {
-    name: "",
-    description: "",
-    readable: tier === "modifier" ? undefined : true,
-    writable: tier === "modifier" ? undefined : false,
-    coordination: false,
-    color: "gray",
-  };
-  const isModifier = tier === "modifier";
+  if (tier === "base") {
+    card.createDiv({
+      cls: "reg-desc",
+      text: "V0.2 一级 type 固定为 goal|prompt|output，不可新建。",
+    });
+    drawFormActions(card, context, state, async () => {
+      state.newFormOpen = null;
+      context.redraw();
+    });
+    return;
+  }
 
+  const form = { name: "" };
   const name = drawLabelRow(card, "名字").createEl("input", {
     cls: "tent-newform-input",
     attr: { type: "text" },
@@ -470,34 +355,6 @@ function drawNewTypeForm(
     form.name = name.value.trim();
   };
   window.setTimeout(() => name.focus(), 0);
-
-  drawPalette(drawLabelRow(card, "颜色"), form.color, (color) => {
-    form.color = color;
-  });
-
-  const rw = drawLabelRow(card, "R/W").createDiv({ cls: "tent-drawer-rw" });
-  drawRwSegment(rw, "readable", form.readable, (value) => {
-    form.readable = value;
-  }, isModifier);
-  drawRwSegment(rw, "writable", form.writable, (value) => {
-    form.writable = value;
-  }, isModifier);
-
-  if (!isModifier) {
-    const coordination = drawLabelRow(card, "协作").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(coordination, "coordination", form.coordination, (value) => {
-      form.coordination = value === true;
-    }, false);
-  }
-
-  const description = drawLabelRow(card, "描述").createEl("textarea", {
-    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
-    attr: { rows: "1" },
-  });
-  description.oninput = () => {
-    form.description = description.value.trim();
-    autoGrowTextarea(description);
-  };
 
   drawFormActions(card, context, state, async () => {
     if (!form.name || form.name === "temp") {
@@ -508,21 +365,7 @@ function drawNewTypeForm(
       new Notice(`类型「${form.name}」已存在`);
       return;
     }
-    const definition: TypeDefinition = isModifier
-      ? {
-          tier: "modifier",
-          ...(form.readable !== undefined ? { readable: form.readable } : {}),
-          ...(form.writable !== undefined ? { writable: form.writable } : {}),
-        }
-      : {
-          tier: "base",
-          readable: form.readable!,
-          writable: form.writable!,
-          ...(form.coordination ? { coordination: true } : { coordination: false }),
-        };
-    if (form.color) definition.color = form.color;
-    if (form.description) definition.description = form.description;
-    await createPrimaryType(context.fs, form.name, definition);
+    await createSecondaryType(context.fs, form.name, { tier: "modifier" });
     state.newFormOpen = null;
     await context.refresh();
   });

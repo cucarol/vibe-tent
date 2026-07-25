@@ -15,28 +15,6 @@ import {
 
 export type TypeLevel = "type";
 
-/**
- * V0.2: type registry entries have no domain metadata (color/description/R/W/coordination).
- * Custom secondaries may be added as modifiers; fixed primaries cannot be created/deleted.
- * Deprecated keys remain on the patch shape so transitional UI compiles; updates no-op or throw.
- */
-export interface TypeMetadataPatch {
-  /** @deprecated Type chrome retired — ignored. */
-  color?: string;
-  /** @deprecated Type chrome retired — ignored. */
-  description?: string;
-  /** @deprecated Domain R/W retired — ignored. */
-  readable?: boolean | "inherit";
-  /** @deprecated Domain R/W retired — ignored. */
-  writable?: boolean | "inherit";
-  /** @deprecated Coordination retired — throws if set. */
-  coordination?: boolean;
-  /**
-   * @deprecated workspacePointer 已退役；传入时抛错。
-   */
-  workspacePointer?: boolean;
-}
-
 export interface TypeReference {
   id: string;
   path: string;
@@ -96,34 +74,6 @@ export async function createSecondaryType(
   await createType(fs, name, { tier: "modifier" });
 }
 
-export async function updateTypeMetadata(
-  fs: FsAdapter,
-  level: TypeLevel,
-  name: string,
-  patch: TypeMetadataPatch
-): Promise<void> {
-  await withTentMutation(fs, async () => {
-    void level;
-    assertTypeName(name);
-    if (patch.workspacePointer !== undefined) {
-      throw new Error(
-        "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
-      );
-    }
-    if (patch.coordination !== undefined) {
-      throw new Error("coordination capability is retired in V0.2; types are semantic only.");
-    }
-    const registry = await loadTypeRegistry(fs);
-    if (!registry[name]) throw new Error(`Type does not exist: ${name}.`);
-    // color/description/readable/writable patches are ignored (no domain chrome).
-    void patch.color;
-    void patch.description;
-    void patch.readable;
-    void patch.writable;
-    await writeTypeRegistryUnlocked(fs, registry);
-  });
-}
-
 export async function inspectTypeDeletion(
   fs: FsAdapter,
   level: TypeLevel,
@@ -141,8 +91,9 @@ export async function inspectTypeDeletion(
 
   for (const reference of referenced) {
     for (const box of relatedBoxes(reference, boxes)) {
-      if (!box.fm.owner) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: box.fm.owner });
+      const owner = typeof box.fm.owner === "string" ? box.fm.owner : undefined;
+      if (!owner) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner });
     }
   }
 

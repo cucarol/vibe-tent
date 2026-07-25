@@ -277,8 +277,15 @@ export async function reloadTree(): Promise<void> {
 /** Drop status/assignee that may ride along on ConceptProjection from docs.list. */
 function stripListCollabFields(node: ConceptNode): ConceptNode {
   const { status: _s, assignee: _a, children, ...rest } = node;
+  const archived = !!rest.archived || rest.mode === "archived";
+  const invalid = !!rest.invalid;
+  const usable = !invalid && !archived;
   return {
     ...rest,
+    archived,
+    invalid,
+    // Local UI alias only — Service no longer projects coordination.
+    coordination: usable,
     children: children?.map(stripListCollabFields),
   };
 }

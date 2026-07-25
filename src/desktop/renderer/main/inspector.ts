@@ -62,13 +62,12 @@ export function renderMeta(): void {
   // 标题 + 最多一行关键属性；类型/路径/id 收进详情折叠
   // 协作 status/assignee 只来自 box.projection（不读 frontmatter）
   const proj = tab.coordination ? boxProjectionFor(tab.cx) : null;
-  const modeLabel =
-    tab.nodeMode === "read-only" ? "仅可读" : tab.nodeMode === "archived" ? "封存" : "开放";
+  const modeLabel = tab.nodeMode === "archived" ? "封存" : "开放";
   const collabLine = boxProjectionSummaryLine(proj);
   const oneLine = tab.coordination
     ? collabLine
-      ? `${escapeHtml(tab.type)} · 协作 · ${escapeHtml(collabLine)} · ${modeLabel}`
-      : `${escapeHtml(tab.type)} · 协作 · ${modeLabel}`
+      ? `${escapeHtml(tab.type)} · ${escapeHtml(collabLine)} · ${modeLabel}`
+      : `${escapeHtml(tab.type)} · ${modeLabel}`
     : `${escapeHtml(tab.type)} · ${modeLabel}`;
   const renameDisabled = tab.nodeMode === "archived";
   const projDl =
@@ -101,7 +100,6 @@ export function renderMeta(): void {
       <label for="node-mode">访问</label>
       <select id="node-mode" class="${UI.fieldCompact}">
         <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>开放</option>
-        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>仅可读</option>
         <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>封存</option>
       </select>
       ${btnHtml({ label: "应用", variant: "secondary", id: "btn-apply-node-mode" })}
@@ -109,7 +107,7 @@ export function renderMeta(): void {
     <details class="meta-details">
       <summary>详情</summary>
       <dl>
-        <dt>类型</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " · 协作" : ""}</dd>
+        <dt>类型</dt><dd>${escapeHtml(tab.type)}</dd>
         <dt>路径</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
         <dt>标识</dt><dd><code title="不可变 id">${escapeHtml(tab.cx)}</code></dd>
         ${projDl}

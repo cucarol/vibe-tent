@@ -5,7 +5,7 @@ export type BoxType = string;
 /**
  * @deprecated Collaboration status is projected from Task/Session/Delivery.
  * Legacy frontmatter may still be present on disk until a later UI cutover;
- * Core does not write status on new Nodes.
+ * Core does not write status on new Nodes. Prefer box.fm["status"] for lifecycle.
  */
 export type Status = "todo" | "doing" | "done";
 
@@ -24,36 +24,17 @@ export interface BoxFrontmatter {
   /** Explicit mode only; omit for editable default. Only "archived" is persisted. */
   mode?: NodeMode;
   /**
-   * @deprecated Domain R/W retired. Not loaded into memory as honor axes; stripped by migration.
-   * Optional keys remain so transitional UI compiles until formal UI cutover.
-   */
-  readable?: boolean;
-  /**
-   * @deprecated Domain R/W retired. See readable.
-   */
-  writable?: boolean;
-  /**
-   * @deprecated Not written on new Nodes. May still appear on legacy disk for UI projection
-   * until a later cutover removes it from formal Desktop surfaces.
+   * @deprecated Not written on new Nodes. Lifecycle may still dual-write for
+   * transitional cleanup; read via fm["owner"] preferred. Not a Service wire field.
    */
   owner?: string;
   /**
    * @deprecated Not written on new Nodes. Collaboration progress lives on Task projection.
+   * Lifecycle may still dual-write; read via fm["status"] preferred.
    */
   status?: Status;
   /** 允许 user 加自定义键,原样保留落盘（迁移会剥离领域 R/W 等退役键）。 */
   [k: string]: unknown;
-}
-
-/**
- * @deprecated Domain R/W axes retired. Wire-compat projection only (not type-registry honor).
- */
-export type AxisSource = "self" | "type" | "mode" | "archived" | "invalid";
-
-/** @deprecated Domain R/W axes retired. Wire-compat projection only. */
-export interface ResolvedAxis {
-  value: boolean;
-  source: AxisSource;
 }
 
 /**
@@ -64,11 +45,6 @@ export interface Box {
   id: string;
   type: BoxType;
   tags: string[];
-  /**
-   * @deprecated Coordination capability retired. Always true for valid non-archived
-   * concepts so transitional Service/UI wire shape keeps compiling; not a type gate.
-   */
-  coordination: boolean;
   /**
    * Effective node mode after inheritance.
    * archived cascades from archive root; editable is the default.
@@ -100,20 +76,6 @@ export interface Box {
   locked: boolean;
   lockSource?: "self" | "ancestor" | "descendant";
   lockOwner?: string;
-  /**
-   * @deprecated Domain R/W retired. Fixed projection: false when invalid/archived, else true.
-   * Not loaded from frontmatter or type registry.
-   */
-  readable: ResolvedAxis;
-  /**
-   * @deprecated Domain R/W retired. Fixed projection: false when invalid/archived, else true.
-   */
-  writable: ResolvedAxis;
-}
-
-/** @deprecated Always true for usable concepts; kept for transitional callers. */
-export function isCoordinationBox(concept: Pick<Box, "coordination">): boolean {
-  return concept.coordination === true;
 }
 
 /** manifest 里 context pointer 的一条（非文件级 ACL）。 */

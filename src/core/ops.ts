@@ -163,11 +163,6 @@ async function dispatchUnlocked(
       );
     }
   } else {
-    if (!claim.box.coordination) {
-      throw new Error(
-        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
-      );
-    }
     const structural = structuralClaimGate(claim.box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
@@ -326,17 +321,6 @@ export async function completeClaim(
     const box = requireBoxById(tent, boxId);
     await setOwner(env.fs, box, undefined, "done", acceptedBy);
   });
-}
-
-/**
- * @deprecated Domain R/W axes retired in V0.2. Agent context comes from Task claims/manifest pointers.
- */
-export async function grantReadable(_env: OpsEnv, _boxId: string): Promise<void> {
-  void _env;
-  void _boxId;
-  throw new Error(
-    "grantReadable is retired in V0.2: Node readable/writable axes are removed; use Task context pointers."
-  );
 }
 
 // ---- clean-temp ----

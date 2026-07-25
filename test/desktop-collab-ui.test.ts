@@ -44,25 +44,19 @@ import { GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 
 // ---- pure UI model ----
 
-test("listCoordinationTypeNames uses registry coordination flag, not type name", () => {
-  const types = [
-    { name: "note", tier: "base" as const, coordination: false },
-    { name: "goal", tier: "base" as const, coordination: true },
-    { name: "prompt", tier: "base" as const, coordination: true },
-    { name: "open", tier: "modifier" as const, coordination: false },
-    { name: "quest", tier: "base" as const, coordination: true },
-  ];
-  assert.deepEqual(listCoordinationTypeNames(types), ["goal", "prompt", "quest"]);
-  assert.equal(pickDefaultCoordinationType(types), "goal");
-
-  // When goal is absent, first sorted coordination type wins — not hardcoded goal.
-  const noGoal = types.filter((t) => t.name !== "goal");
-  assert.equal(pickDefaultCoordinationType(noGoal), "prompt");
-
-  // Custom type with coordination=true is eligible even if name is not goal.
-  assert.ok(listCoordinationTypeNames([{ name: "mission", tier: "base", coordination: true }]).includes("mission"));
+test("listCoordinationTypeNames uses base tier types", () => {
+  const names = listCoordinationTypeNames([
+    { name: "note", tier: "base" as const },
+    { name: "goal", tier: "base" as const },
+    { name: "prompt", tier: "base" as const },
+    { name: "open", tier: "modifier" as const },
+    { name: "quest", tier: "base" as const },
+  ]);
+  assert.deepEqual(names, ["goal", "note", "prompt", "quest"]);
+  assert.equal(pickDefaultCoordinationType(names.map((name) => ({ name, tier: "base" as const }))), "goal");
+  assert.ok(listCoordinationTypeNames([{ name: "mission", tier: "base" }]).includes("mission"));
   assert.equal(
-    listCoordinationTypeNames([{ name: "goal", tier: "base", coordination: false }]).length,
+    listCoordinationTypeNames([{ name: "sealed", tier: "modifier" }]).length,
     0
   );
 });
@@ -635,21 +629,14 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
   }
 });
 
-test("listCoordinationTypeOptions preserves description metadata", () => {
+test("listCoordinationTypeOptions returns base-tier names only", () => {
   const opts = listCoordinationTypeOptions([
-    {
-      name: "goal",
-      tier: "base",
-      coordination: true,
-      description: "定义目标",
-      color: "blue",
-    },
-    {
-      name: "note",
-      tier: "base",
-      coordination: false,
-    },
+    { name: "goal", tier: "base" },
+    { name: "note", tier: "base" },
+    { name: "asset", tier: "modifier" },
   ]);
-  assert.equal(opts.length, 1);
-  assert.equal(opts[0].description, "定义目标");
+  assert.deepEqual(
+    opts.map((o) => o.name).sort(),
+    ["goal", "note"]
+  );
 });

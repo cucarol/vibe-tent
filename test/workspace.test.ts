@@ -5,7 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { loadTent } from "../src/core/tree.js";
-import { createPrimaryType, updateTypeMetadata } from "../src/core/typeManagement.js";
+import { createPrimaryType } from "../src/core/typeManagement.js";
 import { configureTestGitIdentity, git, makeTent } from "./helpers.js";
 
 test("resolveTentWorkspace:仅 in-workspace 布局,不再扫描 concept workspace 字段", async () => {
@@ -41,7 +41,6 @@ test("resolveTentWorkspace:仅 in-workspace 布局,不再扫描 concept workspac
 
   void findIntegratedCommit;
   void createPrimaryType;
-  void updateTypeMetadata;
 });
 
 test("workspaceCheckShell:POSIX require-check uses portable sh -c", async () => {

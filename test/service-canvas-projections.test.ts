@@ -148,19 +148,21 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
     assert.ok(childNode, "child node present");
     assert.equal(parentNode!.path, parent.path);
     assert.equal(parentNode!.name, "parent-goal");
-    assert.equal(parentNode!.coordination, true);
+    assert.equal(parentNode!.invalid, false);
+    assert.equal(parentNode!.archived, false);
     assert.equal(childNode!.path, child.path);
+    assert.equal("coordination" in parentNode!, false);
 
-    // Stable summary only — never body / bodyPreview / status / assignee.
+    // Stable summary only — never body / bodyPreview / status / assignee / coordination.
     for (const n of graph.nodes) {
       assert.equal("body" in n, false);
       assert.equal("bodyPreview" in n, false);
+      assert.equal("coordination" in n, false);
       assert.ok(typeof n.id === "string");
       assert.ok(typeof n.path === "string");
       assert.ok(typeof n.name === "string");
       assert.ok(typeof n.type === "string");
       assert.ok(Array.isArray(n.tags));
-      assert.ok(typeof n.coordination === "boolean");
       assert.ok(typeof n.mode === "string");
       assert.ok(typeof n.archived === "boolean");
       assert.ok(typeof n.invalid === "boolean");

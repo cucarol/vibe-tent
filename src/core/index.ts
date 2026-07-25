@@ -9,7 +9,7 @@ export * from "./scaffold.js";
 export * from "./adapter.js";
 export * from "./frontmatter.js";
 export * from "./tree.js";
-export * from "./concept.js";
+// concept.ts is empty after promoteConcept retirement — no re-export.
 export * from "./migration.js";
 export * from "./claim.js";
 export * from "./manifest.js";

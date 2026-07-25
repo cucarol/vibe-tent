@@ -7,37 +7,12 @@ export { TYPE_REGISTRY_PATH };
 export type TypeTier = "base" | "modifier";
 
 /**
- * V0.2 type definition: identity + tier only on disk / normalize.
- * Optional legacy fields remain on the TypeScript shape so transitional UI
- * compiles; normalizeRegistry never populates them.
+ * V0.2 type definition: identity + tier only.
+ * Domain R/W, coordination, color, description, workspacePointer are not product fields.
  */
-export type TypeDefinition =
-  | {
-      tier?: "base";
-      /** @deprecated Domain R/W retired. */
-      readable?: boolean;
-      /** @deprecated Domain R/W retired. */
-      writable?: boolean;
-      /** @deprecated Coordination capability retired. */
-      coordination?: boolean;
-      /** @deprecated Type chrome retired. */
-      color?: string;
-      /** @deprecated Type chrome retired. */
-      description?: string;
-      /** @deprecated workspacePointer retired. */
-      workspacePointer?: boolean;
-    }
-  | {
-      tier: "modifier";
-      /** @deprecated Domain R/W retired. */
-      readable?: boolean;
-      /** @deprecated Domain R/W retired. */
-      writable?: boolean;
-      /** @deprecated Type chrome retired. */
-      color?: string;
-      /** @deprecated Type chrome retired. */
-      description?: string;
-    };
+export type TypeDefinition = {
+  tier?: "base" | "modifier";
+};
 
 export type TypeRegistry = Record<string, TypeDefinition>;
 
@@ -107,89 +82,6 @@ export function isValidConceptType(type: string, registry: TypeRegistry): boolea
   if (modifier === undefined) return true;
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
-}
-
-/**
- * @deprecated Color palette no longer part of Core type domain; kept for transitional UI imports.
- */
-export const TYPE_COLOR_PALETTE = [
-  "gray",
-  "red",
-  "orange",
-  "yellow",
-  "green",
-  "cyan",
-  "blue",
-  "purple",
-  "pink",
-  "brown",
-] as const;
-
-/**
- * @deprecated Coordination capability retired; always true for known registry types.
- * Do not use as a product gate — structuralClaimGate no longer consults this.
- */
-export function typeHasCoordination(type: string, registry: TypeRegistry): boolean {
-  return typeExists(type, registry);
-}
-
-/** @deprecated Coordination capability retired. */
-export function baseDefinitionCoordination(_definition: TypeDefinition | undefined): boolean | undefined {
-  void _definition;
-  return true;
-}
-
-/** @deprecated Coordination capability retired. */
-export function setBaseCoordination(_definition: TypeDefinition, _value: boolean): void {
-  void _definition;
-  void _value;
-  throw new Error("coordination capability is retired in V0.2; types are semantic only.");
-}
-
-/**
- * @deprecated Domain R/W axes retired; always undefined.
- */
-export function resolveTypeAxis(
-  _type: string,
-  _axis: "readable" | "writable",
-  _registry: TypeRegistry
-): boolean | undefined {
-  void _type;
-  void _axis;
-  void _registry;
-  return undefined;
-}
-
-/**
- * @deprecated No permanent type-name alias. Migration rewrites disk; runtime uses names as-is.
- * Kept as identity for any residual callers during cutover.
- */
-export function canonicalTypeName(type: string): string {
-  return type;
-}
-
-/**
- * @deprecated workspacePointer 运行时语义已退役；保留空实现兼容旧调用点编译，恒为 false。
- */
-export function typeAllowsWorkspacePointer(_type: string, _registry: TypeRegistry): boolean {
-  void _type;
-  void _registry;
-  return false;
-}
-
-/** @deprecated 见 typeAllowsWorkspacePointer。 */
-export function baseDefinitionWorkspacePointer(_definition: TypeDefinition | undefined): boolean | undefined {
-  void _definition;
-  return undefined;
-}
-
-/** @deprecated workspacePointer 不再可写。 */
-export function setBaseWorkspacePointer(_definition: TypeDefinition, _value: boolean): void {
-  void _definition;
-  void _value;
-  throw new Error(
-    "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
-  );
 }
 
 /**

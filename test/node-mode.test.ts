@@ -51,8 +51,9 @@ test("mode matrix: editable mutates; archived freezes; no read-only", async () =
   const archChild = tent.byId.get("bx-p2")!;
   assert.equal(archRoot.mode, "archived");
   assert.equal(archChild.mode, "archived");
-  assert.equal(archRoot.readable.value, false);
-  assert.equal(archRoot.writable.value, false);
+  assert.equal(archRoot.archived, true);
+  assert.equal("readable" in archRoot, false);
+  assert.equal("writable" in archRoot, false);
   assert.equal(isUsableBox(archRoot), false);
   assert.equal(isContentMutable(archRoot), false);
   await assert.rejects(() => patchBody(env as any, archRoot.path, "nope\n"), /archived/i);

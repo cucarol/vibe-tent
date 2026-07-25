@@ -35,7 +35,7 @@ export function renderDispatchPanel(): void {
     return;
   }
   if (!tab.coordination) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">「${escapeHtml(tab.name)}」不可协调（普通笔记）。请新建协作框或提升类型。</div>`;
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">「${escapeHtml(tab.name)}」不可用（无效或已封存），无法派活。</div>`;
     return;
   }
 

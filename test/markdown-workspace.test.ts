@@ -63,7 +63,7 @@ test("renderMarkdownToHtml: headings wiki and artifacts", () => {
   assert.match(html, /a\.ts/);
 });
 
-test("CoreDocsClient: list excludes temp; create/read/write/search/promote", async () => {
+test("CoreDocsClient: list excludes temp; create/read/write/search", async () => {
   const { env, fsa } = await makeEnv();
   const docs = new CoreDocsClient(env as any);
 
@@ -96,14 +96,11 @@ test("CoreDocsClient: list excludes temp; create/read/write/search/promote", asy
   const hits = await docs.search("ideas v2");
   assert.ok(hits.some((h) => h.cx === note.cx));
 
-  // promoteConcept retired in V0.2
-  await assert.rejects(
-    () => docs.promote(note.cx, "goal"),
-    /promoteConcept is retired|retired in V0\.2/,
-  );
   const after = await docs.get(note.cx);
   assert.equal(after?.type, "prompt");
-  assert.equal(after?.coordination, true, "usable wire-compat coordination projection");
+  assert.equal(after?.invalid, false);
+  assert.equal(after?.archived, false);
+  assert.equal("coordination" in (after ?? {}), false);
 });
 
 test("CoreDocsClient: active task protects collab fields on write", async () => {

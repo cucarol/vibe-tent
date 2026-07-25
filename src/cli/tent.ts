@@ -36,7 +36,6 @@ import {
   dispatch,
   stamp,
   completeClaim,
-  grantReadable,
   cleanTemp,
   cancelPendingTask,
   forceRelease,

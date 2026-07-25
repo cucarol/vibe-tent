@@ -50,10 +50,9 @@ export type MountedWorkspaceInfo = {
 
 /**
  * Node lifecycle mode on the wire (document semantics; not Task state).
- * V0.2 Core: editable | archived only. "read-only" may still appear on transitional
- * clients; Service rejects new setMode(read-only).
+ * V0.2: editable | archived only. Service rejects setMode("read-only").
  */
-export type NodeMode = "editable" | "archived" | "read-only";
+export type NodeMode = "editable" | "archived";
 
 export type ConceptProjection = {
   id: string;
@@ -61,18 +60,6 @@ export type ConceptProjection = {
   name: string;
   type: string;
   tags: string[];
-  /**
-   * @deprecated Coordination capability retired. Wire-compat: true for usable concepts.
-   */
-  coordination: boolean;
-  /**
-   * @deprecated Legacy frontmatter projection until UI cutover; not written on new Nodes.
-   */
-  status?: string;
-  /**
-   * @deprecated Legacy owner projection until UI cutover; occupation is Task-based.
-   */
-  assignee?: string;
   /** Effective mode after inheritance (archived cascades). */
   mode: NodeMode;
   /** Convenience: mode === "archived". */
@@ -104,8 +91,6 @@ export type GraphNodeSummary = {
   name: string;
   type: string;
   tags: string[];
-  /** @deprecated Wire-compat only; always true for usable nodes. */
-  coordination: boolean;
   mode: NodeMode;
   archived: boolean;
   invalid: boolean;
@@ -343,24 +328,11 @@ export type SessionProjection = {
 
 /**
  * Project type registry row (read-only projection for clients).
- * V0.2 Core stores tier only; R/W/coordination/color/description are omitted
- * (transitional clients must not treat absence as product semantics).
+ * V0.2 Core stores name + tier only.
  */
 export type TypeRegistryEntryProjection = {
   name: string;
   tier: "base" | "modifier";
-  /** @deprecated Domain R/W retired — omit on wire. */
-  readable?: boolean;
-  /** @deprecated Domain R/W retired — omit on wire. */
-  writable?: boolean;
-  /**
-   * @deprecated Coordination retired. Base types project true for wire-compat pickers.
-   */
-  coordination: boolean;
-  /** @deprecated Type chrome retired — omit on wire. */
-  color?: string;
-  /** @deprecated Type chrome retired — omit on wire. */
-  description?: string;
 };
 
 /** Project role registry row (read-only projection for clients). */
@@ -506,7 +478,7 @@ export type ProviderCatalogProjection = {
 /**
  * Methods clients may call. AgentRuntimePort.* is intentionally absent.
  * B5 adds full task lifecycle + session projections + a2a resolve.
- * Desktop P0-1 adds read-only registry.* for coordination type + role pickers.
+ * Desktop P0-1 adds read-only registry.* for type + role pickers.
  * Desktop ACP launch surface adds profile.list/get + machine-local grok-acp CRUD.
  * Provider verification: provider.catalog (read-only product facts; no secrets).
  * Credential vault: credential.list/set/delete (no get plaintext).
@@ -540,7 +512,6 @@ export const CLIENT_METHODS = [
   /** Existing Node body/frontmatter write; requires baseEtag (-32008 missing / -32009 conflict). */
   "docs.write",
   "docs.createNote",
-  "docs.promote",
   "docs.fork",
   /**
    * User-only atomic concept rename (MutationBus).
@@ -549,7 +520,7 @@ export const CLIENT_METHODS = [
    */
   "docs.rename",
   /**
-   * Set Node mode (editable | read-only | archived). Sole mode mutation RPC.
+   * Set Node mode (editable | archived). Sole mode mutation RPC.
    * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
    */
   "docs.setMode",

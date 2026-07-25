@@ -75,6 +75,10 @@ export type TaskReviewItem = {
 
 export type DispatchFormState = {
   boxId: string | null;
+  /**
+   * Whether the selected node may enter the task lifecycle.
+   * Legacy field name kept for UI call sites; means usable (!invalid && !archived).
+   */
   coordination: boolean;
   role: string;
   prompt: string;
@@ -104,7 +108,7 @@ export type RejectPayload = {
   resume: boolean;
 };
 
-/** Prefer goal among coordination-enabled base types; otherwise first sorted name. */
+/** Prefer goal among base-tier types; otherwise first sorted name. */
 export function pickDefaultCoordinationType(
   types: TypeRegistryEntryProjection[] | CoordinationTypeOption[]
 ): string | null {
@@ -113,14 +117,22 @@ export function pickDefaultCoordinationType(
   return names[0] ?? null;
 }
 
-/** Base types with coordination=true — never hardcode type names for eligibility. */
+/**
+ * Base-tier type names for create/dispatch pickers.
+ * Legacy name kept; eligibility is tier === base (coordination chrome retired).
+ */
 export function listCoordinationTypeNames(
   types: Array<{ name: string; tier?: string; coordination?: boolean } | TypeRegistryEntryProjection>
 ): string[] {
   return types
     .filter((t) => {
       const tier = "tier" in t ? t.tier : "base";
-      return (tier === undefined || tier === "base") && t.coordination === true;
+      // Prefer tier; if transitional wire still sends coordination, require base + true.
+      if (tier !== undefined && tier !== "base") return false;
+      if ("coordination" in t && typeof t.coordination === "boolean") {
+        return t.coordination === true;
+      }
+      return true;
     })
     .map((t) => t.name)
     .sort((a, b) => a.localeCompare(b));
@@ -129,14 +141,7 @@ export function listCoordinationTypeNames(
 export function listCoordinationTypeOptions(
   types: TypeRegistryEntryProjection[]
 ): CoordinationTypeOption[] {
-  return listCoordinationTypeNames(types).map((name) => {
-    const row = types.find((t) => t.name === name);
-    return {
-      name,
-      description: row?.description,
-      color: row?.color,
-    };
-  });
+  return listCoordinationTypeNames(types).map((name) => ({ name }));
 }
 
 export function listRoleOptions(roles: RoleRegistryEntryProjection[]): RoleOption[] {
@@ -222,7 +227,7 @@ export function buildStartSessionPayload(
 
 /**
  * Validate dispatch form before calling task.dispatch.
- * UI must not invent domain rules beyond empty-field / coordination gate.
+ * UI must not invent domain rules beyond empty-field / usable-node gate.
  */
 export function validateDispatchForm(form: DispatchFormState): DispatchValidation {
   if (!form.boxId) {
@@ -231,7 +236,7 @@ export function validateDispatchForm(form: DispatchFormState): DispatchValidatio
   if (!form.coordination) {
     return {
       ok: false,
-      reason: "当前概念不可协调（coordination=false），无法派活。",
+      reason: "当前概念不可用（无效或已封存），无法派活。",
       payload: null,
     };
   }

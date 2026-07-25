@@ -142,12 +142,6 @@ async function applyAction(controller: WorkspaceController, params: URLSearchPar
     case "setMode":
       if (cx) controller.setMode(cx, params.get("mode") === "preview" ? "preview" : "source");
       break;
-    case "promote":
-      if (cx) {
-        controller.setActive(cx);
-        await controller.promoteActive("goal");
-      }
-      break;
     case "loadDisk":
       if (cx) controller.loadDiskVersion(cx);
       break;

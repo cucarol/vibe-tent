@@ -109,8 +109,7 @@ function filePath(box: Box, prefix: string): string {
 }
 function labelFor(box: Box, isRoot: boolean): string {
   const tag = isRoot ? "" : ` · ${box.type}`;
-  const owner = box.fm.owner ? ` ⚑${box.fm.owner}` : "";
-  return `${box.name}${tag}${owner}`;
+  return `${box.name}${tag}`;
 }
 function colorFor(box: Box, isRoot: boolean): string | undefined {
   if (isRoot) return ROOT_COLOR[box.name] || undefined;

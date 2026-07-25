@@ -8,7 +8,7 @@ export type ArtifactRef = {
   label?: string;
 };
 
-export type NodeMode = "editable" | "read-only" | "archived";
+export type NodeMode = "editable" | "archived";
 
 export type ConceptProjection = {
   id: string;
@@ -16,9 +16,6 @@ export type ConceptProjection = {
   name: string;
   type: string;
   tags: string[];
-  coordination: boolean;
-  status?: string;
-  assignee?: string;
   title?: string;
   mode: NodeMode;
   archived: boolean;
@@ -33,7 +30,6 @@ export type ConceptEditSnapshot = {
   path: string;
   name: string;
   type: string;
-  coordination: boolean;
   body: string;
   frontmatter: Record<string, unknown>;
   raw: string;

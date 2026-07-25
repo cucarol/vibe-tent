@@ -1,6 +1,20 @@
-import { TYPE_COLOR_PALETTE } from "../core/typeRegistry.js";
+/**
+ * Plugin-local type color palette (legacy Obsidian chrome only).
+ * Not part of Core TypeDefinition / type registry product contract.
+ */
+export const TYPE_COLOR_PALETTE = [
+  "gray",
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "cyan",
+  "blue",
+  "purple",
+  "pink",
+  "brown",
+] as const;
 
-// 单一色名来源 = core 的注册表色板;FALLBACK 给每个名一个 hex 兜底(Obsidian 无 --color-gray/brown)。
 export const TYPE_COLORS = TYPE_COLOR_PALETTE;
 
 const FALLBACK_COLORS: Record<string, string> = {

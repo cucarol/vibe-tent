@@ -258,10 +258,6 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   });
 
   // V0.2: manifest readable/writable are Task context pointers, not Node domain R/W axes.
-  // Usable boxes project coordination=true and readable/writable fixed true for UI wire-compat.
-  assert.equal(claim.coordination, true);
-  assert.equal(claim.readable.value, true);
-  assert.equal(claim.writable.value, true);
 
   const writablePaths = m.writable.map((e) => e.path);
   const readablePaths = m.readable.map((e) => e.path);
@@ -819,10 +815,10 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
   assert.equal(root.archived, true);
   assert.equal(child.mode, "archived");
   assert.equal(child.archived, true);
-  // Wire-compat only: archived nodes project readable/writable/coordination false (not domain axes)
-  assert.equal(child.readable.value, false);
-  assert.equal(child.writable.value, false);
-  assert.equal(child.coordination, false);
+  // Archived nodes are not usable; no coordination/R/W projection fields.
+  assert.equal(child.archived, true);
+  assert.equal("coordination" in child, false);
+  assert.equal("readable" in child, false);
   assert.equal(isUsableBox(child), false);
   // Disk: archive root has mode:archived, not legacy archived:true; child has no mode write.
   const rootFm = parseFrontmatter(await fsa.readFile(boxNotePath(root.path))).data;
@@ -852,13 +848,8 @@ test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢�
   assert.equal(tent.byId.get("bx-p1")!.mode, "editable");
   assert.equal(tent.byId.get("bx-p1")!.archived, false);
   assert.equal(isUsableBox(tent.byId.get("bx-p1")!), true);
-  assert.equal(tent.byId.get("bx-p2")!.coordination, true);
-  assert.equal(
-    tent.byId.get("bx-p2")!.writable.value,
-    true,
-    "usable box wire-compat writable projection restored",
-  );
-  assert.equal(tent.byId.get("bx-p2")!.readable.value, true);
+  assert.equal(tent.byId.get("bx-p2")!.archived, false);
+  assert.equal(tent.byId.get("bx-p2")!.invalid, false);
 });
 
 test("永久删除:node 必须先归档,删除父级会删除整棵子树", async () => {
@@ -968,16 +959,12 @@ test("duplicate box id direct operations report duplicate id", async () => {
     clock: { now: () => "t" },
     tentName: "wqb",
   };
-  const { dispatch, grantReadable } = await import("../src/core/ops.js");
+  const { dispatch } = await import("../src/core/ops.js");
   await assert.rejects(
     () => dispatch(env as any, "bx-p1", "analyst", "work"),
     /Duplicate box id 'bx-p1'/,
   );
   // Domain R/W grant is retired; call rejects before any id resolution
-  await assert.rejects(
-    () => grantReadable(env as any, "bx-p1"),
-    /grantReadable is retired|retired in V0\.2/,
-  );
 });
 
 test("malformed box frontmatter is marked invalid with parse detail", async () => {

@@ -9,7 +9,10 @@ export type GraphNode = {
   path: string;
   name: string;
   type: string;
-  coordination: boolean;
+  /** @deprecated Local UI only; prefer invalid/archived. */
+  coordination?: boolean;
+  invalid?: boolean;
+  archived?: boolean;
   children?: GraphNode[];
 };
 
@@ -44,20 +47,32 @@ export type FlatGraphNode = {
   path: string;
   name: string;
   type: string;
+  /** Local usable flag for legacy UI (true when not invalid/archived). */
+  usable: boolean;
+  /** @deprecated Prefer usable. */
   coordination: boolean;
   depth: number;
 };
+
+function graphNodeUsable(n: GraphNode): boolean {
+  if (n.invalid) return false;
+  if (n.archived) return false;
+  if (typeof n.coordination === "boolean") return n.coordination;
+  return true;
+}
 
 /** Depth-first flatten for the graph node list (no fabricated edges). */
 export function flattenGraphNodes(roots: GraphNode[], depth = 0): FlatGraphNode[] {
   const out: FlatGraphNode[] = [];
   for (const n of roots) {
+    const usable = graphNodeUsable(n);
     out.push({
       id: n.id,
       path: n.path,
       name: n.name,
       type: n.type,
-      coordination: !!n.coordination,
+      usable,
+      coordination: usable,
       depth,
     });
     if (n.children?.length) {

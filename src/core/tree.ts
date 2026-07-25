@@ -85,9 +85,6 @@ function applyDuplicateInvalid(
     box.invalid = true;
     box.invalidRootId = invalid.rootId;
     box.invalidReason = invalid.reason;
-    box.coordination = false;
-    box.readable = { value: false, source: "invalid" };
-    box.writable = { value: false, source: "invalid" };
   }
   for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
 }
@@ -137,7 +134,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     id: fm.id,
     type: fm.type,
     tags,
-    coordination: false,
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -148,8 +144,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     children: [],
     parent,
     locked: false,
-    readable: { value: false, source: "type" },
-    writable: { value: false, source: "type" },
   };
   if (parseError) {
     box.invalidRootId = path;
@@ -256,24 +250,9 @@ function resolveSubtree(
   // Keep fm.mode only for explicit archive roots.
   if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
   else delete box.fm.mode;
-  // Legacy status may remain on disk for UI; do not invent status projection here.
+  // Legacy status may remain on disk for lifecycle dual-write; do not invent projection here.
   if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
     delete box.fm.status;
-  }
-
-  // Wire-compat projections only (not domain R/W or coordination capability).
-  if (box.invalid) {
-    box.coordination = false;
-    box.readable = { value: false, source: "invalid" };
-    box.writable = { value: false, source: "invalid" };
-  } else if (box.archived) {
-    box.coordination = false;
-    box.readable = { value: false, source: "archived" };
-    box.writable = { value: false, source: "archived" };
-  } else {
-    box.coordination = true;
-    box.readable = { value: true, source: "type" };
-    box.writable = { value: true, source: "type" };
   }
 
   for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);

@@ -215,8 +215,8 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   assert.doesNotMatch(pluginSettings, /workspacePointer/);
   assert.doesNotMatch(pluginSettings, /setBaseWorkspacePointer|baseDefinitionWorkspacePointer/);
   assert.doesNotMatch(uiControls, /workspacePointer/);
-  assert.match(registryPane, /coordination/);
-  assert.match(pluginSettings, /setBaseCoordination|baseDefinitionCoordination/);
+  assert.doesNotMatch(registryPane, /updateTypeMetadata|baseDefinitionCoordination/);
+  assert.doesNotMatch(pluginSettings, /setBaseCoordination|baseDefinitionCoordination/);
 
   // Plugin user-facing copy must not reintroduce the retired product phrase
   const viewSrc = await fs.readFile(path.join(repoRoot, "src", "plugin", "view.ts"), "utf8");

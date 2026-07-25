@@ -1,15 +1,11 @@
 import { App, Notice, PluginSettingTab, Setting } from "obsidian";
 import {
-  baseDefinitionCoordination,
   DEFAULT_TYPE_REGISTRY,
-  setBaseCoordination,
-  TYPE_COLOR_PALETTE,
-  type TypeDefinition,
   type TypeRegistry,
   type TypeTier,
 } from "../core/typeRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
-import { typeColorValue } from "./colors.js";
+import { TYPE_COLOR_PALETTE, typeColorValue } from "./colors.js";
 import type TentPlugin from "./main.js";
 import {
   DEFAULT_RULES_TEMPLATE,
@@ -155,122 +151,41 @@ export class TentSettingTab extends PluginSettingTab {
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
       const summary = new Setting(row)
         .setName(name)
-        .setDesc(definition.description || "");
-      const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
-      color.style.backgroundColor = typeColorValue(definition.color);
-      const coordinationFlag = baseDefinitionCoordination(definition);
-      const coordinationSummary =
-        (definition.tier ?? "base") === "modifier"
-          ? ""
-          : ` · ${axisSummary("协", coordinationFlag === true)}`;
+        .setDesc(tier === "base" ? "一级（固定语义）" : "二级修饰");
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} · ${axisSummary("W", definition.writable)}${coordinationSummary}`,
+        text: `tier:${definition.tier ?? "base"}`,
       });
-      summary.addButton((button) =>
-        button
-          .setIcon("settings")
-          .setTooltip(`编辑 ${name}`)
-          .onClick(() => {
-            this.openType = this.openType === name ? null : name;
-            this.display();
-          })
-      );
-      if (this.openType === name) this.drawTypeEditor(row, name, definition);
-    }
-  }
-
-  private drawTypeEditor(parent: HTMLElement, name: string, definition: TypeDefinition) {
-    const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new Setting(editor)
-      .setName("描述")
-      .addText((text) =>
-        text.setValue(definition.description || "").onChange(async (value) => {
-          setOptionalText(definition, "description", value);
-          await this.plugin.saveSettings();
-        })
-      );
-    this.drawColorControl(editor, definition.color, async (color) => {
-      definition.color = color;
-      await this.plugin.saveSettings();
-      this.display();
-    });
-    this.drawAxisControl(editor, definition);
-    if ((definition.tier ?? "base") === "base") {
-      this.drawCoordinationControl(editor, definition);
-    }
-
-    if (!BUILTIN_TYPES.has(name)) {
-      new Setting(editor)
-        .setName("删除默认 type")
-        .setDesc("只影响之后新建的帐。")
-        .addButton((button) =>
-          button.setButtonText("删除").setWarning().onClick(async () => {
-            delete this.plugin.settings.newTentDefaults.typeRegistry[name];
-            this.openType = null;
-            await this.plugin.saveSettings();
-            this.display();
-          })
+      if (!BUILTIN_TYPES.has(name) && tier === "modifier") {
+        summary.addButton((button) =>
+          button
+            .setIcon("trash")
+            .setTooltip(`删除 ${name}`)
+            .onClick(async () => {
+              delete this.plugin.settings.newTentDefaults.typeRegistry[name];
+              this.openType = null;
+              await this.plugin.saveSettings();
+              this.display();
+            })
         );
+      }
     }
-  }
-
-  private drawAxisControl(parent: HTMLElement, definition: TypeDefinition) {
-    const tier = definition.tier ?? "base";
-    const setting = new Setting(parent).setName("R/W");
-    for (const [axis, label] of [["readable", "R"], ["writable", "W"]] as const) {
-      setting.controlEl.createSpan({ cls: "tent-settings-axis-label", text: label });
-      setting.addDropdown((dropdown) => {
-        if (tier === "modifier") dropdown.addOption("inherit", "继承");
-        dropdown
-          .addOption("on", "开")
-          .addOption("off", "关")
-          .setValue(axisValue(definition[axis], tier))
-          .onChange(async (value) => {
-            setTypeAxis(definition, axis, value);
-            await this.plugin.saveSettings();
-            this.display();
-          });
-      });
-    }
-  }
-
-  private drawCoordinationControl(parent: HTMLElement, definition: TypeDefinition) {
-    new Setting(parent)
-      .setName("协作")
-      .setDesc("开启后，该一级 type 的框可进入协作生命周期（status / task / delivery）。workspace root 由 in-workspace .tent 推导，不再使用 workspace 指针。")
-      .addDropdown((dropdown) =>
-        dropdown
-          .addOption("on", "开")
-          .addOption("off", "关")
-          .setValue(baseDefinitionCoordination(definition) === true ? "on" : "off")
-          .onChange(async (value) => {
-            setBaseCoordination(definition, value === "on");
-            await this.plugin.saveSettings();
-            this.display();
-          })
-      );
   }
 
   private drawAddType(parent: HTMLElement, tier: TypeTier, label: string) {
     let name = "";
-    let coordination = false;
     const form = new Setting(parent)
       .setName(`新建${label}`)
-      .setDesc(tier === "base" ? "创建后名称不可修改。可选开启 collaboration（coordination）能力。" : "创建后名称不可修改。");
-    form.settingEl.addClass("tent-settings-add-row");
-    form.addText((text) => text.setPlaceholder("name").onChange((value) => { name = value; }));
-    if (tier === "base") {
-      form.addDropdown((dropdown) =>
-        dropdown
-          .addOption("off", "协作关")
-          .addOption("on", "协作开")
-          .setValue("off")
-          .onChange((value) => {
-            coordination = value === "on";
-          })
+      .setDesc(
+        tier === "base"
+          ? "V0.2 一级 type 固定为 goal|prompt|output，不可在此新建。"
+          : "创建后名称不可修改。仅支持自定义二级（modifier）。"
       );
+    form.settingEl.addClass("tent-settings-add-row");
+    if (tier === "base") {
+      return;
     }
+    form.addText((text) => text.setPlaceholder("name").onChange((value) => { name = value; }));
     form.addButton((button) =>
       button.setButtonText("新建").setCta().onClick(async () => {
         const normalized = name.trim();
@@ -283,15 +198,7 @@ export class TentSettingTab extends PluginSettingTab {
           new Notice(`type 已存在：${normalized}`);
           return;
         }
-        registry[normalized] = tier === "base"
-          ? {
-              tier: "base",
-              readable: true,
-              writable: false,
-              color: "gray",
-              coordination,
-            }
-          : { tier: "modifier", color: "gray" };
+        registry[normalized] = { tier: "modifier" };
         this.openType = normalized;
         await this.plugin.saveSettings();
         this.display();
@@ -410,25 +317,6 @@ export class TentSettingTab extends PluginSettingTab {
 }
 
 const BUILTIN_TYPES = new Set(Object.keys(DEFAULT_TYPE_REGISTRY));
-
-function axisSummary(label: string, value: boolean | undefined): string {
-  return `${label}${value === undefined ? "继承" : value ? "开" : "关"}`;
-}
-
-function axisValue(value: boolean | undefined, tier: TypeTier): string {
-  if (tier === "modifier" && value === undefined) return "inherit";
-  return value ? "on" : "off";
-}
-
-function setTypeAxis(
-  definition: TypeDefinition,
-  axis: "readable" | "writable",
-  value: string
-): void {
-  const record = definition as TypeDefinition & Record<string, unknown>;
-  if (value === "inherit" && definition.tier === "modifier") delete record[axis];
-  else record[axis] = value === "on";
-}
 
 function setOptionalText<T extends object>(target: T, key: keyof T, value: string): void {
   const text = value.trim();

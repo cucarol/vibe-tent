@@ -19,7 +19,6 @@ export interface DocsClient {
   readForEdit(cxOrPath: string): Promise<ConceptEditSnapshot>;
   write(input: DocsWriteInput): Promise<DocsWriteResult>;
   createNote(input: CreateNoteInput): Promise<{ cx: string; path: string }>;
-  promote(cxOrPath: string, toType: string): Promise<{ cx: string; path: string; fromType: string; toType: string }>;
   fork(cxOrPath: string): Promise<{ cx: string }>;
   search(query: string): Promise<SearchHit[]>;
   backlinks(cxOrPath: string): Promise<BacklinkHit[]>;

@@ -438,7 +438,10 @@ export class DesktopShellModel {
 
 type TreeNodeShape = {
   id: string;
-  coordination: boolean;
+  coordination?: boolean;
+  invalid?: boolean;
+  archived?: boolean;
+  mode?: string;
   status?: string;
   assignee?: string;
   children?: TreeNodeShape[];

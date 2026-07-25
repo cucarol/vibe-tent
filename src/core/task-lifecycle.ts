@@ -121,11 +121,6 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
 
     for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
       const claimable = canClaim(box, {
         tent,
         tasks: peerTasks,

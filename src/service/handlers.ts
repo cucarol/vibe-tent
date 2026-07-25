@@ -315,8 +315,6 @@ export async function dispatchMethod(
         return docsWrite(ctx, p);
       case "docs.createNote":
         return docsCreateNote(ctx, p);
-      case "docs.promote":
-        return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
       case "docs.rename":
@@ -923,7 +921,6 @@ async function docsReadForEdit(ctx: HandlerContext, p: Record<string, unknown>) 
     path: concept.path,
     name: concept.name,
     type: concept.type,
-    coordination: concept.coordination,
     body,
     raw,
     etag: contentEtag(raw),
@@ -1170,7 +1167,7 @@ async function docsBacklinks(ctx: HandlerContext, p: Record<string, unknown>) {
   };
 }
 
-/** Read-only type registry projection (V0.2: tier + wire-compat coordination flag). */
+/** Read-only type registry projection (V0.2: name + tier only). */
 async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -1178,13 +1175,7 @@ async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
   const types: TypeRegistryEntryProjection[] = Object.entries(registry)
     .map(([name, def]) => {
       const tier: "base" | "modifier" = def.tier === "modifier" ? "modifier" : "base";
-      // Wire-compat: base types appear "coordination-capable" so transitional UI pickers work.
-      // Domain coordination capability is retired; do not reintroduce R/W/color/description.
-      return {
-        name,
-        tier,
-        coordination: tier === "base",
-      };
+      return { name, tier };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, types };
@@ -1989,15 +1980,6 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
       throw new RpcError(-32000, message);
     }
   });
-}
-
-async function docsPromote(ctx: HandlerContext, p: Record<string, unknown>) {
-  void ctx;
-  void p;
-  throw new RpcError(
-    -32601,
-    "docs.promote is retired in V0.2: every valid concept may enter the task lifecycle; change type via docs.write / createNote"
-  );
 }
 
 async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -4146,7 +4128,6 @@ function projectGraphNodeSummary(box: import("../core/types.js").Box): GraphNode
     name: box.name,
     type: box.type,
     tags: box.tags,
-    coordination: box.coordination,
     mode: box.mode,
     archived: box.archived,
     invalid: box.invalid,
@@ -7716,9 +7697,6 @@ function projectConcept(
     name: box.name,
     type: box.type,
     tags: box.tags,
-    coordination: box.coordination,
-    status: box.fm.status,
-    assignee: typeof box.fm.owner === "string" ? box.fm.owner : undefined,
     mode: box.mode,
     archived: box.archived,
     invalid: box.invalid,
