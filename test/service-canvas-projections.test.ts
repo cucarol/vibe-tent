@@ -299,7 +299,7 @@ test("box.projections: order stable; item semantics match box.projection", async
       assert.equal(item.activeTaskId, single.activeTaskId);
     }
 
-    assert.equal(batch.projections[0]!.status, "todo"); // c accepted → idle
+    assert.equal(batch.projections[0]!.status, "done"); // c accepted → historical done
     assert.equal(batch.projections[1]!.status, "doing"); // a
     assert.ok(batch.projections[1]!.assignee === "executor");
     assert.ok(batch.projections[1]!.activeTaskId);

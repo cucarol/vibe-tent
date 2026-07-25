@@ -247,9 +247,13 @@ async function boxCollabProjection(
   return res.result as BoxCollabProjection;
 }
 
-/** Occupation released: no active task, projection is free (todo), no assignee. */
-function assertOccupationReleased(proj: BoxCollabProjection, label = "occupation"): void {
-  assert.equal(proj.status, "todo", `${label}: expected free box (todo)`);
+/** Occupation released: no active task; accepted history may still project done. */
+function assertOccupationReleased(
+  proj: BoxCollabProjection,
+  label = "occupation",
+  expectedStatus: "todo" | "done" = "todo"
+): void {
+  assert.equal(proj.status, expectedStatus, `${label}: expected ${expectedStatus}`);
   assert.equal(proj.assignee, undefined, `${label}: assignee must be clear`);
   assert.equal(proj.activeTaskId, undefined, `${label}: activeTaskId must be clear`);
 }
@@ -398,14 +402,15 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     assert.equal(accepted.delivery.integrationMode, "manual-accept");
 
     // After accept: Task/Delivery are authoritative; occupation is released.
-    // box.projection is idle todo when no active task (Node FM done dual-write retired).
+    // box.projection derives historical done from the accepted Task, not Node FM.
     const finalTask = (await client.taskGet(workspaceId, taskPath)) as {
       task: { state: string };
     };
     assert.equal(finalTask.task.state, "accepted");
     assertOccupationReleased(
       (await client.boxProjection(workspaceId, { id: boxId })) as BoxCollabProjection,
-      "manual accept"
+      "manual accept",
+      "done"
     );
 
     // stop session cleanup via interrupt would be after deliver; already terminal
@@ -2677,10 +2682,14 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
     assert.equal((delivered.result as { state: string }).state, "accepted");
     assert.equal(normalizeLf(await fs.readFile(path.join(ws, "auto.txt"), "utf8")), "auto\n");
 
-    // Bypass success: task terminal accepted + occupation released (not Node FM done).
+    // Bypass success: task terminal accepted + historical done, with no active occupation.
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
-    assertOccupationReleased(await boxCollabProjection(svc, workspaceId, boxId), "bypass accept");
+    assertOccupationReleased(
+      await boxCollabProjection(svc, workspaceId, boxId),
+      "bypass accept",
+      "done"
+    );
     const list = await rpc(svc, "delivery.list", { workspaceId });
     const acceptedDeliveries = (
       list.result as { deliveries: Array<{ status: string }> }
