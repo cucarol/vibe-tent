@@ -64,8 +64,10 @@ function mockAcpProfile(
     keepAlive?: boolean;
     /** Advertise agentCapabilities.loadSession (native resume). */
     loadSession?: boolean;
-    /** Reject session/load (fail-loud resume path). */
+    /** Reject session/load (native resume fails; reject-resume may honest-fallback). */
     failLoad?: boolean;
+    /** Text returned for ## Review Feedback / ## User Input follow-ups. */
+    followupText?: string;
     /** Delay bootstrap session/prompt completion so turnBusy stays true. */
     promptDelayMs?: number;
     /** Spontaneous child death after session/new (no pending prompt required). */
@@ -96,6 +98,9 @@ function mockAcpProfile(
       ...(opts.requestPermission ? { MOCK_ACP_REQUEST_PERMISSION: "1" } : {}),
       ...(opts.loadSession ? { MOCK_ACP_LOAD_SESSION: "1" } : {}),
       ...(opts.failLoad ? { MOCK_ACP_FAIL_LOAD: "1" } : {}),
+      ...(opts.followupText
+        ? { MOCK_ACP_FOLLOWUP_TEXT: opts.followupText }
+        : {}),
       ...(opts.promptDelayMs != null
         ? { MOCK_ACP_PROMPT_DELAY_MS: String(opts.promptDelayMs) }
         : {}),
@@ -3686,7 +3691,11 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       const body = rejected.result as {
         state: string;
         task: { sessionId?: string; state: string };
-        session?: { sessionId: string };
+        session?: {
+          sessionId: string;
+          contextRestored?: boolean;
+          restoreReason?: string;
+        };
         input?: {
           id: string;
           kind?: string;
@@ -3699,6 +3708,8 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
       };
       assert.equal(body.state, "running");
       assert.equal(body.session?.sessionId, sessionId, "must keep same Tent sessionId");
+      assert.equal(body.session?.contextRestored, true, "native path claims continuity");
+      assert.equal(body.session?.restoreReason, "task.reject.resume.native");
       assert.equal(body.task.sessionId, sessionId);
       assert.equal((await svc.runtime.probe(sessionId)).alive, true);
 
@@ -3708,6 +3719,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         providerToken,
         "provider resume token must continue (no new provider session)"
       );
+      assert.equal(afterResume?.contextRestored, true);
 
       assert.ok(body.input, "must retain review-feedback TaskInput");
       assert.equal(body.input!.kind, "review-feedback");
@@ -3764,7 +3776,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
   );
 });
 
-test("reject-resume native load failure parks waiting; no new session; input retained", async () => {
+test("reject-resume native load failure falls back to new session (contextRestored=false) + redelivery", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-native-fail", {
     executor: "allow",
@@ -3775,7 +3787,8 @@ test("reject-resume native load failure parks waiting; no new session; input ret
   );
   const profile = mockAcpProfile("mock-reject-fail-load", {
     logPath,
-    promptText: "WILL_FAIL_LOAD",
+    promptText: "FIRST_DELIVERY_BEFORE_NATIVE_FAIL",
+    followupText: "REWORK_AFTER_NATIVE_FAIL_FALLBACK",
     keepAlive: true,
     loadSession: true,
     failLoad: true,
@@ -3788,7 +3801,7 @@ test("reject-resume native load failure parks waiting; no new session; input ret
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "native load fail loud",
+        prompt: "native load fail then honest fallback",
         deliveryPolicy: "manual",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3800,106 +3813,161 @@ test("reject-resume native load failure parks waiting; no new session; input ret
         callerKind: "user",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const priorSessionId = (started.result as { session: { sessionId: string } })
+        .session.sessionId;
 
+      // deliver → provider dies (explicit stop) → reject(resume)
       await invokeManagedAutoDeliverForTests(svc.ctx, {
         workspaceId,
         taskPath,
-        sessionId,
-        assistantText: "WILL_FAIL_LOAD",
+        sessionId: priorSessionId,
+        assistantText: "FIRST_DELIVERY_BEFORE_NATIVE_FAIL",
       });
-      await svc.runtime.stopSession(sessionId, "user");
-      assert.equal((await svc.runtime.probe(sessionId)).resumeCapable, true);
+      await svc.runtime.stopSession(priorSessionId, "user");
+      assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
 
-      // Snapshot session ids before reject so we can prove no new ss- was allocated.
       const beforeIds = new Set(
         (await svc.runtime.registry.list()).map((r) => r.id)
       );
 
+      const exactNote = "  fix after native fail fallback  ";
       const rejected = await rpc(svc, "task.reject", {
         workspaceId,
         taskPath,
         actor: "user",
         resume: true,
-        note: "must park not new-session",
+        note: exactNote,
       });
-      assert.ok(rejected.error, "native load failure must fail the RPC");
-      assert.equal(rejected.error!.code, RPC_LIFECYCLE);
-      assert.match(String(rejected.error!.message), /resume failed to restore managed session/i);
-
-      const afterIds = (await svc.runtime.registry.list()).map((r) => r.id);
-      for (const id of afterIds) {
-        if (!beforeIds.has(id)) {
-          assert.fail(`must not allocate new session on failed native resume; got ${id}`);
-        }
-      }
-
-      const got = await rpc(svc, "task.get", { workspaceId, taskPath });
-      const task = (
-        got.result as {
-          task: {
-            state: string;
-            sessionId?: string;
-            wait?: { reason?: string; summary?: string };
-          };
-        }
-      ).task;
-      assert.equal(task.state, "waiting", "must park waiting, not stay running or fail");
-      assert.equal(task.wait?.reason, "external");
-      assert.ok(
-        task.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY),
-        task.wait?.summary
+      assert.ok(!rejected.error, JSON.stringify(rejected.error));
+      const body = rejected.result as {
+        state: string;
+        session?: {
+          sessionId: string;
+          contextRestored?: boolean;
+          restoreReason?: string;
+        };
+        input?: { id: string; sessionId?: string; text?: string; kind?: string };
+        accepted?: boolean;
+        enqueued?: boolean;
+      };
+      assert.equal(body.state, "running", "honest fallback must keep rework running");
+      assert.ok(body.session?.sessionId);
+      assert.notEqual(
+        body.session!.sessionId,
+        priorSessionId,
+        "native fail must allocate independent new ss-"
       );
-      assert.equal(task.sessionId, sessionId, "task remains bound to prior sessionId");
+      assert.equal(
+        body.session!.contextRestored,
+        false,
+        "must never claim cache continuity after native fail"
+      );
+      assert.equal(
+        body.session!.restoreReason,
+        "task.reject.resume.native-fallback"
+      );
+      assert.equal(body.accepted, true);
+      assert.equal(body.enqueued, true);
+      assert.equal(body.input?.kind, "review-feedback");
+      assert.equal(body.input?.text, exactNote);
+      assert.equal(body.input?.sessionId, body.session!.sessionId);
 
-      // Review TaskInput retained (pending/failed, not cancelled) for later recovery.
-      // Prefer scoped listPending; fall back to get via any residual row id on task.
-      const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
-      let review = pending.find((row) => row.kind === "review-feedback");
-      if (!review) {
-        // listPending may omit cancelled; assert durable row is not cancelled.
-        const allListed = await rpc(svc, "taskInput.listPending", {
+      const newSessionId = body.session!.sessionId;
+      assert.ok(
+        !beforeIds.has(newSessionId) || newSessionId !== priorSessionId,
+        "new session id must be trackable"
+      );
+
+      // Projection / provenance honesty on registry + session.get
+      const row = await svc.runtime.registry.read(newSessionId);
+      assert.equal(row?.contextRestored, false);
+      const projected = await rpc(svc, "session.get", { sessionId: newSessionId });
+      assert.ok(!projected.error, JSON.stringify(projected.error));
+      assert.equal(
+        (projected.result as { session: { contextRestored?: boolean } }).session
+          .contextRestored,
+        false
+      );
+
+      // Feedback delivered exactly once; rework redelivers.
+      const inputDelivered = await pollUntil(async () => {
+        const got = await rpc(svc, "taskInput.get", {
           workspaceId,
           taskPath,
+          inputId: body.input!.id,
         });
-        assert.ok(!allListed.error, JSON.stringify(allListed.error));
-      }
-      assert.ok(review, "review-feedback must be retained after failed native resume");
-      assert.equal(review!.text, "must park not new-session");
-      assert.equal(review!.sessionId, sessionId);
-      assert.ok(
-        review!.status === "pending" || review!.status === "failed",
-        `unexpected status ${review!.status}`
-      );
-      assert.notEqual(review!.status, "cancelled");
+        if (got.error) return null;
+        const input = (
+          got.result as {
+            input: { status: string; lastError?: string };
+          }
+        ).input;
+        if (input.status === "delivered") return input;
+        if (input.status === "failed") {
+          throw new Error(`review-feedback inject failed: ${input.lastError}`);
+        }
+        return null;
+      }, 20_000, "review-feedback delivered on recovery session");
+      assert.equal(inputDelivered.status, "delivered");
 
-      // Resumed (failed) bridge rewrites MOCK_ACP_LOG — must show load attempt, not new.
+      await pollUntil(async () => {
+        const t = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const state = (t.result as { task: { state: string } }).task.state;
+        return state === "delivered" ? t : null;
+      }, 20_000, "rework delivery after native-fail fallback");
+
+      // Fallback startSession rewrites MOCK_ACP_LOG (new bridge process), so
+      // loads[] from the failed native resume are not durable on disk. Provenance
+      // of "native first" is restoreReason + recovery bootstrap restorePath.
       const log = await pollUntil(async () => {
         try {
           return JSON.parse(await fs.readFile(logPath, "utf8")) as {
             news?: unknown[];
             loads?: unknown[];
+            prompts?: string[];
           };
         } catch {
           return null;
         }
-      }, 5_000, "failed native resume log becomes readable");
-      assert.equal(
-        Array.isArray(log.news) ? log.news.length : 0,
-        0,
-        "failed load must not fall back to session/new"
-      );
+      }, 5_000, "mock acp log readable after fallback");
       assert.ok(
-        Array.isArray(log.loads) && log.loads.length >= 1,
-        "must attempt session/load before failing"
+        Array.isArray(log.news) && log.news.length >= 1,
+        "honest fallback must call session/new after native fail"
       );
+      const reviewPrompts = (log.prompts ?? []).filter((p) =>
+        p.includes("## Review Feedback")
+      );
+      assert.equal(
+        reviewPrompts.length,
+        1,
+        "feedback inject exactly once (no double channel)"
+      );
+      const inject = reviewPrompts[0]!;
+      assert.ok(inject.includes(`text: ${exactNote}`));
+      assert.ok(
+        inject.includes("contextRestored: false"),
+        "recovery orientation must mark contextRestored=false"
+      );
+      assert.ok(inject.includes("--- Tent reject-resume recovery ---"));
+      assert.ok(
+        inject.includes("restorePath: native-resume-failed-fallback"),
+        "bootstrap must record that native resume failed before new session"
+      );
+      assert.ok(inject.includes("rejected Delivery:"));
+      assert.ok(inject.includes("FIRST_DELIVERY_BEFORE_NATIVE_FAIL"));
+      assert.ok(inject.includes(taskPath) || inject.includes("Task envelope:"));
+      assert.ok(
+        inject.includes("workspace lane:") || inject.includes("worktree:"),
+        "recovery bootstrap must carry workspace lane"
+      );
+      // Native same-context path must not be claimed on the recovery inject.
+      assert.ok(!inject.includes("contextRestored: true"));
     },
     { profiles: [profile] }
   );
 });
 
-test("late session.failed after reject-resume park keeps waiting + review-feedback", async () => {
+test("late session.failed on prior after native-fallback keeps rework + review-feedback", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("reject-resume-late-failed", {
     executor: "allow",
@@ -3910,7 +3978,8 @@ test("late session.failed after reject-resume park keeps waiting + review-feedba
   );
   const profile = mockAcpProfile("mock-rr-late-fail", {
     logPath,
-    promptText: "LATE_FAIL_PARK",
+    promptText: "LATE_FAIL_PRIOR",
+    followupText: "REWORK_DESPITE_LATE_PRIOR_FAIL",
     keepAlive: true,
     loadSession: true,
     failLoad: true,
@@ -3923,7 +3992,7 @@ test("late session.failed after reject-resume park keeps waiting + review-feedba
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "late failed must not demote park",
+        prompt: "late failed on prior must not demote fallback rework",
         deliveryPolicy: "manual",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3935,59 +4004,47 @@ test("late session.failed after reject-resume park keeps waiting + review-feedba
         callerKind: "user",
       });
       assert.ok(!started.error, JSON.stringify(started.error));
-      const sessionId = (started.result as { session: { sessionId: string } }).session
-        .sessionId;
+      const priorSessionId = (started.result as { session: { sessionId: string } })
+        .session.sessionId;
 
       await invokeManagedAutoDeliverForTests(svc.ctx, {
         workspaceId,
         taskPath,
-        sessionId,
-        assistantText: "LATE_FAIL_PARK",
+        sessionId: priorSessionId,
+        assistantText: "LATE_FAIL_PRIOR",
       });
-      await svc.runtime.stopSession(sessionId, "user");
-      assert.equal((await svc.runtime.probe(sessionId)).resumeCapable, true);
+      await svc.runtime.stopSession(priorSessionId, "user");
+      assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, true);
 
       const rejected = await rpc(svc, "task.reject", {
         workspaceId,
         taskPath,
         actor: "user",
         resume: true,
-        note: "retain after late session.failed",
+        note: "retain after late session.failed on prior",
       });
-      assert.ok(rejected.error, "native load failure must fail the RPC");
-      assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+      assert.ok(!rejected.error, JSON.stringify(rejected.error));
+      const body = rejected.result as {
+        state: string;
+        session?: { sessionId: string; contextRestored?: boolean };
+        input?: { id: string; status?: string };
+      };
+      assert.equal(body.state, "running");
+      assert.ok(body.session?.sessionId);
+      assert.notEqual(body.session!.sessionId, priorSessionId);
+      assert.equal(body.session!.contextRestored, false);
+      const newSessionId = body.session!.sessionId;
 
-      const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
-      const parkedTask = (
-        parked.result as {
-          task: {
-            state: string;
-            wait?: { reason?: string; summary?: string };
-            sessionId?: string;
-          };
-        }
-      ).task;
-      assert.equal(parkedTask.state, "waiting");
-      assert.equal(parkedTask.wait?.reason, "external");
-      assert.ok(
-        parkedTask.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY)
-      );
-
-      const beforeInputs = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
-      const beforeReview = beforeInputs.find((row) => row.kind === "review-feedback");
-      assert.ok(beforeReview, "review-feedback present after park");
-      assert.notEqual(beforeReview!.status, "cancelled");
-
-      // Real self-hosting race: resume already parked, in-flight marker cleared,
-      // then a late session.failed for the same ss- arrives (adapter Internal error).
-      await svc.runtime.registry.update(sessionId, {
+      // Late terminal on the *prior* ss- (failed load bridge / Internal error)
+      // must not demote the rework occupation bound to the new ss-.
+      await svc.runtime.registry.update(priorSessionId, {
         state: "failed",
         lastError: "Internal error",
         pid: undefined,
       });
       await mapRuntimeEventToService(svc.ctx, {
         type: "session.failed",
-        sessionId,
+        sessionId: priorSessionId,
         error: "Internal error",
       });
 
@@ -3996,34 +4053,29 @@ test("late session.failed after reject-resume park keeps waiting + review-feedba
         after.result as {
           task: {
             state: string;
-            wait?: { reason?: string; summary?: string };
             sessionId?: string;
-            activeDeliveryId?: string;
+            wait?: { reason?: string; summary?: string };
           };
         }
       ).task;
       assert.equal(
         afterTask.state,
-        "waiting",
-        "late session.failed must not demote parked reject-resume occupation"
+        "running",
+        "late session.failed on prior must not demote native-fallback rework"
       );
-      assert.equal(afterTask.wait?.reason, "external");
-      assert.ok(
-        afterTask.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY),
-        afterTask.wait?.summary
-      );
-      assert.equal(afterTask.sessionId, sessionId);
+      assert.equal(afterTask.sessionId, newSessionId);
 
-      const afterInputs = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
-      const afterReview = afterInputs.find((row) => row.kind === "review-feedback");
-      assert.ok(afterReview, "review-feedback must survive late session.failed");
-      assert.equal(afterReview!.id, beforeReview!.id);
-      assert.equal(afterReview!.text, "retain after late session.failed");
-      assert.notEqual(afterReview!.status, "cancelled");
-      assert.ok(
-        afterReview!.status === "pending" || afterReview!.status === "failed",
-        `unexpected status ${afterReview!.status}`
-      );
+      const reviewGot = await rpc(svc, "taskInput.get", {
+        workspaceId,
+        taskPath,
+        inputId: body.input!.id,
+      });
+      assert.ok(!reviewGot.error, JSON.stringify(reviewGot.error));
+      const review = (
+        reviewGot.result as { input: { status: string; sessionId?: string } }
+      ).input;
+      assert.notEqual(review.status, "cancelled");
+      assert.equal(review.sessionId, newSessionId);
     },
     { profiles: [profile] }
   );
@@ -4202,7 +4254,11 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
     assert.ok(!rejected.error, JSON.stringify(rejected.error));
     const body = rejected.result as {
       state: string;
-      session?: { sessionId: string };
+      session?: {
+        sessionId: string;
+        contextRestored?: boolean;
+        restoreReason?: string;
+      };
       input?: { sessionId?: string; text?: string };
     };
     assert.equal(body.state, "running");
@@ -4212,7 +4268,13 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
       sessionId,
       "not resumeCapable must allocate a trackable new ss-"
     );
+    assert.equal(body.session!.contextRestored, false);
+    assert.equal(body.session!.restoreReason, "task.reject.resume.new-session");
     assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
+    assert.equal(
+      (await svc.runtime.registry.read(body.session!.sessionId))?.contextRestored,
+      false
+    );
     assert.equal(body.input?.sessionId, body.session!.sessionId);
     assert.equal(body.input?.text, "new session ok");
   });

@@ -91,6 +91,9 @@ function handleFrom(record: SessionRecord): SessionHandle {
     roleName: record.roleName,
     assigneeKind: record.assigneeKind,
     runtimeWorkspace: record.runtimeWorkspace,
+    ...(record.contextRestored !== undefined
+      ? { contextRestored: record.contextRestored }
+      : {}),
     createdAt: record.createdAt,
     updatedAt: record.updatedAt,
   };
@@ -656,7 +659,7 @@ export class AgentRuntime implements AgentRuntimePort {
     // Real ACP adapters with canResume must implement resumeManagedSession.
     // Preserve bootstrapPrompt so reject-resume rework / post-load prompts reach the child.
     if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
-      return this.startSessionWithProfile({
+      const handle = await this.startSessionWithProfile({
         sessionId: req.sessionId,
         profileId: record.profileId,
         roleName: record.roleName,
@@ -670,6 +673,11 @@ export class AgentRuntime implements AgentRuntimePort {
         bootstrapImageRefs: req.bootstrapImageRefs,
         bootstrapImageSystemRoot: req.bootstrapImageSystemRoot,
       }, profile);
+      // Fake resume reuses the same Tent session id — mark continuity restored.
+      const marked = await this.registry.update(req.sessionId, {
+        contextRestored: true,
+      });
+      return handleFrom(marked);
     }
 
     if (typeof adapter.resumeManagedSession !== "function") {
@@ -820,6 +828,8 @@ export class AgentRuntime implements AgentRuntimePort {
         state: "live",
         pid,
         resumeToken: nextToken,
+        // Native resume reuses provider context — honest continuity claim.
+        contextRestored: true,
         lastError: undefined,
         exitCode: undefined,
         stopReason: undefined,

@@ -308,6 +308,12 @@ export type SessionProjection = {
   alive: boolean;
   resumeCapable: boolean;
   /**
+   * Continuity honesty: true only for provider-native same-context restore;
+   * false when Tent opened an independent Session after resume failure / no capability.
+   * Omitted when the row makes no continuity claim (legacy / ordinary first start).
+   */
+  contextRestored?: boolean;
+  /**
    * Managed turn in flight (session/prompt settling). Distinct from `alive`:
    * a live role session may be turn-idle between prompts. Optional for wire
    * compatibility; omitted/false when no managed turn is busy.

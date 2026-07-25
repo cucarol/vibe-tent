@@ -120,6 +120,12 @@ export interface SessionHandle {
   roleName?: string;
   assigneeKind?: "role" | "agentProfile";
   runtimeWorkspace?: RuntimeWorkspace;
+  /**
+   * True when this handle reuses provider-native same-context continuity.
+   * False when Tent started an independent Session (honest recovery / no cache claim).
+   * Omitted on legacy rows / first cold start without a continuity claim.
+   */
+  contextRestored?: boolean;
   createdAt: string;
   updatedAt: string;
 }
@@ -170,6 +176,13 @@ export interface SessionRecord {
   exitCode?: number | null;
   lastError?: string;
   stopReason?: StopReason;
+  /**
+   * Continuity honesty marker for managed reject-resume / resume projections.
+   * - true: provider-native same-context path (alive rebind or successful resumeSession)
+   * - false: independent new Session (no silent cache continuity claim)
+   * Omitted on legacy rows and ordinary first starts that make no continuity claim.
+   */
+  contextRestored?: boolean;
   /**
    * Stable pull-host / external-GUI idempotency key within a workspace.
    * First-class field on the session row — not profile env.

@@ -103,6 +103,9 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
       return null;
     }
   }
+  if ("contextRestored" in data && data.contextRestored !== undefined) {
+    if (typeof data.contextRestored !== "boolean") return null;
+  }
   if ("runtimeWorkspace" in data && data.runtimeWorkspace !== undefined) {
     if (!isPlainObject(data.runtimeWorkspace)) return null;
     if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;

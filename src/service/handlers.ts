@@ -2675,7 +2675,14 @@ function trackManagedTaskInputBackground(work: Promise<unknown>): void {
 function enqueueManagedTaskInputBackground(
   ctx: HandlerContext,
   item: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  opts?: {
+    sessionIdOverride?: string;
+    /**
+     * Optional recovery orientation prepended once to the managed inject prompt
+     * (reject-resume independent Session). Does not create a second TaskInput.
+     */
+    recoveryBootstrap?: string;
+  }
 ): void {
   if (!managedTaskInputAccepting) {
     // Shutdown in progress: leave durable pending/failed for next process.
@@ -2790,7 +2797,11 @@ export function resetManagedTaskInputBackgroundForTests(): void {
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
   item: TaskInputRecord,
-  opts?: { sessionIdOverride?: string }
+  opts?: {
+    sessionIdOverride?: string;
+    /** Prepended once to inject prompt for honest recovery orientation. */
+    recoveryBootstrap?: string;
+  }
 ): Promise<ManagedTaskInputDelivery> {
   const sessionId =
     (opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "") ||
@@ -2877,7 +2888,9 @@ async function deliverManagedTaskInput(
     let continueResult: { continued: boolean; error?: string };
     let finalInput = forInject;
     try {
-      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
+      continueResult = await continueManagedAfterTaskInput(ctx, forInject, {
+        recoveryBootstrap: opts?.recoveryBootstrap,
+      });
       if (continueResult.continued) {
         try {
           finalInput = await ctx.taskInputs.markDelivered(
@@ -2965,10 +2978,18 @@ async function deliverManagedTaskInput(
  */
 async function continueManagedAfterTaskInput(
   ctx: HandlerContext,
-  item: TaskInputRecord
+  item: TaskInputRecord,
+  opts?: { recoveryBootstrap?: string }
 ): Promise<{ continued: boolean; error?: string }> {
   if (!item.sessionId) return { continued: false };
-  const prompt = formatTaskInputPrompt(item);
+  const basePrompt = formatTaskInputPrompt(item);
+  // Recovery orientation rides the single review-feedback inject — never a
+  // second TaskInput or a second session/prompt channel.
+  const recovery = opts?.recoveryBootstrap?.trim();
+  const prompt =
+    recovery && recovery.length > 0
+      ? `${recovery}\n\n${basePrompt}`
+      : basePrompt;
   try {
     try {
       await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
@@ -3266,13 +3287,16 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
  * resume:true: same async accept contract as task.sendInput for the review note:
  *   1) core reject → running occupation
  *   2) durable review-feedback TaskInput (pending)
- *   3) managed session restore/bind when sessionId present (still on RPC path —
- *      restore failure parks waiting(external) and fails the RPC; never leave
- *      running with a dead managed process)
+ *   3) managed session restore/bind when sessionId present (still on RPC path):
+ *      alive rebind or native resume first (contextRestored=true); when native
+ *      resume explicitly fails or prior is not resumeCapable, start an honest
+ *      independent new Session with recovery bootstrap (contextRestored=false).
+ *      Registry/profile identity failures still park waiting(external) and fail
+ *      the RPC — never leave running with a dead managed process.
  *   4) return accepted/processing quickly — do **not** await the full Agent turn
- *   5) background per-task FIFO inject (## Review Feedback); status/events
- *      queryable via taskInput.*; failed is retryable, uncertain is at-most-once,
- *      already processing/delivered/uncertain skips re-inject (no double inject)
+ *   5) background per-task FIFO inject (## Review Feedback) exactly once;
+ *      status/events queryable via taskInput.*; failed is retryable, uncertain
+ *      is at-most-once; already processing/delivered/uncertain skips re-inject
  *
  * External / no sessionId: core rework + pending review-feedback for poll+ack.
  * Role/profile restore semantics and Delivery authority are unchanged.
@@ -3359,6 +3383,8 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath,
+      // Exact note for recovery bootstrap orientation only — inject still once via U2A.
+      reviewFeedbackText: noteExact,
     });
     // review-feedback was created with the pre-restore sessionId (often stopped).
     // Rebind to the live restore target before enqueue so cancelSession(old) and
@@ -3379,6 +3405,8 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     // (CLI/fetch headers timeout would otherwise false-fail a still-running turn).
     enqueueManagedTaskInputBackground(ctx, boundReview, {
       sessionIdOverride: restoredSessionId,
+      // Independent recovery Session only — same-context paths leave undefined.
+      recoveryBootstrap: restored.recoveryBootstrap,
     });
     return {
       workspaceId,
@@ -4247,6 +4275,9 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
+      ...(rec.contextRestored !== undefined
+        ? { contextRestored: rec.contextRestored }
+        : {}),
       turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
@@ -4272,6 +4303,9 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...(rec.contextRestored !== undefined
+      ? { contextRestored: rec.contextRestored }
+      : {}),
     turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
@@ -4343,6 +4377,9 @@ async function sessionEnter(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: handle.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...(rec?.contextRestored !== undefined
+      ? { contextRestored: rec.contextRestored }
+      : {}),
     lastTaskId: rec?.lastTaskId,
     workspace: rec?.workspace ?? workspaceId,
     externalKey: recordExternalKey(rec ?? {}) ?? externalKey,
@@ -4384,6 +4421,9 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
         assigneeKind: rec.assigneeKind ?? "role",
         alive: probe.alive,
         resumeCapable: probe.resumeCapable,
+        ...(rec.contextRestored !== undefined
+          ? { contextRestored: rec.contextRestored }
+          : {}),
         lastTaskId: rec.lastTaskId,
         workspace: rec.workspace,
         externalKey: recordExternalKey(rec),
@@ -4421,6 +4461,9 @@ async function sessionStatus(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...(rec.contextRestored !== undefined
+      ? { contextRestored: rec.contextRestored }
+      : {}),
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
     externalKey: recordExternalKey(rec),
@@ -6846,30 +6889,161 @@ function clearManagedAutoDeliverDedup(sessionId: string, taskPath: string): void
 /**
  * Chinese summary when reject-resume could not restore a live managed session.
  * Task stays occupied (waiting) so the user can retry startSession or interrupt.
+ * Used when registry/profile identity is missing or independent new-session start fails.
  */
 export const REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY =
   "驳回续跑未能恢复 managed session。可重新 startSession，或 interrupt 任务；occupation 保持。";
 
+/** Restore provenance for reject-resume managed session recovery. */
+export type RejectResumeRestoreReason =
+  | "task.reject.resume.alive"
+  | "task.reject.resume.native"
+  | "task.reject.resume.new-session"
+  | "task.reject.resume.native-fallback";
+
+type RejectResumeRestoredSession = {
+  sessionId: string;
+  profileId: string;
+  adapterId: string;
+  state: string;
+  cwd?: string;
+  /**
+   * true = provider-native same-context path; false = independent recovery Session.
+   * Never omit on reject-resume projections — callers must not invent continuity.
+   */
+  contextRestored: boolean;
+  /** Why this session was chosen (alive / native / new / native-fallback). */
+  restoreReason: RejectResumeRestoreReason;
+};
+
+/**
+ * Honest recovery bootstrap when native provider resume is unavailable or failed.
+ * Includes Task/Node refs, rejected Delivery summary, durable review feedback text,
+ * and workspace lane. Marks contextRestored=false so the agent never assumes cache
+ * continuity. Review feedback is still injected exactly once as U2A ## Review Feedback
+ * after restore — this block is orientation only, not a second inject channel.
+ */
+function buildRejectResumeRecoveryBootstrap(
+  task: TaskEnvelope,
+  roots: { workspaceRoot: string; systemRoot: string },
+  opts: {
+    priorSessionId: string;
+    nativeResumeFailed: boolean;
+    nativeResumeError?: string;
+    rejectedDelivery?: {
+      id: string;
+      summary: string;
+      reviewNote?: string;
+    };
+    reviewFeedbackText?: string;
+    workspaceLane?: {
+      workspace: string;
+      worktree: string;
+      branch: string;
+      targetBranch?: string;
+    };
+  }
+): string {
+  const base = buildSessionBootstrapPrompt(task, roots);
+  const lines: string[] = [
+    "--- Tent reject-resume recovery ---",
+    "contextRestored: false",
+    "Native provider Session continuity was not restored. This is an independent managed Session on the same task/workspace lane.",
+    "Do not invent prior chat/cache continuity. Use Task/Node refs and durable review feedback only.",
+    `priorSessionId: ${opts.priorSessionId}`,
+    opts.nativeResumeFailed
+      ? "restorePath: native-resume-failed-fallback"
+      : "restorePath: not-resume-capable-new-session",
+  ];
+  if (opts.nativeResumeError?.trim()) {
+    lines.push(`nativeResumeError: ${opts.nativeResumeError.trim()}`);
+  }
+  lines.push(`Task envelope: ${task.path}`);
+  if (task.id) lines.push(`Task id: ${task.id}`);
+  if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
+  if (task.claims?.length) {
+    lines.push(`claims (Node refs): ${task.claims.join(", ")}`);
+  }
+  if (opts.workspaceLane) {
+    lines.push("workspace lane:");
+    lines.push(`  workspace: ${opts.workspaceLane.workspace}`);
+    lines.push(`  worktree: ${opts.workspaceLane.worktree}`);
+    lines.push(`  branch: ${opts.workspaceLane.branch}`);
+    if (opts.workspaceLane.targetBranch) {
+      lines.push(`  targetBranch: ${opts.workspaceLane.targetBranch}`);
+    }
+  }
+  if (opts.rejectedDelivery) {
+    lines.push("rejected Delivery:");
+    lines.push(`  id: ${opts.rejectedDelivery.id}`);
+    lines.push(`  summary: ${opts.rejectedDelivery.summary}`);
+    if (opts.rejectedDelivery.reviewNote !== undefined) {
+      lines.push(`  reviewNote: ${opts.rejectedDelivery.reviewNote}`);
+    }
+  }
+  if (opts.reviewFeedbackText !== undefined) {
+    lines.push("durable review feedback (also injected once as ## Review Feedback):");
+    lines.push(
+      opts.reviewFeedbackText.length > 0
+        ? opts.reviewFeedbackText
+        : "(empty note)"
+    );
+  }
+  lines.push(
+    "Final report still goes through Delivery only. Feedback delivery remains exactly once via TaskInput."
+  );
+  return `${base}\n\n${lines.join("\n")}\n`;
+}
+
+async function loadRejectedDeliveryForRejectResume(
+  fs: import("../core/adapter.js").FsAdapter,
+  task: TaskEnvelope
+): Promise<{ id: string; summary: string; reviewNote?: string } | undefined> {
+  const taskId = task.id?.trim();
+  if (!taskId) return undefined;
+  try {
+    const deliveries = await loadDeliveries(fs, { taskId });
+    const rejected = deliveries.find((d) => d.status === "rejected");
+    if (!rejected) return undefined;
+    return {
+      id: rejected.id,
+      summary: rejected.summary,
+      ...(rejected.review?.note !== undefined
+        ? { reviewNote: rejected.review.note }
+        : {}),
+    };
+  } catch {
+    return undefined;
+  }
+}
+
 /**
  * After core reject(resume) for a managed task:
- * - alive → rebind the same Tent sessionId
- * - stopped + resumeCapable → native runtime.resumeSession (same ss- + provider token)
- * - not resumeCapable → trackable new ss-
- * Native resume failure is fail-loud (no silent session/new); caller parks waiting(external).
+ * - alive → rebind the same Tent sessionId (contextRestored=true)
+ * - stopped + resumeCapable → native runtime.resumeSession first (contextRestored=true)
+ * - native resume **explicitly fails** → honest new ss- + recovery bootstrap
+ *   (contextRestored=false); never silently claim cache continuity
+ * - not resumeCapable → trackable new ss- + recovery bootstrap (contextRestored=false)
+ * Registry/profile identity failures still park waiting(external).
  * Review feedback is injected once after restore via deliverManagedTaskInput.
  */
 async function restoreManagedSessionAfterRejectResume(
   ctx: HandlerContext,
-  input: { workspaceId: string; taskPath: string }
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    /** Exact durable review note (may be empty). Orientation only in recovery bootstrap. */
+    reviewFeedbackText?: string;
+  }
 ): Promise<{
   task: TaskEnvelope;
-  session: {
-    sessionId: string;
-    profileId: string;
-    adapterId: string;
-    state: string;
-    cwd?: string;
-  };
+  session: RejectResumeRestoredSession;
+  /**
+   * When contextRestored=false: recovery orientation text for the single U2A inject
+   * (process start uses empty bootstrap so auto-deliver cannot race seal before feedback).
+   * Same-context paths leave this undefined.
+   */
+  recoveryBootstrap?: string;
 }> {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -6887,15 +7061,14 @@ async function restoreManagedSessionAfterRejectResume(
   // Lane + baseline must already exist for managed tasks that delivered once.
   task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
-  const workspaceLane =
-    task.workspace || task.worktree || task.branch
-      ? {
-          workspace: task.workspace || mount.workspaceRoot,
-          worktree: task.worktree || mount.workspaceRoot,
-          branch: task.branch || "HEAD",
-          targetBranch: task.targetBranch,
-        }
-      : undefined;
+  // Always project a workspace lane for recovery honesty (even when Git lane
+  // fields are sparse — fall back to mount roots so the agent sees the cwd).
+  const workspaceLane = {
+    workspace: task.workspace || mount.workspaceRoot,
+    worktree: task.worktree || mount.workspaceRoot,
+    branch: task.branch || "HEAD",
+    targetBranch: task.targetBranch,
+  };
 
   const prior = await ctx.runtime.registry.read(priorSessionId);
   if (!prior) {
@@ -6936,17 +7109,18 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  // Restore a live managed process without an auto-delivering bootstrap.
-  // Review note is injected next as U2A ## Review Feedback via deliverManagedTaskInput
-  // (not embedded in bootstrap — not a second prompt channel).
-  // Explicit empty string skips the first session/prompt so the session stays live.
-  const sessionBootstrap = "";
+  // Same-context paths skip auto-delivering bootstrap; recovery path embeds orientation.
+  // Review note is still injected once as U2A ## Review Feedback via deliverManagedTaskInput.
+  const emptyBootstrap = "";
 
   let probe: Awaited<ReturnType<typeof ctx.runtime.probe>> | undefined;
   try {
     probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
       // Still live (unusual after managed deliver stop) — rebind only.
+      await ctx.runtime.registry.update(priorSessionId, {
+        contextRestored: true,
+      });
       const bound = await ctx.mutations.run(input.workspaceId, async () => {
         ctx.host.markSelfWrite(input.workspaceId);
         return patchTaskEnvelope(mount.env.fs, input.taskPath, {
@@ -6964,6 +7138,7 @@ async function restoreManagedSessionAfterRejectResume(
           profileId,
           taskPath: input.taskPath,
           reason: "task.reject.resume.alive",
+          contextRestored: true,
         },
         "self"
       );
@@ -6975,6 +7150,8 @@ async function restoreManagedSessionAfterRejectResume(
           adapterId: prior.adapterId,
           state: probe.state,
           cwd,
+          contextRestored: true,
+          restoreReason: "task.reject.resume.alive",
         },
       };
     }
@@ -6985,17 +7162,19 @@ async function restoreManagedSessionAfterRejectResume(
   }
 
   // Stopped / not live: prefer native resume when the prior row is resume-capable.
-  // Never silently fall back to session/new if native resume fails — fail loud.
+  // Explicit native failure → honest independent new Session (contextRestored=false).
+  // Never claim cache continuity on the fallback path.
+  let nativeResumeError: string | undefined;
   if (probe?.resumeCapable) {
-    // Hold until success return or parkTaskAfterRejectResumeFailure so a racing
-    // session.failed cannot terminally fail the rework task.
+    // Hold until native success return or fallback new-session so a racing
+    // session.failed cannot terminally fail the rework task mid-restore.
     rejectResumeNativeInFlight.add(priorSessionId);
     try {
       const handle = await ctx.runtime.resumeSession({
         sessionId: priorSessionId,
         runtimeWorkspace: { cwd },
         cwd,
-        bootstrapPrompt: sessionBootstrap,
+        bootstrapPrompt: emptyBootstrap,
         lastTaskId: task.id || input.taskPath,
       });
       // Same ss- after rework: clear deliver dedup so the next prompt_complete can deliver.
@@ -7017,6 +7196,7 @@ async function restoreManagedSessionAfterRejectResume(
             profileId: handle.profileId,
             taskPath: input.taskPath,
             reason: "task.reject.resume.native",
+            contextRestored: true,
           },
           "self"
         );
@@ -7032,62 +7212,118 @@ async function restoreManagedSessionAfterRejectResume(
           adapterId: handle.adapterId,
           state: handle.state,
           cwd,
+          contextRestored: true,
+          restoreReason: "task.reject.resume.native",
         },
       };
     } catch (err) {
-      // Leave rejectResumeNativeInFlight set; parkTaskAfterRejectResumeFailure clears it.
-      throw err;
+      nativeResumeError = err instanceof Error ? err.message : String(err);
+      // Fall through to honest new-session recovery (not silent cache claim).
+      // Keep rejectResumeNativeInFlight until fallback start settles or parks.
     }
   }
 
-  // Not resume-capable: allocate a trackable new session (honest independent context).
-  const handle = await ctx.runtime.startSession({
-    sessionId: makeSessionId(),
-    profileId,
-    roleName: task.role,
-    assigneeKind: taskAssigneeKind(task),
-    workspaceLane,
-    runtimeWorkspace: { cwd },
-    cwd,
-    bootstrapPrompt: sessionBootstrap,
-    lastTaskId: task.id || input.taskPath,
-    workspace: input.workspaceId,
-  });
-  // New ss- must also clear deliver dedup under the new key.
-  clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-
-  const bound = await ctx.mutations.run(input.workspaceId, async () => {
-    ctx.host.markSelfWrite(input.workspaceId);
-    const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-      sessionId: handle.sessionId,
-      updatedAt: mount.env.clock.now(),
-    });
-    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
-    ctx.events.emit(
-      "session.state",
-      input.workspaceId,
-      {
-        sessionId: handle.sessionId,
-        state: handle.state,
-        profileId: handle.profileId,
-        taskPath: input.taskPath,
-        reason: "task.reject.resume.new-session",
-      },
-      "self"
-    );
-    return next;
-  });
-
-  return {
-    task: bound,
-    session: {
-      sessionId: handle.sessionId,
-      profileId: handle.profileId,
-      adapterId: handle.adapterId,
-      state: handle.state,
-      cwd,
+  // Independent new Session: not resumeCapable, or native resume explicitly failed.
+  // Process start uses empty bootstrap so the bridge stays live for the single
+  // U2A ## Review Feedback inject (a non-empty startSession bootstrap would
+  // prompt_complete → auto-deliver → seal before feedback can run).
+  // Recovery orientation is attached once to that inject (see taskRejectRpc).
+  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
+    mount.env.fs,
+    task
+  );
+  const recoveryBootstrap = buildRejectResumeRecoveryBootstrap(
+    task,
+    {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot,
     },
-  };
+    {
+      priorSessionId,
+      nativeResumeFailed: !!nativeResumeError,
+      nativeResumeError,
+      rejectedDelivery,
+      reviewFeedbackText: input.reviewFeedbackText,
+      workspaceLane,
+    }
+  );
+
+  const restoreReason: RejectResumeRestoreReason = nativeResumeError
+    ? "task.reject.resume.native-fallback"
+    : "task.reject.resume.new-session";
+
+  try {
+    const handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      // Empty: go live without first session/prompt (same as native resume path).
+      bootstrapPrompt: emptyBootstrap,
+      lastTaskId: task.id || input.taskPath,
+      workspace: input.workspaceId,
+    });
+    // Honest independent context — never claim native continuity on new ss-.
+    await ctx.runtime.registry.update(handle.sessionId, {
+      contextRestored: false,
+    });
+    // New ss- must also clear deliver dedup under the new key.
+    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+
+    const bound = await ctx.mutations.run(input.workspaceId, async () => {
+      ctx.host.markSelfWrite(input.workspaceId);
+      const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+        sessionId: handle.sessionId,
+        updatedAt: mount.env.clock.now(),
+      });
+      emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
+      ctx.events.emit(
+        "session.state",
+        input.workspaceId,
+        {
+          sessionId: handle.sessionId,
+          state: handle.state,
+          profileId: handle.profileId,
+          taskPath: input.taskPath,
+          reason: restoreReason,
+          contextRestored: false,
+          priorSessionId,
+          ...(nativeResumeError
+            ? { nativeResumeError }
+            : {}),
+        },
+        "self"
+      );
+      return next;
+    });
+
+    rejectResumeNativeInFlight.delete(priorSessionId);
+    return {
+      task: bound,
+      session: {
+        sessionId: handle.sessionId,
+        profileId: handle.profileId,
+        adapterId: handle.adapterId,
+        state: handle.state,
+        cwd,
+        contextRestored: false,
+        restoreReason,
+      },
+      recoveryBootstrap,
+    };
+  } catch (err) {
+    // Leave rejectResumeNativeInFlight set; parkTaskAfterRejectResumeFailure clears it.
+    if (nativeResumeError) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `native resume failed (${nativeResumeError}); independent recovery session also failed: ${message}`
+      );
+    }
+    throw err;
+  }
 }
 
 /**
