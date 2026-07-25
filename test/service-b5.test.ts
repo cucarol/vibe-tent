@@ -228,6 +228,47 @@ function rpc(
   return rpcCall(svc.url, method, params, { token: svc.token });
 }
 
+/** Task-oracle collaboration view — not Node frontmatter owner/status. */
+type BoxCollabProjection = {
+  workspaceId: string;
+  boxId: string;
+  status: "todo" | "doing" | "done";
+  assignee?: string;
+  activeTaskId?: string;
+};
+
+async function boxCollabProjection(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  workspaceId: string,
+  boxId: string
+): Promise<BoxCollabProjection> {
+  const res = await rpc(svc, "box.projection", { workspaceId, id: boxId });
+  assert.ok(!res.error, JSON.stringify(res.error));
+  return res.result as BoxCollabProjection;
+}
+
+/** Occupation released: no active task, projection is free (todo), no assignee. */
+function assertOccupationReleased(proj: BoxCollabProjection, label = "occupation"): void {
+  assert.equal(proj.status, "todo", `${label}: expected free box (todo)`);
+  assert.equal(proj.assignee, undefined, `${label}: assignee must be clear`);
+  assert.equal(proj.activeTaskId, undefined, `${label}: activeTaskId must be clear`);
+}
+
+/** Occupation held by an active task (doing + assignee + activeTaskId). */
+function assertOccupationHeld(
+  proj: BoxCollabProjection,
+  opts?: { assignee?: string; label?: string }
+): void {
+  const label = opts?.label ?? "occupation";
+  assert.equal(proj.status, "doing", `${label}: expected doing`);
+  if (opts?.assignee !== undefined) {
+    assert.equal(proj.assignee, opts.assignee, `${label}: assignee`);
+  } else {
+    assert.ok(proj.assignee, `${label}: assignee must remain`);
+  }
+  assert.ok(proj.activeTaskId, `${label}: activeTaskId must remain`);
+}
+
 async function mountWorkItem(svc: Awaited<ReturnType<typeof startLocalTentService>>, ws: string) {
   const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
   assert.ok(!mounted.error, JSON.stringify(mounted.error));
@@ -356,11 +397,16 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
     assert.equal(accepted.delivery.status, "accepted");
     assert.equal(accepted.delivery.integrationMode, "manual-accept");
 
-    const box = (await client.docsGet(workspaceId, { id: boxId })) as {
-      concept: { status?: string; assignee?: string };
+    // After accept: Task/Delivery are authoritative; occupation is released.
+    // box.projection is idle todo when no active task (Node FM done dual-write retired).
+    const finalTask = (await client.taskGet(workspaceId, taskPath)) as {
+      task: { state: string };
     };
-    assert.equal(box.concept.status, "done");
-    assert.equal(box.concept.assignee, undefined);
+    assert.equal(finalTask.task.state, "accepted");
+    assertOccupationReleased(
+      (await client.boxProjection(workspaceId, { id: boxId })) as BoxCollabProjection,
+      "manual accept"
+    );
 
     // stop session cleanup via interrupt would be after deliver; already terminal
     const projectedSession = await client.call("session.get", {
@@ -2204,27 +2250,8 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
       assert.equal(probe.alive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      // Occupation released — box has no owner/doing.
-      const concept = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-      const fm = (concept.result as { frontmatter?: { owner?: string; status?: string } })
-        .frontmatter;
-      // docs.get may nest differently — fall back to raw read via docs.readForEdit
-      let owner: unknown;
-      let status: unknown;
-      if (fm) {
-        owner = fm.owner;
-        status = fm.status;
-      } else {
-        const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
-        const data = edit.result as {
-          frontmatter?: { owner?: string; status?: string };
-          data?: { owner?: string; status?: string };
-        };
-        owner = data.frontmatter?.owner ?? data.data?.owner;
-        status = data.frontmatter?.status ?? data.data?.status;
-      }
-      assert.ok(owner === undefined || owner === null || owner === "");
-      assert.notEqual(status, "doing");
+      // Occupation released — task oracle / box.projection, not Node FM owner/status.
+      assertOccupationReleased(await boxCollabProjection(svc, workspaceId, boxId), "fail cleanup");
 
       // Same box re-dispatch without fork.
       const d2 = await rpc(svc, "task.dispatch", {
@@ -2296,15 +2323,10 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
       assert.equal(probe.alive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      const edit = await rpc(svc, "docs.readForEdit", { workspaceId, id: boxId });
-      const data = edit.result as {
-        frontmatter?: { owner?: string; status?: string };
-        data?: { owner?: string; status?: string };
-      };
-      const owner = data.frontmatter?.owner ?? data.data?.owner;
-      const status = data.frontmatter?.status ?? data.data?.status;
-      assert.ok(owner === undefined || owner === null || owner === "");
-      assert.notEqual(status, "doing");
+      assertOccupationReleased(
+        await boxCollabProjection(svc, workspaceId, boxId),
+        `spontaneous exit code=${exitCode}`
+      );
 
       // Re-dispatch same box proves occupation fully released.
       const d2 = await rpc(svc, "task.dispatch", {
@@ -2432,11 +2454,9 @@ test("B5: crash restart + mount parks running task bound to dead session (task-s
       `registry remains corrected after mount, got ${rec!.state}`
     );
 
-    const box = await rpc(svc2, "docs.get", { workspaceId, id: boxId });
-    assert.ok(!box.error, JSON.stringify(box.error));
-    const concept = (box.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.ok(concept.assignee || concept.owner, "occupation must remain after crash→mount");
+    assertOccupationHeld(await boxCollabProjection(svc2, workspaceId, boxId), {
+      label: "crash→mount",
+    });
   } finally {
     await svc2.stop();
   }
@@ -2657,10 +2677,15 @@ test("P0-2: bypass with commits integrates into main and accepts", async () => {
     assert.equal((delivered.result as { state: string }).state, "accepted");
     assert.equal(normalizeLf(await fs.readFile(path.join(ws, "auto.txt"), "utf8")), "auto\n");
 
-    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
-    assert.equal(concept.status, "done");
-    assert.equal(concept.assignee, undefined);
+    // Bypass success: task terminal accepted + occupation released (not Node FM done).
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "accepted");
+    assertOccupationReleased(await boxCollabProjection(svc, workspaceId, boxId), "bypass accept");
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const acceptedDeliveries = (
+      list.result as { deliveries: Array<{ status: string }> }
+    ).deliveries.filter((d) => d.status === "accepted");
+    assert.ok(acceptedDeliveries.length >= 1, "bypass path must leave an accepted delivery");
   });
 });
 
@@ -2737,10 +2762,16 @@ test("P0-2: accept integration conflict keeps delivered + occupation; no done", 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
 
-    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.equal(concept.assignee, "executor");
+    // Integrate failed: delivery stays ready, occupation held (task still active).
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      assignee: "executor",
+      label: "accept integrate conflict",
+    });
+    const list = await rpc(svc, "delivery.list", { workspaceId });
+    const ready = (
+      list.result as { deliveries: Array<{ status: string }> }
+    ).deliveries.filter((d) => d.status === "ready");
+    assert.ok(ready.length >= 1, "delivery stays ready for retry after integrate failure");
 
     assert.equal((await git(ws, "rev-parse", "HEAD")).trim(), beforeHead);
     assert.equal((await git(ws, "status", "--porcelain")).trim(), "");
@@ -2785,10 +2816,10 @@ test("P0-2: bypass integrate failure keeps running + occupation; no accepted/don
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
     assert.equal((got.result as { task: { state: string } }).task.state, "running");
 
-    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.equal(concept.assignee, "executor");
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      assignee: "executor",
+      label: "bypass integrate failure",
+    });
 
     const list = await rpc(svc, "delivery.list", { workspaceId });
     const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
@@ -2857,10 +2888,10 @@ test("P0 fix: managed auto-deliver integrate failure keeps running; session diag
       "integrate failure must not terminal-fail the task"
     );
 
-    const box = await rpc(svc, "docs.get", { workspaceId, id: boxId });
-    const concept = (box.result as { concept: { status?: string; assignee?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.equal(concept.assignee, "executor");
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      assignee: "executor",
+      label: "managed auto-deliver integrate failure",
+    });
 
     const list = await rpc(svc, "delivery.list", { workspaceId });
     assert.equal(
@@ -5231,19 +5262,13 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     assert.equal(deadBTask.state, "waiting");
     assert.equal(deadBTask.wait?.reason, "external");
 
-    // Occupation kept: box still doing / assignee present
-    const box = await rpc(svc, "docs.get", { workspaceId: idA2, id: dead.boxId });
-    assert.ok(!box.error, JSON.stringify(box.error));
-    const concept = (box.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
-    assert.equal(concept.status, "doing");
-    assert.ok(concept.assignee || concept.owner, "occupation must remain after reconcile");
-
-    // Stale-live occupation also retained
-    const staleBox = await rpc(svc, "docs.get", { workspaceId: idA2, id: staleLive.boxId });
-    assert.ok(!staleBox.error, JSON.stringify(staleBox.error));
-    const staleConcept = (staleBox.result as { concept: { status?: string; assignee?: string; owner?: string } }).concept;
-    assert.equal(staleConcept.status, "doing");
-    assert.ok(staleConcept.assignee || staleConcept.owner, "stale-live occupation must remain");
+    // Occupation kept: active task still owns the box (projection, not Node FM).
+    assertOccupationHeld(await boxCollabProjection(svc, idA2, dead.boxId), {
+      label: "reconcile dead session",
+    });
+    assertOccupationHeld(await boxCollabProjection(svc, idA2, staleLive.boxId), {
+      label: "reconcile stale-live",
+    });
 
     // Events fired with session.reconcile reason
     const reconcileEvents = events.filter(
