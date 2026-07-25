@@ -286,7 +286,7 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     assert.ok(!afterCascade.error, JSON.stringify(afterCascade.error));
     etag = (afterCascade.result as { etag: string }).etag;
 
-    // docs.write cannot set type/tags
+    // docs.write structured cannot set type/tags
     const writeDenied = await rpc(svc, "docs.write", {
       workspaceId,
       id: cx,
@@ -297,6 +297,33 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
     assert.equal(writeDenied.error!.code, -32010);
     assert.match(writeDenied.error!.message, /semantic fields/);
 
+    // docs.write raw cannot change type/tags either
+    const editForRaw = await rpc(svc, "docs.readForEdit", { workspaceId, id: cx });
+    assert.ok(!editForRaw.error, JSON.stringify(editForRaw.error));
+    const rawSnapshot = editForRaw.result as { etag: string; raw: string };
+    etag = rawSnapshot.etag;
+    const rawTypeBypass = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: cx,
+      baseEtag: etag,
+      raw: rawSnapshot.raw.replace(/type:\s*prompt\b/, "type: prompt-asset"),
+    });
+    assert.ok(rawTypeBypass.error);
+    assert.equal(rawTypeBypass.error!.code, -32010);
+    assert.match(rawTypeBypass.error!.message, /semantic fields/);
+
+    const rawTagsBypass = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: cx,
+      baseEtag: etag,
+      raw: rawSnapshot.raw.includes("tags:")
+        ? rawSnapshot.raw.replace(/tags:\s*\[[^\]]*\]/, "tags: [sneaky]")
+        : rawSnapshot.raw.replace(/^---\n/, "---\ntags: [sneaky]\n"),
+    });
+    assert.ok(rawTagsBypass.error);
+    assert.equal(rawTagsBypass.error!.code, -32010);
+    assert.match(rawTagsBypass.error!.message, /semantic fields/);
+
     // Body-only docs.write still works
     const bodyOk = await rpc(svc, "docs.write", {
       workspaceId,
@@ -305,6 +332,167 @@ test("registry type + docs.setType + in-use delete + tags cascade", async () => 
       body: "# inbox updated\n",
     });
     assert.ok(!bodyOk.error, JSON.stringify(bodyOk.error));
+
+    unsub();
+  });
+});
+
+test("type/tags hardening: etag on all four commands, idempotent tags, archived gate, event counts", async () => {
+  await withService(async (svc) => {
+    const { workspaceId, systemFs } = await mountScaffold(svc);
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+
+    const conceptEvents: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.workspaceId !== workspaceId) return;
+      if (ev.type === "concept.changed") {
+        const payload = ev.payload as Record<string, unknown>;
+        if (
+          typeof payload.reason === "string" &&
+          (payload.reason.startsWith("docs.setType") ||
+            payload.reason.startsWith("docs.tags") ||
+            payload.reason.startsWith("docs.tag"))
+        ) {
+          conceptEvents.push(payload);
+        }
+      }
+    });
+
+    const editRpc = await rpc(svc, "docs.readForEdit", {
+      workspaceId,
+      path: "inbox",
+    });
+    assert.ok(!editRpc.error, JSON.stringify(editRpc.error));
+    const edit = editRpc.result as { id: string; etag: string };
+    const cx = edit.id;
+    let etag = edit.etag;
+
+    const semanticCommands: Array<{
+      method: string;
+      params: Record<string, unknown>;
+    }> = [
+      { method: "docs.setType", params: { type: "prompt" } },
+      { method: "docs.tags.set", params: { tags: [] } },
+      { method: "docs.tag.add", params: { tag: "eta-check" } },
+      { method: "docs.tag.remove", params: { tag: "eta-check" } },
+    ];
+
+    for (const { method, params } of semanticCommands) {
+      const missing = await rpc(svc, method, {
+        workspaceId,
+        id: cx,
+        actor: "user",
+        ...params,
+      });
+      assert.ok(missing.error, `${method} missing baseEtag should fail`);
+      assert.equal(missing.error!.code, -32008, method);
+      assert.ok((missing.error!.data as { currentEtag?: string })?.currentEtag, method);
+
+      const stale = await rpc(svc, method, {
+        workspaceId,
+        id: cx,
+        actor: "user",
+        baseEtag: "not-the-etag",
+        ...params,
+      });
+      assert.ok(stale.error, `${method} stale baseEtag should fail`);
+      assert.equal(stale.error!.code, -32009, method);
+    }
+
+    // Seed one tag for idempotent remove / exact event counts
+    const add1 = (await client.docsTagAdd(workspaceId, {
+      id: cx,
+      tag: "keep",
+      baseEtag: etag,
+    })) as { etag: string };
+    etag = add1.etag;
+    const beforeIdempotent = conceptEvents.length;
+
+    // Idempotent add: state unchanged, still one success event (accepted contract L2)
+    const addAgain = (await client.docsTagAdd(workspaceId, {
+      id: cx,
+      tag: "keep",
+      baseEtag: etag,
+    })) as { etag: string };
+    etag = addAgain.etag;
+    let tent = await loadTent(systemFs);
+    assert.deepEqual(tent.byId.get(cx)?.tags, ["keep"]);
+    assert.equal(
+      conceptEvents.filter((e) => e.reason === "docs.tag.add").length,
+      beforeIdempotent + 1
+    );
+
+    // Idempotent remove of absent tag: Node tags unchanged; success event still fires
+    const removeAbsent = (await client.docsTagRemove(workspaceId, {
+      id: cx,
+      tag: "never-attached",
+      baseEtag: etag,
+    })) as { etag: string };
+    etag = removeAbsent.etag;
+    tent = await loadTent(systemFs);
+    assert.deepEqual(tent.byId.get(cx)?.tags, ["keep"]);
+    assert.equal(conceptEvents.filter((e) => e.reason === "docs.tag.remove").length, 1);
+
+    // Exact one concept.changed per successful tags.set / tag.remove (mutating path)
+    const setTagsCountBefore = conceptEvents.filter((e) => e.reason === "docs.tags.set").length;
+    const setTags = (await client.docsTagsSet(workspaceId, {
+      id: cx,
+      tags: ["keep", "extra"],
+      baseEtag: etag,
+    })) as { etag: string };
+    etag = setTags.etag;
+    assert.equal(
+      conceptEvents.filter((e) => e.reason === "docs.tags.set").length,
+      setTagsCountBefore + 1
+    );
+
+    const removeCountBefore = conceptEvents.filter((e) => e.reason === "docs.tag.remove").length;
+    const removeExtra = (await client.docsTagRemove(workspaceId, {
+      id: cx,
+      tag: "extra",
+      baseEtag: etag,
+    })) as { etag: string };
+    etag = removeExtra.etag;
+    tent = await loadTent(systemFs);
+    assert.deepEqual(tent.byId.get(cx)?.tags, ["keep"]);
+    assert.equal(
+      conceptEvents.filter((e) => e.reason === "docs.tag.remove").length,
+      removeCountBefore + 1
+    );
+
+    // Archived mode rejects all four Node semantic commands
+    const archived = await rpc(svc, "docs.setMode", {
+      workspaceId,
+      id: cx,
+      mode: "archived",
+      actor: "user",
+    });
+    assert.ok(!archived.error, JSON.stringify(archived.error));
+
+    const afterArchEdit = await rpc(svc, "docs.readForEdit", { workspaceId, id: cx });
+    // readForEdit may still return etag for archived notes; use disk etag if available
+    const archEtag =
+      !afterArchEdit.error && (afterArchEdit.result as { etag?: string })?.etag
+        ? (afterArchEdit.result as { etag: string }).etag
+        : etag;
+
+    for (const { method, params } of [
+      { method: "docs.setType", params: { type: "prompt" } },
+      { method: "docs.tags.set", params: { tags: ["x"] } },
+      { method: "docs.tag.add", params: { tag: "blocked" } },
+      { method: "docs.tag.remove", params: { tag: "keep" } },
+    ]) {
+      const blocked = await rpc(svc, method, {
+        workspaceId,
+        id: cx,
+        actor: "user",
+        baseEtag: archEtag,
+        ...params,
+      });
+      assert.ok(blocked.error, `${method} on archived should fail`);
+      assert.equal(blocked.error!.code, -32010, method);
+      assert.match(blocked.error!.message, /archived/i, method);
+    }
 
     unsub();
   });

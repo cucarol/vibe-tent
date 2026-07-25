@@ -343,7 +343,7 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | `docs.setType` | Command | User-only set compound Node type (`baseEtag` required); emits `concept.changed` reason `docs.setType` |
 | `docs.tags.set` / `docs.tag.add` / `docs.tag.remove` | Command | User-only Node tag mutations (`baseEtag` required); detach does not prune registry |
 | `registry.types` / `registry.type.create` / `registry.type.delete` | Query / Command | Type registry read + custom secondary create/delete (user-only mutations; in-use delete fails loud) |
-| `registry.tags` / `registry.tag.create` / `registry.tag.delete` | Query / Command | Tag vocabulary read + create; global delete cascades off all Nodes |
+| `registry.tags` / `registry.tag.create` / `registry.tag.delete` | Query / Command | Tag vocabulary read + create; global delete cascades off all Nodes. **`registry.tag.delete` emits only `registry.tags.updated`** (no per-Node `concept.changed`); clients must refresh tag candidates **and** graph/node projections that may have lost the deleted tag |
 | `docs.createNote` | Command | New concept (`cx-`, type, path) |
 | `docs.promote` | Command | Note → box in place |
 | `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |

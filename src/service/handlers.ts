@@ -1349,7 +1349,8 @@ async function registryTagCreate(ctx: HandlerContext, p: Record<string, unknown>
 
 /**
  * User-only global tag delete + cascade off all Nodes (MutationBus).
- * Emits registry.tags.updated once on success.
+ * Emits registry.tags.updated once on success (no per-Node concept.changed).
+ * Clients must invalidate tag candidates and graph/node projections after cascade.
  */
 async function registryTagDelete(ctx: HandlerContext, p: Record<string, unknown>) {
   requireUserActor(p, "registry.tag.delete");

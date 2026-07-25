@@ -582,7 +582,9 @@ export const CLIENT_METHODS = [
   "registry.tag.create",
   /**
    * User-only global tag delete + cascade off all Nodes (MutationBus).
-   * Success emits registry.tags.updated.
+   * Success emits exactly one registry.tags.updated (no per-Node concept.changed).
+   * Clients must treat that event as invalidating tag candidates and graph/node
+   * projections whose tags may have been rewritten by the cascade.
    */
   "registry.tag.delete",
   "registry.roles",
