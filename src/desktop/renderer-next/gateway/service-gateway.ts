@@ -16,7 +16,7 @@ export type ProjectionSnapshot = {
   workspaceId?: string | null;
   /** Wall-clock ISO when the client applied this snapshot. */
   fetchedAt: string;
-  /** Free-form projection bags keyed by logical name (docs.tree, box.projection, …). */
+  /** Free-form projection bags keyed by logical name (docs.tree, node.collaboration, …). */
   bags: Readonly<Record<string, unknown>>;
 };
 
@@ -52,7 +52,12 @@ export function invalidationFromEvent(event: EventEnvelope): InvalidationHint {
     return { keys: ["docs.tree", "docs.get"], event, reason: type };
   }
   if (type.startsWith("task.") || type.startsWith("delivery.") || type.startsWith("session.")) {
-    return { keys: ["task.list", "box.projection", "session.list"], event, reason: type };
+    // V0.2 collab truth is node.collaboration(s); box.projection remains only as a migration key.
+    return {
+      keys: ["task.list", "node.collaboration", "node.collaborations", "session.list"],
+      event,
+      reason: type,
+    };
   }
   if (
     type.startsWith("a2a.") ||

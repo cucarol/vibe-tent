@@ -207,6 +207,11 @@ import {
   type GraphParentEdge,
   type GraphProjection,
   type GraphRelationEdge,
+  type NodeCollaboration,
+  type NodeCollaborationDeliverySummary,
+  type NodeCollaborationSessionSummary,
+  type NodeCollaborationTaskSummary,
+  type NodeCollaborationsResult,
   type RelationDeleteResult,
   type RelationListResult,
   type RelationMutationResult,
@@ -455,6 +460,10 @@ export async function dispatchMethod(
         return boxProjectionRpc(ctx, p);
       case "box.projections":
         return boxProjectionsRpc(ctx, p);
+      case "node.collaboration":
+        return nodeCollaborationRpc(ctx, p);
+      case "node.collaborations":
+        return nodeCollaborationsRpc(ctx, p);
       case "graph.projection":
         return graphProjectionRpc(ctx, p);
       case "proposal.list":
@@ -4869,7 +4878,8 @@ async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
 }
 
 /**
- * Stable box collaboration projection (task-api §2.3).
+ * @deprecated Prefer node.collaboration (V0.2). Migration-only.
+ * Stable box collaboration projection (legacy task-api §2.3).
  * Active task is authoritative (doing + assignee + activeTaskId).
  * With no active task: accepted Task/Delivery history may project done;
  * Node FM owner/status is never consulted.
@@ -4885,6 +4895,7 @@ async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>)
 }
 
 /**
+ * @deprecated Prefer node.collaborations (V0.2). Migration-only.
  * Batch box collaboration projection — same item semantics as box.projection.
  * Input `ids` order is preserved in `projections` (stable for UI working-set).
  * Loads tent + task envelopes once to avoid N+1.
@@ -4919,6 +4930,170 @@ async function boxProjectionsRpc(
     projections.push(projectBoxCollaboration(workspaceId, concept, tasks));
   }
   return { workspaceId, projections };
+}
+
+/**
+ * V0.2 Node-keyed collaboration projection (task-api §2.3).
+ * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
+ * No universal todo/doing/done; idle → null task/session/delivery.
+ */
+async function nodeCollaborationRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<NodeCollaboration> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept(tent, p);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const sessionsById = await loadSessionSummariesForCollaboration(ctx);
+  return projectNodeCollaboration(
+    workspaceId,
+    concept,
+    tasks,
+    deliveries,
+    sessionsById
+  );
+}
+
+/**
+ * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
+ * Input `ids` order is preserved in `items`. Empty ids → empty items.
+ * Loads tent + tasks + deliveries + sessions once (no N+1 RPC or path inference).
+ */
+async function nodeCollaborationsRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<NodeCollaborationsResult> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const idsRaw = p.ids;
+  if (!Array.isArray(idsRaw)) {
+    throw new RpcError(-32602, "node.collaborations requires ids: string[]");
+  }
+  const ids: string[] = [];
+  for (let i = 0; i < idsRaw.length; i++) {
+    const id = idsRaw[i];
+    if (typeof id !== "string" || !id.trim()) {
+      throw new RpcError(-32602, `node.collaborations ids[${i}] must be a non-empty string`);
+    }
+    ids.push(id.trim());
+  }
+
+  if (ids.length === 0) {
+    return { workspaceId, items: [] };
+  }
+
+  const tent = await loadTent(mount.env.fs);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const sessionsById = await loadSessionSummariesForCollaboration(ctx);
+
+  const items: NodeCollaboration[] = [];
+  for (const id of ids) {
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    items.push(
+      projectNodeCollaboration(workspaceId, concept, tasks, deliveries, sessionsById)
+    );
+  }
+  return { workspaceId, items };
+}
+
+/**
+ * Probe sessions once for the batch. Keyed by session id only — never by path/name.
+ */
+async function loadSessionSummariesForCollaboration(
+  ctx: HandlerContext
+): Promise<Map<string, NodeCollaborationSessionSummary>> {
+  const byId = new Map<string, NodeCollaborationSessionSummary>();
+  const all = await ctx.runtime.registry.list();
+  for (const rec of all) {
+    const probe = await ctx.runtime.probe(rec.id);
+    byId.set(rec.id, {
+      id: rec.id,
+      state: probe.state,
+      alive: probe.alive,
+      turnBusy: probe.turnBusy === true,
+    });
+  }
+  return byId;
+}
+
+/**
+ * Shared single-item V0.2 Node collaboration projection.
+ * - At most one directly-claiming nonterminal Task (claims includes node id).
+ * - No ancestor-derived occupation; no todo/doing/done mapping.
+ * - Session/Delivery only when Task carries explicit sessionId / activeDeliveryId.
+ * - Invalid concepts fail loud; Node FM is never consulted.
+ */
+function projectNodeCollaboration(
+  workspaceId: string,
+  concept: import("../core/types.js").Box,
+  tasks: TaskEnvelope[],
+  deliveries: import("../core/delivery.js").DeliveryRecord[],
+  sessionsById: ReadonlyMap<string, NodeCollaborationSessionSummary>
+): NodeCollaboration {
+  if (concept.invalid) {
+    throw new RpcError(
+      -32004,
+      `Concept is invalid and has no collaboration projection: ${concept.path}`,
+      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+    );
+  }
+
+  // Direct claim only — ancestor occupation must not paint this Node.
+  const activeTask = tasks.find(
+    (t) => t.claims.includes(concept.id) && isActiveTaskState(t.state)
+  );
+
+  if (!activeTask) {
+    return {
+      workspaceId,
+      nodeId: concept.id,
+      task: null,
+      session: null,
+      delivery: null,
+    };
+  }
+
+  const assigneeKind = taskAssigneeKind(activeTask);
+  const taskSummary: NodeCollaborationTaskSummary = {
+    id: activeTask.id || activeTask.path,
+    state: activeTask.state,
+    assigneeKind,
+  };
+  if (assigneeKind === "agentProfile") {
+    taskSummary.profileId = activeTask.role;
+  } else {
+    taskSummary.role = activeTask.role;
+  }
+  if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
+  if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
+
+  let session: NodeCollaborationSessionSummary | null = null;
+  if (activeTask.sessionId) {
+    session = sessionsById.get(activeTask.sessionId) ?? null;
+  }
+
+  let delivery: NodeCollaborationDeliverySummary | null = null;
+  if (activeTask.activeDeliveryId) {
+    const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
+    if (found) {
+      delivery = { id: found.id, status: found.status };
+    }
+  }
+
+  return {
+    workspaceId,
+    nodeId: concept.id,
+    task: taskSummary,
+    session,
+    delivery,
+  };
 }
 
 /**

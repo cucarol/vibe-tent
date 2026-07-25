@@ -6,6 +6,8 @@ import type {
   DeliveryProjection,
   EventEnvelope,
   GraphProjection,
+  NodeCollaboration,
+  NodeCollaborationsResult,
   PendingInteractionListResult,
   ProviderCatalogProjection,
   RelationDeleteResult,
@@ -828,7 +830,8 @@ export class ServiceClient {
   }
 
   /**
-   * Stable box collaboration projection (task-api §2.3).
+   * @deprecated Prefer nodeCollaboration (V0.2). Migration-only.
+   * Stable box collaboration projection (legacy task-api §2.3).
    * Resolve by id, boxId, or path (same conventions as docs.get).
    * Active task is authoritative; without one, only persisted done is preserved.
    */
@@ -840,11 +843,40 @@ export class ServiceClient {
   }
 
   /**
+   * @deprecated Prefer nodeCollaborations (V0.2). Migration-only.
    * Batch box collaboration projection — same item semantics as box.projection.
    * `ids` order is preserved in the returned `projections` array.
    */
   boxProjections(workspaceId: string, ids: string[]) {
     return this.call<BoxProjectionsResult>("box.projections", { workspaceId, ids });
+  }
+
+  /**
+   * V0.2 Node-keyed collaboration projection (task-api §2.3).
+   * Resolve by id, boxId, or path (same conventions as docs.get).
+   * At most one directly-claiming nonterminal Task; Session/Delivery only via explicit ids.
+   * Idle Node returns null task/session/delivery.
+   */
+  nodeCollaboration(
+    workspaceId: string,
+    idOrPath: { id?: string; path?: string; boxId?: string }
+  ) {
+    return this.call<NodeCollaboration>("node.collaboration", {
+      workspaceId,
+      ...idOrPath,
+    });
+  }
+
+  /**
+   * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
+   * `ids` order is preserved in the returned `items` array. Empty ids → empty items.
+   * Loads workspace tasks/sessions/deliveries once per batch (no N+1).
+   */
+  nodeCollaborations(workspaceId: string, ids: string[]) {
+    return this.call<NodeCollaborationsResult>("node.collaborations", {
+      workspaceId,
+      ids,
+    });
   }
 
   /**

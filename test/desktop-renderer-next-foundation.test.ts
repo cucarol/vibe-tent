@@ -129,7 +129,8 @@ test("ServiceGateway treats events as invalidation only", async () => {
 
   const hint = gateway.handleServiceEvent(ev("task.state"));
   assert.ok(hint.keys.includes("task.list"));
-  assert.ok(hint.keys.includes("box.projection"));
+  assert.ok(hint.keys.includes("node.collaboration"));
+  assert.ok(hint.keys.includes("node.collaborations"));
   // Payload must not be merged into projection bags.
   assert.deepEqual(gateway.getProjectionSnapshot().bags, {});
   assert.equal(gateway.isDirty("task.list"), true);

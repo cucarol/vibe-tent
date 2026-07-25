@@ -70,7 +70,9 @@ export type ConceptProjection = {
 };
 
 /**
- * Stable box collaboration projection (task-api §2.3 / `box.projection`).
+ * @deprecated V0.2 truth is `node.collaboration` / `node.collaborations`.
+ * Kept only for migration of older desktop consumers.
+ * Stable box collaboration projection (legacy task-api §2.3 / `box.projection`).
  * Active task is authoritative; without one, only persisted `done` is preserved.
  */
 export type BoxProjection = {
@@ -79,6 +81,61 @@ export type BoxProjection = {
   status: "todo" | "doing" | "done";
   assignee?: string;
   activeTaskId?: string;
+};
+
+/**
+ * Direct-claim Task pointer on a Node (V0.2 `node.collaboration`).
+ * Raw lifecycle fields only — never maps to universal todo/doing/done.
+ */
+export type NodeCollaborationTaskSummary = {
+  /** Operational task id (tk-…) when present; otherwise envelope path. */
+  id: string;
+  /** Raw Task lifecycle state (queued|running|waiting|delivered|…). */
+  state: string;
+  /** Role assignee label when assigneeKind is role (or missing). */
+  role?: string;
+  /** Profile assignee id when assigneeKind is agentProfile. */
+  profileId?: string;
+  assigneeKind?: "role" | "agentProfile";
+  sessionId?: string;
+  activeDeliveryId?: string;
+};
+
+/** Session summary attached only via Task.sessionId (never inferred). */
+export type NodeCollaborationSessionSummary = {
+  id: string;
+  state: string;
+  alive: boolean;
+  turnBusy: boolean;
+};
+
+/** Delivery summary attached only via Task.activeDeliveryId (never inferred). */
+export type NodeCollaborationDeliverySummary = {
+  id: string;
+  status: string;
+};
+
+/**
+ * V0.2 Node-keyed collaboration projection (`node.collaboration` item).
+ * Entities stay separate: at most one directly-claiming nonterminal Task;
+ * Session/Delivery only through explicit ids. Idle Node → all null.
+ * No Node owner/status/coordination fields.
+ */
+export type NodeCollaboration = {
+  workspaceId: string;
+  nodeId: string;
+  task: NodeCollaborationTaskSummary | null;
+  session: NodeCollaborationSessionSummary | null;
+  delivery: NodeCollaborationDeliverySummary | null;
+};
+
+/**
+ * Batch Node collaboration projection (`node.collaborations`).
+ * `items` order matches the input `ids` order one-for-one.
+ */
+export type NodeCollaborationsResult = {
+  workspaceId: string;
+  items: NodeCollaboration[];
 };
 
 /**
@@ -204,6 +261,7 @@ export type RelationDeleteResult = {
 };
 
 /**
+ * @deprecated V0.2 truth is `NodeCollaborationsResult` / `node.collaborations`.
  * Batch box collaboration projection (`box.projections`).
  * `projections` order matches the input `ids` order one-for-one.
  */
@@ -717,18 +775,33 @@ export const CLIENT_METHODS = [
   "delivery.list",
   "delivery.get",
   /**
-   * Stable box collaboration projection (task-api §2.3).
+   * @deprecated Prefer node.collaboration (V0.2). Migration-only.
+   * Stable box collaboration projection (legacy task-api §2.3).
    * Params: workspaceId + id|path|boxId (same resolver as docs.get).
    * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
    */
   "box.projection",
   /**
+   * @deprecated Prefer node.collaborations (V0.2). Migration-only.
    * Batch box collaboration projection (same item semantics as box.projection).
    * Params: workspaceId + ids: string[] (stable cx- handles).
    * Result: { workspaceId, projections } with projections ordered as ids.
-   * Avoids UI N+1 fan-out; does not invent a second collab state machine.
    */
   "box.projections",
+  /**
+   * V0.2 Node-keyed collaboration projection (task-api §2.3).
+   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
+   * Result: { workspaceId, nodeId, task, session, delivery } with nulls when idle.
+   * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
+   */
+  "node.collaboration",
+  /**
+   * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
+   * Params: workspaceId + ids: string[] (stable cx- handles).
+   * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
+   * Loads tent/tasks/sessions/deliveries once per batch (no N+1).
+   */
+  "node.collaborations",
   /**
    * Workspace-level graph projection for Working-set Canvas.
    * Params: workspaceId.
