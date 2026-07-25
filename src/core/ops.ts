@@ -30,6 +30,7 @@ import {
   ensureRoleInit,
   loadTaskEnvelope,
   loadTaskEnvelopes,
+  patchTaskEnvelope,
   relayPromptForTask,
   RoleWorkspaceContract,
   taskAssigneeKind,
@@ -46,7 +47,7 @@ import {
 import { removeNonAcceptedDeliveriesForBox } from "./delivery.js";
 import { validateBoxName } from "./scaffold.js";
 import type { OpsEnv } from "./ops-context.js";
-import { taskClaim } from "./task-lifecycle.js";
+import { taskClaim, taskFail, taskInterrupt } from "./task-lifecycle.js";
 
 export type { OpsEnv } from "./ops-context.js";
 export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
@@ -296,31 +297,41 @@ function resolveDispatchClaim(tent: LoadedTent, claimId: string, tentName: strin
   return { root: false, id: box.id, name: box.name, box };
 }
 
-// ---- stamp(盖章 = 验收)----
+// ---- stamp / complete (legacy CLI; Node owner/status dual-write retired) ----
 
-export async function stamp(env: OpsEnv, boxId: string, acceptedBy = "user"): Promise<void> {
-  await completeClaim(env, boxId, undefined, acceptedBy);
+const STAMP_RETIRED_MESSAGE =
+  "stamp/complete no longer write Node owner/status. Use task.deliver + task.accept (or task.fail) for collaboration completion.";
+
+/**
+ * @deprecated Retired: does not dual-write Node frontmatter.
+ * Prefer task.deliver / task.accept. Throws with a clear migration message.
+ */
+export async function stamp(_env: OpsEnv, _boxId: string, _acceptedBy = "user"): Promise<void> {
+  void _env;
+  void _boxId;
+  void _acceptedBy;
+  throw new Error(STAMP_RETIRED_MESSAGE);
 }
 
-/** 验收动作：可先合入 workspace commits；合入失败时不改变 Tent 状态。 */
+/**
+ * @deprecated Retired Node dual-write path.
+ * Prefer task lifecycle. Optional integrate still runs only if a non-retired path is restored later;
+ * currently always throws after validating the box exists (no FM write).
+ */
 export async function completeClaim(
   env: OpsEnv,
   boxId: string,
   integrate?: () => Promise<void>,
-  acceptedBy = "user"
+  _acceptedBy = "user"
 ): Promise<void> {
-  // Resolve the box under lock first so a missing/invalid id fails before Git work.
+  void _acceptedBy;
+  // Resolve the box under lock first so a missing/invalid id fails before any work.
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     requireBoxById(tent, boxId);
   });
-  // Git integrate stays outside the cross-process mutation lock (long work).
-  if (integrate) await integrate();
-  await withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    await setOwner(env.fs, box, undefined, "done", acceptedBy);
-  });
+  void integrate;
+  throw new Error(STAMP_RETIRED_MESSAGE);
 }
 
 // ---- clean-temp ----
@@ -336,16 +347,61 @@ export async function cleanTemp(env: OpsEnv, role?: string): Promise<void> {
   });
 }
 
-// ---- 强清卡死 owner ----
+// ---- force-release: cancel/fail active tasks for box (no FM owner clear) ----
 
+/**
+ * Release occupation for a box by terminating active tasks that claim it
+ * (interrupt running/waiting/delivered; remove queued). Clears non-accepted deliveries.
+ * Does not read or write Node frontmatter owner/status.
+ */
 export async function forceRelease(env: OpsEnv, boxId: string): Promise<void> {
+  // Validate box exists first.
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
-    await setOwner(env.fs, box, undefined, "todo");
-    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
+    requireBoxById(tent, boxId);
   });
+
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const active = tasks.filter(
+    (t) => envelopeIsActiveOccupation(t) && t.claims.includes(boxId)
+  );
+  if (active.length === 0) {
+    // Still clean stray non-accepted deliveries for the box.
+    await withMutation(env.fs, async () => {
+      await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+    });
+    return;
+  }
+
+  for (const task of active) {
+    if (task.state === "queued" || task.status === "pending") {
+      await cancelPendingTask(env, task.path);
+      continue;
+    }
+    // Interrupt ends occupation via task state; also clears non-accepted deliveries.
+    try {
+      await taskInterrupt(env, task.path);
+    } catch {
+      // If interrupt is invalid for this state, fall through to fail.
+      try {
+        await taskFail(env, task.path, { summary: "force-release" });
+      } catch {
+        // Last resort: patch to interrupted + cleanup deliveries under lock.
+        await withMutation(env.fs, async () => {
+          const current = await loadTaskEnvelope(env.fs, task.path).catch(() => null);
+          if (!current) return;
+          if (envelopeIsActiveOccupation(current)) {
+            await patchTaskEnvelope(env.fs, task.path, {
+              state: "interrupted",
+              wait: null,
+              updatedAt: env.clock.now(),
+            });
+          }
+          await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+        });
+      }
+    }
+  }
 }
 
 // ---- tags ----
@@ -680,7 +736,12 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
     if (!isExplicitArchiveRoot(box)) throw new Error("Box must be archived before permanent deletion.");
-    if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
+    const tasks = await loadTaskEnvelopes(env.fs);
+    if (hasActiveTaskInSubtree(tent, box, tasks)) {
+      throw new Error(
+        "Archived subtree still has an active task and cannot be deleted; cancel or fail the task first."
+      );
+    }
 
     const removedIds = collectSubtreeIds(box);
     await env.fs.remove(box.path);
@@ -694,34 +755,6 @@ export async function deleteArchivedBox(env: OpsEnv, boxId: string): Promise<voi
 }
 
 // ---- 内部工具 ----
-
-async function setOwner(
-  fs: FsAdapter,
-  box: Box,
-  owner: string | undefined,
-  status?: Box["fm"]["status"],
-  acceptedBy?: string
-): Promise<void> {
-  const patch: Record<string, unknown> = { owner: owner ?? undefined };
-  if (owner) patch.acceptedBy = undefined;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs, box, patch);
-}
-
-async function restoreOwnerState(
-  fs: FsAdapter,
-  box: Box,
-  owner: string | undefined,
-  status: Box["fm"]["status"] | undefined,
-  acceptedBy: unknown
-): Promise<void> {
-  await patchFrontmatter(fs, box, {
-    owner: owner ?? undefined,
-    status: status ?? undefined,
-    acceptedBy: acceptedBy ?? undefined,
-  });
-}
 
 async function patchFrontmatter(fs: FsAdapter, box: Box, patch: Record<string, unknown>): Promise<void> {
   const boxFile = boxNotePath(box.path);
@@ -762,9 +795,22 @@ function assertNotTempPath(path: string): void {
   }
 }
 
-function hasOwnerInSubtree(box: Box): boolean {
-  if (box.fm.owner) return true;
-  return box.children.some(hasOwnerInSubtree);
+/** True when any active task claims a box id in the subtree (including root of subtree). */
+function hasActiveTaskInSubtree(
+  tent: LoadedTent,
+  box: Box,
+  tasks: TaskEnvelope[]
+): boolean {
+  const ids = collectSubtreeIds(box);
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") return true;
+      if (ids.has(claimId)) return true;
+    }
+  }
+  void tent;
+  return false;
 }
 
 function collectSubtreeIds(box: Box, ids = new Set<string>()): Set<string> {

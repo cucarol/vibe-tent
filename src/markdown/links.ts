@@ -118,7 +118,7 @@ export function buildBacklinkIndex(
       path: c.path,
       notePath: c.notePath,
       name: c.name,
-      type: "note",
+      type: "prompt",
     };
     add(index, concept.id, concept);
     add(index, concept.path, concept);

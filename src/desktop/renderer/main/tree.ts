@@ -121,7 +121,7 @@ export async function onCreateNote(): Promise<void> {
     const created = (await window.tentDesktop.rpc("docs.createNote", {
       workspaceId,
       name,
-      type: "note",
+      type: "prompt",
     })) as { id: string };
     await reloadTree();
     await host?.openConcept(created.id);

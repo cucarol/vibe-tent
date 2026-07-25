@@ -52,8 +52,8 @@ mode: archived
 - Native moves are supported; paths may change while ids stay stable.
 - Durable Node facts are body, id, hierarchy/relations, type/tags, archive, and
   annotations. Collaboration progress is projected from Task/Session/Delivery.
-- Legacy `owner` / `status` may still appear on disk for transitional UI but are
-  not written on new Nodes.
+- Legacy `owner` / `status` / `acceptedBy` are stripped by one-shot migration and
+  are never written by runtime claim/accept paths.
 - Tags are orthogonal lookup facets (not a substitute for secondary type).
 
 Duplicate ids are never silently indexed. A native copied subtree is adopted as
@@ -167,14 +167,14 @@ fresh contract.
 
 The task envelope is the machine-readable delivery record. Its prompt body is immutable;
 its `status` field flips one way from `pending` to `taken` when `task-ack`
-acknowledges the task. Dispatch itself does not write box `owner` or
-`status: doing`; `task-ack` writes `owner` to the task role and marks the box
-`status: doing`. Until then, the pending envelope is the dispatch placeholder
-and blocks dispatch of the same box or any overlapping ancestor/descendant
-subtree. The claimed box remains the task truth: scope, background, context,
-and acceptance criteria belong in the box body or child boxes. A draft or
-incomplete box may be dispatched; after `task-ack`, the agent aligns the task,
-asks when unclear, and writes confirmed conclusions back to the box.
+acknowledges the task. Neither dispatch nor `task-ack` dual-writes Node
+`owner`/`status`; occupation is the active Task envelope only. Until claim,
+the pending envelope is the dispatch placeholder and blocks dispatch of the
+same box or any overlapping ancestor/descendant subtree. The claimed box
+remains the document truth: scope, background, context, and acceptance
+criteria belong in the box body or child boxes. A draft or incomplete box may
+be dispatched; after `task-ack`, the agent aligns the task, asks when unclear,
+and writes confirmed conclusions back to the box.
 
 Role init is stable and cache-friendly:
 
@@ -205,14 +205,13 @@ manual policy. Agents submit via `task.deliver` / `tent task deliver`.
    branch (normally `main`): fast-forward when the selected commits are exactly
    the complete `target..last` interval, otherwise use conflict-aware
    cherry-pick;
-3. if integration succeeds, set the accepted box to `done`, clear its direct
-   owner / assignee projection, record review on the Delivery, leave the
-   accepted Delivery file for operational history/retention;
-4. if integration fails, leave workspace state and Tent owner/status/Delivery
-   state unchanged.
+3. if integration succeeds, mark the task `accepted`, record review on the
+   Delivery, leave the accepted Delivery file for operational history/retention
+   (Node frontmatter is not dual-written);
+4. if integration fails, leave workspace state and Task/Delivery state unchanged.
 
 A Delivery can be rejected (`task.reject`). This performs no workspace
-integration, keeps occupation / `doing` (resume path), marks the Delivery
+integration, keeps occupation via task state (resume path), marks the Delivery
 `rejected`, and lets the agent deliver again.
 
 The workspace target branch must be checked out and clean. A cherry-pick batch
@@ -223,9 +222,9 @@ same `-x` cherry-pick is idempotent.
 **Interrupt / force release**
 
 - performs no workspace integration;
-- sets the directly owned box to `todo`;
-- clears its owner;
+- ends occupation by terminating active tasks for the box (interrupt/cancel/fail);
 - removes non-accepted Delivery records for that box;
+- does not write Node `owner`/`status`;
 - preserves the role branch/worktree and all workspace changes.
 
 Completion and interruption are distinct core actions even if a UI groups them
@@ -306,8 +305,7 @@ tent task list|get|claim|deliver|accept|reject|…
 tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
 tent task-ack <taskPath>
 tent task-cancel <taskPath>
-tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]
-tent stamp <boxId> [--by <role>]
+tent complete|stamp                  # retired (no Node owner/status dual-write)
 tent status
 tent force-release <boxId>
 tent new-box <name> <type> [parentId]
@@ -319,22 +317,20 @@ tent tree
 ```
 
 Formal delivery is **Delivery-only** via `tent task deliver` / `task.deliver`.
-There is no legacy `tent report` path. `stamp` / `complete` remain external-root
-helpers for zero-Delivery completion (owner release / done) during migration;
-Desktop and in-workspace mutates use Local Service `task.*` only. When a ready
-Delivery exists, `task.accept` uses that Delivery's commit list; an explicit
-`--commits` list may override. Accepted Deliveries remain as operational history
-(subject to retention). Rejected Deliveries stay until the agent delivers again
-or interrupt/force-release drops non-accepted records.
+There is no legacy `tent report` path. `stamp` / `complete` are **retired**
+(they no longer dual-write Node `owner`/`status`; use `task.accept` /
+`task.fail`). Desktop and in-workspace mutates use Local Service `task.*` only.
+When a ready Delivery exists, `task.accept` uses that Delivery's commit list; an
+explicit `--commits` list may override. Accepted Deliveries remain as
+operational history (subject to retention). Rejected Deliveries stay until the
+agent delivers again or interrupt/force-release drops non-accepted records.
 
 `status` is a read-only status view for quick orientation: Tent root, workspace,
-pending proposals, pending task envelopes, and active claims.
+pending proposals, pending task envelopes, and active (claimed) tasks.
 
-`--require-check` is a user-supplied mechanical gate on external-root `complete`.
-It runs in the resolved workspace before cherry-pick, owner clearing, or any
-other mutation. A non-zero exit or missing command aborts completion.
-`--by <role>` records the accepting role in `acceptedBy`; without it, acceptance
-is recorded as `user`.
+Legacy `--require-check` was a user-supplied mechanical gate on external-root
+`complete` (now retired with that command). Workspace integration gates live on
+the Service/task accept path instead.
 
 ## 10. UI Contract
 
@@ -344,8 +340,8 @@ The UI renders core state and invokes core actions:
 - native copy is adopted as fork;
 - chat progress stays conversational; formal report body is `Delivery.summary`;
 - proposals are temporary prompt deliveries resolved by confirmation or rejection;
-- completion presents the selected commit-integration step and releases the owner only after integration;
-- interruption releases owner without integration;
+- completion integrates commits then accepts the task (Node FM is not dual-written);
+- interruption ends active tasks without integration;
 - pending task envelopes are shown as task envelopes; copying relay text does
   not consume them, only `task-ack` does;
 - pending task envelopes may be cancelled without force-release; taken tasks

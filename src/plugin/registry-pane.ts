@@ -267,7 +267,7 @@ function drawTypeRow(
     }
     if (inspection.activeOwners.length > 0) {
       new Notice(
-        `关联范围仍有 owner,先盖章或强清:${inspection.activeOwners.map((item) => item.path).join(", ")}`
+        `关联范围仍有 active task,先取消或 fail:${inspection.activeOwners.map((item) => item.path).join(", ")}`
       );
       return;
     }

@@ -192,20 +192,16 @@ Rules:
 
 | Source | Role |
 | --- | --- |
-| Active Task envelope (`claims` + lifecycle `state`) | **Mutex + assignee + `activeTaskId`** |
-| Node `status` (`todo` / `doing` / `done`) | Long-lived **user-visible summary**; lifecycle may project it; **not** a mutex |
-| Legacy frontmatter `owner` | **Compatible read / gradual retire**; lifecycle may still project it on claim/accept; **never** blocks dispatch/claim when no active task remains |
+| Active Task envelope (`claims` + lifecycle `state`) | **Mutex + assignee + `activeTaskId`** (sole product truth) |
+| Node frontmatter `owner` / `status` | **Retired** — stripped on migrate; never dual-written by claim/accept |
 
 | Condition | `box.status` (projection) | `box.assignee` | `activeTaskId` |
 | --- | --- | --- | --- |
-| No active task; never completed | `todo` (or prior durable non-doing summary) | empty | empty |
+| No active task | `todo` | empty | empty |
 | Active task present | `doing` | task assignee label | task id/path |
-| Last terminal state `accepted`, no new task | `done` | empty | empty |
-| After `interrupt` / terminal `rejected` without rework | `todo` | empty | empty |
-| After `failed` (unrecoverable) | `todo` | empty | empty |
-| Stale `owner` / `status: doing` **without** active task | `todo` | empty | empty |
+| After `interrupt` / terminal `rejected` without rework / `failed` | `todo` | empty | empty |
 
-**Forbidden:** UI or agents writing `assignee` / legacy `owner` in competition with the active task—including via ordinary **`docs.write`** / frontmatter body patches. While an **active task** occupies the box, service/core **must reject** competing writes to projected collaboration fields. Use Task API transitions only. Orphan residual `owner` without an active task **must not** pretend occupation and **must not** block a new dispatch/claim.
+**Forbidden:** UI or agents writing `assignee` / legacy `owner`/`status` on Nodes—including via ordinary **`docs.write`** / frontmatter body patches. Collaboration progress is Task/Session/Delivery (+ `box.projection`) only. Residual disk keys without an active task **must not** pretend occupation.
 
 ### 2.4 Parallelism and `docs.fork`
 
@@ -262,7 +258,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `box.projection({ workspaceId, id | path | boxId })` → `{ workspaceId, boxId, status, assignee?, activeTaskId? }`
   - Same concept selector conventions as `docs.get` (`id` / `boxId` / `path`); missing, duplicate-id, or structurally invalid concepts fail cleanly instead of projecting misleading state.
   - **Active task envelope is the sole occupation oracle:** `status=doing`, `assignee` = task role/profile label, `activeTaskId` set.
-  - With no active task: preserve `done` only when the box's current persisted status is `done`; stale `doing` / residual `owner` must project `todo` with no assignee (never pretend occupation). Node `status` remains a durable summary field, not a mutex.
+  - With no active task: project `todo` with no assignee (Node FM `status`/`owner` are not product truth).
 - `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `userAsk.pending` / `userAsk.resolved`, `taskInput.pending` / `taskInput.delivered` / `taskInput.consumed` / `taskInput.cancelled`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), `annotation.changed` (after successful annotation create/resolve/reopen/delete; payload `action`, `id`, `nodeId`), plus document events `concept.changed` / `concept.removed` from the docs group
 
 **No** separate `box.changed` event channel. Concept identity changes use `concept.*` only.
@@ -559,11 +555,11 @@ One-shot cutover; no long-lived dual aliases.
 | Legacy | New |
 | --- | --- |
 | `bx-*` | `cx-*` |
-| `box.fm.owner` | active task `assignee` projection (synthesize running task or idle first) |
+| `box.fm.owner` / `status` | **stripped on migrate**; use active task `assignee` / `box.projection` |
 | envelope `pending` / `taken` | task `queued` / `running` |
 | `temp/.../reports/<boxId>.md` + `DeliveryReport` | **removed** — only `delivery` (`dl-`) on the task |
-| `force-release` | `interrupt` |
-| `complete` / `stamp` | external stamp helpers; review path is `accept` |
+| `force-release` | interrupt/cancel active tasks for the box (no FM write) |
+| `complete` / `stamp` | **retired** (no Node dual-write); review path is `task.accept` |
 | honor-only A2A spawn | service **`A2APolicy`** `allow|ask|deny` gate |
 | “workspace pointer” product term | **WorkspaceLane** on task; tent lives in-workspace at `.tent/` |
 

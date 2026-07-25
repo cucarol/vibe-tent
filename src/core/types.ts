@@ -3,9 +3,8 @@
 export type BoxType = string;
 
 /**
- * @deprecated Collaboration status is projected from Task/Session/Delivery.
- * Legacy frontmatter may still be present on disk until a later UI cutover;
- * Core does not write status on new Nodes. Prefer box.fm["status"] for lifecycle.
+ * Collaboration progress for Task / BoxProjection (todo|doing|done).
+ * Not a Node frontmatter field — Nodes no longer carry status.
  */
 export type Status = "todo" | "doing" | "done";
 
@@ -23,17 +22,7 @@ export interface BoxFrontmatter {
   tags?: string[];
   /** Explicit mode only; omit for editable default. Only "archived" is persisted. */
   mode?: NodeMode;
-  /**
-   * @deprecated Not written on new Nodes. Lifecycle may still dual-write for
-   * transitional cleanup; read via fm["owner"] preferred. Not a Service wire field.
-   */
-  owner?: string;
-  /**
-   * @deprecated Not written on new Nodes. Collaboration progress lives on Task projection.
-   * Lifecycle may still dual-write; read via fm["status"] preferred.
-   */
-  status?: Status;
-  /** 允许 user 加自定义键,原样保留落盘（迁移会剥离领域 R/W 等退役键）。 */
+  /** 允许 user 加自定义键,原样保留落盘（迁移会剥离 owner/status/R/W 等退役键）。 */
   [k: string]: unknown;
 }
 
@@ -69,13 +58,6 @@ export interface Box {
   body: string;
   children: Box[];
   parent: Box | null;
-  /**
-   * @deprecated Derived from legacy fm.owner for transitional UI only.
-   * Active Task envelopes are the occupation oracle.
-   */
-  locked: boolean;
-  lockSource?: "self" | "ancestor" | "descendant";
-  lockOwner?: string;
 }
 
 /** manifest 里 context pointer 的一条（非文件级 ACL）。 */

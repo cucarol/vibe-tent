@@ -1,6 +1,6 @@
 // 认领与占用互斥。
 // 运行时 oracle：active Task envelope（queued|running|waiting|delivered）独占 box 子树。
-// legacy frontmatter `owner` 仅兼容读取 / 生命周期投影，不再作为 claim/dispatch 互斥锁。
+// Node frontmatter 不再承载 owner/status；协作真相仅在 Task/Session/Delivery。
 
 import type { TaskEnvelope } from "./task.js";
 import { isActiveTaskState, legacyStatusToState, type TaskState } from "./task-model.js";
@@ -25,7 +25,7 @@ export interface CanClaimOptions {
   allowAncestorClaimedBy?: string;
   /**
    * Active-task oracle. When provided with `tent`, occupation is enforced.
-   * When omitted, only structural gates run — stale `owner` is never a mutex.
+   * When omitted, only structural gates run.
    */
   tasks?: readonly TaskEnvelope[];
   /** Required together with `tasks` for ancestor/descendant occupation checks. */
@@ -45,7 +45,7 @@ export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
 /**
  * 能否把 box 认领给某角色?
  * 结构门：invalid / archived（isUsableBox）。
- * 占用门：仅 active task envelope 子树互斥（不含 stale owner）。
+ * 占用门：仅 active task envelope 子树互斥。
  */
 export function canClaim(box: Box, options?: CanClaimOptions): ClaimCheck {
   const structural = structuralClaimGate(box);
@@ -195,23 +195,11 @@ export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnv
 }
 
 /**
- * Legacy owner scan for diagnostics / residual frontmatter only.
- * Prefer occupiedBoxesFromTasks for runtime occupation.
+ * Structural freeze only (invalid / archived).
+ * Active-task occupation is checked via findActiveOccupation / canClaim — not Node locks.
  */
-export function occupiedBoxes(tent: LoadedTent): Box[] {
-  const out: Box[] = [];
-  for (const root of tent.roots) collectLegacyOwners(root, out);
-  return out;
-}
-
-function collectLegacyOwners(box: Box, out: Box[]): void {
-  if (box.fm.owner) out.push(box);
-  for (const c of box.children) collectLegacyOwners(c, out);
-}
-
-/** 认领期间被冻结(自身或祖先被占)的框不能拖动。 */
 export function isFrozen(box: Box): boolean {
-  return box.invalid || box.archived || box.locked;
+  return box.invalid || box.archived;
 }
 
 function isAncestor(ancestor: Box, child: Box): boolean {

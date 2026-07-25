@@ -111,29 +111,20 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
   const check = canClaim(g1, { tent, tasks });
   assert.equal(check.ok, false);
   assert.ok(check.blocker?.id === "bx-g2");
+  // isFrozen is structural only (invalid/archived) — occupation is task oracle.
   assert.equal(isFrozen(g1), false, "有占用子孙的祖先不冻结");
-  // Residual owner on g2 still projects lock for UI/compat, but claim oracle is task.
-  assert.equal(g1.locked, false);
-  assert.equal(g1.lockSource, undefined);
-  assert.equal(g1.lockOwner, undefined);
+  assert.equal(isFrozen(tent.byId.get("bx-g2")!), false, "valid non-archived is not structurally frozen");
 
   const g2 = tent.byId.get("bx-g2")!;
   assert.equal(canClaim(g2, { tent, tasks }).ok, false, "自己已被 active task 占");
-  assert.equal(isFrozen(g2), true, "占用框自身冻结 (legacy owner lock projection)");
-  assert.equal(g2.locked, true);
-  assert.equal(g2.lockSource, "self");
-  assert.equal(g2.lockOwner, "executor");
 
   const g3 = tent.byId.get("bx-g3")!;
   const descendantCheck = canClaim(g3, { tent, tasks });
   assert.equal(descendantCheck.ok, false, "占用框的子孙仍不能被重复认领");
   assert.equal(descendantCheck.blocker?.id, "bx-g2");
-  assert.equal(isFrozen(g3), true, "占用框的子孙冻结 (legacy owner lock projection)");
-  assert.equal(g3.locked, true);
-  assert.equal(g3.lockSource, "ancestor");
-  assert.equal(g3.lockOwner, "executor");
+  assert.equal(isFrozen(g3), false);
 
-  // Stale owner alone (no active task) must not block claim.
+  // Without active task, claim is free (no owner lock projection).
   await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"));
   const tent2 = await loadTent(fsa);
   const tasks2 = await loadTaskEnvelopes(fsa);
@@ -364,9 +355,10 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
 
   await taskAck(env as any, second.taskPath);
   claimed = (await loadTent(env.fs)).byId.get("bx-o1")!;
-  assert.equal(claimed.fm.owner, "analyst");
-  assert.equal(claimed.fm.status, "doing", "task-ack 才进入 doing");
+  assert.equal(claimed.fm.owner, undefined, "task-ack 不写 Node owner");
+  assert.equal(claimed.fm.status, undefined, "task-ack 不写 Node status");
   assert.equal((await loadTaskEnvelope(env.fs, second.taskPath)).status, "taken");
+  assert.equal((await loadTaskEnvelope(env.fs, second.taskPath)).state, "running");
 });
 
 test("dispatch:corrupt roles registry is backed up, reset, and dispatch continues", async () => {
@@ -613,7 +605,7 @@ test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", asyn
   assert.ok(prompt.children.some((child) => child.id === "bx-g1"));
 });
 
-test("中断认领:清 owner、回到 todo 并清理非 accepted delivery", async () => {
+test("中断认领:force-release 清理非 accepted delivery（不写 Node owner/status）", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -634,7 +626,7 @@ test("中断认领:清 owner、回到 todo 并清理非 accepted delivery", asyn
   const tent = await loadTent(fsa);
   const box = tent.byId.get("bx-g2")!;
   assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "todo");
+  assert.equal(box.fm.status, undefined);
   assert.equal(await fsa.exists(delivery.path), false);
 });
 

@@ -4,7 +4,7 @@ import { NodeFs } from "../fs/node-fs.js";
 import { loadProposals } from "./proposal.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { loadTent, type LoadedTent } from "./tree.js";
-import type { Box } from "./types.js";
+import { envelopeIsActiveOccupation } from "./claim.js";
 import { resolveTentWorkspace } from "./workspace.js";
 
 export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
@@ -34,28 +34,35 @@ export async function renderTentStatus(cwd = process.cwd(), role = process.env.T
     }
   }
 
-  const tasks = (await loadTaskEnvelopes(fsAdapter))
-    .filter((task) => task.status === "pending")
-    .filter((task) => hasUndoneClaim(tent, task.claims))
+  const allTasks = await loadTaskEnvelopes(fsAdapter);
+  const pendingTasks = allTasks
+    .filter((task) => task.state === "queued" || task.status === "pending")
     .filter((task) => !role || task.role === role);
   lines.push("");
-  if (tasks.length === 0) {
+  if (pendingTasks.length === 0) {
     lines.push("Pending tasks (task-ack): none");
   } else {
     lines.push("Pending tasks (task-ack):");
-    for (const task of tasks) {
+    for (const task of pendingTasks) {
       lines.push(`- ${task.role}/${path.posix.basename(task.path)} -> ${task.claims.join(", ")}`);
     }
   }
 
-  const claims = activeClaimBoxes(tent);
+  // Claimed occupation only (running/waiting/delivered). Queued stays under Pending tasks.
+  const activeTasks = allTasks
+    .filter((task) => envelopeIsActiveOccupation(task))
+    .filter((task) => task.state !== "queued" && task.status !== "pending")
+    .filter((task) => !role || task.role === role);
   lines.push("");
-  if (claims.length === 0) {
-    lines.push("Active claims: none");
+  if (activeTasks.length === 0) {
+    lines.push("Active tasks: none");
   } else {
-    lines.push("Active claims:");
-    for (const box of claims) {
-      lines.push(`- ${box.id}: ${box.name} (owner: ${box.fm.owner}, status: ${box.fm.status || "none"})`);
+    lines.push("Active tasks:");
+    for (const task of activeTasks) {
+      const state = task.state || task.status || "unknown";
+      lines.push(
+        `- ${task.id || path.posix.basename(task.path)}: ${task.role} [${state}] claims=${task.claims.join(",")}`
+      );
     }
   }
 
@@ -97,17 +104,4 @@ async function exists(target: string): Promise<boolean> {
   } catch {
     return false;
   }
-}
-
-function activeClaimBoxes(tent: LoadedTent): Box[] {
-  // Residual frontmatter owner for human status text only — not occupation oracle.
-  // Prefer task list above for true pending occupation.
-  return [...tent.byId.values()]
-    .filter((box) => !!box.fm.owner)
-    .sort((a, b) => a.path.localeCompare(b.path));
-}
-
-function hasUndoneClaim(tent: LoadedTent, claims: string[]): boolean {
-  if (claims.length === 0 || claims.includes("root")) return true;
-  return claims.some((claim) => tent.byId.get(claim)?.fm.status !== "done");
 }

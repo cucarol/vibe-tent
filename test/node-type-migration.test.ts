@@ -72,6 +72,9 @@ test("migrateLegacySchema rewrites node types and strips R/W; idempotent", async
   let parsed = parseFrontmatter(raw);
   parsed.data.type = "note";
   parsed.data.writable = true;
+  parsed.data.owner = "executor";
+  parsed.data.status = "doing";
+  parsed.data.acceptedBy = "user";
   await fs.writeFile(noteBox, serializeFrontmatter(parsed.data, parsed.body, parsed.keyOrder));
 
   const outBox = path.join(dir, "output", "alpha仓库指针", "alpha仓库指针.md");
@@ -87,6 +90,13 @@ test("migrateLegacySchema rewrites node types and strips R/W; idempotent", async
   const afterNote = parseFrontmatter(await fsa.readFile("prompt/表达式任务书/草稿/草稿.md")).data;
   assert.equal(afterNote.type, "prompt");
   assert.equal("writable" in afterNote, false);
+  assert.equal("owner" in afterNote, false);
+  assert.equal("status" in afterNote, false);
+  assert.equal("acceptedBy" in afterNote, false);
+  assert.ok(
+    report1.registryChanges.some((c) => /strip.*owner|owner at/i.test(c)),
+    "migration reports owner strip"
+  );
 
   const afterOut = parseFrontmatter(await fsa.readFile("output/alpha仓库指针/alpha仓库指针.md")).data;
   assert.equal(afterOut.type, "output-asset");

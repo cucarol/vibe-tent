@@ -1,7 +1,7 @@
 // Task lifecycle API (B4) — claim / wait / deliver / accept / reject / interrupt.
 // Uses existing envelope files under temp/<role>/tasks and delivery records.
 // Runtime occupation oracle = active Task envelope only.
-// Box status/owner remain optional frontmatter projections (legacy-compatible summary).
+// Node frontmatter is not dual-written for owner/status; collaboration truth is Task/Delivery.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
@@ -12,9 +12,8 @@ import {
   writeDelivery,
   type DeliveryRecord,
 } from "./delivery.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import type { OpsEnv } from "./ops-context.js";
-import { boxNotePath, loadTent, type LoadedTent } from "./tree.js";
+import { loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
 import {
   ackTaskEnvelope,
@@ -101,16 +100,10 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     const claimedBoxes = task.claims
       .filter((claimId) => claimId !== "root")
       .map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy,
-    }));
 
     // asSub: helper may claim a free child under dispatchedBy's active ancestor occupation.
     // Peer claims still require a fully free ancestor/descendant chain.
-    // Occupation oracle = active Task envelopes only (not stale frontmatter owner).
+    // Occupation oracle = active Task envelopes only.
     const allowAncestorClaimedBy =
       taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role
         ? task.dispatchedBy
@@ -129,24 +122,15 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
 
-    try {
-      for (const box of claimedBoxes) {
-        await projectAssignee(env.fs, box, task.role, "doing");
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now(),
-        });
-      }
-      return loadTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
+    // Claim only acks the envelope — no Node frontmatter owner/status dual-write.
+    await ackTaskEnvelope(env.fs, taskPath);
+    if (options.sessionId) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        sessionId: options.sessionId,
+        updatedAt: env.clock.now(),
+      });
     }
+    return loadTaskEnvelope(env.fs, taskPath);
   });
 }
 
@@ -273,10 +257,7 @@ export async function taskDeliver(
       deliveriesDir: deliveryDirForTask(task),
     });
     // No review.by = submitter — integrate is service policy engine action.
-
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    await projectAssignee(env.fs, box, undefined, "done", "service");
+    // Occupation ends via task state=accepted; no Node frontmatter write.
 
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
@@ -345,10 +326,7 @@ export async function taskAccept(
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
 
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, delivery.boxId);
-    await projectAssignee(env.fs, box, undefined, "done", options.actor);
-
+    // Accept ends occupation via task state; no Node frontmatter dual-write.
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       wait: null,
@@ -389,12 +367,7 @@ export async function taskReject(
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
 
-    if (!resume) {
-      const tent = await loadTent(env.fs);
-      const box = requireBoxById(tent, delivery.boxId);
-      await projectAssignee(env.fs, box, undefined, "todo");
-    }
-
+    // Terminal reject ends occupation via task state only (no FM owner clear).
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: to,
       // Keep activeDeliveryId for history; new deliver checks ready-only.
@@ -415,14 +388,7 @@ export async function taskInterrupt(env: OpsEnv, taskPath: string): Promise<Task
     }
     assertTransition(task.state, "interrupt", "interrupted");
 
-    const tent = await loadTent(env.fs);
-    for (const claimId of task.claims) {
-      if (claimId === "root") continue;
-      const box = tent.byId.get(claimId);
-      if (!box) continue;
-      await projectAssignee(env.fs, box, undefined, "todo");
-      await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
-    }
+    await releaseOccupationForTask(env, task);
 
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "interrupted",
@@ -439,9 +405,9 @@ export interface TaskFailOptions {
 
 /**
  * Unrecoverable failure: running|waiting → failed.
- * Releases box occupation (owner/assignee + service-owned doing → todo) so the same
- * box can be re-dispatched without manual frontmatter edits or docs.fork.
- * Idempotent when already failed (no second occupation release error).
+ * Releases box occupation via task terminal state (and non-accepted delivery cleanup)
+ * so the same box can be re-dispatched. No Node frontmatter dual-write.
+ * Idempotent when already failed.
  */
 export async function taskFail(
   env: OpsEnv,
@@ -451,7 +417,7 @@ export async function taskFail(
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     if (task.state === "failed") {
-      // Already terminal non-active — ensure occupation is cleared (repair path).
+      // Already terminal non-active — ensure non-accepted deliveries are cleared (repair path).
       await releaseOccupationForTask(env, task);
       return task;
     }
@@ -466,14 +432,11 @@ export async function taskFail(
   });
 }
 
+/** Clear non-accepted deliveries for claimed boxes; occupation ends with task state. */
 async function releaseOccupationForTask(env: OpsEnv, task: TaskEnvelope): Promise<void> {
-  const tent = await loadTent(env.fs);
   for (const claimId of task.claims) {
     if (claimId === "root") continue;
-    const box = tent.byId.get(claimId);
-    if (!box) continue;
-    await projectAssignee(env.fs, box, undefined, "todo");
-    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
   }
 }
 
@@ -570,48 +533,6 @@ async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Pr
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
-}
-
-async function projectAssignee(
-  fs: FsAdapter,
-  box: Box,
-  owner: string | undefined,
-  status?: Box["fm"]["status"],
-  acceptedBy?: string
-): Promise<void> {
-  const patch: Record<string, unknown> = { owner: owner ?? undefined };
-  if (owner) patch.acceptedBy = undefined;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs, box, patch);
-}
-
-async function restoreProjection(
-  fs: FsAdapter,
-  box: Box,
-  owner: string | undefined,
-  status: Box["fm"]["status"] | undefined,
-  acceptedBy: unknown
-): Promise<void> {
-  await patchFrontmatter(fs, box, {
-    owner: owner ?? undefined,
-    status: status ?? undefined,
-    acceptedBy: acceptedBy ?? undefined,
-  });
-}
-
-async function patchFrontmatter(fs: FsAdapter, box: Box, patch: Record<string, unknown>): Promise<void> {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === undefined) delete data[k];
-    else data[k] = v;
-  }
-  const order = [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key)),
-  ];
-  await fs.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 
 function requireBoxById(tent: LoadedTent, boxId: string): Box {

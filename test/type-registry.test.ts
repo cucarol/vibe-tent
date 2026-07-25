@@ -36,7 +36,7 @@ test("V0.2 defaults: goal|prompt|output + reference|asset only", async () => {
   assert.equal(tent.typeRegistry.asset?.tier, "modifier");
   assert.equal(tent.typeRegistry.note, undefined);
   assert.equal(tent.typeRegistry.artifact, undefined);
-  
+
   const goal = tent.byId.get("bx-g2")!;
   assert.equal(goal.type, "goal");
   assert.equal(goal.invalid, false);

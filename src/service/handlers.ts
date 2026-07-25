@@ -4041,12 +4041,12 @@ function projectBoxCollaboration(
     return out;
   }
 
-  // No active task: only durable done survives; stale doing/owner → idle todo.
-  const status: BoxProjection["status"] = concept.fm.status === "done" ? "done" : "todo";
+  // No active task → idle todo only. Terminal accepted history is not re-projected
+  // from Node frontmatter (owner/status dual-write is retired).
   return {
     workspaceId,
     boxId: concept.id,
-    status,
+    status: "todo",
   };
 }
 

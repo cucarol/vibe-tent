@@ -225,8 +225,8 @@ test("lifecycle: auto-integrate runs outside mutation.lock and failure leaves no
   assert.equal(task.state, "running");
   assert.equal((await loadDeliveries(e.fs)).length, 0);
   const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, undefined);
 });
 
 test("lifecycle: accept integrate runs outside mutation.lock; failure keeps delivered", async () => {
@@ -264,8 +264,8 @@ test("lifecycle: accept integrate runs outside mutation.lock; failure keeps deli
   const ready = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
   assert.ok(ready);
   const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, undefined);
 });
 
 test("lifecycle: successful auto-integrate still accepts atomically after unlock", async () => {
@@ -291,6 +291,6 @@ test("lifecycle: successful auto-integrate still accepts atomically after unlock
   assert.equal(out.task.state, "accepted");
   assert.equal(out.delivery.status, "accepted");
   const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.status, "done");
+  assert.equal(box.fm.status, undefined);
   assert.equal(box.fm.owner, undefined);
 });

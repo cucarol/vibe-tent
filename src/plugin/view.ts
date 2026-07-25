@@ -8,7 +8,7 @@ import { ObsidianFs, SystemClock } from "./obsidian-fs.js";
 import { typeColorValue } from "./colors.js";
 import { loadTagRegistry, addTag, removeTag, removeRegistryTag } from "../core/tags.js";
 import { loadTent, LoadedTent, boxNotePath, reloadLoadedBox } from "../core/tree.js";
-import { Box, Status } from "../core/types.js";
+import { Box } from "../core/types.js";
 import { splitType, joinType } from "../core/typeRegistry.js";
 import { loadRolesRegistry } from "../core/skillRoleRegistry.js";
 import type { RoleDefinition } from "../core/skillRoleRegistry.js";
@@ -44,7 +44,6 @@ import {
   bottomTabParts,
   hasTreePending,
   restorePaneScroll,
-  statuslessDirectChildren,
   visibleTreeCount,
 } from "./ui-model.js";
 import { TimedCache } from "./timed-cache.js";
@@ -63,12 +62,10 @@ import {
   patchBox,
   patchBody,
   adoptCopiedSubtree,
-  stamp,
 } from "../core/ops.js";
 
 export const TENT_VIEW_TYPE = "tent-structure-editor";
 
-const STATUSES: Status[] = ["todo", "doing", "done"];
 const MIN_TREE_COLUMN = 250;
 const MIN_PROPERTY_COLUMN = 320;
 const COLUMN_DIVIDER = 6;
@@ -215,7 +212,7 @@ export class TentView extends ItemView {
         this.deliveries = await loadDeliveries(fs);
         this.proposals = await loadProposals(fs);
         this.tasks = await loadTaskEnvelopes(fs);
-        this.inbox = await buildInbox(this.tent);
+        this.inbox = await buildInbox(this.tent, fs);
         this.roles = (await loadRolesRegistry(fs)).roles;
         this.registryTags = (await loadTagRegistry(fs)).tags;
         this.loadError = null;
@@ -562,7 +559,6 @@ export class TentView extends ItemView {
     return hasTreePending({
       pendingProposals: this.pendingByTarget.get(box.id) ?? 0,
       pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
-      owner: box.fm.owner,
     });
   }
 
@@ -719,10 +715,9 @@ export class TentView extends ItemView {
       this.registryUi.markedTypes.has(split.base) ||
       (!!split.modifier && this.registryUi.markedTypes.has(split.modifier)) ||
       box.id === this.selectedId;
-    const owner = box.fm.owner;
-    const showRole = !!owner && (
-      this.registryUi.markedRoles.has(owner) || box.id === this.selectedId
-    );
+    // Node owner dual-write retired — role chrome comes from tasks elsewhere if needed.
+    const owner: string | undefined = undefined;
+    const showRole = false;
     if (showType || showRole) {
       const meta = row.createSpan({ cls: "tent-node-meta" });
       meta.createSpan({ cls: "tent-meta-sep", text: "│" });
@@ -763,24 +758,12 @@ export class TentView extends ItemView {
       tentTooltip(nb, isCollapsed ? `${pend} 项待裁（含子级）` : `${pend} 项待裁`);
     }
 
-    // 状态图标(无底色):doing/done,todo 不显
-    const st = box.fm.status;
+    // Status/owner icons retired from Node FM; only invalid remains on the row.
     if (box.invalid) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-invalid" });
       const ico = pill.createSpan();
       setIcon(ico, "triangle-alert");
       tentTooltip(pill, box.invalidReason || "失效框");
-    } else if (box.fm.owner) {
-      const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-lock" });
-      const ico = pill.createSpan();
-      setIcon(ico, "lock");
-      tentTooltip(pill, `锁定:${box.fm.owner} 认领中`);
-    } else if (st && st !== "todo") {
-      const pill = rest.createSpan({ cls: `tent-slot-status tent-spill tent-spill-${st}` });
-      const ico = pill.createSpan();
-      if (st === "doing") setIcon(ico, "circle-dashed");
-      else if (st === "done") setIcon(ico, "circle-check");
-      tentTooltip(pill, st);
     }
 
     // 操作键(hover/选中时显示):根据节点状态显示不同操作
@@ -915,14 +898,15 @@ export class TentView extends ItemView {
 
     menu.addItem((i) => i.setTitle("打开笔记").setIcon("file-text").onClick(() => this.openBoxFile(box)));
 
-    if (!box.archived && !box.invalid && box.fm.owner) {
+    if (!box.archived && !box.invalid) {
       menu.addItem((i) =>
         i
-          .setTitle(`中断释放 (${box.fm.owner})`)
+          .setTitle("中断释放 (active tasks)")
           .setIcon("unlock")
           .onClick(() => void this.requestForceRelease(box))
       );
-    } else if (!box.archived && !box.invalid) {
+    }
+    if (!box.archived && !box.invalid) {
       const check = canClaim(box);
       menu.addItem((i) =>
         i
@@ -1007,19 +991,10 @@ export class TentView extends ItemView {
 
     const card = el.createDiv({ cls: "tent-prop-card style-a-view" });
 
-    // 标题行:名字 + ID(紧靠标题右)+ owner(最右)+ 展开按钮(开/收二级属性)
+    // 标题行:名字 + ID + 展开按钮（Node owner dual-write retired）
     const titleRow = card.createDiv({ cls: "tent-prop-titlerow" });
     titleRow.createSpan({ cls: "tent-card-title", text: box.name });
     titleRow.createSpan({ cls: "tent-prop-id", text: box.id });
-    const ownerWrap = titleRow.createDiv({ cls: "tent-titlerow-owner" });
-    ownerWrap.createSpan({ cls: "owner-label", text: "owner" });
-    const ownerHas = !!box.fm.owner;
-    const ownerBadge = ownerWrap.createSpan({ cls: "owner-badge" + (ownerHas ? " active" : " empty") });
-    if (ownerHas) {
-      const role = this.roles.find((r) => r.name === box.fm.owner);
-      ownerBadge.style.setProperty("--role-color", roleColorValue(role ?? { name: box.fm.owner! }));
-    }
-    ownerBadge.setText(ownerHas ? box.fm.owner! : "—");
     const expandBtn = titleRow.createEl("button", { cls: "tent-prop-expand" });
     expandBtn.setAttr("type", "button");
     setIcon(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
@@ -1060,19 +1035,7 @@ export class TentView extends ItemView {
       baseSel.onchange = () => applyType(baseSel.value, modSel.value);
       modSel.onchange = () => applyType(baseSel.value, modSel.value);
 
-      // status:四段可视切换(非下拉),深底,靠右(owner 已移到标题行)
-      const soItem = editor.createDiv({ cls: "tent-prop-item" });
-      soItem.createSpan({ cls: "tent-item-label", text: "status" });
-      const seg = soItem.createDiv({ cls: "tent-status-segment" });
-      const curStatus = (box.fm.status || "todo") as Status;
-      for (const o of STATUSES) {
-        const opt = seg.createDiv({ cls: "tent-status-segment-option" + (o === curStatus ? " is-active" : ""), text: o });
-        opt.onclick = async () => {
-          await this.patchBoxIncremental(box, { status: o });
-        };
-      }
-
-      // tags
+      // tags (Node status/owner dual-write retired — collab lives on Task projection)
       this.drawTagsRow(editor, box);
       if (this.tagPickerOpen) this.drawTagPicker(editor, box);
     }
@@ -1303,10 +1266,10 @@ export class TentView extends ItemView {
   // 待裁 tab:pending proposal + Delivery 完成待确认(中断释放 / 确认完成)
   private drawTriageInline(body: HTMLElement, actSlot: HTMLElement, box: Box) {
     const proposals = this.pendingProposalsForBox(box.id);
-    const owner = box.fm.owner;
     const delivery = this.readyDeliveriesForBox(box.id)[0];
     const rejectedDelivery = this.rejectedDeliveryForBox(box.id);
-    if (owner) {
+    // Always offer force-release of active tasks for the box (no FM owner gate).
+    {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
         cls: "tent-bottom-action tent-bottom-danger" + (releasePending ? " is-confirm" : ""),
@@ -1318,7 +1281,7 @@ export class TentView extends ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposals.length === 0 && !owner && !delivery) {
+    if (proposals.length === 0 && !delivery) {
       body.createDiv({ cls: "tent-bottom-empty", text: "无待处理" });
       return;
     }
@@ -1385,14 +1348,13 @@ export class TentView extends ItemView {
         try {
           await this.rejectReadyDelivery(delivery);
           await this.refresh();
-          new Notice("已驳回，owner 保留，等待 agent 重新交付");
+          new Notice("已驳回，等待 agent 重新交付");
         } catch (e) {
           new Notice("驳回失败:" + (e instanceof Error ? e.message : e));
         }
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "确认" });
       done.setAttr("type", "button");
-      const statuslessChildren = statuslessDirectChildren(box);
 
       if (delivery.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
@@ -1417,8 +1379,8 @@ export class TentView extends ItemView {
         });
       }
 
-      const accept = async (children: Box[], controls: HTMLButtonElement[] = [done]) => {
-        for (const control of controls) control.setAttr("disabled", "true");
+      done.onclick = async () => {
+        done.setAttr("disabled", "true");
         try {
           await this.acceptReadyDelivery(delivery, {
             integrate: async (refs) => {
@@ -1428,63 +1390,26 @@ export class TentView extends ItemView {
               await integrateWorkspaceCommits(contract, refs);
             },
           });
-          for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
-          const childMessage = children.length > 0 ? `，并盖章 ${children.length} 个子级` : "";
-          new Notice((delivery.commits.length
-            ? `已确认(合入 ${delivery.commits.length} commit + 清 owner)`
-            : "已确认(done + 清 owner)") + childMessage);
+          new Notice(
+            delivery.commits.length
+              ? `已确认(合入 ${delivery.commits.length} commit)`
+              : "已确认交付"
+          );
         } catch (e) {
-          for (const control of controls) control.removeAttribute("disabled");
+          done.removeAttribute("disabled");
           new Notice("确认失败:" + (e instanceof Error ? e.message : e));
         }
       };
-      done.onclick = () => {
-        if (statuslessChildren.length === 0) {
-          void accept([]);
-          return;
-        }
-
-        done.setAttr("disabled", "true");
-        const prompt = body.createDiv({ cls: "tent-child-stamp" });
-        prompt.createDiv({
-          cls: "tent-child-stamp-title",
-          text: `同时盖章 ${statuslessChildren.length} 个直接子级？`,
-        });
-        const selected = new Set(statuslessChildren.map((child) => child.id));
-        for (const child of statuslessChildren) {
-          const row = prompt.createEl("label", { cls: "tent-child-stamp-row" });
-          const checkbox = row.createEl("input", { type: "checkbox" });
-          checkbox.checked = true;
-          row.createSpan({ text: child.name });
-          checkbox.onchange = () => {
-            if (checkbox.checked) selected.add(child.id);
-            else selected.delete(child.id);
-          };
-        }
-        const promptActions = prompt.createDiv({ cls: "tent-child-stamp-actions" });
-        const parentOnly = promptActions.createEl("button", { text: "仅盖父框" });
-        parentOnly.setAttr("type", "button");
-        const includeChildren = promptActions.createEl("button", { cls: "mod-cta", text: "同时盖章" });
-        includeChildren.setAttr("type", "button");
-        const controls = [parentOnly, includeChildren];
-        parentOnly.onclick = () => void accept([], controls);
-        includeChildren.onclick = () => {
-          const children = statuslessChildren.filter((child) => selected.has(child.id));
-          void accept(children, controls);
-        };
-      };
-    } else if (owner) {
+    } else if (rejectedDelivery) {
       body.createDiv({ cls: "tent-triage-sec", text: "处理中" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
-      main.createDiv({ cls: "tent-triage-name", text: `${owner} 正在处理此框` });
+      main.createDiv({ cls: "tent-triage-name", text: `${rejectedDelivery.role} · 交付已驳回` });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: rejectedDelivery
-          ? "上一份交付已驳回，等待重新交付"
-          : "Delivery 到达后可在此确认交付",
+        text: "等待重新交付",
       });
     }
 
@@ -1656,11 +1581,26 @@ export class TentView extends ItemView {
           cancel.removeAttribute("disabled");
         }
       };
-    } else if (box.fm.owner) {
-      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "投递状态" });
-      const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
-      state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} 正在处理此框` });
-      state.createDiv({ cls: "tent-content-meta", text: "可在「待裁」中查看交付或中断任务" });
+    } else {
+      const activeTask = this.tasks.find(
+        (t) =>
+          (t.state === "running" ||
+            t.state === "waiting" ||
+            t.state === "delivered" ||
+            t.state === "queued" ||
+            t.status === "pending" ||
+            t.status === "taken") &&
+          t.claims.includes(box.id)
+      );
+      if (activeTask) {
+        body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "投递状态" });
+        const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
+        state.createDiv({
+          cls: "tent-content-title",
+          text: `${activeTask.role} 正在处理此框`,
+        });
+        state.createDiv({ cls: "tent-content-meta", text: "可在「待裁」中查看交付或中断任务" });
+      }
     }
   }
 
@@ -1780,7 +1720,7 @@ export class TentView extends ItemView {
       try {
         await forceRelease(this.env(), box.id);
         await this.refresh();
-        new Notice(`已中断「${box.name}」并释放 owner`);
+        new Notice(`已中断「${box.name}」的 active tasks`);
       } catch (error) {
         new Notice("释放失败:" + (error instanceof Error ? error.message : error));
       }

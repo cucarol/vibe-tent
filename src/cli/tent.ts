@@ -34,8 +34,6 @@ import { loadTent } from "../core/tree.js";
 import {
   OpsEnv,
   dispatch,
-  stamp,
-  completeClaim,
   cleanTemp,
   cancelPendingTask,
   forceRelease,
@@ -60,9 +58,7 @@ import { withTentMutation } from "../core/adapter.js";
 import { scaffoldInWorkspace, validateBoxName } from "../core/scaffold.js";
 import {
   ensureRoleWorkspace,
-  integrateWorkspaceCommits,
   resolveTentWorkspace,
-  runWorkspaceCheck,
 } from "../core/workspace.js";
 import { TENT_SYSTEM_DIR, workspaceRootFromSystemRoot } from "../core/paths.js";
 import { importExternalTentRoot } from "../core/migration.js";
@@ -449,52 +445,14 @@ async function main() {
       break;
     }
     case "complete": {
-      // External-root stamp path only. Formal Delivery review uses tent task deliver/accept.
-      const { positionals, flags } = parseFlags(args);
-      const boxId = positionals[0];
-      if (!boxId) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
-      if (positionals.length > 1) return fail("Usage: tent complete <boxId> [--commits <sha,sha>] [--require-check <command>] [--by <role>]");
-      const tent = await loadTent(env.fs);
-      const box = tent.byId.get(boxId);
-      if (!box) return fail(`Box not found: ${boxId}`);
-      const owner = ownerFor(box);
-      const hasExplicitCommits = Object.prototype.hasOwnProperty.call(flags, "commits");
-      const explicitRefs = (flags.commits || "").split(",").map((item) => item.trim()).filter(Boolean);
-      if (hasExplicitCommits && explicitRefs.length === 0) {
-        return fail("--commits requires at least one commit ref");
-      }
-      const refs = hasExplicitCommits ? explicitRefs : [];
-      if (refs.length > 0 && !owner) return fail("Completing with workspace commits requires an owner");
-      let integrationLines: string[] = [];
-      const workspacePath = resolveTentWorkspace(tent, env.tentRoot);
-      if (flags["require-check"]) {
-        // Legacy external complete path: still needs a resolvable workspace root
-        // (in-workspace .tent parent). Product phrase "workspace pointer" is retired.
-        if (!workspacePath) return fail("--require-check requires a workspace root");
-        await runWorkspaceCheck(workspacePath, flags["require-check"]);
-      }
-      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
-      const integrate = async (commitRefs: string[]) => {
-        if (!workspacePath) throw new Error("The Tent has no workspace root");
-        const contract = await ensureRoleWorkspace(workspacePath, owner!);
-        const integrated = await integrateWorkspaceCommits(contract, commitRefs);
-        integrationLines = integrated.map(
-          (item) => `${item.sourceRef} → ${item.integratedRef}${item.alreadyIntegrated ? " (already)" : ""}`
-        );
-      };
-      await completeClaim(env, boxId, refs.length > 0 ? () => integrate(refs) : undefined, acceptedBy);
-      for (const line of integrationLines) console.log(line);
-      console.log(`✓ Completed ${boxId}`);
-      break;
+      return fail(
+        "complete is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
+      );
     }
     case "stamp": {
-      const { positionals, flags } = parseFlags(args);
-      if (!positionals[0]) return fail("Usage: tent stamp <boxId> [--by <role>]");
-      if (positionals.length > 1) return fail("Usage: tent stamp <boxId> [--by <role>]");
-      const acceptedBy = flags.by || process.env.TENT_ROLE || "user";
-      await stamp(env, positionals[0], acceptedBy);
-      console.log(`✓ Stamped ${positionals[0]} (done and owner cleared)`);
-      break;
+      return fail(
+        "stamp is retired: Node owner/status dual-write is removed. Use tent task deliver/accept (or task.fail)."
+      );
     }
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
@@ -611,7 +569,7 @@ async function main() {
       if (!args[0]) return fail("Usage: tent force-release <boxId>");
       if (args.length > 1) return fail("Usage: tent force-release <boxId>");
       await forceRelease(env, args[0]);
-      console.log(`✓ Force-released owner: ${args[0]}`);
+      console.log(`✓ Force-released active tasks for box: ${args[0]}`);
       break;
     }
     case "okf-sync": {
@@ -659,11 +617,10 @@ async function readBodyFile(bodySource: string): Promise<string> {
 function printBox(box: import("../core/types.js").Box, depth: number) {
   const ind = "  ".repeat(depth);
   const mode = box.archived ? " archived" : "";
-  const owner = box.fm.owner ? ` ⚑${box.fm.owner}` : "";
   const type = box.type;
   const id = box.id || "missing-id";
   const invalid = box.invalid ? ` invalid:${box.invalidReason || "invalid"}` : "";
-  console.log(`${ind}${box.name} [${type} ${id}]${mode}${owner}${invalid}`);
+  console.log(`${ind}${box.name} [${type} ${id}]${mode}${invalid}`);
   for (const c of box.children) printBox(c, depth + 1);
 }
 
@@ -812,9 +769,8 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   dispatch <boxId> <role> <prompt>   Create a pending task envelope.
   task-ack <taskPath>                Mark a task taken and claim its box (legacy claim).
   task-cancel <taskPath>             Delete a pending task envelope.
-  complete <boxId> [options]         Confirm completion and release owner (no Delivery).
-  stamp <boxId> [--by <role>]        Mark done without workspace commits.
-  force-release <boxId>              Release owner without accepting delivery.
+  complete|stamp                     Retired (no Node owner/status dual-write; use task.*).
+  force-release <boxId>              Interrupt/cancel active tasks for the box (no FM write).
   grant-readable                     Retired (V0.2: no Node R/W axes).
   new-box <name> <type> [parentId]   Create a box (type: goal|prompt|output[-secondary]).
   tag|untag <boxId> <tag>            Add or remove a tag.
@@ -960,16 +916,6 @@ function normalizeTemplateRoles(value: unknown): RolesRegistry {
     roles.push(role);
   }
   return { roles };
-}
-
-function ownerFor(box: import("../core/types.js").Box): string | undefined {
-  if (box.fm.owner) return box.fm.owner;
-  let parent = box.parent;
-  while (parent) {
-    if (parent.fm.owner) return parent.fm.owner;
-    parent = parent.parent;
-  }
-  return undefined;
 }
 
 // Only auto-run when this file is the process entry (not when imported by tests).

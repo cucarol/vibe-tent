@@ -258,7 +258,7 @@ type AgentProfile = {
 
 ### 5.3 Active-task field protection
 
-While a box has an **active task**, collaboration projection fields (`status` when projected as `doing`, `assignee` / legacy `owner`) are **not** independently writable through ordinary `docs.write` / body frontmatter patches. Clients must use Task API transitions; service/core reject competing writes (see `task-api.md` §2.3 and `concept-model.md`).
+Collaboration progress (`status` / `assignee`) is projected from Task/Session/Delivery only. Ordinary `docs.write` must not set retired Node keys (`owner`/`status`/`assignee`); service/core reject those writes (see `task-api.md` §2.3 and `concept-model.md`).
 
 ---
 
@@ -310,7 +310,7 @@ packages/
 | --- | --- |
 | External tent under vault/`_tents` + separate code root linkage | Tent **inside** the workspace at **`.tent/`** |
 | `bx-` handles | `cx-` handles (full map in migration report) |
-| `owner` fact on box | `assignee` projected from active task |
+| `owner` / `status` on Node FM | stripped on migrate; `assignee`/`status` from `box.projection` only |
 | temp `report` without id | `delivery` (`dl-`) under task (per Task API contract) |
 | Dual mental model / dual UI | Single location model only |
 | Product term “workspace pointer” | Retired; use **WorkspaceLane** (task) / **RuntimeWorkspace** (runtime) / in-workspace tent |

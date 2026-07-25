@@ -56,7 +56,6 @@ export async function loadTent(fs: FsAdapter): Promise<LoadedTent> {
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
   const duplicateIds = findDuplicateIds(sortedRoots);
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
-  resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
 
   return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
@@ -101,7 +100,6 @@ export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: str
   box.fm = identity.fm;
   box.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
-  resolveLocks(tent.roots);
   return box;
 }
 
@@ -143,7 +141,6 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
     body,
     children: [],
     parent,
-    locked: false,
   };
   if (parseError) {
     box.invalidRootId = path;
@@ -170,6 +167,9 @@ function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter;
   delete (fm as Record<string, unknown>).archived;
   delete (fm as Record<string, unknown>).readable;
   delete (fm as Record<string, unknown>).writable;
+  delete (fm as Record<string, unknown>).owner;
+  delete (fm as Record<string, unknown>).status;
+  delete (fm as Record<string, unknown>).acceptedBy;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
@@ -250,48 +250,8 @@ function resolveSubtree(
   // Keep fm.mode only for explicit archive roots.
   if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
   else delete box.fm.mode;
-  // Legacy status may remain on disk for lifecycle dual-write; do not invent projection here.
-  if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
-    delete box.fm.status;
-  }
 
   for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
-}
-
-function resolveLocks(roots: Box[]): void {
-  for (const root of roots) clearLocks(root);
-  for (const root of roots) resolveLockSubtree(root);
-}
-
-function clearLocks(box: Box): void {
-  box.locked = false;
-  delete box.lockSource;
-  delete box.lockOwner;
-  for (const child of box.children) clearLocks(child);
-}
-
-function resolveLockSubtree(box: Box): void {
-  for (const child of box.children) {
-    resolveLockSubtree(child);
-  }
-
-  if (box.fm.owner) {
-    applyAncestorLock(box, box.fm.owner);
-    box.locked = true;
-    box.lockSource = "self";
-    box.lockOwner = box.fm.owner;
-  }
-}
-
-function applyAncestorLock(box: Box, owner: string): void {
-  for (const child of box.children) {
-    if (!child.fm.owner) {
-      child.locked = true;
-      child.lockSource = "ancestor";
-      child.lockOwner = owner;
-    }
-    applyAncestorLock(child, child.fm.owner || owner);
-  }
 }
 
 function invalidTypeReference(

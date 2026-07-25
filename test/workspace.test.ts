@@ -411,7 +411,7 @@ test("listRoleCommitsFor:只读列举 role 分支 commits,不创建 worktree", a
   );
 });
 
-test("completeClaim:workspace 合入失败时不释放 owner 或写 done", async () => {
+test("completeClaim: retired — rejects without dual-writing Node owner/status", async () => {
   const dir = await makeTent();
   const adapter = new NodeFs(dir);
   const { completeClaim } = await import("../src/core/ops.js");
@@ -423,11 +423,11 @@ test("completeClaim:workspace 合入失败时不释放 owner 或写 done", async
         throw new Error("conflict");
       }
     ),
-    /conflict/
+    /retired|owner\/status|no longer write/i
   );
   const box = (await loadTent(adapter)).byId.get("bx-g2")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, undefined);
 });
 
 async function makeGitWorkspace(prefix: string): Promise<string> {

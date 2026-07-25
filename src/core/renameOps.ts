@@ -72,9 +72,7 @@ async function renameNodeUnlocked(
   }
   assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
-    throw new Error(
-      "Claimed ranges cannot be renamed; stamp or force-release the owner first."
-    );
+    throw new Error("Invalid or archived boxes cannot be renamed.");
   }
   await assertRenameOccupationAllowed(env, tent, target);
 

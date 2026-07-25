@@ -267,7 +267,7 @@ test("box.projections: order stable; item semantics match box.projection", async
     // Stale owner/doing on b without active task → todo
     await writeStaleOwnerDoing(ws, b.path, "ghost-role");
 
-    // Accept path on c → done
+    // Accept path on c → no active task → todo (Node FM done is not product truth)
     const d2 = (await client.taskDispatch(workspaceId, {
       boxId: c.id,
       role: "executor",
@@ -299,7 +299,7 @@ test("box.projections: order stable; item semantics match box.projection", async
       assert.equal(item.activeTaskId, single.activeTaskId);
     }
 
-    assert.equal(batch.projections[0]!.status, "done"); // c
+    assert.equal(batch.projections[0]!.status, "todo"); // c accepted → idle
     assert.equal(batch.projections[1]!.status, "doing"); // a
     assert.ok(batch.projections[1]!.assignee === "executor");
     assert.ok(batch.projections[1]!.activeTaskId);

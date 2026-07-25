@@ -357,8 +357,13 @@ test("dispatch/claim:V0.2 无 coordination 门；prompt 与 output 均可认领"
   assert.match(result.taskPath, /temp\/reviewer\/tasks\//);
   await taskAck(env as any, result.taskPath);
   const after = await loadTent(fsa);
-  assert.equal(after.byId.get(promptId)!.fm.owner, "reviewer");
-  assert.equal(after.byId.get(promptId)!.fm.status, "doing");
+  assert.equal(after.byId.get(promptId)!.fm.owner, undefined, "claim does not dual-write owner");
+  assert.equal(after.byId.get(promptId)!.fm.status, undefined, "claim does not dual-write status");
+  const { loadTaskEnvelope } = await import("../src/core/task.js");
+  const task = await loadTaskEnvelope(fsa, result.taskPath);
+  assert.equal(task.state, "running");
+  assert.equal(task.status, "taken");
+  assert.equal(task.role, "reviewer");
 });
 
 

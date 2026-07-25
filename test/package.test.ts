@@ -210,7 +210,7 @@ test("in-workspace .tent: legacy mutation CLI fail-loud; read-only + init still 
   assert.equal(await exists(path.join(another, ".tent", "RULES.md")), true);
 });
 
-test("external tent root: legacy CLI 全链路 tree → dispatch → stamp → clean-temp", async () => {
+test("external tent root: legacy CLI 全链路 tree → dispatch → task-ack → clean-temp", async () => {
   // migration window: external system root (not named .tent) still accepts direct core writes
   const tent = await makeExternalTent();
 
@@ -277,16 +277,19 @@ test("external tent root: legacy CLI 全链路 tree → dispatch → stamp → c
   const checkPath = externalPath(tent, "挖掘目标", "检查项", "检查项.md");
   await runCli(tent, "task-ack", taskPath(checkDispatch));
   let goalRaw = await fs.readFile(checkPath, "utf8");
-  assert.equal(parseFrontmatter(goalRaw).data.owner, "reviewer");
+  // claim does not dual-write Node owner/status
+  assert.equal(parseFrontmatter(goalRaw).data.owner, undefined);
+  assert.equal(parseFrontmatter(goalRaw).data.status, undefined);
+  const ackedTask = parseFrontmatter(
+    await fs.readFile(externalPath(tent, taskPath(checkDispatch)), "utf8")
+  ).data;
+  assert.equal(ackedTask.status, "taken");
 
   goalRaw += "\n集成测试已落地。\n";
   await fs.writeFile(checkPath, goalRaw);
 
-  await runCli(tent, "stamp", checkId);
-  const stamped = parseFrontmatter(await fs.readFile(checkPath, "utf8"));
-  assert.equal(stamped.data.status, "done");
-  assert.equal(stamped.data.owner, undefined);
-  assert.equal(stamped.data.acceptedBy, "user");
+  // stamp is retired (no FM dual-write)
+  await assert.rejects(() => runCli(tent, "stamp", checkId), /retired|owner\/status/i);
 
   await runCli(tent, "clean-temp");
   assert.equal(await exists(externalPath(tent, "temp")), true);
@@ -320,8 +323,8 @@ test("external tent: dispatch task-ack lifecycle (no workspace lane)", async () 
   const ackedData = parseFrontmatter(await fs.readFile(externalPath(tent, peerTask), "utf8")).data;
   assert.equal(ackedData.status, "taken");
   peerBox = parseFrontmatter(await fs.readFile(peerBoxPath, "utf8")).data;
-  assert.equal(peerBox.owner, "reviewer");
-  assert.equal(peerBox.status, "doing");
+  assert.equal(peerBox.owner, undefined);
+  assert.equal(peerBox.status, undefined);
 
   // --as-sub requires workspace contract; external flat root has none.
   await assert.rejects(
@@ -363,22 +366,22 @@ test("tent status:read-only on in-workspace; full status on external root", asyn
   );
   assert.match(status.stdout, /Pending tasks \(task-ack\):/);
   assert.match(status.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
-  assert.match(status.stdout, /Active claims: none/);
+  assert.match(status.stdout, /Active tasks: none/);
   assert.equal(status.stderr, "");
 
   await runCli(tent, "task-ack", taskPath(dispatched));
   const ackedStatus = await runCli(tent, "status");
   assert.match(ackedStatus.stdout, /Pending tasks \(task-ack\): none/);
-  assert.match(ackedStatus.stdout, /Active claims:/);
-  assert.match(
-    ackedStatus.stdout,
-    new RegExp(`- ${claimId}: Implement release notes \\(owner: reviewer, status: doing\\)`),
-  );
+  assert.match(ackedStatus.stdout, /Active tasks:/);
+  assert.match(ackedStatus.stdout, /reviewer/);
+  assert.match(ackedStatus.stdout, new RegExp(claimId));
 
-  await runCli(tent, "stamp", claimId);
+  // stamp retired — use force-release / task lifecycle to clear occupation
+  await assert.rejects(() => runCli(tent, "stamp", claimId), /retired|owner\/status/i);
+  await runCli(tent, "force-release", claimId);
   const doneStatus = await runCli(tent, "status");
   assert.match(doneStatus.stdout, /Pending tasks \(task-ack\): none/);
-  assert.doesNotMatch(doneStatus.stdout, new RegExp(`- reviewer/${escapeRegExp(task)} -> ${claimId}`));
+  assert.match(doneStatus.stdout, /Active tasks: none/);
 
   const outside = await fs.realpath(await fs.mkdtemp(path.join(os.tmpdir(), "tent-status-outside-")));
   const failed = await runCliWithExit(outside, "status");
@@ -437,51 +440,25 @@ test("external tent clean-temp:rejects traversal role names and preserves root s
   }
 });
 
-test("external tent complete:without a Delivery remains a zero-integration stamp path", async () => {
-  const fixture = await makeCompletionFixture();
-
-  await runCli(fixture.tent, "complete", fixture.boxId);
-
-  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
-  assert.equal(completed.status, "done");
-  assert.equal(completed.owner, undefined);
-});
-
-test("external tent complete:--by records the accepting role", async () => {
-  const fixture = await makeCompletionFixture();
-
-  await runCli(fixture.tent, "complete", fixture.boxId, "--by", "planner");
-
-  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
-  assert.equal(completed.status, "done");
-  assert.equal(completed.owner, undefined);
-  assert.equal(completed.acceptedBy, "planner");
-});
-
-test("external tent stamp:--by records the accepting role", async () => {
-  const fixture = await makeCompletionFixture();
-
-  await runCli(fixture.tent, "stamp", fixture.boxId, "--by", "planner");
-
-  const completed = parseFrontmatter(await fs.readFile(fixture.boxNote, "utf8")).data;
-  assert.equal(completed.status, "done");
-  assert.equal(completed.owner, undefined);
-  assert.equal(completed.acceptedBy, "planner");
-});
-
-test("external tent complete:--require-check without workspace fails before mutation", async () => {
+test("external tent complete/stamp are retired (no Node owner/status dual-write)", async () => {
   const fixture = await makeCompletionFixture();
   const beforeBox = await fs.readFile(fixture.boxNote, "utf8");
 
+  await assert.rejects(() => runCli(fixture.tent, "complete", fixture.boxId), /retired|owner\/status/i);
+  await assert.rejects(
+    () => runCli(fixture.tent, "complete", fixture.boxId, "--by", "planner"),
+    /retired|owner\/status/i
+  );
+  await assert.rejects(
+    () => runCli(fixture.tent, "stamp", fixture.boxId, "--by", "planner"),
+    /retired|owner\/status/i
+  );
   await assert.rejects(
     () => runCli(fixture.tent, "complete", fixture.boxId, "--require-check", "git --version"),
-    /require-check requires a workspace root/,
+    /retired|owner\/status/i
   );
 
   assert.equal(await fs.readFile(fixture.boxNote, "utf8"), beforeBox);
-  const stillDoing = parseFrontmatter(beforeBox).data;
-  assert.equal(stillDoing.status, "doing");
-  assert.equal(stillDoing.owner, "reviewer");
 });
 
 test("tent new:in-workspace .tent 空骨架,生成 RULES 且 workspace 可无 Git", async () => {
@@ -794,7 +771,7 @@ async function makeCompletionFixture(): Promise<{
   boxId: string;
   boxNote: string;
 }> {
-  // External system root: legacy complete/stamp still direct-write during migration window.
+  // External system root fixture for retired complete/stamp (must not dual-write FM).
   // Formal Delivery is task.deliver only; Git integrate paths are covered by service/core tests.
   const tent = await makeExternalTent();
   const deliveryId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));

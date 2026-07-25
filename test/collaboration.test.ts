@@ -18,17 +18,29 @@ import {
 import { acceptProposal, loadProposal, loadProposals, rejectProposal, submitProposal } from "../src/core/proposal.js";
 import { makeTent } from "./helpers.js";
 
-test("buildInbox:认领中由 inbox 聚合,不计入待裁", async () => {
+test("buildInbox: active task occupation 聚合,不计入待裁", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
+  const env = {
+    fs: fsa,
+    clock: { now: () => "2026-07-01T00:00:00.000Z" },
+    tentName: "wqb",
+    tentRoot: dir,
+  };
+  const result = await dispatch(env as any, "bx-p1", "executor", {
+    userPrompt: "for inbox",
+  });
+  await taskClaim(env as any, result.taskPath);
   const tent = await loadTent(fsa);
   const { buildInbox, pendingCount } = await import("../src/core/inbox.js");
-  const inbox = await buildInbox(tent);
-  assert.ok(inbox.some((i) => i.state === "stale" && i.boxId === "bx-g2"), "owner 显示为认领中");
+  const inbox = await buildInbox(tent, fsa);
+  assert.ok(inbox.some((i) => i.state === "stale" && i.boxId === "bx-p1"), "active task 显示为认领中");
   assert.equal(pendingCount(inbox), 0, "认领中不计入待裁");
+  // Without fs, inbox is empty (no FM owner scan).
+  assert.equal((await buildInbox(tent)).length, 0);
 });
 
-test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 记录", async () => {
+test("delivery:驳回后 task 仍 running,重新交付后 accept 保留 accepted 记录", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -38,7 +50,6 @@ test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 
     tentRoot: dir,
   };
 
-  // bx-g2 already has owner=executor; free a sibling-free claim box for lifecycle.
   const result = await dispatch(env as any, "bx-p1", "executor", {
     userPrompt: "Implement delivery single-track",
   });
@@ -60,7 +71,9 @@ test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 
   assert.equal(rejected.delivery.status, "rejected");
   assert.equal(rejected.delivery.review?.note, "需要补测试");
   assert.equal(rejected.task.state, "running");
-  assert.equal((await loadTent(fsa)).byId.get("bx-p1")!.fm.owner, "executor");
+  const mid = (await loadTent(fsa)).byId.get("bx-p1")!;
+  assert.equal(mid.fm.owner, undefined);
+  assert.equal(mid.fm.status, undefined);
 
   const revised = await taskDeliver(env as any, result.taskPath, {
     summary: "已补测试",
@@ -76,9 +89,10 @@ test("delivery:驳回保留 owner,重新交付后整份确认并保留 accepted 
   });
   assert.deepEqual(integrated, ["ccc"]);
   assert.equal(accepted.delivery.status, "accepted");
+  assert.equal(accepted.task.state, "accepted");
   const box = (await loadTent(fsa)).byId.get("bx-p1")!;
   assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "done");
+  assert.equal(box.fm.status, undefined);
   // Accepted delivery remains as operational history (not deleted like legacy report).
   assert.equal(await fsa.exists(accepted.delivery.path), true);
   assert.equal((await loadDelivery(fsa, accepted.delivery.path)).status, "accepted");
@@ -159,7 +173,7 @@ test("delivery:force-release 删除非 accepted，保留 accepted 历史", async
   assert.equal(await fsa.exists(accepted.path), true);
   const box = (await loadTent(fsa)).byId.get("bx-g2")!;
   assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "todo");
+  assert.equal(box.fm.status, undefined);
 });
 
 test("delivery:纯数字 commit ref 保持字符串", async () => {

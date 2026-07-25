@@ -37,6 +37,7 @@ export interface StatusCountInput {
 export interface TreePendingInput {
   pendingProposals: number;
   pendingDispatches: number;
+  /** @deprecated Node owner is retired; ignored when present. */
   owner?: string;
 }
 
@@ -85,12 +86,15 @@ export function visibleTreeCount<T extends TreeCountNode>(
   return subtreeCount(node);
 }
 
-export function showsUnstampedState(node: LifecycleNode): boolean {
-  return node.fm.status !== undefined || !!node.fm.owner;
+/** @deprecated Node owner/status dual-write is retired; always false. */
+export function showsUnstampedState(_node: LifecycleNode): boolean {
+  void _node;
+  return false;
 }
 
+/** All direct children (status is no longer on Node FM). */
 export function statuslessDirectChildren<T extends LifecycleTreeNode>(node: T): T["children"] {
-  return node.children.filter((child) => child.fm.status === undefined) as T["children"];
+  return node.children.slice() as T["children"];
 }
 
 export function bottomTabCounts(input: BottomTabCountInput): { dispatch: number; triage: number } {
@@ -117,7 +121,8 @@ export function statusIncreaseNoticeText(increase: number): string {
 }
 
 export function hasTreePending(input: TreePendingInput): boolean {
-  return input.pendingProposals > 0 || input.pendingDispatches > 0 || !!input.owner;
+  // Node owner is not product truth — only proposals / pending dispatches.
+  return input.pendingProposals > 0 || input.pendingDispatches > 0;
 }
 
 export function bottomTabParts(label: string, count: number): { label: string; count: string } {

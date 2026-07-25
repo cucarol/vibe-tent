@@ -50,12 +50,12 @@ export function drawRwSegment(
   }
 }
 
-export function hasActiveOwnerInScope(box: Box): boolean {
-  let current: Box | null = box;
-  while (current) {
-    if (current.fm.owner) return true;
-    current = current.parent;
-  }
+/**
+ * Legacy name retained for call sites. Node fm.owner is retired — always false.
+ * Structural freeze / active-task gates live on Core claim + ops paths.
+ */
+export function hasActiveOwnerInScope(_box: Box): boolean {
+  void _box;
   return false;
 }
 

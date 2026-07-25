@@ -1,6 +1,8 @@
 import { FsAdapter, withTentMutation } from "./adapter.js";
 import { Box } from "./types.js";
 import { loadTent } from "./tree.js";
+import { loadTaskEnvelopes } from "./task.js";
+import { envelopeIsActiveOccupation } from "./claim.js";
 import {
   BUILTIN_SECONDARY_TYPES,
   CANONICAL_PRIMARY_TYPES,
@@ -27,6 +29,10 @@ export interface TypeDeletionInspection {
   builtIn: boolean;
   exists: boolean;
   references: TypeReference[];
+  /**
+   * Active task roles occupying referenced nodes (or related ancestor/descendant range).
+   * Field name kept for API stability; values are task.role labels, not Node fm.owner.
+   */
   activeOwners: { id: string; path: string; owner: string }[];
 }
 
@@ -87,13 +93,30 @@ export async function inspectTypeDeletion(
     const { base, modifier } = splitType(box.type);
     return box.type === name || base === name || modifier === name;
   });
+  const tasks = await loadTaskEnvelopes(fs);
   const ownerMap = new Map<string, { id: string; path: string; owner: string }>();
 
+  const relatedIds = new Set<string>();
   for (const reference of referenced) {
     for (const box of relatedBoxes(reference, boxes)) {
-      const owner = typeof box.fm.owner === "string" ? box.fm.owner : undefined;
-      if (!owner) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner });
+      relatedIds.add(box.id);
+    }
+  }
+
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        // Root occupation blocks any type deletion that still has references.
+        if (referenced.length > 0) {
+          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
+        }
+        continue;
+      }
+      if (!relatedIds.has(claimId)) continue;
+      const box = tent.byId.get(claimId);
+      if (!box) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
     }
   }
 
@@ -124,7 +147,9 @@ export async function deleteCustomType(
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.activeOwners.length > 0) {
-      throw new Error(`Referenced range still has an owner; stamp or force-release first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`);
+      throw new Error(
+        `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
+      );
     }
     const registry = await loadTypeRegistry(fs);
     delete registry[name];

@@ -94,21 +94,24 @@ test("plugin ui-model:collapsed rows include hidden descendant triage counts", (
   assert.equal(visibleTreeCount(child, true, direct), 5);
 });
 
-test("plugin ui-model:lifecycle warning only appears after entering the lifecycle", () => {
+test("plugin ui-model:showsUnstampedState always false (Node owner/status retired)", () => {
   assert.equal(showsUnstampedState({ fm: {} }), false);
-  assert.equal(showsUnstampedState({ fm: { owner: "executor" } }), true);
-  assert.equal(showsUnstampedState({ fm: { status: "todo" } }), true);
-  assert.equal(showsUnstampedState({ fm: { status: "done" } }), true);
+  assert.equal(showsUnstampedState({ fm: { owner: "executor" } }), false);
+  assert.equal(showsUnstampedState({ fm: { status: "todo" } }), false);
+  assert.equal(showsUnstampedState({ fm: { status: "done" } }), false);
 });
 
-test("plugin ui-model:lifecycle batch candidates are statusless direct children only", () => {
+test("plugin ui-model:statuslessDirectChildren returns all direct children", () => {
   const grandchild = { id: "grandchild", fm: {}, children: [] };
   const statusless = { id: "statusless", fm: {}, children: [grandchild] };
   const todo = { id: "todo", fm: { status: "todo" }, children: [] };
   const done = { id: "done", fm: { status: "done" }, children: [] };
   const parent = { id: "parent", fm: { status: "doing" }, children: [statusless, todo, done] };
 
-  assert.deepEqual(statuslessDirectChildren(parent).map((child) => child.id), ["statusless"]);
+  assert.deepEqual(
+    statuslessDirectChildren(parent).map((child) => child.id),
+    ["statusless", "todo", "done"]
+  );
 });
 
 test("plugin ui-model:dispatch and triage tab counts stay separate", () => {
@@ -141,10 +144,10 @@ test("plugin ui-model:tab count is a stable part separate from its label", () =>
   assert.deepEqual(bottomTabParts("待裁", 0), { label: "待裁", count: "" });
 });
 
-test("plugin ui-model:tree pending filter includes pending dispatches", () => {
+test("plugin ui-model:tree pending filter includes pending dispatches (not owner)", () => {
   assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 1 }), true);
   assert.equal(hasTreePending({ pendingProposals: 1, pendingDispatches: 0 }), true);
-  assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0, owner: "executor" }), true);
+  assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0, owner: "executor" }), false);
   assert.equal(hasTreePending({ pendingProposals: 0, pendingDispatches: 0 }), false);
 });
 
@@ -244,8 +247,7 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.deepEqual(settings.newTentDefaults.typeRegistry.prompt, { tier: "base" });
   assert.ok(settings.newTentDefaults.typeRegistry.output);
   assert.deepEqual(settings.newTentDefaults.typeRegistry.output, { tier: "base" });
-  
-    assert.equal(settings.newTentDefaults.typeRegistry.repo, undefined, "custom primary bases are not kept");
+  assert.equal(settings.newTentDefaults.typeRegistry.repo, undefined, "custom primary bases are not kept");
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   const migratedRoleId = settings.newTentDefaults.rolesRegistry.roles[0].id;
   assert.ok(migratedRoleId);

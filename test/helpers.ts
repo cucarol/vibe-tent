@@ -34,10 +34,10 @@ export async function makeTent(): Promise<string> {
     ) + "\n"
   );
   await box("goal", "id: bx-goalzone\ntype: goal");
-  await box("goal/挖新alpha", "id: bx-g1\ntype: goal\nstatus: doing");
+  await box("goal/挖新alpha", "id: bx-g1\ntype: goal");
   await box(
     "goal/挖新alpha/写表达式",
-    "id: bx-g2\ntype: goal\nowner: executor\nstatus: doing"
+    "id: bx-g2\ntype: goal"
   );
   await box("prompt", "id: bx-promptzone\ntype: prompt");
   await box(

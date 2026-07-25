@@ -82,8 +82,7 @@ type: prompt           # goal | prompt | output (+ optional -reference|-asset)
 tags: [ui]             # optional lookup facets; orthogonal to secondary type
 title: Optional title  # optional display override
 mode: archived         # omit for editable default; only archived is persisted
-# legacy residual (not written on new Nodes; UI cutover deferred):
-# owner / status — collaboration projection prefers Task API
+# owner / status / acceptedBy — stripped by migration; not product fields
 # artifactRefs: optional ArtifactRef[] to real deliverables (architecture §5.2)
 ---
 # Markdown body
@@ -95,13 +94,13 @@ mode: archived         # omit for editable default; only archived is persisted
 | `type` | Required; primary ∈ `goal\|prompt\|output`; optional secondary ∈ registry modifiers |
 | `tags` | Optional; never replace type or hierarchy |
 | `mode` | Omit = editable; `archived` freezes subtree. No `read-only` |
-| legacy `status` / `owner` | Residual until UI cutover; **not** written on new Nodes; occupation is Task-based |
+| legacy `status` / `owner` | **Stripped on migrate**; not written at runtime; occupation is Task-based |
 | `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
 | Readable/writable | **Retired** as domain axes; not honor ACL |
 
 **Occupation authority:** only an **active Task envelope** occupies a box for mutual exclusion and for `box.projection` assignee/`activeTaskId`. See Task API §2.3.
 
-**Active-task write guard:** when a box has an **active task**, ordinary **`docs.write`** (and equivalent body/frontmatter patches) **must not** change projected collaboration fields (`status` while task-owned as `doing`, `assignee`, legacy `owner`). Service rejects those field patches; clients use Task API transitions. Residual `owner` without an active task does **not** arm this guard. Non-projection body edits remain allowed subject to etag concurrency.
+**Active-task write guard:** ordinary **`docs.write`** must not set retired collaboration keys (`status`/`owner`/`assignee`). Service rejects those field patches; clients use Task API transitions and read `box.projection`. Non-projection body edits remain allowed subject to etag concurrency.
 
 ---
 

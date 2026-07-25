@@ -112,7 +112,7 @@ test("开源可移植性:发布源文件不含开发者机器绝对路径", asyn
   assert.equal(await exists(path.join(repoRoot, "skills", "tent-genesis", "SKILL.md")), false);
   assert.match(spec, /`cli\.command` is required when `cli` exists/);
   assert.match(spec, /The task envelope is the machine-readable delivery record/);
-  assert.match(spec, /`--require-check` is a user-supplied mechanical gate/);
+  assert.match(spec, /Legacy `--require-check` was a user-supplied mechanical gate/);
   assert.match(spec, /A cherry-pick batch\s+is atomic/);
   assert.match(spec, /fast-forward when the selected commits are exactly/);
   assert.match(spec, /## 6\. Proposal, Delivery, And Fork/);
@@ -225,12 +225,12 @@ test("docs/skill drift: workspacePointer retired; WorkspaceLane + coordination +
   }
   assert.match(viewSrc, /in-workspace[^\n]*workspace root/i);
 
-  // Legacy external CLI complete errors: valid paths, renamed product wording only
+  // Legacy external CLI complete/stamp retired — no workspace-pointer wording; dual-write gone
   const tentCli = await fs.readFile(path.join(repoRoot, "src", "cli", "tent.ts"), "utf8");
   assert.doesNotMatch(tentCli, /requires a workspace pointer/);
   assert.doesNotMatch(tentCli, /has no workspace pointer/);
-  assert.match(tentCli, /require-check requires a workspace root/);
-  assert.match(tentCli, /The Tent has no workspace root/);
+  assert.doesNotMatch(tentCli, /require-check requires a workspace root/);
+  assert.match(tentCli, /stamp is retired|complete is retired|owner\/status dual-write/i);
 });
 
 test("OKF validator:angle-bracket markdown links may target filenames with spaces", async () => {

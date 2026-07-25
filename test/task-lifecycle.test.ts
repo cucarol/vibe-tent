@@ -29,6 +29,13 @@ import {
 } from "../src/core/context-card.js";
 import { makeTent } from "./helpers.js";
 
+/** Node FM must not carry owner/status after collab ops. */
+function assertNoFmCollab(box: { fm: Record<string, unknown> }): void {
+  assert.equal(box.fm.owner, undefined);
+  assert.equal(box.fm.status, undefined);
+  assert.equal(box.fm.acceptedBy, undefined);
+}
+
 function env(dir: string) {
   return {
     fs: new NodeFs(dir),
@@ -60,9 +67,8 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   assert.equal(task.state, "running");
   assert.equal(task.status, "taken");
   assert.equal(task.sessionId, "ss-test1");
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   task = await taskWait(e as any, result.taskPath, {
     reason: "user-input",
@@ -97,10 +103,8 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   assert.equal(accepted.delivery.review?.by, "user");
   assert.equal(accepted.delivery.integrationMode, "manual-accept");
 
-  const done = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(done.fm.owner, undefined);
-  assert.equal(done.fm.status, "done");
-  assert.equal(done.fm.acceptedBy, "user");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 });
 
 test("lifecycle: self-accept is hard-forbidden", async () => {
@@ -161,9 +165,8 @@ test("lifecycle: auto-integrate failure keeps running, no delivery, occupation h
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "running");
   assert.equal((await loadDeliveries(e.fs)).length, 0);
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 });
 
 test("lifecycle: manual accept integrate failure keeps delivered + occupation", async () => {
@@ -186,9 +189,8 @@ test("lifecycle: manual accept integrate failure keeps delivered + occupation", 
   );
   const task = await loadTaskEnvelope(e.fs, result.taskPath);
   assert.equal(task.state, "delivered");
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, "executor");
-  assert.equal(box.fm.status, "doing");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
   const ready = (await loadDeliveries(e.fs)).find((d) => d.status === "ready");
   assert.ok(ready, "delivery stays ready for retry after integrate failure");
 });
@@ -234,7 +236,8 @@ test("lifecycle: reject(resume) returns to running; re-deliver works", async () 
   });
   assert.equal(rejected.task.state, "running");
   assert.equal(rejected.delivery.status, "rejected");
-  assert.equal((await loadTent(e.fs)).byId.get("bx-p1")!.fm.owner, "executor");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   const second = await taskDeliver(e as any, result.taskPath, { summary: "second try with tests" });
   assert.equal(second.task.state, "delivered");
@@ -252,27 +255,26 @@ test("lifecycle: cancel queued; interrupt running clears occupation", async () =
   const r2 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "again" });
   await taskClaim(e as any, r2.taskPath);
   await taskInterrupt(e as any, r2.taskPath);
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "todo");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
   const task = await loadTaskEnvelope(e.fs, r2.taskPath);
   assert.equal(task.state, "interrupted");
 });
 
-test("lifecycle: stale frontmatter owner does not block dispatch/claim", async () => {
+test("lifecycle: residual disk owner/status is stripped on load and does not block claim", async () => {
   const dir = await makeTent();
   const e = env(dir);
-  // bx-g2 fixture has residual owner=executor / status=doing with no task envelope.
+  // Write residual owner/status on disk — loadTent strips from memory; claim ignores them.
+  const note = "goal/挖新alpha/写表达式/写表达式.md";
+  const raw = await e.fs.readFile(note);
+  await e.fs.writeFile(note, raw.replace("type: goal", "type: goal\nowner: executor\nstatus: doing"));
   const r = await dispatch(e as any, "bx-g2", "reviewer", {
     userPrompt: "reclaim after orphan owner",
   });
   assert.ok(r.taskPath);
   const claimed = await taskClaim(e as any, r.taskPath);
   assert.equal(claimed.state, "running");
-  const box = (await loadTent(e.fs)).byId.get("bx-g2")!;
-  // Lifecycle projects current assignee; residual owner is overwritten, not treated as mutex.
-  assert.equal(box.fm.owner, "reviewer");
-  assert.equal(box.fm.status, "doing");
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-g2")!);
   const active = await findActiveTaskForBox(e.fs, "bx-g2");
   assert.ok(active);
   assert.equal(active!.role, "reviewer");
@@ -387,30 +389,25 @@ test("lifecycle: taskFail releases occupation; idempotent; re-dispatch same box"
   const dir = await makeTent();
   const { e, result } = await dispatchOnFreeBox(dir);
   await taskClaim(e as any, result.taskPath);
-  const claimed = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(claimed.fm.owner, "executor");
-  assert.equal(claimed.fm.status, "doing");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   const failed = await taskFail(e as any, result.taskPath, { summary: "provider crash" });
   assert.equal(failed.state, "failed");
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "todo");
   assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   // Idempotent second fail — no throw, occupation stays clear.
   const again = await taskFail(e as any, result.taskPath);
   assert.equal(again.state, "failed");
-  const box2 = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box2.fm.owner, undefined);
-  assert.equal(box2.fm.status, "todo");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 
   // Same box can be re-dispatched without fork / manual frontmatter edit.
   const r2 = await dispatch(e as any, "bx-p1", "executor", { userPrompt: "retry after fail" });
   await taskClaim(e as any, r2.taskPath);
-  const reclaimed = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(reclaimed.fm.owner, "executor");
-  assert.equal(reclaimed.fm.status, "doing");
+  assert.ok(await findActiveTaskForBox(e.fs, "bx-p1"));
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 });
 
 test("lifecycle: taskFail from waiting also clears occupation", async () => {
@@ -424,9 +421,8 @@ test("lifecycle: taskFail from waiting also clears occupation", async () => {
   const failed = await taskFail(e as any, result.taskPath);
   assert.equal(failed.state, "failed");
   assert.ok(failed.wait == null, "wait must be cleared");
-  const box = (await loadTent(e.fs)).byId.get("bx-p1")!;
-  assert.equal(box.fm.owner, undefined);
-  assert.equal(box.fm.status, "todo");
+  assert.equal(await findActiveTaskForBox(e.fs, "bx-p1"), undefined);
+  assertNoFmCollab((await loadTent(e.fs)).byId.get("bx-p1")!);
 });
 
 test("lifecycle: A2A gate deny/ask/allow", () => {

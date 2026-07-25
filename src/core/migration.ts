@@ -378,8 +378,19 @@ export async function migrateLegacySchema(
       );
     }
 
-    // Do not strip legacy owner/status here — Judge defers field removal until UI cutover.
-    // New writes already omit them; migration only rewrites type domain fields.
+    // One-shot: strip legacy collaboration dual-write keys from concept frontmatter.
+    // Collaboration truth is Task/Session/Delivery (+ box.projection); Node FM is not product truth.
+    for (const key of ["owner", "status", "acceptedBy"] as const) {
+      if (key in data) {
+        delete data[key];
+        dirty = true;
+        report.registryChanges.push(
+          dryRun
+            ? `would strip legacy ${key} at ${box.path}`
+            : `stripped legacy ${key} at ${box.path}`
+        );
+      }
+    }
 
     if (dirty && !dryRun) {
       await fs.writeFile(
@@ -720,15 +731,16 @@ export async function importExternalTentRoot(
     );
   }
 
-  // Pre-flight occupancy on source (informational; --force continues).
+  // Pre-flight occupancy on source via active Task envelopes (informational; --force continues).
+  // Node FM owner/status is no longer product truth and may be stripped on migrate.
   const sourceFs = new NodeFs(sourceRoot);
   try {
-    const tent = await loadTent(sourceFs);
-    const claimed = [...tent.byId.values()].filter(
-      (b) => typeof b.fm.owner === "string" && b.fm.owner.trim() && b.fm.status === "doing"
-    );
-    if (claimed.length > 0) {
-      const msg = `Source has ${claimed.length} active claim(s) (owner+doing). Prefer idle cutover.`;
+    const { loadTaskEnvelopes } = await import("./task.js");
+    const { envelopeIsActiveOccupation } = await import("./claim.js");
+    const tasks = await loadTaskEnvelopes(sourceFs);
+    const active = tasks.filter((t) => envelopeIsActiveOccupation(t));
+    if (active.length > 0) {
+      const msg = `Source has ${active.length} active task(s). Prefer idle cutover.`;
       if (options.force) warnings.push(msg + " (--force: continuing)");
       else {
         throw new Error(
@@ -737,7 +749,7 @@ export async function importExternalTentRoot(
       }
     }
   } catch (error) {
-    if (error instanceof Error && error.message.includes("active claim")) throw error;
+    if (error instanceof Error && error.message.includes("active task")) throw error;
     warnings.push(
       `Could not fully load source tent for occupancy check: ${
         error instanceof Error ? error.message : String(error)
