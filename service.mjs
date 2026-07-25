@@ -12784,6 +12784,9 @@ function parseSessionRecord(data, sessionId) {
       return null;
     }
   }
+  if ("contextRestored" in data && data.contextRestored !== void 0) {
+    if (typeof data.contextRestored !== "boolean") return null;
+  }
   if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
     if (!isPlainObject(data.runtimeWorkspace)) return null;
     if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
@@ -20664,7 +20667,22 @@ async function deliverManagedTaskInput(ctx, item, opts) {
 }
 async function continueManagedAfterTaskInput(ctx, item) {
   if (!item.sessionId) return { continued: false };
-  const prompt = formatTaskInputPrompt(item);
+  const basePrompt = formatTaskInputPrompt(item);
+  let prompt = basePrompt;
+  try {
+    const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
+    if (recovery && recovery.length > 0) {
+      prompt = `${recovery}
+
+${basePrompt}`;
+    }
+  } catch (rebuildErr) {
+    const message2 = rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr);
+    return {
+      continued: false,
+      error: message2
+    };
+  }
   try {
     try {
       await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
@@ -20941,12 +20959,16 @@ async function taskRejectRpc(ctx, p) {
     };
   }
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
+  let fallbackOrphanSessionId;
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath
     });
     const restoredSessionId = restored.session.sessionId;
+    if (restored.session.contextRestored === false && restoredSessionId !== boundSessionId) {
+      fallbackOrphanSessionId = restoredSessionId;
+    }
     let boundReview = reviewInput;
     if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
       boundReview = await ctx.taskInputs.rebindSession(
@@ -20956,6 +20978,7 @@ async function taskRejectRpc(ctx, p) {
         restoredSessionId
       );
     }
+    fallbackOrphanSessionId = void 0;
     enqueueManagedTaskInputBackground(ctx, boundReview, {
       sessionIdOverride: restoredSessionId
     });
@@ -20976,10 +20999,13 @@ async function taskRejectRpc(ctx, p) {
     };
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
+    if (fallbackOrphanSessionId) {
+      await stopOrphanRejectResumeSession(ctx, fallbackOrphanSessionId);
+    }
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
-      sessionId: boundSessionId,
+      sessionId: fallbackOrphanSessionId || boundSessionId,
       message: message2
     });
     throw new RpcError(
@@ -21617,6 +21643,7 @@ async function sessionList(ctx, p) {
       assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
+      ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
       turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
@@ -21641,6 +21668,7 @@ async function sessionGet(ctx, p) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
     turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
@@ -21699,6 +21727,7 @@ async function sessionEnter(ctx, p) {
     assigneeKind: handle.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...rec?.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
     lastTaskId: rec?.lastTaskId,
     workspace: rec?.workspace ?? workspaceId,
     externalKey: recordExternalKey(rec ?? {}) ?? externalKey,
@@ -21731,6 +21760,7 @@ async function sessionStatus(ctx, p) {
         assigneeKind: rec2.assigneeKind ?? "role",
         alive: probe2.alive,
         resumeCapable: probe2.resumeCapable,
+        ...rec2.contextRestored !== void 0 ? { contextRestored: rec2.contextRestored } : {},
         lastTaskId: rec2.lastTaskId,
         workspace: rec2.workspace,
         externalKey: recordExternalKey(rec2),
@@ -21765,6 +21795,7 @@ async function sessionStatus(ctx, p) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
+    ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
     externalKey: recordExternalKey(rec),
@@ -23452,12 +23483,154 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
     );
   }
 }
+var rejectResumePostStartFailureForTests = null;
 function clearManagedAutoDeliverDedup(sessionId, taskPath) {
   const key = managedDeliverKey(sessionId, taskPath);
   managedAutoDeliverDone.delete(key);
   managedAutoDeliverInFlight.delete(key);
 }
 var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D managed session\u3002\u53EF\u91CD\u65B0 startSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+function buildRejectResumeRecoveryOrientation(task, roots, opts) {
+  const base = buildSessionBootstrapPrompt(task, roots);
+  const lines = [
+    "--- Tent reject-resume recovery ---",
+    "contextRestored: false",
+    "Native provider Session continuity was not restored. This is an independent managed Session on the same task/workspace lane.",
+    "Do not invent prior chat/cache continuity. Use Task/Node refs below; review note appears only under ## Review Feedback."
+  ];
+  if (opts.priorSessionId) {
+    lines.push(`priorSessionId: ${opts.priorSessionId}`);
+  }
+  lines.push(
+    opts.nativeResumeFailed ? "restorePath: native-resume-failed-fallback" : "restorePath: not-resume-capable-new-session"
+  );
+  if (opts.nativeResumeError?.trim()) {
+    lines.push(`nativeResumeError: ${opts.nativeResumeError.trim()}`);
+  }
+  lines.push(`Task envelope: ${task.path}`);
+  if (task.id) lines.push(`Task id: ${task.id}`);
+  if (task.manifest) lines.push(`Manifest: ${task.manifest}`);
+  if (task.claims?.length) {
+    lines.push(`claims (Node refs): ${task.claims.join(", ")}`);
+  }
+  if (opts.workspaceLane) {
+    lines.push("workspace lane:");
+    lines.push(`  workspace: ${opts.workspaceLane.workspace}`);
+    lines.push(`  worktree: ${opts.workspaceLane.worktree}`);
+    lines.push(`  branch: ${opts.workspaceLane.branch}`);
+    if (opts.workspaceLane.targetBranch) {
+      lines.push(`  targetBranch: ${opts.workspaceLane.targetBranch}`);
+    }
+  }
+  if (opts.rejectedDelivery) {
+    lines.push("rejected Delivery:");
+    lines.push(`  id: ${opts.rejectedDelivery.id}`);
+    lines.push(`  summary: ${opts.rejectedDelivery.summary}`);
+  }
+  lines.push(
+    "Final report still goes through Delivery only. Feedback delivery remains exactly once via TaskInput."
+  );
+  return `${base}
+
+${lines.join("\n")}
+`;
+}
+async function loadRejectedDeliveryForRejectResume(fs21, task) {
+  const taskId = task.id?.trim();
+  if (!taskId) return void 0;
+  try {
+    const deliveries = await loadDeliveries(fs21, { taskId });
+    const rejected = deliveries.find((d) => d.status === "rejected");
+    if (!rejected) return void 0;
+    return {
+      id: rejected.id,
+      summary: rejected.summary
+    };
+  } catch {
+    return void 0;
+  }
+}
+async function rebuildRejectResumeRecoveryOrientation(ctx, item) {
+  if (normalizeTaskInputKind(item.kind) !== "review-feedback") return void 0;
+  const sessionId = item.sessionId?.trim();
+  if (!sessionId) return void 0;
+  let rec;
+  try {
+    rec = await ctx.runtime.registry.read(sessionId);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `reject-resume recovery orientation required but session registry read failed for ${sessionId}: ${message2}`
+    );
+  }
+  if (!rec) {
+    throw new Error(
+      `reject-resume recovery orientation required but session registry row missing for ${sessionId}`
+    );
+  }
+  if (rec.contextRestored !== false) return void 0;
+  const mount = ctx.host.get(item.workspaceId);
+  if (!mount) {
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but workspace mount missing: ${item.workspaceId}`
+    );
+  }
+  let task;
+  try {
+    task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+  } catch (err) {
+    const message2 = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but task load failed for ${item.taskPath}: ${message2}`
+    );
+  }
+  const workspaceLane = {
+    workspace: task.workspace || mount.workspaceRoot,
+    worktree: task.worktree || mount.workspaceRoot,
+    branch: task.branch || "HEAD",
+    targetBranch: task.targetBranch
+  };
+  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
+    mount.env.fs,
+    task
+  );
+  const lastError = rec.lastError?.trim() || "";
+  const nativeResumeFailed = /native resume failed/i.test(lastError);
+  const nativeResumeError = nativeResumeFailed ? lastError.replace(/^reject-resume restore failed:\s*/i, "").trim() || lastError : void 0;
+  const orientation = buildRejectResumeRecoveryOrientation(
+    task,
+    {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot
+    },
+    {
+      // No durable priorSessionId field — omit rather than invent.
+      nativeResumeFailed,
+      nativeResumeError,
+      rejectedDelivery,
+      workspaceLane
+    }
+  );
+  if (!orientation.trim()) {
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but builder returned empty for ${sessionId}`
+    );
+  }
+  return orientation;
+}
+async function stopOrphanRejectResumeSession(ctx, sessionId) {
+  try {
+    await ctx.runtime.stopSession(sessionId, "interrupt");
+  } catch {
+  }
+  try {
+    await ctx.runtime.registry.update(sessionId, {
+      lastError: "reject-resume fallback orphan stopped after rebind/context failure",
+      contextRestored: false
+    });
+  } catch {
+  }
+}
 async function restoreManagedSessionAfterRejectResume(ctx, input) {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -23472,12 +23645,12 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
   }
   task = await ensureTaskWorkspaceLane(ctx, input.workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
-  const workspaceLane = task.workspace || task.worktree || task.branch ? {
+  const workspaceLane = {
     workspace: task.workspace || mount.workspaceRoot,
     worktree: task.worktree || mount.workspaceRoot,
     branch: task.branch || "HEAD",
     targetBranch: task.targetBranch
-  } : void 0;
+  };
   const prior = await ctx.runtime.registry.read(priorSessionId);
   if (!prior) {
     throw new Error(
@@ -23510,19 +23683,22 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       }
     }
   }
-  const sessionBootstrap = "";
+  const emptyBootstrap = "";
   let probe;
   try {
     probe = await ctx.runtime.probe(priorSessionId);
     if (probe.alive && SessionRegistry.isNonTerminal(probe.state)) {
-      const bound2 = await ctx.mutations.run(input.workspaceId, async () => {
+      await ctx.runtime.registry.update(priorSessionId, {
+        contextRestored: true
+      });
+      const bound = await ctx.mutations.run(input.workspaceId, async () => {
         ctx.host.markSelfWrite(input.workspaceId);
         return patchTaskEnvelope(mount.env.fs, input.taskPath, {
           sessionId: priorSessionId,
           updatedAt: mount.env.clock.now()
         });
       });
-      emitTaskState(ctx, input.workspaceId, bound2, "task.reject.resume");
+      emitTaskState(ctx, input.workspaceId, bound, "task.reject.resume");
       ctx.events.emit(
         "session.state",
         input.workspaceId,
@@ -23531,18 +23707,21 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
           state: probe.state,
           profileId,
           taskPath: input.taskPath,
-          reason: "task.reject.resume.alive"
+          reason: "task.reject.resume.alive",
+          contextRestored: true
         },
         "self"
       );
       return {
-        task: bound2,
+        task: bound,
         session: {
           sessionId: priorSessionId,
           profileId,
           adapterId: prior.adapterId,
           state: probe.state,
-          cwd
+          cwd,
+          contextRestored: true,
+          restoreReason: "task.reject.resume.alive"
         }
       };
     }
@@ -23551,21 +23730,22 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       throw err;
     }
   }
+  let nativeResumeError;
   if (probe?.resumeCapable) {
     rejectResumeNativeInFlight.add(priorSessionId);
     try {
-      const handle2 = await ctx.runtime.resumeSession({
+      const handle = await ctx.runtime.resumeSession({
         sessionId: priorSessionId,
         runtimeWorkspace: { cwd },
         cwd,
-        bootstrapPrompt: sessionBootstrap,
+        bootstrapPrompt: emptyBootstrap,
         lastTaskId: task.id || input.taskPath
       });
-      clearManagedAutoDeliverDedup(handle2.sessionId, input.taskPath);
-      const bound2 = await ctx.mutations.run(input.workspaceId, async () => {
+      clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+      const bound = await ctx.mutations.run(input.workspaceId, async () => {
         ctx.host.markSelfWrite(input.workspaceId);
         const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-          sessionId: handle2.sessionId,
+          sessionId: handle.sessionId,
           updatedAt: mount.env.clock.now()
         });
         emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
@@ -23573,11 +23753,12 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
           "session.state",
           input.workspaceId,
           {
-            sessionId: handle2.sessionId,
-            state: handle2.state,
-            profileId: handle2.profileId,
+            sessionId: handle.sessionId,
+            state: handle.state,
+            profileId: handle.profileId,
             taskPath: input.taskPath,
-            reason: "task.reject.resume.native"
+            reason: "task.reject.resume.native",
+            contextRestored: true
           },
           "self"
         );
@@ -23585,63 +23766,97 @@ async function restoreManagedSessionAfterRejectResume(ctx, input) {
       });
       rejectResumeNativeInFlight.delete(priorSessionId);
       return {
-        task: bound2,
+        task: bound,
         session: {
-          sessionId: handle2.sessionId,
-          profileId: handle2.profileId,
-          adapterId: handle2.adapterId,
-          state: handle2.state,
-          cwd
+          sessionId: handle.sessionId,
+          profileId: handle.profileId,
+          adapterId: handle.adapterId,
+          state: handle.state,
+          cwd,
+          contextRestored: true,
+          restoreReason: "task.reject.resume.native"
         }
       };
     } catch (err) {
-      throw err;
+      nativeResumeError = err instanceof Error ? err.message : String(err);
     }
   }
-  const handle = await ctx.runtime.startSession({
-    sessionId: makeSessionId(),
-    profileId,
-    roleName: task.role,
-    assigneeKind: taskAssigneeKind(task),
-    workspaceLane,
-    runtimeWorkspace: { cwd },
-    cwd,
-    bootstrapPrompt: sessionBootstrap,
-    lastTaskId: task.id || input.taskPath,
-    workspace: input.workspaceId
-  });
-  clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
-  const bound = await ctx.mutations.run(input.workspaceId, async () => {
-    ctx.host.markSelfWrite(input.workspaceId);
-    const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
-      sessionId: handle.sessionId,
-      updatedAt: mount.env.clock.now()
+  const restoreReason = nativeResumeError ? "task.reject.resume.native-fallback" : "task.reject.resume.new-session";
+  let startedSessionId;
+  try {
+    const handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      // Empty: go live without first session/prompt (same as native resume path).
+      bootstrapPrompt: emptyBootstrap,
+      lastTaskId: task.id || input.taskPath,
+      workspace: input.workspaceId
     });
-    emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
-    ctx.events.emit(
-      "session.state",
-      input.workspaceId,
-      {
-        sessionId: handle.sessionId,
-        state: handle.state,
-        profileId: handle.profileId,
-        taskPath: input.taskPath,
-        reason: "task.reject.resume.new-session"
-      },
-      "self"
-    );
-    return next;
-  });
-  return {
-    task: bound,
-    session: {
-      sessionId: handle.sessionId,
-      profileId: handle.profileId,
-      adapterId: handle.adapterId,
-      state: handle.state,
-      cwd
+    startedSessionId = handle.sessionId;
+    if (rejectResumePostStartFailureForTests) {
+      throw rejectResumePostStartFailureForTests();
     }
-  };
+    await ctx.runtime.registry.update(handle.sessionId, {
+      contextRestored: false,
+      ...nativeResumeError ? {
+        lastError: `native resume failed: ${nativeResumeError}`
+      } : {}
+    });
+    clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
+    const bound = await ctx.mutations.run(input.workspaceId, async () => {
+      ctx.host.markSelfWrite(input.workspaceId);
+      const next = await patchTaskEnvelope(mount.env.fs, input.taskPath, {
+        sessionId: handle.sessionId,
+        updatedAt: mount.env.clock.now()
+      });
+      emitTaskState(ctx, input.workspaceId, next, "task.reject.resume");
+      ctx.events.emit(
+        "session.state",
+        input.workspaceId,
+        {
+          sessionId: handle.sessionId,
+          state: handle.state,
+          profileId: handle.profileId,
+          taskPath: input.taskPath,
+          reason: restoreReason,
+          contextRestored: false,
+          priorSessionId,
+          ...nativeResumeError ? { nativeResumeError } : {}
+        },
+        "self"
+      );
+      return next;
+    });
+    rejectResumeNativeInFlight.delete(priorSessionId);
+    return {
+      task: bound,
+      session: {
+        sessionId: handle.sessionId,
+        profileId: handle.profileId,
+        adapterId: handle.adapterId,
+        state: handle.state,
+        cwd,
+        contextRestored: false,
+        restoreReason
+      }
+    };
+  } catch (err) {
+    if (startedSessionId) {
+      await stopOrphanRejectResumeSession(ctx, startedSessionId);
+    }
+    if (nativeResumeError) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      throw new Error(
+        `native resume failed (${nativeResumeError}); independent recovery session also failed: ${message2}`
+      );
+    }
+    throw err;
+  }
 }
 async function parkTaskAfterRejectResumeFailure(ctx, input) {
   const mount = ctx.host.get(input.workspaceId);
@@ -26320,6 +26535,7 @@ function handleFrom(record) {
     roleName: record.roleName,
     assigneeKind: record.assigneeKind,
     runtimeWorkspace: record.runtimeWorkspace,
+    ...record.contextRestored !== void 0 ? { contextRestored: record.contextRestored } : {},
     createdAt: record.createdAt,
     updatedAt: record.updatedAt
   };
@@ -26793,7 +27009,7 @@ var AgentRuntime = class {
     const cwd = recordedCwd ?? requestedCwd;
     if (!cwd) throw new Error("resumeSession requires a cwd");
     if (profile.fake?.canResume && typeof adapter.resumeManagedSession !== "function") {
-      return this.startSessionWithProfile({
+      const handle = await this.startSessionWithProfile({
         sessionId: req.sessionId,
         profileId: record.profileId,
         roleName: record.roleName,
@@ -26807,6 +27023,10 @@ var AgentRuntime = class {
         bootstrapImageRefs: req.bootstrapImageRefs,
         bootstrapImageSystemRoot: req.bootstrapImageSystemRoot
       }, profile);
+      const marked = await this.registry.update(req.sessionId, {
+        contextRestored: true
+      });
+      return handleFrom(marked);
     }
     if (typeof adapter.resumeManagedSession !== "function") {
       throw new Error(
@@ -26920,6 +27140,8 @@ var AgentRuntime = class {
         state: "live",
         pid,
         resumeToken: nextToken,
+        // Native resume reuses provider context — honest continuity claim.
+        contextRestored: true,
         lastError: void 0,
         exitCode: void 0,
         stopReason: void 0,
