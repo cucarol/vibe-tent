@@ -592,12 +592,19 @@ async function patchBoxUnlocked(
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
-    (key) => key in patch
-  );
+  const reserved = [
+    "id",
+    "owner",
+    "mode",
+    "archived",
+    "readable",
+    "writable",
+    "status",
+    "relations",
+  ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
     );
   }
   if (box.archived || box.mode === "archived") {

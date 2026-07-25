@@ -126,8 +126,25 @@ export type GraphLinkEdge = {
 };
 
 /**
+ * First-class semantic relation edge for graph.projection.
+ * Separate from parent / markdown / wiki — never merged with body links.
+ * Source is the owning Node; target is either resolved `toId` or explicit unresolved.
+ */
+export type GraphRelationEdge = {
+  id: string;
+  fromId: string;
+  kind: string;
+  direction: "directed" | "bidirectional";
+  label?: string;
+  /** Present only when the relation target is a resolved concept handle. */
+  toId?: string;
+  /** Explicit unresolved target string when not resolved. */
+  unresolved?: string;
+};
+
+/**
  * Read-only workspace graph projection for Canvas.
- * Edges are partitioned into parent / markdown / wiki; no placement state.
+ * Edges are partitioned into parent / markdown / wiki / relation; no placement state.
  */
 export type GraphProjection = {
   workspaceId: string;
@@ -136,7 +153,54 @@ export type GraphProjection = {
     parent: GraphParentEdge[];
     markdown: GraphLinkEdge[];
     wiki: GraphLinkEdge[];
+    /** First-class semantic relations (source Node frontmatter); not body links. */
+    relation: GraphRelationEdge[];
   };
+};
+
+/** Wire target for relation CRUD — exactly one form. */
+export type RelationTargetWire = { nodeId: string } | { unresolved: string };
+
+/** Outgoing relation record (source implied by listed Node). */
+export type RelationRecordWire = {
+  id: string;
+  kind: string;
+  direction: "directed" | "bidirectional";
+  label?: string;
+  target: RelationTargetWire;
+};
+
+/** Derived incoming view: stored on sourceId, points at the listed Node. */
+export type RelationIncomingWire = RelationRecordWire & {
+  sourceId: string;
+  sourcePath: string;
+};
+
+/** relation.list result. */
+export type RelationListResult = {
+  workspaceId: string;
+  nodeId: string;
+  path: string;
+  outgoing: RelationRecordWire[];
+  incoming: RelationIncomingWire[];
+};
+
+/** relation.create / relation.update success payload. */
+export type RelationMutationResult = {
+  workspaceId: string;
+  id: string;
+  path: string;
+  etag: string;
+  relation: RelationRecordWire;
+};
+
+/** relation.delete success payload. */
+export type RelationDeleteResult = {
+  workspaceId: string;
+  id: string;
+  path: string;
+  etag: string;
+  deleted: string;
 };
 
 /**
@@ -562,6 +626,15 @@ export const CLIENT_METHODS = [
    * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
    */
   "docs.tag.remove",
+  /**
+   * First-class semantic Node relations (source frontmatter `relations` array).
+   * list is read-only; create/update/delete are user-only MutationBus + source baseEtag.
+   * Not Markdown/wiki body links; kind is an open identifier (no registry).
+   */
+  "relation.list",
+  "relation.create",
+  "relation.update",
+  "relation.delete",
   "registry.types",
   /**
    * User-only custom secondary type create (MutationBus).
@@ -659,8 +732,9 @@ export const CLIENT_METHODS = [
   /**
    * Workspace-level graph projection for Working-set Canvas.
    * Params: workspaceId.
-   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki } }.
-   * Node summaries only (no body); unresolved markdown/wiki links kept explicitly.
+   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki, relation } }.
+   * Node summaries only (no body); unresolved markdown/wiki links and relation targets kept explicitly.
+   * Semantic relation edges are a separate collection — never merged with parent/markdown/wiki.
    * Placement / view state is never projected or persisted here.
    */
   "graph.projection",
@@ -748,9 +822,10 @@ export const RESERVED_DOCS_WRITE_FIELDS = [
 
 /**
  * Semantic Node fields that must use dedicated Service commands, not free-form docs.write.
- * type → docs.setType; tags → docs.tags.set / docs.tag.add / docs.tag.remove.
+ * type → docs.setType; tags → docs.tags.set / docs.tag.add / docs.tag.remove;
+ * relations → relation.create / relation.update / relation.delete.
  */
-export const SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags"] as const;
+export const SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"] as const;
 
 /** JSON-RPC auth failure. */
 export const RPC_UNAUTHORIZED = -32001;

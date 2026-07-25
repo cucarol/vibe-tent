@@ -18,8 +18,17 @@ import {
   removeTag,
   syncTagRegistryAfterBoxTagsChange,
 } from "../core/tags.js";
+import {
+  createRelation,
+  deleteRelation,
+  listRelationsForNode,
+  RelationError,
+  updateRelation,
+  type RelationIncomingView,
+  type RelationOutgoingView,
+} from "../core/relations.js";
 import { isContentMutable } from "../core/tree.js";
-import type { NodeMode } from "../core/types.js";
+import type { NodeMode, RelationRecord } from "../core/types.js";
 import {
   createSecondaryType,
   deleteCustomType,
@@ -197,6 +206,11 @@ import {
   type GraphNodeSummary,
   type GraphParentEdge,
   type GraphProjection,
+  type GraphRelationEdge,
+  type RelationDeleteResult,
+  type RelationListResult,
+  type RelationMutationResult,
+  type RelationRecordWire,
   type PendingA2AInteraction,
   type PendingDeliveryInteraction,
   type PendingInteractionItem,
@@ -353,6 +367,14 @@ export async function dispatchMethod(
         return docsTagAdd(ctx, p);
       case "docs.tag.remove":
         return docsTagRemove(ctx, p);
+      case "relation.list":
+        return relationList(ctx, p);
+      case "relation.create":
+        return relationCreate(ctx, p);
+      case "relation.update":
+        return relationUpdate(ctx, p);
+      case "relation.delete":
+        return relationDelete(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
       case "registry.type.create":
@@ -1579,6 +1601,280 @@ async function docsTagRemove(ctx: HandlerContext, p: Record<string, unknown>) {
       etag: contentEtag(afterRaw),
     };
   });
+}
+
+function projectRelationWire(record: RelationRecord | RelationOutgoingView): RelationRecordWire {
+  const out: RelationRecordWire = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction,
+    target:
+      "nodeId" in record.target
+        ? { nodeId: record.target.nodeId }
+        : { unresolved: record.target.unresolved },
+  };
+  if (record.label !== undefined) out.label = record.label;
+  return out;
+}
+
+function projectIncomingWire(view: RelationIncomingView) {
+  return {
+    ...projectRelationWire(view),
+    sourceId: view.sourceId,
+    sourcePath: view.sourcePath,
+  };
+}
+
+/**
+ * Read-only relation list by stable Node id (or path/boxId resolver).
+ * Returns outgoing records owned by the Node plus derived incoming views.
+ * Does not merge Markdown/wiki body links.
+ */
+async function relationList(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<RelationListResult> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept(tent, p);
+  try {
+    const listed = listRelationsForNode(tent, concept.id);
+    return {
+      workspaceId,
+      nodeId: listed.nodeId,
+      path: listed.path,
+      outgoing: listed.outgoing.map(projectRelationWire),
+      incoming: listed.incoming.map(projectIncomingWire),
+    };
+  } catch (err) {
+    throw mapRelationError(err, "relation.list");
+  }
+}
+
+/**
+ * User-only create semantic relation on source Node (MutationBus + baseEtag).
+ * Emits exactly one concept.changed reason relation.create for the source.
+ */
+async function relationCreate(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<RelationMutationResult> {
+  requireUserActor(p, "relation.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const kind = requireString(p, "kind");
+  const direction = requireString(p, "direction");
+  const label = optionalString(p, "label");
+  if (!isRecord(p.target)) {
+    throw new RpcError(-32602, "relation.create requires target: { nodeId } | { unresolved }");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "relation.create");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.create");
+
+    ctx.host.markSelfWrite(workspaceId);
+    let record: RelationRecord;
+    try {
+      record = await createRelation(
+        mount.env.fs,
+        concept.id,
+        {
+          kind,
+          direction: direction as "directed" | "bidirectional",
+          ...(label !== undefined ? { label } : {}),
+          target: p.target as { nodeId: string } | { unresolved: string },
+        },
+        Math.random,
+        tent
+      );
+    } catch (err) {
+      throw mapRelationError(err, "relation.create");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.create",
+        relationId: record.id,
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      relation: projectRelationWire(record),
+    };
+  });
+}
+
+/**
+ * User-only update semantic relation on source Node (MutationBus + baseEtag).
+ * Cannot change relation id or source. Emits concept.changed reason relation.update.
+ */
+async function relationUpdate(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<RelationMutationResult> {
+  requireUserActor(p, "relation.update");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const relationId = requireString(p, "relationId");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  const patch: {
+    kind?: string;
+    direction?: "directed" | "bidirectional";
+    label?: string | null;
+    target?: { nodeId: string } | { unresolved: string };
+  } = {};
+  if (Object.prototype.hasOwnProperty.call(p, "kind")) {
+    patch.kind = requireString(p, "kind");
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "direction")) {
+    patch.direction = requireString(p, "direction") as "directed" | "bidirectional";
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "label")) {
+    const rawLabel = p.label;
+    if (rawLabel === null) patch.label = null;
+    else if (typeof rawLabel === "string") patch.label = rawLabel;
+    else throw new RpcError(-32602, "relation.update label must be string or null");
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "target")) {
+    if (!isRecord(p.target)) {
+      throw new RpcError(-32602, "relation.update target must be { nodeId } | { unresolved }");
+    }
+    patch.target = p.target as { nodeId: string } | { unresolved: string };
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new RpcError(
+      -32602,
+      "relation.update requires at least one of kind, direction, label, target"
+    );
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "relation.update");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.update");
+
+    ctx.host.markSelfWrite(workspaceId);
+    let record: RelationRecord;
+    try {
+      record = await updateRelation(mount.env.fs, concept.id, relationId, patch, tent);
+    } catch (err) {
+      throw mapRelationError(err, "relation.update");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.update",
+        relationId: record.id,
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      relation: projectRelationWire(record),
+    };
+  });
+}
+
+/**
+ * User-only delete semantic relation on source Node (MutationBus + baseEtag).
+ * Missing relation id fails loudly. Emits concept.changed reason relation.delete.
+ */
+async function relationDelete(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<RelationDeleteResult> {
+  requireUserActor(p, "relation.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const relationId = requireString(p, "relationId");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "relation.delete");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.delete");
+
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await deleteRelation(mount.env.fs, concept.id, relationId, tent);
+    } catch (err) {
+      throw mapRelationError(err, "relation.delete");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.delete",
+        relationId,
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      deleted: relationId,
+    };
+  });
+}
+
+function mapRelationError(err: unknown, surface: string): RpcError {
+  if (err instanceof RpcError) return err;
+  if (err instanceof RelationError) {
+    if (err.code === "NOT_FOUND") return new RpcError(-32004, err.message);
+    if (err.code === "ARCHIVED" || err.code === "INVALID") {
+      return new RpcError(-32010, `${surface} rejected: ${err.message}`, { code: err.code });
+    }
+    if (err.code === "TARGET" || err.code === "INVALID_INPUT") {
+      return new RpcError(-32602, err.message, { code: err.code });
+    }
+    return new RpcError(-32000, err.message, { code: err.code });
+  }
+  const message = err instanceof Error ? err.message : `${surface} failed`;
+  if (/not found|Box not found|Concept not found|Relation not found/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (/archived|invalid/i.test(message)) {
+    return new RpcError(-32010, message);
+  }
+  return new RpcError(-32000, message);
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 function emitRegistryTypesUpdated(
@@ -4617,8 +4913,9 @@ async function boxProjectionsRpc(
 
 /**
  * Workspace-level graph projection for Working-set Canvas.
- * Nodes: stable summaries only (no body). Edges: parent + markdown + wiki.
- * Unresolved concept links are retained with explicit unresolved payload.
+ * Nodes: stable summaries only (no body). Edges: parent + markdown + wiki + relation.
+ * Unresolved concept links / relation targets are retained with explicit unresolved payload.
+ * Semantic relations are never merged into parent/markdown/wiki collections.
  */
 async function graphProjectionRpc(
   ctx: HandlerContext,
@@ -4689,12 +4986,14 @@ function projectBoxCollaboration(
  * Build workspace graph projection from loaded tent.
  * Reuses markdown link parser + concept index (no ad-hoc regex).
  * Node order: depth-first tree walk (stable). Edge order: DFS source + extract order.
+ * Semantic relations are a separate edge collection (source frontmatter only).
  */
 function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProjection {
   const nodes: GraphNodeSummary[] = [];
   const parentEdges: GraphParentEdge[] = [];
   const markdownEdges: GraphLinkEdge[] = [];
   const wikiEdges: GraphLinkEdge[] = [];
+  const relationEdges: GraphRelationEdge[] = [];
 
   // DFS over roots for stable node + parent edge order.
   const visit = (box: import("../core/types.js").Box, parentId: string | null): void => {
@@ -4744,6 +5043,29 @@ function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProje
   };
   for (const root of tent.roots) emitLinks(root);
 
+  // Semantic relations: DFS source order + source frontmatter array order.
+  // Never fold into markdown/wiki even when targets look similar.
+  const emitRelations = (box: import("../core/types.js").Box): void => {
+    for (const rel of box.relations) {
+      const edge: GraphRelationEdge = {
+        id: rel.id,
+        fromId: box.id,
+        kind: rel.kind,
+        direction: rel.direction,
+      };
+      if (rel.label !== undefined) edge.label = rel.label;
+      if ("nodeId" in rel.target) {
+        // Project stored nodeId honestly; do not re-resolve or drop missing targets here.
+        edge.toId = rel.target.nodeId;
+      } else {
+        edge.unresolved = rel.target.unresolved;
+      }
+      relationEdges.push(edge);
+    }
+    for (const child of box.children) emitRelations(child);
+  };
+  for (const root of tent.roots) emitRelations(root);
+
   return {
     workspaceId,
     nodes,
@@ -4751,6 +5073,7 @@ function buildGraphProjection(workspaceId: string, tent: LoadedTent): GraphProje
       parent: parentEdges,
       markdown: markdownEdges,
       wiki: wikiEdges,
+      relation: relationEdges,
     },
   };
 }
@@ -8862,15 +9185,15 @@ function assertReservedDocsWriteFields(frontmatter: Record<string, unknown>): vo
 }
 
 /**
- * Structured frontmatter path: type/tags use dedicated Service commands.
- * Public semantic path is docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.
+ * Structured frontmatter path: type/tags/relations use dedicated Service commands.
+ * Public semantic path is docs.setType / docs.tags.* / relation.*.
  */
 function assertSemanticDocsWriteFields(frontmatter: Record<string, unknown>): void {
   const hit = SEMANTIC_DOCS_WRITE_FIELDS.filter((k) => k in frontmatter);
   if (hit.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove / relation.create|update|delete.`,
     { fields: hit }
   );
 }
@@ -8895,8 +9218,8 @@ function assertRawDocsWriteReserved(
 }
 
 /**
- * Raw write may keep existing type/tags but must not change them.
- * Dedicated docs.setType / docs.tags.* / docs.tag.* are the public semantic path.
+ * Raw write may keep existing type/tags/relations but must not change them.
+ * Dedicated docs.setType / docs.tags.* / relation.* are the public semantic path.
  */
 function assertRawDocsWriteSemantic(
   disk: Record<string, unknown>,
@@ -8911,10 +9234,15 @@ function assertRawDocsWriteSemantic(
   if (diskTags !== nextTags) {
     changed.push("tags");
   }
+  const diskRelations = JSON.stringify(normalizeRelationsForCompare(disk.relations));
+  const nextRelations = JSON.stringify(normalizeRelationsForCompare(next.relations));
+  if (diskRelations !== nextRelations) {
+    changed.push("relations");
+  }
   if (changed.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove / relation.create|update|delete.`,
     { fields: changed }
   );
 }
@@ -8926,6 +9254,20 @@ function normalizeTagsForCompare(value: unknown): string[] {
     .map((t) => t.trim())
     .filter(Boolean)
     .sort((a, b) => a.localeCompare(b));
+}
+
+/** Stable compare for relations frontmatter (order-sensitive by id then payload). */
+function normalizeRelationsForCompare(value: unknown): unknown[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is Record<string, unknown> => isRecord(item))
+    .map((item) => {
+      const keys = Object.keys(item).sort((a, b) => a.localeCompare(b));
+      const ordered: Record<string, unknown> = {};
+      for (const k of keys) ordered[k] = item[k];
+      return ordered;
+    })
+    .sort((a, b) => String(a.id ?? "").localeCompare(String(b.id ?? "")));
 }
 
 /** Best-effort tag list from raw frontmatter for Core registry sync (normalize in Core). */

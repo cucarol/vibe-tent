@@ -15,6 +15,34 @@ export type Status = "todo" | "doing" | "done";
  */
 export type NodeMode = "editable" | "archived";
 
+/**
+ * Semantic relation direction (first-class Node relations).
+ * Source is always the owning Node; direction describes the edge, not storage location.
+ */
+export type RelationDirection = "directed" | "bidirectional";
+
+/**
+ * Exactly one target form:
+ * - resolved: stable concept handle
+ * - unresolved: explicit non-empty string (never silent-drop)
+ */
+export type RelationTarget = { nodeId: string } | { unresolved: string };
+
+/**
+ * First-class semantic relation record owned by the source Node frontmatter.
+ * Source id is implied by the owning Node — never duplicated per record.
+ */
+export interface RelationRecord {
+  /** Stable generated handle (`rl-…`). */
+  id: string;
+  /** Open identifier (not a registry). */
+  kind: string;
+  direction: RelationDirection;
+  /** Optional human label; omit when absent. */
+  label?: string;
+  target: RelationTarget;
+}
+
 /** concept 身份文件 frontmatter。type 必填。id 为 cx- handle（迁移前可有 bx-）。 */
 export interface BoxFrontmatter {
   id: string;
@@ -22,6 +50,11 @@ export interface BoxFrontmatter {
   tags?: string[];
   /** Explicit mode only; omit for editable default. Only "archived" is persisted. */
   mode?: NodeMode;
+  /**
+   * Outgoing first-class semantic relations (source implied by this Node).
+   * Not Markdown/wiki body links.
+   */
+  relations?: RelationRecord[] | Record<string, unknown>[];
   /** 允许 user 加自定义键,原样保留落盘（迁移会剥离 owner/status/R/W 等退役键）。 */
   [k: string]: unknown;
 }
@@ -34,6 +67,11 @@ export interface Box {
   id: string;
   type: BoxType;
   tags: string[];
+  /**
+   * Outgoing semantic relations owned by this Node (normalized).
+   * Independent of Markdown/wiki body links.
+   */
+  relations: RelationRecord[];
   /**
    * Effective node mode after inheritance.
    * archived cascades from archive root; editable is the default.

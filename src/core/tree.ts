@@ -7,6 +7,7 @@ import {
   Box,
   BoxFrontmatter,
   NodeMode,
+  RelationRecord,
 } from "./types.js";
 import { parseFrontmatter } from "./frontmatter.js";
 import { loadOrder, sortByOrder, OrderMap, ROOT_KEY } from "./order.js";
@@ -16,6 +17,10 @@ import {
   typeExists,
 } from "./typeRegistry.js";
 import { isOperationalPath, isSystemNoteName, OPERATIONAL_TOP_LEVEL } from "./paths.js";
+import {
+  normalizeRelationsList,
+  relationsToFrontmatterValue,
+} from "./relations.js";
 
 /** concept 身份文件路径 = <文件夹名>.md */
 export function boxNotePath(boxPath: string): string {
@@ -97,6 +102,7 @@ export async function reloadLoadedBox(fs: FsAdapter, tent: LoadedTent, path: str
   if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
   box.type = identity.fm.type;
   box.tags = identity.tags;
+  box.relations = identity.relations;
   box.fm = identity.fm;
   box.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
@@ -127,11 +133,12 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   const { data, body } = parsed;
   const name = baseName(path);
 
-  const { fm, tags } = normalizeIdentity(data);
+  const { fm, tags, relations } = normalizeIdentity(data);
   const box: Box = {
     id: fm.id,
     type: fm.type,
     tags,
+    relations,
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -156,7 +163,11 @@ async function loadBox(fs: FsAdapter, path: string, parent: Box | null, registry
   return box;
 }
 
-function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter; tags: string[] } {
+function normalizeIdentity(data: Record<string, unknown>): {
+  fm: BoxFrontmatter;
+  tags: string[];
+  relations: RelationRecord[];
+} {
   const rawType = typeof data.type === "string" && data.type ? data.type : "custom";
   const fm: BoxFrontmatter = {
     ...data,
@@ -176,7 +187,11 @@ function normalizeIdentity(data: Record<string, unknown>): { fm: BoxFrontmatter;
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
-  return { fm, tags };
+  const relations = normalizeRelationsList(data.relations);
+  const fmRelations = relationsToFrontmatterValue(relations);
+  if (fmRelations) fm.relations = fmRelations;
+  else delete fm.relations;
+  return { fm, tags, relations };
 }
 
 /**

@@ -1,5 +1,5 @@
 // 极简 frontmatter 解析/序列化。零依赖:框身份文件(<box-name>.md)的 frontmatter 是扁平 key: value,
-// 不需要完整 YAML。只认标量(string/number/bool)、流式数组、块序列和行注释。
+// 不需要完整 YAML。认标量(string/number/bool)、流式数组/映射、块序列(含对象项)和行注释。
 
 export interface ParsedFrontmatter {
   data: Record<string, unknown>;
@@ -9,7 +9,8 @@ export interface ParsedFrontmatter {
 }
 
 const FENCE = "---";
-export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
+/** Canonical box identity key order; relations sits with other durable semantic fields. */
+export const BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
 
 export function parseFrontmatter(raw: string): ParsedFrontmatter {
   const text = raw.replace(/\r\n/g, "\n");
@@ -32,6 +33,8 @@ export function parseFrontmatter(raw: string): ParsedFrontmatter {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+    // Block sequence items belong to a prior key; never treat "- …" as a top-level key.
+    if (/^-\s*/.test(trimmed)) continue;
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
@@ -75,6 +78,13 @@ function coerce(v: string): unknown {
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
   }
+  // YAML flow mapping: {k: v, ...}
+  if (v.startsWith("{")) {
+    if (!v.endsWith("}")) {
+      throw new Error("Invalid frontmatter YAML: unterminated flow mapping.");
+    }
+    return parseFlowMapping(v);
+  }
   // YAML 流式数组: [item1, item2, ...]
   if (v.startsWith("[") && !v.endsWith("]")) {
     throw new Error("Invalid frontmatter YAML: unterminated flow array.");
@@ -82,7 +92,7 @@ function coerce(v: string): unknown {
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerce(item.trim()));
   }
   return v;
 }
@@ -91,6 +101,17 @@ function isBlockSequenceStart(line: string | undefined): boolean {
   return line !== undefined && /^\s*-\s*/.test(line);
 }
 
+function leadingIndent(line: string): number {
+  const match = line.match(/^(\s*)/);
+  return match ? match[1].length : 0;
+}
+
+/**
+ * Block sequence reader.
+ * Supports scalar items, flow maps/arrays, and multi-line mapping items:
+ *   - id: rl-x
+ *     kind: related
+ */
 function readBlockSequence(
   lines: string[],
   startIndex: number,
@@ -98,14 +119,145 @@ function readBlockSequence(
 ): { value: unknown[]; nextIndex: number } {
   const value: unknown[] = [];
   let i = startIndex;
-  for (; i < lines.length; i++) {
+  while (i < lines.length) {
     const line = lines[i];
-    const match = line.match(/^\s*-\s*(.*)$/);
-    if (!match) break;
-    const item = stripInlineComment(match[1].trim());
-    value.push(coerceForKey(key, item));
+    const itemMatch = line.match(/^(\s*)-\s*(.*)$/);
+    if (!itemMatch) break;
+    const itemIndent = itemMatch[1].length;
+    const rest = stripInlineComment(itemMatch[2].trim());
+    i += 1;
+
+    // Multi-line mapping item: "- key: value" then deeper "key: value" lines.
+    const inlineMap = rest.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (inlineMap && !(rest.startsWith("{") || rest.startsWith("["))) {
+      const obj: Record<string, unknown> = {};
+      const firstKey = inlineMap[1];
+      const firstVal = stripInlineComment(inlineMap[2].trim());
+      obj[firstKey] = firstVal === "" ? undefined : coerceForKey(key, firstVal);
+      while (i < lines.length) {
+        const cont = lines[i];
+        if (!cont.trim() || cont.trim().startsWith("#")) {
+          i += 1;
+          continue;
+        }
+        if (leadingIndent(cont) <= itemIndent) break;
+        if (/^\s*-\s*/.test(cont)) break;
+        const trimmed = cont.trim();
+        const colon = trimmed.indexOf(":");
+        if (colon === -1) break;
+        const fieldKey = trimmed.slice(0, colon).trim();
+        const fieldVal = stripInlineComment(trimmed.slice(colon + 1).trim());
+        obj[fieldKey] = fieldVal === "" ? undefined : coerceForKey(key, fieldVal);
+        i += 1;
+      }
+      // Drop undefined placeholders from empty values.
+      for (const k of Object.keys(obj)) {
+        if (obj[k] === undefined) delete obj[k];
+      }
+      value.push(obj);
+      continue;
+    }
+
+    value.push(rest === "" ? null : coerceForKey(key, rest));
   }
   return { value, nextIndex: i };
+}
+
+/** Parse a single-line flow mapping `{k: v, k2: v2}` (values may be nested flow collections). */
+function parseFlowMapping(raw: string): Record<string, unknown> {
+  const inner = raw.slice(1, -1).trim();
+  if (!inner) return {};
+  const parts = splitFlowCollection(inner);
+  const out: Record<string, unknown> = {};
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colon = findTopLevelColon(trimmed);
+    if (colon === -1) {
+      throw new Error(`Invalid frontmatter YAML: flow mapping entry missing colon: ${trimmed}`);
+    }
+    const k = trimmed.slice(0, colon).trim();
+    const v = trimmed.slice(colon + 1).trim();
+    if (!k) throw new Error("Invalid frontmatter YAML: empty flow mapping key.");
+    out[k] = v === "" ? null : coerce(v);
+  }
+  return out;
+}
+
+function findTopLevelColon(s: string): number {
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+
+/**
+ * Split a flow collection inner string on top-level commas.
+ * Respects quotes and nested `[]` / `{}`.
+ */
+function splitFlowCollection(inner: string): string[] {
+  const items: string[] = [];
+  let current = "";
+  let depth = 0;
+  let quote: string | null = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && quote === '"' && i + 1 < inner.length) {
+        current += inner[++i];
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
 }
 
 function coerceForKey(key: string, raw: string): unknown {
@@ -113,7 +265,7 @@ function coerceForKey(key: string, raw: string): unknown {
   if (raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerceCommitItem(item.trim()));
   }
   return coerceCommitItem(raw);
 }
@@ -173,31 +325,8 @@ function normalizeWindowsPathValue(value: unknown): unknown {
   return value.replace(/\\{2,}/g, "\\");
 }
 
-function splitFlowArray(inner: string): string[] {
-  const items: string[] = [];
-  let current = "";
-  let quote: string | null = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (quote) {
-      current += ch;
-      if (ch === quote && inner[i - 1] !== "\\") quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      items.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  items.push(current);
-  return items;
+function isPlainObject(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /** 把 data 写回 frontmatter + body。undefined 的键被省略(= 删除该声明)。 */
@@ -211,6 +340,21 @@ export function serializeFrontmatter(
   for (const k of keys) {
     const val = data[k];
     if (val === undefined) continue;
+    // Object arrays (e.g. relations) use a block sequence of flow maps for readability
+    // and round-trip safety with the minimal parser.
+    if (Array.isArray(val) && val.some(isPlainObject)) {
+      lines.push(`${k}:`);
+      if (val.length === 0) {
+        // empty object-array still needs a representable form; use flow empty.
+        // (Callers normally omit empty relations entirely.)
+        lines[lines.length - 1] = `${k}: []`;
+      } else {
+        for (const item of val) {
+          lines.push(`  - ${emit(item)}`);
+        }
+      }
+      continue;
+    }
     lines.push(`${k}: ${emit(val)}`);
   }
   lines.push(FENCE);
@@ -245,11 +389,20 @@ function emit(v: unknown): string {
     if (v.length === 0) return "[]";
     return "[" + v.map((item) => emit(item)).join(", ") + "]";
   }
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== undefined);
+    if (keys.length === 0) return "{}";
+    return (
+      "{" +
+      keys.map((k) => `${k}: ${emit(v[k])}`).join(", ") +
+      "}"
+    );
+  }
   const s = String(v);
   // 需要引号的情况:含 YAML/flow 标点或首尾空白
   if (
     /^-?(?:\d+|\d*\.\d+)$/.test(s) ||
-    /[:,#\[\]]/.test(s) ||
+    /[:,#\[\]{}]/.test(s) ||
     s !== s.trim() ||
     s === ""
   ) {

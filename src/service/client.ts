@@ -8,6 +8,10 @@ import type {
   GraphProjection,
   PendingInteractionListResult,
   ProviderCatalogProjection,
+  RelationDeleteResult,
+  RelationListResult,
+  RelationMutationResult,
+  RelationTargetWire,
 } from "./types.js";
 import { AUTH_TOKEN_HEADER } from "./auth.js";
 
@@ -392,6 +396,91 @@ export class ServiceClient {
     }
   ) {
     return this.call("docs.tag.remove", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+
+  /**
+   * Read-only first-class semantic relations for a Node.
+   * Outgoing from source frontmatter; incoming derived from other Nodes.
+   * Does not include Markdown/wiki body links.
+   */
+  relationList(
+    workspaceId: string,
+    args: { id?: string; path?: string; boxId?: string }
+  ) {
+    return this.call<RelationListResult>("relation.list", { workspaceId, ...args });
+  }
+
+  /**
+   * User-only create semantic relation on source Node (MutationBus + baseEtag).
+   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason relation.create.
+   */
+  relationCreate(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      kind: string;
+      direction: "directed" | "bidirectional";
+      label?: string;
+      target: RelationTargetWire;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call<RelationMutationResult>("relation.create", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+
+  /**
+   * User-only update semantic relation (cannot change id/source).
+   * label: null clears. Emits concept.changed reason relation.update.
+   */
+  relationUpdate(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      relationId: string;
+      kind?: string;
+      direction?: "directed" | "bidirectional";
+      label?: string | null;
+      target?: RelationTargetWire;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call<RelationMutationResult>("relation.update", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+
+  /**
+   * User-only delete semantic relation by id on source Node.
+   * Missing id fails loudly. Emits concept.changed reason relation.delete.
+   */
+  relationDelete(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      relationId: string;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call<RelationDeleteResult>("relation.delete", {
       workspaceId,
       ...args,
       actor: args.actor ?? "user",

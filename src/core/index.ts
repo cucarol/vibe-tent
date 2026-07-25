@@ -5,6 +5,7 @@ export * from "./typeRegistry.js";
 export * from "./typeManagement.js";
 export * from "./skillRoleRegistry.js";
 export * from "./tags.js";
+export * from "./relations.js";
 export * from "./scaffold.js";
 export * from "./adapter.js";
 export * from "./frontmatter.js";

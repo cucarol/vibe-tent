@@ -82,6 +82,8 @@ type: prompt           # goal | prompt | output (+ optional -reference|-asset)
 tags: [ui]             # optional lookup facets; orthogonal to secondary type
 title: Optional title  # optional display override
 mode: archived         # omit for editable default; only archived is persisted
+relations:             # optional first-class semantic edges (source = this Node)
+  - {id: rl-…, kind: depends-on, direction: directed, nodeId: cx-…}
 # owner / status / acceptedBy — stripped by migration; not product fields
 # artifactRefs: optional ArtifactRef[] to real deliverables (architecture §5.2)
 ---
@@ -94,6 +96,7 @@ mode: archived         # omit for editable default; only archived is persisted
 | `type` | Required; primary ∈ `goal\|prompt\|output`; optional secondary ∈ registry modifiers |
 | `tags` | Optional; never replace type or hierarchy |
 | `mode` | Omit = editable; `archived` freezes subtree. No `read-only` |
+| `relations` | Optional outgoing semantic relations; stable `rl-` id, open `kind`, `direction`, exactly one target (`nodeId` or `unresolved`). **Not** Markdown/wiki body links. Mutate via `relation.*` only |
 | legacy `status` / `owner` | **Stripped on migrate**; not written at runtime; occupation is Task-based |
 | `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
 | Readable/writable | **Retired** as domain axes; not honor ACL |
@@ -198,6 +201,18 @@ type ArtifactRef = {
 
 ## 6. Links, search, and attachments
 
+### 6.0 First-class semantic relations
+
+Source Node frontmatter owns an optional `relations` array. Each record has a stable generated `rl-` id, non-empty open `kind`, `direction: directed|bidirectional`, optional `label`, and exactly one target: `{ nodeId: cx-… }` or `{ unresolved: string }`. Source id is implied by the owning Node.
+
+| Rule | Detail |
+| --- | --- |
+| Storage | Source frontmatter only — **no** global relation database |
+| Mutations | `relation.create` / `update` / `delete` (user-only, MutationBus, source `baseEtag`); `relation.list` is read-only |
+| Validation | Resolved target must exist and be a usable Node; unresolved must be non-empty; archive/invalid source rejected |
+| Graph | `graph.projection.edges.relation` is a **separate** collection from `parent` / `markdown` / `wiki` |
+| Non-goals | Relation-kind registry; path inference; body/wiki mutation; merging body links into semantic relations |
+
 ### 6.1 Link model
 
 | Layer | Form | Role |
@@ -207,6 +222,7 @@ type ArtifactRef = {
 | Resolution keys | path, title/name, `cx-`, legacy `bx-` **during migration only** | Unique hit required to resolve |
 | Backlinks | Inverted from outbound **concept** links in index | Side/bottom panel |
 | artifact links | Structured **`ArtifactRef`** or dedicated scheme (`https:`, `mailto:`, `tent-artifact:`) | External open |
+| Semantic relations | Frontmatter `relations` via `relation.*` | First-class edges; **not** derived from body links |
 
 **Graph extraction (`src/markdown/links.ts`):**
 
@@ -339,9 +355,12 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | --- | --- | --- |
 | `docs.list` / `docs.get` | Query | Concept projections |
 | `docs.readForEdit` | Query | Body + etag for editing |
-| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections; **cannot** set `type`/`tags` (use dedicated commands) |
+| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections; **cannot** set `type`/`tags`/`relations` (use dedicated commands) |
 | `docs.setType` | Command | User-only set compound Node type (`baseEtag` required); emits `concept.changed` reason `docs.setType` |
 | `docs.tags.set` / `docs.tag.add` / `docs.tag.remove` | Command | User-only Node tag mutations (`baseEtag` required); detach does not prune registry |
+| `relation.list` | Query | Outgoing semantic relations + derived incoming views by stable Node id (not body links) |
+| `relation.create` / `relation.update` / `relation.delete` | Command | User-only source-frontmatter relation CRUD (`baseEtag` required); one `concept.changed` on success; kind is open (no registry) |
+| `graph.projection` | Query | Workspace nodes + partitioned edges `{ parent, markdown, wiki, relation }` — semantic relations never merge into body-link edges |
 | `registry.types` / `registry.type.create` / `registry.type.delete` | Query / Command | Type registry read + custom secondary create/delete (user-only mutations; in-use delete fails loud) |
 | `registry.tags` / `registry.tag.create` / `registry.tag.delete` | Query / Command | Tag vocabulary read + create; global delete cascades off all Nodes. **`registry.tag.delete` emits only `registry.tags.updated`** (no per-Node `concept.changed`); clients must refresh tag candidates **and** graph/node projections that may have lost the deleted tag |
 | `docs.createNote` | Command | New concept (`cx-`, type, path) |
