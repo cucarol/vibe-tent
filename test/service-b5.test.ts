@@ -3943,7 +3943,21 @@ test("reject-resume native load failure falls back to new session (contextRestor
         "feedback inject exactly once (no double channel)"
       );
       const inject = reviewPrompts[0]!;
-      assert.ok(inject.includes(`text: ${exactNote}`));
+      // Review note appears exactly once, solely under ## Review Feedback.
+      const noteOccurrences = inject.split(exactNote).length - 1;
+      assert.equal(
+        noteOccurrences,
+        1,
+        `review note must appear exactly once in inject; got ${noteOccurrences}`
+      );
+      assert.ok(
+        inject.includes(`text: ${exactNote}`),
+        "note must live under ## Review Feedback text: field"
+      );
+      assert.ok(
+        !/rejected Delivery:[\s\S]*reviewNote:/i.test(inject),
+        "recovery/rejected-delivery blocks must not re-copy review note"
+      );
       assert.ok(
         inject.includes("contextRestored: false"),
         "recovery orientation must mark contextRestored=false"
@@ -4206,78 +4220,164 @@ test("session.failed still fails a live running task (pre-delivery)", async () =
 
 test("reject-resume allocates new session only when prior is not resumeCapable", async () => {
   resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("reject-resume-not-capable");
-
-  await withService(async (svc) => {
-    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
-    const d = await rpc(svc, "task.dispatch", {
-      workspaceId,
-      boxId,
-      role: "executor",
-      prompt: "new ss when not resumeCapable",
-      deliveryPolicy: "manual",
-    });
-    const taskPath = (d.result as { taskPath: string }).taskPath;
-    await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      profileId: "fake-default",
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const sessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
-
-    await invokeManagedAutoDeliverForTests(svc.ctx, {
-      workspaceId,
-      taskPath,
-      sessionId,
-      assistantText: "NOT_CAPABLE_FIRST",
-    });
-    await svc.runtime.stopSession(sessionId, "user");
-    // Strip resume token so probe.resumeCapable is false (honest new-session path).
-    await svc.runtime.registry.update(sessionId, {
-      resumeToken: undefined,
-      state: "stopped",
-      pid: undefined,
-    });
-    assert.equal((await svc.runtime.probe(sessionId)).resumeCapable, false);
-
-    const rejected = await rpc(svc, "task.reject", {
-      workspaceId,
-      taskPath,
-      actor: "user",
-      resume: true,
-      note: "new session ok",
-    });
-    assert.ok(!rejected.error, JSON.stringify(rejected.error));
-    const body = rejected.result as {
-      state: string;
-      session?: {
-        sessionId: string;
-        contextRestored?: boolean;
-        restoreReason?: string;
-      };
-      input?: { sessionId?: string; text?: string };
-    };
-    assert.equal(body.state, "running");
-    assert.ok(body.session?.sessionId);
-    assert.notEqual(
-      body.session!.sessionId,
-      sessionId,
-      "not resumeCapable must allocate a trackable new ss-"
-    );
-    assert.equal(body.session!.contextRestored, false);
-    assert.equal(body.session!.restoreReason, "task.reject.resume.new-session");
-    assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
-    assert.equal(
-      (await svc.runtime.registry.read(body.session!.sessionId))?.contextRestored,
-      false
-    );
-    assert.equal(body.input?.sessionId, body.session!.sessionId);
-    assert.equal(body.input?.text, "new session ok");
+  const ws = await makeWorkspace(
+    "reject-resume-not-capable",
+    { executor: "allow" },
+    { executor: ["mock-reject-not-capable"] }
+  );
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-rr-notcap-")),
+    "mock-acp.json"
+  );
+  // No loadSession: after stop, probe.resumeCapable is false → honest new-session path.
+  const profile = mockAcpProfile("mock-reject-not-capable", {
+    logPath,
+    promptText: "NOT_CAPABLE_FIRST",
+    followupText: "REWORK_AFTER_NOT_CAPABLE",
+    keepAlive: true,
   });
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "new ss when not resumeCapable",
+        deliveryPolicy: "manual",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-reject-not-capable",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+
+      await invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId,
+        assistantText: "NOT_CAPABLE_FIRST",
+      });
+      await svc.runtime.stopSession(sessionId, "user");
+      // Strip any residual token so probe.resumeCapable is false (honest new-session).
+      await svc.runtime.registry.update(sessionId, {
+        resumeToken: undefined,
+        state: "stopped",
+        pid: undefined,
+      });
+      assert.equal((await svc.runtime.probe(sessionId)).resumeCapable, false);
+
+      const exactNote = "  new session ok after not-capable  ";
+      const rejected = await rpc(svc, "task.reject", {
+        workspaceId,
+        taskPath,
+        actor: "user",
+        resume: true,
+        note: exactNote,
+      });
+      assert.ok(!rejected.error, JSON.stringify(rejected.error));
+      const body = rejected.result as {
+        state: string;
+        session?: {
+          sessionId: string;
+          contextRestored?: boolean;
+          restoreReason?: string;
+        };
+        input?: { id: string; sessionId?: string; text?: string; kind?: string };
+        accepted?: boolean;
+        enqueued?: boolean;
+      };
+      assert.equal(body.state, "running");
+      assert.ok(body.session?.sessionId);
+      assert.notEqual(
+        body.session!.sessionId,
+        sessionId,
+        "not resumeCapable must allocate a trackable new ss-"
+      );
+      assert.equal(body.session!.contextRestored, false);
+      assert.equal(body.session!.restoreReason, "task.reject.resume.new-session");
+      assert.equal((await svc.runtime.probe(body.session!.sessionId)).alive, true);
+      assert.equal(
+        (await svc.runtime.registry.read(body.session!.sessionId))?.contextRestored,
+        false
+      );
+      assert.equal(body.input?.sessionId, body.session!.sessionId);
+      assert.equal(body.input?.text, exactNote);
+      assert.equal(body.accepted, true);
+      assert.equal(body.enqueued, true);
+
+      const newSessionId = body.session!.sessionId;
+      const inputDelivered = await pollUntil(async () => {
+        const got = await rpc(svc, "taskInput.get", {
+          workspaceId,
+          taskPath,
+          inputId: body.input!.id,
+        });
+        if (got.error) return null;
+        const input = (
+          got.result as { input: { status: string; lastError?: string } }
+        ).input;
+        if (input.status === "delivered") return input;
+        if (input.status === "failed") {
+          throw new Error(`review-feedback inject failed: ${input.lastError}`);
+        }
+        return null;
+      }, 20_000, "review-feedback delivered on not-capable new session");
+      assert.equal(inputDelivered.status, "delivered");
+
+      await pollUntil(async () => {
+        const t = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const state = (t.result as { task: { state: string } }).task.state;
+        return state === "delivered" ? t : null;
+      }, 20_000, "rework delivery after not-capable new session");
+
+      const log = await pollUntil(async () => {
+        try {
+          return JSON.parse(await fs.readFile(logPath, "utf8")) as {
+            prompts?: string[];
+          };
+        } catch {
+          return null;
+        }
+      }, 5_000, "mock acp log after not-capable fallback");
+      const reviewPrompts = (log.prompts ?? []).filter((p) =>
+        p.includes("## Review Feedback")
+      );
+      assert.equal(reviewPrompts.length, 1, "feedback inject exactly once");
+      const inject = reviewPrompts[0]!;
+      assert.ok(inject.includes("--- Tent reject-resume recovery ---"));
+      assert.ok(inject.includes("contextRestored: false"));
+      assert.ok(
+        inject.includes("restorePath: not-resume-capable-new-session"),
+        "not-capable path must not claim native-fail provenance"
+      );
+      assert.ok(inject.includes("rejected Delivery:"));
+      assert.ok(inject.includes("NOT_CAPABLE_FIRST"));
+      assert.ok(
+        inject.includes("workspace lane:") || inject.includes("worktree:")
+      );
+      const noteOccurrences = inject.split(exactNote).length - 1;
+      assert.equal(
+        noteOccurrences,
+        1,
+        `review note must appear exactly once; got ${noteOccurrences}`
+      );
+      assert.ok(inject.includes(`text: ${exactNote}`));
+      assert.ok(!/rejected Delivery:[\s\S]*reviewNote:/i.test(inject));
+      assert.equal(
+        (await svc.runtime.registry.read(newSessionId))?.contextRestored,
+        false
+      );
+    },
+    { profiles: [profile] }
+  );
 });
 
 test("reject-resume fails loud and parks waiting when session cannot be restored", async () => {

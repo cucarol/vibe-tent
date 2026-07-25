@@ -2675,14 +2675,7 @@ function trackManagedTaskInputBackground(work: Promise<unknown>): void {
 function enqueueManagedTaskInputBackground(
   ctx: HandlerContext,
   item: TaskInputRecord,
-  opts?: {
-    sessionIdOverride?: string;
-    /**
-     * Optional recovery orientation prepended once to the managed inject prompt
-     * (reject-resume independent Session). Does not create a second TaskInput.
-     */
-    recoveryBootstrap?: string;
-  }
+  opts?: { sessionIdOverride?: string }
 ): void {
   if (!managedTaskInputAccepting) {
     // Shutdown in progress: leave durable pending/failed for next process.
@@ -2797,11 +2790,7 @@ export function resetManagedTaskInputBackgroundForTests(): void {
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
   item: TaskInputRecord,
-  opts?: {
-    sessionIdOverride?: string;
-    /** Prepended once to inject prompt for honest recovery orientation. */
-    recoveryBootstrap?: string;
-  }
+  opts?: { sessionIdOverride?: string }
 ): Promise<ManagedTaskInputDelivery> {
   const sessionId =
     (opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "") ||
@@ -2888,9 +2877,7 @@ async function deliverManagedTaskInput(
     let continueResult: { continued: boolean; error?: string };
     let finalInput = forInject;
     try {
-      continueResult = await continueManagedAfterTaskInput(ctx, forInject, {
-        recoveryBootstrap: opts?.recoveryBootstrap,
-      });
+      continueResult = await continueManagedAfterTaskInput(ctx, forInject);
       if (continueResult.continued) {
         try {
           finalInput = await ctx.taskInputs.markDelivered(
@@ -2978,14 +2965,15 @@ async function deliverManagedTaskInput(
  */
 async function continueManagedAfterTaskInput(
   ctx: HandlerContext,
-  item: TaskInputRecord,
-  opts?: { recoveryBootstrap?: string }
+  item: TaskInputRecord
 ): Promise<{ continued: boolean; error?: string }> {
   if (!item.sessionId) return { continued: false };
   const basePrompt = formatTaskInputPrompt(item);
-  // Recovery orientation rides the single review-feedback inject — never a
-  // second TaskInput or a second session/prompt channel.
-  const recovery = opts?.recoveryBootstrap?.trim();
+  // Independent recovery Sessions (contextRestored=false): rebuild orientation
+  // from durable task/session/delivery facts at inject time so restart/retry
+  // does not depend on in-memory enqueue options. Review note stays only in
+  // ## Review Feedback (basePrompt) — never duplicated in recovery text.
+  const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
   const prompt =
     recovery && recovery.length > 0
       ? `${recovery}\n\n${basePrompt}`
@@ -3379,17 +3367,24 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   // successful rework prompt_complete can deliver again.
   clearManagedAutoDeliverDedup(boundSessionId, taskPath);
 
+  // Tracks a freshly started independent Session so catch can stop orphans when
+  // post-start rebind fails after startSession already succeeded.
+  let fallbackOrphanSessionId: string | undefined;
   try {
     const restored = await restoreManagedSessionAfterRejectResume(ctx, {
       workspaceId,
       taskPath,
-      // Exact note for recovery bootstrap orientation only — inject still once via U2A.
-      reviewFeedbackText: noteExact,
     });
     // review-feedback was created with the pre-restore sessionId (often stopped).
     // Rebind to the live restore target before enqueue so cancelSession(old) and
     // projections cannot strand feedback on a dead ss- while the task runs on new.
     const restoredSessionId = restored.session.sessionId;
+    if (
+      restored.session.contextRestored === false &&
+      restoredSessionId !== boundSessionId
+    ) {
+      fallbackOrphanSessionId = restoredSessionId;
+    }
     let boundReview = reviewInput;
     if ((reviewInput.sessionId?.trim() || "") !== restoredSessionId) {
       boundReview = await ctx.taskInputs.rebindSession(
@@ -3399,14 +3394,16 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         restoredSessionId
       );
     }
+    // Rebind + restore both succeeded — no longer an orphan candidate.
+    fallbackOrphanSessionId = undefined;
     // Fast accept: durable pending + live session bind are the RPC contract.
     // Managed inject of ## Review Feedback runs on the per-task FIFO in the
-    // background — same as task.sendInput. Do not await the full Agent turn
-    // (CLI/fetch headers timeout would otherwise false-fail a still-running turn).
+    // background — same as task.sendInput. Recovery orientation (if any) is
+    // rebuilt at inject time from durable task/session/delivery facts.
+    // Do not await the full Agent turn (CLI/fetch headers timeout would otherwise
+    // false-fail a still-running turn).
     enqueueManagedTaskInputBackground(ctx, boundReview, {
       sessionIdOverride: restoredSessionId,
-      // Independent recovery Session only — same-context paths leave undefined.
-      recoveryBootstrap: restored.recoveryBootstrap,
     });
     return {
       workspaceId,
@@ -3425,12 +3422,17 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     };
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // Close orphan window: fallback startSession may have succeeded while
+    // context flag / task rebind failed — stop the new Session before parking.
+    if (fallbackOrphanSessionId) {
+      await stopOrphanRejectResumeSession(ctx, fallbackOrphanSessionId);
+    }
     // Fail-loud: must not remain running while the managed process is dead.
     // Review TaskInput stays pending (not cancelled) for later poll / retry.
     await parkTaskAfterRejectResumeFailure(ctx, {
       workspaceId,
       taskPath,
-      sessionId: boundSessionId,
+      sessionId: fallbackOrphanSessionId || boundSessionId,
       message,
     });
     throw new RpcError(
@@ -6917,25 +6919,18 @@ type RejectResumeRestoredSession = {
 };
 
 /**
- * Honest recovery bootstrap when native provider resume is unavailable or failed.
- * Includes Task/Node refs, rejected Delivery summary, durable review feedback text,
- * and workspace lane. Marks contextRestored=false so the agent never assumes cache
- * continuity. Review feedback is still injected exactly once as U2A ## Review Feedback
- * after restore — this block is orientation only, not a second inject channel.
+ * Compact recovery orientation for independent reject-resume Sessions.
+ * Built from durable Task / Delivery / session facts only.
+ * Review note is NEVER included here — it appears solely under ## Review Feedback.
  */
-function buildRejectResumeRecoveryBootstrap(
+function buildRejectResumeRecoveryOrientation(
   task: TaskEnvelope,
   roots: { workspaceRoot: string; systemRoot: string },
   opts: {
-    priorSessionId: string;
+    priorSessionId?: string;
     nativeResumeFailed: boolean;
     nativeResumeError?: string;
-    rejectedDelivery?: {
-      id: string;
-      summary: string;
-      reviewNote?: string;
-    };
-    reviewFeedbackText?: string;
+    rejectedDelivery?: { id: string; summary: string };
     workspaceLane?: {
       workspace: string;
       worktree: string;
@@ -6949,12 +6944,16 @@ function buildRejectResumeRecoveryBootstrap(
     "--- Tent reject-resume recovery ---",
     "contextRestored: false",
     "Native provider Session continuity was not restored. This is an independent managed Session on the same task/workspace lane.",
-    "Do not invent prior chat/cache continuity. Use Task/Node refs and durable review feedback only.",
-    `priorSessionId: ${opts.priorSessionId}`,
+    "Do not invent prior chat/cache continuity. Use Task/Node refs below; review note appears only under ## Review Feedback.",
+  ];
+  if (opts.priorSessionId) {
+    lines.push(`priorSessionId: ${opts.priorSessionId}`);
+  }
+  lines.push(
     opts.nativeResumeFailed
       ? "restorePath: native-resume-failed-fallback"
-      : "restorePath: not-resume-capable-new-session",
-  ];
+      : "restorePath: not-resume-capable-new-session"
+  );
   if (opts.nativeResumeError?.trim()) {
     lines.push(`nativeResumeError: ${opts.nativeResumeError.trim()}`);
   }
@@ -6974,20 +6973,10 @@ function buildRejectResumeRecoveryBootstrap(
     }
   }
   if (opts.rejectedDelivery) {
+    // Delivery summary only — never re-copy review note (solely under ## Review Feedback).
     lines.push("rejected Delivery:");
     lines.push(`  id: ${opts.rejectedDelivery.id}`);
     lines.push(`  summary: ${opts.rejectedDelivery.summary}`);
-    if (opts.rejectedDelivery.reviewNote !== undefined) {
-      lines.push(`  reviewNote: ${opts.rejectedDelivery.reviewNote}`);
-    }
-  }
-  if (opts.reviewFeedbackText !== undefined) {
-    lines.push("durable review feedback (also injected once as ## Review Feedback):");
-    lines.push(
-      opts.reviewFeedbackText.length > 0
-        ? opts.reviewFeedbackText
-        : "(empty note)"
-    );
   }
   lines.push(
     "Final report still goes through Delivery only. Feedback delivery remains exactly once via TaskInput."
@@ -6998,7 +6987,7 @@ function buildRejectResumeRecoveryBootstrap(
 async function loadRejectedDeliveryForRejectResume(
   fs: import("../core/adapter.js").FsAdapter,
   task: TaskEnvelope
-): Promise<{ id: string; summary: string; reviewNote?: string } | undefined> {
+): Promise<{ id: string; summary: string } | undefined> {
   const taskId = task.id?.trim();
   if (!taskId) return undefined;
   try {
@@ -7008,9 +6997,6 @@ async function loadRejectedDeliveryForRejectResume(
     return {
       id: rejected.id,
       summary: rejected.summary,
-      ...(rejected.review?.note !== undefined
-        ? { reviewNote: rejected.review.note }
-        : {}),
     };
   } catch {
     return undefined;
@@ -7018,32 +7004,116 @@ async function loadRejectedDeliveryForRejectResume(
 }
 
 /**
+ * Rebuild recovery orientation at inject time from durable facts so restart/retry
+ * does not depend on in-memory enqueue options. Only for independent Sessions
+ * (contextRestored === false). Same-context paths return undefined.
+ */
+async function rebuildRejectResumeRecoveryOrientation(
+  ctx: HandlerContext,
+  item: TaskInputRecord
+): Promise<string | undefined> {
+  if (normalizeTaskInputKind(item.kind) !== "review-feedback") return undefined;
+  const sessionId = item.sessionId?.trim();
+  if (!sessionId) return undefined;
+
+  let rec: SessionRecord | null = null;
+  try {
+    rec = await ctx.runtime.registry.read(sessionId);
+  } catch {
+    return undefined;
+  }
+  // Only independent recovery Sessions claim contextRestored=false.
+  if (!rec || rec.contextRestored !== false) return undefined;
+
+  const mount = ctx.host.get(item.workspaceId);
+  if (!mount) return undefined;
+
+  let task: TaskEnvelope;
+  try {
+    task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
+  } catch {
+    return undefined;
+  }
+
+  const workspaceLane = {
+    workspace: task.workspace || mount.workspaceRoot,
+    worktree: task.worktree || mount.workspaceRoot,
+    branch: task.branch || "HEAD",
+    targetBranch: task.targetBranch,
+  };
+  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
+    mount.env.fs,
+    task
+  );
+  // lastError may retain "reject-resume restore failed: …" from a prior park;
+  // for a live recovery Session it is usually empty. Prefer restorePath from
+  // contextRestored=false alone; treat lastError containing "native resume" as
+  // native-fail provenance when present (best-effort, no new domain fields).
+  const lastError = rec.lastError?.trim() || "";
+  const nativeResumeFailed = /native resume failed/i.test(lastError);
+  const nativeResumeError = nativeResumeFailed
+    ? lastError.replace(/^reject-resume restore failed:\s*/i, "").trim() ||
+      lastError
+    : undefined;
+
+  return buildRejectResumeRecoveryOrientation(
+    task,
+    {
+      workspaceRoot: mount.workspaceRoot,
+      systemRoot: mount.systemRoot,
+    },
+    {
+      // No durable priorSessionId field — omit rather than invent.
+      nativeResumeFailed,
+      nativeResumeError,
+      rejectedDelivery,
+      workspaceLane,
+    }
+  );
+}
+
+/** Best-effort stop of an orphan managed Session (fallback start succeeded mid-failure). */
+async function stopOrphanRejectResumeSession(
+  ctx: HandlerContext,
+  sessionId: string
+): Promise<void> {
+  try {
+    await ctx.runtime.stopSession(sessionId, "interrupt");
+  } catch {
+    // already dead / unknown
+  }
+  try {
+    await ctx.runtime.registry.update(sessionId, {
+      lastError: "reject-resume fallback orphan stopped after rebind/context failure",
+      contextRestored: false,
+    });
+  } catch {
+    // registry row may be gone
+  }
+}
+
+/**
  * After core reject(resume) for a managed task:
  * - alive → rebind the same Tent sessionId (contextRestored=true)
  * - stopped + resumeCapable → native runtime.resumeSession first (contextRestored=true)
- * - native resume **explicitly fails** → honest new ss- + recovery bootstrap
- *   (contextRestored=false); never silently claim cache continuity
- * - not resumeCapable → trackable new ss- + recovery bootstrap (contextRestored=false)
+ * - native resume **explicitly fails** → honest new ss- (contextRestored=false);
+ *   never silently claim cache continuity
+ * - not resumeCapable → trackable new ss- (contextRestored=false)
  * Registry/profile identity failures still park waiting(external).
- * Review feedback is injected once after restore via deliverManagedTaskInput.
+ * If fallback startSession succeeds but context flag / task rebind fails, best-effort
+ * stop the new Session before parking (no orphan live process).
+ * Review feedback is injected once after restore; recovery orientation is rebuilt
+ * at inject time from durable task/session/delivery facts.
  */
 async function restoreManagedSessionAfterRejectResume(
   ctx: HandlerContext,
   input: {
     workspaceId: string;
     taskPath: string;
-    /** Exact durable review note (may be empty). Orientation only in recovery bootstrap. */
-    reviewFeedbackText?: string;
   }
 ): Promise<{
   task: TaskEnvelope;
   session: RejectResumeRestoredSession;
-  /**
-   * When contextRestored=false: recovery orientation text for the single U2A inject
-   * (process start uses empty bootstrap so auto-deliver cannot race seal before feedback).
-   * Same-context paths leave this undefined.
-   */
-  recoveryBootstrap?: string;
 }> {
   const mount = ctx.host.require(input.workspaceId);
   let task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -7109,8 +7179,8 @@ async function restoreManagedSessionAfterRejectResume(
     }
   }
 
-  // Same-context paths skip auto-delivering bootstrap; recovery path embeds orientation.
-  // Review note is still injected once as U2A ## Review Feedback via deliverManagedTaskInput.
+  // Empty bootstrap: go live without first session/prompt so auto-deliver cannot
+  // race seal before the single ## Review Feedback inject.
   const emptyBootstrap = "";
 
   let probe: Awaited<ReturnType<typeof ctx.runtime.probe>> | undefined;
@@ -7224,34 +7294,13 @@ async function restoreManagedSessionAfterRejectResume(
   }
 
   // Independent new Session: not resumeCapable, or native resume explicitly failed.
-  // Process start uses empty bootstrap so the bridge stays live for the single
-  // U2A ## Review Feedback inject (a non-empty startSession bootstrap would
-  // prompt_complete → auto-deliver → seal before feedback can run).
-  // Recovery orientation is attached once to that inject (see taskRejectRpc).
-  const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
-    mount.env.fs,
-    task
-  );
-  const recoveryBootstrap = buildRejectResumeRecoveryBootstrap(
-    task,
-    {
-      workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot,
-    },
-    {
-      priorSessionId,
-      nativeResumeFailed: !!nativeResumeError,
-      nativeResumeError,
-      rejectedDelivery,
-      reviewFeedbackText: input.reviewFeedbackText,
-      workspaceLane,
-    }
-  );
-
+  // Process start uses empty bootstrap; recovery orientation is rebuilt at inject
+  // time from durable facts (not passed as in-memory enqueue options).
   const restoreReason: RejectResumeRestoreReason = nativeResumeError
     ? "task.reject.resume.native-fallback"
     : "task.reject.resume.new-session";
 
+  let startedSessionId: string | undefined;
   try {
     const handle = await ctx.runtime.startSession({
       sessionId: makeSessionId(),
@@ -7266,9 +7315,17 @@ async function restoreManagedSessionAfterRejectResume(
       lastTaskId: task.id || input.taskPath,
       workspace: input.workspaceId,
     });
+    startedSessionId = handle.sessionId;
     // Honest independent context — never claim native continuity on new ss-.
+    // Persist native-fail diagnostic on the new row so inject-time rebuild can
+    // distinguish native-fallback vs not-resume-capable without new domain fields.
     await ctx.runtime.registry.update(handle.sessionId, {
       contextRestored: false,
+      ...(nativeResumeError
+        ? {
+            lastError: `native resume failed: ${nativeResumeError}`,
+          }
+        : {}),
     });
     // New ss- must also clear deliver dedup under the new key.
     clearManagedAutoDeliverDedup(handle.sessionId, input.taskPath);
@@ -7291,9 +7348,7 @@ async function restoreManagedSessionAfterRejectResume(
           reason: restoreReason,
           contextRestored: false,
           priorSessionId,
-          ...(nativeResumeError
-            ? { nativeResumeError }
-            : {}),
+          ...(nativeResumeError ? { nativeResumeError } : {}),
         },
         "self"
       );
@@ -7312,9 +7367,13 @@ async function restoreManagedSessionAfterRejectResume(
         contextRestored: false,
         restoreReason,
       },
-      recoveryBootstrap,
     };
   } catch (err) {
+    // Close orphan window: startSession may have succeeded while context flag
+    // or task rebind failed — best-effort stop the new Session before parking.
+    if (startedSessionId) {
+      await stopOrphanRejectResumeSession(ctx, startedSessionId);
+    }
     // Leave rejectResumeNativeInFlight set; parkTaskAfterRejectResumeFailure clears it.
     if (nativeResumeError) {
       const message = err instanceof Error ? err.message : String(err);
