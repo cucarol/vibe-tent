@@ -102,6 +102,36 @@ test("cannot create primary; can create custom secondary", async () => {
   assert.equal((await loadTypeRegistry(fsa)).snippet, undefined);
 });
 
+test("deleteCustomType fails loud when nodes still reference the type", async () => {
+  const dir = await makeTent();
+  const fsa = new NodeFs(dir);
+  await createSecondaryType(fsa, "snippet", {});
+  // Attach custom secondary via identity note (resolve path by id — fixture names vary by locale).
+  const before = await loadTent(fsa);
+  const box = before.byId.get("bx-p1");
+  assert.ok(box);
+  const note = path.join(dir, box.path, `${box.name}.md`);
+  const raw = await fs.readFile(note, "utf8");
+  await fs.writeFile(note, raw.replace(/^type:.*$/m, "type: prompt-snippet"), "utf8");
+
+  await assert.rejects(
+    () => deleteCustomType(fsa, "type", "snippet", "snippet"),
+    /still in use/
+  );
+  assert.equal((await loadTypeRegistry(fsa)).snippet?.tier, "modifier");
+
+  // Builtin secondary also blocked.
+  await assert.rejects(
+    () => deleteCustomType(fsa, "type", "asset", "asset"),
+    /Built-in types cannot be deleted/
+  );
+
+  // Clear usage then delete succeeds.
+  await fs.writeFile(note, raw.replace(/^type:.*$/m, "type: prompt"), "utf8");
+  await deleteCustomType(fsa, "type", "snippet", "snippet");
+  assert.equal((await loadTypeRegistry(fsa)).snippet, undefined);
+});
+
 test("DEFAULT_TYPE_REGISTRY matches product contract", () => {
   assert.deepEqual(Object.keys(DEFAULT_TYPE_REGISTRY).sort(), [
     "asset",

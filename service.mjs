@@ -383,6 +383,14 @@ function typeExists(type, registry) {
   const mod = registry[modifier];
   return !!mod && mod.tier === "modifier";
 }
+function isValidConceptType(type, registry) {
+  const { base, modifier } = splitType(type);
+  if (!isCanonicalPrimary(base)) return false;
+  if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
+  if (modifier === void 0) return true;
+  const mod = registry[modifier];
+  return !!mod && mod.tier === "modifier";
+}
 async function loadTypeRegistry(fs21) {
   if (!await fs21.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
@@ -1093,6 +1101,9 @@ async function loadTagRegistry(fs21) {
 async function saveTagRegistryUnlocked(fs21, registry) {
   await fs21.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
+async function addRegistryTag(fs21, name) {
+  await withTentMutation(fs21, async () => addRegistryTagUnlocked(fs21, name));
+}
 async function addRegistryTagUnlocked(fs21, name) {
   const tag = normalizeTagName(name);
   const registry = await loadTagRegistry(fs21);
@@ -1100,6 +1111,45 @@ async function addRegistryTagUnlocked(fs21, name) {
     registry.tags.push(tag);
     await saveTagRegistryUnlocked(fs21, registry);
   }
+}
+async function addTag(fs21, boxId, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs21);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
+    assertContentMutable(box, "tagged");
+    await addRegistryTagUnlocked(fs21, tag);
+    const tags = uniqueSorted([...box.tags, tag]);
+    await writeBoxTags(fs21, box, tags);
+  });
+}
+async function removeTag(fs21, boxId, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const tent = await loadTent(fs21);
+    if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+    const box = tent.byId.get(boxId);
+    if (!box) throw new Error(`Box not found: ${boxId}.`);
+    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
+    assertContentMutable(box, "tagged");
+    await writeBoxTags(fs21, box, box.tags.filter((item) => item !== tag));
+  });
+}
+async function removeRegistryTag(fs21, name) {
+  await withTentMutation(fs21, async () => {
+    const tag = normalizeTagName(name);
+    const registry = await loadTagRegistry(fs21);
+    await saveTagRegistryUnlocked(fs21, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs21);
+    for (const box of tent.byId.values()) {
+      if (box.tags.includes(tag)) {
+        await writeBoxTags(fs21, box, box.tags.filter((item) => item !== tag));
+      }
+    }
+  });
 }
 async function syncTagRegistryAfterBoxTagsChange(fs21, previousTags, nextTags) {
   await withTentMutation(fs21, async () => {
@@ -1119,6 +1169,14 @@ function normalizeTagName(name) {
   if (!tag) throw new Error("Tag name cannot be empty.");
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
+}
+async function writeBoxTags(fs21, box, tags) {
+  const path22 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path22));
+  const next = uniqueSorted(tags);
+  if (next.length === 0) delete data.tags;
+  else data.tags = next;
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -1154,6 +1212,12 @@ function normalizeTagList(values) {
 }
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
+}
+function boxKeyOrder(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
 }
 function isRecord2(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
@@ -10204,7 +10268,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
     await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
@@ -10275,7 +10339,7 @@ async function patchFrontmatter(fs21, box, patch) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
 async function ensureDir3(fs21, path22) {
   if (path22 && !await fs21.exists(path22)) await fs21.mkdir(path22);
@@ -10291,7 +10355,7 @@ function normalizeTagPatch(value) {
   }
   return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
 }
-function boxKeyOrder(existing) {
+function boxKeyOrder2(existing) {
   return [
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
@@ -10333,6 +10397,111 @@ function requireBoxById2(tent, boxId) {
 }
 async function withMutation2(fs21, action) {
   return withTentMutation(fs21, action);
+}
+
+// src/core/typeManagement.ts
+async function createType(fs21, name, definition2) {
+  await withTentMutation(fs21, async () => {
+    assertTypeName(name);
+    if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
+      throw new Error(`Built-in primary types cannot be created: ${name}.`);
+    }
+    if (BUILTIN_SECONDARY_TYPES.includes(name)) {
+      throw new Error(`Built-in secondary types already exist: ${name}.`);
+    }
+    if (definition2.tier !== "modifier") {
+      throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
+    }
+    const registry = await loadTypeRegistry(fs21);
+    if (registry[name]) throw new Error(`Type already exists: ${name}.`);
+    registry[name] = { tier: "modifier" };
+    await writeTypeRegistryUnlocked(fs21, registry);
+  });
+}
+async function createSecondaryType(fs21, name, _definition) {
+  void _definition;
+  await createType(fs21, name, { tier: "modifier" });
+}
+async function inspectTypeDeletion(fs21, level, name) {
+  void level;
+  const tent = await loadTent(fs21);
+  const registry = tent.typeRegistry;
+  const boxes = [...tent.byId.values()];
+  const referenced = boxes.filter((box) => {
+    const { base, modifier } = splitType(box.type);
+    return box.type === name || base === name || modifier === name;
+  });
+  const tasks = await loadTaskEnvelopes(fs21);
+  const ownerMap = /* @__PURE__ */ new Map();
+  const relatedIds = /* @__PURE__ */ new Set();
+  for (const reference of referenced) {
+    for (const box of relatedBoxes(reference, boxes)) {
+      relatedIds.add(box.id);
+    }
+  }
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        if (referenced.length > 0) {
+          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
+        }
+        continue;
+      }
+      if (!relatedIds.has(claimId)) continue;
+      const box = tent.byId.get(claimId);
+      if (!box) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
+    }
+  }
+  const builtIn = name in DEFAULT_TYPE_REGISTRY || isCanonicalPrimary(name) || BUILTIN_SECONDARY_TYPES.includes(name);
+  return {
+    level: "type",
+    name,
+    builtIn,
+    exists: name in registry,
+    references: referenced.map(({ id, path: path22, name: boxName }) => ({ id, path: path22, name: boxName })),
+    activeOwners: [...ownerMap.values()]
+  };
+}
+async function deleteCustomType(fs21, level, name, confirmation) {
+  return withTentMutation(fs21, async () => {
+    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
+    const inspection = await inspectTypeDeletion(fs21, level, name);
+    if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
+    if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
+    if (inspection.references.length > 0) {
+      throw new Error(
+        `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references.map((x) => x.path).join(", ")}.`
+      );
+    }
+    if (inspection.activeOwners.length > 0) {
+      throw new Error(
+        `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
+      );
+    }
+    const registry = await loadTypeRegistry(fs21);
+    delete registry[name];
+    await writeTypeRegistryUnlocked(fs21, registry);
+    return inspection;
+  });
+}
+async function writeTypeRegistryUnlocked(fs21, registry) {
+  const slim = {};
+  for (const [name, def] of Object.entries(registry)) {
+    slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
+  }
+  await fs21.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
+}
+function assertTypeName(name) {
+  if (!name.trim()) throw new Error("Type name cannot be empty.");
+  if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
+  if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
+}
+function relatedBoxes(reference, boxes) {
+  return boxes.filter(
+    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
+  );
 }
 
 // src/core/context-card.ts
@@ -13907,7 +14076,51 @@ var CLIENT_METHODS = [
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
   "docs.importAttachment",
+  /**
+   * User-only Node type mutation (MutationBus + baseEtag).
+   * Public semantic path for compound type strings; not via free-form docs.write.
+   * Success emits exactly one concept.changed with reason docs.setType.
+   */
+  "docs.setType",
+  /**
+   * User-only Node tags replace (MutationBus + baseEtag).
+   * Empty array clears Node tags without pruning the global registry.
+   * Success emits exactly one concept.changed with reason docs.tags.set.
+   */
+  "docs.tags.set",
+  /**
+   * User-only attach one tag to a Node (MutationBus + baseEtag; idempotent).
+   * Auto-registers new names into tags.json. Success emits concept.changed reason docs.tag.add.
+   */
+  "docs.tag.add",
+  /**
+   * User-only detach one tag from a Node (MutationBus + baseEtag).
+   * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
+   */
+  "docs.tag.remove",
   "registry.types",
+  /**
+   * User-only custom secondary type create (MutationBus).
+   * Primaries and built-in secondaries cannot be created. Success emits registry.types.updated.
+   */
+  "registry.type.create",
+  /**
+   * User-only custom secondary type delete (MutationBus).
+   * Built-ins and in-use types fail loud. Success emits registry.types.updated.
+   */
+  "registry.type.delete",
+  /** Read-only global tag vocabulary (tags.json). */
+  "registry.tags",
+  /**
+   * User-only ensure a tag exists in the global vocabulary (MutationBus).
+   * Success emits registry.tags.updated (even when already present — client may no-op on payload).
+   */
+  "registry.tag.create",
+  /**
+   * User-only global tag delete + cascade off all Nodes (MutationBus).
+   * Success emits registry.tags.updated.
+   */
+  "registry.tag.delete",
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
@@ -14059,6 +14272,7 @@ var RESERVED_DOCS_WRITE_FIELDS = [
   "archived",
   ...PROTECTED_COLLAB_FIELDS
 ];
+var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags"];
 var RPC_UNAUTHORIZED = -32001;
 var RPC_A2A_DENIED = -32020;
 var RPC_A2A_ASK = -32021;
@@ -18290,8 +18504,26 @@ async function dispatchMethod(ctx, method, params) {
         return docsBacklinks(ctx, p);
       case "docs.importAttachment":
         return docsImportAttachment(ctx, p);
+      case "docs.setType":
+        return docsSetType(ctx, p);
+      case "docs.tags.set":
+        return docsTagsSet(ctx, p);
+      case "docs.tag.add":
+        return docsTagAdd(ctx, p);
+      case "docs.tag.remove":
+        return docsTagRemove(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
+      case "registry.type.create":
+        return registryTypeCreate(ctx, p);
+      case "registry.type.delete":
+        return registryTypeDelete(ctx, p);
+      case "registry.tags":
+        return registryTags(ctx, p);
+      case "registry.tag.create":
+        return registryTagCreate(ctx, p);
+      case "registry.tag.delete":
+        return registryTagDelete(ctx, p);
       case "registry.roles":
         return registryRoles(ctx, p);
       case "registry.role.create":
@@ -18769,6 +19001,7 @@ async function docsWrite(ctx, p) {
       const diskParsed = parseFrontmatter(diskRaw);
       const nextParsed = parseFrontmatter(rawInput);
       assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
+      assertRawDocsWriteSemantic(diskParsed.data, nextParsed.data);
       const tasks = await loadTaskEnvelopes(mount.env.fs);
       const changed = {};
       for (const field of PROTECTED_COLLAB_FIELDS) {
@@ -18789,6 +19022,7 @@ async function docsWrite(ctx, p) {
     } else {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
+        assertSemanticDocsWriteFields(frontmatter);
         assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
       }
       ctx.host.markSelfWrite(workspaceId);
@@ -18946,6 +19180,377 @@ async function registryTypes(ctx, p) {
     return { name, tier };
   }).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, types };
+}
+async function registryTypeCreate(ctx, p) {
+  requireUserActor(p, "registry.type.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  if ("tier" in p && p.tier !== void 0 && p.tier !== "modifier") {
+    throw new RpcError(
+      -32602,
+      "registry.type.create only accepts custom secondary (modifier) types"
+    );
+  }
+  if ("rename" in p || "newName" in p || "update" in p) {
+    throw new RpcError(
+      -32602,
+      "registry.type.create does not support rename/update; type identifiers are immutable"
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await createSecondaryType(mount.env.fs, name, { tier: "modifier" });
+    } catch (err) {
+      throw mapTypeRegistryError(err, "registry.type.create");
+    }
+    emitRegistryTypesUpdated(ctx, workspaceId, {
+      action: "create",
+      name,
+      tier: "modifier"
+    });
+    return { workspaceId, name, tier: "modifier" };
+  });
+}
+async function registryTypeDelete(ctx, p) {
+  requireUserActor(p, "registry.type.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  const confirmation = requireString(p, "confirmation");
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const inspection = await inspectTypeDeletion(mount.env.fs, "type", name);
+      if (!inspection.exists) {
+        throw new RpcError(-32004, `Type does not exist: ${name}`, {
+          name,
+          inspection
+        });
+      }
+      if (inspection.builtIn) {
+        throw new RpcError(-32602, `Built-in types cannot be deleted: ${name}`, {
+          name,
+          inspection
+        });
+      }
+      if (inspection.references.length > 0) {
+        throw new RpcError(
+          -32602,
+          `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references.map((x) => x.path).join(", ")}.`,
+          { name, inspection }
+        );
+      }
+      await deleteCustomType(mount.env.fs, "type", name, confirmation);
+    } catch (err) {
+      if (err instanceof RpcError) throw err;
+      throw mapTypeRegistryError(err, "registry.type.delete");
+    }
+    emitRegistryTypesUpdated(ctx, workspaceId, {
+      action: "delete",
+      name
+    });
+    return { workspaceId, deleted: name };
+  });
+}
+async function registryTags(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadTagRegistry(mount.env.fs);
+  return { workspaceId, tags: registry.tags };
+}
+async function registryTagCreate(ctx, p) {
+  requireUserActor(p, "registry.tag.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawName = requireString(p, "name");
+  let tag;
+  try {
+    tag = normalizeTagName(rawName);
+  } catch (err) {
+    throw mapTagRegistryError(err, "registry.tag.create");
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await addRegistryTag(mount.env.fs, tag);
+    } catch (err) {
+      throw mapTagRegistryError(err, "registry.tag.create");
+    }
+    emitRegistryTagsUpdated(ctx, workspaceId, {
+      action: "create",
+      name: tag
+    });
+    return { workspaceId, name: tag };
+  });
+}
+async function registryTagDelete(ctx, p) {
+  requireUserActor(p, "registry.tag.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawName = requireString(p, "name");
+  let tag;
+  try {
+    tag = normalizeTagName(rawName);
+  } catch (err) {
+    throw mapTagRegistryError(err, "registry.tag.delete");
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await removeRegistryTag(mount.env.fs, tag);
+    } catch (err) {
+      throw mapTagRegistryError(err, "registry.tag.delete");
+    }
+    emitRegistryTagsUpdated(ctx, workspaceId, {
+      action: "delete",
+      name: tag
+    });
+    return { workspaceId, deleted: tag };
+  });
+}
+async function docsSetType(ctx, p) {
+  requireUserActor(p, "docs.setType");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const type = requireString(p, "type");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "docs.setType");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.setType");
+    if (!isValidConceptType(type, tent.typeRegistry)) {
+      throw new RpcError(
+        -32602,
+        `Invalid concept type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
+        { type }
+      );
+    }
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await patchBox(mount.env, concept.path, { type }, tent);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.setType");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.setType", type },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw)
+    };
+  });
+}
+async function docsTagsSet(ctx, p) {
+  requireUserActor(p, "docs.tags.set");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  if (!Array.isArray(p.tags)) {
+    throw new RpcError(-32602, "docs.tags.set requires tags: string[]");
+  }
+  const tagsRaw = p.tags;
+  for (const item of tagsRaw) {
+    if (typeof item !== "string") {
+      throw new RpcError(-32602, "docs.tags.set tags must be an array of strings");
+    }
+  }
+  let tags;
+  try {
+    tags = [...new Set(tagsRaw.map((t) => normalizeTagName(t)))].sort(
+      (a, b) => a.localeCompare(b)
+    );
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tags.set");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "docs.tags.set");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tags.set");
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await patchBox(mount.env, concept.path, { tags }, tent);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tags.set");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tags.set" },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw)
+    };
+  });
+}
+async function docsTagAdd(ctx, p) {
+  requireUserActor(p, "docs.tag.add");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawTag = requireString(p, "tag");
+  let tag;
+  try {
+    tag = normalizeTagName(rawTag);
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tag.add");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "docs.tag.add");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.add");
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await addTag(mount.env.fs, concept.id, tag);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tag.add");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tag.add", tag },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw)
+    };
+  });
+}
+async function docsTagRemove(ctx, p) {
+  requireUserActor(p, "docs.tag.remove");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawTag = requireString(p, "tag");
+  let tag;
+  try {
+    tag = normalizeTagName(rawTag);
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tag.remove");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "docs.tag.remove");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.remove");
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await removeTag(mount.env.fs, concept.id, tag);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tag.remove");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tag.remove", tag },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw)
+    };
+  });
+}
+function emitRegistryTypesUpdated(ctx, workspaceId, payload) {
+  ctx.events.emit(
+    "registry.types.updated",
+    workspaceId,
+    {
+      action: payload.action,
+      name: payload.name,
+      ...payload.tier ? { tier: payload.tier } : {}
+    },
+    "self"
+  );
+}
+function emitRegistryTagsUpdated(ctx, workspaceId, payload) {
+  ctx.events.emit(
+    "registry.tags.updated",
+    workspaceId,
+    { action: payload.action, name: payload.name },
+    "self"
+  );
+}
+async function assertDocsSemanticBaseEtag(fs21, notePath, concept, baseEtag, surface) {
+  const diskRaw = await fs21.readFile(notePath);
+  const currentEtag = contentEtag(diskRaw);
+  if (!baseEtag) {
+    throw new RpcError(-32008, `${surface} requires baseEtag`, {
+      code: "etag_required",
+      currentEtag,
+      path: concept.path,
+      id: concept.id
+    });
+  }
+  if (baseEtag !== currentEtag) {
+    throw new RpcError(-32009, "etag conflict", {
+      code: "etag_conflict",
+      currentEtag,
+      baseEtag,
+      path: concept.path,
+      id: concept.id
+    });
+  }
+}
+function mapTypeRegistryError(err, surface) {
+  if (err instanceof RpcError) return err;
+  const message2 = err instanceof Error ? err.message : `${surface} failed`;
+  if (/does not exist/i.test(message2)) {
+    return new RpcError(-32004, message2);
+  }
+  if (/Built-in|cannot be created|cannot be deleted|already exists|Confirmation mismatch|still in use|active task|cannot contain|cannot be empty|temp\/|Primary types are fixed|only allows creating/i.test(
+    message2
+  )) {
+    return new RpcError(-32602, message2);
+  }
+  return new RpcError(-32e3, message2);
+}
+function mapTagRegistryError(err, surface) {
+  if (err instanceof RpcError) return err;
+  const message2 = err instanceof Error ? err.message : `${surface} failed`;
+  if (/cannot be empty|path separators|newlines/i.test(message2)) {
+    return new RpcError(-32602, message2);
+  }
+  return new RpcError(-32e3, message2);
+}
+function mapDocsSemanticError(err, surface) {
+  if (err instanceof RpcError) return err;
+  const message2 = err instanceof Error ? err.message : `${surface} failed`;
+  if (/not found|Box not found/i.test(message2)) {
+    return new RpcError(-32004, message2);
+  }
+  if (/Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived boxes|Invalid subtrees/i.test(
+    message2
+  )) {
+    return new RpcError(-32602, message2);
+  }
+  return new RpcError(-32e3, message2);
 }
 async function registryRoles(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -24049,6 +24654,15 @@ function assertReservedDocsWriteFields(frontmatter) {
     { fields: hard }
   );
 }
+function assertSemanticDocsWriteFields(frontmatter) {
+  const hit = SEMANTIC_DOCS_WRITE_FIELDS.filter((k) => k in frontmatter);
+  if (hit.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    { fields: hit }
+  );
+}
 function assertRawDocsWriteReserved(disk, next) {
   const hard = ["id", "mode", "archived"].filter(
     (field) => String(next[field] ?? "") !== String(disk[field] ?? "")
@@ -24059,6 +24673,27 @@ function assertRawDocsWriteReserved(disk, next) {
     `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
     { fields: hard }
   );
+}
+function assertRawDocsWriteSemantic(disk, next) {
+  const changed = [];
+  if (String(next.type ?? "") !== String(disk.type ?? "")) {
+    changed.push("type");
+  }
+  const diskTags = JSON.stringify(normalizeTagsForCompare(disk.tags));
+  const nextTags = JSON.stringify(normalizeTagsForCompare(next.tags));
+  if (diskTags !== nextTags) {
+    changed.push("tags");
+  }
+  if (changed.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    { fields: changed }
+  );
+}
+function normalizeTagsForCompare(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => typeof item === "string").map((t) => t.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
 }
 function tagsFromFrontmatterData(data) {
   if (!Array.isArray(data.tags)) return [];

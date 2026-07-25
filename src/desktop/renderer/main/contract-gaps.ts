@@ -62,12 +62,9 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
     need: "Tool call argument / params summary on toolApproval projection (beyond options[]).",
     fallback: "UI shows toolTitle + options name/kind summary only; never invents args.",
   },
-  {
-    id: "type-tag-mutation",
-    methods: ["registry.type.create", "registry.type.update", "docs.setTags", "docs.setType"],
-    need: "Mutate type registry and concept tags/type from Desktop settings.",
-    fallback: "registry.types is read-only; type/tags shown as projection only.",
-  },
+  // type-tag-mutation closed: Service now exposes registry.type.create/delete,
+  // registry.tags / registry.tag.create/delete, docs.setType / docs.tags.set /
+  // docs.tag.add / docs.tag.remove. Desktop UI wiring is out of this batch.
   {
     id: "userAsk.agent-profile",
     methods: ["userAsk.sourceProfile"],

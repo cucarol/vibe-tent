@@ -532,7 +532,51 @@ export const CLIENT_METHODS = [
    * Disk: original bytes under attachments/<cx>/… — never a .b64 text companion.
    */
   "docs.importAttachment",
+  /**
+   * User-only Node type mutation (MutationBus + baseEtag).
+   * Public semantic path for compound type strings; not via free-form docs.write.
+   * Success emits exactly one concept.changed with reason docs.setType.
+   */
+  "docs.setType",
+  /**
+   * User-only Node tags replace (MutationBus + baseEtag).
+   * Empty array clears Node tags without pruning the global registry.
+   * Success emits exactly one concept.changed with reason docs.tags.set.
+   */
+  "docs.tags.set",
+  /**
+   * User-only attach one tag to a Node (MutationBus + baseEtag; idempotent).
+   * Auto-registers new names into tags.json. Success emits concept.changed reason docs.tag.add.
+   */
+  "docs.tag.add",
+  /**
+   * User-only detach one tag from a Node (MutationBus + baseEtag).
+   * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
+   */
+  "docs.tag.remove",
   "registry.types",
+  /**
+   * User-only custom secondary type create (MutationBus).
+   * Primaries and built-in secondaries cannot be created. Success emits registry.types.updated.
+   */
+  "registry.type.create",
+  /**
+   * User-only custom secondary type delete (MutationBus).
+   * Built-ins and in-use types fail loud. Success emits registry.types.updated.
+   */
+  "registry.type.delete",
+  /** Read-only global tag vocabulary (tags.json). */
+  "registry.tags",
+  /**
+   * User-only ensure a tag exists in the global vocabulary (MutationBus).
+   * Success emits registry.tags.updated (even when already present — client may no-op on payload).
+   */
+  "registry.tag.create",
+  /**
+   * User-only global tag delete + cascade off all Nodes (MutationBus).
+   * Success emits registry.tags.updated.
+   */
+  "registry.tag.delete",
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
@@ -684,13 +728,19 @@ export function isClientMethod(method: string): method is ClientMethod {
 /** Collaboration projection fields protected while a box has an active task. */
 export const PROTECTED_COLLAB_FIELDS = ["status", "owner", "assignee"] as const;
 
-/** Fields that raw/docs.write may never set; use dedicated APIs (setMode / task.*). */
+/** Fields that raw/docs.write may never set; use dedicated APIs (setMode / task.* / type-tag RPCs). */
 export const RESERVED_DOCS_WRITE_FIELDS = [
   "id",
   "mode",
   "archived",
   ...PROTECTED_COLLAB_FIELDS,
 ] as const;
+
+/**
+ * Semantic Node fields that must use dedicated Service commands, not free-form docs.write.
+ * type → docs.setType; tags → docs.tags.set / docs.tag.add / docs.tag.remove.
+ */
+export const SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags"] as const;
 
 /** JSON-RPC auth failure. */
 export const RPC_UNAUTHORIZED = -32001;

@@ -146,6 +146,15 @@ export async function deleteCustomType(
     const inspection = await inspectTypeDeletion(fs, level, name);
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
+    // Fail loud while any Node still uses the name as type, primary base, or secondary modifier.
+    // Leaving refs would mark Nodes invalid on next load — not an acceptable silent path.
+    if (inspection.references.length > 0) {
+      throw new Error(
+        `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references
+          .map((x) => x.path)
+          .join(", ")}.`
+      );
+    }
     if (inspection.activeOwners.length > 0) {
       throw new Error(
         `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`

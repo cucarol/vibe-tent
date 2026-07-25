@@ -9,9 +9,23 @@ import {
   patchBox,
   setNodeMode,
 } from "../core/ops.js";
-import { syncTagRegistryAfterBoxTagsChange } from "../core/tags.js";
+import {
+  addRegistryTag,
+  addTag,
+  loadTagRegistry,
+  normalizeTagName,
+  removeRegistryTag,
+  removeTag,
+  syncTagRegistryAfterBoxTagsChange,
+} from "../core/tags.js";
 import { isContentMutable } from "../core/tree.js";
 import type { NodeMode } from "../core/types.js";
+import {
+  createSecondaryType,
+  deleteCustomType,
+  inspectTypeDeletion,
+} from "../core/typeManagement.js";
+import { isValidConceptType } from "../core/typeRegistry.js";
 
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
@@ -169,6 +183,7 @@ import {
   isClientMethod,
   PROTECTED_COLLAB_FIELDS,
   RESERVED_DOCS_WRITE_FIELDS,
+  SEMANTIC_DOCS_WRITE_FIELDS,
   RPC_A2A_ASK,
   RPC_A2A_DENIED,
   RPC_LIFECYCLE,
@@ -327,8 +342,26 @@ export async function dispatchMethod(
         return docsBacklinks(ctx, p);
       case "docs.importAttachment":
         return docsImportAttachment(ctx, p);
+      case "docs.setType":
+        return docsSetType(ctx, p);
+      case "docs.tags.set":
+        return docsTagsSet(ctx, p);
+      case "docs.tag.add":
+        return docsTagAdd(ctx, p);
+      case "docs.tag.remove":
+        return docsTagRemove(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
+      case "registry.type.create":
+        return registryTypeCreate(ctx, p);
+      case "registry.type.delete":
+        return registryTypeDelete(ctx, p);
+      case "registry.tags":
+        return registryTags(ctx, p);
+      case "registry.tag.create":
+        return registryTagCreate(ctx, p);
+      case "registry.tag.delete":
+        return registryTagDelete(ctx, p);
       case "registry.roles":
         return registryRoles(ctx, p);
       case "registry.role.create":
@@ -972,6 +1005,8 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       const nextParsed = parseFrontmatter(rawInput);
       // Reserved identity/mode fields: raw path cannot set or change them.
       assertRawDocsWriteReserved(diskParsed.data, nextParsed.data);
+      // Public type/tags mutations use dedicated RPCs — raw cannot change them.
+      assertRawDocsWriteSemantic(diskParsed.data, nextParsed.data);
       const tasks = await loadTaskEnvelopes(mount.env.fs);
       // Only reject when protected collab projection fields actually change.
       const changed: Record<string, unknown> = {};
@@ -985,8 +1020,7 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
       }
       ctx.host.markSelfWrite(workspaceId);
       await mount.env.fs.writeFile(notePath, rawInput);
-      // Auto-register newly used tags into tags.json via Core (not Service JSON).
-      // Node detach does not prune the registry; only removeRegistryTag deletes.
+      // Tags cannot change via docs.write (asserted above); keep sync as no-op safety.
       await syncTagRegistryAfterBoxTagsChange(
         mount.env.fs,
         concept.tags,
@@ -995,12 +1029,13 @@ async function docsWrite(ctx: HandlerContext, p: Record<string, unknown>) {
     } else {
       if (frontmatter) {
         assertReservedDocsWriteFields(frontmatter);
+        assertSemanticDocsWriteFields(frontmatter);
         assertDocsWriteAllowed(tent, concept.id, frontmatter, await loadTaskEnvelopes(mount.env.fs));
       }
 
       ctx.host.markSelfWrite(workspaceId);
       if (frontmatter && Object.keys(frontmatter).length > 0) {
-        // patchBox → Core auto-registers new tags when present
+        // patchBox for non-semantic frontmatter only (type/tags rejected above)
         await patchBox(mount.env, concept.path, frontmatter, tent);
       }
       if (body !== undefined) {
@@ -1179,6 +1214,467 @@ async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
     })
     .sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, types };
+}
+
+/**
+ * User-only custom secondary type create (MutationBus).
+ * Primaries / built-in secondaries fail loud. Emits registry.types.updated once.
+ */
+async function registryTypeCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "registry.type.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  if ("tier" in p && p.tier !== undefined && p.tier !== "modifier") {
+    throw new RpcError(
+      -32602,
+      "registry.type.create only accepts custom secondary (modifier) types"
+    );
+  }
+  if ("rename" in p || "newName" in p || "update" in p) {
+    throw new RpcError(
+      -32602,
+      "registry.type.create does not support rename/update; type identifiers are immutable"
+    );
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await createSecondaryType(mount.env.fs, name, { tier: "modifier" });
+    } catch (err) {
+      throw mapTypeRegistryError(err, "registry.type.create");
+    }
+    emitRegistryTypesUpdated(ctx, workspaceId, {
+      action: "create",
+      name,
+      tier: "modifier",
+    });
+    return { workspaceId, name, tier: "modifier" as const };
+  });
+}
+
+/**
+ * User-only custom secondary type delete (MutationBus).
+ * Built-in and in-use types fail loud. confirmation must equal name.
+ * Emits registry.types.updated once on success.
+ */
+async function registryTypeDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "registry.type.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const name = requireString(p, "name");
+  const confirmation = requireString(p, "confirmation");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      // Preflight for richer error payload (references / activeOwners).
+      const inspection = await inspectTypeDeletion(mount.env.fs, "type", name);
+      if (!inspection.exists) {
+        throw new RpcError(-32004, `Type does not exist: ${name}`, {
+          name,
+          inspection,
+        });
+      }
+      if (inspection.builtIn) {
+        throw new RpcError(-32602, `Built-in types cannot be deleted: ${name}`, {
+          name,
+          inspection,
+        });
+      }
+      if (inspection.references.length > 0) {
+        throw new RpcError(
+          -32602,
+          `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references
+            .map((x) => x.path)
+            .join(", ")}.`,
+          { name, inspection }
+        );
+      }
+      await deleteCustomType(mount.env.fs, "type", name, confirmation);
+    } catch (err) {
+      if (err instanceof RpcError) throw err;
+      throw mapTypeRegistryError(err, "registry.type.delete");
+    }
+    emitRegistryTypesUpdated(ctx, workspaceId, {
+      action: "delete",
+      name,
+    });
+    return { workspaceId, deleted: name };
+  });
+}
+
+/** Read-only global tag vocabulary. */
+async function registryTags(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const registry = await loadTagRegistry(mount.env.fs);
+  return { workspaceId, tags: registry.tags };
+}
+
+/**
+ * User-only ensure tag in global vocabulary (MutationBus).
+ * Emits registry.tags.updated once on success.
+ */
+async function registryTagCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "registry.tag.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawName = requireString(p, "name");
+  let tag: string;
+  try {
+    tag = normalizeTagName(rawName);
+  } catch (err) {
+    throw mapTagRegistryError(err, "registry.tag.create");
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await addRegistryTag(mount.env.fs, tag);
+    } catch (err) {
+      throw mapTagRegistryError(err, "registry.tag.create");
+    }
+    emitRegistryTagsUpdated(ctx, workspaceId, {
+      action: "create",
+      name: tag,
+    });
+    return { workspaceId, name: tag };
+  });
+}
+
+/**
+ * User-only global tag delete + cascade off all Nodes (MutationBus).
+ * Emits registry.tags.updated once on success.
+ */
+async function registryTagDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "registry.tag.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawName = requireString(p, "name");
+  let tag: string;
+  try {
+    tag = normalizeTagName(rawName);
+  } catch (err) {
+    throw mapTagRegistryError(err, "registry.tag.delete");
+  }
+
+  return ctx.mutations.run(workspaceId, async () => {
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await removeRegistryTag(mount.env.fs, tag);
+    } catch (err) {
+      throw mapTagRegistryError(err, "registry.tag.delete");
+    }
+    emitRegistryTagsUpdated(ctx, workspaceId, {
+      action: "delete",
+      name: tag,
+    });
+    return { workspaceId, deleted: tag };
+  });
+}
+
+/**
+ * User-only Node type mutation (MutationBus + baseEtag).
+ * Primary segment must remain canonical; compound type must validate after cutover.
+ * Emits exactly one concept.changed with reason docs.setType.
+ */
+async function docsSetType(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.setType");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const type = requireString(p, "type");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.setType");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.setType");
+
+    if (!isValidConceptType(type, tent.typeRegistry)) {
+      throw new RpcError(
+        -32602,
+        `Invalid concept type: ${type}. Primary must be goal|prompt|output; secondary must be a registered modifier.`,
+        { type }
+      );
+    }
+
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await patchBox(mount.env, concept.path, { type }, tent);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.setType");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.setType", type },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+    };
+  });
+}
+
+/**
+ * User-only replace Node tag list (MutationBus + baseEtag).
+ * Empty clears Node tags; does not prune registry. Emits concept.changed reason docs.tags.set.
+ */
+async function docsTagsSet(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.tags.set");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  if (!Array.isArray(p.tags)) {
+    throw new RpcError(-32602, "docs.tags.set requires tags: string[]");
+  }
+  const tagsRaw = p.tags as unknown[];
+  for (const item of tagsRaw) {
+    if (typeof item !== "string") {
+      throw new RpcError(-32602, "docs.tags.set tags must be an array of strings");
+    }
+  }
+  let tags: string[];
+  try {
+    tags = [...new Set(tagsRaw.map((t) => normalizeTagName(t as string)))].sort((a, b) =>
+      a.localeCompare(b)
+    );
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tags.set");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.tags.set");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tags.set");
+
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await patchBox(mount.env, concept.path, { tags }, tent);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tags.set");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tags.set" },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+    };
+  });
+}
+
+/**
+ * User-only attach one tag (MutationBus + baseEtag; idempotent).
+ * Emits concept.changed reason docs.tag.add.
+ */
+async function docsTagAdd(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.tag.add");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawTag = requireString(p, "tag");
+  let tag: string;
+  try {
+    tag = normalizeTagName(rawTag);
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tag.add");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.tag.add");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.add");
+
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      // Core addTag holds withTentMutation; MutationBus serializes Service mutations only.
+      await addTag(mount.env.fs, concept.id, tag);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tag.add");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tag.add", tag },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+    };
+  });
+}
+
+/**
+ * User-only detach one tag from Node (MutationBus + baseEtag).
+ * Registry is not pruned. Emits concept.changed reason docs.tag.remove.
+ */
+async function docsTagRemove(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.tag.remove");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const rawTag = requireString(p, "tag");
+  let tag: string;
+  try {
+    tag = normalizeTagName(rawTag);
+  } catch (err) {
+    throw mapDocsSemanticError(err, "docs.tag.remove");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept(tent, p);
+    assertDocsModeMutable(concept, "docs.tag.remove");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "docs.tag.remove");
+
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await removeTag(mount.env.fs, concept.id, tag);
+    } catch (err) {
+      throw mapDocsSemanticError(err, "docs.tag.remove");
+    }
+
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      { id: concept.id, path: concept.path, reason: "docs.tag.remove", tag },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+    };
+  });
+}
+
+function emitRegistryTypesUpdated(
+  ctx: HandlerContext,
+  workspaceId: string,
+  payload: { action: "create" | "delete"; name: string; tier?: "modifier" | "base" }
+): void {
+  ctx.events.emit(
+    "registry.types.updated",
+    workspaceId,
+    {
+      action: payload.action,
+      name: payload.name,
+      ...(payload.tier ? { tier: payload.tier } : {}),
+    },
+    "self"
+  );
+}
+
+function emitRegistryTagsUpdated(
+  ctx: HandlerContext,
+  workspaceId: string,
+  payload: { action: "create" | "delete"; name: string }
+): void {
+  ctx.events.emit(
+    "registry.tags.updated",
+    workspaceId,
+    { action: payload.action, name: payload.name },
+    "self"
+  );
+}
+
+/** Missing → -32008 with currentEtag; stale → -32009 with currentEtag only (no body). */
+async function assertDocsSemanticBaseEtag(
+  fs: import("../core/adapter.js").FsAdapter,
+  notePath: string,
+  concept: import("../core/types.js").Box,
+  baseEtag: string | undefined,
+  surface: string
+): Promise<void> {
+  const diskRaw = await fs.readFile(notePath);
+  const currentEtag = contentEtag(diskRaw);
+  if (!baseEtag) {
+    throw new RpcError(-32008, `${surface} requires baseEtag`, {
+      code: "etag_required",
+      currentEtag,
+      path: concept.path,
+      id: concept.id,
+    });
+  }
+  if (baseEtag !== currentEtag) {
+    throw new RpcError(-32009, "etag conflict", {
+      code: "etag_conflict",
+      currentEtag,
+      baseEtag,
+      path: concept.path,
+      id: concept.id,
+    });
+  }
+}
+
+function mapTypeRegistryError(err: unknown, surface: string): RpcError {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : `${surface} failed`;
+  if (/does not exist/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (
+    /Built-in|cannot be created|cannot be deleted|already exists|Confirmation mismatch|still in use|active task|cannot contain|cannot be empty|temp\/|Primary types are fixed|only allows creating/i.test(
+      message
+    )
+  ) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32000, message);
+}
+
+function mapTagRegistryError(err: unknown, surface: string): RpcError {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : `${surface} failed`;
+  if (/cannot be empty|path separators|newlines/i.test(message)) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32000, message);
+}
+
+function mapDocsSemanticError(err: unknown, surface: string): RpcError {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : `${surface} failed`;
+  if (/not found|Box not found/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (
+    /Unknown type|Primary type|Invalid or archived|cannot be tagged|cannot be empty|path separators|newlines|Reserved or retired|Archived boxes|Invalid subtrees/i.test(
+      message
+    )
+  ) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32000, message);
 }
 
 /** Read-only role registry projection (dispatch target picker). */
@@ -8244,6 +8740,20 @@ function assertReservedDocsWriteFields(frontmatter: Record<string, unknown>): vo
 }
 
 /**
+ * Structured frontmatter path: type/tags use dedicated Service commands.
+ * Public semantic path is docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.
+ */
+function assertSemanticDocsWriteFields(frontmatter: Record<string, unknown>): void {
+  const hit = SEMANTIC_DOCS_WRITE_FIELDS.filter((k) => k in frontmatter);
+  if (hit.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    { fields: hit }
+  );
+}
+
+/**
  * Raw write may keep existing reserved values but must not introduce or change
  * id/mode/archived. Collaboration fields still use the active-task guard.
  */
@@ -8260,6 +8770,40 @@ function assertRawDocsWriteReserved(
     `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
     { fields: hard }
   );
+}
+
+/**
+ * Raw write may keep existing type/tags but must not change them.
+ * Dedicated docs.setType / docs.tags.* / docs.tag.* are the public semantic path.
+ */
+function assertRawDocsWriteSemantic(
+  disk: Record<string, unknown>,
+  next: Record<string, unknown>
+): void {
+  const changed: string[] = [];
+  if (String(next.type ?? "") !== String(disk.type ?? "")) {
+    changed.push("type");
+  }
+  const diskTags = JSON.stringify(normalizeTagsForCompare(disk.tags));
+  const nextTags = JSON.stringify(normalizeTagsForCompare(next.tags));
+  if (diskTags !== nextTags) {
+    changed.push("tags");
+  }
+  if (changed.length === 0) return;
+  throw new RpcError(
+    -32010,
+    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    { fields: changed }
+  );
+}
+
+function normalizeTagsForCompare(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter((item): item is string => typeof item === "string")
+    .map((t) => t.trim())
+    .filter(Boolean)
+    .sort((a, b) => a.localeCompare(b));
 }
 
 /** Best-effort tag list from raw frontmatter for Core registry sync (normalize in Core). */

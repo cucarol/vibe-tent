@@ -299,10 +299,142 @@ export class ServiceClient {
   ) {
     return this.call("docs.importAttachment", { workspaceId, ...args });
   }
+  /**
+   * User-only set compound Node type (MutationBus + baseEtag).
+   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason docs.setType.
+   */
+  docsSetType(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      type: string;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call("docs.setType", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+  /**
+   * User-only replace Node tags (MutationBus + baseEtag). Empty clears Node tags only.
+   */
+  docsTagsSet(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      tags: string[];
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call("docs.tags.set", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+  /** User-only attach one tag (idempotent; MutationBus + baseEtag). */
+  docsTagAdd(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      tag: string;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call("docs.tag.add", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
+  /** User-only detach one tag from Node (does not prune registry). */
+  docsTagRemove(
+    workspaceId: string,
+    args: {
+      id?: string;
+      path?: string;
+      boxId?: string;
+      tag: string;
+      baseEtag: string;
+      actor?: string;
+    }
+  ) {
+    return this.call("docs.tag.remove", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user",
+    });
+  }
 
   // ---- convenience: registry ----
   registryTypes(workspaceId: string) {
     return this.call("registry.types", { workspaceId });
+  }
+  /**
+   * User-only custom secondary type create. Primaries / built-ins fail loud.
+   * Emits registry.types.updated.
+   */
+  registryTypeCreate(
+    workspaceId: string,
+    args: { name: string; actor?: string }
+  ) {
+    return this.call("registry.type.create", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user",
+    });
+  }
+  /**
+   * User-only custom secondary type delete. confirmation must equal name.
+   * In-use and built-in fail loud. Emits registry.types.updated.
+   */
+  registryTypeDelete(
+    workspaceId: string,
+    args: { name: string; confirmation: string; actor?: string }
+  ) {
+    return this.call("registry.type.delete", {
+      workspaceId,
+      name: args.name,
+      confirmation: args.confirmation,
+      actor: args.actor ?? "user",
+    });
+  }
+  /** Read-only global tag vocabulary. */
+  registryTags(workspaceId: string) {
+    return this.call("registry.tags", { workspaceId });
+  }
+  /** User-only ensure tag in global vocabulary. Emits registry.tags.updated. */
+  registryTagCreate(
+    workspaceId: string,
+    args: { name: string; actor?: string }
+  ) {
+    return this.call("registry.tag.create", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user",
+    });
+  }
+  /** User-only global tag delete + cascade off Nodes. Emits registry.tags.updated. */
+  registryTagDelete(
+    workspaceId: string,
+    args: { name: string; actor?: string }
+  ) {
+    return this.call("registry.tag.delete", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user",
+    });
   }
   registryRoles(workspaceId: string) {
     return this.call("registry.roles", { workspaceId });

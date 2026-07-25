@@ -56,7 +56,8 @@ test("contract gaps list missing desktop methods without inventing RPCs", () => 
   assert.ok(ids.includes("docs.move-reparent"));
   assert.ok(ids.includes("concept.permanent-delete"));
   assert.ok(ids.includes("session.logs-reload"));
-  assert.ok(ids.includes("type-tag-mutation"));
+  // type-tag-mutation closed once Service type/tags RPCs landed on CLIENT_METHODS.
+  assert.equal(ids.includes("type-tag-mutation"), false);
   assert.ok(ids.includes("mcp.global-config"));
   // A2U pending batch: field-level holes (not missing listPending RPCs).
   assert.ok(ids.includes("toolApproval.params"));

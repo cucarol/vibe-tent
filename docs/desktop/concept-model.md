@@ -339,7 +339,11 @@ Logical APIs consumed by Desktop Markdown and CLI (transport owned by architectu
 | --- | --- | --- |
 | `docs.list` / `docs.get` | Query | Concept projections |
 | `docs.readForEdit` | Query | Body + etag for editing |
-| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections |
+| `docs.write` | Command | Existing-node write; **required** `baseEtag` (`-32008` missing / `-32009` conflict); **cannot** bypass active-task projections; **cannot** set `type`/`tags` (use dedicated commands) |
+| `docs.setType` | Command | User-only set compound Node type (`baseEtag` required); emits `concept.changed` reason `docs.setType` |
+| `docs.tags.set` / `docs.tag.add` / `docs.tag.remove` | Command | User-only Node tag mutations (`baseEtag` required); detach does not prune registry |
+| `registry.types` / `registry.type.create` / `registry.type.delete` | Query / Command | Type registry read + custom secondary create/delete (user-only mutations; in-use delete fails loud) |
+| `registry.tags` / `registry.tag.create` / `registry.tag.delete` | Query / Command | Tag vocabulary read + create; global delete cascades off all Nodes |
 | `docs.createNote` | Command | New concept (`cx-`, type, path) |
 | `docs.promote` | Command | Note → box in place |
 | `docs.fork` | Command | Copy subtree for parallel occupation (new `cx-`s; clear occupation on fork root) |

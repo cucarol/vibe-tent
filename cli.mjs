@@ -4848,9 +4848,89 @@ var ServiceClient = class {
   docsImportAttachment(workspaceId, args) {
     return this.call("docs.importAttachment", { workspaceId, ...args });
   }
+  /**
+   * User-only set compound Node type (MutationBus + baseEtag).
+   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason docs.setType.
+   */
+  docsSetType(workspaceId, args) {
+    return this.call("docs.setType", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /**
+   * User-only replace Node tags (MutationBus + baseEtag). Empty clears Node tags only.
+   */
+  docsTagsSet(workspaceId, args) {
+    return this.call("docs.tags.set", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /** User-only attach one tag (idempotent; MutationBus + baseEtag). */
+  docsTagAdd(workspaceId, args) {
+    return this.call("docs.tag.add", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /** User-only detach one tag from Node (does not prune registry). */
+  docsTagRemove(workspaceId, args) {
+    return this.call("docs.tag.remove", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
   // ---- convenience: registry ----
   registryTypes(workspaceId) {
     return this.call("registry.types", { workspaceId });
+  }
+  /**
+   * User-only custom secondary type create. Primaries / built-ins fail loud.
+   * Emits registry.types.updated.
+   */
+  registryTypeCreate(workspaceId, args) {
+    return this.call("registry.type.create", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user"
+    });
+  }
+  /**
+   * User-only custom secondary type delete. confirmation must equal name.
+   * In-use and built-in fail loud. Emits registry.types.updated.
+   */
+  registryTypeDelete(workspaceId, args) {
+    return this.call("registry.type.delete", {
+      workspaceId,
+      name: args.name,
+      confirmation: args.confirmation,
+      actor: args.actor ?? "user"
+    });
+  }
+  /** Read-only global tag vocabulary. */
+  registryTags(workspaceId) {
+    return this.call("registry.tags", { workspaceId });
+  }
+  /** User-only ensure tag in global vocabulary. Emits registry.tags.updated. */
+  registryTagCreate(workspaceId, args) {
+    return this.call("registry.tag.create", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user"
+    });
+  }
+  /** User-only global tag delete + cascade off Nodes. Emits registry.tags.updated. */
+  registryTagDelete(workspaceId, args) {
+    return this.call("registry.tag.delete", {
+      workspaceId,
+      name: args.name,
+      actor: args.actor ?? "user"
+    });
   }
   registryRoles(workspaceId) {
     return this.call("registry.roles", { workspaceId });
