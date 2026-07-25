@@ -41,6 +41,8 @@ test("migrateTypeRegistryJson is idempotent and V0.2-shaped", () => {
 
   const second = migrateTypeRegistryJson(first.registry);
   assert.deepEqual(Object.keys(second.registry).sort(), Object.keys(first.registry).sort());
+  assert.deepEqual(second.changes, []);
+  assert.deepEqual(second.registry.goal, { tier: "base" });
 });
 
 test("migrateLegacySchema rewrites node types and strips R/W; idempotent", async () => {
@@ -103,4 +105,11 @@ test("migrateLegacySchema rewrites node types and strips R/W; idempotent", async
 
   const report2 = await migrateLegacySchema(fsa, { rewriteOperationalRefs: false });
   assert.equal(report2.typeRewrites.length, 0);
+  // Second pass must not re-normalize an already-slim types.json.
+  assert.equal(
+    report2.registryChanges.filter((c) => /normalized|stripped|mapped|seeded/i.test(c)).length,
+    0
+  );
+  const registryText2 = await fsa.readFile("types.json");
+  assert.equal(registryText2, registryText);
 });

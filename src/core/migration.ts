@@ -136,40 +136,80 @@ export function rewriteOutputType(type: string): string | undefined {
  * - drop open/sealed
  * - strip R/W, coordination, color, description, workspacePointer
  * - flatten legacy { primary, secondary }
- * Idempotent via normalizeRegistry.
+ * Idempotent: already-slim V0.2 registries return empty `changes` (no rewrite).
  */
 export function migrateTypeRegistryJson(value: unknown): { registry: TypeRegistry; changes: string[] } {
   const changes: string[] = [];
   const root: Record<string, unknown> = isRecord(value) ? deepClone(value) : {};
+  const hadNestedBuckets = isRecord(root.primary) || isRecord(root.secondary);
+  const hadRetiredFields = jsonHadRetiredFields(value);
+  const hadLegacyKeys = jsonHadLegacyTypeKeys(value);
 
-  if (isRecord(root.primary) || isRecord(root.secondary)) {
-    const flat: Record<string, unknown> = {};
+  let flat: Record<string, unknown> = {};
+  if (hadNestedBuckets) {
     if (isRecord(root.primary)) {
       mergeLegacyKeysInto(flat, root.primary, changes, "primary");
     }
     if (isRecord(root.secondary)) {
       mergeLegacyKeysInto(flat, root.secondary, changes, "secondary");
     }
-    const registry = normalizeRegistry(flat);
-    changes.push("normalized primary/secondary registry to V0.2 slim shape");
-    void DEFAULT_TYPE_REGISTRY;
-    return { registry, changes: uniqueChanges(changes) };
+  } else {
+    mergeLegacyKeysInto(flat, root, changes, "root");
   }
 
-  const flat: Record<string, unknown> = {};
-  mergeLegacyKeysInto(flat, root, changes, "root");
   const registry = normalizeRegistry(flat);
-  if (!isRecord(value) || Object.keys(flat).length === 0) {
-    changes.push("seeded default V0.2 type registry");
-  } else {
-    changes.push("normalized flat registry to V0.2 slim shape");
+  const beforeSlim = isAlreadySlimV02Registry(value);
+  if (!beforeSlim) {
+    if (!isRecord(value) || Object.keys(flat).length === 0) {
+      changes.push("seeded default V0.2 type registry");
+    } else if (hadNestedBuckets) {
+      changes.push("normalized primary/secondary registry to V0.2 slim shape");
+    } else {
+      changes.push("normalized flat registry to V0.2 slim shape");
+    }
+    if (hadRetiredFields) {
+      changes.push(
+        "stripped domain R/W, coordination, color, description, workspacePointer from type defs"
+      );
+    }
+    if (hadLegacyKeys && changes.length === 0) {
+      changes.push("mapped legacy type keys to V0.2");
+    }
   }
-  // Detect legacy field strip
-  if (jsonHadRetiredFields(value)) {
-    changes.push("stripped domain R/W, coordination, color, description, workspacePointer from type defs");
-  }
+
   void DEFAULT_TYPE_REGISTRY;
   return { registry, changes: uniqueChanges(changes) };
+}
+
+/** True when disk JSON is already the V0.2 slim shape (tier-only, canonical keys). */
+function isAlreadySlimV02Registry(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if ("primary" in value || "secondary" in value) return false;
+  for (const [name, raw] of Object.entries(value)) {
+    if (name === "note" || name === "artifact" || name === "open" || name === "sealed") return false;
+    if (!isRecord(raw)) return false;
+    const keys = Object.keys(raw);
+    if (keys.length === 0) continue;
+    if (keys.length === 1 && keys[0] === "tier" && (raw.tier === "base" || raw.tier === "modifier")) {
+      continue;
+    }
+    // Any extra field (R/W, color, …) or non-tier shape → not slim.
+    return false;
+  }
+  return true;
+}
+
+function jsonHadLegacyTypeKeys(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const walk = (node: unknown): boolean => {
+    if (!isRecord(node)) return false;
+    for (const [k, v] of Object.entries(node)) {
+      if (k === "note" || k === "artifact" || k === "open" || k === "sealed") return true;
+      if (walk(v)) return true;
+    }
+    return false;
+  };
+  return walk(value);
 }
 
 function mergeLegacyKeysInto(
@@ -436,11 +476,14 @@ async function migrateFlatTypeRegistry(
 ): Promise<void> {
   if (!(await fs.exists(TYPE_REGISTRY_PATH))) return;
   try {
-    const raw = JSON.parse(await fs.readFile(TYPE_REGISTRY_PATH)) as unknown;
+    const text = await fs.readFile(TYPE_REGISTRY_PATH);
+    const raw = JSON.parse(text) as unknown;
     const { registry, changes } = migrateTypeRegistryJson(raw);
     report.registryChanges.push(...changes);
-    if (!dryRun && changes.length > 0) {
-      await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+    const nextText = JSON.stringify(registry, null, 2) + "\n";
+    // Content-stable: skip write when already V0.2 slim (true one-shot idempotence).
+    if (!dryRun && changes.length > 0 && nextText !== text) {
+      await fs.writeFile(TYPE_REGISTRY_PATH, nextText);
     }
   } catch (error) {
     report.warnings.push(

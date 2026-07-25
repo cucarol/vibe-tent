@@ -216,11 +216,11 @@ test("external tent root: legacy CLI 全链路 tree → dispatch → stamp → c
 
   const goalId = boxId(await runCli(tent, "new-box", "挖掘目标", "goal"));
   const checkId = boxId(await runCli(tent, "new-box", "检查项", "goal", goalId));
-  const artifactId = boxId(await runCli(tent, "new-box", "仓库指针", "artifact"));
+  const artifactId = boxId(await runCli(tent, "new-box", "仓库指针", "output"));
   const artifactPath = externalPath(tent, "仓库指针", "仓库指针.md");
   await fs.writeFile(
     artifactPath,
-    `---\nid: ${artifactId}\ntype: artifact\nref: a1b2c3d\n---\n\n# 仓库指针\n`,
+    `---\nid: ${artifactId}\ntype: output\nref: a1b2c3d\n---\n\n# 仓库指针\n`,
     "utf8",
   );
 
@@ -407,8 +407,8 @@ test("external tent dispatch --as-sub:missing workspace explains how to register
   // 纯协作目录（system root 不叫 .tent，且无 workspace 字段）→ 无 workspace 契约
   const tent = await makeFlatCollaborationTent();
   const subId = boxId(await runCli(tent, "new-box", "sub", "prompt"));
-  const noteId = boxId(await runCli(tent, "new-box", "delivery", "note"));
-  assert.ok(noteId, "note without workspace field is not a workspace contract");
+  const noteId = boxId(await runCli(tent, "new-box", "delivery", "prompt"));
+  assert.ok(noteId, "prompt without workspace field is not a workspace contract");
 
   await assert.rejects(
     () => runCli(tent, "dispatch", subId, "reviewer", "Sub task.", "--as-sub", "--by", "planner"),
@@ -504,11 +504,15 @@ test("tent new:in-workspace .tent 空骨架,生成 RULES 且 workspace 可无 Gi
   const registry = JSON.parse(await fs.readFile(path.join(systemRoot, "types.json"), "utf8"));
   assert.deepEqual(
     Object.keys(registry).sort(),
-    ["artifact", "asset", "goal", "note", "open", "prompt", "reference", "sealed"],
+    ["asset", "goal", "output", "prompt", "reference"],
   );
-  assert.equal(registry.note.coordination, false);
-  assert.equal(registry.goal.coordination, true);
-  assert.equal(registry.artifact.coordination, true);
+  assert.deepEqual(registry.goal, { tier: "base" });
+  assert.deepEqual(registry.prompt, { tier: "base" });
+  assert.deepEqual(registry.output, { tier: "base" });
+  assert.deepEqual(registry.reference, { tier: "modifier" });
+  assert.deepEqual(registry.asset, { tier: "modifier" });
+  assert.equal(registry.note, undefined);
+  assert.equal(registry.artifact, undefined);
   assert.equal(await exists(path.join(systemRoot, "roles.json")), true);
   assert.equal(await exists(path.join(systemRoot, "skills.json")), false);
   assert.deepEqual(JSON.parse(await fs.readFile(path.join(systemRoot, "tags.json"), "utf8")), { tags: [] });
@@ -556,8 +560,12 @@ test("tent new --vault:使用插件的新帐 type、role 与 RULES 默认值", a
   const systemRoot = path.join(target, ".tent");
   const registry = JSON.parse(await fs.readFile(path.join(systemRoot, "types.json"), "utf8"));
   const roles = JSON.parse(await fs.readFile(path.join(systemRoot, "roles.json"), "utf8"));
-  assert.equal(registry.goal.color, "orange");
-  assert.equal(registry.goal.description, "自定义目标");
+  // V0.2: vault type defaults are normalized to tier-only (color/description stripped).
+  assert.deepEqual(registry.goal, { tier: "base" });
+  assert.ok(registry.prompt);
+  assert.ok(registry.output);
+  assert.equal(registry.goal.color, undefined);
+  assert.equal(registry.goal.description, undefined);
   assert.equal(roles.roles.length, 1);
   assert.match(roles.roles[0].id, /^rl-[a-z0-9]+$/);
   assert.deepEqual(roles.roles[0], {

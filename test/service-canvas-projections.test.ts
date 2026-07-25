@@ -83,7 +83,7 @@ async function createNote(
   const created = await rpc(svc, "docs.createNote", {
     workspaceId,
     name: opts.name,
-    type: opts.type ?? "note",
+    type: opts.type ?? "prompt",
     ...(opts.parentPath ? { parentPath: opts.parentPath } : {}),
     ...(opts.body !== undefined ? { body: opts.body } : {}),
   });

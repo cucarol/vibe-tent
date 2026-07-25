@@ -238,14 +238,19 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.equal(settings.tentsRoot, "vault-tents");
   assert.equal(settings.appearance, "light");
   assert.equal(settings.dispatchPrefs.copyPromptToClipboard, false);
-  assert.equal(settings.newTentDefaults.typeRegistry.note.readable, true);
-  assert.equal(settings.newTentDefaults.typeRegistry.note.writable, false, "legacy note writable=false from template is preserved");
+  // V0.2: note→prompt, chrome/R/W stripped; custom bases dropped.
+  assert.equal(settings.newTentDefaults.typeRegistry.note, undefined);
+  assert.ok(settings.newTentDefaults.typeRegistry.prompt);
+  assert.deepEqual(settings.newTentDefaults.typeRegistry.prompt, { tier: "base" });
+  assert.ok(settings.newTentDefaults.typeRegistry.output);
+  assert.deepEqual(settings.newTentDefaults.typeRegistry.output, { tier: "base" });
   assert.equal(
-    baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.output ?? settings.newTentDefaults.typeRegistry.artifact),
+    baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.output),
     true,
-    "旧 output 定义映射后仍可作 coordination box"
+    "wire-compat coordination helper remains true for known types"
   );
-  assert.equal(typeAllowsWorkspacePointer("repo", settings.newTentDefaults.typeRegistry), false, "workspacePointer 运行时退役");
+  assert.equal(typeAllowsWorkspacePointer("output", settings.newTentDefaults.typeRegistry), false, "workspacePointer 运行时退役");
+  assert.equal(settings.newTentDefaults.typeRegistry.repo, undefined, "custom primary bases are not kept");
   assert.equal(settings.newTentDefaults.rolesRegistry.roles.length, 1);
   const migratedRoleId = settings.newTentDefaults.rolesRegistry.roles[0].id;
   assert.ok(migratedRoleId);
@@ -260,13 +265,19 @@ test("plugin settings:migrates legacy defaults", () => {
   assert.equal(settings.newTentDefaults.rulesTemplate, "# Custom");
 });
 
-test("plugin settings:default type registry exposes coordination on goal/prompt/artifact", () => {
+test("plugin settings:default type registry is V0.2 goal|prompt|output", () => {
   const settings = mergeSettings({});
-  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.artifact), true);
-  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.goal), true);
-  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.prompt), true);
-  assert.equal(baseDefinitionCoordination(settings.newTentDefaults.typeRegistry.note), false);
-  assert.equal(typeAllowsWorkspacePointer("artifact", settings.newTentDefaults.typeRegistry), false);
+  const reg = settings.newTentDefaults.typeRegistry;
+  assert.deepEqual(Object.keys(reg).sort(), ["asset", "goal", "output", "prompt", "reference"]);
+  assert.deepEqual(reg.goal, { tier: "base" });
+  assert.deepEqual(reg.prompt, { tier: "base" });
+  assert.deepEqual(reg.output, { tier: "base" });
+  assert.equal(reg.note, undefined);
+  assert.equal(reg.artifact, undefined);
+  // Deprecated helpers: known types report coordination wire-compat; workspacePointer always false.
+  assert.equal(baseDefinitionCoordination(reg.goal), true);
+  assert.equal(baseDefinitionCoordination(reg.output), true);
+  assert.equal(typeAllowsWorkspacePointer("output", reg), false);
 });
 
 test("plugin surfaces: no workspacePointer registry/settings write path", async () => {

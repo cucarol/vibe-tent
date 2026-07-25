@@ -90,7 +90,7 @@ export class ServiceDocsClient implements DocsClient {
         : result.path.split("/").pop() || result.path);
     const type =
       result.type ??
-      (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "note");
+      (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
     const coordination =
       result.coordination ??
       (type === "goal" ||
