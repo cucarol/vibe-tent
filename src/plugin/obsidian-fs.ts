@@ -4,8 +4,8 @@
 
 import { App, FileSystemAdapter } from "obsidian";
 import * as nodePath from "node:path";
-import * as nodeFs from "node:fs/promises";
 import { FsAdapter, Clock } from "../core/adapter.js";
+import { withFileMutationLock } from "../fs/mutation-lock.js";
 
 export class ObsidianFs implements FsAdapter {
   private tentRoot: string;
@@ -95,31 +95,10 @@ export class ObsidianFs implements FsAdapter {
     const adapter = this.app.vault.adapter;
     if (!(adapter instanceof FileSystemAdapter)) return action();
     const lockPath = nodePath.join(adapter.getBasePath(), this.vp(path));
-    await nodeFs.mkdir(nodePath.dirname(lockPath), { recursive: true });
-    let handle: nodeFs.FileHandle | undefined;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        handle = await nodeFs.open(lockPath, "wx");
-        break;
-      } catch (error) {
-        const exists = typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-        if (!exists) throw error;
-        const stat = await nodeFs.stat(lockPath).catch(() => undefined);
-        if (!stat || Date.now() - stat.mtimeMs > 120_000) {
-          await nodeFs.rm(lockPath, { force: true });
-          continue;
-        }
-        throw new Error("帐正在执行另一个写操作,请稍后重试");
-      }
-    }
-    if (!handle) throw new Error("无法获取帐 mutation lock");
-    try {
-      await handle.writeFile(JSON.stringify({ createdAt: new Date().toISOString() }), "utf8");
-      return await action();
-    } finally {
-      await handle.close();
-      await nodeFs.rm(lockPath, { force: true });
-    }
+    return withFileMutationLock(lockPath, action, {
+      busyMessage: "帐正在执行另一个写操作,请稍后重试",
+      acquireFailedMessage: "无法获取帐 mutation lock",
+    });
   }
 }
 

@@ -4,6 +4,7 @@
 import * as fs from "node:fs/promises";
 import * as nodePath from "node:path";
 import { FsAdapter, Clock } from "../core/adapter.js";
+import { withFileMutationLock } from "./mutation-lock.js";
 
 export class NodeFs implements FsAdapter {
   private root: string;
@@ -81,46 +82,15 @@ export class NodeFs implements FsAdapter {
   }
 
   async withLock<T>(path: string, action: () => Promise<T>): Promise<T> {
-    const lockPath = this.abs(path);
-    await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
-    let handle: fs.FileHandle | undefined;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        handle = await fs.open(lockPath, "wx");
-        break;
-      } catch (error) {
-        if (!isAlreadyExists(error)) throw error;
-        const stale = await isStaleLock(lockPath);
-        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs.rm(lockPath, { force: true });
-      }
-    }
-    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }), "utf8");
-      return await action();
-    } finally {
-      await handle.close();
-      await fs.rm(lockPath, { force: true });
-    }
+    return withFileMutationLock(this.abs(path), action, {
+      busyMessage: "Tent is already running another write operation; try again later.",
+      acquireFailedMessage: "Cannot acquire the Tent mutation lock.",
+    });
   }
 }
 
 export class SystemClock implements Clock {
   now(): string {
     return new Date().toISOString();
-  }
-}
-
-function isAlreadyExists(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-}
-
-async function isStaleLock(path: string): Promise<boolean> {
-  try {
-    const stat = await fs.stat(path);
-    return Date.now() - stat.mtimeMs > 120_000;
-  } catch {
-    return true;
   }
 }

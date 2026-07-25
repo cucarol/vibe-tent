@@ -194,67 +194,30 @@ export async function taskDeliver(
   taskPath: string,
   options: TaskDeliverOptions
 ): Promise<TaskDeliverResult> {
-  return withMutation(env.fs, async () => {
+  // Manual path: single atomic lock section (no Git).
+  // Auto-integrate path: validate under lock → Git outside lock → re-validate +
+  // state write under lock. Failure before the second section keeps running and
+  // leaves no delivery (same semantics as holding the lock across integrate).
+  type DeliverPhase =
+    | { kind: "done"; result: TaskDeliverResult }
+    | { kind: "auto"; boxId: string };
+
+  const phase = await withMutation(env.fs, async (): Promise<DeliverPhase> => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
-    if (task.state !== "running") {
-      throw new TaskLifecycleError(
-        "INVALID_TRANSITION",
-        `task.deliver requires state=running (got ${task.state}).`
-      );
-    }
+    assertDeliverPreconditions(task);
     const boxId = primaryBoxId(task);
     if (!boxId) throw new Error("task.deliver requires a non-root box claim.");
-
-    // At most one ready delivery at a time.
-    const existing = await loadDeliveries(env.fs, { taskId: task.id || taskPath });
-    if (existing.some((d) => d.status === "ready")) {
-      throw new Error("A delivery is already ready for review; accept or reject it first.");
-    }
+    await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
     const policy: DeliveryPolicy = task.deliveryPolicy ?? "manual";
     const routing = resolveDeliverRouting(policy, options.decision);
 
-    const taskId = task.id || taskPath;
-    // Auto-integrate must run before any accepted/done/occupation release write.
-    // Failure keeps task running and does not leave a ready delivery behind.
     if (routing.autoIntegrate) {
-      const pendingCommits = [...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean))];
-      if (pendingCommits.length > 0) {
-        if (!options.integrate) {
-          throw new Error("Auto-integrate path requires integrate() when commits are present.");
-        }
-        await options.integrate(pendingCommits);
-      }
-
-      const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-        taskId,
-        boxId,
-        role: task.role,
-        summary: options.summary,
-        commits: options.commits,
-        checks: options.checks,
-        artifactRefs: options.artifactRefs,
-        status: "accepted",
-        integrationMode: routing.integrationMode,
-        deliveriesDir: deliveryDirForTask(task),
-      });
-      // No review.by = submitter — integrate is service policy engine action.
-
-      const tent = await loadTent(env.fs);
-      const box = requireBoxById(tent, boxId);
-      await projectAssignee(env.fs, box, undefined, "done", "service");
-
-      const next = await patchTaskEnvelope(env.fs, taskPath, {
-        state: "accepted",
-        activeDeliveryId: delivery.id,
-        wait: null,
-        updatedAt: env.clock.now(),
-      });
-      return { task: next, delivery, autoIntegrated: true };
+      return { kind: "auto", boxId };
     }
 
     const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
-      taskId,
+      taskId: task.id || taskPath,
       boxId,
       role: task.role,
       summary: options.summary,
@@ -272,7 +235,61 @@ export async function taskDeliver(
       activeDeliveryId: delivery.id,
       updatedAt: env.clock.now(),
     });
-    return { task: next, delivery, autoIntegrated: false };
+    return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
+  });
+
+  if (phase.kind === "done") return phase.result;
+
+  const pendingCommits = [
+    ...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean)),
+  ];
+  if (pendingCommits.length > 0) {
+    if (!options.integrate) {
+      throw new Error("Auto-integrate path requires integrate() when commits are present.");
+    }
+    await options.integrate(pendingCommits);
+  }
+
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertDeliverPreconditions(task);
+    const boxId = primaryBoxId(task);
+    if (!boxId || boxId !== phase.boxId) {
+      throw new Error("task.deliver requires a non-root box claim.");
+    }
+    await assertNoReadyDelivery(env.fs, task.id || taskPath);
+
+    const policy: DeliveryPolicy = task.deliveryPolicy ?? "manual";
+    const routing = resolveDeliverRouting(policy, options.decision);
+    if (!routing.autoIntegrate) {
+      throw new Error("Delivery policy changed during integrate; refusing state write.");
+    }
+
+    const delivery = await createDeliveryUnlocked(env.fs, env.clock, {
+      taskId: task.id || taskPath,
+      boxId,
+      role: task.role,
+      summary: options.summary,
+      commits: options.commits,
+      checks: options.checks,
+      artifactRefs: options.artifactRefs,
+      status: "accepted",
+      integrationMode: routing.integrationMode,
+      deliveriesDir: deliveryDirForTask(task),
+    });
+    // No review.by = submitter — integrate is service policy engine action.
+
+    const tent = await loadTent(env.fs);
+    const box = requireBoxById(tent, boxId);
+    await projectAssignee(env.fs, box, undefined, "done", "service");
+
+    const next = await patchTaskEnvelope(env.fs, taskPath, {
+      state: "accepted",
+      activeDeliveryId: delivery.id,
+      wait: null,
+      updatedAt: env.clock.now(),
+    });
+    return { task: next, delivery, autoIntegrated: true };
   });
 }
 
@@ -281,7 +298,9 @@ export async function taskAccept(
   taskPath: string,
   options: TaskAcceptOptions
 ): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
-  return withMutation(env.fs, async () => {
+  // Validate authority + ready delivery under lock; Git integrate outside;
+  // then re-validate and write accepted/done atomically under lock.
+  const prepared = await withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
@@ -292,12 +311,38 @@ export async function taskAccept(
       dispatchedBy: task.dispatchedBy,
       action: "accept",
     });
-
     const commits = options.commits ?? delivery.commits;
-    if (commits.length > 0) {
-      if (!options.integrate) throw new Error("Delivery contains commits; workspace integration is required.");
-      await options.integrate(commits);
+    return {
+      deliveryId: delivery.id,
+      deliveryPath: delivery.path,
+      commits: [...commits],
+    };
+  });
+
+  if (prepared.commits.length > 0) {
+    if (!options.integrate) {
+      throw new Error("Delivery contains commits; workspace integration is required.");
     }
+    await options.integrate(prepared.commits);
+  }
+
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    assertTransition(task.state, "accept", "accepted");
+    const delivery = await requireActiveReadyDelivery(env.fs, task);
+    if (delivery.id !== prepared.deliveryId) {
+      throw new TaskLifecycleError(
+        "NO_ACTIVE_DELIVERY",
+        "Ready delivery changed during integrate; refusing accept."
+      );
+    }
+    assertReviewAuthority({
+      actor: options.actor,
+      submitterRole: delivery.role,
+      asSub: taskAsSub(task),
+      dispatchedBy: task.dispatchedBy,
+      action: "accept",
+    });
 
     delivery.status = "accepted";
     delivery.integrationMode = "manual-accept";
@@ -497,6 +542,22 @@ function deliveryDirForTask(task: TaskEnvelope): string | undefined {
 }
 
 // ---- internals ----
+
+function assertDeliverPreconditions(task: TaskEnvelope): void {
+  if (task.state !== "running") {
+    throw new TaskLifecycleError(
+      "INVALID_TRANSITION",
+      `task.deliver requires state=running (got ${task.state}).`
+    );
+  }
+}
+
+async function assertNoReadyDelivery(fs: FsAdapter, taskId: string): Promise<void> {
+  const existing = await loadDeliveries(fs, { taskId });
+  if (existing.some((d) => d.status === "ready")) {
+    throw new Error("A delivery is already ready for review; accept or reject it first.");
+  }
+}
 
 async function requireActiveReadyDelivery(fs: FsAdapter, task: TaskEnvelope): Promise<DeliveryRecord> {
   if (task.activeDeliveryId) {

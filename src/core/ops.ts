@@ -314,10 +314,16 @@ export async function completeClaim(
   integrate?: () => Promise<void>,
   acceptedBy = "user"
 ): Promise<void> {
+  // Resolve the box under lock first so a missing/invalid id fails before Git work.
+  await withMutation(env.fs, async () => {
+    const tent = await loadTent(env.fs);
+    requireBoxById(tent, boxId);
+  });
+  // Git integrate stays outside the cross-process mutation lock (long work).
+  if (integrate) await integrate();
   await withMutation(env.fs, async () => {
     const tent = await loadTent(env.fs);
     const box = requireBoxById(tent, boxId);
-    if (integrate) await integrate();
     await setOwner(env.fs, box, undefined, "done", acceptedBy);
   });
 }

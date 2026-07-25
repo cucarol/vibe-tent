@@ -985,6 +985,11 @@ test("Tent mutation lock:并发写入被短期互斥,释放后可继续", async 
   while (!(await first.exists("mutation.lock"))) {
     await new Promise((resolve) => setTimeout(resolve, 5));
   }
+  const lockBody = await first.readFile("mutation.lock");
+  const parsed = JSON.parse(lockBody) as { ownerToken?: string; pid?: number };
+  assert.equal(typeof parsed.ownerToken, "string");
+  assert.ok(parsed.ownerToken && parsed.ownerToken.length > 0);
+  assert.equal(parsed.pid, process.pid);
   await assert.rejects(
     () => second.withLock!("mutation.lock", async () => undefined),
     /already running another write operation/,
