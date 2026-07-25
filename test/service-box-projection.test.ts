@@ -211,16 +211,18 @@ test("box.projection: stale owner/doing without active task → todo, no assigne
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const { workspaceId, boxId, path: boxPath } = await mountWorkItem(svc, ws);
 
-    // Persist orphan occupation that no longer has an active task.
+    // Persist orphan Node FM that no longer has an active task.
+    // docs.get no longer projects status/assignee (retired); residual keys stay on disk only.
     await writeStaleOwnerDoing(ws, boxPath, "ghost-role");
 
-    // docs.get may still show the stale frontmatter; projection must not.
     const doc = (await client.docsGet(workspaceId, { id: boxId })) as {
-      concept: { status?: string; assignee?: string };
+      concept: { status?: string; assignee?: string; id: string };
     };
-    assert.equal(doc.concept.status, "doing");
-    assert.equal(doc.concept.assignee, "ghost-role");
+    assert.equal(doc.concept.id, boxId);
+    assert.equal(doc.concept.status, undefined);
+    assert.equal(doc.concept.assignee, undefined);
 
+    // Projection must ignore residual FM and stay idle todo.
     const proj = (await client.boxProjection(workspaceId, { id: boxId })) as BoxProjectionResult;
     assert.equal(proj.status, "todo");
     assert.equal(proj.assignee, undefined);

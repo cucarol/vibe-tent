@@ -380,12 +380,39 @@ test("renameNode: refuses collision and occupied range", async () => {
   await createBox(env as any, { parentPath: "", name: "two", type: "prompt" });
   await assert.rejects(() => renameNode(env as any, a, "two"), /already exists|sibling/i);
 
+  // Occupation oracle = active Task envelope only (stale Node owner/status is not a lock).
   const occupied = await createBox(env as any, { parentPath: "", name: "busy", type: "prompt" });
+  await fsa.mkdir("temp/executor/tasks");
   await fsa.writeFile(
-    "busy/busy.md",
-    `---\nid: ${occupied}\ntype: prompt\nowner: executor\nstatus: doing\n---\n\n# busy\n`
+    "temp/executor/tasks/task-busy.md",
+    [
+      "---",
+      "type: task",
+      "id: tk-busy001",
+      "role: executor",
+      `claims: [${occupied}]`,
+      "manifest: temp/executor/manifests/x.yml",
+      "status: taken",
+      "state: running",
+      "---",
+      "",
+      "# Task",
+      "",
+    ].join("\n")
   );
-  await assert.rejects(() => renameNode(env as any, occupied, "free"), /claim|owner|occupy|Claimed/i);
+  await assert.rejects(
+    () => renameNode(env as any, occupied, "free"),
+    /active task|occupy|Cannot rename/i
+  );
+
+  // Stale Node FM alone must not block rename.
+  const staleOnly = await createBox(env as any, { parentPath: "", name: "stale", type: "prompt" });
+  await fsa.writeFile(
+    "stale/stale.md",
+    `---\nid: ${staleOnly}\ntype: prompt\nowner: ghost\nstatus: doing\n---\n\n# stale\n`
+  );
+  const renamed = await renameNode(env as any, staleOnly, "stale-free");
+  assert.equal(renamed.path, "stale-free");
 });
 
 test("docs.rename: service user-only, event, client, etag-independent resolve by cx", async () => {

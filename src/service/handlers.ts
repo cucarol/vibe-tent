@@ -3947,8 +3947,8 @@ async function deliveryGet(ctx: HandlerContext, p: Record<string, unknown>) {
 /**
  * Stable box collaboration projection (task-api §2.3).
  * Active task is authoritative (doing + assignee + activeTaskId).
- * With no active task: preserve done only when the box's persisted status is done;
- * stale doing/owner must not pretend occupation → todo with no assignee.
+ * With no active task: accepted Task/Delivery history may project done;
+ * Node FM owner/status is never consulted.
  */
 async function boxProjectionRpc(ctx: HandlerContext, p: Record<string, unknown>): Promise<BoxProjection> {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -4015,6 +4015,7 @@ async function graphProjectionRpc(
 /**
  * Shared single-item box collaboration projection (box.projection item semantics).
  * `tasks` is the full envelope list so batch callers can reuse one load.
+ * Truth sources: Task envelopes (+ Delivery via task state after accept). No Node FM.
  */
 function projectBoxCollaboration(
   workspaceId: string,
@@ -4028,7 +4029,10 @@ function projectBoxCollaboration(
       { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
     );
   }
-  const activeTask = tasks.find((t) => t.claims.includes(concept.id) && isActiveTaskState(t.state));
+  // Active occupation (queued|running|waiting|delivered) → doing + assignee + activeTaskId.
+  const activeTask = tasks.find(
+    (t) => t.claims.includes(concept.id) && isActiveTaskState(t.state)
+  );
   if (activeTask) {
     const fromTask = boxProjectionOf(activeTask);
     const out: BoxProjection = {
@@ -4041,8 +4045,21 @@ function projectBoxCollaboration(
     return out;
   }
 
-  // No active task → idle todo only. Terminal accepted history is not re-projected
-  // from Node frontmatter (owner/status dual-write is retired).
+  // Historical accepted work (task.accept / auto-integrate) → done; no assignee/activeTaskId.
+  // Prefer Task state=accepted (Delivery is accepted in the same mutation).
+  const acceptedTask = tasks.find(
+    (t) => t.claims.includes(concept.id) && t.state === "accepted"
+  );
+  if (acceptedTask) {
+    const fromTask = boxProjectionOf(acceptedTask);
+    return {
+      workspaceId,
+      boxId: concept.id,
+      status: fromTask.status,
+    };
+  }
+
+  // Interrupted / failed / rejected / never tasked → idle todo. Stale Node FM ignored.
   return {
     workspaceId,
     boxId: concept.id,

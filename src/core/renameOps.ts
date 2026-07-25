@@ -2,7 +2,7 @@
 // On any post-move failure: restore every completed note write, then restore the tree.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { envelopeIsActiveOccupation, isFrozen } from "./claim.js";
+import { findActiveOccupation, isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex, resolveConcept, type OkfConcept } from "./okf.js";
 import { normalizeTarget } from "../markdown/links.js";
@@ -262,30 +262,15 @@ async function assertRenameOccupationAllowed(
   tent: LoadedTent,
   concept: Box
 ): Promise<void> {
-  // Occupation oracle = active task envelopes only (stale owner is not a rename lock).
+  // Occupation oracle = active task envelopes only (Node owner/status is not a rename lock).
+  // Same findActiveOccupation gate as placeBox / claim (self, ancestor, descendant, root).
   const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot rename ${concept.name}: overlapping active task ${task.path} occupies this range.`
-        );
-      }
-    }
+  const hit = findActiveOccupation(tent, concept, tasks);
+  if (hit) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
+    );
   }
-}
-
-function isAncestorPath(ancestor: string, child: string): boolean {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
 }
 
 function assertNotOperationalPath(path: string): void {
