@@ -5,6 +5,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { NodeFs } from "../src/fs/node-fs.js";
 import {
+  mayReclaimLock,
   readMutationLockRecord,
   releaseMutationLockIfOwned,
   withFileMutationLock,
@@ -97,19 +98,88 @@ test("mutation lock: concurrent holders are mutual exclusive; lock carries owner
   await b.withLock!("mutation.lock", async () => undefined);
 });
 
-test("mutation lock: stale lock is reclaimed then exclusive again", async () => {
-  const dir = await tempRoot("tent-mlock-stale-");
+test("mutation lock: aged lock with live process.pid stays busy (no age-only reclaim)", async () => {
+  const dir = await tempRoot("tent-mlock-live-pid-");
   const lockPath = path.join(dir, "mutation.lock");
   await fs.writeFile(
     lockPath,
     JSON.stringify({
-      ownerToken: "ancient",
-      pid: 1,
+      ownerToken: "still-alive-owner",
+      pid: process.pid,
       createdAt: "2000-01-01T00:00:00.000Z",
     }),
     "utf8"
   );
-  // Force mtime into the past beyond the 120s stale window.
+  const ancient = new Date(Date.now() - 180_000);
+  await fs.utimes(lockPath, ancient, ancient);
+
+  assert.equal(await mayReclaimLock(lockPath), false);
+
+  await assert.rejects(
+    () =>
+      withFileMutationLock(lockPath, async () => undefined, {
+        busyMessage: "Tent is already running another write operation; try again later.",
+        acquireFailedMessage: "Cannot acquire the Tent mutation lock.",
+      }),
+    /already running another write operation/
+  );
+
+  const still = await readMutationLockRecord(lockPath);
+  assert.ok(still);
+  assert.equal(still!.ownerToken, "still-alive-owner");
+  assert.equal(still!.pid, process.pid);
+});
+
+test("mutation lock: aged lock with dead PID is reclaimed", async () => {
+  const dir = await tempRoot("tent-mlock-dead-pid-");
+  const lockPath = path.join(dir, "mutation.lock");
+  const deadPid = 1_000_000 + Math.floor(Math.random() * 1_000_000);
+  await fs.writeFile(
+    lockPath,
+    JSON.stringify({
+      ownerToken: "ancient-dead",
+      pid: deadPid,
+      createdAt: "2000-01-01T00:00:00.000Z",
+    }),
+    "utf8"
+  );
+  const ancient = new Date(Date.now() - 180_000);
+  await fs.utimes(lockPath, ancient, ancient);
+
+  assert.equal(
+    await mayReclaimLock(lockPath, Date.now, 120_000, () => false),
+    true
+  );
+
+  await withFileMutationLock(
+    lockPath,
+    async () => {
+      const rec = await readMutationLockRecord(lockPath);
+      assert.ok(rec);
+      assert.notEqual(rec!.ownerToken, "ancient-dead");
+    },
+    {
+      busyMessage: "busy",
+      acquireFailedMessage: "acquire failed",
+      isProcessAlive: () => false,
+    }
+  );
+  assert.equal(await readMutationLockRecord(lockPath), null);
+});
+
+test("mutation lock: stale dead-pid lock reclaimed via NodeFs then exclusive again", async () => {
+  const dir = await tempRoot("tent-mlock-stale-");
+  const lockPath = path.join(dir, "mutation.lock");
+  // Use an unusable/absent pid so real processIsAlive allows reclaim on any OS.
+  await fs.writeFile(
+    lockPath,
+    JSON.stringify({
+      ownerToken: "ancient",
+      pid: -1,
+      createdAt: "2000-01-01T00:00:00.000Z",
+    }),
+    "utf8"
+  );
   const ancient = new Date(Date.now() - 180_000);
   await fs.utimes(lockPath, ancient, ancient);
 

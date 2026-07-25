@@ -1,12 +1,12 @@
 // Cross-process Tent mutation.lock with ownership tokens.
-// Release only removes a lock file that still carries this holder's token,
-// so a stale reclaim by another process cannot be undone by the old holder.
+// Release only removes a lock that still belongs to this holder (rename + verify),
+// and age-only stale reclaim is refused while the recorded PID is still alive.
 
 import { randomUUID } from "node:crypto";
 import * as fs from "node:fs/promises";
 import type { FileHandle } from "node:fs/promises";
 
-/** Lock older than this may be reclaimed (mtime-based). */
+/** Lock older than this may be reclaimed when its PID is absent/unusable. */
 export const MUTATION_LOCK_STALE_MS = 120_000;
 
 export interface MutationLockRecord {
@@ -26,11 +26,17 @@ export interface WithFileMutationLockOptions {
   makeOwnerToken?: () => string;
   /** Stale threshold in ms (default 120s). */
   staleMs?: number;
+  /**
+   * Process liveness probe for reclaim. Default: kill(pid, 0).
+   * EPERM / success = alive; ESRCH / invalid pid = absent.
+   */
+  isProcessAlive?: (pid: number) => boolean;
 }
 
 /**
  * Acquire `lockPath` with `wx`, run `action`, release only if ownership matches.
  * Stale reclaim uses rename (not blind delete) so contenders never share a path.
+ * Age alone is not enough: a live recorded PID keeps the lock busy.
  */
 export async function withFileMutationLock<T>(
   lockPath: string,
@@ -40,6 +46,7 @@ export async function withFileMutationLock<T>(
   const now = options.now ?? Date.now;
   const makeOwnerToken = options.makeOwnerToken ?? randomUUID;
   const staleMs = options.staleMs ?? MUTATION_LOCK_STALE_MS;
+  const isProcessAlive = options.isProcessAlive ?? processIsAlive;
   const ownerToken = makeOwnerToken();
   const record: MutationLockRecord = {
     ownerToken,
@@ -56,8 +63,8 @@ export async function withFileMutationLock<T>(
       break;
     } catch (error) {
       if (!isAlreadyExists(error)) throw error;
-      const stale = await isStaleLockFile(lockPath, now, staleMs);
-      if (!stale || attempt >= 2) {
+      const reclaimable = await mayReclaimLock(lockPath, now, staleMs, isProcessAlive);
+      if (!reclaimable || attempt >= 2) {
         throw new Error(options.busyMessage);
       }
       // Quarantine then retry; only one contender wins the rename.
@@ -82,21 +89,38 @@ export async function withFileMutationLock<T>(
   }
 }
 
-/** Remove lock only when the on-disk ownerToken still matches this holder. */
+/**
+ * Remove lock only when the file still belongs to this holder.
+ * Uses rename + verify so a concurrent reclaim/replace cannot be deleted by the old holder
+ * (TOCTOU-safe vs read-then-rm on the live path).
+ */
 export async function releaseMutationLockIfOwned(
   lockPath: string,
   ownerToken: string
 ): Promise<boolean> {
-  const current = await readMutationLockRecord(lockPath);
-  if (!current || current.ownerToken !== ownerToken) {
-    return false;
-  }
+  const quarantine = `${lockPath}.releasing-${ownerToken}`;
   try {
-    await fs.rm(lockPath, { force: true });
-    return true;
-  } catch {
+    await fs.rename(lockPath, quarantine);
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    // Another releaser/reclaimer already moved the path.
     return false;
   }
+
+  const current = await readMutationLockRecord(quarantine);
+  if (current?.ownerToken === ownerToken) {
+    await fs.rm(quarantine, { force: true }).catch(() => undefined);
+    return true;
+  }
+
+  // Not ours (or unreadable): put the path back so the real owner is not orphaned.
+  try {
+    await fs.rename(quarantine, lockPath);
+  } catch {
+    // Best effort: if lockPath was recreated, drop our quarantine copy.
+    await fs.rm(quarantine, { force: true }).catch(() => undefined);
+  }
+  return false;
 }
 
 export async function readMutationLockRecord(
@@ -121,17 +145,66 @@ export async function readMutationLockRecord(
   }
 }
 
-async function isStaleLockFile(
+/**
+ * Reclaim only when the lock is aged AND its PID is absent/unusable.
+ * Live PID (including EPERM) blocks reclaim even past the age window.
+ * Legacy / malformed bodies: usable live pid → busy; no usable pid + aged → reclaim.
+ */
+export async function mayReclaimLock(
   lockPath: string,
-  now: () => number,
-  staleMs: number
+  now: () => number = Date.now,
+  staleMs: number = MUTATION_LOCK_STALE_MS,
+  isProcessAliveFn: (pid: number) => boolean = processIsAlive
 ): Promise<boolean> {
+  let mtimeMs: number;
   try {
     const stat = await fs.stat(lockPath);
-    return now() - stat.mtimeMs > staleMs;
+    mtimeMs = stat.mtimeMs;
   } catch (error) {
-    if (isNotFound(error)) return true;
+    // Missing path: contender should retry wx, not quarantine.
+    if (isNotFound(error)) return false;
+    // Unstatable aged? Treat as reclaimable only if we cannot prove a live owner.
     return true;
+  }
+
+  if (now() - mtimeMs <= staleMs) {
+    return false;
+  }
+
+  const pid = await readRecordedPid(lockPath);
+  if (pid !== null && isProcessAliveFn(pid)) {
+    return false;
+  }
+  // Aged + (no usable pid | dead pid | legacy without pid) → reclaim.
+  return true;
+}
+
+/**
+ * Best-effort pid from a lock body. Supports current {ownerToken,pid,createdAt}
+ * and legacy {pid,createdAt} without ownerToken. Malformed → null (unusable).
+ */
+async function readRecordedPid(lockPath: string): Promise<number | null> {
+  try {
+    const raw = await fs.readFile(lockPath, "utf8");
+    const value = JSON.parse(raw) as { pid?: unknown };
+    if (typeof value.pid === "number" && Number.isInteger(value.pid) && value.pid > 0) {
+      return value.pid;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+/** Same liveness rule as service data-dir lease: EPERM counts as alive. */
+export function processIsAlive(pid: number): boolean {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    // ESRCH = gone. Permission failures are conservatively live.
+    return !hasCode(error, "ESRCH");
   }
 }
 
@@ -141,9 +214,18 @@ function dirnameOf(p: string): string {
 }
 
 function isAlreadyExists(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code: string }).code === "EEXIST";
+  return hasCode(error, "EEXIST");
 }
 
 function isNotFound(error: unknown): boolean {
-  return typeof error === "object" && error !== null && "code" in error && (error as { code: string }).code === "ENOENT";
+  return hasCode(error, "ENOENT");
+}
+
+function hasCode(error: unknown, code: string): boolean {
+  return (
+    !!error &&
+    typeof error === "object" &&
+    "code" in error &&
+    (error as NodeJS.ErrnoException).code === code
+  );
 }
