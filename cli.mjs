@@ -2,12 +2,146 @@
 
 // src/cli/tent.ts
 import * as path8 from "node:path";
-import * as fs8 from "node:fs/promises";
+import * as fs9 from "node:fs/promises";
 import { fileURLToPath as fileURLToPath2 } from "node:url";
 
 // src/fs/node-fs.ts
-import * as fs from "node:fs/promises";
+import * as fs2 from "node:fs/promises";
 import * as nodePath from "node:path";
+
+// src/fs/mutation-lock.ts
+import { randomUUID } from "node:crypto";
+import * as fs from "node:fs/promises";
+var MUTATION_LOCK_STALE_MS = 12e4;
+async function withFileMutationLock(lockPath, action, options) {
+  const now = options.now ?? Date.now;
+  const makeOwnerToken = options.makeOwnerToken ?? randomUUID;
+  const staleMs = options.staleMs ?? MUTATION_LOCK_STALE_MS;
+  const isProcessAlive = options.isProcessAlive ?? processIsAlive;
+  const ownerToken = makeOwnerToken();
+  const record = {
+    ownerToken,
+    pid: process.pid,
+    createdAt: new Date(now()).toISOString()
+  };
+  await fs.mkdir(dirnameOf(lockPath), { recursive: true });
+  let handle;
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      handle = await fs.open(lockPath, "wx");
+      break;
+    } catch (error) {
+      if (!isAlreadyExists(error)) throw error;
+      const reclaimable = await mayReclaimLock(lockPath, now, staleMs, isProcessAlive);
+      if (!reclaimable || attempt >= 2) {
+        throw new Error(options.busyMessage);
+      }
+      const quarantine = `${lockPath}.stale-${randomUUID()}`;
+      try {
+        await fs.rename(lockPath, quarantine);
+        await fs.rm(quarantine, { force: true }).catch(() => void 0);
+      } catch (renameError) {
+        if (isNotFound(renameError)) continue;
+        throw renameError;
+      }
+    }
+  }
+  if (!handle) throw new Error(options.acquireFailedMessage);
+  try {
+    await handle.writeFile(JSON.stringify(record), "utf8");
+    return await action();
+  } finally {
+    await handle.close().catch(() => void 0);
+    await releaseMutationLockIfOwned(lockPath, ownerToken);
+  }
+}
+async function releaseMutationLockIfOwned(lockPath, ownerToken) {
+  const quarantine = `${lockPath}.releasing-${ownerToken}`;
+  try {
+    await fs.rename(lockPath, quarantine);
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    return false;
+  }
+  const current = await readMutationLockRecord(quarantine);
+  if (current?.ownerToken === ownerToken) {
+    await fs.rm(quarantine, { force: true }).catch(() => void 0);
+    return true;
+  }
+  try {
+    await fs.rename(quarantine, lockPath);
+  } catch {
+    await fs.rm(quarantine, { force: true }).catch(() => void 0);
+  }
+  return false;
+}
+async function readMutationLockRecord(lockPath) {
+  try {
+    const raw = await fs.readFile(lockPath, "utf8");
+    const value = JSON.parse(raw);
+    if (typeof value.ownerToken !== "string" || !value.ownerToken || typeof value.pid !== "number" || !Number.isInteger(value.pid) || typeof value.createdAt !== "string") {
+      return null;
+    }
+    return value;
+  } catch (error) {
+    if (isNotFound(error) || error instanceof SyntaxError) return null;
+    return null;
+  }
+}
+async function mayReclaimLock(lockPath, now = Date.now, staleMs = MUTATION_LOCK_STALE_MS, isProcessAliveFn = processIsAlive) {
+  let mtimeMs;
+  try {
+    const stat2 = await fs.stat(lockPath);
+    mtimeMs = stat2.mtimeMs;
+  } catch (error) {
+    if (isNotFound(error)) return false;
+    return true;
+  }
+  if (now() - mtimeMs <= staleMs) {
+    return false;
+  }
+  const pid = await readRecordedPid(lockPath);
+  if (pid !== null && isProcessAliveFn(pid)) {
+    return false;
+  }
+  return true;
+}
+async function readRecordedPid(lockPath) {
+  try {
+    const raw = await fs.readFile(lockPath, "utf8");
+    const value = JSON.parse(raw);
+    if (typeof value.pid === "number" && Number.isInteger(value.pid) && value.pid > 0) {
+      return value.pid;
+    }
+    return null;
+  } catch {
+    return null;
+  }
+}
+function processIsAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return !hasCode(error, "ESRCH");
+  }
+}
+function dirnameOf(p) {
+  const i = Math.max(p.lastIndexOf("/"), p.lastIndexOf("\\"));
+  return i === -1 ? "." : p.slice(0, i);
+}
+function isAlreadyExists(error) {
+  return hasCode(error, "EEXIST");
+}
+function isNotFound(error) {
+  return hasCode(error, "ENOENT");
+}
+function hasCode(error, code) {
+  return !!error && typeof error === "object" && "code" in error && error.code === code;
+}
+
+// src/fs/node-fs.ts
 var NodeFs = class {
   constructor(root) {
     this.root = nodePath.resolve(root);
@@ -22,74 +156,56 @@ var NodeFs = class {
     return resolved;
   }
   async listDir(dir) {
-    const entries = await fs.readdir(this.abs(dir), { withFileTypes: true });
+    const entries = await fs2.readdir(this.abs(dir), { withFileTypes: true });
     return entries.filter((e) => !e.name.startsWith(".git")).map((e) => ({ name: e.name, isDir: e.isDirectory() }));
   }
   async readFile(path9) {
-    return fs.readFile(this.abs(path9), "utf8");
+    return fs2.readFile(this.abs(path9), "utf8");
   }
   async writeFile(path9, content) {
-    await fs.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
-    await fs.writeFile(this.abs(path9), content, "utf8");
+    await fs2.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
+    await fs2.writeFile(this.abs(path9), content, "utf8");
   }
   async readBinary(path9) {
-    const buf = await fs.readFile(this.abs(path9));
+    const buf = await fs2.readFile(this.abs(path9));
     return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
   }
   async writeBinary(path9, data) {
     const abs = this.abs(path9);
-    await fs.mkdir(nodePath.dirname(abs), { recursive: true });
+    await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
     const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     try {
-      await fs.writeFile(tmp, payload);
-      await fs.rename(tmp, abs);
+      await fs2.writeFile(tmp, payload);
+      await fs2.rename(tmp, abs);
     } catch (err) {
-      await fs.rm(tmp, { force: true }).catch(() => void 0);
+      await fs2.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
     }
   }
   async exists(path9) {
     try {
-      await fs.access(this.abs(path9));
+      await fs2.access(this.abs(path9));
       return true;
     } catch {
       return false;
     }
   }
   async mkdir(path9) {
-    await fs.mkdir(this.abs(path9), { recursive: true });
+    await fs2.mkdir(this.abs(path9), { recursive: true });
   }
   async move(from, to) {
-    await fs.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
-    await fs.rename(this.abs(from), this.abs(to));
+    await fs2.mkdir(nodePath.dirname(this.abs(to)), { recursive: true });
+    await fs2.rename(this.abs(from), this.abs(to));
   }
   async remove(path9) {
-    await fs.rm(this.abs(path9), { recursive: true, force: true });
+    await fs2.rm(this.abs(path9), { recursive: true, force: true });
   }
   async withLock(path9, action) {
-    const lockPath = this.abs(path9);
-    await fs.mkdir(nodePath.dirname(lockPath), { recursive: true });
-    let handle;
-    for (let attempt = 0; attempt < 2; attempt++) {
-      try {
-        handle = await fs.open(lockPath, "wx");
-        break;
-      } catch (error) {
-        if (!isAlreadyExists(error)) throw error;
-        const stale = await isStaleLock(lockPath);
-        if (!stale || attempt > 0) throw new Error("Tent is already running another write operation; try again later.");
-        await fs.rm(lockPath, { force: true });
-      }
-    }
-    if (!handle) throw new Error("Cannot acquire the Tent mutation lock.");
-    try {
-      await handle.writeFile(JSON.stringify({ pid: process.pid, createdAt: (/* @__PURE__ */ new Date()).toISOString() }), "utf8");
-      return await action();
-    } finally {
-      await handle.close();
-      await fs.rm(lockPath, { force: true });
-    }
+    return withFileMutationLock(this.abs(path9), action, {
+      busyMessage: "Tent is already running another write operation; try again later.",
+      acquireFailedMessage: "Cannot acquire the Tent mutation lock."
+    });
   }
 };
 var SystemClock = class {
@@ -97,20 +213,9 @@ var SystemClock = class {
     return (/* @__PURE__ */ new Date()).toISOString();
   }
 };
-function isAlreadyExists(error) {
-  return typeof error === "object" && error !== null && "code" in error && error.code === "EEXIST";
-}
-async function isStaleLock(path9) {
-  try {
-    const stat2 = await fs.stat(path9);
-    return Date.now() - stat2.mtimeMs > 12e4;
-  } catch {
-    return true;
-  }
-}
 
 // src/machine/skills.ts
-import * as fs2 from "node:fs/promises";
+import * as fs3 from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 var SKILL_TARGET_IDS = ["shared-agents", "claude"];
@@ -162,7 +267,7 @@ async function listBundledSkillNames(packageRoot2) {
   const sourceDir = bundledSkillsDir(packageRoot2);
   let entries;
   try {
-    entries = await fs2.readdir(sourceDir, { withFileTypes: true });
+    entries = await fs3.readdir(sourceDir, { withFileTypes: true });
   } catch (err) {
     const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
     if (code === "ENOENT") {
@@ -196,7 +301,7 @@ async function installSkills(options) {
   }
   const results = [];
   for (const dest of destinations) {
-    await fs2.mkdir(dest.dir, { recursive: true });
+    await fs3.mkdir(dest.dir, { recursive: true });
     for (const name of selectedNames) {
       const source = path.join(sourceDir, name);
       const target = path.join(dest.dir, name);
@@ -214,9 +319,9 @@ async function installSkills(options) {
         continue;
       }
       if (exists2 && force) {
-        await fs2.rm(target, { recursive: true, force: true });
+        await fs3.rm(target, { recursive: true, force: true });
       }
-      await fs2.cp(source, target, { recursive: true, errorOnExist: true });
+      await fs3.cp(source, target, { recursive: true, errorOnExist: true });
       results.push({
         targetDir: dest.dir,
         ...dest.target ? { target: dest.target } : {},
@@ -269,7 +374,7 @@ function assertChildPath(parent, child) {
 }
 async function existsPath(target) {
   try {
-    await fs2.access(target);
+    await fs3.access(target);
     return true;
   } catch {
     return false;
@@ -277,7 +382,7 @@ async function existsPath(target) {
 }
 
 // src/machine/agent-hooks.ts
-import * as fs3 from "node:fs/promises";
+import * as fs4 from "node:fs/promises";
 import * as os2 from "node:os";
 import * as path2 from "node:path";
 var AGENT_HOOK_IDS = ["claude", "codex", "antigravity", "copilot"];
@@ -508,7 +613,7 @@ async function projectClaudeLike(options) {
   let root = {};
   let existed = false;
   try {
-    const raw = await fs3.readFile(configPath, "utf8");
+    const raw = await fs4.readFile(configPath, "utf8");
     existed = true;
     const parsed = JSON.parse(raw);
     if (parsed === null || typeof parsed !== "object" || Array.isArray(parsed)) {
@@ -717,7 +822,7 @@ async function writeHooksRoot(configPath, nextRoot, hooks, wrapRoot, previousRoo
   }
   if (!wrapRoot && Object.keys(toWrite).length === 0) {
     try {
-      await fs3.unlink(configPath);
+      await fs4.unlink(configPath);
     } catch (err) {
       const code = err && typeof err === "object" && "code" in err ? err.code : void 0;
       if (code !== "ENOENT") throw err;
@@ -725,10 +830,10 @@ async function writeHooksRoot(configPath, nextRoot, hooks, wrapRoot, previousRoo
     return;
   }
   void previousRoot;
-  await fs3.mkdir(path2.dirname(configPath), { recursive: true });
+  await fs4.mkdir(path2.dirname(configPath), { recursive: true });
   const body = `${JSON.stringify(toWrite, null, 2)}
 `;
-  await fs3.writeFile(configPath, body, "utf8");
+  await fs4.writeFile(configPath, body, "utf8");
 }
 function detectManagedEvents(hooks, agent) {
   const present = [];
@@ -1087,9 +1192,9 @@ function emit(v) {
 }
 
 // src/core/registryRecovery.ts
-async function backupCorruptRegistry(fs9, path9) {
+async function backupCorruptRegistry(fs10, path9) {
   const backupPath = `${path9}.corrupt-${timestamp()}`;
-  await fs9.writeFile(backupPath, await fs9.readFile(path9));
+  await fs10.writeFile(backupPath, await fs10.readFile(path9));
   return backupPath;
 }
 function warnRegistryRecovered(path9, backupPath, action, extra = "") {
@@ -1185,19 +1290,19 @@ function isSystemNoteName(fileName) {
 
 // src/core/order.ts
 var ROOT_KEY = "__root__";
-async function loadOrder(fs9) {
-  if (!await fs9.exists(ORDER_PATH)) return {};
+async function loadOrder(fs10) {
+  if (!await fs10.exists(ORDER_PATH)) return {};
   try {
-    return JSON.parse(await fs9.readFile(ORDER_PATH));
+    return JSON.parse(await fs10.readFile(ORDER_PATH));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs9, ORDER_PATH);
-    await saveOrder(fs9, {});
+    const backupPath = await backupCorruptRegistry(fs10, ORDER_PATH);
+    await saveOrder(fs10, {});
     warnRegistryRecovered(ORDER_PATH, backupPath, "recovered");
     return {};
   }
 }
-async function saveOrder(fs9, map) {
-  await fs9.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
+async function saveOrder(fs10, map) {
+  await fs10.writeFile(ORDER_PATH, JSON.stringify(map, null, 2) + "\n");
 }
 function sortByOrder(items, order, fallback) {
   const sorted = [...items];
@@ -1310,10 +1415,10 @@ function baseDefinitionCoordination(definition) {
   if (!definition || definition.tier === "modifier") return void 0;
   return definition.coordination;
 }
-async function loadTypeRegistry(fs9) {
-  if (!await fs9.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+async function loadTypeRegistry(fs10) {
+  if (!await fs10.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
   try {
-    const parsed = JSON.parse(await fs9.readFile(TYPE_REGISTRY_PATH));
+    const parsed = JSON.parse(await fs10.readFile(TYPE_REGISTRY_PATH));
     return normalizeRegistry(parsed);
   } catch (error) {
     const detail = error instanceof Error ? error.message : String(error);
@@ -1407,19 +1512,19 @@ function isRecord(value) {
 function boxNotePath(boxPath) {
   return join3(boxPath, baseName(boxPath) + ".md");
 }
-async function loadTent(fs9) {
+async function loadTent(fs10) {
   const byId = /* @__PURE__ */ new Map();
   const byPath = /* @__PURE__ */ new Map();
   const roots = [];
-  const typeRegistry = await loadTypeRegistry(fs9);
-  const top = await fs9.listDir("");
+  const typeRegistry = await loadTypeRegistry(fs10);
+  const top = await fs10.listDir("");
   for (const entry2 of top) {
     if (!entry2.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
     if (isSystemNoteName(entry2.name)) continue;
-    await loadBoxInto(fs9, entry2.name, null, typeRegistry, roots);
+    await loadBoxInto(fs10, entry2.name, null, typeRegistry, roots);
   }
-  const order = await loadOrder(fs9);
+  const order = await loadOrder(fs10);
   const sortedRoots = sortByOrder(roots, order[ROOT_KEY], (a, b) => a.name.localeCompare(b.name));
   for (const root of sortedRoots) sortChildren(root, order);
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
@@ -1454,13 +1559,13 @@ function sortChildren(box, order) {
   box.children = sortByOrder(box.children, order[box.id], (a, b) => a.name.localeCompare(b.name));
   for (const c of box.children) sortChildren(c, order);
 }
-async function loadBox(fs9, path9, parent, registry) {
+async function loadBox(fs10, path9, parent, registry) {
   if (isOperationalPath(path9)) return null;
   const boxFile = boxNotePath(path9);
-  if (!await fs9.exists(boxFile)) {
+  if (!await fs10.exists(boxFile)) {
     return null;
   }
-  const raw = await fs9.readFile(boxFile);
+  const raw = await fs10.readFile(boxFile);
   let parsed;
   let parseError;
   try {
@@ -1495,11 +1600,11 @@ async function loadBox(fs9, path9, parent, registry) {
     box.invalidRootId = path9;
     box.invalidReason = `Invalid frontmatter: ${parseError}`;
   }
-  const sub = await fs9.listDir(path9);
+  const sub = await fs10.listDir(path9);
   for (const entry2 of sub) {
     if (!entry2.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
-    await loadBoxInto(fs9, join3(path9, entry2.name), box, registry, box.children);
+    await loadBoxInto(fs10, join3(path9, entry2.name), box, registry, box.children);
   }
   return box;
 }
@@ -1537,18 +1642,18 @@ function normalizeTags(value) {
   }
   return out;
 }
-async function loadBoxInto(fs9, path9, parent, registry, target) {
+async function loadBoxInto(fs10, path9, parent, registry, target) {
   if (isOperationalPath(path9)) return;
-  const box = await loadBox(fs9, path9, parent, registry);
+  const box = await loadBox(fs10, path9, parent, registry);
   if (box) {
     target.push(box);
     return;
   }
-  const sub = await fs9.listDir(path9);
+  const sub = await fs10.listDir(path9);
   for (const entry2 of sub) {
     if (!entry2.isDir) continue;
     if (OPERATIONAL_TOP_LEVEL.has(entry2.name)) continue;
-    await loadBoxInto(fs9, join3(path9, entry2.name), parent, registry, target);
+    await loadBoxInto(fs10, join3(path9, entry2.name), parent, registry, target);
   }
 }
 function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = false) {
@@ -1660,8 +1765,8 @@ function dirName(path9) {
 }
 
 // src/core/adapter.ts
-function withTentMutation(fs9, action) {
-  return fs9.withLock ? fs9.withLock(MUTATION_LOCK_PATH, action) : action();
+function withTentMutation(fs10, action) {
+  return fs10.withLock ? fs10.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/manifest.ts
@@ -2009,67 +2114,67 @@ function isAncestor(ancestor, child) {
 
 // src/core/tags.ts
 var DEFAULT_TAG_REGISTRY = { tags: [] };
-async function loadTagRegistry(fs9) {
-  if (!await fs9.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
+async function loadTagRegistry(fs10) {
+  if (!await fs10.exists(TAGS_REGISTRY_PATH)) return { tags: [] };
   try {
-    return normalizeRegistry2(JSON.parse(await fs9.readFile(TAGS_REGISTRY_PATH)));
+    return normalizeRegistry2(JSON.parse(await fs10.readFile(TAGS_REGISTRY_PATH)));
   } catch {
-    const backupPath = await backupCorruptRegistry(fs9, TAGS_REGISTRY_PATH);
-    const recovered = await recoverTagRegistryFromBoxes(fs9);
-    await saveTagRegistryUnlocked(fs9, recovered);
+    const backupPath = await backupCorruptRegistry(fs10, TAGS_REGISTRY_PATH);
+    const recovered = await recoverTagRegistryFromBoxes(fs10);
+    await saveTagRegistryUnlocked(fs10, recovered);
     warnRegistryRecovered(TAGS_REGISTRY_PATH, backupPath, "recovered");
     return recovered;
   }
 }
-async function saveTagRegistryUnlocked(fs9, registry) {
-  await fs9.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
+async function saveTagRegistryUnlocked(fs10, registry) {
+  await fs10.writeFile(TAGS_REGISTRY_PATH, JSON.stringify(normalizeRegistry2(registry), null, 2) + "\n");
 }
-async function addRegistryTag(fs9, name) {
-  await withTentMutation(fs9, async () => addRegistryTagUnlocked(fs9, name));
+async function addRegistryTag(fs10, name) {
+  await withTentMutation(fs10, async () => addRegistryTagUnlocked(fs10, name));
 }
-async function addRegistryTagUnlocked(fs9, name) {
+async function addRegistryTagUnlocked(fs10, name) {
   const tag = normalizeTagName(name);
-  const registry = await loadTagRegistry(fs9);
+  const registry = await loadTagRegistry(fs10);
   if (!registry.tags.includes(tag)) {
     registry.tags.push(tag);
-    await saveTagRegistryUnlocked(fs9, registry);
+    await saveTagRegistryUnlocked(fs10, registry);
   }
 }
-async function addTag(fs9, boxId, name) {
-  await withTentMutation(fs9, async () => {
+async function addTag(fs10, boxId, name) {
+  await withTentMutation(fs10, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs9);
+    const tent = await loadTent(fs10);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     assertContentMutable(box, "tagged");
-    await addRegistryTagUnlocked(fs9, tag);
+    await addRegistryTagUnlocked(fs10, tag);
     const tags = uniqueSorted([...box.tags, tag]);
-    await writeBoxTags(fs9, box, tags);
+    await writeBoxTags(fs10, box, tags);
   });
 }
-async function removeTag(fs9, boxId, name) {
-  await withTentMutation(fs9, async () => {
+async function removeTag(fs10, boxId, name) {
+  await withTentMutation(fs10, async () => {
     const tag = normalizeTagName(name);
-    const tent = await loadTent(fs9);
+    const tent = await loadTent(fs10);
     if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
     const box = tent.byId.get(boxId);
     if (!box) throw new Error(`Box not found: ${boxId}.`);
     if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be tagged.");
     assertContentMutable(box, "tagged");
-    await writeBoxTags(fs9, box, box.tags.filter((item) => item !== tag));
+    await writeBoxTags(fs10, box, box.tags.filter((item) => item !== tag));
   });
 }
-async function removeRegistryTag(fs9, name) {
-  await withTentMutation(fs9, async () => {
+async function removeRegistryTag(fs10, name) {
+  await withTentMutation(fs10, async () => {
     const tag = normalizeTagName(name);
-    const registry = await loadTagRegistry(fs9);
-    await saveTagRegistryUnlocked(fs9, { tags: registry.tags.filter((item) => item !== tag) });
-    const tent = await loadTent(fs9);
+    const registry = await loadTagRegistry(fs10);
+    await saveTagRegistryUnlocked(fs10, { tags: registry.tags.filter((item) => item !== tag) });
+    const tent = await loadTent(fs10);
     for (const box of tent.byId.values()) {
       if (box.tags.includes(tag)) {
-        await writeBoxTags(fs9, box, box.tags.filter((item) => item !== tag));
+        await writeBoxTags(fs10, box, box.tags.filter((item) => item !== tag));
       }
     }
   });
@@ -2084,13 +2189,13 @@ function normalizeTagName(name) {
   if (/[\/\\\r\n]/.test(tag)) throw new Error("Tag name cannot contain path separators or newlines.");
   return tag;
 }
-async function writeBoxTags(fs9, box, tags) {
+async function writeBoxTags(fs10, box, tags) {
   const path9 = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(path9));
+  const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(path9));
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs9.writeFile(path9, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs10.writeFile(path9, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
   if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
@@ -2104,8 +2209,8 @@ function normalizeRegistry2(value) {
   }
   return { tags: uniqueSorted(tags) };
 }
-async function recoverTagRegistryFromBoxes(fs9) {
-  const tent = await loadTent(fs9);
+async function recoverTagRegistryFromBoxes(fs10) {
+  const tent = await loadTent(fs10);
   const tags = [];
   for (const box of tent.byPath.values()) {
     tags.push(...box.tags);
@@ -2129,23 +2234,23 @@ function isRecord2(value) {
 var DEFAULT_ROLES_REGISTRY = {
   roles: []
 };
-async function loadRolesRegistry(fs9) {
-  const { registry } = await readRolesRegistryState(fs9);
+async function loadRolesRegistry(fs10) {
+  const { registry } = await readRolesRegistryState(fs10);
   return registry;
 }
-async function readRolesRegistryState(fs9) {
-  if (!await fs9.exists(ROLES_REGISTRY_PATH)) {
+async function readRolesRegistryState(fs10) {
+  if (!await fs10.exists(ROLES_REGISTRY_PATH)) {
     return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
   }
   try {
-    const rawText = await fs9.readFile(ROLES_REGISTRY_PATH);
+    const rawText = await fs10.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
     const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
     return { registry, migrated, recovered: false };
   } catch {
-    const backupPath = await backupCorruptRegistry(fs9, ROLES_REGISTRY_PATH);
+    const backupPath = await backupCorruptRegistry(fs10, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
-    await writeJson(fs9, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
+    await writeJson(fs10, ROLES_REGISTRY_PATH, serializeRolesRegistry(reset));
     warnRegistryRecovered(
       ROLES_REGISTRY_PATH,
       backupPath,
@@ -2278,40 +2383,40 @@ function cloneDefaultRoles() {
     roles: DEFAULT_ROLES_REGISTRY.roles.map((role) => ({ ...role }))
   };
 }
-async function writeJson(fs9, path9, value) {
-  if (!await fs9.exists(".tent")) await fs9.mkdir(".tent");
-  await fs9.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
+async function writeJson(fs10, path9, value) {
+  if (!await fs10.exists(".tent")) await fs10.mkdir(".tent");
+  await fs10.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
 }
 function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 // src/core/task.ts
-async function loadTaskEnvelopes(fs9) {
+async function loadTaskEnvelopes(fs10) {
   const tasks = [];
-  if (!await fs9.exists(TEMP_DIR)) return tasks;
-  for (const entry2 of await fs9.listDir(TEMP_DIR)) {
+  if (!await fs10.exists(TEMP_DIR)) return tasks;
+  for (const entry2 of await fs10.listDir(TEMP_DIR)) {
     if (!entry2.isDir) continue;
     if (entry2.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join3(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs9.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs9.listDir(profilesRoot)) {
+      if (!await fs10.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs10.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
-        await collectTaskFiles(fs9, join3(profilesRoot, profileEntry.name, "tasks"), tasks);
+        await collectTaskFiles(fs10, join3(profilesRoot, profileEntry.name, "tasks"), tasks);
       }
       continue;
     }
-    await collectTaskFiles(fs9, join3(TEMP_DIR, entry2.name, "tasks"), tasks);
+    await collectTaskFiles(fs10, join3(TEMP_DIR, entry2.name, "tasks"), tasks);
   }
   return tasks.sort((a, b) => a.path.localeCompare(b.path));
 }
-async function collectTaskFiles(fs9, taskDir, tasks) {
-  if (!await fs9.exists(taskDir)) return;
-  for (const entry2 of await fs9.listDir(taskDir)) {
+async function collectTaskFiles(fs10, taskDir, tasks) {
+  if (!await fs10.exists(taskDir)) return;
+  for (const entry2 of await fs10.listDir(taskDir)) {
     if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
     const path9 = join3(taskDir, entry2.name);
     try {
-      tasks.push(await loadTaskEnvelope(fs9, path9));
+      tasks.push(await loadTaskEnvelope(fs10, path9));
     } catch {
     }
   }
@@ -2322,9 +2427,9 @@ function taskAssigneeKind(task) {
 function taskAsSub(task) {
   return task.asSub === true;
 }
-async function loadTaskEnvelope(fs9, path9) {
-  if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
+async function loadTaskEnvelope(fs10, path9) {
+  if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
   if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
     throw new Error(`Invalid task envelope format: ${path9}.`);
   }
@@ -2424,7 +2529,7 @@ ${formatTaskPointers(task)}
 3. When finished, run \`tent task deliver ${task.path} --summary <text>\` (optional: --commits sha,sha).
 ` + initStep;
 }
-async function ensureRoleInit(fs9, role, tentName) {
+async function ensureRoleInit(fs10, role, tentName) {
   const path9 = join3("temp", role.name, "init.md");
   const body = `# Role Init
 
@@ -2442,18 +2547,18 @@ ${role.prompt?.trim() || "(no persistent role prompt)"}
 Manifest readable/writable entries are an honor-system contract, not a security sandbox. If prompts conflict or a boundary cannot be followed, stop and ask the user.
 Task lifecycle uses \`tent task *\` (Local Service). Do not invent paths as <workspace>/temp \u2014 operational files live under .tent/temp.
 `;
-  await fs9.writeFile(path9, serializeFrontmatter({ type: "role-init", role: role.name }, body));
+  await fs10.writeFile(path9, serializeFrontmatter({ type: "role-init", role: role.name }, body));
   return path9;
 }
-async function writeTaskEnvelope(fs9, clock, input) {
+async function writeTaskEnvelope(fs10, clock, input) {
   const userPrompt = input.userPrompt?.trim() || "";
   if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
   const assigneeKind = input.assigneeKind ?? "role";
   const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join3(TEMP_DIR, input.role, "tasks"));
-  await ensureDir(fs9, dir);
+  await ensureDir(fs10, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
-  const path9 = await uniqueMarkdownPath(fs9, dir, stem);
+  const path9 = await uniqueMarkdownPath(fs10, dir, stem);
   const now = clock.now();
   const data = {
     type: "task",
@@ -2491,25 +2596,25 @@ ${pointers}
 
 ${userPrompt}
 `;
-  await fs9.writeFile(path9, serializeFrontmatter(data, body));
+  await fs10.writeFile(path9, serializeFrontmatter(data, body));
   return path9;
 }
-async function ackTaskEnvelope(fs9, path9) {
-  await patchTaskEnvelope(fs9, path9, {
+async function ackTaskEnvelope(fs10, path9) {
+  await patchTaskEnvelope(fs10, path9, {
     status: "taken",
     state: "running"
   });
 }
-async function cancelTaskEnvelope(fs9, path9) {
-  const task = await loadTaskEnvelope(fs9, path9);
+async function cancelTaskEnvelope(fs10, path9) {
+  const task = await loadTaskEnvelope(fs10, path9);
   if (task.state !== "queued" && task.status !== "pending") {
     throw new Error("Only queued (pending) task envelopes can be cancelled.");
   }
-  await fs9.remove(path9);
+  await fs10.remove(path9);
 }
-async function patchTaskEnvelope(fs9, path9, patch) {
-  if (!await fs9.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
-  const raw = await fs9.readFile(path9);
+async function patchTaskEnvelope(fs10, path9, patch) {
+  if (!await fs10.exists(path9)) throw new Error(`Task envelope not found: ${path9}.`);
+  const raw = await fs10.readFile(path9);
   const { data, body, keyOrder } = parseFrontmatter(raw);
   if (data.type !== "task") throw new Error(`Invalid task envelope format: ${path9}.`);
   if (patch.state) {
@@ -2541,8 +2646,8 @@ async function patchTaskEnvelope(fs9, path9, patch) {
   else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
     data.roleBranchBase = patch.roleBranchBase.trim();
   }
-  await fs9.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
-  return loadTaskEnvelope(fs9, path9);
+  await fs10.writeFile(path9, serializeFrontmatter(data, body, keyOrder));
+  return loadTaskEnvelope(fs10, path9);
 }
 function parseTaskState(value, legacy) {
   if (value === "queued" || value === "running" || value === "waiting" || value === "delivered" || value === "accepted" || value === "rejected" || value === "interrupted" || value === "failed") {
@@ -2565,22 +2670,22 @@ function taskStem(now, claimId) {
   const stamp2 = now.replace(/[^0-9A-Za-z]+/g, "").slice(0, 14) || "task";
   return `task-${stamp2}-${claimId.replace(/[^0-9A-Za-z_-]+/g, "-")}`;
 }
-async function uniqueMarkdownPath(fs9, dir, stem) {
+async function uniqueMarkdownPath(fs10, dir, stem) {
   for (let n = 1; ; n++) {
     const suffix = n === 1 ? "" : `-${n}`;
     const path9 = join3(dir, `${stem}${suffix}.md`);
-    if (!await fs9.exists(path9)) return path9;
+    if (!await fs10.exists(path9)) return path9;
   }
 }
-async function ensureDir(fs9, path9) {
-  if (!await fs9.exists(path9)) await fs9.mkdir(path9);
+async function ensureDir(fs10, path9) {
+  if (!await fs10.exists(path9)) await fs10.mkdir(path9);
 }
 
 // src/core/delivery.ts
-async function loadDelivery(fs9, inputPath) {
+async function loadDelivery(fs10, inputPath) {
   const path9 = normalizeDeliveryPath(inputPath);
-  if (!await fs9.exists(path9)) throw new Error(`Delivery not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
+  if (!await fs10.exists(path9)) throw new Error(`Delivery not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
   if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
     throw new Error(`Invalid delivery format: ${path9}.`);
   }
@@ -2611,18 +2716,18 @@ async function loadDelivery(fs9, inputPath) {
     updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
   };
 }
-async function loadDeliveries(fs9, filter) {
+async function loadDeliveries(fs10, filter) {
   const out = [];
-  if (!await fs9.exists(TEMP_DIR)) return out;
-  for (const entry2 of await fs9.listDir(TEMP_DIR)) {
+  if (!await fs10.exists(TEMP_DIR)) return out;
+  for (const entry2 of await fs10.listDir(TEMP_DIR)) {
     if (!entry2.isDir) continue;
     if (entry2.name === AGENT_PROFILES_TEMP_DIR) {
       const profilesRoot = join3(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs9.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs9.listDir(profilesRoot)) {
+      if (!await fs10.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs10.listDir(profilesRoot)) {
         if (!profileEntry.isDir) continue;
         await collectDeliveryFiles(
-          fs9,
+          fs10,
           join3(profilesRoot, profileEntry.name, "deliveries"),
           filter,
           out
@@ -2630,16 +2735,16 @@ async function loadDeliveries(fs9, filter) {
       }
       continue;
     }
-    await collectDeliveryFiles(fs9, join3(TEMP_DIR, entry2.name, "deliveries"), filter, out);
+    await collectDeliveryFiles(fs10, join3(TEMP_DIR, entry2.name, "deliveries"), filter, out);
   }
   return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
 }
-async function collectDeliveryFiles(fs9, dir, filter, out) {
-  if (!await fs9.exists(dir)) return;
-  for (const entry2 of await fs9.listDir(dir)) {
+async function collectDeliveryFiles(fs10, dir, filter, out) {
+  if (!await fs10.exists(dir)) return;
+  for (const entry2 of await fs10.listDir(dir)) {
     if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
     try {
-      const d = await loadDelivery(fs9, join3(dir, entry2.name));
+      const d = await loadDelivery(fs10, join3(dir, entry2.name));
       if (filter?.taskId && d.taskId !== filter.taskId) continue;
       if (filter?.boxId && d.boxId !== filter.boxId) continue;
       out.push(d);
@@ -2647,10 +2752,10 @@ async function collectDeliveryFiles(fs9, dir, filter, out) {
     }
   }
 }
-async function removeNonAcceptedDeliveriesForBox(fs9, boxId) {
-  for (const delivery of await loadDeliveries(fs9, { boxId })) {
+async function removeNonAcceptedDeliveriesForBox(fs10, boxId) {
+  for (const delivery of await loadDeliveries(fs10, { boxId })) {
     if (delivery.status === "accepted") continue;
-    if (await fs9.exists(delivery.path)) await fs9.remove(delivery.path);
+    if (await fs10.exists(delivery.path)) await fs10.remove(delivery.path);
   }
 }
 function normalizeDeliveryPath(input) {
@@ -2845,23 +2950,23 @@ async function taskClaim(env, taskPath, options = {}) {
     }
   });
 }
-async function projectAssignee(fs9, box, owner, status, acceptedBy) {
+async function projectAssignee(fs10, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter(fs9, box, patch);
+  await patchFrontmatter(fs10, box, patch);
 }
-async function restoreProjection(fs9, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs9, box, {
+async function restoreProjection(fs10, box, owner, status, acceptedBy) {
+  await patchFrontmatter(fs10, box, {
     owner: owner ?? void 0,
     status: status ?? void 0,
     acceptedBy: acceptedBy ?? void 0
   });
 }
-async function patchFrontmatter(fs9, box, patch) {
+async function patchFrontmatter(fs10, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
@@ -2870,7 +2975,7 @@ async function patchFrontmatter(fs9, box, patch) {
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
-  await fs9.writeFile(boxFile, serializeFrontmatter(data, body, order));
+  await fs10.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -2880,8 +2985,8 @@ function requireBoxById(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation(fs9, action) {
-  return withTentMutation(fs9, action);
+async function withMutation(fs10, action) {
+  return withTentMutation(fs10, action);
 }
 
 // src/core/forkOps.ts
@@ -2936,22 +3041,22 @@ async function forkNodeUnlocked(env, boxId) {
   await saveOrder(env.fs, order);
   return forkRootId;
 }
-async function uniqueSiblingPath(fs9, parentPath, base) {
+async function uniqueSiblingPath(fs10, parentPath, base) {
   let n = 1;
   while (true) {
     const name = n === 1 ? base : `${base.replace(/\s\(fork\)$/, "")} (fork ${n})`;
     const candidate = join3(parentPath, name);
-    if (!await fs9.exists(candidate)) return candidate;
+    if (!await fs10.exists(candidate)) return candidate;
     n += 1;
   }
 }
-async function copyTree(fs9, from, to) {
-  await fs9.mkdir(to);
-  for (const entry2 of await fs9.listDir(from)) {
+async function copyTree(fs10, from, to) {
+  await fs10.mkdir(to);
+  for (const entry2 of await fs10.listDir(from)) {
     const src = join3(from, entry2.name);
     const dst = join3(to, entry2.name);
-    if (entry2.isDir) await copyTree(fs9, src, dst);
-    else await fs9.writeFile(dst, await fs9.readFile(src));
+    if (entry2.isDir) await copyTree(fs10, src, dst);
+    else await fs10.writeFile(dst, await fs10.readFile(src));
   }
 }
 function collectSubtree(box, out = []) {
@@ -2963,24 +3068,24 @@ function relativePath(root, child) {
   if (child === root) return "";
   return child.slice(root.length + 1);
 }
-async function ensureIdentityFileName(fs9, newBoxPath, oldBoxPath) {
+async function ensureIdentityFileName(fs10, newBoxPath, oldBoxPath) {
   const expected = boxNotePath(newBoxPath);
-  if (await fs9.exists(expected)) return;
+  if (await fs10.exists(expected)) return;
   const oldName = `${baseName(oldBoxPath)}.md`;
   const copied = join3(newBoxPath, oldName);
-  if (await fs9.exists(copied)) await fs9.move(copied, expected);
+  if (await fs10.exists(copied)) await fs10.move(copied, expected);
 }
 
 // src/core/okf.ts
-async function syncOkfBundle(fs9) {
-  return withTentMutation(fs9, async () => syncOkfBundleUnlocked(fs9));
+async function syncOkfBundle(fs10) {
+  return withTentMutation(fs10, async () => syncOkfBundleUnlocked(fs10));
 }
-async function syncOkfBundleUnlocked(fs9) {
-  const tent = await loadTent(fs9);
+async function syncOkfBundleUnlocked(fs10) {
+  const tent = await loadTent(fs10);
   const concepts = [...tent.byPath.values()];
   const index = buildConceptIndex(concepts);
-  const generatedFiles = await writeIndexes(fs9, concepts);
-  const projection = await projectWikiLinks(fs9, concepts, index);
+  const generatedFiles = await writeIndexes(fs10, concepts);
+  const projection = await projectWikiLinks(fs10, concepts, index);
   return { generatedFiles, ...projection };
 }
 function buildConceptIndex(boxes) {
@@ -3025,23 +3130,23 @@ function projectMarkdownLinks(body, fromNotePath, index) {
   });
   return { body: next, unresolved, changed };
 }
-async function projectWikiLinks(fs9, boxes, index) {
+async function projectWikiLinks(fs10, boxes, index) {
   const projectedFiles = [];
   const unresolved = [];
   for (const box of boxes) {
     const notePath = boxNotePath(box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(notePath));
+    const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(notePath));
     const projected = projectMarkdownLinks(body, notePath, index);
     if (projected.unresolved.length > 0) {
       unresolved.push(...projected.unresolved.map((target) => ({ file: notePath, target })));
     }
     if (!projected.changed) continue;
-    await fs9.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
+    await fs10.writeFile(notePath, serializeFrontmatter(data, projected.body, keyOrder));
     projectedFiles.push(notePath);
   }
   return { projectedFiles, unresolved };
 }
-async function writeIndexes(fs9, boxes) {
+async function writeIndexes(fs10, boxes) {
   const generated = /* @__PURE__ */ new Set();
   const byDir = /* @__PURE__ */ new Map();
   for (const box of boxes) {
@@ -3051,7 +3156,7 @@ async function writeIndexes(fs9, boxes) {
     byDir.set(dir, list);
   }
   const roots = boxes.filter((box) => !box.parent);
-  await fs9.writeFile(
+  await fs10.writeFile(
     "index.md",
     serializeFrontmatter(
       { type: "index", okf_version: "0.1" },
@@ -3062,7 +3167,7 @@ async function writeIndexes(fs9, boxes) {
   for (const [dir, siblings] of byDir.entries()) {
     if (!dir) continue;
     const indexPath = join3(dir, "index.md");
-    await fs9.writeFile(
+    await fs10.writeFile(
       indexPath,
       serializeFrontmatter(
         { type: "index" },
@@ -3071,7 +3176,7 @@ async function writeIndexes(fs9, boxes) {
     );
     generated.add(indexPath);
   }
-  await fs9.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
+  await fs10.writeFile("log.md", serializeFrontmatter({ type: "log" }, "# Log\n\n_No log entries._\n"));
   generated.add("log.md");
   return [...generated].sort();
 }
@@ -3271,8 +3376,12 @@ async function stamp(env, boxId, acceptedBy = "user") {
 async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
   await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
+    requireBoxById2(tent, boxId);
+  });
+  if (integrate) await integrate();
+  await withMutation2(env.fs, async () => {
+    const tent = await loadTent(env.fs);
     const box = requireBoxById2(tent, boxId);
-    if (integrate) await integrate();
     await setOwner(env.fs, box, void 0, "done", acceptedBy);
   });
 }
@@ -3352,24 +3461,24 @@ async function createBoxUnlocked(env, input) {
   }
   return id;
 }
-async function setOwner(fs9, box, owner, status, acceptedBy) {
+async function setOwner(fs10, box, owner, status, acceptedBy) {
   const patch = { owner: owner ?? void 0 };
   if (owner) patch.acceptedBy = void 0;
   else if (acceptedBy) patch.acceptedBy = acceptedBy;
   if (status) patch.status = status;
-  await patchFrontmatter2(fs9, box, patch);
+  await patchFrontmatter2(fs10, box, patch);
 }
-async function patchFrontmatter2(fs9, box, patch) {
+async function patchFrontmatter2(fs10, box, patch) {
   const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(boxFile));
+  const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs9.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  await fs10.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
-async function ensureDir2(fs9, path9) {
-  if (path9 && !await fs9.exists(path9)) await fs9.mkdir(path9);
+async function ensureDir2(fs10, path9) {
+  if (path9 && !await fs10.exists(path9)) await fs10.mkdir(path9);
 }
 function boxKeyOrder2(existing) {
   return [
@@ -3411,8 +3520,8 @@ function requireBoxById2(tent, boxId) {
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   return box;
 }
-async function withMutation2(fs9, action) {
-  return withTentMutation(fs9, action);
+async function withMutation2(fs10, action) {
+  return withTentMutation(fs10, action);
 }
 
 // src/core/output.ts
@@ -3454,20 +3563,20 @@ function cleanValue(value) {
 }
 
 // src/core/proposal.ts
-async function submitProposal(fs9, clock, role, boxId, body) {
-  return withTentMutation(fs9, async () => submitProposalUnlocked(fs9, clock, role, boxId, body));
+async function submitProposal(fs10, clock, role, boxId, body) {
+  return withTentMutation(fs10, async () => submitProposalUnlocked(fs10, clock, role, boxId, body));
 }
-async function submitProposalUnlocked(fs9, clock, roleInput, boxId, body) {
+async function submitProposalUnlocked(fs10, clock, roleInput, boxId, body) {
   const text = body.trim();
   if (!text) throw new Error("Proposal body cannot be empty.");
   const role = normalizeRole(roleInput);
-  const tent = await loadTent(fs9);
+  const tent = await loadTent(fs10);
   if (tent.duplicateIds.has(boxId)) throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
   const box = tent.byId.get(boxId);
   if (!box) throw new Error(`Box not found: ${boxId}.`);
   const path9 = proposalPath(role, box.id);
-  if (await fs9.exists(path9)) {
-    const current = await loadProposal(fs9, path9);
+  if (await fs10.exists(path9)) {
+    const current = await loadProposal(fs10, path9);
     if (current.status === "pending") throw new Error("A proposal is already pending triage; the user must confirm or reject it first.");
   }
   const proposal = {
@@ -3478,32 +3587,32 @@ async function submitProposalUnlocked(fs9, clock, roleInput, boxId, body) {
     createdAt: clock.now(),
     body: text
   };
-  await ensureDir3(fs9, join3("temp", role, "proposals"));
-  await writeProposal(fs9, proposal);
+  await ensureDir3(fs10, join3("temp", role, "proposals"));
+  await writeProposal(fs10, proposal);
   return proposal;
 }
-async function loadProposals(fs9) {
+async function loadProposals(fs10) {
   const proposals = [];
-  if (!await fs9.exists("temp")) return proposals;
-  for (const roleDir of await fs9.listDir("temp")) {
+  if (!await fs10.exists("temp")) return proposals;
+  for (const roleDir of await fs10.listDir("temp")) {
     if (!roleDir.isDir) continue;
     const dir = join3("temp", roleDir.name, "proposals");
-    if (!await fs9.exists(dir)) continue;
-    for (const entry2 of await fs9.listDir(dir)) {
+    if (!await fs10.exists(dir)) continue;
+    for (const entry2 of await fs10.listDir(dir)) {
       if (entry2.isDir || !entry2.name.endsWith(".md")) continue;
       const path9 = join3(dir, entry2.name);
       try {
-        proposals.push(await loadProposal(fs9, path9));
+        proposals.push(await loadProposal(fs10, path9));
       } catch {
       }
     }
   }
   return proposals.sort((a, b) => (b.createdAt || "").localeCompare(a.createdAt || ""));
 }
-async function loadProposal(fs9, inputPath) {
+async function loadProposal(fs10, inputPath) {
   const path9 = normalizeProposalPath(inputPath);
-  if (!await fs9.exists(path9)) throw new Error(`Proposal not found: ${path9}.`);
-  const { data, body } = parseFrontmatter(await fs9.readFile(path9));
+  if (!await fs10.exists(path9)) throw new Error(`Proposal not found: ${path9}.`);
+  const { data, body } = parseFrontmatter(await fs10.readFile(path9));
   if (data.type !== "proposal" || typeof data.box !== "string" || typeof data.role !== "string" || data.status !== "pending" && data.status !== "accepted" && data.status !== "rejected") {
     throw new Error(`Invalid proposal format: ${path9}.`);
   }
@@ -3526,7 +3635,7 @@ function normalizeProposalPath(input) {
   }
   return path9;
 }
-async function writeProposal(fs9, proposal) {
+async function writeProposal(fs10, proposal) {
   const data = {
     type: "proposal",
     box: proposal.boxId,
@@ -3534,13 +3643,13 @@ async function writeProposal(fs9, proposal) {
     status: proposal.status,
     createdAt: proposal.createdAt
   };
-  await fs9.writeFile(
+  await fs10.writeFile(
     proposal.path,
     serializeFrontmatter(data, proposal.body + "\n", ["type", "box", "role", "status", "createdAt"])
   );
 }
-async function ensureDir3(fs9, path9) {
-  if (!await fs9.exists(path9)) await fs9.mkdir(path9);
+async function ensureDir3(fs10, path9) {
+  if (!await fs10.exists(path9)) await fs10.mkdir(path9);
 }
 function normalizeRole(role) {
   const normalized = role.trim();
@@ -3550,7 +3659,7 @@ function normalizeRole(role) {
 }
 
 // src/core/status.ts
-import * as fs4 from "node:fs/promises";
+import * as fs5 from "node:fs/promises";
 import * as path3 from "node:path";
 
 // src/core/workspace.ts
@@ -3904,7 +4013,7 @@ async function isSystemRoot(root) {
 }
 async function exists(target) {
   try {
-    await fs4.access(target);
+    await fs5.access(target);
     return true;
   } catch {
     return false;
@@ -4024,7 +4133,7 @@ function promoteOutputKey(root, changes) {
   delete root.output;
   changes.push("removed legacy output type key");
 }
-async function migrateLegacySchema(fs9, options = {}) {
+async function migrateLegacySchema(fs10, options = {}) {
   const dryRun = options.dryRun === true;
   const rewriteOps = options.rewriteOperationalRefs !== false;
   const report = {
@@ -4035,16 +4144,16 @@ async function migrateLegacySchema(fs9, options = {}) {
     skipped: [],
     warnings: []
   };
-  await liftNestedRegistries(fs9, report, dryRun);
-  await migrateFlatTypeRegistry(fs9, report, dryRun);
-  await unifyMutationLock(fs9, report, dryRun);
-  const tent = await loadTent(fs9);
+  await liftNestedRegistries(fs10, report, dryRun);
+  await migrateFlatTypeRegistry(fs10, report, dryRun);
+  await unifyMutationLock(fs10, report, dryRun);
+  const tent = await loadTent(fs10);
   const legacyIds = [...tent.byId.keys()].filter(isLegacyBoxId);
   const existing = new Set(tent.byId.keys());
   const idMap = planIdRemap(legacyIds, existing, options.rand);
   for (const box of tent.byPath.values()) {
     const notePath = boxNotePath(box.path);
-    const { data, body, keyOrder } = parseFrontmatter(await fs9.readFile(notePath));
+    const { data, body, keyOrder } = parseFrontmatter(await fs10.readFile(notePath));
     let dirty = false;
     const oldId = typeof data.id === "string" ? data.id : "";
     if (isLegacyBoxId(oldId)) {
@@ -4084,15 +4193,15 @@ async function migrateLegacySchema(fs9, options = {}) {
       );
     }
     if (dirty && !dryRun) {
-      await fs9.writeFile(
+      await fs10.writeFile(
         notePath,
         serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER)
       );
     }
   }
-  if (await fs9.exists(ORDER_PATH)) {
+  if (await fs10.exists(ORDER_PATH)) {
     try {
-      const order = JSON.parse(await fs9.readFile(ORDER_PATH));
+      const order = JSON.parse(await fs10.readFile(ORDER_PATH));
       let dirty = false;
       const next = {};
       for (const [key, list] of Object.entries(order)) {
@@ -4109,14 +4218,14 @@ async function migrateLegacySchema(fs9, options = {}) {
       }
       if (dirty) {
         report.registryChanges.push(dryRun ? "would rewrite order.json ids" : "rewrote order.json ids");
-        if (!dryRun) await fs9.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
+        if (!dryRun) await fs10.writeFile(ORDER_PATH, JSON.stringify(next, null, 2) + "\n");
       }
     } catch (error) {
       report.warnings.push(`order.json: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  if (rewriteOps && await fs9.exists(TEMP_DIR)) {
-    await rewriteOperationalTree(fs9, idMap, report, dryRun);
+  if (rewriteOps && await fs10.exists(TEMP_DIR)) {
+    await rewriteOperationalTree(fs10, idMap, report, dryRun);
   }
   const seen = /* @__PURE__ */ new Set();
   report.idMap = report.idMap.filter((entry2) => {
@@ -4127,42 +4236,42 @@ async function migrateLegacySchema(fs9, options = {}) {
   });
   return report;
 }
-async function liftNestedRegistries(fs9, report, dryRun) {
-  if (!await fs9.exists(TENT_SYSTEM_DIR)) return;
+async function liftNestedRegistries(fs10, report, dryRun) {
+  if (!await fs10.exists(TENT_SYSTEM_DIR)) return;
   for (const name of NESTED_REGISTRY_FILES) {
     const nested = join3(TENT_SYSTEM_DIR, name);
-    if (!await fs9.exists(nested)) continue;
-    const flatExists = await fs9.exists(name);
+    if (!await fs10.exists(nested)) continue;
+    const flatExists = await fs10.exists(name);
     if (!flatExists) {
       report.registryChanges.push(
         dryRun ? `would lift nested ${nested} \u2192 ${name}` : `lifted nested ${nested} \u2192 ${name}`
       );
       if (!dryRun) {
-        const text = await fs9.readFile(nested);
-        await fs9.writeFile(name, text);
+        const text = await fs10.readFile(nested);
+        await fs10.writeFile(name, text);
       }
     } else {
       report.registryChanges.push(`nested ${nested} ignored; flat ${name} already present`);
     }
     report.registryChanges.push(dryRun ? `would remove nested ${nested}` : `removed nested ${nested}`);
-    if (!dryRun) await fs9.remove(nested);
+    if (!dryRun) await fs10.remove(nested);
   }
   const nestedLock = join3(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
-  if (await fs9.exists(nestedLock)) {
+  if (await fs10.exists(nestedLock)) {
     report.registryChanges.push(
       dryRun ? `would remove nested ${nestedLock}` : `removed nested ${nestedLock}`
     );
-    if (!dryRun) await fs9.remove(nestedLock);
+    if (!dryRun) await fs10.remove(nestedLock);
   }
 }
-async function migrateFlatTypeRegistry(fs9, report, dryRun) {
-  if (!await fs9.exists(TYPE_REGISTRY_PATH)) return;
+async function migrateFlatTypeRegistry(fs10, report, dryRun) {
+  if (!await fs10.exists(TYPE_REGISTRY_PATH)) return;
   try {
-    const raw = JSON.parse(await fs9.readFile(TYPE_REGISTRY_PATH));
+    const raw = JSON.parse(await fs10.readFile(TYPE_REGISTRY_PATH));
     const { registry, changes } = migrateTypeRegistryJson(raw);
     report.registryChanges.push(...changes);
     if (!dryRun && changes.length > 0) {
-      await fs9.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+      await fs10.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
     }
   } catch (error) {
     report.warnings.push(
@@ -4170,23 +4279,23 @@ async function migrateFlatTypeRegistry(fs9, report, dryRun) {
     );
   }
 }
-async function unifyMutationLock(fs9, report, dryRun) {
+async function unifyMutationLock(fs10, report, dryRun) {
   const nestedLock = join3(TENT_SYSTEM_DIR, MUTATION_LOCK_PATH);
-  if (await fs9.exists(nestedLock)) {
+  if (await fs10.exists(nestedLock)) {
     report.registryChanges.push(
       dryRun ? `would remove nested lock ${nestedLock}` : `removed nested lock ${nestedLock}`
     );
-    if (!dryRun) await fs9.remove(nestedLock);
+    if (!dryRun) await fs10.remove(nestedLock);
   }
   if (!report.registryChanges.some((c) => c.includes(MUTATION_LOCK_PATH))) {
     report.registryChanges.push(`unique lock path: ${MUTATION_LOCK_PATH}`);
   }
 }
-async function rewriteOperationalTree(fs9, idMap, report, dryRun) {
+async function rewriteOperationalTree(fs10, idMap, report, dryRun) {
   if (idMap.size === 0) return;
   const walk = async (dir) => {
-    if (!await fs9.exists(dir)) return;
-    for (const entry2 of await fs9.listDir(dir)) {
+    if (!await fs10.exists(dir)) return;
+    for (const entry2 of await fs10.listDir(dir)) {
       const path9 = join3(dir, entry2.name);
       if (entry2.isDir) {
         await walk(path9);
@@ -4194,7 +4303,7 @@ async function rewriteOperationalTree(fs9, idMap, report, dryRun) {
       }
       const lower = entry2.name.toLowerCase();
       if (!lower.endsWith(".md") && !lower.endsWith(".yml") && !lower.endsWith(".yaml")) continue;
-      const text = await fs9.readFile(path9);
+      const text = await fs10.readFile(path9);
       const rewritten = rewriteOperationalText(text, idMap);
       let targetName = entry2.name;
       for (const [from, to] of idMap) {
@@ -4207,10 +4316,10 @@ async function rewriteOperationalTree(fs9, idMap, report, dryRun) {
       report.registryChanges.push(`operational rewrite: ${path9}`);
       if (!dryRun) {
         if (targetPath !== path9) {
-          await fs9.writeFile(targetPath, rewritten);
-          await fs9.remove(path9);
+          await fs10.writeFile(targetPath, rewritten);
+          await fs10.remove(path9);
         } else {
-          await fs9.writeFile(path9, rewritten);
+          await fs10.writeFile(path9, rewritten);
         }
       }
     }
@@ -4487,19 +4596,19 @@ function isRecord4(value) {
 }
 
 // src/cli/service-attach.ts
-import * as fs7 from "node:fs/promises";
+import * as fs8 from "node:fs/promises";
 import * as path6 from "node:path";
 import { spawn as spawn2 } from "node:child_process";
 import { fileURLToPath } from "node:url";
 
 // src/service/data-dir.ts
-import * as fs6 from "node:fs/promises";
+import * as fs7 from "node:fs/promises";
 import { isIP } from "node:net";
 import * as os3 from "node:os";
 import * as path5 from "node:path";
 
 // src/machine-state.ts
-import * as fs5 from "node:fs/promises";
+import * as fs6 from "node:fs/promises";
 import * as path4 from "node:path";
 function isNotFoundError(err) {
   return !!err && typeof err === "object" && "code" in err && err.code === "ENOENT";
@@ -4537,7 +4646,7 @@ function isLoopbackServiceHost(host) {
 async function readServiceEndpoint(dataDir) {
   const file = serviceEndpointPath(dataDir);
   try {
-    const raw = await fs6.readFile(file, "utf8");
+    const raw = await fs7.readFile(file, "utf8");
     let data;
     try {
       data = JSON.parse(raw);
@@ -5270,7 +5379,7 @@ async function resolveDefaultServiceEntry(packageRootHint) {
     for (const rel of relativeCandidates) {
       const candidate = path6.join(root, rel);
       try {
-        await fs7.access(candidate);
+        await fs8.access(candidate);
         return candidate;
       } catch {
       }
@@ -6931,7 +7040,7 @@ function readStdin() {
 async function readBodyFile(bodySource) {
   const resolved = path8.resolve(bodySource);
   if (!await existsPath2(resolved)) throw new Error(`Body file not found: ${bodySource}.`);
-  return fs8.readFile(resolved, "utf8");
+  return fs9.readFile(resolved, "utf8");
 }
 function printBox(box, depth) {
   const ind = "  ".repeat(depth);
@@ -7025,14 +7134,14 @@ function packageRoot() {
 }
 async function existsPath2(target) {
   try {
-    await fs8.access(target);
+    await fs9.access(target);
     return true;
   } catch {
     return false;
   }
 }
 async function packageVersion() {
-  const pkg = JSON.parse(await fs8.readFile(path8.join(packageRoot(), "package.json"), "utf8"));
+  const pkg = JSON.parse(await fs9.readFile(path8.join(packageRoot(), "package.json"), "utf8"));
   return String(pkg.version ?? "0.0.0");
 }
 function helpText() {
