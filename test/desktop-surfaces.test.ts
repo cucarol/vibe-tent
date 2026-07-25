@@ -89,21 +89,21 @@ test("flattenGraphNodes preserves tree order and depth", () => {
       type: "goal",
       coordination: true,
       children: [
-        { id: "cx-b", path: "a/b", name: "B", type: "note", coordination: false },
+        { id: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false },
       ],
     },
-    { id: "cx-c", path: "c", name: "C", type: "note", coordination: false },
+    { id: "cx-c", path: "c", name: "C", type: "prompt", coordination: false },
   ]);
   assert.deepEqual(
     flat.map((n) => `${n.depth}:${n.id}`),
     ["0:cx-a", "1:cx-b", "0:cx-c"]
   );
-  assert.equal(findGraphNode([{ id: "cx-a", path: "a", name: "A", type: "goal", coordination: true, children: [{ id: "cx-b", path: "a/b", name: "B", type: "note", coordination: false }] }], "cx-b")?.name, "B");
+  assert.equal(findGraphNode([{ id: "cx-a", path: "a", name: "A", type: "goal", coordination: true, children: [{ id: "cx-b", path: "a/b", name: "B", type: "prompt", coordination: false }] }], "cx-b")?.name, "B");
 });
 
 test("buildGraphSelectionView never invents edges", () => {
   const empty = buildGraphSelectionView({
-    node: { id: "cx-1", path: "x", name: "X", type: "note", coordination: false },
+    node: { id: "cx-1", path: "x", name: "X", type: "prompt", coordination: false },
   });
   assert.equal(empty.backlinks.length, 0);
   assert.equal(empty.outLinks.length, 0);
@@ -417,8 +417,8 @@ test("service smoke: docs.backlinks + provider.catalog for graph/settings", asyn
     name: "surf",
     rules: "# RULES\n",
     boxes: [
-      { name: "alpha", type: "note", body: "# alpha\nsee [[beta]]\n" },
-      { name: "beta", type: "note", body: "# beta\n" },
+      { name: "alpha", type: "prompt", body: "# alpha\nsee [[beta]]\n" },
+      { name: "beta", type: "prompt", body: "# beta\n" },
     ],
   });
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-surf-data-"));

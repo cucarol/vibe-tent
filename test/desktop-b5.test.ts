@@ -34,7 +34,7 @@ async function makeWorkspace(): Promise<string> {
     name: "desk",
     rules: "# RULES\n\nB5 desktop test\n",
     boxes: [
-      { name: "inbox", type: "note", body: "# inbox\nhello desktop\n" },
+      { name: "inbox", type: "prompt", body: "# inbox\nhello desktop\n" },
       { name: "goal-a", type: "goal", body: "# goal\n" },
     ],
   });
@@ -83,7 +83,7 @@ test("ServiceDocsClient over real Local Service: list/open/write/search/promote"
     assert.ok(tree.length >= 1);
     assert.ok(tree.some((n) => n.name === "inbox" || n.path === "inbox"));
 
-    const created = await docs.createNote({ name: "from-desk", type: "note", body: "# from desk\n" });
+    const created = await docs.createNote({ name: "from-desk", type: "prompt", body: "# from desk\n" });
     assert.match(created.cx, /^cx-/);
 
     const edit = await docs.readForEdit(created.cx);
@@ -100,8 +100,11 @@ test("ServiceDocsClient over real Local Service: list/open/write/search/promote"
     const hits = await docs.search("from desk v2");
     assert.ok(hits.some((h) => h.cx === created.cx));
 
-    const promoted = await docs.promote(created.cx, "goal");
-    assert.equal(promoted.toType, "goal");
+    // docs.promote retired in V0.2
+    await assert.rejects(
+      () => docs.promote(created.cx, "goal"),
+      /docs\.promote is retired|retired in V0\.2|Method not found/,
+    );
 
     const bin = new Uint8Array([0x00, 0x01, 0xff, 0xfe]);
     const att = await docs.importAttachment(created.cx, "desk.bin", bin);

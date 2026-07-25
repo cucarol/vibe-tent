@@ -12,7 +12,7 @@ import {
 import { syncTagRegistryAfterBoxTagsChange } from "../core/tags.js";
 import { isContentMutable } from "../core/tree.js";
 import type { NodeMode } from "../core/types.js";
-import { promoteConcept } from "../core/concept.js";
+
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
 import {
@@ -1040,8 +1040,14 @@ async function docsSetMode(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const modeRaw = requireString(p, "mode");
-  if (modeRaw !== "editable" && modeRaw !== "read-only" && modeRaw !== "archived") {
-    throw new RpcError(-32602, 'docs.setMode mode must be "editable", "read-only", or "archived"');
+  if (modeRaw === "read-only") {
+    throw new RpcError(
+      -32602,
+      'docs.setMode: "read-only" is retired in V0.2; use "editable" or "archived"'
+    );
+  }
+  if (modeRaw !== "editable" && modeRaw !== "archived") {
+    throw new RpcError(-32602, 'docs.setMode mode must be "editable" or "archived"');
   }
   const mode = modeRaw as NodeMode;
 
@@ -1164,7 +1170,7 @@ async function docsBacklinks(ctx: HandlerContext, p: Record<string, unknown>) {
   };
 }
 
-/** Read-only type registry projection (coordination capability for desktop pickers). */
+/** Read-only type registry projection (V0.2: tier + wire-compat coordination flag). */
 async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -1172,16 +1178,12 @@ async function registryTypes(ctx: HandlerContext, p: Record<string, unknown>) {
   const types: TypeRegistryEntryProjection[] = Object.entries(registry)
     .map(([name, def]) => {
       const tier: "base" | "modifier" = def.tier === "modifier" ? "modifier" : "base";
-      const coordination =
-        tier === "base" && "coordination" in def ? def.coordination === true : false;
+      // Wire-compat: base types appear "coordination-capable" so transitional UI pickers work.
+      // Domain coordination capability is retired; do not reintroduce R/W/color/description.
       return {
         name,
         tier,
-        readable: def.readable,
-        writable: def.writable,
-        coordination,
-        color: def.color,
-        description: def.description,
+        coordination: tier === "base",
       };
     })
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -1897,7 +1899,8 @@ async function docsCreateNote(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const name = requireString(p, "name");
-  const type = optionalString(p, "type") ?? "note";
+  // V0.2 default primary for ordinary notes is prompt (Core 数据与权威边界审计).
+  const type = optionalString(p, "type") ?? "prompt";
   const parentPath = optionalString(p, "parentPath") ?? "";
   const body = typeof p.body === "string" ? p.body : undefined;
 
@@ -1989,22 +1992,12 @@ async function docsImportAttachment(ctx: HandlerContext, p: Record<string, unkno
 }
 
 async function docsPromote(ctx: HandlerContext, p: Record<string, unknown>) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const toType = requireString(p, "toType");
-  const idOrPath = optionalString(p, "id") ?? optionalString(p, "path") ?? requireString(p, "concept");
-
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const result = await promoteConcept(mount.env, idOrPath, toType);
-    ctx.events.emit(
-      "concept.changed",
-      workspaceId,
-      { id: result.id, path: result.path, reason: "docs.promote", toType },
-      "self"
-    );
-    return { workspaceId, ...result };
-  });
+  void ctx;
+  void p;
+  throw new RpcError(
+    -32601,
+    "docs.promote is retired in V0.2: every valid concept may enter the task lifecycle; change type via docs.write / createNote"
+  );
 }
 
 async function docsFork(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -8220,7 +8213,7 @@ function assertDocsWriteAllowed(
   );
 }
 
-/** Hard gate: only explicit mode (+ invalid) blocks content writes — not type/self writable. */
+/** Hard gate: only invalid + archived block content writes (V0.2: no read-only mode). */
 function assertDocsModeMutable(
   concept: import("../core/types.js").Box,
   op: string
@@ -8234,12 +8227,6 @@ function assertDocsModeMutable(
   }
   if (concept.mode === "archived" || concept.archived) {
     throw new RpcError(-32010, `${op} rejected: concept is archived`, {
-      conceptId: concept.id,
-      mode: concept.mode,
-    });
-  }
-  if (concept.mode === "read-only") {
-    throw new RpcError(-32010, `${op} rejected: concept is read-only`, {
       conceptId: concept.id,
       mode: concept.mode,
     });

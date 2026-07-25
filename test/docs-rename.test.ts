@@ -88,7 +88,7 @@ test("rewriteConceptLinks: md path and unique wiki name for rename root", () => 
       id: "cx-alpha",
       path: "alpha",
       name: "alpha",
-      type: "note",
+      type: "prompt",
       body: "",
       tags: [],
       coordination: "open",
@@ -103,7 +103,7 @@ test("rewriteConceptLinks: md path and unique wiki name for rename root", () => 
       id: "cx-child",
       path: "alpha/child",
       name: "child",
-      type: "note",
+      type: "prompt",
       body: "",
       tags: [],
       coordination: "open",
@@ -142,7 +142,7 @@ test("rewriteConceptLinks: leaves ambiguous unqualified wiki name unchanged", ()
       id: "cx-a1",
       path: "branch-a/twin",
       name: "twin",
-      type: "note",
+      type: "prompt",
       body: "",
       tags: [],
       coordination: "open",
@@ -157,7 +157,7 @@ test("rewriteConceptLinks: leaves ambiguous unqualified wiki name unchanged", ()
       id: "cx-a2",
       path: "branch-b/twin",
       name: "twin",
-      type: "note",
+      type: "prompt",
       body: "",
       tags: [],
       coordination: "open",
@@ -190,7 +190,7 @@ test("renameNode: leaf keeps cx-, renames folder + identity note", async () => {
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = envFor(fsa);
-  const id = await createBox(env as any, { parentPath: "", name: "leaf", type: "note" });
+  const id = await createBox(env as any, { parentPath: "", name: "leaf", type: "prompt" });
   const result = await renameNode(env as any, id, "renamed-leaf");
   assert.equal(result.id, id);
   assert.equal(result.oldPath, "leaf");
@@ -210,11 +210,11 @@ test("renameNode: subtree preserves child relative paths and ids", async () => {
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = envFor(fsa);
   const parentId = await createBox(env as any, { parentPath: "", name: "parent", type: "prompt" });
-  const childId = await createBox(env as any, { parentPath: "parent", name: "child", type: "note" });
+  const childId = await createBox(env as any, { parentPath: "parent", name: "child", type: "prompt" });
   const grandId = await createBox(env as any, {
     parentPath: "parent/child",
     name: "grand",
-    type: "note",
+    type: "prompt",
   });
 
   const result = await renameNode(env as any, parentId, "parent-new");
@@ -237,11 +237,11 @@ test("renameNode: rewrites inbound md links; order stays id-keyed", async () => 
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = envFor(fsa);
-  const a = await createBox(env as any, { parentPath: "", name: "alpha", type: "note" });
-  const b = await createBox(env as any, { parentPath: "", name: "beta", type: "note" });
+  const a = await createBox(env as any, { parentPath: "", name: "alpha", type: "prompt" });
+  const b = await createBox(env as any, { parentPath: "", name: "beta", type: "prompt" });
   await fsa.writeFile(
     "beta/beta.md",
-    `---\nid: ${b}\ntype: note\n---\n\nSee [Alpha](../alpha/alpha.md) and [[alpha]].\n`
+    `---\nid: ${b}\ntype: prompt\n---\n\nSee [Alpha](../alpha/alpha.md) and [[alpha]].\n`
   );
   const orderBefore = await loadOrder(fsa);
   orderBefore[ROOT_KEY] = [a, b];
@@ -269,18 +269,18 @@ test("renameNode: duplicate display names leave unqualified wiki unchanged", asy
   const twinA = await createBox(env as any, {
     parentPath: "branch-a",
     name: "twin",
-    type: "note",
+    type: "prompt",
   });
   const twinB = await createBox(env as any, {
     parentPath: "branch-b",
     name: "twin",
-    type: "note",
+    type: "prompt",
   });
-  const hub = await createBox(env as any, { parentPath: "", name: "hub", type: "note" });
+  const hub = await createBox(env as any, { parentPath: "", name: "hub", type: "prompt" });
   const hubBody = [
     "---",
     `id: ${hub}`,
-    "type: note",
+    "type: prompt",
     "---",
     "",
     "Unqualified [[twin]] is ambiguous.",
@@ -309,14 +309,14 @@ test("renameNode: injected write failure restores tree and every note byte-for-b
   const base = new NodeFs(dir);
   await scaffoldTent(base, { name: "x", rules: "# r\n" });
   const setupEnv = envFor(base);
-  const a = await createBox(setupEnv as any, { parentPath: "", name: "alpha", type: "note" });
-  const b = await createBox(setupEnv as any, { parentPath: "", name: "beta", type: "note" });
-  const c = await createBox(setupEnv as any, { parentPath: "", name: "gamma", type: "note" });
+  const a = await createBox(setupEnv as any, { parentPath: "", name: "alpha", type: "prompt" });
+  const b = await createBox(setupEnv as any, { parentPath: "", name: "beta", type: "prompt" });
+  const c = await createBox(setupEnv as any, { parentPath: "", name: "gamma", type: "prompt" });
 
   const betaOriginal = [
     "---",
     `id: ${b}`,
-    "type: note",
+    "type: prompt",
     "---",
     "",
     "See [Alpha](../alpha/alpha.md) and [[alpha]].",
@@ -325,7 +325,7 @@ test("renameNode: injected write failure restores tree and every note byte-for-b
   const gammaOriginal = [
     "---",
     `id: ${c}`,
-    "type: note",
+    "type: prompt",
     "---",
     "",
     "Also [Alpha path](../alpha/alpha.md).",
@@ -376,8 +376,8 @@ test("renameNode: refuses collision and occupied range", async () => {
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = envFor(fsa);
-  const a = await createBox(env as any, { parentPath: "", name: "one", type: "note" });
-  await createBox(env as any, { parentPath: "", name: "two", type: "note" });
+  const a = await createBox(env as any, { parentPath: "", name: "one", type: "prompt" });
+  await createBox(env as any, { parentPath: "", name: "two", type: "prompt" });
   await assert.rejects(() => renameNode(env as any, a, "two"), /already exists|sibling/i);
 
   const occupied = await createBox(env as any, { parentPath: "", name: "busy", type: "prompt" });
@@ -395,13 +395,13 @@ test("docs.rename: service user-only, event, client, etag-independent resolve by
     await scaffoldInWorkspace(fsa, {
       name: "demo",
       rules: "# RULES\n\nrename test\n",
-      boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     // sibling for inbound links
     await fsa.mkdir(".tent/hub");
     await fsa.writeFile(
       ".tent/hub/hub.md",
-      "---\nid: cx-hub001\ntype: note\n---\n\nLink [Inbox](../inbox/inbox.md) and [[inbox]].\n"
+      "---\nid: cx-hub001\ntype: prompt\n---\n\nLink [Inbox](../inbox/inbox.md) and [[inbox]].\n"
     );
 
     const mount = await rpc(svc, "workspace.mount", { workspaceRoot: workspace });

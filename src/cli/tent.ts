@@ -508,11 +508,9 @@ async function main() {
       break;
     }
     case "grant-readable": {
-      if (!args[0]) return fail("Usage: tent grant-readable <boxId>");
-      if (args.length > 1) return fail("Usage: tent grant-readable <boxId>");
-      await grantReadable(env, args[0]);
-      console.log(`✓ ${args[0]} readable=true`);
-      break;
+      return fail(
+        "grant-readable is retired in V0.2: Node readable/writable axes are removed; use Task context pointers."
+      );
     }
     case "new-box": {
       const [name, type, parentId] = args;
@@ -661,12 +659,12 @@ async function readBodyFile(bodySource: string): Promise<string> {
 
 function printBox(box: import("../core/types.js").Box, depth: number) {
   const ind = "  ".repeat(depth);
-  const rw = `R${box.readable.value ? "✓" : "✗"}/W${box.writable.value ? "✓" : "✗"}`;
+  const mode = box.archived ? " archived" : "";
   const owner = box.fm.owner ? ` ⚑${box.fm.owner}` : "";
   const type = box.type;
   const id = box.id || "missing-id";
   const invalid = box.invalid ? ` invalid:${box.invalidReason || "invalid"}` : "";
-  console.log(`${ind}${box.name} [${type} ${id}] ${rw}${owner}${invalid}`);
+  console.log(`${ind}${box.name} [${type} ${id}]${mode}${owner}${invalid}`);
   for (const c of box.children) printBox(c, depth + 1);
 }
 
@@ -818,8 +816,8 @@ Legacy direct-core mutations (external / non-.tent system root only — migratio
   complete <boxId> [options]         Confirm completion and release owner (no Delivery).
   stamp <boxId> [--by <role>]        Mark done without workspace commits.
   force-release <boxId>              Release owner without accepting delivery.
-  grant-readable <boxId>             Mark a box readable.
-  new-box <name> <type> [parentId]   Create a box.
+  grant-readable                     Retired (V0.2: no Node R/W axes).
+  new-box <name> <type> [parentId]   Create a box (type: goal|prompt|output[-secondary]).
   tag|untag <boxId> <tag>            Add or remove a tag.
   tag-new | tag-rm                   Manage the tag registry.
   fork <boxId>                       Copy a box subtree with new ids.

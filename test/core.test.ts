@@ -247,21 +247,27 @@ test("loadTent:顶层普通目录透传其下合法框", async () => {
   assert.ok(tent.roots.some((box) => box.id === "bx-nested"));
 });
 
-test("manifest:可读集=全帐 readable,可写集=认领子树 writable + temp 格", async () => {
+test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格 (非 domain R/W)", async () => {
   const dir = await makeTent();
   const tent = await loadTent(new NodeFs(dir));
-  const claim = tent.byId.get("bx-p1")!; // prompt/表达式任务书,子有可写草稿
+  const claim = tent.byId.get("bx-p1")!; // prompt/表达式任务书
   const m = buildManifest(tent, {
     tentName: "wqb",
     role: "executor",
     claimBoxes: [claim],
   });
 
+  // V0.2: manifest readable/writable are Task context pointers, not Node domain R/W axes.
+  // Usable boxes project coordination=true and readable/writable fixed true for UI wire-compat.
+  assert.equal(claim.coordination, true);
+  assert.equal(claim.readable.value, true);
+  assert.equal(claim.writable.value, true);
+
   const writablePaths = m.writable.map((e) => e.path);
   const readablePaths = m.readable.map((e) => e.path);
   assert.ok(
     writablePaths.some((p) => p.includes("草稿")),
-    "草稿在可写集",
+    "草稿在认领子树可写集",
   );
   assert.ok(
     writablePaths.some((p) => p === "temp/executor/"),
@@ -269,6 +275,8 @@ test("manifest:可读集=全帐 readable,可写集=认领子树 writable + temp 
   );
   assert.ok(readablePaths.includes("roles.json"), "role 注册表是 agent 的系统只读上下文");
   assert.ok(readablePaths.includes("temp/"), "整个 temp 系统管道在可读集");
+  // All usable concepts appear in readable context set
+  assert.ok(readablePaths.some((p) => p.includes("表达式任务书")));
 
   const yaml = manifestToYaml(m);
   assert.ok(yaml.includes("tent: wqb"));
@@ -790,7 +798,7 @@ test("createBox and cleanTemp reject unsafe names before filesystem writes", asy
   assert.equal(await fsa.exists("temp/bad\nrole"), false);
 });
 
-test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", async () => {
+test("归档:整棵子树 wire-compat R/W 投影关闭且退出正常流程,恢复后还原", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   const env = {
@@ -801,7 +809,7 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
   };
   const { archiveBox, restoreBox, tagBox } = await import("../src/core/ops.js");
   const { parseFrontmatter } = await import("../src/core/frontmatter.js");
-  const { boxNotePath } = await import("../src/core/tree.js");
+  const { boxNotePath, isUsableBox } = await import("../src/core/tree.js");
 
   await archiveBox(env as any, "bx-p1");
   let tent = await loadTent(fsa);
@@ -811,12 +819,17 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
   assert.equal(root.archived, true);
   assert.equal(child.mode, "archived");
   assert.equal(child.archived, true);
+  // Wire-compat only: archived nodes project readable/writable/coordination false (not domain axes)
   assert.equal(child.readable.value, false);
   assert.equal(child.writable.value, false);
+  assert.equal(child.coordination, false);
+  assert.equal(isUsableBox(child), false);
   // Disk: archive root has mode:archived, not legacy archived:true; child has no mode write.
   const rootFm = parseFrontmatter(await fsa.readFile(boxNotePath(root.path))).data;
   assert.equal(rootFm.mode, "archived");
   assert.equal("archived" in rootFm, false);
+  assert.equal("readable" in rootFm, false);
+  assert.equal("writable" in rootFm, false);
   const childFm = parseFrontmatter(await fsa.readFile(boxNotePath(child.path))).data;
   assert.equal("mode" in childFm, false);
   assert.equal(canClaim(root).ok, false);
@@ -825,6 +838,7 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
     role: "executor",
     claimBoxes: [tent.byId.get("bx-a1")!],
   });
+  // Manifest readable is context-pointer set of usable boxes — archived subtree excluded
   assert.ok(
     !manifest.readable.some((x) => x.path.startsWith("prompt/表达式任务书")),
   );
@@ -837,11 +851,14 @@ test("归档:整棵子树 R/W 关闭且退出正常流程,恢复后还原", asyn
   tent = await loadTent(fsa);
   assert.equal(tent.byId.get("bx-p1")!.mode, "editable");
   assert.equal(tent.byId.get("bx-p1")!.archived, false);
+  assert.equal(isUsableBox(tent.byId.get("bx-p1")!), true);
+  assert.equal(tent.byId.get("bx-p2")!.coordination, true);
   assert.equal(
     tent.byId.get("bx-p2")!.writable.value,
     true,
-    "原显式权限自然恢复",
+    "usable box wire-compat writable projection restored",
   );
+  assert.equal(tent.byId.get("bx-p2")!.readable.value, true);
 });
 
 test("永久删除:node 必须先归档,删除父级会删除整棵子树", async () => {
@@ -956,9 +973,10 @@ test("duplicate box id direct operations report duplicate id", async () => {
     () => dispatch(env as any, "bx-p1", "analyst", "work"),
     /Duplicate box id 'bx-p1'/,
   );
+  // Domain R/W grant is retired; call rejects before any id resolution
   await assert.rejects(
     () => grantReadable(env as any, "bx-p1"),
-    /Duplicate box id 'bx-p1'/,
+    /grantReadable is retired|retired in V0\.2/,
   );
 });
 

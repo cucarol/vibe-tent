@@ -3,111 +3,66 @@ import { TYPE_REGISTRY_PATH } from "./paths.js";
 
 export { TYPE_REGISTRY_PATH };
 
-export const TYPE_COLOR_PALETTE = ["gray", "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown"];
-
-/** type 分层:base = 主类(决定基础 R/W);modifier = 修饰类(覆盖 base 的 R/W)。
- *  一个框的 type 是单个字符串,可为 "base" 或复合 "base-modifier"(如 goal-asset)。 */
+/** type 分层:base = 一级主类;modifier = 可选二级修饰。复合串为 "base-modifier"。 */
 export type TypeTier = "base" | "modifier";
 
-interface TypeDefinitionMetadata {
-  color?: string;
-  description?: string;
-}
-
+/**
+ * V0.2 type definition: identity + tier only on disk / normalize.
+ * Optional legacy fields remain on the TypeScript shape so transitional UI
+ * compiles; normalizeRegistry never populates them.
+ */
 export type TypeDefinition =
-  | (TypeDefinitionMetadata & {
-      /** base 必须明确两轴。缺省 tier 也按 base 处理。 */
+  | {
       tier?: "base";
-      readable: boolean;
-      writable: boolean;
-      /**
-       * 是否可承载协作生命周期（status / task occupation / delivery projection）。
-       * 默认 false；compound type 跟随 base，modifier 不可单独配置。
-       */
-      coordination?: boolean;
-      /**
-       * @deprecated 运行时已退役；normalize/load 忽略。仅保留类型形状以免旧插件编译面瞬间断裂。
-       */
-      workspacePointer?: boolean;
-    })
-  | (TypeDefinitionMetadata & {
-      /** modifier 缺省的轴继承复合 type 的 base。 */
-      tier: "modifier";
+      /** @deprecated Domain R/W retired. */
       readable?: boolean;
+      /** @deprecated Domain R/W retired. */
       writable?: boolean;
-    });
+      /** @deprecated Coordination capability retired. */
+      coordination?: boolean;
+      /** @deprecated Type chrome retired. */
+      color?: string;
+      /** @deprecated Type chrome retired. */
+      description?: string;
+      /** @deprecated workspacePointer retired. */
+      workspacePointer?: boolean;
+    }
+  | {
+      tier: "modifier";
+      /** @deprecated Domain R/W retired. */
+      readable?: boolean;
+      /** @deprecated Domain R/W retired. */
+      writable?: boolean;
+      /** @deprecated Type chrome retired. */
+      color?: string;
+      /** @deprecated Type chrome retired. */
+      description?: string;
+    };
 
 export type TypeRegistry = Record<string, TypeDefinition>;
 
+/** Fixed product primaries — not user-extensible. */
+export const CANONICAL_PRIMARY_TYPES = ["goal", "prompt", "output"] as const;
+export type CanonicalPrimaryType = (typeof CANONICAL_PRIMARY_TYPES)[number];
+
+/** Built-in secondary presets (user may also register custom modifiers without chrome). */
+export const BUILTIN_SECONDARY_TYPES = ["reference", "asset"] as const;
+export type BuiltinSecondaryType = (typeof BUILTIN_SECONDARY_TYPES)[number];
+
 /**
  * 内置默认 type 注册表。
- * - note: 普通 concept，coordination=false
- * - goal / prompt / artifact: 默认可作 box（coordination=true）
- * - artifact: 替代旧 output；不再携带 workspacePointer 运行时语义
+ * - primary: goal | prompt | output
+ * - secondary presets: reference | asset
  */
 export const DEFAULT_TYPE_REGISTRY: TypeRegistry = {
-  note: {
-    readable: true,
-    writable: true,
-    color: "gray",
-    tier: "base",
-    coordination: false,
-    description: "普通笔记 concept，默认不进入协作生命周期",
-  },
-  goal: {
-    readable: true,
-    writable: false,
-    color: "blue",
-    tier: "base",
-    coordination: true,
-    description: "定义目标、意图与验收方向",
-  },
-  prompt: {
-    readable: true,
-    writable: true,
-    color: "purple",
-    tier: "base",
-    coordination: true,
-    description: "提供任务说明与工作上下文",
-  },
-  artifact: {
-    readable: true,
-    writable: true,
-    color: "cyan",
-    tier: "base",
-    coordination: true,
-    description: "映射真实交付物与 ArtifactRef 关联",
-  },
-  open: {
-    readable: true,
-    writable: true,
-    color: "green",
-    tier: "modifier",
-    description: "仍在推进、可继续处理",
-  },
-  reference: {
-    readable: true,
-    color: "blue",
-    tier: "modifier",
-    description: "作为背景资料供查阅与引用",
-  },
-  asset: {
-    writable: true,
-    color: "purple",
-    tier: "modifier",
-    description: "作为实际产物或可复用资源",
-  },
-  sealed: {
-    readable: false,
-    writable: false,
-    color: "red",
-    tier: "modifier",
-    description: "已封存，不再参与后续处理",
-  },
+  goal: { tier: "base" },
+  prompt: { tier: "base" },
+  output: { tier: "base" },
+  reference: { tier: "modifier" },
+  asset: { tier: "modifier" },
 };
 
-/** 拆复合 type:"goal-asset" → {base:"goal", modifier:"asset"};"goal" → {base:"goal"}。
- *  按第一个 "-" 拆(内置名不含 "-")。 */
+/** 拆复合 type:"goal-asset" → {base:"goal", modifier:"asset"};"goal" → {base:"goal"}。 */
 export function splitType(type: string): { base: string; modifier?: string } {
   const i = type.indexOf("-");
   if (i === -1) return { base: type };
@@ -119,66 +74,102 @@ export function joinType(base: string, modifier?: string): string {
   return modifier ? `${base}-${modifier}` : base;
 }
 
+export function isCanonicalPrimary(name: string): name is CanonicalPrimaryType {
+  return (CANONICAL_PRIMARY_TYPES as readonly string[]).includes(name);
+}
+
+export function isBuiltinSecondary(name: string): name is BuiltinSecondaryType {
+  return (BUILTIN_SECONDARY_TYPES as readonly string[]).includes(name);
+}
+
 /**
- * 迁移窗口：落盘 type 名 `output` 解析时映射到 canonical `artifact`。
- * 新写入应只使用 artifact；长期双 type 产品语义不保留。
+ * type 是否可被注册表解析(精确命中,或 base[+modifier] 都在册)。
+ * Primary bases must be canonical goal|prompt|output (or a residual custom base still in registry during transition tests).
  */
-export function canonicalTypeName(type: string): string {
-  if (type === "output") return "artifact";
-  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
-  return type;
-}
-
-/** type 是否可被注册表解析(精确命中,或 base[+modifier] 都在册)。 */
 export function typeExists(type: string, registry: TypeRegistry): boolean {
-  const canonical = canonicalTypeName(type);
-  if (registry[canonical] || registry[type]) return true;
-  const { base, modifier } = splitType(canonical);
-  return !!(registry[base] && (modifier === undefined || !!registry[modifier]));
-}
-
-/** 解析复合 type 在某根轴上的 R/W:modifier 覆盖 base。精确命中的单 type 直接取其值。 */
-export function resolveTypeAxis(
-  type: string,
-  axis: "readable" | "writable",
-  registry: TypeRegistry
-): boolean | undefined {
-  const canonical = canonicalTypeName(type);
-  const exact = registry[canonical] ?? registry[type];
-  if (exact) return exact[axis];
-  const { base, modifier } = splitType(canonical);
-  const baseVal = registry[base]?.[axis];
-  const modVal = modifier ? registry[modifier]?.[axis] : undefined;
-  return typeof modVal === "boolean" ? modVal : baseVal;
+  if (registry[type]) return true;
+  const { base, modifier } = splitType(type);
+  const baseOk = !!registry[base] && (registry[base].tier ?? "base") !== "modifier";
+  if (!baseOk) return false;
+  if (modifier === undefined) return true;
+  const mod = registry[modifier];
+  return !!mod && mod.tier === "modifier";
 }
 
 /**
- * 框/concept 的一级 type 是否开启 coordination（可作 box）。
- * 永远读注册表 capability，禁止按 type 名称硬编码。
+ * Whether a type string is a valid V0.2 concept type after cutover:
+ * primary ∈ goal|prompt|output, optional secondary present in registry as modifier.
+ */
+export function isValidConceptType(type: string, registry: TypeRegistry): boolean {
+  const { base, modifier } = splitType(type);
+  if (!isCanonicalPrimary(base)) return false;
+  if (!registry[base] || (registry[base].tier ?? "base") === "modifier") return false;
+  if (modifier === undefined) return true;
+  const mod = registry[modifier];
+  return !!mod && mod.tier === "modifier";
+}
+
+/**
+ * @deprecated Color palette no longer part of Core type domain; kept for transitional UI imports.
+ */
+export const TYPE_COLOR_PALETTE = [
+  "gray",
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "cyan",
+  "blue",
+  "purple",
+  "pink",
+  "brown",
+] as const;
+
+/**
+ * @deprecated Coordination capability retired; always true for known registry types.
+ * Do not use as a product gate — structuralClaimGate no longer consults this.
  */
 export function typeHasCoordination(type: string, registry: TypeRegistry): boolean {
-  const canonical = canonicalTypeName(type);
-  const { base } = splitType(canonical);
-  return baseDefinitionCoordination(registry[base] ?? registry[canonical] ?? registry[type]) === true;
+  return typeExists(type, registry);
 }
 
-/** 读取一级 type 定义上的 coordination；modifier 恒为 undefined。 */
-export function baseDefinitionCoordination(definition: TypeDefinition | undefined): boolean | undefined {
-  if (!definition || definition.tier === "modifier") return undefined;
-  return definition.coordination;
+/** @deprecated Coordination capability retired. */
+export function baseDefinitionCoordination(_definition: TypeDefinition | undefined): boolean | undefined {
+  void _definition;
+  return true;
 }
 
-/** 写入一级 type 的 coordination；modifier 抛错。 */
-export function setBaseCoordination(definition: TypeDefinition, value: boolean): void {
-  if (definition.tier === "modifier") {
-    throw new Error("Modifier types cannot configure coordination capability.");
-  }
-  definition.coordination = value;
+/** @deprecated Coordination capability retired. */
+export function setBaseCoordination(_definition: TypeDefinition, _value: boolean): void {
+  void _definition;
+  void _value;
+  throw new Error("coordination capability is retired in V0.2; types are semantic only.");
+}
+
+/**
+ * @deprecated Domain R/W axes retired; always undefined.
+ */
+export function resolveTypeAxis(
+  _type: string,
+  _axis: "readable" | "writable",
+  _registry: TypeRegistry
+): boolean | undefined {
+  void _type;
+  void _axis;
+  void _registry;
+  return undefined;
+}
+
+/**
+ * @deprecated No permanent type-name alias. Migration rewrites disk; runtime uses names as-is.
+ * Kept as identity for any residual callers during cutover.
+ */
+export function canonicalTypeName(type: string): string {
+  return type;
 }
 
 /**
  * @deprecated workspacePointer 运行时语义已退役；保留空实现兼容旧调用点编译，恒为 false。
- * 新代码请使用 in-workspace `.tent` 布局与 WorkspaceLane，不要再依赖 type 轴。
  */
 export function typeAllowsWorkspacePointer(_type: string, _registry: TypeRegistry): boolean {
   void _type;
@@ -192,7 +183,7 @@ export function baseDefinitionWorkspacePointer(_definition: TypeDefinition | und
   return undefined;
 }
 
-/** @deprecated 见 setBaseCoordination；workspacePointer 不再可写。 */
+/** @deprecated workspacePointer 不再可写。 */
 export function setBaseWorkspacePointer(_definition: TypeDefinition, _value: boolean): void {
   void _definition;
   void _value;
@@ -216,115 +207,95 @@ export async function loadTypeRegistry(fs: FsAdapter): Promise<TypeRegistry> {
   }
 }
 
+/**
+ * Normalize disk registry to V0.2 shape:
+ * - drop R/W, coordination, color, description, workspacePointer
+ * - map legacy primary keys note→prompt, artifact→output (definition merge only; node rewrites are migration)
+ * - drop retired built-ins open/sealed/note/artifact from defaults (custom modifiers may remain)
+ * - flatten legacy { primary, secondary }
+ */
 export function normalizeRegistry(value: unknown): TypeRegistry {
   const root = isRecord(value) ? value : {};
   const registry = cloneDefaults();
 
-  // Legacy schema: { primary, secondary } → primary=base, secondary=modifier。
   if (isRecord(root.primary) || isRecord(root.secondary)) {
-    mergeDefinitions(registry, root.primary, true, "base");
-    mergeDefinitions(registry, root.secondary, false, "modifier");
-    applyLegacyOutputAlias(registry);
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.primary));
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.secondary), "modifier");
+    finalizeRegistry(registry);
     return registry;
   }
 
-  mergeDefinitions(registry, root);
-  applyLegacyOutputAlias(registry);
+  mergeDefinitions(registry, mapLegacyBucketKeys(root));
+  finalizeRegistry(registry);
   return registry;
 }
 
-/**
- * 一次性兼容：磁盘上仍写 `output` 时映射为 `artifact` 的定义字段，
- * 不保留长期双 type 产品语义；迁移函数会把落盘名改成 artifact。
- */
-function applyLegacyOutputAlias(registry: TypeRegistry): void {
-  if (registry.output && !isRecord(registry.output)) return;
-  if (registry.output) {
-    const out = registry.output;
-    if (out.tier !== "modifier") {
-      // 若用户未显式写 artifact，用 output 定义填充 artifact 缺省轴
-      const artifact = registry.artifact;
-      if (artifact && artifact.tier !== "modifier") {
-        if (typeof out.readable === "boolean") artifact.readable = out.readable;
-        if (typeof out.writable === "boolean") artifact.writable = out.writable;
-        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
-        else if (out.coordination === undefined) artifact.coordination = true;
-        if (out.color) artifact.color = out.color;
-        if (out.description) artifact.description = out.description;
-      }
-    }
+function mapLegacyBucketKeys(source: unknown): Record<string, unknown> {
+  if (!isRecord(source)) return {};
+  const out: Record<string, unknown> = {};
+  for (const [rawName, raw] of Object.entries(source)) {
+    const name = mapLegacyTypeKey(rawName);
+    if (!name) continue;
+    // Prefer first definition if both note and prompt present after map, etc.
+    if (out[name] === undefined) out[name] = raw;
   }
+  return out;
+}
+
+/** Map legacy registry key names; returns "" to drop the key entirely. */
+function mapLegacyTypeKey(name: string): string {
+  if (name === "note") return "prompt";
+  if (name === "artifact") return "output";
+  if (name === "open" || name === "sealed") return "";
+  return name;
 }
 
 function mergeDefinitions(
   registry: TypeRegistry,
   source: unknown,
-  legacyBase = false,
   defaultTier?: TypeTier
 ): void {
   if (!isRecord(source)) return;
   for (const [name, raw] of Object.entries(source)) {
     if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
     const current = registry[name];
-    const tier: TypeTier | undefined =
-      raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier;
-    const resolvedTier = tier ?? "base";
-    const readable = typeof raw.readable === "boolean" ? raw.readable : undefined;
-    const writable = typeof raw.writable === "boolean" ? raw.writable : undefined;
-    if ((legacyBase || resolvedTier === "base") && (readable === undefined || writable === undefined)) continue;
-    const metadata = {
-      ...(typeof raw.color === "string" && raw.color
-        ? { color: raw.color }
-        : current?.color
-          ? { color: current.color }
-          : {}),
-      ...(typeof raw.description === "string" && raw.description
-        ? { description: raw.description }
-        : current?.description
-          ? { description: current.description }
-          : {}),
-    };
-    if (resolvedTier === "modifier") {
-      registry[name] = {
-        tier: "modifier",
-        ...(readable !== undefined ? { readable } : {}),
-        ...(writable !== undefined ? { writable } : {}),
-        ...metadata,
-      };
+    const tier: TypeTier =
+      raw.tier === "base" || raw.tier === "modifier"
+        ? raw.tier
+        : current?.tier ?? defaultTier ?? (isCanonicalPrimary(name) ? "base" : "modifier");
+
+    // Fixed primaries always base; cannot demote.
+    if (isCanonicalPrimary(name)) {
+      registry[name] = { tier: "base" };
       continue;
     }
-    const coordination = resolveCoordinationFlag(name, raw, current);
-    const entry: TypeDefinition = {
-      tier: "base",
-      readable: readable!,
-      writable: writable!,
-      ...metadata,
-      ...(coordination !== undefined ? { coordination } : {}),
-    };
-    // 永不把 workspacePointer 带入运行时注册表
-    delete (entry as { workspacePointer?: boolean }).workspacePointer;
-    registry[name] = entry;
+    // Built-in secondaries always modifier.
+    if (isBuiltinSecondary(name)) {
+      registry[name] = { tier: "modifier" };
+      continue;
+    }
+    // Custom: allow base only if not colliding with reserved retired names
+    if (tier === "base") {
+      // V0.2 product: only three primaries. Drop custom bases from registry.
+      continue;
+    }
+    registry[name] = { tier: "modifier" };
   }
 }
 
-/**
- * 解析一级 type 的 coordination。
- * - 显式 boolean 优先；
- * - 旧 types.json 无字段：内置倾向 goal/prompt/artifact/output → true，note → false。
- * - 忽略遗留 workspacePointer 字段（不读入运行时）。
- */
-function resolveCoordinationFlag(
-  name: string,
-  raw: Record<string, unknown>,
-  current: TypeDefinition | undefined
-): boolean | undefined {
-  if (typeof raw.coordination === "boolean") return raw.coordination;
-  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
-    return current.coordination;
+function finalizeRegistry(registry: TypeRegistry): void {
+  // Ensure fixed primaries + built-in secondaries always present.
+  for (const p of CANONICAL_PRIMARY_TYPES) {
+    registry[p] = { tier: "base" };
   }
-  if (name === "note") return false;
-  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
-  return undefined;
+  for (const s of BUILTIN_SECONDARY_TYPES) {
+    registry[s] = { tier: "modifier" };
+  }
+  // Never keep retired keys
+  delete registry.note;
+  delete registry.artifact;
+  delete registry.open;
+  delete registry.sealed;
 }
 
 function cloneDefaults(): TypeRegistry {

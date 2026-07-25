@@ -48,8 +48,12 @@ export type MountedWorkspaceInfo = {
   foreground: boolean;
 };
 
-/** Node lifecycle mode on the wire (document semantics; not Task state). */
-export type NodeMode = "editable" | "read-only" | "archived";
+/**
+ * Node lifecycle mode on the wire (document semantics; not Task state).
+ * V0.2 Core: editable | archived only. "read-only" may still appear on transitional
+ * clients; Service rejects new setMode(read-only).
+ */
+export type NodeMode = "editable" | "archived" | "read-only";
 
 export type ConceptProjection = {
   id: string;
@@ -57,8 +61,17 @@ export type ConceptProjection = {
   name: string;
   type: string;
   tags: string[];
+  /**
+   * @deprecated Coordination capability retired. Wire-compat: true for usable concepts.
+   */
   coordination: boolean;
+  /**
+   * @deprecated Legacy frontmatter projection until UI cutover; not written on new Nodes.
+   */
   status?: string;
+  /**
+   * @deprecated Legacy owner projection until UI cutover; occupation is Task-based.
+   */
   assignee?: string;
   /** Effective mode after inheritance (archived cascades). */
   mode: NodeMode;
@@ -91,6 +104,7 @@ export type GraphNodeSummary = {
   name: string;
   type: string;
   tags: string[];
+  /** @deprecated Wire-compat only; always true for usable nodes. */
   coordination: boolean;
   mode: NodeMode;
   archived: boolean;
@@ -327,15 +341,25 @@ export type SessionProjection = {
   updatedAt?: string;
 };
 
-/** Project type registry row (read-only projection for clients). */
+/**
+ * Project type registry row (read-only projection for clients).
+ * V0.2 Core stores tier only; R/W/coordination/color/description are omitted
+ * (transitional clients must not treat absence as product semantics).
+ */
 export type TypeRegistryEntryProjection = {
   name: string;
   tier: "base" | "modifier";
+  /** @deprecated Domain R/W retired — omit on wire. */
   readable?: boolean;
+  /** @deprecated Domain R/W retired — omit on wire. */
   writable?: boolean;
-  /** Only meaningful for base types; modifiers omit / false. */
+  /**
+   * @deprecated Coordination retired. Base types project true for wire-compat pickers.
+   */
   coordination: boolean;
+  /** @deprecated Type chrome retired — omit on wire. */
   color?: string;
+  /** @deprecated Type chrome retired — omit on wire. */
   description?: string;
 };
 

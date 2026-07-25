@@ -21,7 +21,7 @@ async function makeWorkspace(name = "ws-agents"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nWorkspace agents service\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   return workspace;
 }

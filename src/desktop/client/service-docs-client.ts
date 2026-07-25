@@ -182,7 +182,7 @@ export class ServiceDocsClient implements DocsClient {
     const result = await this.rpc.call<{ id: string; path: string }>("docs.createNote", {
       workspaceId: this.workspaceId,
       name: input.name,
-      type: input.type ?? "note",
+      type: input.type ?? "prompt",
       parentPath: input.parentPath ?? "",
       body: input.body,
     });

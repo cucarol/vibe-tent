@@ -21,7 +21,7 @@ async function makeWorkspace(name = "ws-settings"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nWorkspace settings service\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",

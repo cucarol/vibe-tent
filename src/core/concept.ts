@@ -1,14 +1,10 @@
-// concept 级操作：promote note→box 等（docs 组命令的 core 实现）。
+// V0.2: coordination / note→box promote is retired.
+// Every valid concept may be claimed; type changes use ordinary docs/ops write paths.
 
-import { withTentMutation } from "./adapter.js";
-import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
-import type { OpsEnv } from "./ops-context.js";
-import { envelopeIsActiveOccupation } from "./claim.js";
-import { loadTaskEnvelopes } from "./task.js";
-import { typeHasCoordination } from "./typeRegistry.js";
-import { assertContentMutable, boxNotePath, isUsableBox, loadTent, type LoadedTent } from "./tree.js";
-import type { Box } from "./types.js";
-
+/**
+ * @deprecated Promote / coordination gate removed in V0.2 Node/Type migration.
+ * Callers should set type via create/update Node APIs instead.
+ */
 export interface PromoteResult {
   id: string;
   path: string;
@@ -17,86 +13,17 @@ export interface PromoteResult {
 }
 
 /**
- * 原地 promote：note → box。
- * 保留 path / body / cx-；仅改 type（与可选 status:todo）。
- * 不移动文件、不新发 id。
- * box→box promote 遇到 active task / owner 时遵守写保护。
+ * @deprecated Removed: V0.2 has no note/box promotion or coordination capability.
  */
 export async function promoteConcept(
-  env: OpsEnv,
-  conceptIdOrPath: string,
-  toType: string
+  _env: unknown,
+  _conceptIdOrPath: string,
+  _toType: string
 ): Promise<PromoteResult> {
-  return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
-}
-
-async function promoteConceptUnlocked(
-  env: OpsEnv,
-  conceptIdOrPath: string,
-  toType: string
-): Promise<PromoteResult> {
-  const tent = await loadTent(env.fs);
-  const concept = resolveConcept(tent, conceptIdOrPath);
-  if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
-  assertContentMutable(concept, "promoted");
-  const target = toType.trim();
-  if (!target) throw new Error("Promote requires a non-empty target type.");
-  if (!typeHasCoordination(target, tent.typeRegistry)) {
-    throw new Error(`Target type must have coordination capability: ${target}.`);
-  }
-  if (concept.coordination && concept.type === target) {
-    return { id: concept.id, path: concept.path, fromType: concept.type, toType: target };
-  }
-
-  // box → box：active owner / pending|taken task 时禁止改 type（写保护）
-  if (concept.coordination && concept.type !== target) {
-    await assertPromoteWriteAllowed(env, tent, concept);
-  }
-
-  const notePath = boxNotePath(concept.path);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-  const fromType = typeof data.type === "string" ? data.type : concept.type;
-  data.type = target;
-  if (data.status !== "todo" && data.status !== "doing" && data.status !== "done") {
-    data.status = "todo";
-  }
-  // 保留 id / body / 路径
-  await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER));
-  return { id: concept.id, path: concept.path, fromType, toType: target };
-}
-
-async function assertPromoteWriteAllowed(env: OpsEnv, tent: LoadedTent, concept: Box): Promise<void> {
-  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
-  const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot promote ${concept.name}: overlapping active task ${task.path} write-protects type changes.`
-        );
-      }
-    }
-  }
-}
-
-function isAncestorPath(ancestor: string, child: string): boolean {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
-}
-
-function resolveConcept(tent: LoadedTent, conceptIdOrPath: string): Box {
-  const key = conceptIdOrPath.trim();
-  const byId = tent.byId.get(key);
-  if (byId) return byId;
-  const byPath = tent.byPath.get(key.replace(/\\/g, "/"));
-  if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+  void _env;
+  void _conceptIdOrPath;
+  void _toType;
+  throw new Error(
+    "promoteConcept is retired in V0.2: every valid concept may enter the task lifecycle; change type via node update APIs."
+  );
 }

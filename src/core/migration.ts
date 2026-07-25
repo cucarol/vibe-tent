@@ -1,5 +1,5 @@
 // 一次性 legacy schema migration（纯函数 + 可对 FsAdapter 执行）。
-// 不做长期 alias / 双解析产品路径：迁移报告写出后，新写入只用 cx- / artifact。
+// 不做长期 alias / 双解析产品路径：迁移报告写出后，新写入只用 cx- / goal|prompt|output。
 // 正常运行路径不得 dual-read 嵌套 `.tent/*`；本文件负责读旧布局并切断。
 // 另：importExternalTentRoot 将旧独立帐根复制进 workspace 内 `.tent/`（B5）。
 
@@ -83,110 +83,157 @@ export function planIdRemap(
   return map;
 }
 
-/** 纯：把 type 字符串中的 base `output` 改成 `artifact`（含 compound）。 */
-export function rewriteOutputType(type: string): string | undefined {
-  if (type === "output") return "artifact";
-  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
-  return undefined;
+/**
+ * 纯：V0.2 concept type rewrite (one-shot, no permanent alias).
+ * - note → prompt (Core 数据与权威边界审计: ordinary text → prompt)
+ * - artifact → output
+ * - output stays output
+ * - retired secondaries open/sealed → drop modifier (bare primary)
+ * - unknown secondary → drop modifier when base is canonical
+ * Returns undefined when already canonical / unchanged.
+ */
+export function rewriteCanonicalConceptType(type: string): string | undefined {
+  const raw = type.trim();
+  if (!raw) return undefined;
+  const i = raw.indexOf("-");
+  const base = i === -1 ? raw : raw.slice(0, i);
+  const modifier = i === -1 ? undefined : raw.slice(i + 1);
+
+  let nextBase = base;
+  if (base === "note") nextBase = "prompt";
+  else if (base === "artifact") nextBase = "output";
+  // bare retired modifiers cannot stand alone as type
+  else if (base === "open" || base === "sealed") nextBase = "prompt";
+
+  let nextMod = modifier;
+  if (modifier === "open" || modifier === "sealed") nextMod = undefined;
+  // keep reference|asset; drop other secondaries only when primary is fixed canonical
+  if (
+    nextMod &&
+    nextMod !== "reference" &&
+    nextMod !== "asset" &&
+    (nextBase === "goal" || nextBase === "prompt" || nextBase === "output")
+  ) {
+    // Custom secondary may still exist in registry; keep it if not retired built-in.
+    // open/sealed already dropped above.
+  }
+
+  const next = nextMod ? `${nextBase}-${nextMod}` : nextBase;
+  return next === raw ? undefined : next;
 }
 
 /**
- * 纯：从 types.json 对象去掉 workspacePointer，并把 output 键合并为 artifact。
- * 同时处理 flat 与 { primary, secondary } 旧 schema，幂等。
+ * @deprecated Prefer rewriteCanonicalConceptType. Historical name from output→artifact window;
+ * now implements V0.2 note/artifact→canonical (identity for callers that still import this name).
+ */
+export function rewriteOutputType(type: string): string | undefined {
+  return rewriteCanonicalConceptType(type);
+}
+
+/**
+ * 纯：types.json → V0.2 slim registry (tier only).
+ * - note → prompt, artifact → output keys
+ * - drop open/sealed
+ * - strip R/W, coordination, color, description, workspacePointer
+ * - flatten legacy { primary, secondary }
+ * Idempotent via normalizeRegistry.
  */
 export function migrateTypeRegistryJson(value: unknown): { registry: TypeRegistry; changes: string[] } {
   const changes: string[] = [];
   const root: Record<string, unknown> = isRecord(value) ? deepClone(value) : {};
 
-  const stripPointer = (def: unknown): unknown => {
-    if (!isRecord(def)) return def;
-    if (!("workspacePointer" in def)) return def;
-    const next = { ...def };
-    delete next.workspacePointer;
-    changes.push("removed workspacePointer from a type definition");
-    return next;
-  };
-
   if (isRecord(root.primary) || isRecord(root.secondary)) {
+    const flat: Record<string, unknown> = {};
     if (isRecord(root.primary)) {
-      root.primary = migratePrimarySecondaryBucket(root.primary, stripPointer, changes, "primary");
+      mergeLegacyKeysInto(flat, root.primary, changes, "primary");
     }
     if (isRecord(root.secondary)) {
-      root.secondary = migratePrimarySecondaryBucket(root.secondary, stripPointer, changes, "secondary");
+      mergeLegacyKeysInto(flat, root.secondary, changes, "secondary");
     }
-  } else {
-    for (const key of Object.keys(root)) {
-      root[key] = stripPointer(root[key]);
-    }
-    promoteOutputKey(root, changes);
+    const registry = normalizeRegistry(flat);
+    changes.push("normalized primary/secondary registry to V0.2 slim shape");
+    void DEFAULT_TYPE_REGISTRY;
+    return { registry, changes: uniqueChanges(changes) };
   }
 
-  const registry = normalizeRegistry(root);
-  // ensure no workspacePointer / output key leaked into normalized objects
-  for (const def of Object.values(registry)) {
-    if (def && typeof def === "object" && "workspacePointer" in def) {
-      delete (def as { workspacePointer?: boolean }).workspacePointer;
-      changes.push("stripped workspacePointer after normalize");
-    }
+  const flat: Record<string, unknown> = {};
+  mergeLegacyKeysInto(flat, root, changes, "root");
+  const registry = normalizeRegistry(flat);
+  if (!isRecord(value) || Object.keys(flat).length === 0) {
+    changes.push("seeded default V0.2 type registry");
+  } else {
+    changes.push("normalized flat registry to V0.2 slim shape");
   }
-  if ("output" in registry) {
-    delete registry.output;
-    changes.push("removed residual output key after normalize");
+  // Detect legacy field strip
+  if (jsonHadRetiredFields(value)) {
+    changes.push("stripped domain R/W, coordination, color, description, workspacePointer from type defs");
   }
   void DEFAULT_TYPE_REGISTRY;
-  return { registry, changes };
+  return { registry, changes: uniqueChanges(changes) };
 }
 
-function migratePrimarySecondaryBucket(
-  bucket: Record<string, unknown>,
-  stripPointer: (def: unknown) => unknown,
+function mergeLegacyKeysInto(
+  target: Record<string, unknown>,
+  source: Record<string, unknown>,
   changes: string[],
   label: string
-): Record<string, unknown> {
-  const next: Record<string, unknown> = {};
-  for (const [key, raw] of Object.entries(bucket)) {
-    const stripped = stripPointer(raw);
-    if (key === "output") {
-      if (next.artifact === undefined) {
-        if (isRecord(stripped)) {
-          const out = { ...stripped };
-          if (out.coordination === undefined && label === "primary") out.coordination = true;
-          delete out.workspacePointer;
-          next.artifact = out;
-        } else {
-          next.artifact = stripped;
-        }
-        changes.push(`promoted ${label}.output definition to ${label}.artifact`);
-      } else {
-        changes.push(`dropped duplicate ${label}.output; kept existing ${label}.artifact`);
-      }
-      changes.push(`removed legacy ${label}.output type key`);
+): void {
+  for (const [key, raw] of Object.entries(source)) {
+    if (key === "primary" || key === "secondary") continue;
+    if (key === "open" || key === "sealed") {
+      changes.push(`dropped retired secondary key ${label}.${key}`);
       continue;
     }
-    next[key] = stripped;
+    let nextKey = key;
+    if (key === "note") {
+      nextKey = "prompt";
+      changes.push(`mapped ${label}.note → prompt`);
+    } else if (key === "artifact") {
+      nextKey = "output";
+      changes.push(`mapped ${label}.artifact → output`);
+    }
+    if (target[nextKey] === undefined) {
+      target[nextKey] = isRecord(raw) ? slimTypeDef(raw) : raw;
+    }
   }
-  return next;
 }
 
-function promoteOutputKey(root: Record<string, unknown>, changes: string[]): void {
-  if (!isRecord(root.output)) return;
-  if (!root.artifact) {
-    const out = { ...root.output, coordination: (root.output as { coordination?: boolean }).coordination ?? true };
-    delete (out as Record<string, unknown>).workspacePointer;
-    root.artifact = out;
-    changes.push("promoted output definition to artifact");
-  } else {
-    changes.push("dropped duplicate output; kept existing artifact");
-  }
-  delete root.output;
-  changes.push("removed legacy output type key");
+function slimTypeDef(raw: Record<string, unknown>): Record<string, unknown> {
+  const tier = raw.tier === "modifier" ? "modifier" : "base";
+  return { tier };
+}
+
+function jsonHadRetiredFields(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  const walk = (node: unknown): boolean => {
+    if (!isRecord(node)) return false;
+    for (const [k, v] of Object.entries(node)) {
+      if (
+        k === "readable" ||
+        k === "writable" ||
+        k === "coordination" ||
+        k === "color" ||
+        k === "description" ||
+        k === "workspacePointer"
+      ) {
+        return true;
+      }
+      if (walk(v)) return true;
+    }
+    return false;
+  };
+  return walk(value);
+}
+
+function uniqueChanges(changes: string[]): string[] {
+  return [...new Set(changes)];
 }
 
 /**
  * 对当前 system root 执行一次性 legacy migration：
  * 1) 嵌套 `.tent/*` 注册表 → 扁平 system root 并切断 dual-read
- * 2) types.json output→artifact（含 primary/secondary）
- * 3) bx-→cx- + concept type rewrite
+ * 2) types.json → V0.2 slim (note→prompt, artifact→output, strip R/W/chrome)
+ * 3) bx-→cx- + concept type rewrite + strip domain R/W + read-only→editable
  * 4) 有界 operational 引用改写（非全局 split/join）
  */
 export async function migrateLegacySchema(
@@ -233,12 +280,39 @@ export async function migrateLegacySchema(
     }
 
     if (typeof data.type === "string") {
-      const rewritten = rewriteOutputType(data.type);
+      const rewritten = rewriteCanonicalConceptType(data.type);
       if (rewritten) {
         report.typeRewrites.push({ path: box.path, from: data.type, to: rewritten });
         data.type = rewritten;
         dirty = true;
       }
+    }
+
+    // Strip domain R/W axes from concept frontmatter (one-shot; no dual-write).
+    if ("readable" in data) {
+      delete data.readable;
+      dirty = true;
+      report.registryChanges.push(
+        dryRun ? `would strip readable at ${box.path}` : `stripped readable at ${box.path}`
+      );
+    }
+    if ("writable" in data) {
+      delete data.writable;
+      dirty = true;
+      report.registryChanges.push(
+        dryRun ? `would strip writable at ${box.path}` : `stripped writable at ${box.path}`
+      );
+    }
+
+    // read-only mode → editable default (delete key). Archive preserved separately.
+    if (data.mode === "read-only") {
+      delete data.mode;
+      dirty = true;
+      report.registryChanges.push(
+        dryRun
+          ? `would clear read-only mode at ${box.path}`
+          : `cleared read-only mode at ${box.path}`
+      );
     }
 
     // One-shot: explicit archive roots archived:true → mode:archived; strip legacy key.
@@ -263,6 +337,9 @@ export async function migrateLegacySchema(
           : `stripped legacy archived key at ${box.path}`
       );
     }
+
+    // Do not strip legacy owner/status here — Judge defers field removal until UI cutover.
+    // New writes already omit them; migration only rewrites type domain fields.
 
     if (dirty && !dryRun) {
       await fs.writeFile(

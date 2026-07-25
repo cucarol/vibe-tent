@@ -2,27 +2,37 @@ import { FsAdapter, withTentMutation } from "./adapter.js";
 import { Box } from "./types.js";
 import { loadTent } from "./tree.js";
 import {
+  BUILTIN_SECONDARY_TYPES,
+  CANONICAL_PRIMARY_TYPES,
   DEFAULT_TYPE_REGISTRY,
-  TYPE_COLOR_PALETTE,
+  isCanonicalPrimary,
   loadTypeRegistry,
-  setBaseCoordination,
-  TypeDefinition,
   TYPE_REGISTRY_PATH,
+  TypeDefinition,
   TypeRegistry,
   splitType,
 } from "./typeRegistry.js";
 
 export type TypeLevel = "type";
 
+/**
+ * V0.2: type registry entries have no domain metadata (color/description/R/W/coordination).
+ * Custom secondaries may be added as modifiers; fixed primaries cannot be created/deleted.
+ * Deprecated keys remain on the patch shape so transitional UI compiles; updates no-op or throw.
+ */
 export interface TypeMetadataPatch {
+  /** @deprecated Type chrome retired — ignored. */
   color?: string;
+  /** @deprecated Type chrome retired — ignored. */
   description?: string;
+  /** @deprecated Domain R/W retired — ignored. */
   readable?: boolean | "inherit";
+  /** @deprecated Domain R/W retired — ignored. */
   writable?: boolean | "inherit";
-  /** 仅一级/base type 可设；二级 type 跟随一级。 */
+  /** @deprecated Coordination retired — throws if set. */
   coordination?: boolean;
   /**
-   * @deprecated workspacePointer 已退役；传入时抛错，避免静默双语义。
+   * @deprecated workspacePointer 已退役；传入时抛错。
    */
   workspacePointer?: boolean;
 }
@@ -49,33 +59,41 @@ export async function createType(
 ): Promise<void> {
   await withTentMutation(fs, async () => {
     assertTypeName(name);
-    if (
-      definition.tier !== "modifier" &&
-      (typeof definition.readable !== "boolean" || typeof definition.writable !== "boolean")
-    ) {
-      throw new Error("Base type must specify readable and writable.");
+    if (isCanonicalPrimary(name) || (CANONICAL_PRIMARY_TYPES as readonly string[]).includes(name)) {
+      throw new Error(`Built-in primary types cannot be created: ${name}.`);
+    }
+    if ((BUILTIN_SECONDARY_TYPES as readonly string[]).includes(name)) {
+      throw new Error(`Built-in secondary types already exist: ${name}.`);
+    }
+    if (definition.tier !== "modifier") {
+      throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
     }
     const registry = await loadTypeRegistry(fs);
     if (registry[name]) throw new Error(`Type already exists: ${name}.`);
-    registry[name] = withDefaultColor(registry, definition);
+    registry[name] = { tier: "modifier" };
     await writeTypeRegistryUnlocked(fs, registry);
   });
 }
 
-// Backward-compatible exports for older callers/tests; both now create a first-class OKF type.
-export const createPrimaryType = createType;
+// Backward-compatible exports for older callers/tests.
+export const createPrimaryType = async (
+  fs: FsAdapter,
+  name: string,
+  _definition?: TypeDefinition
+): Promise<void> => {
+  void _definition;
+  throw new Error(
+    `Primary types are fixed to goal|prompt|output; cannot create primary type: ${name}.`
+  );
+};
+
 export async function createSecondaryType(
   fs: FsAdapter,
   name: string,
-  definition: Partial<TypeDefinition>
+  _definition?: Partial<TypeDefinition>
 ): Promise<void> {
-  await createType(fs, name, {
-    tier: "modifier",
-    ...(typeof definition.readable === "boolean" ? { readable: definition.readable } : {}),
-    ...(typeof definition.writable === "boolean" ? { writable: definition.writable } : {}),
-    color: definition.color,
-    description: definition.description,
-  });
+  void _definition;
+  await createType(fs, name, { tier: "modifier" });
 }
 
 export async function updateTypeMetadata(
@@ -89,28 +107,19 @@ export async function updateTypeMetadata(
     assertTypeName(name);
     if (patch.workspacePointer !== undefined) {
       throw new Error(
-        "workspacePointer capability is retired; use coordination and in-workspace .tent layout."
+        "workspacePointer capability is retired; use in-workspace .tent layout and WorkspaceLane on tasks."
       );
     }
-    const registry = await loadTypeRegistry(fs);
-    const current = registry[name];
-    if (!current) throw new Error(`Type does not exist: ${name}.`);
-
-    if (patch.color !== undefined) {
-      const color = patch.color.trim();
-      if (color) current.color = color;
-      else delete current.color;
-    }
-    if (patch.description !== undefined) {
-      const description = patch.description.trim();
-      if (description) current.description = description;
-      else delete current.description;
-    }
-    updateAxis(current, "readable", patch.readable);
-    updateAxis(current, "writable", patch.writable);
     if (patch.coordination !== undefined) {
-      setBaseCoordination(current, patch.coordination);
+      throw new Error("coordination capability is retired in V0.2; types are semantic only.");
     }
+    const registry = await loadTypeRegistry(fs);
+    if (!registry[name]) throw new Error(`Type does not exist: ${name}.`);
+    // color/description/readable/writable patches are ignored (no domain chrome).
+    void patch.color;
+    void patch.description;
+    void patch.readable;
+    void patch.writable;
     await writeTypeRegistryUnlocked(fs, registry);
   });
 }
@@ -137,10 +146,15 @@ export async function inspectTypeDeletion(
     }
   }
 
+  const builtIn =
+    name in DEFAULT_TYPE_REGISTRY ||
+    isCanonicalPrimary(name) ||
+    (BUILTIN_SECONDARY_TYPES as readonly string[]).includes(name);
+
   return {
     level: "type",
     name,
-    builtIn: name in DEFAULT_TYPE_REGISTRY,
+    builtIn,
     exists: name in registry,
     references: referenced.map(({ id, path, name: boxName }) => ({ id, path, name: boxName })),
     activeOwners: [...ownerMap.values()],
@@ -169,26 +183,18 @@ export async function deleteCustomType(
 }
 
 async function writeTypeRegistryUnlocked(fs: FsAdapter, registry: TypeRegistry): Promise<void> {
-  await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+  // Persist slim V0.2 registry only.
+  const slim: TypeRegistry = {};
+  for (const [name, def] of Object.entries(registry)) {
+    slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
+  }
+  await fs.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
 }
 
 function assertTypeName(name: string): void {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
   if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
-}
-
-function updateAxis(
-  definition: TypeDefinition,
-  axis: "readable" | "writable",
-  value: boolean | "inherit" | undefined
-): void {
-  if (value === undefined) return;
-  if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("Base types cannot inherit readable/writable settings.");
-    delete definition[axis];
-    return;
-  }
-  definition[axis] = value;
+  if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
 }
 
 function relatedBoxes(reference: Box, boxes: Box[]): Box[] {
@@ -197,11 +203,4 @@ function relatedBoxes(reference: Box, boxes: Box[]): Box[] {
     box.path.startsWith(reference.path + "/") ||
     reference.path.startsWith(box.path + "/")
   );
-}
-
-function withDefaultColor<T extends { color?: string }>(registry: TypeRegistry, definition: T): T {
-  const color = definition.color?.trim();
-  if (color) return { ...definition, color };
-  const used = Object.keys(registry).length;
-  return { ...definition, color: TYPE_COLOR_PALETTE[used % TYPE_COLOR_PALETTE.length] };
 }

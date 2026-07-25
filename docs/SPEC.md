@@ -19,10 +19,10 @@ Task code channels use **WorkspaceLane** fields on the task envelope
 (`workspace`, `worktree`, `branch`, `targetBranch`). Service/core prepares the
 lane at dispatch or managed execution; agents do not invent those paths.
 
-`artifact` is the built-in type for real deliverables or structured
-`artifactRefs` pointers. It is an ordinary coordination-capable box type, not a
-synonym for every delivery and not a workspace-binding mechanism. The legacy
-type name `output` migrates to `artifact`; the retired `workspacePointer` type
+`output` is the built-in primary type for real deliverables or structured
+`artifactRefs` pointers. It is an ordinary concept type (not a workspace-binding
+mechanism). Legacy names `note` and `artifact` migrate one-shot to `prompt` and
+`output`; there is no permanent type alias. The retired `workspacePointer` type
 axis is stripped on load and rejected on write.
 
 ## 2. Boxes And Identity
@@ -40,55 +40,52 @@ pipeline, never a box.
 Box frontmatter:
 
 ```yaml
-id: bx-7k2f9q
+id: cx-7k2f9q
 type: goal
 tags: [backend]
-readable: true
-writable: false
-archived: true
-owner: executor
-status: doing
+mode: archived
 ```
 
-- Only boxes have persistent ids: `bx-` plus six random collision-checked
-  characters.
-- A box name is chosen at creation. A Tent has no rename operation.
+- Concepts have persistent ids: `cx-` plus a short collision-checked suffix
+  (legacy `bx-` migrates one-shot).
+- A box name is chosen at creation. Controlled renames go through Service.
 - Native moves are supported; paths may change while ids stay stable.
-- Native renames are unsupported.
-- `status` is `todo`, `doing`, or `done`.
-- Locking is derived from `owner`; no separate lock field is stored.
-- Tags are lookup facets only.
+- Durable Node facts are body, id, hierarchy/relations, type/tags, archive, and
+  annotations. Collaboration progress is projected from Task/Session/Delivery.
+- Legacy `owner` / `status` may still appear on disk for transitional UI but are
+  not written on new Nodes.
+- Tags are orthogonal lookup facets (not a substitute for secondary type).
 
 Duplicate ids are never silently indexed. A native copied subtree is adopted as
 a fork: every copied box gets a fresh id and copied `owner`/`status` are
 cleared. Any duplicate that cannot be identified as a fresh copy is invalid.
 
-## 3. Type And Permission Resolution
+## 3. Type Model (V0.2)
 
-`.tent/types.json` is a flat OKF-aligned type map. Built-ins are `note`, `goal`,
-`prompt`, `artifact`, `open`, `reference`, `asset`, and `sealed`.
+`.tent/types.json` is a flat type map storing **tier only** (`base` |
+`modifier`). Domain R/W, coordination, color, and description are not part of
+the type domain.
 
-Base type definitions may set optional `coordination: true` so concepts of that
-base type can enter the collaboration lifecycle (status, task occupation,
-delivery projection). Only base types store this flag; compound types follow
-the base. Default built-ins `goal`, `prompt`, and `artifact` enable
-coordination; `note` does not. The retired `workspacePointer` flag is ignored
-at runtime and must not be written by clients.
+**Canonical primary types (fixed product set):** `goal` | `prompt` | `output`.
 
-A type is either a base type or a modifier. A compound type such as `goal-draft`
-combines a base with a modifier. Each permission axis resolves independently:
+**Built-in secondary (optional modifiers):** `reference` | `asset`. Users may
+register additional custom secondaries without chrome; tags remain the reusable
+cross-cutting facet.
 
-1. invalid subtree forces false;
-2. archived subtree forces false;
-3. explicit box `readable` or `writable`;
-4. modifier value when present;
-5. base default, otherwise false.
+A compound type such as `goal-asset` is `base-modifier`. Type is semantic only:
+every valid non-archived concept may be claimed and enter the task lifecycle.
+There is no `coordination` gate and no note→box promote path.
 
-Permission axes do not inherit from ancestors. Hierarchy expresses organization
-and containment, not permission inheritance.
+**Node mode:** default editable; `mode: archived` freezes the subtree (soft
+delete / history). There is no `read-only` mode.
 
-Manifest R/W is an honor contract, not an OS sandbox. Core enforces mechanical
-invariants, not semantic prompt authority.
+**Mutation gate:** invalid or archived Nodes reject content/structure writes.
+Agent-visible context comes from Task claims and manifest **context pointers**,
+not from Node `readable`/`writable` axes (those axes are retired).
+
+One-shot migration rewrites `note`→`prompt`, `artifact`→`output`, strips domain
+R/W and type chrome, and clears legacy `read-only` mode. No permanent dual-write
+or runtime type alias.
 
 ## 4. Roles, Claims, And Dispatch
 

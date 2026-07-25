@@ -380,7 +380,7 @@ async function makeCollabWorkspace(): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name: "collab",
     rules: "# RULES\n\nDesktop collab smoke\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",

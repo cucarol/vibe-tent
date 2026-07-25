@@ -70,7 +70,7 @@ test("CoreDocsClient: list excludes temp; create/read/write/search/promote", asy
   await fsa.mkdir("temp/role/tasks");
   await fsa.writeFile("temp/role/tasks/task.md", "---\ntype: task\n---\nsecret\n");
 
-  const note = await docs.createNote({ name: "ideas", type: "note", body: "# ideas\nlink [[ideas]]\n" });
+  const note = await docs.createNote({ name: "ideas", type: "prompt", body: "# ideas\nlink [[ideas]]\n" });
   assert.match(note.cx, /^cx-/);
 
   const tree = await docs.list();
@@ -96,12 +96,14 @@ test("CoreDocsClient: list excludes temp; create/read/write/search/promote", asy
   const hits = await docs.search("ideas v2");
   assert.ok(hits.some((h) => h.cx === note.cx));
 
-  const promoted = await docs.promote(note.cx, "goal");
-  assert.equal(promoted.cx, note.cx);
-  assert.equal(promoted.toType, "goal");
+  // promoteConcept retired in V0.2
+  await assert.rejects(
+    () => docs.promote(note.cx, "goal"),
+    /promoteConcept is retired|retired in V0\.2/,
+  );
   const after = await docs.get(note.cx);
-  assert.equal(after?.coordination, true);
-  assert.equal(after?.status, "todo");
+  assert.equal(after?.type, "prompt");
+  assert.equal(after?.coordination, true, "usable wire-compat coordination projection");
 });
 
 test("CoreDocsClient: active task protects collab fields on write", async () => {
@@ -188,7 +190,7 @@ test("WorkspaceController: tabs dirty conflict and save", async () => {
 test("WorkspaceController: tree has no operational paths", async () => {
   const { env, fsa } = await makeEnv();
   await fsa.mkdir("temp/x");
-  await fsa.writeFile("temp/x/x.md", "---\nid: cx-temp\ntype: note\n---\n");
+  await fsa.writeFile("temp/x/x.md", "---\nid: cx-temp\ntype: prompt\n---\n");
   const docs = new CoreDocsClient(env as any);
   await docs.createNote({ name: "real", body: "# r\n" });
   const ctl = new WorkspaceController(docs);
@@ -252,7 +254,7 @@ test("decodeBase64Strict: rejects invalid encodings", () => {
 test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempotent", async () => {
   const { env, fsa, dir } = await makeEnv();
   const docs = new CoreDocsClient(env as any);
-  const note = await docs.createNote({ name: "with-pic", type: "note", body: "# pic\n" });
+  const note = await docs.createNote({ name: "with-pic", type: "prompt", body: "# pic\n" });
 
   const payload = new Uint8Array([0x00, 0x89, 0x50, 0x4e, 0x47, 0xff, 0xfe, 0x00, 0x01]);
   const first = await docs.importAttachment(note.cx, "shot.png", payload);
@@ -301,7 +303,7 @@ test("CoreDocsClient.importAttachment: binary roundtrip, no .b64 marker, idempot
 test("storeAttachmentBytes: draft..final.png stores; spaces/parens use angle-bracket destinations", async () => {
   const { env, fsa } = await makeEnv();
   const docs = new CoreDocsClient(env as any);
-  const note = await docs.createNote({ name: "attach-names", type: "note", body: "# names\n" });
+  const note = await docs.createNote({ name: "attach-names", type: "prompt", body: "# names\n" });
   const payload = new Uint8Array([0x01, 0x02, 0x03, 0x04]);
 
   // Filename with embedded ".." must not be false-rejected by path guards.

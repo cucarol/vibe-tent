@@ -33,7 +33,7 @@ test("scaffoldInWorkspace:写 <workspace>/.tent 且 gitignore 忽略系统目录
   await scaffoldInWorkspace(fsa, {
     name: "demo",
     rules: "# RULES\n\nbody\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   assert.equal(await fsa.exists(".tent/RULES.md"), true);
   assert.equal(await fsa.exists(".tent/types.json"), true);
@@ -44,7 +44,7 @@ test("scaffoldInWorkspace:写 <workspace>/.tent 且 gitignore 忽略系统目录
   assert.match(gitignore, /\.tent\//);
   const note = await fsa.readFile(".tent/inbox/inbox.md");
   assert.match(note, /id: cx-/);
-  assert.match(note, /type: note/);
+  assert.match(note, /type: prompt/);
 });
 
 test("loadTent:temp 与 operational 不进 concept 索引", async () => {
@@ -56,44 +56,44 @@ test("loadTent:temp 与 operational 不进 concept 索引", async () => {
     "temp/role/tasks/task.md",
     "---\ntype: task\nrole: role\nclaims: [cx-a]\nmanifest: m\n---\n",
   );
-  await fsa.mkdir("note");
-  await fsa.writeFile("note/note.md", "---\nid: cx-note1\ntype: note\n---\n# n\n");
+  await fsa.mkdir("memo");
+  await fsa.writeFile("memo/memo.md", "---\nid: cx-memo1\ntype: prompt\n---\n# n\n");
   const tent = await loadTent(fsa);
-  assert.equal(tent.byId.has("cx-note1"), true);
+  assert.equal(tent.byId.has("cx-memo1"), true);
   assert.equal(tent.byPath.has("temp"), false);
   assert.equal(tent.byPath.has("temp/role"), false);
   assert.equal(tent.roots.every((r) => r.path !== "temp"), true);
 });
 
-test("promoteConcept:原地 note→goal，保留 cx- 与路径", async () => {
+test("promoteConcept: V0.2 退役；可用 concept wire-compat coordination=true", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-promote-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = { fs: fsa, clock: { now: () => "t" }, tentName: "x", rand: () => 0.2 };
-  const id = await createBox(env as any, { parentPath: "", name: "idea", type: "note" });
+  const id = await createBox(env as any, { parentPath: "", name: "idea", type: "prompt" });
   assert.match(id, /^cx-/);
   const before = await loadTent(fsa);
-  assert.equal(before.byId.get(id)!.coordination, false);
+  const idea = before.byId.get(id)!;
+  assert.equal(idea.type, "prompt");
+  assert.equal(idea.coordination, true, "usable boxes project coordination=true for UI wire-compat");
+  assert.equal(idea.readable.value, true);
+  assert.equal(idea.writable.value, true);
+  // typeHasCoordination is deprecated identity for known registry types (not a product gate)
+  assert.equal(typeHasCoordination("prompt", before.typeRegistry), true);
+  assert.equal(typeHasCoordination("goal", before.typeRegistry), true);
 
-  const result = await promoteConcept(env as any, id, "goal");
-  assert.equal(result.id, id);
-  assert.equal(result.path, "idea");
-  assert.equal(result.toType, "goal");
-
-  const after = await loadTent(fsa);
-  const box = after.byId.get(id)!;
-  assert.equal(box.path, "idea");
-  assert.equal(box.type, "goal");
-  assert.equal(box.coordination, true);
-  assert.equal(box.fm.status, "todo");
-  assert.equal(typeHasCoordination("goal", after.typeRegistry), true);
-
-  await assert.rejects(() => promoteConcept(env as any, id, "note"), /coordination/);
+  await assert.rejects(
+    () => promoteConcept(env as any, id, "goal"),
+    /promoteConcept is retired|retired in V0\.2/,
+  );
 });
 
-test("migration:bx→cx 与 output→artifact 纯函数 + 落盘", async () => {
-  assert.equal(rewriteOutputType("output"), "artifact");
-  assert.equal(rewriteOutputType("output-asset"), "artifact-asset");
+test("migration:bx→cx 与 note/artifact→prompt/output 纯函数 + 落盘", async () => {
+  // rewriteOutputType is historical name; implements rewriteCanonicalConceptType
+  assert.equal(rewriteOutputType("note"), "prompt");
+  assert.equal(rewriteOutputType("artifact"), "output");
+  assert.equal(rewriteOutputType("artifact-asset"), "output-asset");
+  assert.equal(rewriteOutputType("output"), undefined);
   assert.equal(rewriteOutputType("goal"), undefined);
 
   const map = planIdRemap(["bx-abc123", "bx-xyz"], new Set(["cx-other"]), () => 0.5);
@@ -105,31 +105,35 @@ test("migration:bx→cx 与 output→artifact 纯函数 + 落盘", async () => {
     "types.json",
     JSON.stringify({
       goal: { tier: "base", readable: true, writable: false },
-      output: { tier: "base", readable: true, writable: true, workspacePointer: true },
+      note: { tier: "base", readable: true, writable: true },
+      artifact: { tier: "base", readable: true, writable: true, workspacePointer: true },
     }),
-    // writeFile signature is (path, content)
   );
-  // fix: NodeFs writeFile takes two args only
   await fsa.mkdir("legacy");
   await fsa.writeFile(
     "legacy/legacy.md",
-    "---\nid: bx-leg001\ntype: output\n---\n# L\n",
+    "---\nid: bx-leg001\ntype: artifact\n---\n# L\n",
   );
   await fsa.writeFile("RULES.md", "# r\n");
 
   const dry = await migrateLegacySchema(fsa, { dryRun: true, rand: () => 0.1 });
   assert.ok(dry.idMap.some((e) => e.from === "bx-leg001"));
-  assert.ok(dry.typeRewrites.some((e) => e.from === "output" && e.to === "artifact"));
+  assert.ok(dry.typeRewrites.some((e) => e.from === "artifact" && e.to === "output"));
   assert.match(await fsa.readFile("legacy/legacy.md"), /id: bx-leg001/);
 
   const live = await migrateLegacySchema(fsa, { dryRun: false, rand: () => 0.1 });
   const text = await fsa.readFile("legacy/legacy.md");
   assert.match(text, /id: cx-leg001/);
-  assert.match(text, /type: artifact/);
+  assert.match(text, /type: output/);
   assert.ok(live.idMap.length >= 1);
   const tent = await loadTent(fsa);
   assert.equal(tent.byId.has("cx-leg001"), true);
+  assert.equal(tent.byId.get("cx-leg001")!.type, "output");
   assert.equal(tent.byId.get("cx-leg001")!.coordination, true);
+  assert.equal(tent.typeRegistry.note, undefined);
+  assert.equal(tent.typeRegistry.artifact, undefined);
+  assert.ok(tent.typeRegistry.prompt);
+  assert.ok(tent.typeRegistry.output);
 });
 
 test("findIntegratedCommit:ancestor 与 cherry-pick 幂等", async () => {
@@ -247,7 +251,8 @@ test("migration:嵌套 .tent 注册表单次搬迁后切断 dual-read", async ()
   // 嵌套存在时正常 load 不得 dual-read：flat 缺失 → defaults，忽略 nested
   const { loadTypeRegistry } = await import("../src/core/typeRegistry.js");
   const before = await loadTypeRegistry(fsa);
-  assert.equal(before.goal.color, "blue", "defaults, not nested orange");
+  // V0.2 slim defaults: tier only, no color chrome
+  assert.deepEqual(before.goal, { tier: "base" }, "defaults, not nested orange chrome");
   assert.equal(before.onlyNested, undefined, "nested-only type must not dual-read");
   assert.equal(await fsa.exists("types.json"), false);
 
@@ -260,9 +265,12 @@ test("migration:嵌套 .tent 注册表单次搬迁后切断 dual-read", async ()
   assert.equal(await fsa.exists(".tent/roles.json"), false);
 
   const registry = JSON.parse(await fsa.readFile("types.json"));
-  assert.ok(registry.artifact, "primary.output → artifact");
-  assert.equal(registry.output, undefined);
-  assert.equal(registry.artifact.coordination, true);
+  // V0.2: primary stays output (not artifact); chrome stripped
+  assert.ok(registry.output, "primary.output remains output");
+  assert.equal(registry.artifact, undefined);
+  assert.deepEqual(registry.output, { tier: "base" });
+  assert.equal("coordination" in registry.output, false);
+  assert.equal("readable" in registry.output, false);
 
   // 重跑幂等
   const again = await migrateLegacySchema(fsa, { dryRun: false, rand: () => 0.1 });
@@ -270,23 +278,30 @@ test("migration:嵌套 .tent 注册表单次搬迁后切断 dual-read", async ()
   assert.equal(await fsa.exists(".tent/types.json"), false);
 });
 
-test("migration:primary/secondary output→artifact 幂等", async () => {
+test("migration:primary/secondary artifact→output 幂等", async () => {
   const { migrateTypeRegistryJson } = await import("../src/core/migration.js");
   const first = migrateTypeRegistryJson({
     primary: {
       goal: { readable: true, writable: false },
-      output: { readable: true, writable: true, workspacePointer: true },
+      artifact: { readable: true, writable: true, workspacePointer: true },
+      note: { readable: true, writable: true },
     },
     secondary: { asset: { writable: true } },
   });
-  assert.ok(first.changes.some((c) => /primary\.output/.test(c) || /promoted/.test(c)));
-  assert.equal(first.registry.output, undefined);
-  assert.equal(first.registry.artifact?.tier !== "modifier" ? first.registry.artifact?.coordination : undefined, true);
+  assert.ok(first.changes.some((c) => /artifact/.test(c) || /note/.test(c) || /normalized/.test(c)));
+  assert.ok(first.registry.output);
+  assert.ok(first.registry.prompt);
+  assert.equal(first.registry.artifact, undefined);
+  assert.equal(first.registry.note, undefined);
+  assert.deepEqual(first.registry.output, { tier: "base" });
+  assert.deepEqual(first.registry.prompt, { tier: "base" });
 
   const second = migrateTypeRegistryJson(first.registry);
-  // 已是 artifact 的 flat registry：再迁一次不应再发明 output
-  assert.equal(second.registry.output, undefined);
-  assert.ok(second.registry.artifact);
+  // 已是 V0.2 flat registry：再迁一次保持 output/prompt
+  assert.ok(second.registry.output);
+  assert.ok(second.registry.prompt);
+  assert.equal(second.registry.artifact, undefined);
+  assert.equal(second.registry.note, undefined);
 });
 
 test("migration:operational 引用有界改写且幂等", async () => {
@@ -325,24 +340,27 @@ test("migration:operational 引用有界改写且幂等", async () => {
   assert.doesNotMatch(task, /bx-abc123/);
 });
 
-test("dispatch/claim:拒绝 coordination=false 的 note；prompt 正向通过", async () => {
+test("dispatch/claim:V0.2 无 coordination 门；prompt 与 output 均可认领", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-dispatch-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
   const env = { fs: fsa, clock: { now: () => "2026-07-12T00:00:00.000Z" }, tentName: "x", tentRoot: dir, rand: () => 0.3 };
-  const noteId = await createBox(env as any, { parentPath: "", name: "memo", type: "note" });
+  // type "note" is not a permanent alias — createBox rejects unknown types
+  await assert.rejects(
+    () => createBox(env as any, { parentPath: "", name: "memo", type: "note" }),
+    /Unknown type/,
+  );
   const promptId = await createBox(env as any, { parentPath: "", name: "job", type: "prompt" });
+  const outputId = await createBox(env as any, { parentPath: "", name: "deliverable", type: "output" });
 
   const { dispatch, taskAck } = await import("../src/core/ops.js");
   const { canClaim } = await import("../src/core/claim.js");
   const tent = await loadTent(fsa);
-  assert.equal(canClaim(tent.byId.get(noteId)!).ok, false);
+  // Structural gate only: valid non-archived concepts are claimable (type is semantic)
   assert.equal(canClaim(tent.byId.get(promptId)!).ok, true);
-
-  await assert.rejects(
-    () => dispatch(env as any, noteId, "reviewer", "do note"),
-    /coordination=false/,
-  );
+  assert.equal(canClaim(tent.byId.get(outputId)!).ok, true);
+  assert.equal(tent.byId.get(promptId)!.coordination, true);
+  assert.equal(tent.byId.get(outputId)!.coordination, true);
 
   const result = await dispatch(env as any, promptId, "reviewer", "do prompt");
   assert.match(result.taskPath, /temp\/reviewer\/tasks\//);
@@ -352,7 +370,7 @@ test("dispatch/claim:拒绝 coordination=false 的 note；prompt 正向通过", 
   assert.equal(after.byId.get(promptId)!.fm.status, "doing");
 });
 
-test("promoteConcept:active task 时 box→box 写保护", async () => {
+test("promoteConcept: 即使 active task 存在也仅报退役，不再走写保护路径", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b1-promote-lock-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
@@ -363,7 +381,7 @@ test("promoteConcept:active task 时 box→box 写保护", async () => {
 
   await assert.rejects(
     () => promoteConcept(env as any, id, "goal"),
-    /active task|write-protect/,
+    /promoteConcept is retired|retired in V0\.2/,
   );
 });
 
@@ -425,7 +443,9 @@ async function makeLegacyExternalRoot(parent: string): Promise<string> {
     JSON.stringify({
       primary: {
         goal: { readable: true, writable: false, color: "blue" },
-        output: { readable: true, writable: true, workspacePointer: true },
+        // legacy primary name artifact migrates → output
+        artifact: { readable: true, writable: true, workspacePointer: true },
+        note: { readable: true, writable: true },
       },
     }) + "\n"
   );
@@ -448,7 +468,7 @@ async function makeLegacyExternalRoot(parent: string): Promise<string> {
   await fs.mkdir(boxDir, { recursive: true });
   await fs.writeFile(
     path.join(boxDir, "goal.md"),
-    "---\nid: bx-legbox1\ntype: output\n---\n# Goal body\nPreserved.\n"
+    "---\nid: bx-legbox1\ntype: artifact\n---\n# Goal body\nPreserved.\n"
   );
   const tempRole = path.join(root, "temp", "executor", "tasks");
   await fs.mkdir(tempRole, { recursive: true });
@@ -539,8 +559,13 @@ test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且�
   assert.equal(tent.byId.has("bx-legbox1"), false);
   const note = await destFs.readFile("goal/goal.md");
   assert.match(note, /id: cx-legbox1/);
-  assert.match(note, /type: artifact/);
+  assert.match(note, /type: output/);
   assert.match(note, /Preserved/);
+  const destTypes = JSON.parse(await destFs.readFile("types.json"));
+  assert.ok(destTypes.output);
+  assert.ok(destTypes.prompt);
+  assert.equal(destTypes.artifact, undefined);
+  assert.equal(destTypes.note, undefined);
 
   const taskText = await destFs.readFile("temp/executor/tasks/task-cx-legbox1.md");
   assert.match(taskText, /claims: \[cx-legbox1\]/);

@@ -328,15 +328,15 @@ export async function completeClaim(
   });
 }
 
-/** 翻可读:批准 asset 请求时顺手把目标框 readable 改 true(无需二段落地)。 */
-export async function grantReadable(env: OpsEnv, boxId: string): Promise<void> {
-  await withMutation(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
-    assertContentMutable(box, "made readable");
-    await patchFrontmatter(env.fs, box, { readable: true });
-  });
+/**
+ * @deprecated Domain R/W axes retired in V0.2. Agent context comes from Task claims/manifest pointers.
+ */
+export async function grantReadable(_env: OpsEnv, _boxId: string): Promise<void> {
+  void _env;
+  void _boxId;
+  throw new Error(
+    "grantReadable is retired in V0.2: Node readable/writable axes are removed; use Task context pointers."
+  );
 }
 
 // ---- clean-temp ----
@@ -410,6 +410,7 @@ async function createBoxUnlocked(env: OpsEnv, input: NewBoxInput): Promise<strin
   const path = join(input.parentPath, name);
   assertNotTempPath(path);
   await ensureDir(env.fs, path);
+  // V0.2: new Nodes write only id + type (no owner/status/R/W/mode).
   const fm = { id, type: input.type };
   const content = serializeFrontmatter(fm, `\n# ${name}\n`, BOX_FRONTMATTER_KEY_ORDER);
   await env.fs.writeFile(boxNotePath(path), content);
@@ -546,13 +547,16 @@ async function patchBoxUnlocked(
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
+  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
+    (key) => key in patch
+  );
+  if (reserved.length > 0) {
+    throw new Error(
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+    );
+  }
   if (box.archived || box.mode === "archived") {
     throw new Error("Archived boxes can only be restored or permanently deleted.");
-  }
-  if (box.mode === "read-only") {
-    throw new Error("Read-only boxes cannot be patched; use docs.setMode / setNodeMode first.");
   }
   if (box.invalid) {
     const keys = Object.keys(patch);
@@ -563,20 +567,6 @@ async function patchBoxUnlocked(
   if ("type" in patch) {
     if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
-  }
-  if ("status" in patch) {
-    // Status is a long-lived user summary, not a mutex — but while an active task
-    // occupies the box, collaboration status is projected by task.* only.
-    const tasks = await loadTaskEnvelopes(env.fs);
-    const occupied = findActiveOccupation(tent, box, tasks);
-    if (occupied) {
-      throw new Error(
-        "Status for boxes with an active task can only be changed by completing or interrupting the task."
-      );
-    }
-    if (patch.status !== undefined && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("Status must be todo, doing, or done.");
-    }
   }
   const tagsTouched = "tags" in patch;
   const previousTags = box.tags.slice();
@@ -623,17 +613,24 @@ async function patchBodyUnlocked(
 }
 
 /**
- * Set Node mode: editable | read-only | archived.
+ * Set Node mode: editable | archived.
  * Dedicated mutation path — ordinary patch/docs.write cannot set mode.
- * editable/read-only are node-local; archived cascades like the prior archive root.
+ * V0.2: no read-only mode; archive is the freeze / soft-delete layer.
  */
-export async function setNodeMode(env: OpsEnv, boxId: string, mode: NodeMode): Promise<void> {
+export async function setNodeMode(env: OpsEnv, boxId: string, mode: NodeMode | string): Promise<void> {
   await withMutation(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
 }
 
-async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode): Promise<void> {
+async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | string): Promise<void> {
+  if (mode === "read-only") {
+    throw new Error(
+      'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
+    );
+  }
   const next = parseNodeMode(mode);
-  if (!next) throw new Error('mode must be "editable", "read-only", or "archived".');
+  if (!next || (next !== "editable" && next !== "archived")) {
+    throw new Error('mode must be "editable" or "archived".');
+  }
   const tent = await loadTent(env.fs);
   const box = requireBoxById(tent, boxId);
 
@@ -647,17 +644,11 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode): 
     throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
   }
 
-  const current: NodeMode = isExplicitArchiveRoot(box)
-    ? "archived"
-    : box.mode === "read-only"
-      ? "read-only"
-      : "editable";
+  const current: NodeMode = isExplicitArchiveRoot(box) ? "archived" : "editable";
   if (current === next) {
-    // Idempotent: ensure disk shape for archived/read-only; editable clears keys.
+    // Idempotent: ensure disk shape for archived; editable clears keys.
     if (next === "editable") {
       await patchFrontmatter(env.fs, box, { mode: undefined, archived: undefined });
-    } else if (next === "read-only") {
-      await patchFrontmatter(env.fs, box, { mode: "read-only", archived: undefined });
     } else {
       await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
     }
@@ -679,14 +670,6 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode): 
 
   if (next === "archived") {
     await patchFrontmatter(env.fs, box, { mode: "archived", archived: undefined });
-    return;
-  }
-  if (next === "read-only") {
-    // archive root → read-only is not supported; restore to editable first.
-    if (current === "archived") {
-      throw new Error("Archived roots must be restored to editable before setting read-only.");
-    }
-    await patchFrontmatter(env.fs, box, { mode: "read-only", archived: undefined });
     return;
   }
   // editable (including archive restore)

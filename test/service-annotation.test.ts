@@ -20,7 +20,7 @@ async function makeWorkspace(name = "ws-ann"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nAnnotation service\n",
-    boxes: [{ name: "doc", type: "note", body: "hello world hello\n" }],
+    boxes: [{ name: "doc", type: "prompt", body: "hello world hello\n" }],
   });
   return workspace;
 }
@@ -73,7 +73,7 @@ test("annotation.create validates etag/range; list relocates; resolve/reopen/del
     const createdNote = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "annotated",
-      type: "note",
+      type: "prompt",
     });
     assert.ok(!createdNote.error, JSON.stringify(createdNote.error));
     const nodeId = (createdNote.result as { id: string }).id;
@@ -291,7 +291,7 @@ test("annotation.list projects missing-node when nodeId has records but concept 
     const createdNote = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "temp-node",
-      type: "note",
+      type: "prompt",
     });
     const nodeId = (createdNote.result as { id: string }).id;
     const read = await rpc(svc, "docs.readForEdit", { workspaceId, id: nodeId });

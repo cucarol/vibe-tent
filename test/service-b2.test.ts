@@ -59,7 +59,7 @@ async function makeWorkspace(name = "demo"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nB2 test tent\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   // Register a role so dispatch manifest preloads cleanly
   await fsa.writeFile(
@@ -297,7 +297,7 @@ test("WorkspaceHost: same basename + long shared path prefix still gets distinct
     await scaffoldInWorkspace(fsa, {
       name,
       rules: "# RULES\n\nB2 id collision tent\n",
-      boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+      boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
     });
     await fsa.writeFile(
       ".tent/roles.json",
@@ -345,20 +345,38 @@ test("WorkspaceHost: missing path and missing Tent errors stay clear", async () 
   }
 });
 
-test("docs.createNote / list / get / write with etag; promote + fork", async () => {
+test("docs.createNote / list / get / write with etag; promote retired + fork", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
     const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
 
+    // Default type is prompt when omitted
+    const defaulted = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "default-type",
+    });
+    assert.ok(!defaulted.error, JSON.stringify(defaulted.error));
+    assert.equal((defaulted.result as { type?: string }).type, "prompt");
+
+    // Explicit type: note is not a permanent alias — createBox rejects unknown types
+    const badNote = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "legacy-note",
+      type: "note",
+    });
+    assert.ok(badNote.error);
+    assert.match(badNote.error!.message, /Unknown type|unknown type/i);
+
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "idea",
-      type: "note",
+      type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
     const id = (created.result as { id: string }).id;
     assert.match(id, /^cx-/);
+    assert.equal((created.result as { type?: string }).type, "prompt");
 
     const listed = await rpc(svc, "docs.list", { workspaceId });
     const concepts = (listed.result as { concepts: { id: string; name: string }[] }).concepts;
@@ -424,13 +442,28 @@ test("docs.createNote / list / get / write with etag; promote + fork", async () 
     assert.equal(conflictData.body, undefined);
     assert.equal(conflictData.raw, undefined);
 
+    // docs.promote retired in V0.2
     const promoted = await rpc(svc, "docs.promote", {
       workspaceId,
       id,
       toType: "goal",
     });
-    assert.ok(!promoted.error, JSON.stringify(promoted.error));
-    assert.equal((promoted.result as { toType: string }).toType, "goal");
+    assert.ok(promoted.error);
+    assert.equal(promoted.error!.code, -32601);
+    assert.match(promoted.error!.message, /docs\.promote is retired|retired in V0\.2/);
+
+    // Type change uses ordinary docs.write frontmatter path
+    const editType = await rpc(svc, "docs.readForEdit", { workspaceId, id });
+    assert.ok(!editType.error, JSON.stringify(editType.error));
+    const typeWrite = await rpc(svc, "docs.write", {
+      workspaceId,
+      id,
+      frontmatter: { type: "goal" },
+      baseEtag: (editType.result as { etag: string }).etag,
+    });
+    assert.ok(!typeWrite.error, JSON.stringify(typeWrite.error));
+    const gotGoal = await rpc(svc, "docs.get", { workspaceId, id });
+    assert.equal((gotGoal.result as { concept: { type: string } }).concept.type, "goal");
 
     const forked = await rpc(svc, "docs.fork", { workspaceId, id });
     assert.ok(!forked.error, JSON.stringify(forked.error));
@@ -449,7 +482,7 @@ test("docs.importAttachment: base64 wire → binary disk; rejects bad base64/siz
     const created = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "attach-me",
-      type: "note",
+      type: "prompt",
     });
     assert.ok(!created.error, JSON.stringify(created.error));
     const id = (created.result as { id: string }).id;
@@ -624,7 +657,7 @@ test("docs.write tags auto-register; node remove keeps registry candidates (fron
     const a = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "tag-node-a",
-      type: "note",
+      type: "prompt",
     });
     assert.ok(!a.error, JSON.stringify(a.error));
     const idA = (a.result as { id: string }).id;
@@ -632,7 +665,7 @@ test("docs.write tags auto-register; node remove keeps registry candidates (fron
     const b = await rpc(svc, "docs.createNote", {
       workspaceId,
       name: "tag-node-b",
-      type: "note",
+      type: "prompt",
     });
     assert.ok(!b.error, JSON.stringify(b.error));
     const idB = (b.result as { id: string }).id;
@@ -721,7 +754,7 @@ test("docs.write tags auto-register; node remove keeps registry candidates (fron
   });
 });
 
-test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () => {
+test("docs.setMode + docs.write mode gates; raw cannot set mode/id; no read-only", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
@@ -751,43 +784,36 @@ test("docs.setMode + docs.write mode gates; raw cannot set mode/id", async () =>
     });
     assert.ok(!okWrite.error, JSON.stringify(okWrite.error));
 
-    // frontmatter cannot set mode
+    // frontmatter cannot set mode (reserved)
     const editMode = await rpc(svc, "docs.readForEdit", { workspaceId, id });
     assert.ok(!editMode.error, JSON.stringify(editMode.error));
     const badMode = await rpc(svc, "docs.write", {
       workspaceId,
       id,
-      frontmatter: { mode: "read-only" },
+      frontmatter: { mode: "archived" },
       baseEtag: (editMode.result as { etag: string }).etag,
     });
     assert.ok(badMode.error);
     assert.equal(badMode.error!.code, -32010);
     assert.match(badMode.error!.message, /reserved|mode/i);
 
+    // read-only mode is retired
     const setRo = await rpc(svc, "docs.setMode", { workspaceId, id, mode: "read-only" });
-    assert.ok(!setRo.error, JSON.stringify(setRo.error));
-    assert.equal((setRo.result as { mode: string }).mode, "read-only");
+    assert.ok(setRo.error);
+    assert.equal(setRo.error!.code, -32602);
+    assert.match(setRo.error!.message, /read-only.*retired|retired in V0\.2/i);
 
-    // Mode gate runs before etag; missing baseEtag is still not a blind overwrite path for editable nodes.
-    const blocked = await rpc(svc, "docs.write", {
-      workspaceId,
-      id,
-      body: "blocked\n",
-    });
-    assert.ok(blocked.error);
-    assert.equal(blocked.error!.code, -32010);
-    assert.match(blocked.error!.message, /read-only/i);
+    // editable still writable after rejected read-only attempt
+    const stillEditable = await rpc(svc, "docs.get", { workspaceId, id });
+    assert.equal((stillEditable.result as { concept: { mode: string } }).concept.mode, "editable");
 
-    // raw cannot change mode
+    // raw cannot inject mode
     const edit2 = await rpc(svc, "docs.readForEdit", { workspaceId, id });
     const raw2 = (edit2.result as { raw: string }).raw;
-    const tampered = raw2.replace(/mode: read-only/, "mode: editable");
     const rawBad = await rpc(svc, "docs.write", {
       workspaceId,
       id,
-      raw: tampered.includes("mode:")
-        ? tampered
-        : raw2.replace(/^---\n/, "---\nmode: editable\n"),
+      raw: raw2.replace(/^---\n/, "---\nmode: archived\n"),
       baseEtag: (edit2.result as { etag: string }).etag,
     });
     assert.ok(rawBad.error);

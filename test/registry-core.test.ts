@@ -247,7 +247,15 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
   await scaffoldTent(fsa, {
     name: "demo",
     rules: "# RULES\n",
-    typeRegistry: { task: { readable: true, writable: false, color: "orange" } },
+    // Custom secondary may be present; V0.2 normalize strips R/W/color chrome to tier only
+    typeRegistry: {
+      goal: { tier: "base" },
+      prompt: { tier: "base" },
+      output: { tier: "base" },
+      reference: { tier: "modifier" },
+      asset: { tier: "modifier" },
+      task: { tier: "modifier", readable: true, writable: false, color: "orange" },
+    },
     rolesRegistry: {
       roles: [
         {
@@ -257,7 +265,8 @@ test("role 注册表:core 创建修改删除与 scaffold 模板写入", async ()
       ],
     },
   });
-  assert.equal((await loadTent(fsa)).typeRegistry.task.color, "orange");
+  // loadTent normalizes to slim tier-only defs (no color / R/W axes)
+  assert.deepEqual((await loadTent(fsa)).typeRegistry.task, { tier: "modifier" });
   assert.deepEqual(
     (await loadRolesRegistry(fsa)).roles.map((role) => role.name),
     ["analyst"],

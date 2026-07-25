@@ -243,7 +243,7 @@ export class WorkspaceController {
   }
 
   async createNote(name: string, parentPath?: string): Promise<string> {
-    const created = await this.docs.createNote({ name, parentPath, type: "note" });
+    const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
     await this.refreshTree();
     await this.openConcept(created.cx);
     this.statusMessage = `Created note ${created.path}`;

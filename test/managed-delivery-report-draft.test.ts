@@ -30,7 +30,7 @@ async function makeWorkspace(name = "mrd"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nManaged report draft\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",

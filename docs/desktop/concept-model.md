@@ -1,7 +1,7 @@
 # Desktop Contract · Concept & Box Document Model
 
-Status: **B0 frozen contract** (implementation follows in B1 / B7)  
-Scope: OKF concept space, box as coordination-enabled concept, `cx-` handles, physical layout, links, attachments, operational exclusion, external-edit concurrency, Markdown MVP boundaries  
+Status: **V0.2 Node/Type domain** (aligned with architecture Judge)  
+Scope: OKF concept space, concept types `goal|prompt|output`, `cx-` handles, physical layout, links, attachments, operational exclusion, external-edit concurrency, Markdown MVP boundaries  
 Non-goals: Task/Delivery state machine (`docs/desktop/task-api.md`), service process topology (`docs/desktop/architecture.md`), AgentRuntime adapters (`docs/desktop/agent-runtime.md`)
 
 This document freezes the document model for independent desktop Tent. Canonical English names are API/schema truth. UI may localize labels via i18n; persisted enums never use localized values.
@@ -17,9 +17,7 @@ Peer contracts that must not invert these rules:
 
 ```text
 OKF concept space (user-facing Markdown)
-├── concept (always has non-empty type)
-│   ├── coordination: false  → ordinary note
-│   └── coordination: true   → box (lifecycle-capable)
+├── concept (always has non-empty type ∈ goal|prompt|output [+ optional secondary])
 └── (non-concept) operational space
     ├── task          tk-
     ├── delivery      dl-
@@ -30,10 +28,10 @@ OKF concept space (user-facing Markdown)
 
 | Space | What lives there | Indexed as concept? | OKF validator? |
 | --- | --- | --- | --- |
-| **Concept** | User-facing notes and boxes | yes | yes (subject to generated-file rules) |
+| **Concept** | User-facing Markdown nodes | yes | yes (subject to generated-file rules) |
 | **Operational** | Task, delivery, session, handoff, claim, review, temp pipeline | **no** | **no** |
 
-**One sentence:** content lives in concepts; collaboration lifecycle attaches only when `coordination` is enabled; pipeline state lives in operational space and is cleaned by retention policy.
+**One sentence:** content lives in concepts; collaboration lifecycle is projected from Task/Session/Delivery (every valid concept may be claimed); pipeline state lives in operational space and is cleaned by retention policy.
 
 ### 1.1 Hard exclusions from concept space
 
@@ -73,19 +71,19 @@ Operational Markdown **may** reuse the same renderer component in lifecycle pane
 2. Every concept receives a random, stable, immutable `cx-` at creation.
 3. UI does not emphasize `cx-` by default; expose it for copy, drag `contextRef`, diagnostics, and agent tools.
 4. Controlled rename/move **changes** OKF path identity and **must** rewrite internal Markdown links and rebuild/update index entries. `cx-` proves “same concept” across the move.
-5. Promoting note → box keeps the same path, body, and `cx-`.
+5. Type changes keep the same path, body, and `cx-` (no promote / demote product path).
 
 ### 2.3 Frontmatter shape (contract)
 
 ```yaml
 ---
 id: cx-a1b2c3          # stable handle; migration may rewrite legacy bx- once
-type: note             # non-empty; registry-resolved (base or compound)
-tags: [ui]             # optional lookup facets
+type: prompt           # goal | prompt | output (+ optional -reference|-asset)
+tags: [ui]             # optional lookup facets; orthogonal to secondary type
 title: Optional title  # optional display override
-# Only when type.coordination === true (box):
-status: todo           # todo | doing | done — doing/assignee projected from active task
-# assignee / legacy owner: not independently writable against an active task
+mode: archived         # omit for editable default; only archived is persisted
+# legacy residual (not written on new Nodes; UI cutover deferred):
+# owner / status — collaboration projection prefers Task API
 # artifactRefs: optional ArtifactRef[] to real deliverables (architecture §5.2)
 ---
 # Markdown body
@@ -94,13 +92,12 @@ status: todo           # todo | doing | done — doing/assignee projected from a
 | Field | Rule |
 | --- | --- |
 | `id` | Required; `cx-…` after migration |
-| `type` | Required, non-empty; resolved via type registry |
+| `type` | Required; primary ∈ `goal\|prompt\|output`; optional secondary ∈ registry modifiers |
 | `tags` | Optional; never replace type or hierarchy |
-| `status` | Long-lived summary for coordination-enabled types (`todo` / `doing` / `done`). Lifecycle may update it; **not** a claim/dispatch mutex |
-| `assignee` | API projection of the active task only; not an independent owner fact |
-| legacy `owner` | Compatible residual field; may still be written as a projection; **not** runtime occupation authority |
+| `mode` | Omit = editable; `archived` freezes subtree. No `read-only` |
+| legacy `status` / `owner` | Residual until UI cutover; **not** written on new Nodes; occupation is Task-based |
 | `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
-| Readable/writable axes | Honor contract per type/box; orthogonal to `coordination` |
+| Readable/writable | **Retired** as domain axes; not honor ACL |
 
 **Occupation authority:** only an **active Task envelope** occupies a box for mutual exclusion and for `box.projection` assignee/`activeTaskId`. See Task API §2.3.
 
@@ -108,51 +105,29 @@ status: todo           # todo | doing | done — doing/assignee projected from a
 
 ---
 
-## 3. Type registry: `coordination` capability
+## 3. Type registry (V0.2)
 
-### 3.1 Capability, not name hardcoding
+### 3.1 Semantic types only
 
-`coordination` is a **base-type capability** on the type registry (alongside existing axes such as `readable` / `writable`). Legacy type flags that only existed to mark “this box points at a code root outside the tent” are **retired** with the in-workspace `.tent` model—do not reintroduce a product “workspace pointer” type axis.
+Type registry entries store **tier** (`base` | `modifier`). Domain R/W, coordination, color, and description are not product fields.
 
-```ts
-// base type only — modifiers do not configure coordination independently
-coordination?: boolean; // default false
-```
-
-| Rule | Detail |
+| Class | Values |
 | --- | --- |
-| Default | `false` when omitted |
-| Compound types | Follow the **base** type; modifiers do not flip coordination alone |
-| Built-in tendency | `note` → false; `goal` / `prompt` / `artifact` → true (configurable, not name-matched in code) |
-| Detection | Always read registry capability; **never** `if (type === "goal")` style hardcoding |
+| Fixed primaries | `goal`, `prompt`, `output` |
+| Built-in secondaries | `reference`, `asset` (custom modifiers allowed without chrome) |
 
-`coordination` decides lifecycle eligibility (status, task occupation, delivery projection).  
-Readable/writable remain honor R/W axes and do **not** imply coordination.
+One-shot migration: `note`→`prompt`, `artifact`→`output`; strip R/W/chrome; drop retired modifiers `open`/`sealed` from compounds. No permanent alias.
 
-### 3.2 Concept vs box
+### 3.2 Concept terminology
 
 | Term | Definition |
 | --- | --- |
-| **concept** | Any user-facing Markdown in OKF concept space with non-empty `type` and a `cx-` |
-| **box** | A concept whose resolved type has `coordination: true` |
-| **note** | Ordinary concept with coordination disabled (default base type name may be `note`) |
+| **concept** / **Node** | User-facing Markdown in OKF concept space with non-empty `type` and a `cx-` |
+| **box** | Historical synonym for concept in APIs; not a second file format |
 
-Box is **not** a second file format, folder kind, or identity prefix.
+Every valid non-archived concept may enter the task lifecycle. There is no coordination gate and no `docs.promote`.
 
-### 3.3 Promote (note → box)
-
-API sketch: `docs.promote` / `promoteConcept(cx | path, toType)`.
-
-| Step | Requirement |
-| --- | --- |
-| 1 | `toType` must resolve with `coordination === true` |
-| 2 | Same path, same body bytes (except frontmatter type/status), same `cx-` |
-| 3 | Set `status: todo` if absent |
-| 4 | **No** file move, **no** copy, **no** new id |
-
-Demote (box → note) is **non-MVP** unless later specified; if added, require no active task, clear collaboration fields, keep `cx-`.
-
-### 3.4 Fork (parallel occupation)
+### 3.3 Fork (parallel occupation)
 
 Canonical command: **`docs.fork(boxId | path)`** (CLI alias: `tent fork`).
 

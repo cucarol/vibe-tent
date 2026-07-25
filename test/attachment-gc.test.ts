@@ -58,11 +58,11 @@ test("attachment refs normalize Markdown links, reference links and wiki embeds"
 
 test("attachment GC retains every file owned by a live or archived concept", async () => {
   const { fsa, env } = await makeEnv();
-  const id = await createBox(env as never, { parentPath: "", name: "owner", type: "note" });
+  const id = await createBox(env as never, { parentPath: "", name: "owner", type: "prompt" });
   const tent = await loadTent(fsa);
   const owner = tent.byId.get(id)!;
   const raw = await fsa.readFile(boxNotePath(owner.path));
-  await fsa.writeFile(boxNotePath(owner.path), raw.replace("type: note", "type: note\nmode: archived"));
+  await fsa.writeFile(boxNotePath(owner.path), raw.replace("type: prompt", "type: prompt\nmode: archived"));
   const attachment = `attachments/${id}/unused.png`;
   await fsa.writeBinary(attachment, new Uint8Array([1, 2, 3]));
 
@@ -95,7 +95,7 @@ test("cross-concept and operational references retain orphan-owner attachments",
   await fsa.writeBinary(conceptAttachment, new Uint8Array([1]));
   await fsa.writeBinary(taskAttachment, new Uint8Array([2]));
 
-  const keeperId = await createBox(env as never, { parentPath: "", name: "keeper", type: "note" });
+  const keeperId = await createBox(env as never, { parentPath: "", name: "keeper", type: "prompt" });
   const keeper = (await loadTent(fsa)).byId.get(keeperId)!;
   const notePath = boxNotePath(keeper.path);
   await fsa.writeFile(
@@ -120,7 +120,7 @@ test("a restored reference clears candidacy and starts a new grace window if rem
   await fsa.writeBinary(attachment, new Uint8Array([3]));
   await sweepAttachmentGc(fsa, { now: T0 });
 
-  const keeperId = await createBox(env as never, { parentPath: "", name: "keeper", type: "note" });
+  const keeperId = await createBox(env as never, { parentPath: "", name: "keeper", type: "prompt" });
   const keeper = (await loadTent(fsa)).byId.get(keeperId)!;
   const notePath = boxNotePath(keeper.path);
   const original = await fsa.readFile(notePath);

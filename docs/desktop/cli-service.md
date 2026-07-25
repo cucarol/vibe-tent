@@ -69,7 +69,7 @@ Legacy commands that **direct-write** core are **blocked on in-workspace** syste
 | Read-only | `tree`, `status`, `roles`, `find`, `tags` | allowed | allowed |
 | Init / derived / machine | `new`, `migrate`/`import`, `role-init`, `skill-install` | allowed | allowed |
 | Service-routed | `task *`, `propose` | attach → mount → RPC (`task.*` / `proposal.submit`) | `propose` still direct-core (migration window); prefer Service when mounted |
-| Mutation (direct-core) | `dispatch`, `task-ack`, `task-cancel`, `report`, `complete`, `stamp`, `grant-readable`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` | **fail-loud** | allowed (migration window) |
+| Mutation (direct-core) | `dispatch`, `task-ack`, `task-cancel`, `report`, `complete`, `stamp`, `new-box`, `tag`, `untag`, `tag-new`, `tag-rm`, `fork`, `clean-temp`, `force-release`, `okf-sync` (`grant-readable` retired in V0.2) | **fail-loud** | allowed (migration window) |
 
 Machine-local bundled skills are also available through authenticated Local
 Service RPC: `skill.list` and `skill.install`. Installation sources are fixed to

@@ -163,7 +163,8 @@ export class CoreDocsClient implements DocsClient {
   }
 
   async createNote(input: CreateNoteInput): Promise<{ cx: string; path: string }> {
-    const type = input.type?.trim() || "note";
+    // V0.2 default primary is prompt (no permanent note alias).
+    const type = input.type?.trim() || "prompt";
     const cx = await createBox(this.env, {
       parentPath: input.parentPath?.replace(/\\/g, "/") ?? "",
       name: input.name,

@@ -1,8 +1,6 @@
 // 工单(manifest)生成 —— 派活的硬执行层之一。
-// 算可读集/可写集:
-//   可读集 = 帐内所有 readable=true 的框 + 系统 temp 管道
-//   可写集 = 认领子树里所有 writable=true 的框 + 该角色的 temp 格
-// 这是确定性算法,任何 agent/进程跑出来必须一字不差。
+// V0.2: readable/writable lists are **context pointers** (claim scope + system paths),
+// not domain R/W axes on Nodes. Deterministic for any agent/process.
 
 import { Box, Manifest, ManifestEntry } from "./types.js";
 import { isUsableBox, LoadedTent, join } from "./tree.js";
@@ -28,18 +26,18 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   const readable: ManifestEntry[] = [];
   const writable: ManifestEntry[] = [];
 
-  // 可读集:帐内全部 readable=true 的框(含认领子树内的)
+  // Context readable set: all usable concepts (semantic context for the agent).
   for (const box of allBoxes(tent)) {
-    if (isUsableBox(box) && box.readable.value) {
+    if (isUsableBox(box)) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
-  // 可写集:认领子树里 writable=true 的框
+  // Context writable set: claim scope (mutation authority is Task/Service, not this list).
   for (const box of claimScope) {
-    if (isUsableBox(box) && box.writable.value) {
+    if (isUsableBox(box)) {
       writable.push({ id: box.id, path: box.path });
     }
   }
@@ -119,8 +117,9 @@ function dedupe(entries: ManifestEntry[]): ManifestEntry[] {
   const seen = new Set<string>();
   const out: ManifestEntry[] = [];
   for (const e of entries) {
-    if (seen.has(e.path)) continue;
-    seen.add(e.path);
+    const key = `${e.id ?? ""}|${e.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(e);
   }
   return out;

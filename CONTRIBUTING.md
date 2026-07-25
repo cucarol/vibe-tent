@@ -6,7 +6,7 @@ Thanks for helping improve Tent.
 
 - Put behavioral and permission rules in `src/core/`.
 - Keep the CLI and Obsidian plugin as thin clients of core.
-- Keep manifest/readable/writable behavior in core and SPEC; do not redefine it only in UI.
+- Keep Node/Type domain and manifest context-pointer behavior in core and SPEC; do not redefine them only in UI.
 - Do not place typed boxes under `temp/`; it is a system pipeline.
 - Keep changes scoped and add tests for observable behavior.
 

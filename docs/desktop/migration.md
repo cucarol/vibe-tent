@@ -10,7 +10,7 @@ Non-scope: long-term dual-write, Obsidian plugin as product path, auto-delete of
 | --- | --- |
 | External tent root (e.g. `Vault/_tents/tent-dev`) with `RULES.md`, `order.json`, `types/`, `tags/`, `roles/`, `temp/`, box tree, optional nested `.tent/*` registries | `<workspace>/.tent/` (system root) |
 | Nested registry dual-layout under source `.tent/` | Flat registries on system root (via `migrateLegacySchema`) |
-| `bx-` ids / `output` type | `cx-` / `artifact` on the **copy** only |
+| `bx-` ids / legacy `note`·`artifact` types | `cx-` / `prompt`·`output` on the **copy** only |
 
 ## Hard rules
 

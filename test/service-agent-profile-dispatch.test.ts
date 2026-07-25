@@ -29,7 +29,7 @@ async function makeWorkspace(
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nagentProfile dispatch\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",

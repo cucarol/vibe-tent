@@ -23,14 +23,11 @@ export async function makeTent(): Promise<string> {
     path.join(dir, "types.json"),
     JSON.stringify(
       {
-        note: { tier: "base", readable: true, writable: true, coordination: false, color: "gray" },
-        goal: { tier: "base", readable: true, writable: false, coordination: true, color: "blue" },
-        prompt: { tier: "base", readable: true, writable: true, coordination: true, color: "purple" },
-        artifact: { tier: "base", readable: true, writable: true, coordination: true, color: "cyan" },
-        open: { tier: "modifier", readable: true, writable: true, color: "green" },
-        reference: { tier: "modifier", readable: true, color: "blue" },
-        asset: { tier: "modifier", writable: true, color: "purple" },
-        sealed: { tier: "modifier", readable: false, writable: false, color: "red" },
+        goal: { tier: "base" },
+        prompt: { tier: "base" },
+        output: { tier: "base" },
+        reference: { tier: "modifier" },
+        asset: { tier: "modifier" },
       },
       null,
       2
@@ -50,12 +47,12 @@ export async function makeTent(): Promise<string> {
   );
   await box(
     "prompt/表达式任务书/草稿",
-    "id: bx-p2\ntype: prompt\nwritable: true"
+    "id: bx-p2\ntype: prompt"
   );
   await box("output", "id: bx-outzone\ntype: output");
   await box("output/alpha仓库指针", "id: bx-o1\ntype: output");
   await fs.mkdir(path.join(dir, "temp"), { recursive: true });
-  await box("prompt/旧站资料", "id: bx-a1\ntype: asset");
+  await box("prompt/旧站资料", "id: bx-a1\ntype: prompt-asset");
   return dir;
 }
 

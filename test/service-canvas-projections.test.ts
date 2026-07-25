@@ -28,7 +28,7 @@ async function makeWorkspace(name = "canvas-proj"): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name,
     rules: "# RULES\n\nCanvas projection service\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",
@@ -133,7 +133,7 @@ test("graph.projection: nodes + parent edges; no body fields", async () => {
     const parent = await createNote(svc, workspaceId, { name: "parent-goal", type: "goal" });
     const child = await createNote(svc, workspaceId, {
       name: "child-note",
-      type: "note",
+      type: "prompt",
       parentPath: parent.path,
     });
 
@@ -181,9 +181,9 @@ test("graph.projection: resolved markdown + wiki edges; unresolved kept explicit
   await withService(async (svc) => {
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
     const workspaceId = await mountWorkspace(svc, ws);
-    const alpha = await createNote(svc, workspaceId, { name: "Alpha", type: "note" });
-    const beta = await createNote(svc, workspaceId, { name: "Beta", type: "note" });
-    const source = await createNote(svc, workspaceId, { name: "Source", type: "note" });
+    const alpha = await createNote(svc, workspaceId, { name: "Alpha", type: "prompt" });
+    const beta = await createNote(svc, workspaceId, { name: "Beta", type: "prompt" });
+    const source = await createNote(svc, workspaceId, { name: "Source", type: "prompt" });
 
     // Write body with resolved wiki, resolved md, unresolved wiki, unresolved md.
     // Relative md destination must resolve against source note path.

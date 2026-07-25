@@ -78,13 +78,8 @@ export function structuralClaimGate(box: Box): ClaimCheck {
   if (box.archived) {
     return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   }
-  if (!box.coordination) {
-    return {
-      ok: false,
-      blocker: box,
-      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`,
-    };
-  }
+  // V0.2: every valid non-archived concept may enter the task lifecycle.
+  // Type is semantic only; no coordination capability gate.
   return { ok: true };
 }
 

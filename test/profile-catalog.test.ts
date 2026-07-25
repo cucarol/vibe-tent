@@ -89,7 +89,7 @@ async function makeWs(): Promise<string> {
   await scaffoldInWorkspace(fsa, {
     name: "pcat",
     rules: "# RULES\n",
-    boxes: [{ name: "inbox", type: "note", body: "# inbox\n" }],
+    boxes: [{ name: "inbox", type: "prompt", body: "# inbox\n" }],
   });
   await fsa.writeFile(
     ".tent/roles.json",

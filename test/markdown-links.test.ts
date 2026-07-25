@@ -23,7 +23,7 @@ function conceptIndex(
     index.set("__all__", all);
   };
   for (const c of concepts) {
-    const full: OkfConcept = { ...c, boxId: c.id, type: "note" };
+    const full: OkfConcept = { ...c, boxId: c.id, type: "prompt" };
     add(full.id, full);
     add(full.path, full);
     add(full.notePath, full);
