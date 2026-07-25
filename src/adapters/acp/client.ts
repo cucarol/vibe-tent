@@ -30,6 +30,64 @@ import {
 
 const LOAD_REPLAY_QUIET_MS = 100;
 const LOAD_REPLAY_MAX_WAIT_MS = 2_000;
+const RPC_ERROR_DATA_MAX_CHARS = 600;
+const RPC_ERROR_SAFE_KEYS = new Set([
+  "code",
+  "kind",
+  "message",
+  "reason",
+  "stderr",
+  "type",
+  // ACP SDK / bridge internals often put the real failure here while message is
+  // the opaque "Internal error" (e.g. Claude Agent ACP session resume).
+  "details",
+  "errorKind",
+]);
+
+function formatRpcError(error: NonNullable<AcpJsonRpcResponse["error"]>): string {
+  const message = error.message || "ACP JSON-RPC error";
+  const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
+  const data = summarizeRpcErrorData(error.data);
+  return `${message}${code}${data ? ` (${data})` : ""}`;
+}
+
+/**
+ * Keep provider diagnostics useful without persisting arbitrary payloads.
+ * ACP error data may contain tool args, headers, prompts, or credentials.
+ */
+function summarizeRpcErrorData(data: unknown): string | undefined {
+  if (data == null) return undefined;
+  if (
+    typeof data === "string" ||
+    typeof data === "number" ||
+    typeof data === "boolean"
+  ) {
+    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) {
+    return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
+  }
+
+  const safe: Record<string, string | number | boolean | null> = {};
+  for (const [key, value] of Object.entries(data as Record<string, unknown>)) {
+    if (!RPC_ERROR_SAFE_KEYS.has(key)) continue;
+    if (
+      value == null ||
+      typeof value === "string" ||
+      typeof value === "number" ||
+      typeof value === "boolean"
+    ) {
+      safe[key] =
+        value == null
+          ? null
+          : typeof value === "string"
+          ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS)
+          : value;
+    }
+  }
+  if (Object.keys(safe).length === 0) return undefined;
+  return `data=${JSON.stringify(safe).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+}
 
 export type AcpClientOptions = {
   command: string;
@@ -101,13 +159,18 @@ export type AcpStartResult = {
   assistantText: string;
 };
 
-/** connect() mode: session/new (default) vs native session/load resume. */
-export type AcpConnectMode = "new" | "load";
+/**
+ * connect() mode:
+ * - `new` — session/new (default)
+ * - `load` — session/load (history may stream; quarantined, never delivered)
+ * - `resume` — session/resume (no history replay; requires sessionCapabilities.resume)
+ */
+export type AcpConnectMode = "new" | "load" | "resume";
 
 export type AcpConnectOptions = {
   mode?: AcpConnectMode;
   /**
-   * Provider ACP sessionId to load. Required when mode is "load".
+   * Provider ACP sessionId to load/resume. Required when mode is "load" or "resume".
    * Must equal the machine-local resume token (providerSessionId).
    */
   providerSessionId?: string;
@@ -118,7 +181,30 @@ export type AcpConnectResult = {
   providerSessionId: string;
   /** True when initialize advertised agentCapabilities.loadSession. */
   loadSessionSupported: boolean;
+  /**
+   * True when initialize advertised agentCapabilities.sessionCapabilities.resume
+   * as an object (including `{}`).
+   */
+  resumeSessionSupported: boolean;
 };
+
+/**
+ * ACP: sessionCapabilities.resume is optional. Omitted / null = unsupported.
+ * Supplying `{}` (or any non-null object) means the agent supports session/resume.
+ */
+export function isSessionResumeAdvertised(
+  sessionCapabilities: unknown
+): boolean {
+  if (
+    !sessionCapabilities ||
+    typeof sessionCapabilities !== "object" ||
+    Array.isArray(sessionCapabilities)
+  ) {
+    return false;
+  }
+  const resume = (sessionCapabilities as { resume?: unknown }).resume;
+  return resume != null && typeof resume === "object" && !Array.isArray(resume);
+}
 
 type Pending = {
   resolve: (value: unknown) => void;
@@ -161,6 +247,11 @@ export class AcpClient {
   private lastLoadReplayUpdateAt = 0;
   /** Cached from initialize agentCapabilities.loadSession (default false). */
   private loadSessionSupported = false;
+  /**
+   * Cached from initialize agentCapabilities.sessionCapabilities.resume
+   * (object including `{}`; default false until connect).
+   */
+  private resumeSessionSupported = false;
   /**
    * Cached from initialize agentCapabilities.promptCapabilities.image.
    * Only explicit true counts; omit/false → unsupported (no guessing).
@@ -278,15 +369,21 @@ export class AcpClient {
   }
 
   /**
-   * Spawn ACP process + initialize/authenticate, then session/new or session/load.
-   * Emits session.live when the ACP session exists. Does not block on prompt.
+   * Spawn ACP process + initialize/authenticate, then session/new, session/load,
+   * or session/resume. Emits session.live when the ACP session exists. Does not
+   * block on prompt.
    *
-   * Load mode requires agentCapabilities.loadSession === true from this initialize
-   * handshake (fail-loud otherwise). History notifications are isolated and never
-   * accumulate into assistantText / prompt delivery.
+   * - Load mode requires agentCapabilities.loadSession === true. History
+   *   notifications are quarantined and never enter assistantText / delivery.
+   * - Resume mode requires agentCapabilities.sessionCapabilities.resume (object,
+   *   including `{}`). Does not replay history (Tent is not a transcript UI).
+   * Both load and resume fail loud and never fall back to session/new.
    */
   async connect(options?: AcpConnectOptions): Promise<AcpConnectResult> {
-    const mode: AcpConnectMode = options?.mode === "load" ? "load" : "new";
+    const mode: AcpConnectMode =
+      options?.mode === "load" || options?.mode === "resume"
+        ? options.mode
+        : "new";
     this.spawnProcess();
     const pid = this.proc!.pid!;
     this.options.emit({
@@ -305,12 +402,16 @@ export class AcpClient {
         authMethods?: Array<{ id: string }>;
         agentCapabilities?: {
           loadSession?: boolean;
+          sessionCapabilities?: { resume?: unknown };
           promptCapabilities?: { image?: boolean };
         };
       };
 
       this.loadSessionSupported =
         init.agentCapabilities?.loadSession === true;
+      this.resumeSessionSupported = isSessionResumeAdvertised(
+        init.agentCapabilities?.sessionCapabilities
+      );
       // Strict: only explicit true. Missing promptCapabilities → no image blocks.
       this.promptImageSupported = acpTransportSupportsImage(
         init.agentCapabilities
@@ -334,10 +435,16 @@ export class AcpClient {
       }
 
       let providerSessionId: string;
-      if (mode === "load") {
-        if (!this.loadSessionSupported) {
+      if (mode === "load" || mode === "resume") {
+        const method = mode === "resume" ? "session/resume" : "session/load";
+        if (mode === "load" && !this.loadSessionSupported) {
           throw new Error(
             `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+          );
+        }
+        if (mode === "resume" && !this.resumeSessionSupported) {
+          throw new Error(
+            `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
           );
         }
         const loadId =
@@ -346,26 +453,33 @@ export class AcpClient {
             : "";
         if (!loadId) {
           throw new Error(
-            `${this.label} session/load requires providerSessionId (resume token)`
+            `${this.label} ${method} requires providerSessionId (resume token)`
           );
         }
         this.resetAssistantReport();
-        this.quarantiningLoadReplay = true;
-        this.lastLoadReplayUpdateAt = Date.now();
+        // Only session/load is expected to stream full transcript history.
+        // session/resume must not quarantine-wait for replay (none by contract).
+        if (mode === "load") {
+          this.quarantiningLoadReplay = true;
+          this.lastLoadReplayUpdateAt = Date.now();
+        }
         try {
           await this.request(
-            "session/load",
+            method,
             this.sessionStartParams({
               sessionId: loadId,
               cwd: this.options.cwd,
             }),
             60_000
           );
-          await this.waitForLoadReplayQuiescence();
+          if (mode === "load") {
+            await this.waitForLoadReplayQuiescence();
+          }
         } finally {
           this.quarantiningLoadReplay = false;
           this.resetAssistantReport();
         }
+        // Preserve the same provider session id — never invent a new one.
         this.providerSessionId = loadId;
         providerSessionId = loadId;
       } else {
@@ -391,6 +505,7 @@ export class AcpClient {
         pid,
         providerSessionId,
         loadSessionSupported: this.loadSessionSupported,
+        resumeSessionSupported: this.resumeSessionSupported,
       };
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -688,9 +803,7 @@ export class AcpClient {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message && message.error) {
-      pending.reject(
-        new Error(message.error.message || JSON.stringify(message.error))
-      );
+      pending.reject(new Error(formatRpcError(message.error)));
     } else {
       pending.resolve(("result" in message ? message.result : undefined) ?? {});
     }

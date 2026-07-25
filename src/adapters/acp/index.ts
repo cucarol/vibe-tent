@@ -3,6 +3,7 @@
 
 export {
   AcpClient,
+  isSessionResumeAdvertised,
   type AcpClientOptions,
   type AcpConnectMode,
   type AcpConnectOptions,
@@ -37,6 +38,7 @@ export {
   startManagedAcpSession,
   stopAcpClientQuiet,
   type AcpPermissionAskHooks,
+  type AcpResumeTransport,
   type ManagedAcpClient,
   type ResumeManagedAcpSessionInput,
   type StartManagedAcpSessionInput,

@@ -190,6 +190,13 @@ export type StartManagedAcpSessionInput = {
   defaultBootstrapPrompt?: string;
 };
 
+/**
+ * ACP wire method used to restore a provider session on a new bridge process.
+ * - `load` (default): session/load — may stream history (quarantined, never delivered)
+ * - `resume`: session/resume — no history replay (Claude Agent ACP managed path)
+ */
+export type AcpResumeTransport = "load" | "resume";
+
 export type ResumeManagedAcpSessionInput = {
   plan: LaunchPlan;
   emit: (ev: RuntimeEvent) => void;
@@ -197,7 +204,13 @@ export type ResumeManagedAcpSessionInput = {
   /** Provider ACP sessionId (machine-local resume token). */
   providerSessionId: string;
   /**
-   * When set, send a fresh session/prompt after load.
+   * Provider-selectable restore transport. Default `load` keeps existing adapters
+   * on session/load. Claude uses `resume` (session/resume) so Tent never asks the
+   * bridge to replay a full transcript.
+   */
+  resumeTransport?: AcpResumeTransport;
+  /**
+   * When set, send a fresh session/prompt after load/resume.
    * History replay from load is never delivered; only this prompt may.
    * When omitted/empty, session stays live with no bootstrap prompt.
    */
@@ -289,9 +302,12 @@ export async function startManagedAcpSession(
 }
 
 /**
- * Native ACP resume: new bridge process + initialize + session/load (never session/new).
- * Fail-loud when loadSession is unsupported or load fails; always cleans up the process.
- * History notifications from load are isolated by AcpClient and never auto-deliver.
+ * Native ACP resume: new bridge process + initialize + session/load or session/resume
+ * (never session/new). Transport defaults to `load` for existing adapters; Claude
+ * selects `resume` so managed continuity does not replay transcript history.
+ * Fail-loud when the chosen capability is unsupported or the RPC fails; always
+ * cleans up the process. History notifications from load are isolated by AcpClient
+ * and never auto-deliver.
  */
 export async function resumeManagedAcpSession(
   input: ResumeManagedAcpSessionInput
@@ -301,9 +317,12 @@ export async function resumeManagedAcpSession(
   if (!loadId) {
     throw new Error("resumeManagedAcpSession requires non-empty providerSessionId");
   }
+  const transport: AcpResumeTransport =
+    input.resumeTransport === "resume" ? "resume" : "load";
+  const connectMode = transport === "resume" ? "resume" : "load";
 
   try {
-    await client.connect({ mode: "load", providerSessionId: loadId });
+    await client.connect({ mode: connectMode, providerSessionId: loadId });
   } catch (err) {
     // Honest failure: never fall back to session/new. Kill orphan bridge process.
     await stopAcpClientQuiet(client);
@@ -312,7 +331,7 @@ export async function resumeManagedAcpSession(
   }
 
   const bootstrap = input.bootstrapPrompt?.trim() || plan.bootstrapPrompt?.trim() || "";
-  // Optional post-load prompt only — empty means stay live without auto-delivery.
+  // Optional post-load/resume prompt only — empty means stay live without auto-delivery.
   const session = new AcpManagedSession(plan.sessionId, client, emit);
   if (bootstrap) {
     session.beginBackgroundTurn(() =>

@@ -127,8 +127,12 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   /**
-   * Native ACP resume: new bridge process + session/load (never session/new).
-   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   * Native ACP resume: new bridge process + session/resume (never session/new,
+   * never session/load). Claude Agent ACP 0.62+ advertises sessionCapabilities.resume
+   * and implements resume without replaying the full transcript; session/load
+   * additionally replays history and is the wrong transport for Tent managed
+   * continuity (Tent is not a transcript UI). Live initialize must advertise
+   * sessionCapabilities.resume or this fails loud — no session/new fallback.
    */
   async resumeManagedSession(
     plan: LaunchPlan,
@@ -149,6 +153,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
       emit,
       client,
       providerSessionId,
+      resumeTransport: "resume",
       bootstrapPrompt: plan.bootstrapPrompt,
     });
   }

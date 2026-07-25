@@ -15025,6 +15025,50 @@ function isAssistantMessageChunkKind(kind) {
 // src/adapters/acp/client.ts
 var LOAD_REPLAY_QUIET_MS = 100;
 var LOAD_REPLAY_MAX_WAIT_MS = 2e3;
+var RPC_ERROR_DATA_MAX_CHARS = 600;
+var RPC_ERROR_SAFE_KEYS = /* @__PURE__ */ new Set([
+  "code",
+  "kind",
+  "message",
+  "reason",
+  "stderr",
+  "type",
+  // ACP SDK / bridge internals often put the real failure here while message is
+  // the opaque "Internal error" (e.g. Claude Agent ACP session resume).
+  "details",
+  "errorKind"
+]);
+function formatRpcError(error) {
+  const message2 = error.message || "ACP JSON-RPC error";
+  const code = Number.isFinite(error.code) ? ` [JSON-RPC ${error.code}]` : "";
+  const data = summarizeRpcErrorData(error.data);
+  return `${message2}${code}${data ? ` (${data})` : ""}`;
+}
+function summarizeRpcErrorData(data) {
+  if (data == null) return void 0;
+  if (typeof data === "string" || typeof data === "number" || typeof data === "boolean") {
+    return `data=${String(data).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+  }
+  if (typeof data !== "object" || Array.isArray(data)) {
+    return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
+  }
+  const safe = {};
+  for (const [key, value] of Object.entries(data)) {
+    if (!RPC_ERROR_SAFE_KEYS.has(key)) continue;
+    if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
+      safe[key] = value == null ? null : typeof value === "string" ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
+    }
+  }
+  if (Object.keys(safe).length === 0) return void 0;
+  return `data=${JSON.stringify(safe).slice(0, RPC_ERROR_DATA_MAX_CHARS)}`;
+}
+function isSessionResumeAdvertised(sessionCapabilities) {
+  if (!sessionCapabilities || typeof sessionCapabilities !== "object" || Array.isArray(sessionCapabilities)) {
+    return false;
+  }
+  const resume = sessionCapabilities.resume;
+  return resume != null && typeof resume === "object" && !Array.isArray(resume);
+}
 var AcpClient = class {
   constructor(options) {
     this.options = options;
@@ -15060,6 +15104,11 @@ var AcpClient = class {
     this.lastLoadReplayUpdateAt = 0;
     /** Cached from initialize agentCapabilities.loadSession (default false). */
     this.loadSessionSupported = false;
+    /**
+     * Cached from initialize agentCapabilities.sessionCapabilities.resume
+     * (object including `{}`; default false until connect).
+     */
+    this.resumeSessionSupported = false;
     /**
      * Cached from initialize agentCapabilities.promptCapabilities.image.
      * Only explicit true counts; omit/false → unsupported (no guessing).
@@ -15157,15 +15206,18 @@ var AcpClient = class {
     this.assistantMessageCurrent = sealed.current;
   }
   /**
-   * Spawn ACP process + initialize/authenticate, then session/new or session/load.
-   * Emits session.live when the ACP session exists. Does not block on prompt.
+   * Spawn ACP process + initialize/authenticate, then session/new, session/load,
+   * or session/resume. Emits session.live when the ACP session exists. Does not
+   * block on prompt.
    *
-   * Load mode requires agentCapabilities.loadSession === true from this initialize
-   * handshake (fail-loud otherwise). History notifications are isolated and never
-   * accumulate into assistantText / prompt delivery.
+   * - Load mode requires agentCapabilities.loadSession === true. History
+   *   notifications are quarantined and never enter assistantText / delivery.
+   * - Resume mode requires agentCapabilities.sessionCapabilities.resume (object,
+   *   including `{}`). Does not replay history (Tent is not a transcript UI).
+   * Both load and resume fail loud and never fall back to session/new.
    */
   async connect(options) {
-    const mode = options?.mode === "load" ? "load" : "new";
+    const mode = options?.mode === "load" || options?.mode === "resume" ? options.mode : "new";
     this.spawnProcess();
     const pid = this.proc.pid;
     this.options.emit({
@@ -15181,6 +15233,9 @@ var AcpClient = class {
         }
       });
       this.loadSessionSupported = init.agentCapabilities?.loadSession === true;
+      this.resumeSessionSupported = isSessionResumeAdvertised(
+        init.agentCapabilities?.sessionCapabilities
+      );
       this.promptImageSupported = acpTransportSupportsImage(
         init.agentCapabilities
       );
@@ -15195,31 +15250,41 @@ var AcpClient = class {
         });
       }
       let providerSessionId;
-      if (mode === "load") {
-        if (!this.loadSessionSupported) {
+      if (mode === "load" || mode === "resume") {
+        const method = mode === "resume" ? "session/resume" : "session/load";
+        if (mode === "load" && !this.loadSessionSupported) {
           throw new Error(
             `${this.label} does not advertise agentCapabilities.loadSession; cannot session/load`
+          );
+        }
+        if (mode === "resume" && !this.resumeSessionSupported) {
+          throw new Error(
+            `${this.label} does not advertise agentCapabilities.sessionCapabilities.resume; cannot session/resume`
           );
         }
         const loadId = typeof options?.providerSessionId === "string" ? options.providerSessionId.trim() : "";
         if (!loadId) {
           throw new Error(
-            `${this.label} session/load requires providerSessionId (resume token)`
+            `${this.label} ${method} requires providerSessionId (resume token)`
           );
         }
         this.resetAssistantReport();
-        this.quarantiningLoadReplay = true;
-        this.lastLoadReplayUpdateAt = Date.now();
+        if (mode === "load") {
+          this.quarantiningLoadReplay = true;
+          this.lastLoadReplayUpdateAt = Date.now();
+        }
         try {
           await this.request(
-            "session/load",
+            method,
             this.sessionStartParams({
               sessionId: loadId,
               cwd: this.options.cwd
             }),
             6e4
           );
-          await this.waitForLoadReplayQuiescence();
+          if (mode === "load") {
+            await this.waitForLoadReplayQuiescence();
+          }
         } finally {
           this.quarantiningLoadReplay = false;
           this.resetAssistantReport();
@@ -15246,7 +15311,8 @@ var AcpClient = class {
       return {
         pid,
         providerSessionId,
-        loadSessionSupported: this.loadSessionSupported
+        loadSessionSupported: this.loadSessionSupported,
+        resumeSessionSupported: this.resumeSessionSupported
       };
     } catch (err) {
       const message2 = err instanceof Error ? err.message : String(err);
@@ -15484,9 +15550,7 @@ var AcpClient = class {
     this.pending.delete(id);
     clearTimeout(pending.timer);
     if ("error" in message2 && message2.error) {
-      pending.reject(
-        new Error(message2.error.message || JSON.stringify(message2.error))
-      );
+      pending.reject(new Error(formatRpcError(message2.error)));
     } else {
       pending.resolve(("result" in message2 ? message2.result : void 0) ?? {});
     }
@@ -15903,8 +15967,10 @@ async function resumeManagedAcpSession(input) {
   if (!loadId) {
     throw new Error("resumeManagedAcpSession requires non-empty providerSessionId");
   }
+  const transport = input.resumeTransport === "resume" ? "resume" : "load";
+  const connectMode = transport === "resume" ? "resume" : "load";
   try {
-    await client.connect({ mode: "load", providerSessionId: loadId });
+    await client.connect({ mode: connectMode, providerSessionId: loadId });
   } catch (err) {
     await stopAcpClientQuiet(client);
     const message2 = err instanceof Error ? err.message : String(err);
@@ -16569,8 +16635,12 @@ var ClaudeAcpProviderAdapter = class {
     return startManagedAcpSession({ plan, emit: emit2, client });
   }
   /**
-   * Native ACP resume: new bridge process + session/load (never session/new).
-   * Requires agentCapabilities.loadSession on the live initialize handshake.
+   * Native ACP resume: new bridge process + session/resume (never session/new,
+   * never session/load). Claude Agent ACP 0.62+ advertises sessionCapabilities.resume
+   * and implements resume without replaying the full transcript; session/load
+   * additionally replays history and is the wrong transport for Tent managed
+   * continuity (Tent is not a transcript UI). Live initialize must advertise
+   * sessionCapabilities.resume or this fails loud — no session/new fallback.
    */
   async resumeManagedSession(plan, token, emit2) {
     const providerSessionId = (token.providerSessionId ?? token.raw).trim();
@@ -16585,6 +16655,7 @@ var ClaudeAcpProviderAdapter = class {
       emit: emit2,
       client,
       providerSessionId,
+      resumeTransport: "resume",
       bootstrapPrompt: plan.bootstrapPrompt
     });
   }

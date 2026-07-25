@@ -65,6 +65,79 @@ test("managed ACP start cleans bridge process when handshake fails", async () =>
   assert.equal(client.isAlive(), false);
 });
 
+test("AcpClient: handshake errors retain safe diagnostics and redact arbitrary data", async () => {
+  const cwd = await tempDir("tent-acp-handshake-diagnostics-");
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: {
+      MOCK_ACP_FAIL_NEW: "1",
+      MOCK_ACP_KEEP_ALIVE: "1",
+    },
+    sessionId: "ss-handshake-diagnostics",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: () => undefined,
+  });
+
+  try {
+    await assert.rejects(
+      () => client.connect(),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /Internal error/);
+        assert.match(message, /JSON-RPC -32603/);
+        assert.match(message, /mock provider unavailable/);
+        assert.match(message, /mock bridge session initialization failed/);
+        assert.doesNotMatch(message, /must-not-leak|token/);
+        return true;
+      }
+    );
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
+test("AcpClient: RPC error retains safe data.details and data.errorKind", async () => {
+  const cwd = await tempDir("tent-acp-rpc-details-");
+  const client = new AcpClient({
+    command: process.execPath,
+    args: [MOCK_ACP],
+    cwd,
+    env: {
+      MOCK_ACP_RESUME_SESSION: "1",
+      MOCK_ACP_FAIL_RESUME: "1",
+      MOCK_ACP_KEEP_ALIVE: "0",
+    },
+    sessionId: "ss-rpc-details",
+    permissionPolicy: "deny",
+    label: "MockACP",
+    emit: () => undefined,
+  });
+
+  try {
+    await assert.rejects(
+      () =>
+        client.connect({
+          mode: "resume",
+          providerSessionId: "mock-acp-session-1",
+        }),
+      (error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        assert.match(message, /Internal error/);
+        assert.match(message, /JSON-RPC -32603/);
+        assert.match(message, /mock session\/resume SDK failure detail/);
+        assert.match(message, /mock_resume_failed/);
+        assert.doesNotMatch(message, /must-not-leak-resume/);
+        return true;
+      }
+    );
+  } finally {
+    await client.stop("shutdown");
+  }
+});
+
 test("AcpClient: destroyed stdin rejects pending request without hang", async () => {
   const cwd = await tempDir("tent-acp-stdin-destroyed-");
   const client = new AcpClient({

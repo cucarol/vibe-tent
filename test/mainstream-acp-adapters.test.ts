@@ -349,14 +349,22 @@ for (const [name, adapter] of [
   });
 }
 
-const RESUME_CAPABLE_MAINSTREAM: ReadonlyArray<
+/** Adapters that restore via session/load (history may stream; quarantined). */
+const LOAD_RESUME_MAINSTREAM: ReadonlyArray<
   readonly [string, () => ProviderAdapter]
 > = [
   ["OpenCode", createOpenCodeAcpAdapter],
   ["Codex", createCodexAcpAdapter],
-  ["Claude", createClaudeAcpAdapter],
   ["Copilot", createCopilotAcpAdapter],
   ["Pi", createPiAcpAdapter],
+];
+
+/** All product adapters with canResume (load or session/resume transport). */
+const RESUME_CAPABLE_MAINSTREAM: ReadonlyArray<
+  readonly [string, () => ProviderAdapter]
+> = [
+  ...LOAD_RESUME_MAINSTREAM,
+  ["Claude", createClaudeAcpAdapter],
 ];
 
 test("mainstream ACP loadSession adapters advertise canResume; Antigravity stays false", () => {
@@ -370,7 +378,7 @@ test("mainstream ACP loadSession adapters advertise canResume; Antigravity stays
   assert.equal(antigravity.resumeManagedSession, undefined);
 });
 
-for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
+for (const [name, create] of LOAD_RESUME_MAINSTREAM) {
   test(`${name} ACP resumeManagedSession uses session/load and isolates history replay`, async () => {
     const slug = name.toLowerCase();
     const cwd = await tempDir(`tent-${slug}-load-`);
@@ -428,6 +436,7 @@ for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
       "session/prompt",
     ]);
     assert.ok(!log.methods.includes("session/new"));
+    assert.ok(!log.methods.includes("session/resume"));
     assert.equal(log.loads.length, 1);
     assert.equal(log.loads[0].sessionId, "mock-acp-session-1");
     assert.equal(log.loads[0].cwd, cwd);
@@ -474,3 +483,119 @@ for (const [name, create] of RESUME_CAPABLE_MAINSTREAM) {
     }
   });
 }
+
+test("Claude ACP resumeManagedSession uses session/resume (not load/new) without history replay", async () => {
+  const cwd = await tempDir("tent-claude-resume-");
+  const logPath = path.join(cwd, "mock-acp-log.json");
+  const events: RuntimeEvent[] = [];
+  const adapter = createClaudeAcpAdapter();
+  const session = await adapter.resumeManagedSession!(
+    {
+      sessionId: "ss-claude-resume",
+      profileId: "claude-acp-default",
+      cwd,
+      env: {
+        MOCK_ACP_LOG: logPath,
+        MOCK_ACP_KEEP_ALIVE: "0",
+        // Advertise resume only — Claude managed path must not require loadSession.
+        MOCK_ACP_RESUME_SESSION: "1",
+        MOCK_ACP_HISTORY_TEXT: "OLD_HISTORY_MUST_NOT_DELIVER",
+        MOCK_ACP_PROMPT_TEXT: "POST_RESUME_ONLY",
+      },
+      command: process.execPath,
+      args: [MOCK_ACP],
+      bootstrapPrompt: "resume bootstrap after session/resume",
+      extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
+    },
+    { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+    (event) => events.push(event)
+  );
+
+  assert.equal(session.providerSessionId, "mock-acp-session-1");
+  const managed = session as typeof session & { waitBootstrap(): Promise<void> };
+  await managed.waitBootstrap();
+
+  const complete = events.filter((e) => e.type === "session.prompt_complete");
+  assert.equal(complete.length, 1);
+  assert.equal(
+    (complete[0] as Extract<RuntimeEvent, { type: "session.prompt_complete" }>)
+      .assistantText,
+    "POST_RESUME_ONLY"
+  );
+  assert.ok(
+    !events.some(
+      (e) =>
+        e.type === "session.prompt_complete" &&
+        "assistantText" in e &&
+        String(e.assistantText).includes("OLD_HISTORY")
+    )
+  );
+  // No history contamination into diagnostics either during resume.
+  assert.ok(
+    !events.some(
+      (e) =>
+        e.type === "session.stdout_tail" &&
+        "text" in e &&
+        String(e.text).includes("OLD_HISTORY")
+    )
+  );
+
+  const log = await readJsonWhenComplete<{
+    methods: string[];
+    loads: unknown[];
+    resumes: Array<{ sessionId: string; cwd: string; hasMcpServers: boolean }>;
+    prompts: string[];
+  }>(logPath, (value) => value.methods.includes("session/prompt"));
+  assert.deepEqual(log.methods.slice(0, 3), [
+    "initialize",
+    "session/resume",
+    "session/prompt",
+  ]);
+  assert.ok(!log.methods.includes("session/new"));
+  assert.ok(!log.methods.includes("session/load"));
+  assert.equal(log.loads?.length ?? 0, 0);
+  assert.equal(log.resumes.length, 1);
+  assert.equal(log.resumes[0].sessionId, "mock-acp-session-1");
+  assert.equal(log.resumes[0].cwd, cwd);
+  assert.equal(log.resumes[0].hasMcpServers, true);
+  assert.deepEqual(log.prompts, ["resume bootstrap after session/resume"]);
+  await session.stop("shutdown");
+});
+
+test("Claude ACP resumeManagedSession fails loud when sessionCapabilities.resume unsupported", async () => {
+  const cwd = await tempDir("tent-claude-noresume-");
+  const logPath = path.join(cwd, "mock-acp-log.json");
+  const adapter = createClaudeAcpAdapter();
+  await assert.rejects(
+    () =>
+      adapter.resumeManagedSession!(
+        {
+          sessionId: "ss-claude-noresume",
+          profileId: "claude-acp-default",
+          cwd,
+          env: {
+            MOCK_ACP_LOG: logPath,
+            MOCK_ACP_KEEP_ALIVE: "0",
+            // loadSession alone must not satisfy Claude resume transport
+            MOCK_ACP_LOAD_SESSION: "1",
+          },
+          command: process.execPath,
+          args: [MOCK_ACP],
+          bootstrapPrompt: "should not prompt",
+          extras: { acp: { promptTimeoutMs: 5_000, permissionPolicy: "deny" } },
+        },
+        { raw: "mock-acp-session-1", providerSessionId: "mock-acp-session-1" },
+        () => undefined
+      ),
+    /sessionCapabilities\.resume|session\/resume/i
+  );
+  try {
+    const log = JSON.parse(await fs.readFile(logPath, "utf8")) as {
+      methods: string[];
+    };
+    assert.ok(!log.methods.includes("session/new"));
+    assert.ok(!log.methods.includes("session/load"));
+  } catch {
+    // no log file is fine
+  }
+});

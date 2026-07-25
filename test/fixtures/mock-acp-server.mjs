@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
  * Offline mock Grok ACP stdio server for Tent tests.
- * Speaks initialize / authenticate / session/new / session/load / session/prompt + session/update.
+ * Speaks initialize / authenticate / session/new / session/load / session/resume /
+ * session/prompt + session/update.
  * NEVER contacts api.x.ai or any network. Refuse if asked to.
  *
  * Env:
@@ -17,12 +18,15 @@
  *   MOCK_ACP_PERMISSION_COUNT — concurrent permission requests to send (default 1)
  *   MOCK_ACP_KEEP_ALIVE — "1" stay alive after prompt until SIGTERM (default 1)
  *   MOCK_ACP_FAIL_AUTH — "1" reject authenticate
+ *   MOCK_ACP_FAIL_NEW — "1" reject session/new with safe + secret-shaped data
  *   MOCK_ACP_LOG — optional path to write JSON log of requests
  *   MOCK_ACP_LOAD_SESSION — "1" advertise agentCapabilities.loadSession (default 0)
+ *   MOCK_ACP_RESUME_SESSION — "1" advertise agentCapabilities.sessionCapabilities.resume={} (default 0)
  *   MOCK_ACP_HISTORY_TEXT — history agent_message_chunk text on session/load (default "HISTORY_REPLAY")
  *   MOCK_ACP_LATE_HISTORY_MS — emit one replay chunk after load result (bridge hardening test)
  *   MOCK_ACP_FAIL_LOAD — "1" reject session/load
- *   MOCK_ACP_KNOWN_SESSION_ID — only this sessionId succeeds on load (default mock-acp-session-1)
+ *   MOCK_ACP_FAIL_RESUME — "1" reject session/resume
+ *   MOCK_ACP_KNOWN_SESSION_ID — only this sessionId succeeds on load/resume (default mock-acp-session-1)
  */
 import * as fs from "node:fs";
 import * as readline from "node:readline";
@@ -58,6 +62,7 @@ const permissionCount = Math.max(
 );
 const keepAlive = process.env.MOCK_ACP_KEEP_ALIVE !== "0";
 const failAuth = process.env.MOCK_ACP_FAIL_AUTH === "1";
+const failNew = process.env.MOCK_ACP_FAIL_NEW === "1";
 /** empty | error | interrupt — special prompt outcomes for managed-delivery tests */
 const promptMode = process.env.MOCK_ACP_PROMPT_MODE || "ok";
 const stopReasonEnv = process.env.MOCK_ACP_STOP_REASON || "end_turn";
@@ -68,6 +73,11 @@ const dieExitCode = Number(process.env.MOCK_ACP_DIE_EXIT_CODE || "1");
 /** Advertise loadSession capability (default off — matches schema default false). */
 const loadSessionCapable = process.env.MOCK_ACP_LOAD_SESSION === "1";
 /**
+ * Advertise sessionCapabilities.resume={} (default off).
+ * Matches ACP: omitted/null = unsupported; `{}` = session/resume supported.
+ */
+const resumeSessionCapable = process.env.MOCK_ACP_RESUME_SESSION === "1";
+/**
  * Advertise agentCapabilities.promptCapabilities.image (default off).
  * Only explicit "1" opts in — matches ACP schema default false.
  */
@@ -75,6 +85,7 @@ const promptImageCapable = process.env.MOCK_ACP_PROMPT_IMAGE === "1";
 const historyText = process.env.MOCK_ACP_HISTORY_TEXT || "HISTORY_REPLAY";
 const lateHistoryMs = Number(process.env.MOCK_ACP_LATE_HISTORY_MS || "0");
 const failLoad = process.env.MOCK_ACP_FAIL_LOAD === "1";
+const failResume = process.env.MOCK_ACP_FAIL_RESUME === "1";
 const knownSessionId =
   process.env.MOCK_ACP_KNOWN_SESSION_ID || "mock-acp-session-1";
 /**
@@ -103,8 +114,11 @@ const log = {
   promptBlocks: [],
   news: [],
   loads: [],
+  /** session/resume params (no history replay by contract). */
+  resumes: [],
   permissionOutcomes: [],
   loadSessionCapable,
+  resumeSessionCapable,
   promptImageCapable,
   envKeysPresent: {
     CPA_GROK_API_KEY: Boolean(process.env.CPA_GROK_API_KEY),
@@ -203,6 +217,10 @@ rl.on("line", (line) => {
     const agentCapabilities = {};
     // Schema default loadSession=false; only advertise when MOCK_ACP_LOAD_SESSION=1.
     if (loadSessionCapable) agentCapabilities.loadSession = true;
+    // sessionCapabilities.resume: omit when off; `{}` when MOCK_ACP_RESUME_SESSION=1.
+    if (resumeSessionCapable) {
+      agentCapabilities.sessionCapabilities = { resume: {} };
+    }
     // Schema default promptCapabilities.image=false; only advertise when MOCK_ACP_PROMPT_IMAGE=1.
     if (promptImageCapable) {
       agentCapabilities.promptCapabilities = { image: true };
@@ -237,6 +255,23 @@ rl.on("line", (line) => {
     const params = msg.params ?? {};
     // Never log secret values from mcpServers env/headers — names + counts only.
     log.news.push(summarizeSessionStartParams(params));
+    if (failNew) {
+      process.stderr.write("mock bridge session initialization failed\n");
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: "Internal error",
+          data: {
+            reason: "mock provider unavailable",
+            token: "must-not-leak",
+          },
+        },
+      });
+      flushLog();
+      return;
+    }
     if (!Array.isArray(params.mcpServers)) {
       write({
         jsonrpc: "2.0",
@@ -352,6 +387,87 @@ rl.on("line", (line) => {
         flushLog();
       }, lateHistoryMs);
     }
+    flushLog();
+    return;
+  }
+
+  if (msg.method === "session/resume") {
+    const params = msg.params ?? {};
+    log.resumes.push({
+      ...summarizeSessionStartParams(params),
+      sessionId: params.sessionId ?? null,
+      cwd: params.cwd ?? null,
+      hasMcpServers: Array.isArray(params.mcpServers),
+      mcpServersLen: Array.isArray(params.mcpServers)
+        ? params.mcpServers.length
+        : null,
+    });
+
+    if (!resumeSessionCapable) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32601,
+          message:
+            "mock: method not found session/resume (sessionCapabilities.resume false)",
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    if (failResume) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32603,
+          message: "Internal error",
+          data: {
+            details: "mock session/resume SDK failure detail",
+            errorKind: "mock_resume_failed",
+            token: "must-not-leak-resume",
+          },
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    // session/resume requires sessionId + cwd; mcpServers always sent by Tent.
+    if (!params.sessionId || !params.cwd || !Array.isArray(params.mcpServers)) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32602,
+          message: "mock session/resume requires sessionId, cwd, mcpServers",
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    if (params.sessionId !== knownSessionId) {
+      write({
+        jsonrpc: "2.0",
+        id: msg.id,
+        error: {
+          code: -32000,
+          message: `mock session/resume unknown sessionId: ${params.sessionId}`,
+        },
+      });
+      flushLog();
+      return;
+    }
+
+    // Contract: no history replay (unlike session/load). Do not emit historyText.
+    write({
+      jsonrpc: "2.0",
+      id: msg.id,
+      result: {},
+    });
     flushLog();
     return;
   }
