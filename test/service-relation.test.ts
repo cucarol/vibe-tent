@@ -357,3 +357,292 @@ test("relation.create rejects archived/invalid source; graph keeps relation edge
     assert.equal(archivedCreate.error!.code, -32010);
   });
 });
+
+test("corrupt/future-format relations: mutation fails loud; disk + no concept.changed", async () => {
+  await withService(async (svc) => {
+    const { workspaceId, systemFs } = await mountScaffold(svc);
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const alpha = await createNote(svc, workspaceId, "Alpha");
+    const beta = await createNote(svc, workspaceId, "Beta");
+
+    let etag = await readEtag(svc, workspaceId, alpha.id);
+    const created = (await client.relationCreate(workspaceId, {
+      id: alpha.id,
+      kind: "related",
+      direction: "directed",
+      target: { nodeId: beta.id },
+      baseEtag: etag,
+    })) as RelationMutationResult;
+
+    const notePath = boxNotePath(alpha.path);
+    const before = await systemFs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(before);
+    data.relations = [
+      ...(Array.isArray(data.relations) ? (data.relations as unknown[]) : []),
+      {
+        id: "rl-future99",
+        kind: "related",
+        direction: "directed",
+        nodeId: beta.id,
+        futureField: "do-not-erase",
+      },
+    ];
+    const planted = serializeFrontmatter(data, body, keyOrder);
+    await systemFs.writeFile(notePath, planted);
+    etag = await readEtag(svc, workspaceId, alpha.id);
+
+    const conceptEvents: Array<Record<string, unknown>> = [];
+    const unsub = svc.events.subscribe((ev) => {
+      if (ev.workspaceId !== workspaceId) return;
+      if (ev.type === "concept.changed") {
+        const payload = ev.payload as Record<string, unknown>;
+        if (typeof payload.reason === "string" && payload.reason.startsWith("relation.")) {
+          conceptEvents.push(payload);
+        }
+      }
+    });
+
+    // Read projection is migration-tolerant (projects canonical core of future-format row).
+    const listed = (await client.relationList(workspaceId, {
+      id: alpha.id,
+    })) as RelationListResult;
+    assert.ok(listed.outgoing.some((r) => r.id === created.relation.id));
+    assert.ok(listed.outgoing.some((r) => r.id === "rl-future99"));
+    assert.equal(
+      listed.outgoing.some(
+        (r) => "futureField" in (r as unknown as Record<string, unknown>)
+      ),
+      false,
+      "wire projection is canonical only"
+    );
+
+    for (const [method, params] of [
+      [
+        "relation.create",
+        {
+          workspaceId,
+          id: alpha.id,
+          kind: "other",
+          direction: "directed",
+          target: { unresolved: "x" },
+          baseEtag: etag,
+          actor: "user",
+        },
+      ],
+      [
+        "relation.update",
+        {
+          workspaceId,
+          id: alpha.id,
+          relationId: created.relation.id,
+          kind: "blocks",
+          baseEtag: etag,
+          actor: "user",
+        },
+      ],
+      [
+        "relation.delete",
+        {
+          workspaceId,
+          id: alpha.id,
+          relationId: created.relation.id,
+          baseEtag: etag,
+          actor: "user",
+        },
+      ],
+    ] as const) {
+      const res = await rpc(svc, method, params as Record<string, unknown>);
+      assert.ok(res.error, `${method} should fail`);
+      assert.equal(res.error!.code, -32602, method);
+      const data = res.error!.data as { code?: string } | undefined;
+      assert.equal(data?.code, "relations_corrupt", method);
+    }
+
+    assert.equal(conceptEvents.length, 0);
+    const after = await systemFs.readFile(notePath);
+    assert.equal(after, planted, "disk bytes must be unchanged");
+    unsub();
+  });
+});
+
+test("relation validation compact: dual target, empty kind, direction, empty patch, wrong source, invalid nodes, raw write, unresolved graph", async () => {
+  await withService(async (svc) => {
+    const { workspaceId, systemFs, workspace } = await mountScaffold(svc);
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const alpha = await createNote(svc, workspaceId, "Alpha");
+    const beta = await createNote(svc, workspaceId, "Beta");
+    const gamma = await createNote(svc, workspaceId, "Gamma");
+
+    let etag = await readEtag(svc, workspaceId, alpha.id);
+    const created = (await client.relationCreate(workspaceId, {
+      id: alpha.id,
+      kind: "related",
+      direction: "directed",
+      target: { unresolved: "OpenTarget" },
+      baseEtag: etag,
+    })) as RelationMutationResult;
+    etag = created.etag;
+
+    // Dual target (nodeId + unresolved) rejected
+    const dual = await rpc(svc, "relation.create", {
+      workspaceId,
+      id: alpha.id,
+      kind: "related",
+      direction: "directed",
+      target: { nodeId: beta.id, unresolved: "also" },
+      baseEtag: etag,
+      actor: "user",
+    });
+    assert.ok(dual.error);
+    assert.equal(dual.error!.code, -32602);
+
+    // Empty kind
+    const emptyKind = await rpc(svc, "relation.create", {
+      workspaceId,
+      id: alpha.id,
+      kind: "   ",
+      direction: "directed",
+      target: { unresolved: "x" },
+      baseEtag: etag,
+      actor: "user",
+    });
+    assert.ok(emptyKind.error);
+    assert.equal(emptyKind.error!.code, -32602);
+
+    // Invalid direction
+    const badDir = await rpc(svc, "relation.create", {
+      workspaceId,
+      id: alpha.id,
+      kind: "related",
+      direction: "sideways",
+      target: { unresolved: "x" },
+      baseEtag: etag,
+      actor: "user",
+    });
+    assert.ok(badDir.error);
+    assert.equal(badDir.error!.code, -32602);
+
+    // Empty update patch
+    const emptyPatch = await rpc(svc, "relation.update", {
+      workspaceId,
+      id: alpha.id,
+      relationId: created.relation.id,
+      baseEtag: etag,
+      actor: "user",
+    });
+    assert.ok(emptyPatch.error);
+    assert.equal(emptyPatch.error!.code, -32602);
+    assert.match(emptyPatch.error!.message, /at least one/i);
+
+    // Wrong-source update/delete: relation lives on alpha, not beta
+    const betaEtag = await readEtag(svc, workspaceId, beta.id);
+    const wrongUpdate = await rpc(svc, "relation.update", {
+      workspaceId,
+      id: beta.id,
+      relationId: created.relation.id,
+      kind: "hijack",
+      baseEtag: betaEtag,
+      actor: "user",
+    });
+    assert.ok(wrongUpdate.error);
+    assert.equal(wrongUpdate.error!.code, -32004);
+
+    const wrongDelete = await rpc(svc, "relation.delete", {
+      workspaceId,
+      id: beta.id,
+      relationId: created.relation.id,
+      baseEtag: betaEtag,
+      actor: "user",
+    });
+    assert.ok(wrongDelete.error);
+    assert.equal(wrongDelete.error!.code, -32004);
+
+    // Invalid target (archived)
+    await rpc(svc, "docs.setMode", {
+      workspaceId,
+      id: gamma.id,
+      mode: "archived",
+      actor: "user",
+    });
+    const archivedTarget = await rpc(svc, "relation.create", {
+      workspaceId,
+      id: alpha.id,
+      kind: "related",
+      direction: "directed",
+      target: { nodeId: gamma.id },
+      baseEtag: etag,
+      actor: "user",
+    });
+    assert.ok(archivedTarget.error);
+    assert.equal(archivedTarget.error!.code, -32602);
+
+    // Invalid source (unknown type → invalid node)
+    const inv = await createNote(svc, workspaceId, "Broken");
+    const invNote = boxNotePath(inv.path);
+    const invRaw = await systemFs.readFile(invNote);
+    const invParsed = parseFrontmatter(invRaw);
+    invParsed.data.type = "not-a-real-type";
+    await systemFs.writeFile(
+      invNote,
+      serializeFrontmatter(invParsed.data, invParsed.body, invParsed.keyOrder)
+    );
+    const invEtag = await readEtag(svc, workspaceId, inv.id);
+    const invalidSource = await rpc(svc, "relation.create", {
+      workspaceId,
+      id: inv.id,
+      kind: "related",
+      direction: "directed",
+      target: { unresolved: "x" },
+      baseEtag: invEtag,
+      actor: "user",
+    });
+    assert.ok(invalidSource.error);
+    assert.equal(invalidSource.error!.code, -32010);
+
+    // raw docs.write cannot bypass relations semantic guard
+    const rawBypass = await rpc(svc, "docs.write", {
+      workspaceId,
+      id: alpha.id,
+      baseEtag: etag,
+      raw: serializeFrontmatter(
+        {
+          id: alpha.id,
+          type: "prompt",
+          relations: [
+            {
+              id: "rl-sneaky01",
+              kind: "related",
+              direction: "directed",
+              unresolved: "hack",
+            },
+          ],
+        },
+        "# Alpha\n",
+        ["id", "type", "relations"]
+      ),
+      actor: "user",
+    });
+    assert.ok(rawBypass.error);
+    assert.equal(rawBypass.error!.code, -32010);
+    assert.match(rawBypass.error!.message, /relations|semantic/i);
+
+    // Unresolved graph edge shape
+    const graph = (await client.graphProjection(workspaceId)) as GraphProjection;
+    const openEdge = graph.edges.relation.find((e) => e.id === created.relation.id);
+    assert.ok(openEdge);
+    assert.equal(openEdge!.toId, undefined);
+    assert.equal(openEdge!.unresolved, "OpenTarget");
+    assert.equal(openEdge!.fromId, alpha.id);
+    assert.equal(openEdge!.kind, "related");
+    assert.equal(openEdge!.direction, "directed");
+
+    // Ensure alpha still has only the original relation (no silent writes)
+    const listed = (await client.relationList(workspaceId, {
+      id: alpha.id,
+    })) as RelationListResult;
+    assert.equal(listed.outgoing.length, 1);
+    assert.equal(listed.outgoing[0]!.id, created.relation.id);
+
+    void workspace;
+  });
+});

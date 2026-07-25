@@ -1858,6 +1858,13 @@ function mapRelationError(err: unknown, surface: string): RpcError {
     if (err.code === "ARCHIVED" || err.code === "INVALID") {
       return new RpcError(-32010, `${surface} rejected: ${err.message}`, { code: err.code });
     }
+    // CORRUPT: raw relations cannot all round-trip; refuse mutation (disk unchanged).
+    if (err.code === "CORRUPT") {
+      return new RpcError(-32602, err.message, {
+        code: "relations_corrupt",
+        reason: err.code,
+      });
+    }
     if (err.code === "TARGET" || err.code === "INVALID_INPUT") {
       return new RpcError(-32602, err.message, { code: err.code });
     }
@@ -1869,6 +1876,9 @@ function mapRelationError(err: unknown, surface: string): RpcError {
   }
   if (/archived|invalid/i.test(message)) {
     return new RpcError(-32010, message);
+  }
+  if (/corrupt|non-canonical|unrecognized field|duplicate id/i.test(message)) {
+    return new RpcError(-32602, message, { code: "relations_corrupt" });
   }
   return new RpcError(-32000, message);
 }

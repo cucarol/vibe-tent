@@ -8,12 +8,14 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import {
+  assertRawRelationsCanonicalForMutation,
   createRelation,
   deleteRelation,
   isRelationId,
   listRelationsForNode,
   normalizeRelationsList,
   parseRelationRecord,
+  RelationError,
   updateRelation,
 } from "../src/core/relations.js";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
@@ -237,4 +239,117 @@ test("loadTent loads relations; body wiki links stay out of relations array", as
   assert.ok(loaded.body.includes("[[Beta]]"));
   // relations array still only the explicit semantic record
   assert.equal(loaded.relations[0]!.kind, "related");
+});
+
+test("read projection tolerates corrupt rows; mutation refuses and leaves disk unchanged", async () => {
+  const { systemFs } = await makeSystemRoot();
+  const tent0 = await loadTent(systemFs);
+  const alpha = [...tent0.byId.values()].find((b) => b.name === "Alpha")!;
+  const beta = [...tent0.byId.values()].find((b) => b.name === "Beta")!;
+
+  const good = await createRelation(systemFs, alpha.id, {
+    kind: "related",
+    direction: "directed",
+    target: { nodeId: beta.id },
+  });
+
+  const notePath = boxNotePath(alpha.path);
+  const beforeRaw = await systemFs.readFile(notePath);
+  const { data, body, keyOrder } = parseFrontmatter(beforeRaw);
+  // Plant: (1) future-format extra field (2) truly corrupt id — both must block mutation.
+  data.relations = [
+    ...(Array.isArray(data.relations) ? (data.relations as unknown[]) : []),
+    {
+      id: "rl-future01",
+      kind: "related",
+      direction: "directed",
+      nodeId: beta.id,
+      schemaVersion: 99,
+    },
+    {
+      id: "not-a-relation-id",
+      kind: "related",
+      direction: "directed",
+      nodeId: beta.id,
+    },
+  ];
+  const planted = serializeFrontmatter(data, body, keyOrder);
+  await systemFs.writeFile(notePath, planted);
+
+  // Read projection is migration-tolerant: drops non-parseable; may still project
+  // future-format rows that have a valid canonical core (extra keys stripped in memory).
+  const tent = await loadTent(systemFs);
+  const projected = tent.byId.get(alpha.id)!.relations;
+  assert.ok(projected.some((r) => r.id === good.id));
+  assert.equal(
+    projected.some((r) => r.id === "not-a-relation-id"),
+    false,
+    "corrupt id dropped on read"
+  );
+  // future-format core still projects (schemaVersion not part of RelationRecord)
+  assert.ok(projected.some((r) => r.id === "rl-future01"));
+
+  // Mutation gate fails loud on either unrecognized fields or non-canonical rows.
+  assert.throws(
+    () =>
+      assertRawRelationsCanonicalForMutation([
+        { id: good.id, kind: "related", direction: "directed", nodeId: beta.id },
+        {
+          id: "rl-future01",
+          kind: "related",
+          direction: "directed",
+          nodeId: beta.id,
+          schemaVersion: 99,
+        },
+      ]),
+    (err: unknown) => err instanceof RelationError && err.code === "CORRUPT"
+  );
+  assert.throws(
+    () =>
+      assertRawRelationsCanonicalForMutation([
+        { id: good.id, kind: "related", direction: "directed", nodeId: beta.id },
+        {
+          id: "not-a-relation-id",
+          kind: "related",
+          direction: "directed",
+          nodeId: beta.id,
+        },
+      ]),
+    (err: unknown) => err instanceof RelationError && err.code === "CORRUPT"
+  );
+
+  await assert.rejects(
+    () =>
+      createRelation(systemFs, alpha.id, {
+        kind: "other",
+        direction: "directed",
+        target: { unresolved: "x" },
+      }),
+    (err: unknown) => err instanceof RelationError && err.code === "CORRUPT"
+  );
+  await assert.rejects(
+    () =>
+      updateRelation(systemFs, alpha.id, good.id, {
+        kind: "blocks",
+      }),
+    (err: unknown) => err instanceof RelationError && err.code === "CORRUPT"
+  );
+  await assert.rejects(
+    () => deleteRelation(systemFs, alpha.id, good.id),
+    (err: unknown) => err instanceof RelationError && err.code === "CORRUPT"
+  );
+
+  // Disk bytes unchanged after failed mutations.
+  const afterRaw = await systemFs.readFile(notePath);
+  assert.equal(afterRaw, planted);
+
+  // Duplicate ids also refuse mutation.
+  assert.throws(
+    () =>
+      assertRawRelationsCanonicalForMutation([
+        { id: "rl-dup00001", kind: "a", direction: "directed", nodeId: "cx-a" },
+        { id: "rl-dup00001", kind: "b", direction: "directed", nodeId: "cx-b" },
+      ]),
+    /duplicate id/i
+  );
 });

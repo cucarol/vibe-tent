@@ -22,7 +22,9 @@ export type RelationErrorCode =
   | "NOT_FOUND"
   | "TARGET"
   | "ARCHIVED"
-  | "INVALID";
+  | "INVALID"
+  /** Raw source relations cannot all round-trip as canonical records; refuse mutation. */
+  | "CORRUPT";
 
 export class RelationError extends Error {
   code: RelationErrorCode;
@@ -32,6 +34,17 @@ export class RelationError extends Error {
     this.name = "RelationError";
   }
 }
+
+/** Keys allowed on a durable relation frontmatter item (flat or nested-target form). */
+const CANONICAL_RELATION_KEYS = new Set([
+  "id",
+  "kind",
+  "direction",
+  "label",
+  "nodeId",
+  "unresolved",
+  "target",
+]);
 
 export type CreateRelationInput = {
   kind: string;
@@ -205,7 +218,10 @@ export function parseRelationRecord(raw: unknown): RelationRecord | null {
   return out;
 }
 
-/** Normalize a frontmatter relations array; drop corrupt rows; preserve first-seen id order. */
+/**
+ * Load-time / read-projection normalize: drop corrupt rows; preserve first-seen id order.
+ * Migration-tolerant — never fail load on a bad row.
+ */
 export function normalizeRelationsList(value: unknown): RelationRecord[] {
   if (!Array.isArray(value)) return [];
   const out: RelationRecord[] = [];
@@ -218,6 +234,82 @@ export function normalizeRelationsList(value: unknown): RelationRecord[] {
     out.push(parsed);
   }
   return out;
+}
+
+/**
+ * Mutation durability gate: every raw relations array item must round-trip as a
+ * valid canonical RelationRecord. Unrecognized / corrupt / future-format rows and
+ * duplicate ids fail loud — no silent erase, no repair heuristics.
+ *
+ * Read projection continues to use normalizeRelationsList (tolerant).
+ * Returns the full canonical list to use as the mutation base.
+ */
+export function assertRawRelationsCanonicalForMutation(value: unknown): RelationRecord[] {
+  if (value === undefined) return [];
+  if (!Array.isArray(value)) {
+    throw new RelationError(
+      "CORRUPT",
+      "Source relations must be an array of canonical relation records"
+    );
+  }
+  const out: RelationRecord[] = [];
+  const seen = new Set<string>();
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!isRecord(item)) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations[${i}] is not a canonical relation record`
+      );
+    }
+    for (const key of Object.keys(item)) {
+      if (!CANONICAL_RELATION_KEYS.has(key)) {
+        throw new RelationError(
+          "CORRUPT",
+          `Source relations[${i}] has unrecognized field: ${key}`
+        );
+      }
+    }
+    if (isRecord(item.target)) {
+      for (const key of Object.keys(item.target)) {
+        if (key !== "nodeId" && key !== "unresolved") {
+          throw new RelationError(
+            "CORRUPT",
+            `Source relations[${i}].target has unrecognized field: ${key}`
+          );
+        }
+      }
+    }
+    const parsed = parseRelationRecord(item);
+    if (!parsed) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations[${i}] is corrupt or non-canonical`
+      );
+    }
+    if (seen.has(parsed.id)) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations contain duplicate id: ${parsed.id}`
+      );
+    }
+    seen.add(parsed.id);
+    out.push(parsed);
+  }
+  return out;
+}
+
+/**
+ * Read identity-note raw relations and assert they are fully canonical for mutation.
+ * Leaves disk untouched on failure (caller must not write after throw).
+ */
+export async function loadCanonicalRelationsForMutation(
+  fs: FsAdapter,
+  boxPath: string
+): Promise<RelationRecord[]> {
+  const notePath = boxNotePath(boxPath);
+  const { data } = parseFrontmatter(await fs.readFile(notePath));
+  return assertRawRelationsCanonicalForMutation(data.relations);
 }
 
 /** Persist shape: flat target fields (no nested target object) for honest minimal YAML. */
@@ -334,6 +426,9 @@ export async function createRelation(
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
 
+    // Durability: refuse mutation if raw FM would lose unrecognized/corrupt rows.
+    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+
     const kind = normalizeRelationKind(input.kind);
     const direction = normalizeRelationDirection(input.direction);
     const label = normalizeRelationLabel(input.label);
@@ -345,11 +440,12 @@ export async function createRelation(
     for (const b of tent.byId.values()) {
       for (const r of b.relations) existing.add(r.id);
     }
+    for (const r of base) existing.add(r.id);
     const id = makeUniqueRelationId(existing, rand);
     const record: RelationRecord = { id, kind, direction, target };
     if (label !== undefined) record.label = label;
 
-    const next = [...box.relations.map(cloneRelation), record];
+    const next = [...base.map(cloneRelation), record];
     await writeBoxRelations(fs, box, next);
     box.relations = next.map(cloneRelation);
     box.fm.relations = relationsToFrontmatterValue(next);
@@ -370,11 +466,12 @@ export async function updateRelation(
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
 
-    const idx = box.relations.findIndex((r) => r.id === relationId);
+    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+    const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
-    const current = cloneRelation(box.relations[idx]!);
+    const current = cloneRelation(base[idx]!);
 
     if (patch.kind !== undefined) current.kind = normalizeRelationKind(patch.kind);
     if (patch.direction !== undefined) {
@@ -390,7 +487,7 @@ export async function updateRelation(
       assertResolvedTargetUsable(tent, current.target);
     }
 
-    const next = box.relations.map((r, i) => (i === idx ? current : cloneRelation(r)));
+    const next = base.map((r, i) => (i === idx ? current : cloneRelation(r)));
     await writeBoxRelations(fs, box, next);
     box.relations = next.map(cloneRelation);
     box.fm.relations = relationsToFrontmatterValue(next);
@@ -410,11 +507,12 @@ export async function deleteRelation(
     if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
     assertSourceMutable(box);
 
-    const idx = box.relations.findIndex((r) => r.id === relationId);
+    const base = await loadCanonicalRelationsForMutation(fs, box.path);
+    const idx = base.findIndex((r) => r.id === relationId);
     if (idx < 0) {
       throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
     }
-    const next = box.relations.filter((_, i) => i !== idx).map(cloneRelation);
+    const next = base.filter((_, i) => i !== idx).map(cloneRelation);
     await writeBoxRelations(fs, box, next);
     box.relations = next.map(cloneRelation);
     const fmValue = relationsToFrontmatterValue(next);
