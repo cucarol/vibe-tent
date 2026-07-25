@@ -354,99 +354,34 @@ function sortByOrder(items, order, fallback) {
 }
 
 // src/core/typeRegistry.ts
+var CANONICAL_PRIMARY_TYPES = ["goal", "prompt", "output"];
+var BUILTIN_SECONDARY_TYPES = ["reference", "asset"];
 var DEFAULT_TYPE_REGISTRY = {
-  note: {
-    readable: true,
-    writable: true,
-    color: "gray",
-    tier: "base",
-    coordination: false,
-    description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
-  },
-  goal: {
-    readable: true,
-    writable: false,
-    color: "blue",
-    tier: "base",
-    coordination: true,
-    description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
-  },
-  prompt: {
-    readable: true,
-    writable: true,
-    color: "purple",
-    tier: "base",
-    coordination: true,
-    description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
-  },
-  artifact: {
-    readable: true,
-    writable: true,
-    color: "cyan",
-    tier: "base",
-    coordination: true,
-    description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
-  },
-  open: {
-    readable: true,
-    writable: true,
-    color: "green",
-    tier: "modifier",
-    description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
-  },
-  reference: {
-    readable: true,
-    color: "blue",
-    tier: "modifier",
-    description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
-  },
-  asset: {
-    writable: true,
-    color: "purple",
-    tier: "modifier",
-    description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
-  },
-  sealed: {
-    readable: false,
-    writable: false,
-    color: "red",
-    tier: "modifier",
-    description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
-  }
+  goal: { tier: "base" },
+  prompt: { tier: "base" },
+  output: { tier: "base" },
+  reference: { tier: "modifier" },
+  asset: { tier: "modifier" }
 };
 function splitType(type) {
   const i = type.indexOf("-");
   if (i === -1) return { base: type };
   return { base: type.slice(0, i), modifier: type.slice(i + 1) };
 }
-function canonicalTypeName(type) {
-  if (type === "output") return "artifact";
-  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
-  return type;
+function isCanonicalPrimary(name) {
+  return CANONICAL_PRIMARY_TYPES.includes(name);
+}
+function isBuiltinSecondary(name) {
+  return BUILTIN_SECONDARY_TYPES.includes(name);
 }
 function typeExists(type, registry) {
-  const canonical = canonicalTypeName(type);
-  if (registry[canonical] || registry[type]) return true;
-  const { base, modifier } = splitType(canonical);
-  return !!(registry[base] && (modifier === void 0 || !!registry[modifier]));
-}
-function resolveTypeAxis(type, axis, registry) {
-  const canonical = canonicalTypeName(type);
-  const exact = registry[canonical] ?? registry[type];
-  if (exact) return exact[axis];
-  const { base, modifier } = splitType(canonical);
-  const baseVal = registry[base]?.[axis];
-  const modVal = modifier ? registry[modifier]?.[axis] : void 0;
-  return typeof modVal === "boolean" ? modVal : baseVal;
-}
-function typeHasCoordination(type, registry) {
-  const canonical = canonicalTypeName(type);
-  const { base } = splitType(canonical);
-  return baseDefinitionCoordination(registry[base] ?? registry[canonical] ?? registry[type]) === true;
-}
-function baseDefinitionCoordination(definition2) {
-  if (!definition2 || definition2.tier === "modifier") return void 0;
-  return definition2.coordination;
+  if (registry[type]) return true;
+  const { base, modifier } = splitType(type);
+  const baseOk = !!registry[base] && (registry[base].tier ?? "base") !== "modifier";
+  if (!baseOk) return false;
+  if (modifier === void 0) return true;
+  const mod = registry[modifier];
+  return !!mod && mod.tier === "modifier";
 }
 async function loadTypeRegistry(fs21) {
   if (!await fs21.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
@@ -462,75 +397,62 @@ function normalizeRegistry(value) {
   const root = isRecord(value) ? value : {};
   const registry = cloneDefaults();
   if (isRecord(root.primary) || isRecord(root.secondary)) {
-    mergeDefinitions(registry, root.primary, true, "base");
-    mergeDefinitions(registry, root.secondary, false, "modifier");
-    applyLegacyOutputAlias(registry);
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.primary));
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.secondary), "modifier");
+    finalizeRegistry(registry);
     return registry;
   }
-  mergeDefinitions(registry, root);
-  applyLegacyOutputAlias(registry);
+  mergeDefinitions(registry, mapLegacyBucketKeys(root));
+  finalizeRegistry(registry);
   return registry;
 }
-function applyLegacyOutputAlias(registry) {
-  if (registry.output && !isRecord(registry.output)) return;
-  if (registry.output) {
-    const out = registry.output;
-    if (out.tier !== "modifier") {
-      const artifact = registry.artifact;
-      if (artifact && artifact.tier !== "modifier") {
-        if (typeof out.readable === "boolean") artifact.readable = out.readable;
-        if (typeof out.writable === "boolean") artifact.writable = out.writable;
-        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
-        else if (out.coordination === void 0) artifact.coordination = true;
-        if (out.color) artifact.color = out.color;
-        if (out.description) artifact.description = out.description;
-      }
-    }
+function mapLegacyBucketKeys(source) {
+  if (!isRecord(source)) return {};
+  const out = {};
+  for (const [rawName, raw] of Object.entries(source)) {
+    const name = mapLegacyTypeKey(rawName);
+    if (!name) continue;
+    if (out[name] === void 0) out[name] = raw;
   }
+  return out;
 }
-function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
+function mapLegacyTypeKey(name) {
+  if (name === "note") return "prompt";
+  if (name === "artifact") return "output";
+  if (name === "open" || name === "sealed") return "";
+  return name;
+}
+function mergeDefinitions(registry, source, defaultTier) {
   if (!isRecord(source)) return;
   for (const [name, raw] of Object.entries(source)) {
     if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
     const current = registry[name];
-    const tier = raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier;
-    const resolvedTier = tier ?? "base";
-    const readable = typeof raw.readable === "boolean" ? raw.readable : void 0;
-    const writable = typeof raw.writable === "boolean" ? raw.writable : void 0;
-    if ((legacyBase || resolvedTier === "base") && (readable === void 0 || writable === void 0)) continue;
-    const metadata = {
-      ...typeof raw.color === "string" && raw.color ? { color: raw.color } : current?.color ? { color: current.color } : {},
-      ...typeof raw.description === "string" && raw.description ? { description: raw.description } : current?.description ? { description: current.description } : {}
-    };
-    if (resolvedTier === "modifier") {
-      registry[name] = {
-        tier: "modifier",
-        ...readable !== void 0 ? { readable } : {},
-        ...writable !== void 0 ? { writable } : {},
-        ...metadata
-      };
+    const tier = raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier ?? (isCanonicalPrimary(name) ? "base" : "modifier");
+    if (isCanonicalPrimary(name)) {
+      registry[name] = { tier: "base" };
       continue;
     }
-    const coordination = resolveCoordinationFlag(name, raw, current);
-    const entry = {
-      tier: "base",
-      readable,
-      writable,
-      ...metadata,
-      ...coordination !== void 0 ? { coordination } : {}
-    };
-    delete entry.workspacePointer;
-    registry[name] = entry;
+    if (isBuiltinSecondary(name)) {
+      registry[name] = { tier: "modifier" };
+      continue;
+    }
+    if (tier === "base") {
+      continue;
+    }
+    registry[name] = { tier: "modifier" };
   }
 }
-function resolveCoordinationFlag(name, raw, current) {
-  if (typeof raw.coordination === "boolean") return raw.coordination;
-  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
-    return current.coordination;
+function finalizeRegistry(registry) {
+  for (const p of CANONICAL_PRIMARY_TYPES) {
+    registry[p] = { tier: "base" };
   }
-  if (name === "note") return false;
-  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
-  return void 0;
+  for (const s of BUILTIN_SECONDARY_TYPES) {
+    registry[s] = { tier: "modifier" };
+  }
+  delete registry.note;
+  delete registry.artifact;
+  delete registry.open;
+  delete registry.sealed;
 }
 function cloneDefaults() {
   return Object.fromEntries(
@@ -563,7 +485,6 @@ async function loadTent(fs21) {
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
   const duplicateIds = findDuplicateIds(sortedRoots);
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
-  resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
   return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
@@ -583,8 +504,6 @@ function applyDuplicateInvalid(box, duplicateIds, inherited) {
     box.invalid = true;
     box.invalidRootId = invalid.rootId;
     box.invalidReason = invalid.reason;
-    box.readable = { value: false, source: "invalid" };
-    box.writable = { value: false, source: "invalid" };
   }
   for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
 }
@@ -614,8 +533,6 @@ async function loadBox(fs21, path22, parent, registry) {
     id: fm.id,
     type: fm.type,
     tags,
-    coordination: false,
-    // filled in resolveSubtree
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -624,10 +541,7 @@ async function loadBox(fs21, path22, parent, registry) {
     fm,
     body,
     children: [],
-    parent,
-    locked: false,
-    readable: { value: false, source: "type" },
-    writable: { value: false, source: "type" }
+    parent
   };
   if (parseError) {
     box.invalidRootId = path22;
@@ -649,20 +563,23 @@ function normalizeIdentity(data) {
     type: rawType
   };
   delete fm.archived;
+  delete fm.readable;
+  delete fm.writable;
+  delete fm.owner;
+  delete fm.status;
+  delete fm.acceptedBy;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
-  if (typeof data.readable === "boolean") fm.readable = data.readable;
-  else delete fm.readable;
-  if (typeof data.writable === "boolean") fm.writable = data.writable;
-  else delete fm.writable;
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
   return { fm, tags };
 }
 function parseNodeMode(value) {
-  if (value === "editable" || value === "read-only" || value === "archived") return value;
+  if (value === "archived") return "archived";
+  if (value === "editable") return "editable";
+  if (value === "read-only") return "editable";
   return void 0;
 }
 function isExplicitArchiveRoot(box) {
@@ -700,67 +617,10 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalidReason = invalid?.reason;
   const localMode = parseNodeMode(box.fm.mode) ?? "editable";
   box.archived = inheritedArchived || localMode === "archived";
-  box.mode = box.archived ? "archived" : localMode;
-  if (localMode === "editable") delete box.fm.mode;
-  else box.fm.mode = localMode;
-  box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
-  if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
-    delete box.fm.status;
-  }
-  if (!box.coordination) {
-    delete box.fm.status;
-  }
-  box.readable = resolveAxis(box, "readable", registry);
-  box.writable = resolveAxis(box, "writable", registry);
+  box.mode = box.archived ? "archived" : "editable";
+  if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
+  else delete box.fm.mode;
   for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
-}
-function resolveLocks(roots) {
-  for (const root of roots) clearLocks(root);
-  for (const root of roots) resolveLockSubtree(root);
-}
-function clearLocks(box) {
-  box.locked = false;
-  delete box.lockSource;
-  delete box.lockOwner;
-  for (const child of box.children) clearLocks(child);
-}
-function resolveLockSubtree(box) {
-  for (const child of box.children) {
-    resolveLockSubtree(child);
-  }
-  if (box.fm.owner) {
-    applyAncestorLock(box, box.fm.owner);
-    box.locked = true;
-    box.lockSource = "self";
-    box.lockOwner = box.fm.owner;
-  }
-}
-function applyAncestorLock(box, owner) {
-  for (const child of box.children) {
-    if (!child.fm.owner) {
-      child.locked = true;
-      child.lockSource = "ancestor";
-      child.lockOwner = owner;
-    }
-    applyAncestorLock(child, child.fm.owner || owner);
-  }
-}
-function resolveAxis(box, axis, registry) {
-  if (box.invalid) return { value: false, source: "invalid" };
-  if (box.mode === "archived" || box.archived) return { value: false, source: "archived" };
-  if (axis === "readable") {
-    return resolveDeclaredOrType(box, "readable", registry);
-  }
-  if (box.mode === "read-only") return { value: false, source: "mode" };
-  return resolveDeclaredOrType(box, "writable", registry);
-}
-function resolveDeclaredOrType(box, axis, registry) {
-  const declared = box.fm[axis];
-  if (typeof declared === "boolean") {
-    return { value: declared, source: "self" };
-  }
-  const fallback = resolveTypeAxis(box.type, axis, registry);
-  return { value: typeof fallback === "boolean" ? fallback : false, source: "type" };
 }
 function invalidTypeReference(box, registry) {
   if (!box.id) {
@@ -778,9 +638,6 @@ function assertContentMutable(box, action = "modified") {
   if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
   if (box.archived || box.mode === "archived") {
     throw new Error(`Archived boxes cannot be ${action}.`);
-  }
-  if (box.mode === "read-only") {
-    throw new Error(`Read-only boxes cannot be ${action}.`);
   }
 }
 function isContentMutable(box) {
@@ -816,14 +673,14 @@ function buildManifest(tent, input) {
   const readable = [];
   const writable = [];
   for (const box of allBoxes(tent)) {
-    if (isUsableBox(box) && box.readable.value) {
+    if (isUsableBox(box)) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
-    if (isUsableBox(box) && box.writable.value) {
+    if (isUsableBox(box)) {
       writable.push({ id: box.id, path: box.path });
     }
   }
@@ -891,8 +748,9 @@ function dedupe(entries) {
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const e of entries) {
-    if (seen.has(e.path)) continue;
-    seen.add(e.path);
+    const key = `${e.id ?? ""}|${e.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(e);
   }
   return out;
@@ -1156,13 +1014,6 @@ function structuralClaimGate(box) {
   if (box.archived) {
     return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   }
-  if (!box.coordination) {
-    return {
-      ok: false,
-      blocker: box,
-      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
-    };
-  }
   return { ok: true };
 }
 function findActiveOccupation(tent, box, tasks, options) {
@@ -1215,7 +1066,7 @@ function findAnyActiveTask(tasks) {
   return tasks.find((t) => envelopeIsActiveOccupation(t));
 }
 function isFrozen(box) {
-  return box.invalid || box.archived || box.locked;
+  return box.invalid || box.archived;
 }
 function isAncestor(ancestor, child) {
   let parent = child.parent;
@@ -2120,21 +1971,10 @@ async function taskClaim(env, taskPath, options = {}) {
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
     const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const previous2 = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy
-    }));
     const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
     const allTasks = await loadTaskEnvelopes(env.fs);
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
       const claimable = canClaim(box, {
         tent,
         tasks: peerTasks,
@@ -2142,24 +1982,14 @@ async function taskClaim(env, taskPath, options = {}) {
       });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
-    try {
-      for (const box of claimedBoxes) {
-        await projectAssignee(env.fs, box, task.role, "doing");
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now()
-        });
-      }
-      return loadTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous2) {
-        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
+    await ackTaskEnvelope(env.fs, taskPath);
+    if (options.sessionId) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        sessionId: options.sessionId,
+        updatedAt: env.clock.now()
+      });
     }
+    return loadTaskEnvelope(env.fs, taskPath);
   });
 }
 async function taskWait(env, taskPath, options) {
@@ -2254,9 +2084,6 @@ async function taskDeliver(env, taskPath, options) {
       integrationMode: routing.integrationMode,
       deliveriesDir: deliveryDirForTask(task)
     });
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, boxId);
-    await projectAssignee(env.fs, box, void 0, "done", "service");
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       activeDeliveryId: delivery.id,
@@ -2313,9 +2140,6 @@ async function taskAccept(env, taskPath, options) {
     delivery.review = { by: options.actor, decision: "accept" };
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, delivery.boxId);
-    await projectAssignee(env.fs, box, void 0, "done", options.actor);
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       wait: null,
@@ -2347,11 +2171,6 @@ async function taskReject(env, taskPath, options) {
     };
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
-    if (!resume) {
-      const tent = await loadTent(env.fs);
-      const box = requireBoxById(tent, delivery.boxId);
-      await projectAssignee(env.fs, box, void 0, "todo");
-    }
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: to,
       // Keep activeDeliveryId for history; new deliver checks ready-only.
@@ -2369,14 +2188,7 @@ async function taskInterrupt(env, taskPath) {
       return { ...task, state: "interrupted", status: "taken" };
     }
     assertTransition(task.state, "interrupt", "interrupted");
-    const tent = await loadTent(env.fs);
-    for (const claimId of task.claims) {
-      if (claimId === "root") continue;
-      const box = tent.byId.get(claimId);
-      if (!box) continue;
-      await projectAssignee(env.fs, box, void 0, "todo");
-      await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
-    }
+    await releaseOccupationForTask(env, task);
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "interrupted",
       wait: null,
@@ -2402,13 +2214,9 @@ async function taskFail(env, taskPath, options = {}) {
   });
 }
 async function releaseOccupationForTask(env, task) {
-  const tent = await loadTent(env.fs);
   for (const claimId of task.claims) {
     if (claimId === "root") continue;
-    const box = tent.byId.get(claimId);
-    if (!box) continue;
-    await projectAssignee(env.fs, box, void 0, "todo");
-    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
+    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
   }
 }
 async function taskCancel(env, taskPath) {
@@ -2466,33 +2274,6 @@ async function requireActiveReadyDelivery(fs21, task) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
-}
-async function projectAssignee(fs21, box, owner, status, acceptedBy) {
-  const patch = { owner: owner ?? void 0 };
-  if (owner) patch.acceptedBy = void 0;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs21, box, patch);
-}
-async function restoreProjection(fs21, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs21, box, {
-    owner: owner ?? void 0,
-    status: status ?? void 0,
-    acceptedBy: acceptedBy ?? void 0
-  });
-}
-async function patchFrontmatter(fs21, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  const order = [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
-  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -9643,7 +9424,7 @@ function buildBacklinkIndex(concepts) {
       path: c.path,
       notePath: c.notePath,
       name: c.name,
-      type: "note"
+      type: "prompt"
     };
     add(index2, concept.id, concept);
     add(index2, concept.path, concept);
@@ -9891,9 +9672,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   }
   assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
-    throw new Error(
-      "Claimed ranges cannot be renamed; stamp or force-release the owner first."
-    );
+    throw new Error("Invalid or archived boxes cannot be renamed.");
   }
   await assertRenameOccupationAllowed(env, tent, target);
   const oldPath = target.path;
@@ -10039,27 +9818,12 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
 }
 async function assertRenameOccupationAllowed(env, tent, concept) {
   const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot rename ${concept.name}: overlapping active task ${task.path} occupies this range.`
-        );
-      }
-    }
+  const hit = findActiveOccupation(tent, concept, tasks);
+  if (hit) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
+    );
   }
-}
-function isAncestorPath(ancestor, child) {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
 }
 function assertNotOperationalPath(path22) {
   if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
@@ -10273,11 +10037,6 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       );
     }
   } else {
-    if (!claim.box.coordination) {
-      throw new Error(
-        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
-      );
-    }
     const structural = structuralClaimGate(claim.box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
@@ -10413,13 +10172,16 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
+  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
+    (key) => key in patch
+  );
+  if (reserved.length > 0) {
+    throw new Error(
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+    );
+  }
   if (box.archived || box.mode === "archived") {
     throw new Error("Archived boxes can only be restored or permanently deleted.");
-  }
-  if (box.mode === "read-only") {
-    throw new Error("Read-only boxes cannot be patched; use docs.setMode / setNodeMode first.");
   }
   if (box.invalid) {
     const keys = Object.keys(patch);
@@ -10430,18 +10192,6 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   if ("type" in patch) {
     if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
-  }
-  if ("status" in patch) {
-    const tasks = await loadTaskEnvelopes(env.fs);
-    const occupied = findActiveOccupation(tent, box, tasks);
-    if (occupied) {
-      throw new Error(
-        "Status for boxes with an active task can only be changed by completing or interrupting the task."
-      );
-    }
-    if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("Status must be todo, doing, or done.");
-    }
   }
   const tagsTouched = "tags" in patch;
   const previousTags = box.tags.slice();
@@ -10477,8 +10227,15 @@ async function setNodeMode(env, boxId, mode) {
   await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
 }
 async function setNodeModeUnlocked(env, boxId, mode) {
+  if (mode === "read-only") {
+    throw new Error(
+      'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
+    );
+  }
   const next = parseNodeMode(mode);
-  if (!next) throw new Error('mode must be "editable", "read-only", or "archived".');
+  if (!next || next !== "editable" && next !== "archived") {
+    throw new Error('mode must be "editable" or "archived".');
+  }
   const tent = await loadTent(env.fs);
   const box = requireBoxById2(tent, boxId);
   if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
@@ -10488,14 +10245,12 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     }
     throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
   }
-  const current = isExplicitArchiveRoot(box) ? "archived" : box.mode === "read-only" ? "read-only" : "editable";
+  const current = isExplicitArchiveRoot(box) ? "archived" : "editable";
   if (current === next) {
     if (next === "editable") {
-      await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
-    } else if (next === "read-only") {
-      await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
+      await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
     } else {
-      await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+      await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
     }
     return;
   }
@@ -10508,19 +10263,12 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     }
   }
   if (next === "archived") {
-    await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+    await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
     return;
   }
-  if (next === "read-only") {
-    if (current === "archived") {
-      throw new Error("Archived roots must be restored to editable before setting read-only.");
-    }
-    await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
-    return;
-  }
-  await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
+  await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
 }
-async function patchFrontmatter2(fs21, box, patch) {
+async function patchFrontmatter(fs21, box, patch) {
   const boxFile = boxNotePath(box.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
@@ -10585,69 +10333,6 @@ function requireBoxById2(tent, boxId) {
 }
 async function withMutation2(fs21, action) {
   return withTentMutation(fs21, action);
-}
-
-// src/core/concept.ts
-async function promoteConcept(env, conceptIdOrPath, toType) {
-  return withTentMutation(env.fs, async () => promoteConceptUnlocked(env, conceptIdOrPath, toType));
-}
-async function promoteConceptUnlocked(env, conceptIdOrPath, toType) {
-  const tent = await loadTent(env.fs);
-  const concept = resolveConcept2(tent, conceptIdOrPath);
-  if (!isUsableBox(concept)) throw new Error("Invalid or archived concepts cannot be promoted.");
-  assertContentMutable(concept, "promoted");
-  const target = toType.trim();
-  if (!target) throw new Error("Promote requires a non-empty target type.");
-  if (!typeHasCoordination(target, tent.typeRegistry)) {
-    throw new Error(`Target type must have coordination capability: ${target}.`);
-  }
-  if (concept.coordination && concept.type === target) {
-    return { id: concept.id, path: concept.path, fromType: concept.type, toType: target };
-  }
-  if (concept.coordination && concept.type !== target) {
-    await assertPromoteWriteAllowed(env, tent, concept);
-  }
-  const notePath = boxNotePath(concept.path);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(notePath));
-  const fromType = typeof data.type === "string" ? data.type : concept.type;
-  data.type = target;
-  if (data.status !== "todo" && data.status !== "doing" && data.status !== "done") {
-    data.status = "todo";
-  }
-  await env.fs.writeFile(notePath, serializeFrontmatter(data, body, keyOrder.length ? keyOrder : BOX_FRONTMATTER_KEY_ORDER));
-  return { id: concept.id, path: concept.path, fromType, toType: target };
-}
-async function assertPromoteWriteAllowed(env, tent, concept) {
-  const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot promote ${concept.name}: active task ${task.path} write-protects type changes.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath2(claimed.path, concept.path) || isAncestorPath2(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot promote ${concept.name}: overlapping active task ${task.path} write-protects type changes.`
-        );
-      }
-    }
-  }
-}
-function isAncestorPath2(ancestor, child) {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
-}
-function resolveConcept2(tent, conceptIdOrPath) {
-  const key = conceptIdOrPath.trim();
-  const byId = tent.byId.get(key);
-  if (byId) return byId;
-  const byPath = tent.byPath.get(key.replace(/\\/g, "/"));
-  if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
 
 // src/core/context-card.ts
@@ -14202,7 +13887,6 @@ var CLIENT_METHODS = [
   /** Existing Node body/frontmatter write; requires baseEtag (-32008 missing / -32009 conflict). */
   "docs.write",
   "docs.createNote",
-  "docs.promote",
   "docs.fork",
   /**
    * User-only atomic concept rename (MutationBus).
@@ -14211,7 +13895,7 @@ var CLIENT_METHODS = [
    */
   "docs.rename",
   /**
-   * Set Node mode (editable | read-only | archived). Sole mode mutation RPC.
+   * Set Node mode (editable | archived). Sole mode mutation RPC.
    * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
    */
   "docs.setMode",
@@ -18594,8 +18278,6 @@ async function dispatchMethod(ctx, method, params) {
         return docsWrite(ctx, p);
       case "docs.createNote":
         return docsCreateNote(ctx, p);
-      case "docs.promote":
-        return docsPromote(ctx, p);
       case "docs.fork":
         return docsFork(ctx, p);
       case "docs.rename":
@@ -19024,7 +18706,7 @@ async function docsGet(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept3(tent, p);
+  const concept = resolveConcept2(tent, p);
   return {
     workspaceId,
     concept: projectConcept(concept, true, false)
@@ -19034,7 +18716,7 @@ async function docsReadForEdit(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept3(tent, p);
+  const concept = resolveConcept2(tent, p);
   const notePath = boxNotePath(concept.path);
   const raw = await mount.env.fs.readFile(notePath);
   const { data, body } = parseFrontmatter(raw);
@@ -19045,7 +18727,6 @@ async function docsReadForEdit(ctx, p) {
     path: concept.path,
     name: concept.name,
     type: concept.type,
-    coordination: concept.coordination,
     body,
     raw,
     etag: contentEtag(raw),
@@ -19062,7 +18743,7 @@ async function docsWrite(ctx, p) {
   const frontmatter = p.frontmatter && typeof p.frontmatter === "object" && !Array.isArray(p.frontmatter) ? p.frontmatter : void 0;
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept3(tent, p);
+    const concept = resolveConcept2(tent, p);
     assertDocsModeMutable(concept, "docs.write");
     const notePath = boxNotePath(concept.path);
     const diskRaw = await mount.env.fs.readFile(notePath);
@@ -19141,13 +18822,19 @@ async function docsSetMode(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const modeRaw = requireString(p, "mode");
-  if (modeRaw !== "editable" && modeRaw !== "read-only" && modeRaw !== "archived") {
-    throw new RpcError(-32602, 'docs.setMode mode must be "editable", "read-only", or "archived"');
+  if (modeRaw === "read-only") {
+    throw new RpcError(
+      -32602,
+      'docs.setMode: "read-only" is retired in V0.2; use "editable" or "archived"'
+    );
+  }
+  if (modeRaw !== "editable" && modeRaw !== "archived") {
+    throw new RpcError(-32602, 'docs.setMode mode must be "editable" or "archived"');
   }
   const mode = modeRaw;
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept3(tent, p);
+    const concept = resolveConcept2(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
       await setNodeMode(mount.env, concept.id, mode);
@@ -19235,7 +18922,7 @@ async function docsBacklinks(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept3(tent, p);
+  const concept = resolveConcept2(tent, p);
   const concepts = [...tent.byId.values()].map((b) => ({
     id: b.id,
     path: b.path,
@@ -19256,16 +18943,7 @@ async function registryTypes(ctx, p) {
   const registry = await loadTypeRegistry(mount.env.fs);
   const types = Object.entries(registry).map(([name, def]) => {
     const tier = def.tier === "modifier" ? "modifier" : "base";
-    const coordination = tier === "base" && "coordination" in def ? def.coordination === true : false;
-    return {
-      name,
-      tier,
-      readable: def.readable,
-      writable: def.writable,
-      coordination,
-      color: def.color,
-      description: def.description
-    };
+    return { name, tier };
   }).sort((a, b) => a.name.localeCompare(b.name));
   return { workspaceId, types };
 }
@@ -19845,7 +19523,7 @@ async function docsCreateNote(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const name = requireString(p, "name");
-  const type = optionalString(p, "type") ?? "note";
+  const type = optionalString(p, "type") ?? "prompt";
   const parentPath = optionalString(p, "parentPath") ?? "";
   const body = typeof p.body === "string" ? p.body : void 0;
   return ctx.mutations.run(workspaceId, async () => {
@@ -19891,7 +19569,7 @@ async function docsImportAttachment(ctx, p) {
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept3(tent, p);
+    const concept = resolveConcept2(tent, p);
     assertDocsModeMutable(concept, "docs.importAttachment");
     ctx.host.markSelfWrite(workspaceId);
     try {
@@ -19917,23 +19595,6 @@ async function docsImportAttachment(ctx, p) {
       }
       throw new RpcError(-32e3, message2);
     }
-  });
-}
-async function docsPromote(ctx, p) {
-  const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
-  const toType = requireString(p, "toType");
-  const idOrPath = optionalString(p, "id") ?? optionalString(p, "path") ?? requireString(p, "concept");
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const result = await promoteConcept(mount.env, idOrPath, toType);
-    ctx.events.emit(
-      "concept.changed",
-      workspaceId,
-      { id: result.id, path: result.path, reason: "docs.promote", toType },
-      "self"
-    );
-    return { workspaceId, ...result };
   });
 }
 async function docsFork(ctx, p) {
@@ -19972,7 +19633,7 @@ async function docsRename(ctx, p) {
   }
   return ctx.mutations.run(workspaceId, async () => {
     const tent = await loadTent(mount.env.fs);
-    const concept = resolveConcept3(tent, p);
+    const concept = resolveConcept2(tent, p);
     ctx.host.markSelfWrite(workspaceId);
     try {
       const result = await renameNode(mount.env, concept.id, newName);
@@ -21417,7 +21078,7 @@ async function boxProjectionRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const tent = await loadTent(mount.env.fs);
-  const concept = resolveConcept3(tent, p);
+  const concept = resolveConcept2(tent, p);
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   return projectBoxCollaboration(workspaceId, concept, tasks);
 }
@@ -21462,7 +21123,9 @@ function projectBoxCollaboration(workspaceId, concept, tasks) {
       { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
     );
   }
-  const activeTask = tasks.find((t) => t.claims.includes(concept.id) && isActiveTaskState(t.state));
+  const activeTask = tasks.find(
+    (t) => t.claims.includes(concept.id) && isActiveTaskState(t.state)
+  );
   if (activeTask) {
     const fromTask = boxProjectionOf(activeTask);
     const out = {
@@ -21474,11 +21137,21 @@ function projectBoxCollaboration(workspaceId, concept, tasks) {
     if (fromTask.activeTaskId) out.activeTaskId = fromTask.activeTaskId;
     return out;
   }
-  const status = concept.fm.status === "done" ? "done" : "todo";
+  const acceptedTask = tasks.find(
+    (t) => t.claims.includes(concept.id) && t.state === "accepted"
+  );
+  if (acceptedTask) {
+    const fromTask = boxProjectionOf(acceptedTask);
+    return {
+      workspaceId,
+      boxId: concept.id,
+      status: fromTask.status
+    };
+  }
   return {
     workspaceId,
     boxId: concept.id,
-    status
+    status: "todo"
   };
 }
 function buildGraphProjection(workspaceId, tent) {
@@ -21534,7 +21207,6 @@ function projectGraphNodeSummary(box) {
     name: box.name,
     type: box.type,
     tags: box.tags,
-    coordination: box.coordination,
     mode: box.mode,
     archived: box.archived,
     invalid: box.invalid
@@ -23999,7 +23671,7 @@ function parseCallerKind(raw) {
   if (raw === "user" || raw === "role") return raw;
   throw new RpcError(-32602, `Invalid callerKind: ${raw}`);
 }
-function resolveConcept3(tent, p) {
+function resolveConcept2(tent, p) {
   const id = optionalString(p, "id") ?? optionalString(p, "boxId");
   const path22 = optionalString(p, "path");
   if (id) {
@@ -24022,9 +23694,6 @@ function projectConcept(box, includeBody, withChildren) {
     name: box.name,
     type: box.type,
     tags: box.tags,
-    coordination: box.coordination,
-    status: box.fm.status,
-    assignee: typeof box.fm.owner === "string" ? box.fm.owner : void 0,
     mode: box.mode,
     archived: box.archived,
     invalid: box.invalid
@@ -24366,12 +24035,6 @@ function assertDocsModeMutable(concept, op) {
       mode: concept.mode
     });
   }
-  if (concept.mode === "read-only") {
-    throw new RpcError(-32010, `${op} rejected: concept is read-only`, {
-      conceptId: concept.id,
-      mode: concept.mode
-    });
-  }
   throw new RpcError(-32010, `${op} rejected: concept is not mutable`, {
     conceptId: concept.id,
     mode: concept.mode
@@ -24408,14 +24071,14 @@ function hasActiveTaskForConcept(tent, conceptId, conceptPath, tasks) {
     for (const claimId of task.claims) {
       const claimed = tent.byId.get(claimId);
       if (!claimed) continue;
-      if (isAncestorPath3(claimed.path, conceptPath) || isAncestorPath3(conceptPath, claimed.path)) {
+      if (isAncestorPath(claimed.path, conceptPath) || isAncestorPath(conceptPath, claimed.path)) {
         return true;
       }
     }
   }
   return false;
 }
-function isAncestorPath3(ancestor, child) {
+function isAncestorPath(ancestor, child) {
   if (!ancestor) return true;
   return child === ancestor || child.startsWith(ancestor + "/");
 }

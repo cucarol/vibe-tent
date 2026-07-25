@@ -118,211 +118,6 @@ var init_paths = __esm({
   }
 });
 
-// src/core/typeRegistry.ts
-function splitType(type) {
-  const i = type.indexOf("-");
-  if (i === -1) return { base: type };
-  return { base: type.slice(0, i), modifier: type.slice(i + 1) };
-}
-function joinType(base2, modifier) {
-  return modifier ? `${base2}-${modifier}` : base2;
-}
-function canonicalTypeName(type) {
-  if (type === "output") return "artifact";
-  if (type.startsWith("output-")) return "artifact" + type.slice("output".length);
-  return type;
-}
-function typeExists(type, registry) {
-  const canonical = canonicalTypeName(type);
-  if (registry[canonical] || registry[type]) return true;
-  const { base: base2, modifier } = splitType(canonical);
-  return !!(registry[base2] && (modifier === void 0 || !!registry[modifier]));
-}
-function resolveTypeAxis(type, axis, registry) {
-  const canonical = canonicalTypeName(type);
-  const exact = registry[canonical] ?? registry[type];
-  if (exact) return exact[axis];
-  const { base: base2, modifier } = splitType(canonical);
-  const baseVal = registry[base2]?.[axis];
-  const modVal = modifier ? registry[modifier]?.[axis] : void 0;
-  return typeof modVal === "boolean" ? modVal : baseVal;
-}
-function typeHasCoordination(type, registry) {
-  const canonical = canonicalTypeName(type);
-  const { base: base2 } = splitType(canonical);
-  return baseDefinitionCoordination(registry[base2] ?? registry[canonical] ?? registry[type]) === true;
-}
-function baseDefinitionCoordination(definition) {
-  if (!definition || definition.tier === "modifier") return void 0;
-  return definition.coordination;
-}
-function setBaseCoordination(definition, value) {
-  if (definition.tier === "modifier") {
-    throw new Error("Modifier types cannot configure coordination capability.");
-  }
-  definition.coordination = value;
-}
-async function loadTypeRegistry(fs2) {
-  if (!await fs2.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
-  try {
-    const parsed = JSON.parse(await fs2.readFile(TYPE_REGISTRY_PATH));
-    return normalizeRegistry(parsed);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`types.json is corrupt: ${detail}.`);
-  }
-}
-function normalizeRegistry(value) {
-  const root = isRecord(value) ? value : {};
-  const registry = cloneDefaults();
-  if (isRecord(root.primary) || isRecord(root.secondary)) {
-    mergeDefinitions(registry, root.primary, true, "base");
-    mergeDefinitions(registry, root.secondary, false, "modifier");
-    applyLegacyOutputAlias(registry);
-    return registry;
-  }
-  mergeDefinitions(registry, root);
-  applyLegacyOutputAlias(registry);
-  return registry;
-}
-function applyLegacyOutputAlias(registry) {
-  if (registry.output && !isRecord(registry.output)) return;
-  if (registry.output) {
-    const out = registry.output;
-    if (out.tier !== "modifier") {
-      const artifact = registry.artifact;
-      if (artifact && artifact.tier !== "modifier") {
-        if (typeof out.readable === "boolean") artifact.readable = out.readable;
-        if (typeof out.writable === "boolean") artifact.writable = out.writable;
-        if (typeof out.coordination === "boolean") artifact.coordination = out.coordination;
-        else if (out.coordination === void 0) artifact.coordination = true;
-        if (out.color) artifact.color = out.color;
-        if (out.description) artifact.description = out.description;
-      }
-    }
-  }
-}
-function mergeDefinitions(registry, source, legacyBase = false, defaultTier) {
-  if (!isRecord(source)) return;
-  for (const [name, raw] of Object.entries(source)) {
-    if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
-    const current = registry[name];
-    const tier = raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier;
-    const resolvedTier = tier ?? "base";
-    const readable = typeof raw.readable === "boolean" ? raw.readable : void 0;
-    const writable = typeof raw.writable === "boolean" ? raw.writable : void 0;
-    if ((legacyBase || resolvedTier === "base") && (readable === void 0 || writable === void 0)) continue;
-    const metadata = {
-      ...typeof raw.color === "string" && raw.color ? { color: raw.color } : current?.color ? { color: current.color } : {},
-      ...typeof raw.description === "string" && raw.description ? { description: raw.description } : current?.description ? { description: current.description } : {}
-    };
-    if (resolvedTier === "modifier") {
-      registry[name] = {
-        tier: "modifier",
-        ...readable !== void 0 ? { readable } : {},
-        ...writable !== void 0 ? { writable } : {},
-        ...metadata
-      };
-      continue;
-    }
-    const coordination = resolveCoordinationFlag(name, raw, current);
-    const entry = {
-      tier: "base",
-      readable,
-      writable,
-      ...metadata,
-      ...coordination !== void 0 ? { coordination } : {}
-    };
-    delete entry.workspacePointer;
-    registry[name] = entry;
-  }
-}
-function resolveCoordinationFlag(name, raw, current) {
-  if (typeof raw.coordination === "boolean") return raw.coordination;
-  if (current && current.tier !== "modifier" && typeof current.coordination === "boolean") {
-    return current.coordination;
-  }
-  if (name === "note") return false;
-  if (name === "goal" || name === "prompt" || name === "artifact" || name === "output") return true;
-  return void 0;
-}
-function cloneDefaults() {
-  return Object.fromEntries(
-    Object.entries(DEFAULT_TYPE_REGISTRY).map(([name, def]) => [name, { ...def }])
-  );
-}
-function isRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-var TYPE_COLOR_PALETTE, DEFAULT_TYPE_REGISTRY;
-var init_typeRegistry = __esm({
-  "src/core/typeRegistry.ts"() {
-    "use strict";
-    init_paths();
-    TYPE_COLOR_PALETTE = ["gray", "red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "brown"];
-    DEFAULT_TYPE_REGISTRY = {
-      note: {
-        readable: true,
-        writable: true,
-        color: "gray",
-        tier: "base",
-        coordination: false,
-        description: "\u666E\u901A\u7B14\u8BB0 concept\uFF0C\u9ED8\u8BA4\u4E0D\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F"
-      },
-      goal: {
-        readable: true,
-        writable: false,
-        color: "blue",
-        tier: "base",
-        coordination: true,
-        description: "\u5B9A\u4E49\u76EE\u6807\u3001\u610F\u56FE\u4E0E\u9A8C\u6536\u65B9\u5411"
-      },
-      prompt: {
-        readable: true,
-        writable: true,
-        color: "purple",
-        tier: "base",
-        coordination: true,
-        description: "\u63D0\u4F9B\u4EFB\u52A1\u8BF4\u660E\u4E0E\u5DE5\u4F5C\u4E0A\u4E0B\u6587"
-      },
-      artifact: {
-        readable: true,
-        writable: true,
-        color: "cyan",
-        tier: "base",
-        coordination: true,
-        description: "\u6620\u5C04\u771F\u5B9E\u4EA4\u4ED8\u7269\u4E0E ArtifactRef \u5173\u8054"
-      },
-      open: {
-        readable: true,
-        writable: true,
-        color: "green",
-        tier: "modifier",
-        description: "\u4ECD\u5728\u63A8\u8FDB\u3001\u53EF\u7EE7\u7EED\u5904\u7406"
-      },
-      reference: {
-        readable: true,
-        color: "blue",
-        tier: "modifier",
-        description: "\u4F5C\u4E3A\u80CC\u666F\u8D44\u6599\u4F9B\u67E5\u9605\u4E0E\u5F15\u7528"
-      },
-      asset: {
-        writable: true,
-        color: "purple",
-        tier: "modifier",
-        description: "\u4F5C\u4E3A\u5B9E\u9645\u4EA7\u7269\u6216\u53EF\u590D\u7528\u8D44\u6E90"
-      },
-      sealed: {
-        readable: false,
-        writable: false,
-        color: "red",
-        tier: "modifier",
-        description: "\u5DF2\u5C01\u5B58\uFF0C\u4E0D\u518D\u53C2\u4E0E\u540E\u7EED\u5904\u7406"
-      }
-    };
-  }
-});
-
 // src/core/adapter.ts
 function withTentMutation(fs2, action) {
   return fs2.withLock ? fs2.withLock(MUTATION_LOCK_PATH, action) : action();
@@ -616,6 +411,126 @@ var init_order = __esm({
   }
 });
 
+// src/core/typeRegistry.ts
+function splitType(type) {
+  const i = type.indexOf("-");
+  if (i === -1) return { base: type };
+  return { base: type.slice(0, i), modifier: type.slice(i + 1) };
+}
+function joinType(base2, modifier) {
+  return modifier ? `${base2}-${modifier}` : base2;
+}
+function isCanonicalPrimary(name) {
+  return CANONICAL_PRIMARY_TYPES.includes(name);
+}
+function isBuiltinSecondary(name) {
+  return BUILTIN_SECONDARY_TYPES.includes(name);
+}
+function typeExists(type, registry) {
+  if (registry[type]) return true;
+  const { base: base2, modifier } = splitType(type);
+  const baseOk = !!registry[base2] && (registry[base2].tier ?? "base") !== "modifier";
+  if (!baseOk) return false;
+  if (modifier === void 0) return true;
+  const mod = registry[modifier];
+  return !!mod && mod.tier === "modifier";
+}
+async function loadTypeRegistry(fs2) {
+  if (!await fs2.exists(TYPE_REGISTRY_PATH)) return cloneDefaults();
+  try {
+    const parsed = JSON.parse(await fs2.readFile(TYPE_REGISTRY_PATH));
+    return normalizeRegistry(parsed);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`types.json is corrupt: ${detail}.`);
+  }
+}
+function normalizeRegistry(value) {
+  const root = isRecord(value) ? value : {};
+  const registry = cloneDefaults();
+  if (isRecord(root.primary) || isRecord(root.secondary)) {
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.primary));
+    mergeDefinitions(registry, mapLegacyBucketKeys(root.secondary), "modifier");
+    finalizeRegistry(registry);
+    return registry;
+  }
+  mergeDefinitions(registry, mapLegacyBucketKeys(root));
+  finalizeRegistry(registry);
+  return registry;
+}
+function mapLegacyBucketKeys(source) {
+  if (!isRecord(source)) return {};
+  const out = {};
+  for (const [rawName, raw] of Object.entries(source)) {
+    const name = mapLegacyTypeKey(rawName);
+    if (!name) continue;
+    if (out[name] === void 0) out[name] = raw;
+  }
+  return out;
+}
+function mapLegacyTypeKey(name) {
+  if (name === "note") return "prompt";
+  if (name === "artifact") return "output";
+  if (name === "open" || name === "sealed") return "";
+  return name;
+}
+function mergeDefinitions(registry, source, defaultTier) {
+  if (!isRecord(source)) return;
+  for (const [name, raw] of Object.entries(source)) {
+    if (!name.trim() || name === "temp" || !isRecord(raw)) continue;
+    const current = registry[name];
+    const tier = raw.tier === "base" || raw.tier === "modifier" ? raw.tier : current?.tier ?? defaultTier ?? (isCanonicalPrimary(name) ? "base" : "modifier");
+    if (isCanonicalPrimary(name)) {
+      registry[name] = { tier: "base" };
+      continue;
+    }
+    if (isBuiltinSecondary(name)) {
+      registry[name] = { tier: "modifier" };
+      continue;
+    }
+    if (tier === "base") {
+      continue;
+    }
+    registry[name] = { tier: "modifier" };
+  }
+}
+function finalizeRegistry(registry) {
+  for (const p of CANONICAL_PRIMARY_TYPES) {
+    registry[p] = { tier: "base" };
+  }
+  for (const s of BUILTIN_SECONDARY_TYPES) {
+    registry[s] = { tier: "modifier" };
+  }
+  delete registry.note;
+  delete registry.artifact;
+  delete registry.open;
+  delete registry.sealed;
+}
+function cloneDefaults() {
+  return Object.fromEntries(
+    Object.entries(DEFAULT_TYPE_REGISTRY).map(([name, def]) => [name, { ...def }])
+  );
+}
+function isRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+var CANONICAL_PRIMARY_TYPES, BUILTIN_SECONDARY_TYPES, DEFAULT_TYPE_REGISTRY;
+var init_typeRegistry = __esm({
+  "src/core/typeRegistry.ts"() {
+    "use strict";
+    init_paths();
+    CANONICAL_PRIMARY_TYPES = ["goal", "prompt", "output"];
+    BUILTIN_SECONDARY_TYPES = ["reference", "asset"];
+    DEFAULT_TYPE_REGISTRY = {
+      goal: { tier: "base" },
+      prompt: { tier: "base" },
+      output: { tier: "base" },
+      reference: { tier: "modifier" },
+      asset: { tier: "modifier" }
+    };
+  }
+});
+
 // src/core/tree.ts
 function boxNotePath(boxPath) {
   return join2(boxPath, baseName(boxPath) + ".md");
@@ -638,7 +553,6 @@ async function loadTent(fs2) {
   for (const root of sortedRoots) resolveSubtree(root, typeRegistry);
   const duplicateIds = findDuplicateIds(sortedRoots);
   for (const root of sortedRoots) applyDuplicateInvalid(root, duplicateIds);
-  resolveLocks(sortedRoots);
   for (const root of sortedRoots) indexSubtree(root, byId, byPath, duplicateIds);
   return { roots: sortedRoots, byId, byPath, duplicateIds, typeRegistry };
 }
@@ -658,8 +572,6 @@ function applyDuplicateInvalid(box, duplicateIds, inherited) {
     box.invalid = true;
     box.invalidRootId = invalid.rootId;
     box.invalidReason = invalid.reason;
-    box.readable = { value: false, source: "invalid" };
-    box.writable = { value: false, source: "invalid" };
   }
   for (const child of box.children) applyDuplicateInvalid(child, duplicateIds, invalid);
 }
@@ -674,7 +586,6 @@ async function reloadLoadedBox(fs2, tent, path) {
   box.fm = identity.fm;
   box.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
-  resolveLocks(tent.roots);
   return box;
 }
 function sortChildren(box, order) {
@@ -703,8 +614,6 @@ async function loadBox(fs2, path, parent, registry) {
     id: fm.id,
     type: fm.type,
     tags,
-    coordination: false,
-    // filled in resolveSubtree
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -713,10 +622,7 @@ async function loadBox(fs2, path, parent, registry) {
     fm,
     body,
     children: [],
-    parent,
-    locked: false,
-    readable: { value: false, source: "type" },
-    writable: { value: false, source: "type" }
+    parent
   };
   if (parseError) {
     box.invalidRootId = path;
@@ -738,20 +644,23 @@ function normalizeIdentity(data) {
     type: rawType
   };
   delete fm.archived;
+  delete fm.readable;
+  delete fm.writable;
+  delete fm.owner;
+  delete fm.status;
+  delete fm.acceptedBy;
   const tags = normalizeTags(data.tags);
   if (tags.length > 0) fm.tags = tags;
   else delete fm.tags;
-  if (typeof data.readable === "boolean") fm.readable = data.readable;
-  else delete fm.readable;
-  if (typeof data.writable === "boolean") fm.writable = data.writable;
-  else delete fm.writable;
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
   return { fm, tags };
 }
 function parseNodeMode(value) {
-  if (value === "editable" || value === "read-only" || value === "archived") return value;
+  if (value === "archived") return "archived";
+  if (value === "editable") return "editable";
+  if (value === "read-only") return "editable";
   return void 0;
 }
 function isExplicitArchiveRoot(box) {
@@ -789,67 +698,10 @@ function resolveSubtree(box, registry, inheritedInvalid, inheritedArchived = fal
   box.invalidReason = invalid?.reason;
   const localMode = parseNodeMode(box.fm.mode) ?? "editable";
   box.archived = inheritedArchived || localMode === "archived";
-  box.mode = box.archived ? "archived" : localMode;
-  if (localMode === "editable") delete box.fm.mode;
-  else box.fm.mode = localMode;
-  box.coordination = !box.invalid && typeHasCoordination(box.type, registry);
-  if (box.fm.status !== "todo" && box.fm.status !== "doing" && box.fm.status !== "done") {
-    delete box.fm.status;
-  }
-  if (!box.coordination) {
-    delete box.fm.status;
-  }
-  box.readable = resolveAxis(box, "readable", registry);
-  box.writable = resolveAxis(box, "writable", registry);
+  box.mode = box.archived ? "archived" : "editable";
+  if (localMode === "archived" && !inheritedArchived) box.fm.mode = "archived";
+  else delete box.fm.mode;
   for (const c of box.children) resolveSubtree(c, registry, invalid, box.archived);
-}
-function resolveLocks(roots) {
-  for (const root of roots) clearLocks(root);
-  for (const root of roots) resolveLockSubtree(root);
-}
-function clearLocks(box) {
-  box.locked = false;
-  delete box.lockSource;
-  delete box.lockOwner;
-  for (const child of box.children) clearLocks(child);
-}
-function resolveLockSubtree(box) {
-  for (const child of box.children) {
-    resolveLockSubtree(child);
-  }
-  if (box.fm.owner) {
-    applyAncestorLock(box, box.fm.owner);
-    box.locked = true;
-    box.lockSource = "self";
-    box.lockOwner = box.fm.owner;
-  }
-}
-function applyAncestorLock(box, owner) {
-  for (const child of box.children) {
-    if (!child.fm.owner) {
-      child.locked = true;
-      child.lockSource = "ancestor";
-      child.lockOwner = owner;
-    }
-    applyAncestorLock(child, child.fm.owner || owner);
-  }
-}
-function resolveAxis(box, axis, registry) {
-  if (box.invalid) return { value: false, source: "invalid" };
-  if (box.mode === "archived" || box.archived) return { value: false, source: "archived" };
-  if (axis === "readable") {
-    return resolveDeclaredOrType(box, "readable", registry);
-  }
-  if (box.mode === "read-only") return { value: false, source: "mode" };
-  return resolveDeclaredOrType(box, "writable", registry);
-}
-function resolveDeclaredOrType(box, axis, registry) {
-  const declared = box.fm[axis];
-  if (typeof declared === "boolean") {
-    return { value: declared, source: "self" };
-  }
-  const fallback = resolveTypeAxis(box.type, axis, registry);
-  return { value: typeof fallback === "boolean" ? fallback : false, source: "type" };
 }
 function invalidTypeReference(box, registry) {
   if (!box.id) {
@@ -867,9 +719,6 @@ function assertContentMutable(box, action = "modified") {
   if (box.invalid) throw new Error(`Invalid boxes cannot be ${action}.`);
   if (box.archived || box.mode === "archived") {
     throw new Error(`Archived boxes cannot be ${action}.`);
-  }
-  if (box.mode === "read-only") {
-    throw new Error(`Read-only boxes cannot be ${action}.`);
   }
 }
 function indexSubtree(box, byId, byPath, duplicateIds) {
@@ -1523,13 +1372,6 @@ function structuralClaimGate(box) {
   if (box.archived) {
     return { ok: false, blocker: box, reason: "Archived subtree cannot be claimed." };
   }
-  if (!box.coordination) {
-    return {
-      ok: false,
-      blocker: box,
-      reason: `Concept ${box.name} has coordination=false and cannot enter the task lifecycle.`
-    };
-  }
   return { ok: true };
 }
 function findActiveOccupation(tent, box, tasks, options) {
@@ -1581,8 +1423,20 @@ function findActiveOccupation(tent, box, tasks, options) {
 function findAnyActiveTask(tasks) {
   return tasks.find((t) => envelopeIsActiveOccupation(t));
 }
+function occupiedBoxesFromTasks(tent, tasks) {
+  const out = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") continue;
+      const box = tent.byId.get(claimId);
+      if (box) out.set(box.id, box);
+    }
+  }
+  return [...out.values()];
+}
 function isFrozen(box) {
-  return box.invalid || box.archived || box.locked;
+  return box.invalid || box.archived;
 }
 function isAncestor(ancestor, child) {
   let parent = child.parent;
@@ -1596,190 +1450,6 @@ var init_claim = __esm({
   "src/core/claim.ts"() {
     "use strict";
     init_task_model();
-  }
-});
-
-// src/core/delivery.ts
-async function loadDelivery(fs2, inputPath) {
-  const path = normalizeDeliveryPath(inputPath);
-  if (!await fs2.exists(path)) throw new Error(`Delivery not found: ${path}.`);
-  const { data, body } = parseFrontmatter(await fs2.readFile(path));
-  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
-    throw new Error(`Invalid delivery format: ${path}.`);
-  }
-  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
-    throw new Error(`Invalid delivery format: ${path}.`);
-  }
-  const status = parseDeliveryStatus(data.status);
-  const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
-  const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
-  return {
-    path,
-    id: data.id,
-    taskId: data.taskId,
-    boxId: data.boxId,
-    role: data.role,
-    status,
-    summary: body.trim(),
-    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
-    checks: parseJsonArrayField(data.checksJson, parseChecks),
-    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
-    integrationMode: parseIntegrationMode(data.integrationMode),
-    review: reviewBy && reviewDecision ? {
-      by: reviewBy,
-      decision: reviewDecision,
-      note: typeof data.reviewNote === "string" ? data.reviewNote : void 0
-    } : void 0,
-    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
-    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
-  };
-}
-async function loadDeliveries(fs2, filter) {
-  const out = [];
-  if (!await fs2.exists(TEMP_DIR)) return out;
-  for (const entry of await fs2.listDir(TEMP_DIR)) {
-    if (!entry.isDir) continue;
-    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
-      const profilesRoot = join2(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
-      if (!await fs2.exists(profilesRoot)) continue;
-      for (const profileEntry of await fs2.listDir(profilesRoot)) {
-        if (!profileEntry.isDir) continue;
-        await collectDeliveryFiles(
-          fs2,
-          join2(profilesRoot, profileEntry.name, "deliveries"),
-          filter,
-          out
-        );
-      }
-      continue;
-    }
-    await collectDeliveryFiles(fs2, join2(TEMP_DIR, entry.name, "deliveries"), filter, out);
-  }
-  return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
-}
-async function collectDeliveryFiles(fs2, dir, filter, out) {
-  if (!await fs2.exists(dir)) return;
-  for (const entry of await fs2.listDir(dir)) {
-    if (entry.isDir || !entry.name.endsWith(".md")) continue;
-    try {
-      const d = await loadDelivery(fs2, join2(dir, entry.name));
-      if (filter?.taskId && d.taskId !== filter.taskId) continue;
-      if (filter?.boxId && d.boxId !== filter.boxId) continue;
-      out.push(d);
-    } catch {
-    }
-  }
-}
-async function removeNonAcceptedDeliveriesForBox(fs2, boxId) {
-  for (const delivery of await loadDeliveries(fs2, { boxId })) {
-    if (delivery.status === "accepted") continue;
-    if (await fs2.exists(delivery.path)) await fs2.remove(delivery.path);
-  }
-}
-async function writeDelivery(fs2, record) {
-  const data = {
-    type: "delivery",
-    id: record.id,
-    taskId: record.taskId,
-    boxId: record.boxId,
-    role: record.role,
-    status: record.status,
-    commits: record.commits,
-    checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
-    artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
-    integrationMode: record.integrationMode,
-    reviewBy: record.review?.by,
-    reviewDecision: record.review?.decision,
-    reviewNote: record.review?.note,
-    createdAt: record.createdAt,
-    updatedAt: record.updatedAt
-  };
-  await fs2.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
-}
-function normalizeDeliveryPath(input) {
-  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
-  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)) {
-    throw new Error(
-      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
-    );
-  }
-  return path;
-}
-function parseDeliveryStatus(value) {
-  if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
-  throw new Error(`Invalid delivery status: ${String(value)}`);
-}
-function parseIntegrationMode(value) {
-  if (value === void 0 || value === null || value === "null") return null;
-  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
-    return value;
-  }
-  return null;
-}
-function parseJsonArrayField(value, parse) {
-  if (typeof value !== "string" || !value.trim()) return [];
-  try {
-    return parse(JSON.parse(value));
-  } catch {
-    return [];
-  }
-}
-function parseChecks(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const o = item;
-    if (typeof o.name !== "string" || typeof o.command !== "string" || typeof o.exitCode !== "number") continue;
-    out.push({ name: o.name, command: o.command, exitCode: o.exitCode });
-  }
-  return out;
-}
-function parseArtifactRefs(value) {
-  if (!Array.isArray(value)) return [];
-  const out = [];
-  for (const item of value) {
-    if (!item || typeof item !== "object") continue;
-    const o = item;
-    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
-    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
-    out.push({
-      kind: o.kind,
-      target: o.target,
-      label: typeof o.label === "string" ? o.label : void 0
-    });
-  }
-  return out;
-}
-function uniqueCommits(commits) {
-  return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
-}
-var KEY_ORDER;
-var init_delivery = __esm({
-  "src/core/delivery.ts"() {
-    "use strict";
-    init_adapter();
-    init_frontmatter();
-    init_paths();
-    init_tree();
-    init_task_model();
-    KEY_ORDER = [
-      "type",
-      "id",
-      "taskId",
-      "boxId",
-      "role",
-      "status",
-      "commits",
-      "checksJson",
-      "artifactRefsJson",
-      "integrationMode",
-      "reviewBy",
-      "reviewDecision",
-      "reviewNote",
-      "createdAt",
-      "updatedAt"
-    ];
   }
 });
 
@@ -2082,6 +1752,190 @@ var init_task = __esm({
   }
 });
 
+// src/core/delivery.ts
+async function loadDelivery(fs2, inputPath) {
+  const path = normalizeDeliveryPath(inputPath);
+  if (!await fs2.exists(path)) throw new Error(`Delivery not found: ${path}.`);
+  const { data, body } = parseFrontmatter(await fs2.readFile(path));
+  if (data.type !== "delivery" || typeof data.id !== "string" || !isDeliveryId(data.id)) {
+    throw new Error(`Invalid delivery format: ${path}.`);
+  }
+  if (typeof data.taskId !== "string" || typeof data.boxId !== "string" || typeof data.role !== "string") {
+    throw new Error(`Invalid delivery format: ${path}.`);
+  }
+  const status = parseDeliveryStatus(data.status);
+  const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
+  const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  return {
+    path,
+    id: data.id,
+    taskId: data.taskId,
+    boxId: data.boxId,
+    role: data.role,
+    status,
+    summary: body.trim(),
+    commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    checks: parseJsonArrayField(data.checksJson, parseChecks),
+    artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
+    integrationMode: parseIntegrationMode(data.integrationMode),
+    review: reviewBy && reviewDecision ? {
+      by: reviewBy,
+      decision: reviewDecision,
+      note: typeof data.reviewNote === "string" ? data.reviewNote : void 0
+    } : void 0,
+    createdAt: typeof data.createdAt === "string" ? data.createdAt : void 0,
+    updatedAt: typeof data.updatedAt === "string" ? data.updatedAt : void 0
+  };
+}
+async function loadDeliveries(fs2, filter) {
+  const out = [];
+  if (!await fs2.exists(TEMP_DIR)) return out;
+  for (const entry of await fs2.listDir(TEMP_DIR)) {
+    if (!entry.isDir) continue;
+    if (entry.name === AGENT_PROFILES_TEMP_DIR) {
+      const profilesRoot = join2(TEMP_DIR, AGENT_PROFILES_TEMP_DIR);
+      if (!await fs2.exists(profilesRoot)) continue;
+      for (const profileEntry of await fs2.listDir(profilesRoot)) {
+        if (!profileEntry.isDir) continue;
+        await collectDeliveryFiles(
+          fs2,
+          join2(profilesRoot, profileEntry.name, "deliveries"),
+          filter,
+          out
+        );
+      }
+      continue;
+    }
+    await collectDeliveryFiles(fs2, join2(TEMP_DIR, entry.name, "deliveries"), filter, out);
+  }
+  return out.sort((a, b) => (b.updatedAt || "").localeCompare(a.updatedAt || ""));
+}
+async function collectDeliveryFiles(fs2, dir, filter, out) {
+  if (!await fs2.exists(dir)) return;
+  for (const entry of await fs2.listDir(dir)) {
+    if (entry.isDir || !entry.name.endsWith(".md")) continue;
+    try {
+      const d = await loadDelivery(fs2, join2(dir, entry.name));
+      if (filter?.taskId && d.taskId !== filter.taskId) continue;
+      if (filter?.boxId && d.boxId !== filter.boxId) continue;
+      out.push(d);
+    } catch {
+    }
+  }
+}
+async function removeNonAcceptedDeliveriesForBox(fs2, boxId) {
+  for (const delivery of await loadDeliveries(fs2, { boxId })) {
+    if (delivery.status === "accepted") continue;
+    if (await fs2.exists(delivery.path)) await fs2.remove(delivery.path);
+  }
+}
+async function writeDelivery(fs2, record) {
+  const data = {
+    type: "delivery",
+    id: record.id,
+    taskId: record.taskId,
+    boxId: record.boxId,
+    role: record.role,
+    status: record.status,
+    commits: record.commits,
+    checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
+    artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
+    integrationMode: record.integrationMode,
+    reviewBy: record.review?.by,
+    reviewDecision: record.review?.decision,
+    reviewNote: record.review?.note,
+    createdAt: record.createdAt,
+    updatedAt: record.updatedAt
+  };
+  await fs2.writeFile(record.path, serializeFrontmatter(data, record.summary + "\n", KEY_ORDER));
+}
+function normalizeDeliveryPath(input) {
+  const path = input.trim().replace(/\\/g, "/").replace(/^\.\/+/, "");
+  if (!/^temp\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path) && !/^temp\/agent-profiles\/[^/]+\/deliveries\/dl-[^/]+\.md$/.test(path)) {
+    throw new Error(
+      "Delivery must point to temp/<role>/deliveries/<dl-id>.md or temp/agent-profiles/<profile>/deliveries/<dl-id>.md."
+    );
+  }
+  return path;
+}
+function parseDeliveryStatus(value) {
+  if (value === "draft" || value === "ready" || value === "accepted" || value === "rejected") return value;
+  throw new Error(`Invalid delivery status: ${String(value)}`);
+}
+function parseIntegrationMode(value) {
+  if (value === void 0 || value === null || value === "null") return null;
+  if (value === "manual-accept" || value === "bypass-auto" || value === "agent-decided-integrate") {
+    return value;
+  }
+  return null;
+}
+function parseJsonArrayField(value, parse) {
+  if (typeof value !== "string" || !value.trim()) return [];
+  try {
+    return parse(JSON.parse(value));
+  } catch {
+    return [];
+  }
+}
+function parseChecks(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.name !== "string" || typeof o.command !== "string" || typeof o.exitCode !== "number") continue;
+    out.push({ name: o.name, command: o.command, exitCode: o.exitCode });
+  }
+  return out;
+}
+function parseArtifactRefs(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  for (const item of value) {
+    if (!item || typeof item !== "object") continue;
+    const o = item;
+    if (typeof o.kind !== "string" || typeof o.target !== "string") continue;
+    if (!["path", "dir", "commit", "url", "other"].includes(o.kind)) continue;
+    out.push({
+      kind: o.kind,
+      target: o.target,
+      label: typeof o.label === "string" ? o.label : void 0
+    });
+  }
+  return out;
+}
+function uniqueCommits(commits) {
+  return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+var KEY_ORDER;
+var init_delivery = __esm({
+  "src/core/delivery.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_paths();
+    init_tree();
+    init_task_model();
+    KEY_ORDER = [
+      "type",
+      "id",
+      "taskId",
+      "boxId",
+      "role",
+      "status",
+      "commits",
+      "checksJson",
+      "artifactRefsJson",
+      "integrationMode",
+      "reviewBy",
+      "reviewDecision",
+      "reviewNote",
+      "createdAt",
+      "updatedAt"
+    ];
+  }
+});
+
 // src/core/task-lifecycle.ts
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
@@ -2098,21 +1952,10 @@ async function taskClaim(env, taskPath, options = {}) {
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
     const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const previous = claimedBoxes.map((box) => ({
-      box,
-      owner: box.fm.owner,
-      status: box.fm.status,
-      acceptedBy: box.fm.acceptedBy
-    }));
     const allowAncestorClaimedBy = taskAsSub(task) && task.dispatchedBy && task.dispatchedBy !== "user" && task.dispatchedBy !== task.role ? task.dispatchedBy : void 0;
     const allTasks = await loadTaskEnvelopes(env.fs);
     const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
     for (const box of claimedBoxes) {
-      if (!box.coordination) {
-        throw new Error(
-          `Cannot claim task: ${box.name} has coordination=false (type ${box.type}); ordinary notes cannot enter the task lifecycle.`
-        );
-      }
       const claimable = canClaim(box, {
         tent,
         tasks: peerTasks,
@@ -2120,24 +1963,14 @@ async function taskClaim(env, taskPath, options = {}) {
       });
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
-    try {
-      for (const box of claimedBoxes) {
-        await projectAssignee(env.fs, box, task.role, "doing");
-      }
-      await ackTaskEnvelope(env.fs, taskPath);
-      if (options.sessionId) {
-        return patchTaskEnvelope(env.fs, taskPath, {
-          sessionId: options.sessionId,
-          updatedAt: env.clock.now()
-        });
-      }
-      return loadTaskEnvelope(env.fs, taskPath);
-    } catch (error) {
-      for (const item of previous) {
-        await restoreProjection(env.fs, item.box, item.owner, item.status, item.acceptedBy);
-      }
-      throw error;
+    await ackTaskEnvelope(env.fs, taskPath);
+    if (options.sessionId) {
+      return patchTaskEnvelope(env.fs, taskPath, {
+        sessionId: options.sessionId,
+        updatedAt: env.clock.now()
+      });
     }
+    return loadTaskEnvelope(env.fs, taskPath);
   });
 }
 async function taskAccept(env, taskPath, options) {
@@ -2187,9 +2020,6 @@ async function taskAccept(env, taskPath, options) {
     delivery.review = { by: options.actor, decision: "accept" };
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById(tent, delivery.boxId);
-    await projectAssignee(env.fs, box, void 0, "done", options.actor);
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       wait: null,
@@ -2221,11 +2051,6 @@ async function taskReject(env, taskPath, options) {
     };
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
-    if (!resume) {
-      const tent = await loadTent(env.fs);
-      const box = requireBoxById(tent, delivery.boxId);
-      await projectAssignee(env.fs, box, void 0, "todo");
-    }
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: to,
       // Keep activeDeliveryId for history; new deliver checks ready-only.
@@ -2233,6 +2058,46 @@ async function taskReject(env, taskPath, options) {
     });
     return { task: next, delivery };
   });
+}
+async function taskInterrupt(env, taskPath) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "queued") {
+      assertTransition(task.state, "interrupt", "interrupted");
+      await env.fs.remove(taskPath);
+      return { ...task, state: "interrupted", status: "taken" };
+    }
+    assertTransition(task.state, "interrupt", "interrupted");
+    await releaseOccupationForTask(env, task);
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "interrupted",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function taskFail(env, taskPath, options = {}) {
+  return withMutation(env.fs, async () => {
+    const task = await loadTaskEnvelope(env.fs, taskPath);
+    if (task.state === "failed") {
+      await releaseOccupationForTask(env, task);
+      return task;
+    }
+    assertTransition(task.state, "fail", "failed");
+    await releaseOccupationForTask(env, task);
+    void options.summary;
+    return patchTaskEnvelope(env.fs, taskPath, {
+      state: "failed",
+      wait: null,
+      updatedAt: env.clock.now()
+    });
+  });
+}
+async function releaseOccupationForTask(env, task) {
+  for (const claimId of task.claims) {
+    if (claimId === "root") continue;
+    await removeNonAcceptedDeliveriesForBox(env.fs, claimId);
+  }
 }
 async function requireActiveReadyDelivery(fs2, task) {
   if (task.activeDeliveryId) {
@@ -2248,33 +2113,6 @@ async function requireActiveReadyDelivery(fs2, task) {
     throw new TaskLifecycleError("NO_ACTIVE_DELIVERY", "No ready delivery for this task.");
   }
   return ready;
-}
-async function projectAssignee(fs2, box, owner, status, acceptedBy) {
-  const patch = { owner: owner ?? void 0 };
-  if (owner) patch.acceptedBy = void 0;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter(fs2, box, patch);
-}
-async function restoreProjection(fs2, box, owner, status, acceptedBy) {
-  await patchFrontmatter(fs2, box, {
-    owner: owner ?? void 0,
-    status: status ?? void 0,
-    acceptedBy: acceptedBy ?? void 0
-  });
-}
-async function patchFrontmatter(fs2, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  const order = [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...keyOrder.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
-  await fs2.writeFile(boxFile, serializeFrontmatter(data, body, order));
 }
 function requireBoxById(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {
@@ -2293,7 +2131,6 @@ var init_task_lifecycle = __esm({
     init_adapter();
     init_claim();
     init_delivery();
-    init_frontmatter();
     init_tree();
     init_task();
     init_paths();
@@ -2309,14 +2146,14 @@ function buildManifest(tent, input) {
   const readable = [];
   const writable = [];
   for (const box of allBoxes(tent)) {
-    if (isUsableBox(box) && box.readable.value) {
+    if (isUsableBox(box)) {
       readable.push({ id: box.id, path: box.path, note: oneLineNote(box) });
     }
   }
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
   for (const box of claimScope) {
-    if (isUsableBox(box) && box.writable.value) {
+    if (isUsableBox(box)) {
       writable.push({ id: box.id, path: box.path });
     }
   }
@@ -2384,8 +2221,9 @@ function dedupe(entries) {
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const e of entries) {
-    if (seen.has(e.path)) continue;
-    seen.add(e.path);
+    const key = `${e.id ?? ""}|${e.path}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
     out.push(e);
   }
   return out;
@@ -2680,9 +2518,7 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
   }
   assertContentMutable(target, "renamed");
   if (isFrozen(target)) {
-    throw new Error(
-      "Claimed ranges cannot be renamed; stamp or force-release the owner first."
-    );
+    throw new Error("Invalid or archived boxes cannot be renamed.");
   }
   await assertRenameOccupationAllowed(env, tent, target);
   const oldPath = target.path;
@@ -2828,27 +2664,12 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
 }
 async function assertRenameOccupationAllowed(env, tent, concept) {
   const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(concept.id) || task.claims.includes("root")) {
-      throw new Error(
-        `Cannot rename ${concept.name}: active task ${task.path} occupies this concept.`
-      );
-    }
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, concept.path) || isAncestorPath(concept.path, claimed.path)) {
-        throw new Error(
-          `Cannot rename ${concept.name}: overlapping active task ${task.path} occupies this range.`
-        );
-      }
-    }
+  const hit = findActiveOccupation(tent, concept, tasks);
+  if (hit) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
+    );
   }
-}
-function isAncestorPath(ancestor, child) {
-  if (!ancestor) return true;
-  return child === ancestor || child.startsWith(ancestor + "/");
 }
 function assertNotOperationalPath(path) {
   if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
@@ -3048,7 +2869,6 @@ __export(ops_exports, {
   dispatch: () => dispatch,
   forceRelease: () => forceRelease,
   forkNode: () => forkNode,
-  grantReadable: () => grantReadable,
   patchBody: () => patchBody,
   patchBox: () => patchBox,
   placeBox: () => placeBox,
@@ -3102,11 +2922,6 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       );
     }
   } else {
-    if (!claim.box.coordination) {
-      throw new Error(
-        `Cannot dispatch: ${claim.box.name} has coordination=false (type ${claim.box.type}); only coordination-enabled concepts may enter the task lifecycle.`
-      );
-    }
     const structural = structuralClaimGate(claim.box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
@@ -3205,29 +3020,20 @@ function resolveDispatchClaim(tent, claimId, tentName) {
   const box = requireBoxById2(tent, id);
   return { root: false, id: box.id, name: box.name, box };
 }
-async function stamp(env, boxId, acceptedBy = "user") {
-  await completeClaim(env, boxId, void 0, acceptedBy);
+async function stamp(_env, _boxId, _acceptedBy = "user") {
+  void _env;
+  void _boxId;
+  void _acceptedBy;
+  throw new Error(STAMP_RETIRED_MESSAGE);
 }
-async function completeClaim(env, boxId, integrate, acceptedBy = "user") {
+async function completeClaim(env, boxId, integrate, _acceptedBy = "user") {
+  void _acceptedBy;
   await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
     requireBoxById2(tent, boxId);
   });
-  if (integrate) await integrate();
-  await withMutation2(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById2(tent, boxId);
-    await setOwner(env.fs, box, void 0, "done", acceptedBy);
-  });
-}
-async function grantReadable(env, boxId) {
-  await withMutation2(env.fs, async () => {
-    const tent = await loadTent(env.fs);
-    const box = requireBoxById2(tent, boxId);
-    if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot be made readable.");
-    assertContentMutable(box, "made readable");
-    await patchFrontmatter2(env.fs, box, { readable: true });
-  });
+  void integrate;
+  throw new Error(STAMP_RETIRED_MESSAGE);
 }
 async function cleanTemp(env, role) {
   const roleName = role === void 0 ? void 0 : assertRoleName(role);
@@ -3242,11 +3048,44 @@ async function cleanTemp(env, role) {
 async function forceRelease(env, boxId) {
   await withMutation2(env.fs, async () => {
     const tent = await loadTent(env.fs);
-    const box = requireBoxById2(tent, boxId);
-    if (!box.fm.owner) throw new Error("Only claim roots with a direct owner can be force-released.");
-    await setOwner(env.fs, box, void 0, "todo");
-    await removeNonAcceptedDeliveriesForBox(env.fs, box.id);
+    requireBoxById2(tent, boxId);
   });
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const active = tasks.filter(
+    (t) => envelopeIsActiveOccupation(t) && t.claims.includes(boxId)
+  );
+  if (active.length === 0) {
+    await withMutation2(env.fs, async () => {
+      await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+    });
+    return;
+  }
+  for (const task of active) {
+    if (task.state === "queued" || task.status === "pending") {
+      await cancelPendingTask(env, task.path);
+      continue;
+    }
+    try {
+      await taskInterrupt(env, task.path);
+    } catch {
+      try {
+        await taskFail(env, task.path, { summary: "force-release" });
+      } catch {
+        await withMutation2(env.fs, async () => {
+          const current = await loadTaskEnvelope(env.fs, task.path).catch(() => null);
+          if (!current) return;
+          if (envelopeIsActiveOccupation(current)) {
+            await patchTaskEnvelope(env.fs, task.path, {
+              state: "interrupted",
+              wait: null,
+              updatedAt: env.clock.now()
+            });
+          }
+          await removeNonAcceptedDeliveriesForBox(env.fs, boxId);
+        });
+      }
+    }
+  }
 }
 async function tagBox(env, boxId, name) {
   await addTag(env.fs, boxId, normalizeTagName(name));
@@ -3365,13 +3204,16 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived"].filter((key) => key in patch);
-  if (reserved.length > 0) throw new Error(`Reserved fields cannot be edited here: ${reserved.join(", ")}.`);
+  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
+    (key) => key in patch
+  );
+  if (reserved.length > 0) {
+    throw new Error(
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+    );
+  }
   if (box.archived || box.mode === "archived") {
     throw new Error("Archived boxes can only be restored or permanently deleted.");
-  }
-  if (box.mode === "read-only") {
-    throw new Error("Read-only boxes cannot be patched; use docs.setMode / setNodeMode first.");
   }
   if (box.invalid) {
     const keys = Object.keys(patch);
@@ -3382,18 +3224,6 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   if ("type" in patch) {
     if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
     if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
-  }
-  if ("status" in patch) {
-    const tasks = await loadTaskEnvelopes(env.fs);
-    const occupied = findActiveOccupation(tent, box, tasks);
-    if (occupied) {
-      throw new Error(
-        "Status for boxes with an active task can only be changed by completing or interrupting the task."
-      );
-    }
-    if (patch.status !== void 0 && !["todo", "doing", "done"].includes(String(patch.status))) {
-      throw new Error("Status must be todo, doing, or done.");
-    }
   }
   const tagsTouched = "tags" in patch;
   const previousTags = box.tags.slice();
@@ -3429,8 +3259,15 @@ async function setNodeMode(env, boxId, mode) {
   await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
 }
 async function setNodeModeUnlocked(env, boxId, mode) {
+  if (mode === "read-only") {
+    throw new Error(
+      'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
+    );
+  }
   const next = parseNodeMode(mode);
-  if (!next) throw new Error('mode must be "editable", "read-only", or "archived".');
+  if (!next || next !== "editable" && next !== "archived") {
+    throw new Error('mode must be "editable" or "archived".');
+  }
   const tent = await loadTent(env.fs);
   const box = requireBoxById2(tent, boxId);
   if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
@@ -3440,14 +3277,12 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     }
     throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
   }
-  const current = isExplicitArchiveRoot(box) ? "archived" : box.mode === "read-only" ? "read-only" : "editable";
+  const current = isExplicitArchiveRoot(box) ? "archived" : "editable";
   if (current === next) {
     if (next === "editable") {
-      await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
-    } else if (next === "read-only") {
-      await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
+      await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
     } else {
-      await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+      await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
     }
     return;
   }
@@ -3460,17 +3295,10 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     }
   }
   if (next === "archived") {
-    await patchFrontmatter2(env.fs, box, { mode: "archived", archived: void 0 });
+    await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
     return;
   }
-  if (next === "read-only") {
-    if (current === "archived") {
-      throw new Error("Archived roots must be restored to editable before setting read-only.");
-    }
-    await patchFrontmatter2(env.fs, box, { mode: "read-only", archived: void 0 });
-    return;
-  }
-  await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
+  await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
 }
 async function archiveBox(env, boxId) {
   await setNodeMode(env, boxId, "archived");
@@ -3482,7 +3310,7 @@ async function restoreBox(env, boxId) {
     if (!isExplicitArchiveRoot(box)) {
       throw new Error("Only an explicit archive root can restore the subtree.");
     }
-    await patchFrontmatter2(env.fs, box, { mode: void 0, archived: void 0 });
+    await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
   });
 }
 async function deleteArchivedBox(env, boxId) {
@@ -3490,7 +3318,12 @@ async function deleteArchivedBox(env, boxId) {
     const tent = await loadTent(env.fs);
     const box = requireBoxById2(tent, boxId);
     if (!isExplicitArchiveRoot(box)) throw new Error("Box must be archived before permanent deletion.");
-    if (hasOwnerInSubtree(box)) throw new Error("Archived subtree still has an owner and cannot be deleted.");
+    const tasks = await loadTaskEnvelopes(env.fs);
+    if (hasActiveTaskInSubtree(tent, box, tasks)) {
+      throw new Error(
+        "Archived subtree still has an active task and cannot be deleted; cancel or fail the task first."
+      );
+    }
     const removedIds = collectSubtreeIds(box);
     await env.fs.remove(box.path);
     const order = await loadOrder(env.fs);
@@ -3501,14 +3334,7 @@ async function deleteArchivedBox(env, boxId) {
     await saveOrder(env.fs, order);
   });
 }
-async function setOwner(fs2, box, owner, status, acceptedBy) {
-  const patch = { owner: owner ?? void 0 };
-  if (owner) patch.acceptedBy = void 0;
-  else if (acceptedBy) patch.acceptedBy = acceptedBy;
-  if (status) patch.status = status;
-  await patchFrontmatter2(fs2, box, patch);
-}
-async function patchFrontmatter2(fs2, box, patch) {
+async function patchFrontmatter(fs2, box, patch) {
   const boxFile = boxNotePath(box.path);
   const { data, body, keyOrder } = parseFrontmatter(await fs2.readFile(boxFile));
   for (const [k, v] of Object.entries(patch)) {
@@ -3542,9 +3368,17 @@ function assertNotTempPath(path) {
     throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
   }
 }
-function hasOwnerInSubtree(box) {
-  if (box.fm.owner) return true;
-  return box.children.some(hasOwnerInSubtree);
+function hasActiveTaskInSubtree(tent, box, tasks) {
+  const ids = collectSubtreeIds(box);
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") return true;
+      if (ids.has(claimId)) return true;
+    }
+  }
+  void tent;
+  return false;
 }
 function collectSubtreeIds(box, ids = /* @__PURE__ */ new Set()) {
   ids.add(box.id);
@@ -3583,6 +3417,7 @@ function requireBoxById2(tent, boxId) {
 async function withMutation2(fs2, action) {
   return withTentMutation(fs2, action);
 }
+var STAMP_RETIRED_MESSAGE;
 var init_ops = __esm({
   "src/core/ops.ts"() {
     "use strict";
@@ -3605,6 +3440,7 @@ var init_ops = __esm({
     init_task_lifecycle();
     init_forkOps();
     init_renameOps();
+    STAMP_RETIRED_MESSAGE = "stamp/complete no longer write Node owner/status. Use task.deliver + task.accept (or task.fail) for collaboration completion.";
   }
 });
 
@@ -3851,7 +3687,18 @@ function normalizeVaultPath(p) {
 }
 
 // src/plugin/colors.ts
-init_typeRegistry();
+var TYPE_COLOR_PALETTE = [
+  "gray",
+  "red",
+  "orange",
+  "yellow",
+  "green",
+  "cyan",
+  "blue",
+  "purple",
+  "pink",
+  "brown"
+];
 var TYPE_COLORS = TYPE_COLOR_PALETTE;
 var FALLBACK_COLORS = {
   gray: "#8a8678",
@@ -3880,13 +3727,28 @@ init_skillRoleRegistry();
 init_claim();
 
 // src/core/inbox.ts
-async function buildInbox(tent) {
+init_task();
+init_claim();
+async function buildInbox(tent, fs2) {
+  if (!fs2) {
+    return [];
+  }
+  const tasks = await loadTaskEnvelopes(fs2);
+  const occupied = occupiedBoxesFromTasks(tent, tasks);
   const items = [];
-  for (const box of tent.byId.values()) {
+  for (const box of occupied) {
     if (box.invalid || box.archived) continue;
-    const role = box.fm.owner;
-    if (!role) continue;
-    items.push({ state: "stale", role, boxPath: box.path, boxId: box.id });
+    const task = tasks.find(
+      (t) => envelopeIsActiveOccupation(t) && t.claims.includes(box.id)
+    );
+    if (!task) continue;
+    items.push({
+      state: "stale",
+      role: task.role,
+      boxPath: box.path,
+      boxId: box.id,
+      taskId: task.id || task.path
+    });
   }
   return items;
 }
@@ -3985,9 +3847,7 @@ var COL_GAP = 48;
 var ROOT_COLOR = {
   goal: "5",
   prompt: "6",
-  artifact: "4",
   output: "4",
-  note: "1",
   temp: "",
   custom: "2"
 };
@@ -4054,15 +3914,14 @@ function filePath(box, prefix) {
 }
 function labelFor(box, isRoot) {
   const tag = isRoot ? "" : ` \xB7 ${box.type}`;
-  const owner = box.fm.owner ? ` \u2691${box.fm.owner}` : "";
-  return `${box.name}${tag}${owner}`;
+  return `${box.name}${tag}`;
 }
 function colorFor(box, isRoot) {
   if (isRoot) return ROOT_COLOR[box.name] || void 0;
   const { base: base2, modifier } = splitType(box.type);
   if (base2 === "goal") return "5";
   if (base2 === "prompt") return "6";
-  if (base2 === "artifact" || base2 === "output") return "4";
+  if (base2 === "output") return "4";
   if (modifier === "asset" || box.type === "asset") return "";
   return void 0;
 }
@@ -4412,9 +4271,6 @@ function visibleTreeCount(node, collapsed, directCount) {
   const subtreeCount = (current) => directCount(current) + current.children.reduce((total, child) => total + subtreeCount(child), 0);
   return subtreeCount(node);
 }
-function statuslessDirectChildren(node) {
-  return node.children.filter((child) => child.fm.status === void 0);
-}
 function bottomTabCounts(input) {
   return {
     dispatch: input.pendingDispatches,
@@ -4434,7 +4290,7 @@ function statusIncreaseNoticeText(increase) {
   return `\u5E10\u5185\u65B0\u589E ${increase} \u9879\u5F85\u88C1`;
 }
 function hasTreePending(input) {
-  return input.pendingProposals > 0 || input.pendingDispatches > 0 || !!input.owner;
+  return input.pendingProposals > 0 || input.pendingDispatches > 0;
 }
 function bottomTabParts(label, count) {
   return {
@@ -4451,20 +4307,6 @@ function createRegistryPaneState() {
     newFormOpen: null,
     openEditor: null
   };
-}
-function rwSegmentStates(declared, allowInherit = true) {
-  const states = allowInherit ? [
-    { label: "\u7EE7\u627F", value: void 0 },
-    { label: "\u5F00", value: true },
-    { label: "\u5173", value: false }
-  ] : [
-    { label: "\u5F00", value: true },
-    { label: "\u5173", value: false }
-  ];
-  return states.map((state) => ({
-    ...state,
-    active: declared === state.value
-  }));
 }
 function roleColorValue(role) {
   if (role.color) return typeColorValue(role.color);
@@ -4488,29 +4330,8 @@ function createChevronSelect(parent, options) {
   (0, import_obsidian2.setIcon)(icon, "chevron-down");
   return select;
 }
-function drawRwSegment(parent, key, declared, onChange, allowInherit = true, readonly = false) {
-  const segment = parent.createDiv({
-    cls: "tent-status-segment tent-rw-seg" + (readonly ? " is-readonly" : "")
-  });
-  const keyLabel = key === "readable" ? "R" : key === "writable" ? "W" : "\u534F";
-  segment.createSpan({ cls: "tent-seg-key", text: keyLabel });
-  if (key === "coordination") {
-    tentTooltip(segment, "\u53EF\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F\uFF1A\u5F00\u5219\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u627F\u8F7D status / task / delivery");
-  }
-  for (const state of rwSegmentStates(declared, allowInherit)) {
-    const option = segment.createDiv({
-      cls: "tent-status-segment-option" + (state.active ? " is-active" : ""),
-      text: state.label
-    });
-    if (!readonly) option.onclick = () => onChange(state.value);
-  }
-}
-function hasActiveOwnerInScope(box) {
-  let current = box;
-  while (current) {
-    if (current.fm.owner) return true;
-    current = current.parent;
-  }
+function hasActiveOwnerInScope(_box) {
+  void _box;
   return false;
 }
 function tentTooltip(el, text, placement = "top") {
@@ -4536,49 +4357,30 @@ init_skillRoleRegistry();
 // src/core/typeManagement.ts
 init_adapter();
 init_tree();
+init_task();
+init_claim();
 init_typeRegistry();
 async function createType(fs2, name, definition) {
   await withTentMutation(fs2, async () => {
     assertTypeName(name);
-    if (definition.tier !== "modifier" && (typeof definition.readable !== "boolean" || typeof definition.writable !== "boolean")) {
-      throw new Error("Base type must specify readable and writable.");
+    if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
+      throw new Error(`Built-in primary types cannot be created: ${name}.`);
+    }
+    if (BUILTIN_SECONDARY_TYPES.includes(name)) {
+      throw new Error(`Built-in secondary types already exist: ${name}.`);
+    }
+    if (definition.tier !== "modifier") {
+      throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
     }
     const registry = await loadTypeRegistry(fs2);
     if (registry[name]) throw new Error(`Type already exists: ${name}.`);
-    registry[name] = withDefaultColor(registry, definition);
+    registry[name] = { tier: "modifier" };
     await writeTypeRegistryUnlocked(fs2, registry);
   });
 }
-var createPrimaryType = createType;
-async function updateTypeMetadata(fs2, level, name, patch) {
-  await withTentMutation(fs2, async () => {
-    void level;
-    assertTypeName(name);
-    if (patch.workspacePointer !== void 0) {
-      throw new Error(
-        "workspacePointer capability is retired; use coordination and in-workspace .tent layout."
-      );
-    }
-    const registry = await loadTypeRegistry(fs2);
-    const current = registry[name];
-    if (!current) throw new Error(`Type does not exist: ${name}.`);
-    if (patch.color !== void 0) {
-      const color = patch.color.trim();
-      if (color) current.color = color;
-      else delete current.color;
-    }
-    if (patch.description !== void 0) {
-      const description = patch.description.trim();
-      if (description) current.description = description;
-      else delete current.description;
-    }
-    updateAxis(current, "readable", patch.readable);
-    updateAxis(current, "writable", patch.writable);
-    if (patch.coordination !== void 0) {
-      setBaseCoordination(current, patch.coordination);
-    }
-    await writeTypeRegistryUnlocked(fs2, registry);
-  });
+async function createSecondaryType(fs2, name, _definition) {
+  void _definition;
+  await createType(fs2, name, { tier: "modifier" });
 }
 async function inspectTypeDeletion(fs2, level, name) {
   void level;
@@ -4589,17 +4391,34 @@ async function inspectTypeDeletion(fs2, level, name) {
     const { base: base2, modifier } = splitType(box.type);
     return box.type === name || base2 === name || modifier === name;
   });
+  const tasks = await loadTaskEnvelopes(fs2);
   const ownerMap = /* @__PURE__ */ new Map();
+  const relatedIds = /* @__PURE__ */ new Set();
   for (const reference of referenced) {
     for (const box of relatedBoxes(reference, boxes)) {
-      if (!box.fm.owner) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: box.fm.owner });
+      relatedIds.add(box.id);
     }
   }
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        if (referenced.length > 0) {
+          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
+        }
+        continue;
+      }
+      if (!relatedIds.has(claimId)) continue;
+      const box = tent.byId.get(claimId);
+      if (!box) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
+    }
+  }
+  const builtIn = name in DEFAULT_TYPE_REGISTRY || isCanonicalPrimary(name) || BUILTIN_SECONDARY_TYPES.includes(name);
   return {
     level: "type",
     name,
-    builtIn: name in DEFAULT_TYPE_REGISTRY,
+    builtIn,
     exists: name in registry,
     references: referenced.map(({ id, path, name: boxName }) => ({ id, path, name: boxName })),
     activeOwners: [...ownerMap.values()]
@@ -4612,7 +4431,9 @@ async function deleteCustomType(fs2, level, name, confirmation) {
     if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
     if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
     if (inspection.activeOwners.length > 0) {
-      throw new Error(`Referenced range still has an owner; stamp or force-release first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`);
+      throw new Error(
+        `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
+      );
     }
     const registry = await loadTypeRegistry(fs2);
     delete registry[name];
@@ -4621,35 +4442,24 @@ async function deleteCustomType(fs2, level, name, confirmation) {
   });
 }
 async function writeTypeRegistryUnlocked(fs2, registry) {
-  await fs2.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(registry, null, 2) + "\n");
+  const slim = {};
+  for (const [name, def] of Object.entries(registry)) {
+    slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
+  }
+  await fs2.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
 }
 function assertTypeName(name) {
   if (!name.trim()) throw new Error("Type name cannot be empty.");
   if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
-}
-function updateAxis(definition, axis, value) {
-  if (value === void 0) return;
-  if (value === "inherit") {
-    if (definition.tier !== "modifier") throw new Error("Base types cannot inherit readable/writable settings.");
-    delete definition[axis];
-    return;
-  }
-  definition[axis] = value;
+  if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
 }
 function relatedBoxes(reference, boxes) {
   return boxes.filter(
     (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
   );
 }
-function withDefaultColor(registry, definition) {
-  const color = definition.color?.trim();
-  if (color) return { ...definition, color };
-  const used = Object.keys(registry).length;
-  return { ...definition, color: TYPE_COLOR_PALETTE[used % TYPE_COLOR_PALETTE.length] };
-}
 
 // src/plugin/registry-pane.ts
-init_typeRegistry();
 function drawRegistryPane(host, context, state) {
   host.createDiv({ cls: "registry-title", text: "\u7C7B\u578B / \u89D2\u8272 \u6CE8\u518C\u8868" });
   const list = host.createDiv({ cls: "registry-list" });
@@ -4710,12 +4520,12 @@ function drawVisibilityPanel(host, context, state, primary, secondary) {
       chips.createSpan({ cls: "reg-vis-empty", text: "\u2014" });
       return;
     }
-    for (const [name, definition] of definitions) {
+    for (const [name] of definitions) {
       drawChip(
         chips,
         name,
         state.markedTypes.has(name),
-        typeColorValue(definition.color),
+        typeColorValue(void 0),
         () => toggleSetValue(state.markedTypes, name)
       );
     }
@@ -4801,28 +4611,13 @@ function drawTypeRow(content, context, state, section, name, definition) {
     cls: "registry-item-wrapper" + (open2 ? " drawer-open" : "")
   });
   const row = wrapper.createDiv({ cls: "reg-card" });
-  row.style.setProperty("--accent-color", typeColorValue(definition.color));
   row.createSpan({ cls: "item-name", text: name });
-  row.createSpan({ cls: "reg-desc", text: definition.description || "" });
-  const rightArea = row.createDiv({ cls: "row-right-area" });
-  drawRwCapsule(
-    rightArea.createDiv({ cls: "item-indicators" }),
-    definition.readable,
-    definition.writable,
-    definition.tier === "modifier" ? void 0 : baseDefinitionCoordination(definition) === true
-  );
-  const actions = rightArea.createDiv({ cls: "row-actions" });
-  const edit = actions.createEl("button", {
-    cls: "registry-edit-btn" + (open2 ? " active" : "")
+  row.createSpan({
+    cls: "reg-desc",
+    text: `tier:${definition.tier ?? "base"}`
   });
-  edit.setAttr("type", "button");
-  (0, import_obsidian3.setIcon)(edit, "settings");
-  addTooltip(edit, "\u7F16\u8F91\u989C\u8272 / \u8BFB\u5199");
-  edit.onclick = (event) => {
-    event.stopPropagation();
-    state.openEditor = open2 ? null : editKey;
-    context.redraw();
-  };
+  const rightArea = row.createDiv({ cls: "row-right-area" });
+  const actions = rightArea.createDiv({ cls: "row-actions" });
   const deleteKey = `type:${section}:${name}`;
   const deletePending = context.getPendingDelete() === deleteKey;
   const remove = actions.createEl("button", {
@@ -4841,7 +4636,7 @@ function drawTypeRow(content, context, state, section, name, definition) {
     }
     if (inspection.activeOwners.length > 0) {
       new import_obsidian3.Notice(
-        `\u5173\u8054\u8303\u56F4\u4ECD\u6709 owner,\u5148\u76D6\u7AE0\u6216\u5F3A\u6E05:${inspection.activeOwners.map((item) => item.path).join(", ")}`
+        `\u5173\u8054\u8303\u56F4\u4ECD\u6709 active task,\u5148\u53D6\u6D88\u6216 fail:${inspection.activeOwners.map((item) => item.path).join(", ")}`
       );
       return;
     }
@@ -4853,27 +4648,6 @@ function drawTypeRow(content, context, state, section, name, definition) {
     context.setPendingDelete(deleteKey);
     context.redraw();
   };
-  if (open2) drawTypeEditDrawer(wrapper, context, name, definition);
-}
-function drawRwCapsule(host, readable, writable, coordination) {
-  const capsule = host.createSpan({ cls: "rw-cap" });
-  const label = (state) => state === void 0 ? "\u7EE7\u627F" : state ? "\u5F00" : "\u5173";
-  const coordinationTip = coordination === void 0 ? "" : ` \xB7 coordination:${label(coordination)}`;
-  addTooltip(capsule, `readable:${label(readable)} \xB7 writable:${label(writable)}${coordinationTip}`);
-  const drawPart = (key, value) => {
-    const className = value === void 0 ? "is-inherit" : value ? "is-on" : "is-off";
-    const symbol = value === void 0 ? "\u2014" : value ? "\u221A" : "\u2715";
-    const part = capsule.createSpan({ cls: `rw-part ${className}` });
-    part.createSpan({ cls: "rw-k", text: key });
-    part.createSpan({ cls: "rw-s", text: symbol });
-  };
-  drawPart("R", readable);
-  capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
-  drawPart("W", writable);
-  if (coordination !== void 0) {
-    capsule.createSpan({ cls: "rw-dot", text: "\xB7" });
-    drawPart("\u534F", coordination);
-  }
 }
 function drawPalette(host, selected, onSelect) {
   const palette = host.createDiv({ cls: "tent-color-palette" });
@@ -4908,68 +4682,20 @@ function autoGrowTextarea(textarea) {
   textarea.style.height = "auto";
   textarea.style.height = `${textarea.scrollHeight}px`;
 }
-function drawTypeEditDrawer(wrapper, context, name, definition) {
-  const drawer = wrapper.createDiv({
-    cls: "registry-item-edit-drawer type-drawer"
-  });
-  const isModifier = definition.tier === "modifier";
-  drawPalette(drawLabelRow(drawer, "\u989C\u8272"), definition.color || "", async (color) => {
-    await updateTypeMetadata(context.fs, "type", name, { color });
-    await context.refresh();
-  });
-  const rw = drawLabelRow(drawer, "R/W").createDiv({ cls: "tent-drawer-rw" });
-  drawRwSegment(rw, "readable", definition.readable, async (value) => {
-    await updateTypeMetadata(context.fs, "type", name, {
-      readable: isModifier ? value ?? "inherit" : value ?? false
-    });
-    await context.refresh();
-  }, isModifier);
-  drawRwSegment(rw, "writable", definition.writable, async (value) => {
-    await updateTypeMetadata(context.fs, "type", name, {
-      writable: isModifier ? value ?? "inherit" : value ?? false
-    });
-    await context.refresh();
-  }, isModifier);
-  if (!isModifier) {
-    const coordination = drawLabelRow(drawer, "\u534F\u4F5C").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(
-      coordination,
-      "coordination",
-      baseDefinitionCoordination(definition) === true,
-      async (value) => {
-        await updateTypeMetadata(context.fs, "type", name, {
-          coordination: value === true
-        });
-        await context.refresh();
-      },
-      false
-    );
-  }
-  const description = drawLabelRow(drawer, "\u63CF\u8FF0").createEl("textarea", {
-    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
-    attr: { rows: "1" }
-  });
-  description.value = definition.description || "";
-  description.oninput = () => autoGrowTextarea(description);
-  description.onblur = async () => {
-    const value = description.value.trim();
-    if (value === (definition.description || "")) return;
-    await updateTypeMetadata(context.fs, "type", name, { description: value });
-    await context.refresh();
-  };
-  window.setTimeout(() => autoGrowTextarea(description), 0);
-}
 function drawNewTypeForm(section, context, state, tier) {
   const card = section.createDiv({ cls: "tent-newform" });
-  const form = {
-    name: "",
-    description: "",
-    readable: tier === "modifier" ? void 0 : true,
-    writable: tier === "modifier" ? void 0 : false,
-    coordination: false,
-    color: "gray"
-  };
-  const isModifier = tier === "modifier";
+  if (tier === "base") {
+    card.createDiv({
+      cls: "reg-desc",
+      text: "V0.2 \u4E00\u7EA7 type \u56FA\u5B9A\u4E3A goal|prompt|output\uFF0C\u4E0D\u53EF\u65B0\u5EFA\u3002"
+    });
+    drawFormActions(card, context, state, async () => {
+      state.newFormOpen = null;
+      context.redraw();
+    });
+    return;
+  }
+  const form = { name: "" };
   const name = drawLabelRow(card, "\u540D\u5B57").createEl("input", {
     cls: "tent-newform-input",
     attr: { type: "text" }
@@ -4978,30 +4704,6 @@ function drawNewTypeForm(section, context, state, tier) {
     form.name = name.value.trim();
   };
   window.setTimeout(() => name.focus(), 0);
-  drawPalette(drawLabelRow(card, "\u989C\u8272"), form.color, (color) => {
-    form.color = color;
-  });
-  const rw = drawLabelRow(card, "R/W").createDiv({ cls: "tent-drawer-rw" });
-  drawRwSegment(rw, "readable", form.readable, (value) => {
-    form.readable = value;
-  }, isModifier);
-  drawRwSegment(rw, "writable", form.writable, (value) => {
-    form.writable = value;
-  }, isModifier);
-  if (!isModifier) {
-    const coordination = drawLabelRow(card, "\u534F\u4F5C").createDiv({ cls: "tent-drawer-rw" });
-    drawRwSegment(coordination, "coordination", form.coordination, (value) => {
-      form.coordination = value === true;
-    }, false);
-  }
-  const description = drawLabelRow(card, "\u63CF\u8FF0").createEl("textarea", {
-    cls: "tent-newform-input tent-newform-textarea tent-newform-desc-textarea",
-    attr: { rows: "1" }
-  });
-  description.oninput = () => {
-    form.description = description.value.trim();
-    autoGrowTextarea(description);
-  };
   drawFormActions(card, context, state, async () => {
     if (!form.name || form.name === "temp") {
       new import_obsidian3.Notice("\u8BF7\u586B\u5199\u6709\u6548\u7684 type \u540D");
@@ -5011,19 +4713,7 @@ function drawNewTypeForm(section, context, state, tier) {
       new import_obsidian3.Notice(`\u7C7B\u578B\u300C${form.name}\u300D\u5DF2\u5B58\u5728`);
       return;
     }
-    const definition = isModifier ? {
-      tier: "modifier",
-      ...form.readable !== void 0 ? { readable: form.readable } : {},
-      ...form.writable !== void 0 ? { writable: form.writable } : {}
-    } : {
-      tier: "base",
-      readable: form.readable,
-      writable: form.writable,
-      ...form.coordination ? { coordination: true } : { coordination: false }
-    };
-    if (form.color) definition.color = form.color;
-    if (form.description) definition.description = form.description;
-    await createPrimaryType(context.fs, form.name, definition);
+    await createSecondaryType(context.fs, form.name, { tier: "modifier" });
     state.newFormOpen = null;
     await context.refresh();
   });
@@ -5239,7 +4929,6 @@ function compareTaskOrder(a, b) {
 // src/plugin/view.ts
 init_ops();
 var TENT_VIEW_TYPE = "tent-structure-editor";
-var STATUSES = ["todo", "doing", "done"];
 var MIN_TREE_COLUMN = 250;
 var MIN_PROPERTY_COLUMN = 320;
 var COLUMN_DIVIDER = 6;
@@ -5365,7 +5054,7 @@ var TentView = class extends import_obsidian4.ItemView {
         this.deliveries = await loadDeliveries(fs2);
         this.proposals = await loadProposals(fs2);
         this.tasks = await loadTaskEnvelopes(fs2);
-        this.inbox = await buildInbox(this.tent);
+        this.inbox = await buildInbox(this.tent, fs2);
         this.roles = (await loadRolesRegistry(fs2)).roles;
         this.registryTags = (await loadTagRegistry(fs2)).tags;
         this.loadError = null;
@@ -5669,8 +5358,7 @@ var TentView = class extends import_obsidian4.ItemView {
   boxHasPending(box) {
     return hasTreePending({
       pendingProposals: this.pendingByTarget.get(box.id) ?? 0,
-      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0,
-      owner: box.fm.owner
+      pendingDispatches: this.pendingDispatchByBox.get(box.id)?.length ?? 0
     });
   }
   subtreeHasPending(box) {
@@ -5751,8 +5439,7 @@ var TentView = class extends import_obsidian4.ItemView {
       wrap.addClass("tent-zone");
       const known = ["goal", "prompt", "output"].includes(box.name);
       wrap.addClass("tent-zone-" + (known ? box.name : "custom"));
-      const topTypeDef = this.tent.typeRegistry[box.type];
-      wrap.style.setProperty("--zone-color", typeColorValue(topTypeDef?.color));
+      wrap.style.setProperty("--zone-color", typeColorValue(void 0));
     } else if (hasKids) {
       wrap.addClass("tent-subframe");
     }
@@ -5794,8 +5481,8 @@ var TentView = class extends import_obsidian4.ItemView {
     row.createSpan({ cls: "tent-name", text: box.name });
     const split = splitType(box.type);
     const showType = this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.base) || !!split.modifier && this.registryUi.markedTypes.has(split.modifier) || box.id === this.selectedId;
-    const owner = box.fm.owner;
-    const showRole = !!owner && (this.registryUi.markedRoles.has(owner) || box.id === this.selectedId);
+    const owner = void 0;
+    const showRole = false;
     if (showType || showRole) {
       const meta = row.createSpan({ cls: "tent-node-meta" });
       meta.createSpan({ cls: "tent-meta-sep", text: "\u2502" });
@@ -5803,15 +5490,13 @@ var TentView = class extends import_obsidian4.ItemView {
         const showBase = box.id === this.selectedId || this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.base);
         const showModifier = !!split.modifier && (box.id === this.selectedId || this.registryUi.markedTypes.has(box.type) || this.registryUi.markedTypes.has(split.modifier));
         if (showBase) {
-          const baseDef = this.tent.typeRegistry[split.base];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.base });
-          tw.style.setProperty("--tent-type-color", typeColorValue(baseDef?.color));
+          tw.style.setProperty("--tent-type-color", typeColorValue(void 0));
         }
         if (showModifier && split.modifier) {
           if (showBase) meta.createSpan({ cls: "tent-meta-type-join", text: "-" });
-          const modDef = this.tent.typeRegistry[split.modifier];
           const tw = meta.createSpan({ cls: "tent-meta-type", text: split.modifier });
-          tw.style.setProperty("--tent-type-color", typeColorValue(modDef?.color));
+          tw.style.setProperty("--tent-type-color", typeColorValue(void 0));
         }
       }
       if (showRole && owner) {
@@ -5827,23 +5512,11 @@ var TentView = class extends import_obsidian4.ItemView {
       const nb = rest.createSpan({ cls: "tent-slot-notif", text: String(pend) });
       tentTooltip(nb, isCollapsed ? `${pend} \u9879\u5F85\u88C1\uFF08\u542B\u5B50\u7EA7\uFF09` : `${pend} \u9879\u5F85\u88C1`);
     }
-    const st = box.fm.status;
     if (box.invalid) {
       const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-invalid" });
       const ico = pill.createSpan();
       (0, import_obsidian4.setIcon)(ico, "triangle-alert");
       tentTooltip(pill, box.invalidReason || "\u5931\u6548\u6846");
-    } else if (box.fm.owner) {
-      const pill = rest.createSpan({ cls: "tent-slot-status tent-spill tent-spill-lock" });
-      const ico = pill.createSpan();
-      (0, import_obsidian4.setIcon)(ico, "lock");
-      tentTooltip(pill, `\u9501\u5B9A:${box.fm.owner} \u8BA4\u9886\u4E2D`);
-    } else if (st && st !== "todo") {
-      const pill = rest.createSpan({ cls: `tent-slot-status tent-spill tent-spill-${st}` });
-      const ico = pill.createSpan();
-      if (st === "doing") (0, import_obsidian4.setIcon)(ico, "circle-dashed");
-      else if (st === "done") (0, import_obsidian4.setIcon)(ico, "circle-check");
-      tentTooltip(pill, st);
     }
     const actionBlocked = hasActiveOwnerInScope(box);
     if (!frozen || box.archived) {
@@ -5965,11 +5638,12 @@ var TentView = class extends import_obsidian4.ItemView {
     e.preventDefault();
     const menu = new import_obsidian4.Menu();
     menu.addItem((i) => i.setTitle("\u6253\u5F00\u7B14\u8BB0").setIcon("file-text").onClick(() => this.openBoxFile(box)));
-    if (!box.archived && !box.invalid && box.fm.owner) {
+    if (!box.archived && !box.invalid) {
       menu.addItem(
-        (i) => i.setTitle(`\u4E2D\u65AD\u91CA\u653E (${box.fm.owner})`).setIcon("unlock").onClick(() => void this.requestForceRelease(box))
+        (i) => i.setTitle("\u4E2D\u65AD\u91CA\u653E (active tasks)").setIcon("unlock").onClick(() => void this.requestForceRelease(box))
       );
-    } else if (!box.archived && !box.invalid) {
+    }
+    if (!box.archived && !box.invalid) {
       const check = canClaim(box);
       menu.addItem(
         (i) => i.setTitle("\u6D3E\u6D3B").setIcon("send").setDisabled(!check.ok).onClick(() => {
@@ -6034,15 +5708,6 @@ var TentView = class extends import_obsidian4.ItemView {
     const titleRow = card.createDiv({ cls: "tent-prop-titlerow" });
     titleRow.createSpan({ cls: "tent-card-title", text: box.name });
     titleRow.createSpan({ cls: "tent-prop-id", text: box.id });
-    const ownerWrap = titleRow.createDiv({ cls: "tent-titlerow-owner" });
-    ownerWrap.createSpan({ cls: "owner-label", text: "owner" });
-    const ownerHas = !!box.fm.owner;
-    const ownerBadge = ownerWrap.createSpan({ cls: "owner-badge" + (ownerHas ? " active" : " empty") });
-    if (ownerHas) {
-      const role = this.roles.find((r) => r.name === box.fm.owner);
-      ownerBadge.style.setProperty("--role-color", roleColorValue(role ?? { name: box.fm.owner }));
-    }
-    ownerBadge.setText(ownerHas ? box.fm.owner : "\u2014");
     const expandBtn = titleRow.createEl("button", { cls: "tent-prop-expand" });
     expandBtn.setAttr("type", "button");
     (0, import_obsidian4.setIcon)(expandBtn, this.propEditExpanded ? "chevron-up" : "chevron-down");
@@ -6077,25 +5742,6 @@ var TentView = class extends import_obsidian4.ItemView {
       });
       baseSel.onchange = () => applyType(baseSel.value, modSel.value);
       modSel.onchange = () => applyType(baseSel.value, modSel.value);
-      const rwItem = editor.createDiv({ cls: "tent-prop-item" });
-      rwItem.createSpan({ cls: "tent-item-label", text: "R/W" });
-      const rwWrap = rwItem.createDiv({ cls: "tent-rw-mini-wrap" });
-      drawRwSegment(rwWrap, "readable", box.fm.readable, async (v) => {
-        await this.patchBoxIncremental(box, { readable: v });
-      });
-      drawRwSegment(rwWrap, "writable", box.fm.writable, async (v) => {
-        await this.patchBoxIncremental(box, { writable: v });
-      });
-      const soItem = editor.createDiv({ cls: "tent-prop-item" });
-      soItem.createSpan({ cls: "tent-item-label", text: "status" });
-      const seg = soItem.createDiv({ cls: "tent-status-segment" });
-      const curStatus = box.fm.status || "todo";
-      for (const o of STATUSES) {
-        const opt = seg.createDiv({ cls: "tent-status-segment-option" + (o === curStatus ? " is-active" : ""), text: o });
-        opt.onclick = async () => {
-          await this.patchBoxIncremental(box, { status: o });
-        };
-      }
       this.drawTagsRow(editor, box);
       if (this.tagPickerOpen) this.drawTagPicker(editor, box);
     }
@@ -6304,10 +5950,9 @@ var TentView = class extends import_obsidian4.ItemView {
   // 待裁 tab:pending proposal + Delivery 完成待确认(中断释放 / 确认完成)
   drawTriageInline(body, actSlot, box) {
     const proposals = this.pendingProposalsForBox(box.id);
-    const owner = box.fm.owner;
     const delivery = this.readyDeliveriesForBox(box.id)[0];
     const rejectedDelivery = this.rejectedDeliveryForBox(box.id);
-    if (owner) {
+    {
       const releasePending = this.pendingDelete === `release:${box.id}`;
       const rel = actSlot.createEl("button", {
         cls: "tent-bottom-action tent-bottom-danger" + (releasePending ? " is-confirm" : ""),
@@ -6319,7 +5964,7 @@ var TentView = class extends import_obsidian4.ItemView {
         void this.requestForceRelease(box);
       };
     }
-    if (proposals.length === 0 && !owner && !delivery) {
+    if (proposals.length === 0 && !delivery) {
       body.createDiv({ cls: "tent-bottom-empty", text: "\u65E0\u5F85\u5904\u7406" });
       return;
     }
@@ -6383,14 +6028,13 @@ var TentView = class extends import_obsidian4.ItemView {
         try {
           await this.rejectReadyDelivery(delivery);
           await this.refresh();
-          new import_obsidian4.Notice("\u5DF2\u9A73\u56DE\uFF0Cowner \u4FDD\u7559\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
+          new import_obsidian4.Notice("\u5DF2\u9A73\u56DE\uFF0C\u7B49\u5F85 agent \u91CD\u65B0\u4EA4\u4ED8");
         } catch (e) {
           new import_obsidian4.Notice("\u9A73\u56DE\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
       const done = acts.createEl("button", { cls: "mod-cta", text: "\u786E\u8BA4" });
       done.setAttr("type", "button");
-      const statuslessChildren = statuslessDirectChildren(box);
       if (delivery.commits.length > 0) {
         const pick = body.createDiv({ cls: "tent-commit-pick" });
         pick.createDiv({ cls: "tent-commit-note", text: "\u8BFB\u53D6 delivery commits\u2026" });
@@ -6413,8 +6057,8 @@ var TentView = class extends import_obsidian4.ItemView {
           }
         });
       }
-      const accept = async (children, controls = [done]) => {
-        for (const control of controls) control.setAttr("disabled", "true");
+      done.onclick = async () => {
+        done.setAttr("disabled", "true");
         try {
           await this.acceptReadyDelivery(delivery, {
             integrate: async (refs) => {
@@ -6424,58 +6068,24 @@ var TentView = class extends import_obsidian4.ItemView {
               await integrateWorkspaceCommits(contract, refs);
             }
           });
-          for (const child of children) await stamp(this.env(), child.id);
           this.clearGitUiCache();
           await this.refresh();
-          const childMessage = children.length > 0 ? `\uFF0C\u5E76\u76D6\u7AE0 ${children.length} \u4E2A\u5B50\u7EA7` : "";
-          new import_obsidian4.Notice((delivery.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${delivery.commits.length} commit + \u6E05 owner)` : "\u5DF2\u786E\u8BA4(done + \u6E05 owner)") + childMessage);
+          new import_obsidian4.Notice(
+            delivery.commits.length ? `\u5DF2\u786E\u8BA4(\u5408\u5165 ${delivery.commits.length} commit)` : "\u5DF2\u786E\u8BA4\u4EA4\u4ED8"
+          );
         } catch (e) {
-          for (const control of controls) control.removeAttribute("disabled");
+          done.removeAttribute("disabled");
           new import_obsidian4.Notice("\u786E\u8BA4\u5931\u8D25:" + (e instanceof Error ? e.message : e));
         }
       };
-      done.onclick = () => {
-        if (statuslessChildren.length === 0) {
-          void accept([]);
-          return;
-        }
-        done.setAttr("disabled", "true");
-        const prompt = body.createDiv({ cls: "tent-child-stamp" });
-        prompt.createDiv({
-          cls: "tent-child-stamp-title",
-          text: `\u540C\u65F6\u76D6\u7AE0 ${statuslessChildren.length} \u4E2A\u76F4\u63A5\u5B50\u7EA7\uFF1F`
-        });
-        const selected = new Set(statuslessChildren.map((child) => child.id));
-        for (const child of statuslessChildren) {
-          const row = prompt.createEl("label", { cls: "tent-child-stamp-row" });
-          const checkbox = row.createEl("input", { type: "checkbox" });
-          checkbox.checked = true;
-          row.createSpan({ text: child.name });
-          checkbox.onchange = () => {
-            if (checkbox.checked) selected.add(child.id);
-            else selected.delete(child.id);
-          };
-        }
-        const promptActions = prompt.createDiv({ cls: "tent-child-stamp-actions" });
-        const parentOnly = promptActions.createEl("button", { text: "\u4EC5\u76D6\u7236\u6846" });
-        parentOnly.setAttr("type", "button");
-        const includeChildren = promptActions.createEl("button", { cls: "mod-cta", text: "\u540C\u65F6\u76D6\u7AE0" });
-        includeChildren.setAttr("type", "button");
-        const controls = [parentOnly, includeChildren];
-        parentOnly.onclick = () => void accept([], controls);
-        includeChildren.onclick = () => {
-          const children = statuslessChildren.filter((child) => selected.has(child.id));
-          void accept(children, controls);
-        };
-      };
-    } else if (owner) {
+    } else if (rejectedDelivery) {
       body.createDiv({ cls: "tent-triage-sec", text: "\u5904\u7406\u4E2D" });
       const item = body.createDiv({ cls: "tent-triage-item" });
       const main = item.createDiv({ cls: "tent-triage-main" });
-      main.createDiv({ cls: "tent-triage-name", text: `${owner} \u6B63\u5728\u5904\u7406\u6B64\u6846` });
+      main.createDiv({ cls: "tent-triage-name", text: `${rejectedDelivery.role} \xB7 \u4EA4\u4ED8\u5DF2\u9A73\u56DE` });
       main.createDiv({
         cls: "tent-triage-meta",
-        text: rejectedDelivery ? "\u4E0A\u4E00\u4EFD\u4EA4\u4ED8\u5DF2\u9A73\u56DE\uFF0C\u7B49\u5F85\u91CD\u65B0\u4EA4\u4ED8" : "Delivery \u5230\u8FBE\u540E\u53EF\u5728\u6B64\u786E\u8BA4\u4EA4\u4ED8"
+        text: "\u7B49\u5F85\u91CD\u65B0\u4EA4\u4ED8"
       });
     }
   }
@@ -6629,11 +6239,19 @@ var TentView = class extends import_obsidian4.ItemView {
           cancel.removeAttribute("disabled");
         }
       };
-    } else if (box.fm.owner) {
-      body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "\u6295\u9012\u72B6\u6001" });
-      const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
-      state.createDiv({ cls: "tent-content-title", text: `${box.fm.owner} \u6B63\u5728\u5904\u7406\u6B64\u6846` });
-      state.createDiv({ cls: "tent-content-meta", text: "\u53EF\u5728\u300C\u5F85\u88C1\u300D\u4E2D\u67E5\u770B\u4EA4\u4ED8\u6216\u4E2D\u65AD\u4EFB\u52A1" });
+    } else {
+      const activeTask = this.tasks.find(
+        (t) => (t.state === "running" || t.state === "waiting" || t.state === "delivered" || t.state === "queued" || t.status === "pending" || t.status === "taken") && t.claims.includes(box.id)
+      );
+      if (activeTask) {
+        body.createDiv({ cls: "tent-dispatch-sec tent-dispatch-status-sec", text: "\u6295\u9012\u72B6\u6001" });
+        const state = body.createDiv({ cls: "tent-content-intro tent-dispatch-status-item is-stacked" });
+        state.createDiv({
+          cls: "tent-content-title",
+          text: `${activeTask.role} \u6B63\u5728\u5904\u7406\u6B64\u6846`
+        });
+        state.createDiv({ cls: "tent-content-meta", text: "\u53EF\u5728\u300C\u5F85\u88C1\u300D\u4E2D\u67E5\u770B\u4EA4\u4ED8\u6216\u4E2D\u65AD\u4EFB\u52A1" });
+      }
     }
   }
   // 正文:可编辑 textarea,blur 落盘。支持拖 Obsidian 文件进来转成帐根相对路径。
@@ -6642,7 +6260,7 @@ var TentView = class extends import_obsidian4.ItemView {
     intro.createDiv({ cls: "tent-content-title", text: "\u7B14\u8BB0\u6B63\u6587" });
     intro.createDiv({
       cls: "tent-content-meta",
-      text: box.readable.value ? "\u6D3E\u6D3B\u65F6\u4F5C\u4E3A\u6B64\u6846\u4E0A\u4E0B\u6587\u63D0\u4F9B\u7ED9 agent" : "\u4EC5\u4F9B user \u67E5\u770B"
+      text: !box.invalid && !box.archived ? "\u6D3E\u6D3B\u65F6\u4F5C\u4E3A\u6B64\u6846\u4E0A\u4E0B\u6587\u63D0\u4F9B\u7ED9 agent" : "\u65E0\u6548\u6216\u5DF2\u5C01\u5B58\u8282\u70B9\u4E0D\u53EF\u8FDB\u5165\u534F\u4F5C"
     });
     const ta = el.createEl("textarea", { cls: "tent-notebox" });
     ta.value = box.body.trim();
@@ -6737,7 +6355,7 @@ var TentView = class extends import_obsidian4.ItemView {
       try {
         await forceRelease(this.env(), box.id);
         await this.refresh();
-        new import_obsidian4.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u5E76\u91CA\u653E owner`);
+        new import_obsidian4.Notice(`\u5DF2\u4E2D\u65AD\u300C${box.name}\u300D\u7684 active tasks`);
       } catch (error) {
         new import_obsidian4.Notice("\u91CA\u653E\u5931\u8D25:" + (error instanceof Error ? error.message : error));
       }
@@ -6947,91 +6565,35 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
     for (const [name, definition] of Object.entries(registry)) {
       if ((definition.tier ?? "base") !== tier) continue;
       const row = section.createDiv({ cls: "tent-settings-registry-item" });
-      const summary = new import_obsidian5.Setting(row).setName(name).setDesc(definition.description || "");
-      const color = summary.controlEl.createSpan({ cls: "tent-settings-color-dot" });
-      color.style.backgroundColor = typeColorValue(definition.color);
-      const coordinationFlag = baseDefinitionCoordination(definition);
-      const coordinationSummary = (definition.tier ?? "base") === "modifier" ? "" : ` \xB7 ${axisSummary("\u534F", coordinationFlag === true)}`;
+      const summary = new import_obsidian5.Setting(row).setName(name).setDesc(tier === "base" ? "\u4E00\u7EA7\uFF08\u56FA\u5B9A\u8BED\u4E49\uFF09" : "\u4E8C\u7EA7\u4FEE\u9970");
       summary.controlEl.createSpan({
         cls: "tent-settings-rw-summary",
-        text: `${axisSummary("R", definition.readable)} \xB7 ${axisSummary("W", definition.writable)}${coordinationSummary}`
+        text: `tier:${definition.tier ?? "base"}`
       });
-      summary.addButton(
-        (button) => button.setIcon("settings").setTooltip(`\u7F16\u8F91 ${name}`).onClick(() => {
-          this.openType = this.openType === name ? null : name;
-          this.display();
-        })
-      );
-      if (this.openType === name) this.drawTypeEditor(row, name, definition);
+      if (!BUILTIN_TYPES.has(name) && tier === "modifier") {
+        summary.addButton(
+          (button) => button.setIcon("trash").setTooltip(`\u5220\u9664 ${name}`).onClick(async () => {
+            delete this.plugin.settings.newTentDefaults.typeRegistry[name];
+            this.openType = null;
+            await this.plugin.saveSettings();
+            this.display();
+          })
+        );
+      }
     }
-  }
-  drawTypeEditor(parent, name, definition) {
-    const editor = parent.createDiv({ cls: "tent-settings-editor" });
-    new import_obsidian5.Setting(editor).setName("\u63CF\u8FF0").addText(
-      (text) => text.setValue(definition.description || "").onChange(async (value) => {
-        setOptionalText(definition, "description", value);
-        await this.plugin.saveSettings();
-      })
-    );
-    this.drawColorControl(editor, definition.color, async (color) => {
-      definition.color = color;
-      await this.plugin.saveSettings();
-      this.display();
-    });
-    this.drawAxisControl(editor, definition);
-    if ((definition.tier ?? "base") === "base") {
-      this.drawCoordinationControl(editor, definition);
-    }
-    if (!BUILTIN_TYPES.has(name)) {
-      new import_obsidian5.Setting(editor).setName("\u5220\u9664\u9ED8\u8BA4 type").setDesc("\u53EA\u5F71\u54CD\u4E4B\u540E\u65B0\u5EFA\u7684\u5E10\u3002").addButton(
-        (button) => button.setButtonText("\u5220\u9664").setWarning().onClick(async () => {
-          delete this.plugin.settings.newTentDefaults.typeRegistry[name];
-          this.openType = null;
-          await this.plugin.saveSettings();
-          this.display();
-        })
-      );
-    }
-  }
-  drawAxisControl(parent, definition) {
-    const tier = definition.tier ?? "base";
-    const setting = new import_obsidian5.Setting(parent).setName("R/W");
-    for (const [axis, label] of [["readable", "R"], ["writable", "W"]]) {
-      setting.controlEl.createSpan({ cls: "tent-settings-axis-label", text: label });
-      setting.addDropdown((dropdown) => {
-        if (tier === "modifier") dropdown.addOption("inherit", "\u7EE7\u627F");
-        dropdown.addOption("on", "\u5F00").addOption("off", "\u5173").setValue(axisValue(definition[axis], tier)).onChange(async (value) => {
-          setTypeAxis(definition, axis, value);
-          await this.plugin.saveSettings();
-          this.display();
-        });
-      });
-    }
-  }
-  drawCoordinationControl(parent, definition) {
-    new import_obsidian5.Setting(parent).setName("\u534F\u4F5C").setDesc("\u5F00\u542F\u540E\uFF0C\u8BE5\u4E00\u7EA7 type \u7684\u6846\u53EF\u8FDB\u5165\u534F\u4F5C\u751F\u547D\u5468\u671F\uFF08status / task / delivery\uFF09\u3002workspace root \u7531 in-workspace .tent \u63A8\u5BFC\uFF0C\u4E0D\u518D\u4F7F\u7528 workspace \u6307\u9488\u3002").addDropdown(
-      (dropdown) => dropdown.addOption("on", "\u5F00").addOption("off", "\u5173").setValue(baseDefinitionCoordination(definition) === true ? "on" : "off").onChange(async (value) => {
-        setBaseCoordination(definition, value === "on");
-        await this.plugin.saveSettings();
-        this.display();
-      })
-    );
   }
   drawAddType(parent, tier, label) {
     let name = "";
-    let coordination = false;
-    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc(tier === "base" ? "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002\u53EF\u9009\u5F00\u542F collaboration\uFF08coordination\uFF09\u80FD\u529B\u3002" : "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002");
+    const form = new import_obsidian5.Setting(parent).setName(`\u65B0\u5EFA${label}`).setDesc(
+      tier === "base" ? "V0.2 \u4E00\u7EA7 type \u56FA\u5B9A\u4E3A goal|prompt|output\uFF0C\u4E0D\u53EF\u5728\u6B64\u65B0\u5EFA\u3002" : "\u521B\u5EFA\u540E\u540D\u79F0\u4E0D\u53EF\u4FEE\u6539\u3002\u4EC5\u652F\u6301\u81EA\u5B9A\u4E49\u4E8C\u7EA7\uFF08modifier\uFF09\u3002"
+    );
     form.settingEl.addClass("tent-settings-add-row");
+    if (tier === "base") {
+      return;
+    }
     form.addText((text) => text.setPlaceholder("name").onChange((value) => {
       name = value;
     }));
-    if (tier === "base") {
-      form.addDropdown(
-        (dropdown) => dropdown.addOption("off", "\u534F\u4F5C\u5173").addOption("on", "\u534F\u4F5C\u5F00").setValue("off").onChange((value) => {
-          coordination = value === "on";
-        })
-      );
-    }
     form.addButton(
       (button) => button.setButtonText("\u65B0\u5EFA").setCta().onClick(async () => {
         const normalized = name.trim();
@@ -7044,13 +6606,7 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
           new import_obsidian5.Notice(`type \u5DF2\u5B58\u5728\uFF1A${normalized}`);
           return;
         }
-        registry[normalized] = tier === "base" ? {
-          tier: "base",
-          readable: true,
-          writable: false,
-          color: "gray",
-          coordination
-        } : { tier: "modifier", color: "gray" };
+        registry[normalized] = { tier: "modifier" };
         this.openType = normalized;
         await this.plugin.saveSettings();
         this.display();
@@ -7162,18 +6718,6 @@ var TentSettingTab = class extends import_obsidian5.PluginSettingTab {
   }
 };
 var BUILTIN_TYPES = new Set(Object.keys(DEFAULT_TYPE_REGISTRY));
-function axisSummary(label, value) {
-  return `${label}${value === void 0 ? "\u7EE7\u627F" : value ? "\u5F00" : "\u5173"}`;
-}
-function axisValue(value, tier) {
-  if (tier === "modifier" && value === void 0) return "inherit";
-  return value ? "on" : "off";
-}
-function setTypeAxis(definition, axis, value) {
-  const record = definition;
-  if (value === "inherit" && definition.tier === "modifier") delete record[axis];
-  else record[axis] = value === "on";
-}
 function setOptionalText(target, key, value) {
   const text = value.trim();
   if (text) target[key] = text;

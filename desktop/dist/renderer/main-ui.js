@@ -25,18 +25,15 @@ function pickDefaultCoordinationType(types) {
 function listCoordinationTypeNames(types) {
   return types.filter((t) => {
     const tier = "tier" in t ? t.tier : "base";
-    return (tier === void 0 || tier === "base") && t.coordination === true;
+    if (tier !== void 0 && tier !== "base") return false;
+    if ("coordination" in t && typeof t.coordination === "boolean") {
+      return t.coordination === true;
+    }
+    return true;
   }).map((t) => t.name).sort((a, b) => a.localeCompare(b));
 }
 function listCoordinationTypeOptions(types) {
-  return listCoordinationTypeNames(types).map((name) => {
-    const row = types.find((t) => t.name === name);
-    return {
-      name,
-      description: row?.description,
-      color: row?.color
-    };
-  });
+  return listCoordinationTypeNames(types).map((name) => ({ name }));
 }
 function listRoleOptions(roles2) {
   return roles2.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
@@ -91,7 +88,7 @@ function validateDispatchForm(form) {
   if (!form.coordination) {
     return {
       ok: false,
-      reason: "\u5F53\u524D\u6982\u5FF5\u4E0D\u53EF\u534F\u8C03\uFF08coordination=false\uFF09\uFF0C\u65E0\u6CD5\u6D3E\u6D3B\u3002",
+      reason: "\u5F53\u524D\u6982\u5FF5\u4E0D\u53EF\u7528\uFF08\u65E0\u6548\u6216\u5DF2\u5C01\u5B58\uFF09\uFF0C\u65E0\u6CD5\u6D3E\u6D3B\u3002",
       payload: null
     };
   }
@@ -5867,6 +5864,12 @@ function setError(err) {
 }
 
 // src/desktop/workbench/box-projection.ts
+function isUsableTreeNode(n) {
+  if (n.invalid) return false;
+  if (n.archived || n.mode === "archived") return false;
+  if (typeof n.coordination === "boolean") return n.coordination;
+  return true;
+}
 function boxStatusLabel(status) {
   switch (status) {
     case "doing":
@@ -5906,7 +5909,7 @@ function collectCoordinationBoxIds(nodes) {
   const ids = [];
   const walk2 = (list2) => {
     for (const n of list2) {
-      if (n.coordination && n.id) ids.push(n.id);
+      if (isUsableTreeNode(n) && n.id) ids.push(n.id);
       if (n.children?.length) walk2(n.children);
     }
   };
@@ -5918,7 +5921,7 @@ function applyBoxProjectionsToTree(nodes, byBoxId) {
 }
 function applyOne(node2, byBoxId) {
   const children = node2.children?.length ? node2.children.map((c) => applyOne(c, byBoxId)) : node2.children;
-  if (!node2.coordination) {
+  if (!isUsableTreeNode(node2)) {
     const cleared = { ...node2, children };
     delete cleared.status;
     delete cleared.assignee;
@@ -6128,8 +6131,15 @@ async function reloadTree() {
 }
 function stripListCollabFields(node2) {
   const { status: _s, assignee: _a, children, ...rest } = node2;
+  const archived = !!rest.archived || rest.mode === "archived";
+  const invalid = !!rest.invalid;
+  const usable = !invalid && !archived;
   return {
     ...rest,
+    archived,
+    invalid,
+    // Local UI alias only — Service no longer projects coordination.
+    coordination: usable,
     children: children?.map(stripListCollabFields)
   };
 }
@@ -6403,9 +6413,9 @@ function renderMeta() {
   }
   el.meta.classList.remove("muted");
   const proj = tab.coordination ? boxProjectionFor(tab.cx) : null;
-  const modeLabel = tab.nodeMode === "read-only" ? "\u4EC5\u53EF\u8BFB" : tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
+  const modeLabel = tab.nodeMode === "archived" ? "\u5C01\u5B58" : "\u5F00\u653E";
   const collabLine = boxProjectionSummaryLine(proj);
-  const oneLine = tab.coordination ? collabLine ? `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${escapeHtml(collabLine)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 \u534F\u4F5C \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
+  const oneLine = tab.coordination ? collabLine ? `${escapeHtml(tab.type)} \xB7 ${escapeHtml(collabLine)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}` : `${escapeHtml(tab.type)} \xB7 ${modeLabel}`;
   const renameDisabled = tab.nodeMode === "archived";
   const projDl = tab.coordination && proj ? `<dt>\u72B6\u6001</dt><dd>${escapeHtml(boxStatusLabel(proj.status))}</dd>
         <dt>\u7ECF\u529E</dt><dd>${proj.assignee ? escapeHtml(proj.assignee) : "\u2014"}</dd>
@@ -6428,7 +6438,6 @@ function renderMeta() {
       <label for="node-mode">\u8BBF\u95EE</label>
       <select id="node-mode" class="${UI.fieldCompact}">
         <option value="editable"${tab.nodeMode === "editable" ? " selected" : ""}>\u5F00\u653E</option>
-        <option value="read-only"${tab.nodeMode === "read-only" ? " selected" : ""}>\u4EC5\u53EF\u8BFB</option>
         <option value="archived"${tab.nodeMode === "archived" ? " selected" : ""}>\u5C01\u5B58</option>
       </select>
       ${btnHtml({ label: "\u5E94\u7528", variant: "secondary", id: "btn-apply-node-mode" })}
@@ -6436,7 +6445,7 @@ function renderMeta() {
     <details class="meta-details">
       <summary>\u8BE6\u60C5</summary>
       <dl>
-        <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}${tab.coordination ? " \xB7 \u534F\u4F5C" : ""}</dd>
+        <dt>\u7C7B\u578B</dt><dd>${escapeHtml(tab.type)}</dd>
         <dt>\u8DEF\u5F84</dt><dd title="${escapeHtml(tab.path)}">${escapeHtml(tab.path)}</dd>
         <dt>\u6807\u8BC6</dt><dd><code title="\u4E0D\u53EF\u53D8 id">${escapeHtml(tab.cx)}</code></dd>
         ${projDl}
@@ -7105,17 +7114,21 @@ async function openConcept(cx) {
     el.status.textContent = "\u5F53\u524D\u6807\u7B7E\u6709\u672A\u4FDD\u5B58\u66F4\u6539\u3002";
     return;
   }
+  const concept = findConcept(tree, edit.id);
+  const rawMode = edit.mode || concept?.mode || "editable";
+  const nodeMode = rawMode === "archived" ? "archived" : "editable";
+  const usable = concept?.coordination ?? (!concept?.invalid && nodeMode !== "archived");
   const tab = {
     cx: edit.id,
     path: edit.path,
     name: edit.name || edit.path.split("/").pop() || edit.path,
-    type: edit.type || String(edit.frontmatter?.type || "note"),
-    coordination: !!edit.coordination,
+    type: edit.type || String(edit.frontmatter?.type || "prompt"),
+    coordination: usable,
     etag: edit.etag,
     buffer: edit.raw ?? reconstruct(edit.frontmatter, edit.body),
     dirty: false,
     mode: existing?.mode ?? "source",
-    nodeMode: edit.mode || findConcept(tree, edit.id)?.mode || "editable",
+    nodeMode,
     frontmatter: edit.frontmatter || {},
     artifactRefs: edit.artifactRefs
   };
@@ -7144,7 +7157,6 @@ function renderToolbar() {
     el.toolbar.innerHTML = "";
     return;
   }
-  const promoteTarget = pickDefaultCoordinationType(coordinationTypes) || "goal";
   const modeLabel = tab.mode === "preview" ? "\u9884\u89C8" : "\u6E90\u7801";
   const modeTitle = tab.mode === "preview" ? "\u5207\u6362\u5230\u6E90\u7801" : "\u5207\u6362\u5230\u9884\u89C8";
   const modeIco = tab.mode === "preview" ? ICO.modePreview : ICO.modeSource;
@@ -7178,7 +7190,6 @@ function renderToolbar() {
         <button type="button" class="menu-item" role="menuitem" data-act="card">\u53D1\u51FA\u4E0A\u4E0B\u6587\u5361</button>
         <button type="button" class="menu-item" role="menuitem" data-act="fork" title="\u590D\u5236\u5B50\u6811\u5E76\u91CD\u53D1 id">\u6D3E\u751F\u526F\u672C</button>
         ${tab.nodeMode === "editable" ? `<button type="button" class="menu-item" role="menuitem" data-act="attach">\u5BFC\u5165\u9644\u4EF6\u2026</button>` : ""}
-        ${!tab.coordination ? `<button type="button" class="menu-item" role="menuitem" data-act="promote" title="\u63D0\u5347\u4E3A ${escapeHtml(promoteTarget)}">\u63D0\u5347\u4E3A\u534F\u4F5C\u6846</button>` : ""}
       </div>
     </div>
   `;
@@ -7212,23 +7223,6 @@ async function onToolbar(act) {
   }
   if (act === "save") {
     await saveTab(tab);
-    return;
-  }
-  if (act === "promote") {
-    if (tab.dirty) await saveTab(tab);
-    const toType = pickDefaultCoordinationType(coordinationTypes) || "goal";
-    try {
-      await window.tentDesktop.rpc("docs.promote", {
-        workspaceId,
-        id: tab.cx,
-        toType
-      });
-      el.status.textContent = `\u5DF2\u63D0\u5347\u4E3A ${toType}`;
-      await openConcept(tab.cx);
-      await reloadTree();
-    } catch (err) {
-      setError(err);
-    }
     return;
   }
   if (act === "fork") {
@@ -7398,7 +7392,7 @@ function renderDispatchPanel() {
     return;
   }
   if (!tab.coordination) {
-    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u300C${escapeHtml(tab.name)}\u300D\u4E0D\u53EF\u534F\u8C03\uFF08\u666E\u901A\u7B14\u8BB0\uFF09\u3002\u8BF7\u65B0\u5EFA\u534F\u4F5C\u6846\u6216\u63D0\u5347\u7C7B\u578B\u3002</div>`;
+    el.dispatch.innerHTML = `<div class="muted dispatch-empty">\u300C${escapeHtml(tab.name)}\u300D\u4E0D\u53EF\u7528\uFF08\u65E0\u6548\u6216\u5DF2\u5C01\u5B58\uFF09\uFF0C\u65E0\u6CD5\u6D3E\u6D3B\u3002</div>`;
     return;
   }
   const roleOpts = roles.length > 0 ? roles.map(
@@ -7910,7 +7904,7 @@ function renderCreateTypeSelect() {
     el.createType.innerHTML = `<option value="">\u65E0\u53EF\u534F\u8C03\u7C7B\u578B</option>`;
     el.createType.disabled = true;
     el.btnNewBox.disabled = true;
-    el.btnNewBox.title = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709 coordination=true \u7684\u4E00\u7EA7\u7C7B\u578B";
+    el.btnNewBox.title = "\u5F53\u524D types \u6CE8\u518C\u8868\u6CA1\u6709\u4E00\u7EA7\uFF08base\uFF09\u7C7B\u578B";
     return;
   }
   el.createType.disabled = false;
@@ -7983,7 +7977,7 @@ async function onCreateNote() {
     const created = await window.tentDesktop.rpc("docs.createNote", {
       workspaceId,
       name,
-      type: "note"
+      type: "prompt"
     });
     await reloadTree();
     await host5?.openConcept(created.id);
@@ -8113,15 +8107,23 @@ function bindSurfaceNav() {
 }
 
 // src/desktop/workbench/graph-model.ts
+function graphNodeUsable(n) {
+  if (n.invalid) return false;
+  if (n.archived) return false;
+  if (typeof n.coordination === "boolean") return n.coordination;
+  return true;
+}
 function flattenGraphNodes(roots, depth = 0) {
   const out = [];
   for (const n of roots) {
+    const usable = graphNodeUsable(n);
     out.push({
       id: n.id,
       path: n.path,
       name: n.name,
       type: n.type,
-      coordination: !!n.coordination,
+      usable,
+      coordination: usable,
       depth
     });
     if (n.children?.length) {
@@ -8275,7 +8277,7 @@ function renderGraph() {
   const nodesHtml = flat.map((n) => {
     const active = n.id === selectedId ? " is-active" : "";
     const pad = 8 + n.depth * 14;
-    const kind = n.coordination ? "\u534F\u4F5C" : n.type;
+    const kind = n.type;
     return `<button type="button" class="graph-node${active}" data-graph-node="${escapeHtml(n.id)}" style="padding-left:${pad}px" title="${escapeHtml(n.path)}">
         <span class="graph-node-name">${escapeHtml(n.name)}</span>
         <span class="muted graph-node-kind">${escapeHtml(kind)}</span>

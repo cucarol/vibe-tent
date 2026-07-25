@@ -766,14 +766,12 @@ var ServiceDocsClient = class {
     const cx = result.cx ?? result.id;
     const raw = result.raw ?? reconstructRaw(result.frontmatter ?? {}, result.body ?? "");
     const name = result.name ?? (typeof result.frontmatter?.name === "string" ? result.frontmatter.name : result.path.split("/").pop() || result.path);
-    const type = result.type ?? (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "note");
-    const coordination = result.coordination ?? (type === "goal" || type.startsWith("goal-") || type === "prompt" || type.startsWith("prompt-") || type === "output" || type.startsWith("output-"));
+    const type = result.type ?? (typeof result.frontmatter?.type === "string" ? result.frontmatter.type : "prompt");
     return {
       cx,
       path: result.path,
       name,
       type,
-      coordination,
       body: result.body,
       frontmatter: result.frontmatter ?? {},
       raw,
@@ -839,24 +837,11 @@ var ServiceDocsClient = class {
     const result = await this.rpc.call("docs.createNote", {
       workspaceId: this.workspaceId,
       name: input.name,
-      type: input.type ?? "note",
+      type: input.type ?? "prompt",
       parentPath: input.parentPath ?? "",
       body: input.body
     });
     return { cx: result.id, path: result.path };
-  }
-  async promote(cxOrPath, toType) {
-    const result = await this.rpc.call("docs.promote", {
-      workspaceId: this.workspaceId,
-      ...idOrPathParams(cxOrPath),
-      toType
-    });
-    return {
-      cx: result.id,
-      path: result.path,
-      fromType: result.fromType,
-      toType: result.toType
-    };
   }
   async fork(cxOrPath) {
     const result = await this.rpc.call("docs.fork", {
@@ -937,14 +922,20 @@ function idOrPathParams(cxOrPath) {
   return { path: key };
 }
 function normalizeProjection(c) {
-  const mode = c.mode === "read-only" || c.mode === "archived" || c.mode === "editable" ? c.mode : c.archived ? "archived" : "editable";
+  const mode = c.mode === "archived" || c.mode === "editable" ? c.mode : c.mode === "read-only" ? "editable" : c.archived ? "archived" : "editable";
   return {
-    ...c,
-    children: (c.children ?? []).map(normalizeProjection),
+    id: c.id,
+    path: c.path,
+    name: c.name,
+    type: c.type,
     tags: c.tags ?? [],
+    title: c.title,
     mode,
     archived: mode === "archived" || !!c.archived,
-    invalid: !!c.invalid
+    invalid: !!c.invalid,
+    bodyPreview: c.bodyPreview,
+    children: (c.children ?? []).map(normalizeProjection),
+    artifactRefs: c.artifactRefs
   };
 }
 function findByPath(nodes, path6) {
@@ -1194,7 +1185,6 @@ var WorkspaceController = class {
       path: snap.path,
       name: snap.name,
       type: snap.type,
-      coordination: snap.coordination,
       etag: snap.etag,
       buffer: snap.raw,
       savedRaw: snap.raw,
@@ -1329,25 +1319,12 @@ var WorkspaceController = class {
     this.emit();
   }
   async createNote(name, parentPath) {
-    const created = await this.docs.createNote({ name, parentPath, type: "note" });
+    const created = await this.docs.createNote({ name, parentPath, type: "prompt" });
     await this.refreshTree();
     await this.openConcept(created.cx);
     this.statusMessage = `Created note ${created.path}`;
     this.emit();
     return created.cx;
-  }
-  async promoteActive(toType = "goal") {
-    const tab = this.getActiveTab();
-    if (!tab) return;
-    if (tab.dirty) {
-      const ok = await this.save(tab.cx);
-      if (!ok) return;
-    }
-    const result = await this.docs.promote(tab.cx, toType);
-    await this.refreshTree();
-    await this.openConcept(result.cx);
-    this.statusMessage = `Promoted to ${result.toType}`;
-    this.emit();
   }
   /** Apply external concept.changed: reload clean tabs only. */
   async onConceptChanged(cx) {
@@ -1436,6 +1413,12 @@ var ContextCardStore = class {
 };
 
 // src/desktop/workbench/box-projection.ts
+function isUsableTreeNode(n) {
+  if (n.invalid) return false;
+  if (n.archived || n.mode === "archived") return false;
+  if (typeof n.coordination === "boolean") return n.coordination;
+  return true;
+}
 function normalizeBoxProjection(raw) {
   if (!raw || typeof raw !== "object") return null;
   const r = raw;
@@ -1463,7 +1446,7 @@ function collectCoordinationBoxIds(nodes) {
   const ids = [];
   const walk = (list) => {
     for (const n of list) {
-      if (n.coordination && n.id) ids.push(n.id);
+      if (isUsableTreeNode(n) && n.id) ids.push(n.id);
       if (n.children?.length) walk(n.children);
     }
   };
@@ -1475,7 +1458,7 @@ function applyBoxProjectionsToTree(nodes, byBoxId) {
 }
 function applyOne(node, byBoxId) {
   const children = node.children?.length ? node.children.map((c) => applyOne(c, byBoxId)) : node.children;
-  if (!node.coordination) {
+  if (!isUsableTreeNode(node)) {
     const cleared = { ...node, children };
     delete cleared.status;
     delete cleared.assignee;
@@ -1498,18 +1481,15 @@ function applyOne(node, byBoxId) {
 function listCoordinationTypeNames(types) {
   return types.filter((t) => {
     const tier = "tier" in t ? t.tier : "base";
-    return (tier === void 0 || tier === "base") && t.coordination === true;
+    if (tier !== void 0 && tier !== "base") return false;
+    if ("coordination" in t && typeof t.coordination === "boolean") {
+      return t.coordination === true;
+    }
+    return true;
   }).map((t) => t.name).sort((a, b) => a.localeCompare(b));
 }
 function listCoordinationTypeOptions(types) {
-  return listCoordinationTypeNames(types).map((name) => {
-    const row = types.find((t) => t.name === name);
-    return {
-      name,
-      description: row?.description,
-      color: row?.color
-    };
-  });
+  return listCoordinationTypeNames(types).map((name) => ({ name }));
 }
 function listRoleOptions(roles) {
   return roles.map((r) => ({ name: r.name, description: r.description })).sort((a, b) => a.name.localeCompare(b.name));
