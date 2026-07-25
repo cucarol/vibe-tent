@@ -26,15 +26,20 @@ import {
   GROK_ACP_ADAPTER_ID,
 } from "../src/adapters/grok-acp/index.js";
 import {
+  enableManagedTaskInputBackgroundAccept,
+  invokeDeliverManagedTaskInputForTests,
   invokeManagedAutoDeliverForTests,
   mapRuntimeEventToService,
   migrateSessionWorkspaceIdsOnMount,
   reconcileTaskSessionsOnMount,
   REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY,
   resetManagedAutoDeliverDedupForTests,
+  resetManagedTaskInputBackgroundForTests,
   resetRuntimeProjectionForTests,
+  setRejectResumePostStartFailureForTests,
   setRuntimeProjectionTestHooksForTests,
   SESSION_UNAVAILABLE_WAIT_SUMMARY,
+  stopManagedTaskInputBackgroundAccept,
 } from "../src/service/handlers.js";
 import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { loadTaskEnvelope, patchTaskEnvelope } from "../src/core/task.js";
@@ -4378,6 +4383,285 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
     },
     { profiles: [profile] }
   );
+});
+
+test("reject-resume recovery orientation rebuilds after simulated restart/retry", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace(
+    "reject-resume-restart-rebuild",
+    { executor: "allow" },
+    { executor: ["mock-rr-restart"] }
+  );
+  const logPath = path.join(
+    await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-rr-restart-")),
+    "mock-acp.json"
+  );
+  const profile = mockAcpProfile("mock-rr-restart", {
+    logPath,
+    promptText: "RESTART_REBUILD_FIRST",
+    followupText: "REWORK_AFTER_RESTART_RETRY",
+    keepAlive: true,
+  });
+
+  await withService(
+    async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "rebuild orientation after restart",
+        deliveryPolicy: "manual",
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "mock-rr-restart",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const priorSessionId = (started.result as { session: { sessionId: string } })
+        .session.sessionId;
+
+      await invokeManagedAutoDeliverForTests(svc.ctx, {
+        workspaceId,
+        taskPath,
+        sessionId: priorSessionId,
+        assistantText: "RESTART_REBUILD_FIRST",
+      });
+      await svc.runtime.stopSession(priorSessionId, "user");
+      await svc.runtime.registry.update(priorSessionId, {
+        resumeToken: undefined,
+        state: "stopped",
+        pid: undefined,
+      });
+
+      const exactNote = "  retry after service restart  ";
+      // Simulate Service restart gap: durable accept + restore happen, but
+      // background inject is not accepted (process died before FIFO ran).
+      stopManagedTaskInputBackgroundAccept();
+      let rejected;
+      try {
+        rejected = await rpc(svc, "task.reject", {
+          workspaceId,
+          taskPath,
+          actor: "user",
+          resume: true,
+          note: exactNote,
+        });
+      } finally {
+        // Re-enable for later tests / redelivery; we inject manually below.
+        enableManagedTaskInputBackgroundAccept();
+      }
+      assert.ok(!rejected.error, JSON.stringify(rejected.error));
+      const body = rejected.result as {
+        state: string;
+        session?: { sessionId: string; contextRestored?: boolean };
+        input?: { id: string; sessionId?: string; text?: string; status?: string };
+        enqueued?: boolean;
+      };
+      assert.equal(body.state, "running");
+      assert.equal(body.session?.contextRestored, false);
+      const newSessionId = body.session!.sessionId;
+      assert.notEqual(newSessionId, priorSessionId);
+      assert.equal(body.input?.text, exactNote);
+      // Background was stopped — enqueue is a no-op; row stays pending.
+      assert.equal(body.enqueued, true); // RPC still reports schedule intent
+      const durable = await svc.ctx.taskInputs.get(
+        body.input!.id,
+        workspaceId,
+        taskPath
+      );
+      assert.ok(durable);
+      assert.ok(
+        durable!.status === "pending" || durable!.status === "failed",
+        `simulated restart must leave open TaskInput; got ${durable!.status}`
+      );
+      assert.equal(
+        (await svc.runtime.registry.read(newSessionId))?.contextRestored,
+        false,
+        "durable Session row must keep contextRestored=false across restart"
+      );
+
+      // Post-restart retry: rebuild orientation from durable facts only
+      // (no in-memory recoveryBootstrap from the original reject RPC).
+      const result = await invokeDeliverManagedTaskInputForTests(svc.ctx, durable!, {
+        sessionIdOverride: newSessionId,
+      });
+      assert.equal(
+        result.continued,
+        true,
+        `retry inject must succeed with rebuilt orientation: ${result.continueError}`
+      );
+      assert.equal(result.input.status, "delivered");
+
+      await pollUntil(async () => {
+        const t = await rpc(svc, "task.get", { workspaceId, taskPath });
+        const state = (t.result as { task: { state: string } }).task.state;
+        return state === "delivered" ? t : null;
+      }, 20_000, "rework delivery after restart retry");
+
+      const log = await pollUntil(async () => {
+        try {
+          return JSON.parse(await fs.readFile(logPath, "utf8")) as {
+            prompts?: string[];
+          };
+        } catch {
+          return null;
+        }
+      }, 5_000, "mock log after restart retry");
+      const reviewPrompts = (log.prompts ?? []).filter((p) =>
+        p.includes("## Review Feedback")
+      );
+      assert.equal(reviewPrompts.length, 1, "exactly one review inject after manual retry");
+      const injectText = reviewPrompts[0]!;
+      assert.ok(
+        injectText.includes("--- Tent reject-resume recovery ---"),
+        "orientation must be rebuilt from durable facts at inject time"
+      );
+      assert.ok(injectText.includes("contextRestored: false"));
+      assert.ok(
+        injectText.includes("restorePath: not-resume-capable-new-session")
+      );
+      assert.ok(injectText.includes("rejected Delivery:"));
+      assert.ok(injectText.includes("RESTART_REBUILD_FIRST"));
+      assert.ok(
+        injectText.includes("workspace lane:") || injectText.includes("worktree:")
+      );
+      const noteOccurrences = injectText.split(exactNote).length - 1;
+      assert.equal(noteOccurrences, 1, "review note exactly once after rebuild");
+      assert.ok(injectText.includes(`text: ${exactNote}`));
+      assert.ok(!/rejected Delivery:[\s\S]*reviewNote:/i.test(injectText));
+    },
+    { profiles: [profile] }
+  );
+  resetManagedTaskInputBackgroundForTests();
+});
+
+test("reject-resume post-start context failure stops orphan Session and parks occupation", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("reject-resume-post-start-fail");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "post-start context failure must stop orphan",
+      deliveryPolicy: "manual",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const priorSessionId = (started.result as { session: { sessionId: string } })
+      .session.sessionId;
+
+    await invokeManagedAutoDeliverForTests(svc.ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: priorSessionId,
+      assistantText: "POST_START_FAIL_FIRST",
+    });
+    await svc.runtime.stopSession(priorSessionId, "user");
+    await svc.runtime.registry.update(priorSessionId, {
+      resumeToken: undefined,
+      state: "stopped",
+      pid: undefined,
+    });
+    assert.equal((await svc.runtime.probe(priorSessionId)).resumeCapable, false);
+
+    const beforeIds = new Set(
+      (await svc.runtime.registry.list()).map((r) => r.id)
+    );
+
+    setRejectResumePostStartFailureForTests(
+      () => new Error("simulated post-start context-update failure")
+    );
+    try {
+      const rejected = await rpc(svc, "task.reject", {
+        workspaceId,
+        taskPath,
+        actor: "user",
+        resume: true,
+        note: "must park after orphan stop",
+      });
+      assert.ok(rejected.error, "post-start failure must fail the RPC");
+      assert.equal(rejected.error!.code, RPC_LIFECYCLE);
+      assert.match(
+        String(rejected.error!.message),
+        /resume failed to restore managed session/i
+      );
+      assert.match(
+        String(rejected.error!.message),
+        /simulated post-start context-update failure/
+      );
+    } finally {
+      setRejectResumePostStartFailureForTests(null);
+    }
+
+    const afterIds = (await svc.runtime.registry.list()).map((r) => r.id);
+    const newIds = afterIds.filter((id) => !beforeIds.has(id));
+    // A fallback Session may have been allocated then stopped — must not stay live.
+    for (const id of newIds) {
+      const probe = await svc.runtime.probe(id);
+      assert.equal(
+        probe.alive,
+        false,
+        `orphan fallback Session must be stopped; ${id} still alive`
+      );
+    }
+    // Also ensure no live process other than already-dead prior.
+    for (const id of afterIds) {
+      if (id === priorSessionId) continue;
+      const probe = await svc.runtime.probe(id);
+      assert.equal(
+        probe.alive,
+        false,
+        `no live orphan after post-start failure; ${id} alive`
+      );
+    }
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      got.result as {
+        task: {
+          state: string;
+          sessionId?: string;
+          wait?: { reason?: string; summary?: string };
+        };
+      }
+    ).task;
+    assert.equal(task.state, "waiting", "must park waiting, not fail or stay running");
+    assert.equal(task.wait?.reason, "external");
+    assert.ok(
+      task.wait?.summary?.includes(REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY),
+      task.wait?.summary
+    );
+    // Occupation retained (waiting, not released/failed).
+    assert.notEqual(task.state, "failed");
+    assert.notEqual(task.state, "interrupted");
+    assert.notEqual(task.state, "cancelled");
+
+    const pending = await svc.ctx.taskInputs.listPending(workspaceId, taskPath);
+    assert.ok(
+      pending.some(
+        (row) =>
+          row.kind === "review-feedback" &&
+          row.text === "must park after orphan stop" &&
+          row.status !== "cancelled"
+      ),
+      "review-feedback must remain for retry after orphan stop"
+    );
+  });
 });
 
 test("reject-resume fails loud and parks waiting when session cannot be restored", async () => {

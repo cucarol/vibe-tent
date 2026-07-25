@@ -2973,11 +2973,23 @@ async function continueManagedAfterTaskInput(
   // from durable task/session/delivery facts at inject time so restart/retry
   // does not depend on in-memory enqueue options. Review note stays only in
   // ## Review Feedback (basePrompt) — never duplicated in recovery text.
-  const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
-  const prompt =
-    recovery && recovery.length > 0
-      ? `${recovery}\n\n${basePrompt}`
-      : basePrompt;
+  // When the target Session row says contextRestored=false, orientation is
+  // mandatory (empty process bootstrap). Rebuild failures fail this inject so
+  // TaskInput stays failed/retryable — never send bare ## Review Feedback alone.
+  let prompt = basePrompt;
+  try {
+    const recovery = await rebuildRejectResumeRecoveryOrientation(ctx, item);
+    if (recovery && recovery.length > 0) {
+      prompt = `${recovery}\n\n${basePrompt}`;
+    }
+  } catch (rebuildErr) {
+    const message =
+      rebuildErr instanceof Error ? rebuildErr.message : String(rebuildErr);
+    return {
+      continued: false,
+      error: message,
+    };
+  }
   try {
     try {
       await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
@@ -6874,11 +6886,38 @@ async function stopManagedSessionAfterDelivery(
   }
 }
 
+/**
+ * Test-only: throw after fallback startSession succeeds, before context flag /
+ * task rebind completes. Exercises orphan stop + park without losing occupation.
+ * Production never sets this.
+ */
+let rejectResumePostStartFailureForTests: (() => Error) | null = null;
+
+export function setRejectResumePostStartFailureForTests(
+  fn: (() => Error) | null
+): void {
+  rejectResumePostStartFailureForTests = fn;
+}
+
 /** Test helper: clear in-process managed deliver dedup (does not touch disk). */
 export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
   rejectResumeNativeInFlight.clear();
+  rejectResumePostStartFailureForTests = null;
+}
+
+/**
+ * Test helper: invoke managed U2A deliver (sendInput / reject-resume review).
+ * Used to simulate post-restart retry of a durable pending TaskInput without
+ * relying on in-memory enqueue state from the original RPC.
+ */
+export async function invokeDeliverManagedTaskInputForTests(
+  ctx: HandlerContext,
+  item: TaskInputRecord,
+  opts?: { sessionIdOverride?: string }
+): Promise<ManagedTaskInputDelivery> {
+  return deliverManagedTaskInput(ctx, item, opts);
 }
 
 /** Drop managed auto-deliver success/in-flight markers for one session+task pair. */
@@ -7005,8 +7044,14 @@ async function loadRejectedDeliveryForRejectResume(
 
 /**
  * Rebuild recovery orientation at inject time from durable facts so restart/retry
- * does not depend on in-memory enqueue options. Only for independent Sessions
- * (contextRestored === false). Same-context paths return undefined.
+ * does not depend on in-memory enqueue options.
+ *
+ * - Same-context / ordinary Sessions (contextRestored !== false): return undefined
+ *   (no recovery prefix).
+ * - Independent recovery Sessions (contextRestored === false): orientation is
+ *   **mandatory** because the process was started with an empty bootstrap.
+ *   Registry / mount / task-load failures throw so managed inject fails and
+ *   TaskInput stays failed/retryable — never silently send bare ## Review Feedback.
  */
 async function rebuildRejectResumeRecoveryOrientation(
   ctx: HandlerContext,
@@ -7016,23 +7061,39 @@ async function rebuildRejectResumeRecoveryOrientation(
   const sessionId = item.sessionId?.trim();
   if (!sessionId) return undefined;
 
-  let rec: SessionRecord | null = null;
+  let rec: SessionRecord | null;
   try {
     rec = await ctx.runtime.registry.read(sessionId);
-  } catch {
-    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `reject-resume recovery orientation required but session registry read failed for ${sessionId}: ${message}`
+    );
+  }
+  if (!rec) {
+    throw new Error(
+      `reject-resume recovery orientation required but session registry row missing for ${sessionId}`
+    );
   }
   // Only independent recovery Sessions claim contextRestored=false.
-  if (!rec || rec.contextRestored !== false) return undefined;
+  // Missing/undefined/true → same-context or ordinary start; no recovery prefix.
+  if (rec.contextRestored !== false) return undefined;
 
   const mount = ctx.host.get(item.workspaceId);
-  if (!mount) return undefined;
+  if (!mount) {
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but workspace mount missing: ${item.workspaceId}`
+    );
+  }
 
   let task: TaskEnvelope;
   try {
     task = await loadTaskEnvelope(mount.env.fs, item.taskPath);
-  } catch {
-    return undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but task load failed for ${item.taskPath}: ${message}`
+    );
   }
 
   const workspaceLane = {
@@ -7041,14 +7102,15 @@ async function rebuildRejectResumeRecoveryOrientation(
     branch: task.branch || "HEAD",
     targetBranch: task.targetBranch,
   };
+  // Delivery lookup is best-effort content — missing rejected delivery still
+  // yields orientation with task/lane facts (does not invent review note).
   const rejectedDelivery = await loadRejectedDeliveryForRejectResume(
     mount.env.fs,
     task
   );
-  // lastError may retain "reject-resume restore failed: …" from a prior park;
-  // for a live recovery Session it is usually empty. Prefer restorePath from
-  // contextRestored=false alone; treat lastError containing "native resume" as
-  // native-fail provenance when present (best-effort, no new domain fields).
+  // lastError may retain "native resume failed: …" from fallback start.
+  // Prefer restorePath from contextRestored=false; treat lastError as native-fail
+  // provenance when present (best-effort, no new domain fields).
   const lastError = rec.lastError?.trim() || "";
   const nativeResumeFailed = /native resume failed/i.test(lastError);
   const nativeResumeError = nativeResumeFailed
@@ -7056,7 +7118,7 @@ async function rebuildRejectResumeRecoveryOrientation(
       lastError
     : undefined;
 
-  return buildRejectResumeRecoveryOrientation(
+  const orientation = buildRejectResumeRecoveryOrientation(
     task,
     {
       workspaceRoot: mount.workspaceRoot,
@@ -7070,6 +7132,12 @@ async function rebuildRejectResumeRecoveryOrientation(
       workspaceLane,
     }
   );
+  if (!orientation.trim()) {
+    throw new Error(
+      `reject-resume recovery orientation required (contextRestored=false) but builder returned empty for ${sessionId}`
+    );
+  }
+  return orientation;
 }
 
 /** Best-effort stop of an orphan managed Session (fallback start succeeded mid-failure). */
@@ -7316,6 +7384,11 @@ async function restoreManagedSessionAfterRejectResume(
       workspace: input.workspaceId,
     });
     startedSessionId = handle.sessionId;
+    // Test-only: simulate post-start context-update / rebind failure after the
+    // new Session already exists — production never sets this hook.
+    if (rejectResumePostStartFailureForTests) {
+      throw rejectResumePostStartFailureForTests();
+    }
     // Honest independent context — never claim native continuity on new ss-.
     // Persist native-fail diagnostic on the new row so inject-time rebuild can
     // distinguish native-fallback vs not-resume-capable without new domain fields.
