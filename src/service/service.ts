@@ -27,6 +27,7 @@ import {
 } from "./tool-approval-store.js";
 import { UserAskStore } from "./user-ask-store.js";
 import { TaskInputStore } from "./task-input-store.js";
+import { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
 import { ensureDefaultProfiles } from "./profiles.js";
 import { AgentProfileCatalog } from "./profile-catalog.js";
 import type { CredentialProtector } from "./credential-protector.js";
@@ -164,6 +165,8 @@ async function startOwnedLocalTentService(
   await userAsks.ensureLoaded();
   const taskInputs = new TaskInputStore(dataDir);
   await taskInputs.ensureLoaded();
+  const managedDeliveryReportDrafts = new ManagedDeliveryReportDraftStore(dataDir);
+  await managedDeliveryReportDrafts.ensureLoaded();
   // Process-local: previous in-process stop may have drained background U2A.
   enableManagedTaskInputBackgroundAccept();
 
@@ -349,6 +352,7 @@ async function startOwnedLocalTentService(
     toolApprovals,
     userAsks,
     taskInputs,
+    managedDeliveryReportDrafts,
     credentials,
     dataDir,
     profileCatalog,
@@ -452,6 +456,9 @@ async function startOwnedLocalTentService(
           true
         );
         await attempt(() => taskInputs.shutdown(), true);
+        // Report drafts are durable operational state (not process-bound); close
+        // after runtime projections so a late clear() from deliver can still land.
+        await attempt(() => managedDeliveryReportDrafts.shutdown(), true);
         await attempt(() => drainRuntimeProjections());
         unsubscribeRuntimeEvents();
         await attempt(() => workspaceHost.dispose());

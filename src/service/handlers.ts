@@ -163,6 +163,7 @@ import {
   type TaskInputRecord,
   type TaskInputStore,
 } from "./task-input-store.js";
+import type { ManagedDeliveryReportDraftStore } from "./managed-delivery-report-draft-store.js";
 import type { CredentialStore } from "./credential-store.js";
 import {
   isClientMethod,
@@ -229,6 +230,12 @@ export interface HandlerContext {
    * Not chat; not UserAsk answer; scoped by workspaceId+taskPath.
    */
   taskInputs: TaskInputStore;
+  /**
+   * Machine-local managed auto-deliver report drafts (final assistantText only).
+   * Not chat history; not a ready Delivery; not a sixth pending-interaction.
+   * Survives restart so publish failures can retry without re-prompting the Agent.
+   */
+  managedDeliveryReportDrafts: ManagedDeliveryReportDraftStore;
   /**
    * Machine-local encrypted credential vault (Windows DPAPI).
    * Client RPC: list/set/delete only — never get/resolve plaintext.
@@ -6405,18 +6412,38 @@ async function tryManagedAutoDeliver(
     commits?: string[];
   }
 ): Promise<void> {
-  const summary = input.assistantText.trim();
+  // Prefer explicit assistantText; empty callers may recover a durable draft
+  // (service restart / idempotent retry without re-prompting the Agent).
+  let summary = input.assistantText.trim();
+  let sessionId = input.sessionId.trim();
   if (!summary) {
+    try {
+      const draft = await ctx.managedDeliveryReportDrafts.get(
+        input.workspaceId,
+        input.taskPath
+      );
+      if (draft?.assistantText?.trim()) {
+        summary = draft.assistantText.trim();
+        if (!sessionId && draft.sessionId) {
+          sessionId = draft.sessionId;
+        }
+      }
+    } catch {
+      // Draft lookup failure must not invent a delivery.
+    }
+  }
+  if (!summary || !sessionId) {
     // Adapter should have failed already; do not invent a delivery.
     return;
   }
 
-  const key = managedDeliverKey(input.sessionId, input.taskPath);
+  const key = managedDeliverKey(sessionId, input.taskPath);
   if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
     return;
   }
   managedAutoDeliverInFlight.add(key);
 
+  let draftPreserved = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
     if (!mount) return;
@@ -6427,7 +6454,7 @@ async function tryManagedAutoDeliver(
     if (!pre || pre.state !== "running") {
       return;
     }
-    if (pre.sessionId && pre.sessionId !== input.sessionId) {
+    if (pre.sessionId && pre.sessionId !== sessionId) {
       return;
     }
     const existingReady = await loadDeliveries(mount.env.fs, {
@@ -6435,8 +6462,26 @@ async function tryManagedAutoDeliver(
     });
     if (existingReady.some((d) => d.status === "ready")) {
       managedAutoDeliverDone.add(key);
+      // Ready Delivery already published — drop any leftover draft.
+      try {
+        await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
+      } catch {
+        // ignore
+      }
       return;
     }
+
+    // Durable preserve BEFORE seal/dirty/collect/integrate/publish so a later
+    // failure can retry without re-running the Agent turn. Operational only —
+    // not a ready Delivery, does not change task state.
+    await ctx.managedDeliveryReportDrafts.preserve({
+      workspaceId: input.workspaceId,
+      taskPath: input.taskPath,
+      taskId: pre.id || input.taskPath,
+      sessionId,
+      assistantText: summary,
+    });
+    draftPreserved = true;
 
     // Outside the mutation bus: capture-once baseline for legacy Git-lane tasks
     // missing roleBranchBase. Nested mutations.run would deadlock.
@@ -6449,7 +6494,7 @@ async function tryManagedAutoDeliver(
     // (role slot freed; registry resume metadata retained) but ordered first.
     const sealed = await sealManagedSessionBeforeDelivery(ctx, {
       workspaceId: input.workspaceId,
-      sessionId: input.sessionId,
+      sessionId,
       taskPath: input.taskPath,
     });
     if (!sealed) {
@@ -6461,6 +6506,7 @@ async function tryManagedAutoDeliver(
     }
 
     // Re-load authority state under mutation bus after seal.
+    let published = false;
     await ctx.mutations.run(input.workspaceId, async () => {
       const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
 
@@ -6469,7 +6515,7 @@ async function tryManagedAutoDeliver(
         // Already delivered / review / terminal / interrupted — ignore duplicate.
         return;
       }
-      if (task.sessionId && task.sessionId !== input.sessionId) {
+      if (task.sessionId && task.sessionId !== sessionId) {
         return;
       }
 
@@ -6479,6 +6525,7 @@ async function tryManagedAutoDeliver(
       });
       if (existing.some((d) => d.status === "ready")) {
         managedAutoDeliverDone.add(key);
+        published = true;
         return;
       }
 
@@ -6511,6 +6558,7 @@ async function tryManagedAutoDeliver(
       });
 
       managedAutoDeliverDone.add(key);
+      published = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
         "delivery.updated",
@@ -6526,18 +6574,27 @@ async function tryManagedAutoDeliver(
       );
     });
 
+    // Successful publish (or ready already present) → clear operational draft.
+    if (published) {
+      try {
+        await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
+      } catch {
+        // Delivery already committed; draft cleanup is best-effort (retry clears again).
+      }
+    }
+
     // Idempotent safety: seal already stopped; re-run cleanup if a race left
     // the process alive (must not roll back a successful Delivery).
     await stopManagedSessionAfterDelivery(ctx, {
       workspaceId: input.workspaceId,
-      sessionId: input.sessionId,
+      sessionId,
       taskPath: input.taskPath,
     });
   } catch (err) {
     // Deliver / integrate / collection / seal / dirty-worktree failure must NOT
     // terminal-fail the task. Keep running/occupation so the user can retry;
     // expose via session diagnostics/event. Only session.failed (launch/process)
-    // maps task → failed.
+    // maps task → failed. Report draft stays on disk for idempotent retry.
     const message = err instanceof Error ? err.message : String(err);
     const errorCode =
       err instanceof RpcError &&
@@ -6548,6 +6605,17 @@ async function tryManagedAutoDeliver(
         : err instanceof TaskLifecycleError
           ? err.code
           : undefined;
+    if (draftPreserved) {
+      try {
+        await ctx.managedDeliveryReportDrafts.markFailed(
+          input.workspaceId,
+          input.taskPath,
+          message
+        );
+      } catch {
+        // Draft body already durable; annotation is best-effort.
+      }
+    }
     try {
       const mount = ctx.host.get(input.workspaceId);
       if (!mount) return;
@@ -6556,7 +6624,7 @@ async function tryManagedAutoDeliver(
         // Clear in-flight so a later prompt_complete / retry can attempt again.
         // Do not add to managedAutoDeliverDone — failure is not success.
         try {
-          await ctx.runtime.registry.update(input.sessionId, {
+          await ctx.runtime.registry.update(sessionId, {
             lastError: `managed auto-deliver failed: ${message}`,
           });
         } catch {
@@ -6566,7 +6634,7 @@ async function tryManagedAutoDeliver(
           "session.state",
           input.workspaceId,
           {
-            sessionId: input.sessionId,
+            sessionId,
             taskPath: input.taskPath,
             taskState: task.state,
             runtimeEvent: "session.prompt_complete.failed",
@@ -6574,6 +6642,7 @@ async function tryManagedAutoDeliver(
             ...(errorCode ? { errorCode } : {}),
             // Explicit: task remains non-terminal for retry.
             taskFailed: false,
+            reportDraftPreserved: draftPreserved,
           },
           "service"
         );
@@ -7102,6 +7171,10 @@ export async function invokeManagedAutoDeliverForTests(
     workspaceId: string;
     taskPath: string;
     sessionId: string;
+    /**
+     * Final report body. Empty string recovers a durable draft for the task
+     * (restart / idempotent retry without re-prompting the Agent).
+     */
     assistantText: string;
     commits?: string[];
   }
