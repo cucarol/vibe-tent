@@ -520,6 +520,14 @@ export const CLIENT_METHODS = [
    */
   "docs.rename",
   /**
+   * User-only structural move / reparent (MutationBus).
+   * Resolve moved node + destination by cx-; require expectedPath (stale → -32009 path_stale).
+   * Reparent rewrites path links; same-parent reorder is order-only.
+   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   * Canonical name is docs.move — no docs.reparent alias.
+   */
+  "docs.move",
+  /**
    * Set Node mode (editable | archived). Sole mode mutation RPC.
    * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
    */

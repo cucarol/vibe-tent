@@ -52,6 +52,11 @@ import { taskClaim, taskFail, taskInterrupt } from "./task-lifecycle.js";
 export type { OpsEnv } from "./ops-context.js";
 export { adoptCopiedSubtree, forkNode } from "./forkOps.js";
 export { renameNode, type RenameNodeResult } from "./renameOps.js";
+export {
+  moveNode,
+  type MoveNodeResult,
+  type MovePosition,
+} from "./moveOps.js";
 
 // ---- dispatch ----
 

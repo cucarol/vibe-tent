@@ -29,6 +29,7 @@ import { isValidConceptType } from "../core/typeRegistry.js";
 
 import { forkNode } from "../core/forkOps.js";
 import { renameNode } from "../core/renameOps.js";
+import { moveNode, type MovePosition } from "../core/moveOps.js";
 import {
   extractTaskUserPrompt,
   loadTaskEnvelope,
@@ -334,6 +335,8 @@ export async function dispatchMethod(
         return docsFork(ctx, p);
       case "docs.rename":
         return docsRename(ctx, p);
+      case "docs.move":
+        return docsMove(ctx, p);
       case "docs.setMode":
         return docsSetMode(ctx, p);
       case "docs.search":
@@ -2564,6 +2567,124 @@ function mapDocsRenameError(err: unknown): RpcError {
   }
   if (
     /already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+      message
+    )
+  ) {
+    return new RpcError(-32602, message);
+  }
+  return new RpcError(-32000, message);
+}
+
+/**
+ * User-only structural move / reparent.
+ * MutationBus; resolve by cx-; require expectedPath; placeBox occupation; rename-style link rewrite on parent change.
+ * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+ */
+async function docsMove(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "docs.move");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id = requireString(p, "id");
+  const expectedPath = requireString(p, "expectedPath");
+  if ("newId" in p) {
+    throw new RpcError(-32602, "docs.move cannot change concept id; cx- is immutable");
+  }
+  // newParentId: null/undefined/"" = tent root; must be string or null when present.
+  if (
+    "newParentId" in p &&
+    p.newParentId !== null &&
+    p.newParentId !== undefined &&
+    typeof p.newParentId !== "string"
+  ) {
+    throw new RpcError(-32602, "docs.move newParentId must be a string or null");
+  }
+  const newParentId =
+    p.newParentId === null || p.newParentId === undefined || p.newParentId === ""
+      ? null
+      : String(p.newParentId);
+  const position = parseMovePosition(p.position);
+
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    // Tree identity concurrency: path must match client's expectedPath (not body etag).
+    const normalizedExpected = expectedPath.replace(/\\/g, "/").replace(/^\.\//, "");
+    const currentPath = concept.path;
+    if (currentPath !== normalizedExpected) {
+      throw new RpcError(-32009, "path stale", {
+        code: "path_stale",
+        currentPath,
+        expectedPath: normalizedExpected,
+        id: concept.id,
+      });
+    }
+    // Destination parent must resolve by id when non-null (stable cx-, not path).
+    if (newParentId !== null) {
+      const parent = tent.byId.get(newParentId);
+      if (!parent) {
+        throw new RpcError(-32004, `Target parent not found: ${newParentId}`);
+      }
+    }
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await moveNode(mount.env, concept.id, newParentId, position);
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        {
+          id: result.id,
+          path: result.path,
+          oldPath: result.oldPath,
+          reason: "docs.move",
+          pathMap: result.pathMap,
+        },
+        "self"
+      );
+      return {
+        workspaceId,
+        id: result.id,
+        cx: result.id,
+        path: result.path,
+        oldPath: result.oldPath,
+        pathMap: result.pathMap,
+        rewrittenNotes: result.rewrittenNotes,
+      };
+    } catch (err) {
+      throw mapDocsMoveError(err);
+    }
+  });
+}
+
+function parseMovePosition(raw: unknown): MovePosition {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new RpcError(-32602, "docs.move position must be an object");
+  }
+  const pos = raw as Record<string, unknown>;
+  const mode = pos.mode;
+  if (mode === "inside") {
+    return { mode: "inside" };
+  }
+  if (mode === "before" || mode === "after") {
+    const siblingId = pos.siblingId;
+    if (typeof siblingId !== "string" || !siblingId.trim()) {
+      throw new RpcError(-32602, `docs.move position.${mode} requires siblingId`);
+    }
+    return { mode, siblingId: siblingId.trim() };
+  }
+  throw new RpcError(-32602, "docs.move position.mode must be inside, before, or after");
+}
+
+function mapDocsMoveError(err: unknown): RpcError {
+  if (err instanceof RpcError) return err;
+  const message = err instanceof Error ? err.message : "docs.move failed";
+  if (/not found/i.test(message)) {
+    return new RpcError(-32004, message);
+  }
+  if (
+    /already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling concept|id drift|immutable|own subtree|relative to itself|destination parent|Concept id is required/i.test(
       message
     )
   ) {

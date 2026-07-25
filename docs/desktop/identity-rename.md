@@ -98,6 +98,23 @@ Native concept rename is available as user-only Service RPC **`docs.rename`** (M
 
 Core entry: `renameNode` in `src/core/renameOps.ts`. Client: `ServiceRpcClient.docsRename`.
 
+## 4.1 Node move / reparent contract (implemented)
+
+Native structural move is available as user-only Service RPC **`docs.move`** (MutationBus). Canonical name only — **no** `docs.reparent` alias.
+
+1. **Identity:** keep frontmatter `id` (`cx-`) unchanged; folder stem (display name) is preserved on reparent.
+2. **Resolve:** moved node, destination parent, and before/after sibling are all stable `cx-` ids. `newParentId: null` = tent root.
+3. **Stale path:** `expectedPath` is required. If `concept.path !== expectedPath` → `-32009` with `{ code: "path_stale", currentPath, expectedPath, id }` (tree identity, not body etag).
+4. **Position:** `{ mode: "inside" }` appends under parent; `{ mode: "before"|"after", siblingId }` inserts among destination siblings (sibling must already live under that parent).
+5. **Same-parent reorder:** updates id-keyed `order.json` only — **no** filesystem move, **no** link rewrite.
+6. **Reparent:** moves the folder tree; builds subtree `pathMap`; rewrites path-based Markdown/wiki links (same engine as rename); rolls back notes + tree + order on post-move failure.
+7. **Occupancy (placeBox freeze, not rename):** block when the moved node or target parent is occupied as `self` | `ancestor` | `root`. Ancestors of an occupied descendant **may** still move (claim moves with the subtree). Active Task envelopes only — not retired Node owner/status.
+8. **Safety:** refuse cycle (into own subtree), name collision at destination, invalid/archived moved or parent, operational/system paths.
+9. **Events:** emit exactly one `concept.changed` (`reason: docs.move`) with `id`, `path`, `oldPath`, `pathMap`.
+10. **UI / relations:** no frontmatter edits; no relation CRUD in this RPC; parent hierarchy stays folder+order — never implemented as delete/create link edges.
+
+Core entry: `moveNode` in `src/core/moveOps.ts`. Client: `ServiceRpcClient.docsMove`. Wire result: `{ id, path, oldPath, pathMap, rewrittenNotes }`.
+
 ## 5. Tests required (batch 1)
 
 - roles.json round-trip with `id` + `displayName`

@@ -271,6 +271,27 @@ export class ServiceClient {
     return this.call("docs.rename", { workspaceId, ...args });
   }
   /**
+   * User-only structural move / reparent (MutationBus).
+   * Resolve by stable cx- id; expectedPath required for stale-path conflict.
+   * newParentId null = tent root. position: inside | before/after siblingId.
+   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   */
+  docsMove(
+    workspaceId: string,
+    args: {
+      id: string;
+      expectedPath: string;
+      newParentId: string | null;
+      position:
+        | { mode: "inside" }
+        | { mode: "before"; siblingId: string }
+        | { mode: "after"; siblingId: string };
+      actor?: string;
+    }
+  ) {
+    return this.call("docs.move", { workspaceId, ...args });
+  }
+  /**
    * Set Node mode (editable | archived). Sole mode mutation client surface.
    */
   docsSetMode(

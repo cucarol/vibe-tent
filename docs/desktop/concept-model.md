@@ -460,6 +460,8 @@ Concept dual identity (`path` + `cx-`) is specified above. Other registries:
 
 **Rename rule:** id is never edited; rename changes display label and/or path only. Node native rename is Service `docs.rename` with atomic path+link rewrite and true note/tree rollback (contract in `identity-rename.md` §4).
 
+**Move / reparent rule:** id is never edited; structural placement is Service `docs.move` (canonical; no `docs.reparent` alias). Resolve by `cx-`, require `expectedPath` stale-path conflict, reparent rewrites path links with rollback, same-parent reorder is order-only (contract in `identity-rename.md` §4.1).
+
 ## 13. Frozen decisions (B0)
 
 1. **OKF path** = concept identity; **`cx-`** = immutable handle; no semantic key.

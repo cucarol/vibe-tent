@@ -27,12 +27,6 @@ export const DESKTOP_CONTRACT_GAPS: readonly ContractGap[] = [
     fallback: "docs.setMode archived only; no permanent delete control.",
   },
   {
-    id: "docs.move-reparent",
-    methods: ["docs.move", "docs.reparent"],
-    need: "Move / reparent a concept in the tree while preserving cx- and rewriting links.",
-    fallback: "Tree is read-only for placement; rename + mode only via docs.rename / docs.setMode.",
-  },
-  {
     id: "graph.bulk",
     methods: ["graph.snapshot", "docs.graph"],
     need: "Workspace-wide node/edge projection for a full graph canvas.",

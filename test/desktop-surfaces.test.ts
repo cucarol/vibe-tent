@@ -53,7 +53,9 @@ import {
 test("contract gaps list missing desktop methods without inventing RPCs", () => {
   const ids = contractGapIds();
   assert.ok(ids.includes("graph.bulk"));
-  assert.ok(ids.includes("docs.move-reparent"));
+  // docs.move landed as the canonical structural move/reparent RPC — gap removed.
+  assert.equal(ids.includes("docs.move-reparent"), false);
+  assert.ok(CLIENT_METHODS.includes("docs.move"));
   assert.ok(ids.includes("concept.permanent-delete"));
   assert.ok(ids.includes("session.logs-reload"));
   // type-tag-mutation closed once Service type/tags RPCs landed on CLIENT_METHODS.
