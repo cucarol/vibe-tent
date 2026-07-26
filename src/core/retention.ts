@@ -78,8 +78,8 @@ export type RetentionPurgeResult = RetentionPreviewResult & {
 };
 
 export class RetentionError extends Error {
-  code: "INVALID_KEEP_DAYS";
-  constructor(code: "INVALID_KEEP_DAYS", message: string) {
+  code: "INVALID_KEEP_DAYS" | "PROVENANCE_PIN_SCAN_FAILED";
+  constructor(code: "INVALID_KEEP_DAYS" | "PROVENANCE_PIN_SCAN_FAILED", message: string) {
     super(message);
     this.code = code;
     this.name = "RetentionError";
@@ -166,13 +166,18 @@ export async function previewOperationalRetention(
 
   // Output provenance pin: any live Output.deliveryId (including archived Outputs)
   // protects that Delivery and its Task group. Not a general permanent history system.
-  let pinnedDeliveryIds = new Set<string>();
+  // Fail closed: if pin scan cannot load the tent, refuse all destructive selection
+  // rather than purge without knowing which Deliveries are still referenced.
+  let pinnedDeliveryIds: Set<string>;
   try {
     const tent = await loadTent(fs);
     pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
   } catch (err) {
-    warnings.push(
-      `output provenance pin scan failed: ${err instanceof Error ? err.message : String(err)}`
+    throw new RetentionError(
+      "PROVENANCE_PIN_SCAN_FAILED",
+      `Output provenance pin scan failed; refusing retention preview/purge: ${
+        err instanceof Error ? err.message : String(err)
+      }`
     );
   }
   const pinnedTaskIds = new Set<string>();

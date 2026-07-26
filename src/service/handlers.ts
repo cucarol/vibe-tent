@@ -4267,6 +4267,7 @@ function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
     case "OUTPUT_NOT_OUTPUT_TYPE":
     case "OUTPUT_ALREADY_BOUND":
     case "INVALID_DELIVERY_ID":
+    case "BIND_ROLLBACK_FAILED":
       return new RpcError(-32010, err.message, { code: err.code, ...err.details });
     default:
       return new RpcError(-32010, err.message, { code: err.code, ...err.details });

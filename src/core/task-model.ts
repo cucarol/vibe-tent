@@ -117,7 +117,9 @@ export type TransitionErrorCode =
   | "A2A_DENIED"
   | "NO_ACTIVE_DELIVERY"
   | "TASK_NOT_ACTIVE"
-  | "DELIVERY_NOT_READY";
+  | "DELIVERY_NOT_READY"
+  /** Compensating rollback after partial accept (Output bind + Delivery/Task) failed. */
+  | "ACCEPT_ROLLBACK_FAILED";
 
 export class TaskLifecycleError extends Error {
   code: TransitionErrorCode;

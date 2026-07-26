@@ -288,7 +288,7 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 | Rule | Contract |
 | --- | --- |
 | Authority | Output frontmatter reserved field **`deliveryId`** only. No redundant `taskId` / `sourceNodeId` on Output; no Delivery-side authoritative reverse list in minimal P0. |
-| Bind path | Formal **`task.accept`** may pass `outputNodeIds`. Service validates **all** Outputs then binds **all** inside the final accept mutation **before** Task/Delivery become accepted. Any failure → Task, Delivery, and Outputs stay unchanged (no partial accept). |
+| Bind path | Formal **`task.accept`** may pass `outputNodeIds`. Service validates **all** Outputs then binds inside the final accept mutation **before** Task/Delivery become accepted. Multi-Output writes use **original raw snapshots + compensating rollback** (and fail loud if rollback itself fails). If Delivery/Task accepted persistence fails after Output writes, the same compensation restores Outputs + operational files. Any failure → Task, Delivery, and Outputs stay unchanged (no partial accept / partial provenance publish). |
 | Output eligibility | Exists, valid, not archived, primary type base = `output`. Same `deliveryId` → idempotent success. Different `deliveryId` already present → fail loud. |
 | Client writes | `docs.write` / raw / semantic patch **cannot** set or change `deliveryId` (reserved with `id`/`mode`/`archived`). |
 | Query | `output.provenance({ workspaceId, id \| outputId \| path })` → `{ workspaceId, outputId, path, bound, deliveryId, delivery, task, sourceNode, incomplete }`. Stable Node id preferred; path compatible. Unbound → `bound: false`, nulls, empty `incomplete`. Missing heat records → live halves null + `incomplete` reasons (`delivery_missing` / `task_missing` / `source_missing` / `mismatch`). **Never** infer by path/name/time/text. Archived Output remains readable. |
@@ -518,6 +518,7 @@ Explicit user-only RPCs (successor of blunt `clean-temp` for operational heat). 
 
 1. **Never delete** tasks in `queued` / `running` / `waiting` / `delivered`, or deliveries in `ready`.
 1b. **Never delete** a Delivery (or its Task group) while any concept Node still holds `deliveryId` pointing at that Delivery — including **archived** Output Nodes. This pins lightweight Output → Delivery → Task provenance without inventing a general permanent history system.
+1c. **Fail closed on pin scan:** if `loadTent` / Output provenance pin scan fails, `operationalRetention.preview` and `purge` must **refuse** (error) rather than select candidates without pin knowledge.
 2. **Terminal tasks** eligible for purge: `accepted` / `rejected` / `interrupted` / `failed` whose `updatedAt || createdAt` is on or before the cutoff.
 3. **Task-group cleanup:** purge a terminal task **together with** its terminal deliveries so no dangling delivery references remain. If any related delivery is still `draft` or `ready`, refuse the whole group. Group age uses the most recent task/delivery activity timestamp.
 4. **Orphan terminal deliveries** (unknown / missing `taskId` parent, status `accepted` / `rejected`) may be purged independently when past retention.

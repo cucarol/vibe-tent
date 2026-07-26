@@ -26,7 +26,9 @@ export type OutputProvenanceErrorCode =
   | "OUTPUT_NOT_OUTPUT_TYPE"
   | "OUTPUT_ALREADY_BOUND"
   | "INVALID_DELIVERY_ID"
-  | "INVALID_SELECTOR";
+  | "INVALID_SELECTOR"
+  /** Compensating restore of Output raw snapshots failed after a bind/accept error. */
+  | "BIND_ROLLBACK_FAILED";
 
 export class OutputProvenanceError extends Error {
   code: OutputProvenanceErrorCode;
@@ -225,44 +227,142 @@ export function validateOutputBindingsForAccept(
 }
 
 /**
- * Write `deliveryId` onto an Output Node identity file (mutation-lock caller).
- * Idempotent when already equal. Does not dual-write taskId/sourceNodeId.
+ * Pre-write snapshot of an Output identity file for compensating rollback.
+ * Restoring `raw` is the sole authority for undoing a partial bind.
  */
-export async function bindOutputDeliveryIdUnlocked(
-  fs: FsAdapter,
-  box: Box,
-  deliveryId: string
-): Promise<{ changed: boolean }> {
-  const { alreadyBound } = assertOutputBindable(box, deliveryId);
-  if (alreadyBound) return { changed: false };
+export type OutputBindSnapshot = {
+  outputId: string;
+  notePath: string;
+  raw: string;
+  box: Box;
+  previousDeliveryId: string | undefined;
+};
 
-  const notePath = boxNotePath(box.path);
-  const raw = await fs.readFile(notePath);
-  const { data, body, keyOrder } = parseFrontmatter(raw);
-  data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
-  // Keep in-memory box coherent for callers that reuse the tent snapshot.
-  (box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = deliveryId;
-  await fs.writeFile(notePath, serializeFrontmatter(data, body, outputKeyOrder(keyOrder)));
-  return { changed: true };
+/**
+ * Restore Output identity files from raw snapshots (mutation-lock caller).
+ * Fail-loud if any restore write fails — partial provenance must not remain silent.
+ */
+export async function restoreOutputBindSnapshots(
+  fs: FsAdapter,
+  snapshots: readonly OutputBindSnapshot[]
+): Promise<void> {
+  if (snapshots.length === 0) return;
+  const failures: Array<{ outputId: string; notePath: string; error: string }> = [];
+  // Restore in reverse write order (last written first).
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const snap = snapshots[i];
+    try {
+      await fs.writeFile(snap.notePath, snap.raw);
+      const prev = snap.previousDeliveryId;
+      if (prev === undefined) {
+        delete (snap.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD];
+      } else {
+        (snap.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = prev;
+      }
+    } catch (err) {
+      failures.push({
+        outputId: snap.outputId,
+        notePath: snap.notePath,
+        error: err instanceof Error ? err.message : String(err),
+      });
+    }
+  }
+  if (failures.length > 0) {
+    throw new OutputProvenanceError(
+      "BIND_ROLLBACK_FAILED",
+      `Failed to roll back Output provenance bind for ${failures.length} file(s); disk may be partially bound.`,
+      { failures }
+    );
+  }
 }
 
 /**
  * Bind many Outputs to one Delivery after full validation (accept final mutation).
- * Returns ids that were newly written (for concept.changed); idempotent skips omitted.
+ *
+ * Cross-file atomicity via compensating rollback:
+ * 1) validate all
+ * 2) snapshot original raw for every file that will change
+ * 3) write each deliveryId
+ * 4) on any write failure, restore all prior snapshots (fail loud if restore fails)
+ *
+ * Idempotent same-delivery binds do not write and are not snapshotted.
+ * `snapshots` is returned so outer accept can roll back if Delivery/Task persistence fails later.
  */
 export async function bindOutputsToDeliveryUnlocked(
   fs: FsAdapter,
   tent: LoadedTent,
   outputNodeIds: readonly string[] | undefined,
   deliveryId: string
-): Promise<{ boundIds: string[]; changedIds: string[] }> {
+): Promise<{
+  boundIds: string[];
+  changedIds: string[];
+  snapshots: OutputBindSnapshot[];
+}> {
   const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
-  const changedIds: string[] = [];
+
+  type Planned = {
+    box: Box;
+    outputId: string;
+    notePath: string;
+    raw: string;
+    previousDeliveryId: string | undefined;
+  };
+  const planned: Planned[] = [];
   for (let i = 0; i < boxes.length; i++) {
-    const result = await bindOutputDeliveryIdUnlocked(fs, boxes[i], deliveryId);
-    if (result.changed) changedIds.push(outputIds[i]);
+    const box = boxes[i];
+    const outputId = outputIds[i];
+    const { alreadyBound } = assertOutputBindable(box, deliveryId);
+    if (alreadyBound) continue;
+    const notePath = boxNotePath(box.path);
+    const raw = await fs.readFile(notePath);
+    planned.push({
+      box,
+      outputId,
+      notePath,
+      raw,
+      previousDeliveryId: readOutputDeliveryId(box.fm as Record<string, unknown>),
+    });
   }
-  return { boundIds: outputIds, changedIds };
+
+  const snapshots: OutputBindSnapshot[] = [];
+  const changedIds: string[] = [];
+
+  try {
+    for (const item of planned) {
+      const { data, body, keyOrder } = parseFrontmatter(item.raw);
+      data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
+      await fs.writeFile(item.notePath, nextRaw);
+      // Only record snapshot after a successful write so rollback targets real changes.
+      snapshots.push({
+        outputId: item.outputId,
+        notePath: item.notePath,
+        raw: item.raw,
+        box: item.box,
+        previousDeliveryId: item.previousDeliveryId,
+      });
+      (item.box.fm as Record<string, unknown>)[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      changedIds.push(item.outputId);
+    }
+  } catch (err) {
+    try {
+      await restoreOutputBindSnapshots(fs, snapshots);
+    } catch (rollbackErr) {
+      if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
+      throw new OutputProvenanceError(
+        "BIND_ROLLBACK_FAILED",
+        `Output provenance bind failed and rollback also failed: ${
+          rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)
+        } (original: ${err instanceof Error ? err.message : String(err)})`,
+        {
+          originalError: err instanceof Error ? err.message : String(err),
+        }
+      );
+    }
+    throw err;
+  }
+
+  return { boundIds: outputIds, changedIds, snapshots };
 }
 
 /**
@@ -445,16 +545,6 @@ export function resolveOutputBox(
     "INVALID_SELECTOR",
     "output.provenance requires id, outputId, or path"
   );
-}
-
-/** Optional path-based Delivery load when list scan missed a record (best-effort). */
-export async function tryLoadDeliveryById(
-  fs: FsAdapter,
-  deliveryId: string
-): Promise<DeliveryRecord | undefined> {
-  if (!isDeliveryId(deliveryId)) return undefined;
-  const all = await loadDeliveries(fs);
-  return all.find((d) => d.id === deliveryId);
 }
 
 function outputKeyOrder(existing: string[]): string[] {

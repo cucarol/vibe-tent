@@ -14,7 +14,9 @@ import {
 } from "./delivery.js";
 import {
   bindOutputsToDeliveryUnlocked,
+  restoreOutputBindSnapshots,
   validateOutputBindingsForAccept,
+  type OutputBindSnapshot,
 } from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadTent, type LoadedTent } from "./tree.js";
@@ -343,7 +345,7 @@ export async function taskAccept(
     });
 
     // Full validate + bind Outputs BEFORE Task/Delivery accepted writes.
-    // Any bind failure aborts the whole accept mutation (no partial accepted).
+    // Multi-Output bind uses raw snapshots + compensating rollback (no partial bind).
     const tent = await loadTent(env.fs);
     const bindResult = await bindOutputsToDeliveryUnlocked(
       env.fs,
@@ -352,26 +354,86 @@ export async function taskAccept(
       delivery.id
     );
 
-    delivery.status = "accepted";
-    delivery.integrationMode = "manual-accept";
-    delivery.review = { by: options.actor, decision: "accept" };
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
+    // Snapshot operational files before accepted writes so Delivery/Task failures
+    // can restore pre-accept state together with Output rollback.
+    const deliveryRawBefore = await env.fs.readFile(delivery.path);
+    const taskRawBefore = await env.fs.readFile(taskPath);
 
-    // Accept ends occupation via task state; collab FM dual-write stays retired.
-    // Output.deliveryId is the sole provenance write path (not collab projection).
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: "accepted",
-      wait: null,
-      updatedAt: env.clock.now(),
-    });
-    return {
-      task: next,
-      delivery,
-      boundOutputIds: bindResult.boundIds,
-      changedOutputIds: bindResult.changedIds,
-    };
+    try {
+      delivery.status = "accepted";
+      delivery.integrationMode = "manual-accept";
+      delivery.review = { by: options.actor, decision: "accept" };
+      delivery.updatedAt = env.clock.now();
+      await writeDelivery(env.fs, delivery);
+
+      // Accept ends occupation via task state; collab FM dual-write stays retired.
+      // Output.deliveryId is the sole provenance write path (not collab projection).
+      const next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        wait: null,
+        updatedAt: env.clock.now(),
+      });
+      return {
+        task: next,
+        delivery,
+        boundOutputIds: bindResult.boundIds,
+        changedOutputIds: bindResult.changedIds,
+      };
+    } catch (err) {
+      await compensateAcceptAfterOutputBind(env.fs, {
+        deliveryPath: delivery.path,
+        deliveryRawBefore,
+        taskPath,
+        taskRawBefore,
+        outputSnapshots: bindResult.snapshots,
+      });
+      throw err;
+    }
   });
+}
+
+/**
+ * After Outputs were bound but Delivery/Task accepted persistence failed:
+ * restore Task + Delivery raw, then Output snapshots. Fail loud if any restore fails.
+ */
+async function compensateAcceptAfterOutputBind(
+  fs: FsAdapter,
+  args: {
+    deliveryPath: string;
+    deliveryRawBefore: string;
+    taskPath: string;
+    taskRawBefore: string;
+    outputSnapshots: readonly OutputBindSnapshot[];
+  }
+): Promise<void> {
+  const failures: string[] = [];
+  try {
+    await fs.writeFile(args.deliveryPath, args.deliveryRawBefore);
+  } catch (err) {
+    failures.push(
+      `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await fs.writeFile(args.taskPath, args.taskRawBefore);
+  } catch (err) {
+    failures.push(
+      `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await restoreOutputBindSnapshots(fs, args.outputSnapshots);
+  } catch (err) {
+    failures.push(
+      `outputs: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (failures.length > 0) {
+    throw new TaskLifecycleError(
+      "ACCEPT_ROLLBACK_FAILED",
+      `task.accept failed after Output bind and compensating rollback also failed: ${failures.join("; ")}`
+    );
+  }
 }
 
 export async function taskReject(
