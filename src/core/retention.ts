@@ -4,6 +4,7 @@
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { loadDelivery, type DeliveryRecord } from "./delivery.js";
+import { collectReferencedDeliveryIds } from "./output.js";
 import { loadTaskEnvelope, type TaskEnvelope } from "./task.js";
 import {
   isActiveTaskState,
@@ -11,7 +12,7 @@ import {
   type DeliveryStatus,
   type TaskState,
 } from "./task-model.js";
-import { join } from "./tree.js";
+import { join, loadTent } from "./tree.js";
 
 /** Default heat retention for terminal operational records (task-api §6). */
 export const DEFAULT_KEEP_TERMINAL_DAYS = 30;
@@ -163,6 +164,22 @@ export async function previewOperationalRetention(
   const candidates: RetentionCandidate[] = [];
   const claimedDeliveryPaths = new Set<string>();
 
+  // Output provenance pin: any live Output.deliveryId (including archived Outputs)
+  // protects that Delivery and its Task group. Not a general permanent history system.
+  let pinnedDeliveryIds = new Set<string>();
+  try {
+    const tent = await loadTent(fs);
+    pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
+  } catch (err) {
+    warnings.push(
+      `output provenance pin scan failed: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const pinnedTaskIds = new Set<string>();
+  for (const d of deliveries) {
+    if (pinnedDeliveryIds.has(d.id) && d.taskId) pinnedTaskIds.add(d.taskId);
+  }
+
   // 1) Terminal tasks past retention → purge as a group with their deliveries.
   for (const task of tasks) {
     if (!isTerminalTaskState(task.state)) continue;
@@ -200,6 +217,19 @@ export async function previewOperationalRetention(
       continue;
     }
 
+    // Pin: Output.deliveryId references any related Delivery, or task id is pinned via Delivery.
+    const pinnedRelated = related.filter((d) => pinnedDeliveryIds.has(d.id));
+    if (
+      pinnedRelated.length > 0 ||
+      (task.id !== undefined && pinnedTaskIds.has(task.id))
+    ) {
+      const pinIds = pinnedRelated.map((d) => d.id).join(",") || task.id || "";
+      warnings.push(
+        `task-group ${task.path} pinned by Output.deliveryId (${pinIds}); refusing group purge`
+      );
+      continue;
+    }
+
     const ageDays = ageDaysFrom(activityMs, nowMs);
     const deliveryPaths = related.map((d) => d.path);
     for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
@@ -223,6 +253,13 @@ export async function previewOperationalRetention(
     const parent = tasksById.get(d.taskId);
     if (parent) {
       // Delivery still attached to a known task — only purged with that task group.
+      continue;
+    }
+
+    if (pinnedDeliveryIds.has(d.id)) {
+      warnings.push(
+        `orphan delivery ${d.path} pinned by Output.deliveryId; refusing purge`
+      );
       continue;
     }
 

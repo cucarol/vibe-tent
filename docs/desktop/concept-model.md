@@ -97,6 +97,7 @@ relations:             # optional first-class semantic edges (source = this Node
 | `tags` | Optional; never replace type or hierarchy |
 | `mode` | Omit = editable; `archived` freezes subtree. No `read-only` |
 | `relations` | Optional outgoing semantic relations; stable `rl-` id, open `kind`, `direction`, exactly one target (`nodeId` or `unresolved`). **Not** Markdown/wiki body links. Mutate via `relation.*` only |
+| `deliveryId` | **Reserved Output provenance** (primary type base `output` only). Authoritative link to a Delivery (`dl-…`). Written only by formal `task.accept` bind (`outputNodeIds`); ordinary `docs.write` / raw / `patchBox` reject. Unbound Output omits the field. No redundant `taskId`/`sourceNodeId` denorm on the Node. |
 | legacy `status` / `owner` | **Stripped on migrate**; not written at runtime; occupation is Task-based |
 | `artifactRefs` | Optional `ArtifactRef[]`; not concept identity |
 | Readable/writable | **Retired** as domain axes; not honor ACL |

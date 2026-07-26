@@ -8,6 +8,7 @@ import type {
   GraphProjection,
   NodeCollaboration,
   NodeCollaborationsResult,
+  OutputProvenance,
   PendingInteractionListResult,
   ProviderCatalogProjection,
   RelationDeleteResult,
@@ -770,8 +771,20 @@ export class ServiceClient {
   ) {
     return this.call("task.deliver", { workspaceId, taskPath, ...args });
   }
-  taskAccept(workspaceId: string, taskPath: string, actor: string, commits?: string[]) {
-    return this.call("task.accept", { workspaceId, taskPath, actor, commits });
+  taskAccept(
+    workspaceId: string,
+    taskPath: string,
+    actor: string,
+    commits?: string[],
+    opts?: { outputNodeIds?: string[] }
+  ) {
+    return this.call("task.accept", {
+      workspaceId,
+      taskPath,
+      actor,
+      commits,
+      ...(opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}),
+    });
   }
   taskReject(
     workspaceId: string,
@@ -876,6 +889,20 @@ export class ServiceClient {
     return this.call<NodeCollaborationsResult>("node.collaborations", {
       workspaceId,
       ids,
+    });
+  }
+
+  /**
+   * V0.2 Output provenance: Output → Delivery → Task → sourceNode by id.
+   * Unbound type=output returns bound:false; never infers by path/name/time.
+   */
+  outputProvenance(
+    workspaceId: string,
+    idOrPath: { id?: string; path?: string; outputId?: string }
+  ) {
+    return this.call<OutputProvenance>("output.provenance", {
+      workspaceId,
+      ...idOrPath,
     });
   }
 

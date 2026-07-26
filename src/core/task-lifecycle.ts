@@ -12,6 +12,10 @@ import {
   writeDelivery,
   type DeliveryRecord,
 } from "./delivery.js";
+import {
+  bindOutputsToDeliveryUnlocked,
+  validateOutputBindingsForAccept,
+} from "./output.js";
 import type { OpsEnv } from "./ops-context.js";
 import { loadTent, type LoadedTent } from "./tree.js";
 import type { Box } from "./types.js";
@@ -66,6 +70,12 @@ export interface TaskAcceptOptions {
   actor: string;
   commits?: string[];
   integrate?: (commits: string[]) => Promise<void>;
+  /**
+   * Optional Output Node ids to bind to the accepted Delivery (`deliveryId` FM).
+   * Validated all-or-nothing inside the final accept mutation; any failure
+   * leaves Task/Delivery/Output unchanged (not partially accepted).
+   */
+  outputNodeIds?: string[];
 }
 
 export interface TaskRejectOptions {
@@ -273,9 +283,16 @@ export async function taskAccept(
   env: OpsEnv,
   taskPath: string,
   options: TaskAcceptOptions
-): Promise<{ task: TaskEnvelope; delivery: DeliveryRecord }> {
+): Promise<{
+  task: TaskEnvelope;
+  delivery: DeliveryRecord;
+  /** Output Node ids successfully bound (including same-delivery idempotent). */
+  boundOutputIds: string[];
+  /** Subset that newly wrote deliveryId (for concept.changed). */
+  changedOutputIds: string[];
+}> {
   // Validate authority + ready delivery under lock; Git integrate outside;
-  // then re-validate and write accepted/done atomically under lock.
+  // then re-validate, bind Outputs, and write accepted atomically under lock.
   const prepared = await withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
@@ -287,6 +304,11 @@ export async function taskAccept(
       dispatchedBy: task.dispatchedBy,
       action: "accept",
     });
+    // Pre-validate Outputs before integrate so bad selectors fail before side effects.
+    if (options.outputNodeIds && options.outputNodeIds.length > 0) {
+      const tent = await loadTent(env.fs);
+      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
+    }
     const commits = options.commits ?? delivery.commits;
     return {
       deliveryId: delivery.id,
@@ -320,19 +342,35 @@ export async function taskAccept(
       action: "accept",
     });
 
+    // Full validate + bind Outputs BEFORE Task/Delivery accepted writes.
+    // Any bind failure aborts the whole accept mutation (no partial accepted).
+    const tent = await loadTent(env.fs);
+    const bindResult = await bindOutputsToDeliveryUnlocked(
+      env.fs,
+      tent,
+      options.outputNodeIds,
+      delivery.id
+    );
+
     delivery.status = "accepted";
     delivery.integrationMode = "manual-accept";
     delivery.review = { by: options.actor, decision: "accept" };
     delivery.updatedAt = env.clock.now();
     await writeDelivery(env.fs, delivery);
 
-    // Accept ends occupation via task state; no Node frontmatter dual-write.
+    // Accept ends occupation via task state; collab FM dual-write stays retired.
+    // Output.deliveryId is the sole provenance write path (not collab projection).
     const next = await patchTaskEnvelope(env.fs, taskPath, {
       state: "accepted",
       wait: null,
       updatedAt: env.clock.now(),
     });
-    return { task: next, delivery };
+    return {
+      task: next,
+      delivery,
+      boundOutputIds: bindResult.boundIds,
+      changedOutputIds: bindResult.changedIds,
+    };
   });
 }
 

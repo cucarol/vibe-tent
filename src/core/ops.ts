@@ -601,10 +601,12 @@ async function patchBoxUnlocked(
     "writable",
     "status",
     "relations",
+    // Output provenance: only formal task.accept bind path may write deliveryId.
+    "deliveryId",
   ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
     );
   }
   if (box.archived || box.mode === "archived") {

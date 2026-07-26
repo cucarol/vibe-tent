@@ -186,16 +186,33 @@ export async function runTaskCommand(
         const taskPath = positionals[0];
         if (!taskPath || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]"
+            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
         const commits = parseCommitsFlag(flags.commits);
-        const result = await client.taskAccept(workspaceId, taskPath, actor, commits);
+        const outputNodeIds =
+          parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
+        const result = await client.taskAccept(workspaceId, taskPath, actor, commits, {
+          outputNodeIds,
+        });
         return okPrint(result, json, (r) => {
-          const row = r as { taskPath: string; state?: string };
-          return `✓ Accepted via service RPC\ntaskPath: ${row.taskPath}\nstate: ${row.state ?? "accepted"}\n`;
+          const row = r as {
+            taskPath: string;
+            state?: string;
+            boundOutputIds?: string[];
+          };
+          const bound =
+            row.boundOutputIds && row.boundOutputIds.length
+              ? `boundOutputs: ${row.boundOutputIds.join(",")}\n`
+              : "";
+          return (
+            `✓ Accepted via service RPC\n` +
+            `taskPath: ${row.taskPath}\n` +
+            `state: ${row.state ?? "accepted"}\n` +
+            bound
+          );
         });
       }
       case "reject": {

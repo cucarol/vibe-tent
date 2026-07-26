@@ -63,6 +63,11 @@ import {
 } from "../adapters/acp/image-prompt.js";
 import { loadDeliveries } from "../core/delivery.js";
 import {
+  OutputProvenanceError,
+  resolveOutputProvenance,
+  type OutputProvenance as CoreOutputProvenance,
+} from "../core/output.js";
+import {
   acceptProposal,
   loadProposal,
   loadProposals,
@@ -213,6 +218,7 @@ import {
   type NodeCollaborationSessionSummary,
   type NodeCollaborationTaskSummary,
   type NodeCollaborationsResult,
+  type OutputProvenance,
   type RelationDeleteResult,
   type RelationListResult,
   type RelationMutationResult,
@@ -465,6 +471,8 @@ export async function dispatchMethod(
         return nodeCollaborationRpc(ctx, p);
       case "node.collaborations":
         return nodeCollaborationsRpc(ctx, p);
+      case "output.provenance":
+        return outputProvenanceRpc(ctx, p);
       case "graph.projection":
         return graphProjectionRpc(ctx, p);
       case "proposal.list":
@@ -4145,17 +4153,25 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
   const commits = optionalStringArray(p, "commits");
+  const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    const result = await taskAccept(mount.env, taskPath, {
-      actor,
-      commits,
-      // Core requires integrate whenever delivery commits are non-empty.
-      // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
-      integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate),
-    });
+    let result: Awaited<ReturnType<typeof taskAccept>>;
+    try {
+      result = await taskAccept(mount.env, taskPath, {
+        actor,
+        commits,
+        outputNodeIds,
+        // Core requires integrate whenever delivery commits are non-empty.
+        // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
+        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate),
+      });
+    } catch (err) {
+      if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+      throw err;
+    }
     emitTaskState(ctx, workspaceId, result.task, "task.accept");
     ctx.events.emit(
       "delivery.updated",
@@ -4177,14 +4193,84 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         "self"
       );
     }
+    // Output provenance bind invalidation: only Outputs that newly wrote deliveryId.
+    for (const outputId of result.changedOutputIds) {
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        { id: outputId, reason: "output.provenance-bind" },
+        "self"
+      );
+    }
     return {
       workspaceId,
       taskPath,
       task: projectTask(result.task),
       delivery: projectDelivery(result.delivery),
       state: result.task.state,
+      boundOutputIds: result.boundOutputIds,
+      changedOutputIds: result.changedOutputIds,
     };
   });
+}
+
+/**
+ * V0.2 Output provenance read: Output → Delivery → Task → sourceNode by id.
+ * Unbound type=output is legal (bound:false). Archived Output still readable.
+ */
+async function outputProvenanceRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+): Promise<OutputProvenance> {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id =
+    optionalString(p, "id") ?? optionalString(p, "outputId") ?? optionalString(p, "boxId");
+  const path = optionalString(p, "path");
+  if (!id && !path) {
+    throw new RpcError(-32602, "output.provenance requires id, outputId, or path");
+  }
+  try {
+    const projected = await resolveOutputProvenance(mount.env.fs, { id, path, outputId: id });
+    return projectOutputProvenanceWire(workspaceId, projected);
+  } catch (err) {
+    if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+    throw err;
+  }
+}
+
+function projectOutputProvenanceWire(
+  workspaceId: string,
+  core: CoreOutputProvenance
+): OutputProvenance {
+  return {
+    workspaceId,
+    outputId: core.outputId,
+    path: core.path,
+    bound: core.bound,
+    deliveryId: core.deliveryId,
+    delivery: core.delivery,
+    task: core.task,
+    sourceNode: core.sourceNode,
+    incomplete: core.incomplete,
+  };
+}
+
+function outputProvenanceErrorToRpc(err: OutputProvenanceError): RpcError {
+  switch (err.code) {
+    case "OUTPUT_NOT_FOUND":
+      return new RpcError(-32004, err.message, err.details);
+    case "INVALID_SELECTOR":
+      return new RpcError(-32602, err.message, err.details);
+    case "OUTPUT_INVALID":
+    case "OUTPUT_ARCHIVED":
+    case "OUTPUT_NOT_OUTPUT_TYPE":
+    case "OUTPUT_ALREADY_BOUND":
+    case "INVALID_DELIVERY_ID":
+      return new RpcError(-32010, err.message, { code: err.code, ...err.details });
+    default:
+      return new RpcError(-32010, err.message, { code: err.code, ...err.details });
+  }
 }
 
 /**
@@ -9420,13 +9506,13 @@ function assertDocsModeMutable(
   });
 }
 
-/** Structured frontmatter path: id/mode/archived never via docs.write (use docs.setMode). */
+/** Structured frontmatter path: id/mode/archived/deliveryId never via docs.write. */
 function assertReservedDocsWriteFields(frontmatter: Record<string, unknown>): void {
-  const hard = (["id", "mode", "archived"] as const).filter((k) => k in frontmatter);
+  const hard = (["id", "mode", "archived", "deliveryId"] as const).filter((k) => k in frontmatter);
   if (hard.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode; Output deliveryId binds via task.accept.`,
     { fields: hard }
   );
 }
@@ -9447,19 +9533,19 @@ function assertSemanticDocsWriteFields(frontmatter: Record<string, unknown>): vo
 
 /**
  * Raw write may keep existing reserved values but must not introduce or change
- * id/mode/archived. Collaboration fields still use the active-task guard.
+ * id/mode/archived/deliveryId. Collaboration fields still use the active-task guard.
  */
 function assertRawDocsWriteReserved(
   disk: Record<string, unknown>,
   next: Record<string, unknown>
 ): void {
-  const hard = (["id", "mode", "archived"] as const).filter(
+  const hard = (["id", "mode", "archived", "deliveryId"] as const).filter(
     (field) => String(next[field] ?? "") !== String(disk[field] ?? "")
   );
   if (hard.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode; Output deliveryId binds via task.accept.`,
     { fields: hard }
   );
 }

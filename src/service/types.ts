@@ -139,6 +139,43 @@ export type NodeCollaborationsResult = {
 };
 
 /**
+ * V0.2 Output provenance read model (`output.provenance`).
+ * Authority is Output frontmatter `deliveryId` only — no taskId/sourceNodeId denorm.
+ * Live Delivery → Task → sourceNode joins by id; missing heat → incomplete, never inferred.
+ */
+export type OutputProvenanceIncompleteReason =
+  | "delivery_missing"
+  | "task_missing"
+  | "source_missing"
+  | "mismatch";
+
+export type OutputProvenance = {
+  workspaceId: string;
+  outputId: string;
+  path: string;
+  bound: boolean;
+  deliveryId: string | null;
+  delivery: {
+    id: string;
+    status: string;
+    taskId: string;
+    boxId: string;
+  } | null;
+  task: {
+    id: string;
+    state: string;
+    path?: string;
+  } | null;
+  sourceNode: {
+    id: string;
+    path?: string;
+    type?: string;
+    archived?: boolean;
+  } | null;
+  incomplete: OutputProvenanceIncompleteReason[];
+};
+
+/**
  * Workspace-level graph node summary for Working-set Canvas (`graph.projection`).
  * Stable identity + document meta only — never includes body / bodyPreview.
  */
@@ -796,6 +833,12 @@ export const CLIENT_METHODS = [
    */
   "node.collaboration",
   /**
+   * V0.2 Output provenance (Output → Delivery → Task → sourceNode).
+   * Params: workspaceId + id|outputId|path (stable Node id preferred).
+   * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
+   */
+  "output.provenance",
+  /**
    * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
    * Params: workspaceId + ids: string[] (stable cx- handles).
    * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
@@ -890,6 +933,8 @@ export const RESERVED_DOCS_WRITE_FIELDS = [
   "id",
   "mode",
   "archived",
+  /** Output provenance — only formal task.accept bind path may write. */
+  "deliveryId",
   ...PROTECTED_COLLAB_FIELDS,
 ] as const;
 
