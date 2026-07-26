@@ -2512,6 +2512,337 @@ function validateBoxName(value) {
   return name;
 }
 
+// src/core/output.ts
+var OUTPUT_PROVENANCE_FIELD = "deliveryId";
+var OutputProvenanceError = class extends Error {
+  constructor(code, message2, details) {
+    super(message2);
+    this.code = code;
+    this.name = "OutputProvenanceError";
+    this.details = details;
+  }
+};
+function isOutputPrimaryType(type) {
+  if (!type || typeof type !== "string") return false;
+  return splitType(type).base === "output";
+}
+function readOutputDeliveryId(fm) {
+  const raw = fm[OUTPUT_PROVENANCE_FIELD];
+  if (typeof raw !== "string") return void 0;
+  const trimmed = raw.trim();
+  return trimmed || void 0;
+}
+function collectReferencedDeliveryIds(tent) {
+  const out = /* @__PURE__ */ new Set();
+  for (const box of tent.byId.values()) {
+    const deliveryId = readOutputDeliveryId(box.fm);
+    if (deliveryId && isDeliveryId(deliveryId)) out.add(deliveryId);
+  }
+  return out;
+}
+function assertOutputBindable(box, deliveryId) {
+  if (!box.id) {
+    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${box.path}`);
+  }
+  if (box.invalid) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Output is invalid: ${box.path}`,
+      { outputId: box.id, detail: box.invalidReason }
+    );
+  }
+  if (box.archived || box.mode === "archived") {
+    throw new OutputProvenanceError(
+      "OUTPUT_ARCHIVED",
+      `Output is archived and cannot bind provenance: ${box.id}`,
+      { outputId: box.id }
+    );
+  }
+  if (!isOutputPrimaryType(box.type)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_NOT_OUTPUT_TYPE",
+      `Node primary type must be output to bind provenance (got ${box.type}): ${box.id}`,
+      { outputId: box.id, type: box.type }
+    );
+  }
+  if (!isDeliveryId(deliveryId)) {
+    throw new OutputProvenanceError(
+      "INVALID_DELIVERY_ID",
+      `Invalid delivery id for provenance bind: ${deliveryId}`
+    );
+  }
+  const existing = readOutputDeliveryId(box.fm);
+  if (existing && existing !== deliveryId) {
+    throw new OutputProvenanceError(
+      "OUTPUT_ALREADY_BOUND",
+      `Output ${box.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
+      { outputId: box.id, existingDeliveryId: existing, deliveryId }
+    );
+  }
+  return { alreadyBound: existing === deliveryId };
+}
+function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
+  if (!outputNodeIds || outputNodeIds.length === 0) {
+    return { outputIds: [], boxes: [] };
+  }
+  if (!isDeliveryId(deliveryId)) {
+    throw new OutputProvenanceError(
+      "INVALID_DELIVERY_ID",
+      `Invalid delivery id for provenance bind: ${deliveryId}`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const outputIds = [];
+  const boxes = [];
+  for (const raw of outputNodeIds) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new OutputProvenanceError(
+        "INVALID_SELECTOR",
+        "outputNodeIds entries must be non-empty Node ids"
+      );
+    }
+    const id = raw.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (tent.duplicateIds.has(id)) {
+      throw new OutputProvenanceError(
+        "OUTPUT_INVALID",
+        `Duplicate box id '${id}' found; repair before binding provenance.`,
+        { outputId: id }
+      );
+    }
+    const box = tent.byId.get(id);
+    if (!box) {
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
+        outputId: id
+      });
+    }
+    assertOutputBindable(box, deliveryId);
+    outputIds.push(id);
+    boxes.push(box);
+  }
+  return { outputIds, boxes };
+}
+async function restoreOutputBindSnapshots(fs21, snapshots) {
+  if (snapshots.length === 0) return;
+  const failures = [];
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const snap = snapshots[i];
+    try {
+      await fs21.writeFile(snap.notePath, snap.raw);
+      const prev = snap.previousDeliveryId;
+      if (prev === void 0) {
+        delete snap.box.fm[OUTPUT_PROVENANCE_FIELD];
+      } else {
+        snap.box.fm[OUTPUT_PROVENANCE_FIELD] = prev;
+      }
+    } catch (err) {
+      failures.push({
+        outputId: snap.outputId,
+        notePath: snap.notePath,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  if (failures.length > 0) {
+    throw new OutputProvenanceError(
+      "BIND_ROLLBACK_FAILED",
+      `Failed to roll back Output provenance bind for ${failures.length} file(s); disk may be partially bound.`,
+      { failures }
+    );
+  }
+}
+async function bindOutputsToDeliveryUnlocked(fs21, tent, outputNodeIds, deliveryId) {
+  const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
+  const planned = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const box = boxes[i];
+    const outputId = outputIds[i];
+    const { alreadyBound } = assertOutputBindable(box, deliveryId);
+    if (alreadyBound) continue;
+    const notePath = boxNotePath(box.path);
+    const raw = await fs21.readFile(notePath);
+    planned.push({
+      box,
+      outputId,
+      notePath,
+      raw,
+      previousDeliveryId: readOutputDeliveryId(box.fm)
+    });
+  }
+  const snapshots = [];
+  const changedIds = [];
+  try {
+    for (const item of planned) {
+      const { data, body, keyOrder } = parseFrontmatter(item.raw);
+      data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
+      await fs21.writeFile(item.notePath, nextRaw);
+      snapshots.push({
+        outputId: item.outputId,
+        notePath: item.notePath,
+        raw: item.raw,
+        box: item.box,
+        previousDeliveryId: item.previousDeliveryId
+      });
+      item.box.fm[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      changedIds.push(item.outputId);
+    }
+  } catch (err) {
+    try {
+      await restoreOutputBindSnapshots(fs21, snapshots);
+    } catch (rollbackErr) {
+      if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
+      throw new OutputProvenanceError(
+        "BIND_ROLLBACK_FAILED",
+        `Output provenance bind failed and rollback also failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)} (original: ${err instanceof Error ? err.message : String(err)})`,
+        {
+          originalError: err instanceof Error ? err.message : String(err)
+        }
+      );
+    }
+    throw err;
+  }
+  return { boundIds: outputIds, changedIds, snapshots };
+}
+function projectOutputProvenance(box, indexes) {
+  if (box.invalid) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Output is invalid: ${box.path}`,
+      { outputId: box.id, detail: box.invalidReason }
+    );
+  }
+  if (!isOutputPrimaryType(box.type)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_NOT_OUTPUT_TYPE",
+      `Node primary type must be output for provenance query (got ${box.type}): ${box.id}`,
+      { outputId: box.id, type: box.type }
+    );
+  }
+  const deliveryId = readOutputDeliveryId(box.fm) ?? null;
+  const base = {
+    outputId: box.id,
+    path: box.path,
+    bound: false,
+    deliveryId: null,
+    delivery: null,
+    task: null,
+    sourceNode: null,
+    incomplete: []
+  };
+  if (!deliveryId) {
+    return base;
+  }
+  base.bound = true;
+  base.deliveryId = deliveryId;
+  if (!isDeliveryId(deliveryId)) {
+    base.incomplete.push("delivery_missing");
+    return base;
+  }
+  const delivery = indexes.deliveriesById.get(deliveryId);
+  if (!delivery) {
+    base.incomplete.push("delivery_missing");
+    return base;
+  }
+  base.delivery = {
+    id: delivery.id,
+    status: delivery.status,
+    taskId: delivery.taskId,
+    boxId: delivery.boxId
+  };
+  const task = indexes.tasksById.get(delivery.taskId) ?? // Some envelopes use path as fallback id in older fixtures.
+  [...indexes.tasksById.values()].find((t) => t.id === delivery.taskId || t.path === delivery.taskId);
+  if (!task) {
+    base.incomplete.push("task_missing");
+  } else {
+    base.task = {
+      id: task.id || task.path,
+      state: task.state,
+      path: task.path
+    };
+    const taskKey = task.id || task.path;
+    if (delivery.taskId && taskKey && delivery.taskId !== taskKey && delivery.taskId !== task.path) {
+      if (!base.incomplete.includes("mismatch")) base.incomplete.push("mismatch");
+    }
+  }
+  const sourceId = delivery.boxId?.trim();
+  if (!sourceId) {
+    base.incomplete.push("source_missing");
+  } else {
+    const source = indexes.tent.byId.get(sourceId);
+    if (!source) {
+      base.incomplete.push("source_missing");
+      base.sourceNode = { id: sourceId };
+    } else {
+      base.sourceNode = {
+        id: source.id,
+        path: source.path,
+        type: source.type,
+        archived: source.archived || source.mode === "archived"
+      };
+    }
+  }
+  return base;
+}
+async function loadProvenanceIndexes(fs21, tent) {
+  const loadedTent = tent ?? await loadTent(fs21);
+  const deliveries = await loadDeliveries(fs21);
+  const tasks = await loadTaskEnvelopes(fs21);
+  const deliveriesById = /* @__PURE__ */ new Map();
+  for (const d of deliveries) deliveriesById.set(d.id, d);
+  const tasksById = /* @__PURE__ */ new Map();
+  for (const t of tasks) {
+    if (t.id) tasksById.set(t.id, t);
+  }
+  return { tent: loadedTent, deliveriesById, tasksById };
+}
+async function resolveOutputProvenance(fs21, selector, preloaded) {
+  const indexes = preloaded ?? await loadProvenanceIndexes(fs21);
+  const box = resolveOutputBox(indexes.tent, selector);
+  return projectOutputProvenance(box, indexes);
+}
+function resolveOutputBox(tent, selector) {
+  const id = (selector.id ?? selector.outputId)?.trim();
+  const path22 = selector.path?.trim().replace(/\\/g, "/");
+  if (id) {
+    if (tent.duplicateIds.has(id)) {
+      throw new OutputProvenanceError(
+        "OUTPUT_INVALID",
+        `Duplicate box id '${id}' found; repair before provenance query.`,
+        { outputId: id }
+      );
+    }
+    const box = tent.byId.get(id);
+    if (!box) {
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
+        outputId: id
+      });
+    }
+    return box;
+  }
+  if (path22) {
+    const box = tent.byPath.get(path22);
+    if (!box) {
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found at path: ${path22}`, {
+        path: path22
+      });
+    }
+    return box;
+  }
+  throw new OutputProvenanceError(
+    "INVALID_SELECTOR",
+    "output.provenance requires id, outputId, or path"
+  );
+}
+function outputKeyOrder(existing) {
+  const preferred = [...BOX_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
+  return [
+    ...preferred,
+    ...existing.filter((key) => !preferred.includes(key))
+  ];
+}
+
 // src/core/task-lifecycle.ts
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
@@ -2662,6 +2993,10 @@ async function taskAccept(env, taskPath, options) {
       dispatchedBy: task.dispatchedBy,
       action: "accept"
     });
+    if (options.outputNodeIds && options.outputNodeIds.length > 0) {
+      const tent = await loadTent(env.fs);
+      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
+    }
     const commits = options.commits ?? delivery.commits;
     return {
       deliveryId: delivery.id,
@@ -2692,18 +3027,75 @@ async function taskAccept(env, taskPath, options) {
       dispatchedBy: task.dispatchedBy,
       action: "accept"
     });
-    delivery.status = "accepted";
-    delivery.integrationMode = "manual-accept";
-    delivery.review = { by: options.actor, decision: "accept" };
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: "accepted",
-      wait: null,
-      updatedAt: env.clock.now()
-    });
-    return { task: next, delivery };
+    const deliveryRawBefore = await env.fs.readFile(delivery.path);
+    const taskRawBefore = await env.fs.readFile(taskPath);
+    const tent = await loadTent(env.fs);
+    let outputSnapshots = [];
+    try {
+      const bindResult = await bindOutputsToDeliveryUnlocked(
+        env.fs,
+        tent,
+        options.outputNodeIds,
+        delivery.id
+      );
+      outputSnapshots = bindResult.snapshots;
+      delivery.status = "accepted";
+      delivery.integrationMode = "manual-accept";
+      delivery.review = { by: options.actor, decision: "accept" };
+      delivery.updatedAt = env.clock.now();
+      await writeDelivery(env.fs, delivery);
+      const next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+      return {
+        task: next,
+        delivery,
+        boundOutputIds: bindResult.boundIds,
+        changedOutputIds: bindResult.changedIds
+      };
+    } catch (err) {
+      await compensateAcceptAfterOutputBind(env.fs, {
+        deliveryPath: delivery.path,
+        deliveryRawBefore,
+        taskPath,
+        taskRawBefore,
+        outputSnapshots
+      });
+      throw err;
+    }
   });
+}
+async function compensateAcceptAfterOutputBind(fs21, args) {
+  const failures = [];
+  try {
+    await fs21.writeFile(args.deliveryPath, args.deliveryRawBefore);
+  } catch (err) {
+    failures.push(
+      `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await fs21.writeFile(args.taskPath, args.taskRawBefore);
+  } catch (err) {
+    failures.push(
+      `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await restoreOutputBindSnapshots(fs21, args.outputSnapshots);
+  } catch (err) {
+    failures.push(
+      `outputs: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (failures.length > 0) {
+    throw new TaskLifecycleError(
+      "ACCEPT_ROLLBACK_FAILED",
+      `task.accept failed after Output bind and compensating rollback also failed: ${failures.join("; ")}`
+    );
+  }
 }
 async function taskReject(env, taskPath, options) {
   return withMutation(env.fs, async () => {
@@ -10979,11 +11371,13 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     "readable",
     "writable",
     "status",
-    "relations"
+    "relations",
+    // Output provenance: only formal task.accept bind path may write deliveryId.
+    "deliveryId"
   ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
     );
   }
   if (box.archived || box.mode === "archived") {
@@ -11924,6 +12318,20 @@ async function previewOperationalRetention(fs21, options = {}) {
   }
   const candidates = [];
   const claimedDeliveryPaths = /* @__PURE__ */ new Set();
+  let pinnedDeliveryIds;
+  try {
+    const tent = await loadTent(fs21);
+    pinnedDeliveryIds = collectReferencedDeliveryIds(tent);
+  } catch (err) {
+    throw new RetentionError(
+      "PROVENANCE_PIN_SCAN_FAILED",
+      `Output provenance pin scan failed; refusing retention preview/purge: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  const pinnedTaskIds = /* @__PURE__ */ new Set();
+  for (const d of deliveries) {
+    if (pinnedDeliveryIds.has(d.id) && d.taskId) pinnedTaskIds.add(d.taskId);
+  }
   for (const task of tasks) {
     if (!isTerminalTaskState(task.state)) continue;
     if (isActiveTaskState(task.state)) continue;
@@ -11956,6 +12364,14 @@ async function previewOperationalRetention(fs21, options = {}) {
       );
       continue;
     }
+    const pinnedRelated = related.filter((d) => pinnedDeliveryIds.has(d.id));
+    if (pinnedRelated.length > 0 || task.id !== void 0 && pinnedTaskIds.has(task.id)) {
+      const pinIds = pinnedRelated.map((d) => d.id).join(",") || task.id || "";
+      warnings.push(
+        `task-group ${task.path} pinned by Output.deliveryId (${pinIds}); refusing group purge`
+      );
+      continue;
+    }
     const ageDays = ageDaysFrom(activityMs, nowMs);
     const deliveryPaths = related.map((d) => d.path);
     for (const p of deliveryPaths) claimedDeliveryPaths.add(p);
@@ -11974,6 +12390,12 @@ async function previewOperationalRetention(fs21, options = {}) {
     if (!isPurgeableDeliveryStatus(d.status)) continue;
     const parent = tasksById.get(d.taskId);
     if (parent) {
+      continue;
+    }
+    if (pinnedDeliveryIds.has(d.id)) {
+      warnings.push(
+        `orphan delivery ${d.path} pinned by Output.deliveryId; refusing purge`
+      );
       continue;
     }
     const activity = deliveryActivityMs(d);
@@ -14960,6 +15382,12 @@ var CLIENT_METHODS = [
    */
   "node.collaboration",
   /**
+   * V0.2 Output provenance (Output → Delivery → Task → sourceNode).
+   * Params: workspaceId + id|outputId|path (stable Node id preferred).
+   * Unbound output → bound:false + nulls; corrupt refs → incomplete reasons.
+   */
+  "output.provenance",
+  /**
    * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
    * Params: workspaceId + ids: string[] (stable cx- handles).
    * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
@@ -15047,6 +15475,8 @@ var RESERVED_DOCS_WRITE_FIELDS = [
   "id",
   "mode",
   "archived",
+  /** Output provenance — only formal task.accept bind path may write. */
+  "deliveryId",
   ...PROTECTED_COLLAB_FIELDS
 ];
 var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"];
@@ -19404,6 +19834,8 @@ async function dispatchMethod(ctx, method, params) {
         return nodeCollaborationRpc(ctx, p);
       case "node.collaborations":
         return nodeCollaborationsRpc(ctx, p);
+      case "output.provenance":
+        return outputProvenanceRpc(ctx, p);
       case "graph.projection":
         return graphProjectionRpc(ctx, p);
       case "proposal.list":
@@ -22260,16 +22692,24 @@ async function taskAcceptRpc(ctx, p) {
   const taskPath = requireString(p, "taskPath");
   const actor = requireString(p, "actor");
   const commits = optionalStringArray(p, "commits");
+  const outputNodeIds = optionalStringArray(p, "outputNodeIds");
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    const result = await taskAccept(mount.env, taskPath, {
-      actor,
-      commits,
-      // Core requires integrate whenever delivery commits are non-empty.
-      // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
-      integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate)
-    });
+    let result;
+    try {
+      result = await taskAccept(mount.env, taskPath, {
+        actor,
+        commits,
+        outputNodeIds,
+        // Core requires integrate whenever delivery commits are non-empty.
+        // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
+        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate)
+      });
+    } catch (err) {
+      if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+      throw err;
+    }
     emitTaskState(ctx, workspaceId, result.task, "task.accept");
     ctx.events.emit(
       "delivery.updated",
@@ -22291,14 +22731,70 @@ async function taskAcceptRpc(ctx, p) {
         "self"
       );
     }
+    for (const outputId of result.changedOutputIds) {
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        { id: outputId, reason: "output.provenance-bind" },
+        "self"
+      );
+    }
     return {
       workspaceId,
       taskPath,
       task: projectTask(result.task),
       delivery: projectDelivery(result.delivery),
-      state: result.task.state
+      state: result.task.state,
+      boundOutputIds: result.boundOutputIds,
+      changedOutputIds: result.changedOutputIds
     };
   });
+}
+async function outputProvenanceRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id = optionalString(p, "id") ?? optionalString(p, "outputId") ?? optionalString(p, "boxId");
+  const path22 = optionalString(p, "path");
+  if (!id && !path22) {
+    throw new RpcError(-32602, "output.provenance requires id, outputId, or path");
+  }
+  try {
+    const projected = await resolveOutputProvenance(mount.env.fs, { id, path: path22, outputId: id });
+    return projectOutputProvenanceWire(workspaceId, projected);
+  } catch (err) {
+    if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+    throw err;
+  }
+}
+function projectOutputProvenanceWire(workspaceId, core) {
+  return {
+    workspaceId,
+    outputId: core.outputId,
+    path: core.path,
+    bound: core.bound,
+    deliveryId: core.deliveryId,
+    delivery: core.delivery,
+    task: core.task,
+    sourceNode: core.sourceNode,
+    incomplete: core.incomplete
+  };
+}
+function outputProvenanceErrorToRpc(err) {
+  switch (err.code) {
+    case "OUTPUT_NOT_FOUND":
+      return new RpcError(-32004, err.message, err.details);
+    case "INVALID_SELECTOR":
+      return new RpcError(-32602, err.message, err.details);
+    case "OUTPUT_INVALID":
+    case "OUTPUT_ARCHIVED":
+    case "OUTPUT_NOT_OUTPUT_TYPE":
+    case "OUTPUT_ALREADY_BOUND":
+    case "INVALID_DELIVERY_ID":
+    case "BIND_ROLLBACK_FAILED":
+      return new RpcError(-32010, err.message, { code: err.code, ...err.details });
+    default:
+      return new RpcError(-32010, err.message, { code: err.code, ...err.details });
+  }
 }
 async function taskRejectRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -25967,11 +26463,11 @@ function assertDocsModeMutable(concept, op) {
   });
 }
 function assertReservedDocsWriteFields(frontmatter) {
-  const hard = ["id", "mode", "archived"].filter((k) => k in frontmatter);
+  const hard = ["id", "mode", "archived", "deliveryId"].filter((k) => k in frontmatter);
   if (hard.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    `docs.write cannot set reserved fields: ${hard.join(", ")}. Use docs.setMode for mode; Output deliveryId binds via task.accept.`,
     { fields: hard }
   );
 }
@@ -25985,13 +26481,13 @@ function assertSemanticDocsWriteFields(frontmatter) {
   );
 }
 function assertRawDocsWriteReserved(disk, next) {
-  const hard = ["id", "mode", "archived"].filter(
+  const hard = ["id", "mode", "archived", "deliveryId"].filter(
     (field) => String(next[field] ?? "") !== String(disk[field] ?? "")
   );
   if (hard.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode.`,
+    `docs.write cannot change reserved fields: ${hard.join(", ")}. Use docs.setMode for mode; Output deliveryId binds via task.accept.`,
     { fields: hard }
   );
 }

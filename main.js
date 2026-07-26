@@ -2204,6 +2204,211 @@ var init_delivery = __esm({
   }
 });
 
+// src/core/output.ts
+function isOutputPrimaryType(type) {
+  if (!type || typeof type !== "string") return false;
+  return splitType(type).base === "output";
+}
+function readOutputDeliveryId(fm) {
+  const raw = fm[OUTPUT_PROVENANCE_FIELD];
+  if (typeof raw !== "string") return void 0;
+  const trimmed = raw.trim();
+  return trimmed || void 0;
+}
+function assertOutputBindable(box, deliveryId) {
+  if (!box.id) {
+    throw new OutputProvenanceError("OUTPUT_INVALID", `Output has no id: ${box.path}`);
+  }
+  if (box.invalid) {
+    throw new OutputProvenanceError(
+      "OUTPUT_INVALID",
+      `Output is invalid: ${box.path}`,
+      { outputId: box.id, detail: box.invalidReason }
+    );
+  }
+  if (box.archived || box.mode === "archived") {
+    throw new OutputProvenanceError(
+      "OUTPUT_ARCHIVED",
+      `Output is archived and cannot bind provenance: ${box.id}`,
+      { outputId: box.id }
+    );
+  }
+  if (!isOutputPrimaryType(box.type)) {
+    throw new OutputProvenanceError(
+      "OUTPUT_NOT_OUTPUT_TYPE",
+      `Node primary type must be output to bind provenance (got ${box.type}): ${box.id}`,
+      { outputId: box.id, type: box.type }
+    );
+  }
+  if (!isDeliveryId(deliveryId)) {
+    throw new OutputProvenanceError(
+      "INVALID_DELIVERY_ID",
+      `Invalid delivery id for provenance bind: ${deliveryId}`
+    );
+  }
+  const existing = readOutputDeliveryId(box.fm);
+  if (existing && existing !== deliveryId) {
+    throw new OutputProvenanceError(
+      "OUTPUT_ALREADY_BOUND",
+      `Output ${box.id} is already bound to ${existing}; cannot rebind to ${deliveryId}`,
+      { outputId: box.id, existingDeliveryId: existing, deliveryId }
+    );
+  }
+  return { alreadyBound: existing === deliveryId };
+}
+function validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId) {
+  if (!outputNodeIds || outputNodeIds.length === 0) {
+    return { outputIds: [], boxes: [] };
+  }
+  if (!isDeliveryId(deliveryId)) {
+    throw new OutputProvenanceError(
+      "INVALID_DELIVERY_ID",
+      `Invalid delivery id for provenance bind: ${deliveryId}`
+    );
+  }
+  const seen = /* @__PURE__ */ new Set();
+  const outputIds = [];
+  const boxes = [];
+  for (const raw of outputNodeIds) {
+    if (typeof raw !== "string" || !raw.trim()) {
+      throw new OutputProvenanceError(
+        "INVALID_SELECTOR",
+        "outputNodeIds entries must be non-empty Node ids"
+      );
+    }
+    const id = raw.trim();
+    if (seen.has(id)) continue;
+    seen.add(id);
+    if (tent.duplicateIds.has(id)) {
+      throw new OutputProvenanceError(
+        "OUTPUT_INVALID",
+        `Duplicate box id '${id}' found; repair before binding provenance.`,
+        { outputId: id }
+      );
+    }
+    const box = tent.byId.get(id);
+    if (!box) {
+      throw new OutputProvenanceError("OUTPUT_NOT_FOUND", `Output Node not found: ${id}`, {
+        outputId: id
+      });
+    }
+    assertOutputBindable(box, deliveryId);
+    outputIds.push(id);
+    boxes.push(box);
+  }
+  return { outputIds, boxes };
+}
+async function restoreOutputBindSnapshots(fs2, snapshots) {
+  if (snapshots.length === 0) return;
+  const failures = [];
+  for (let i = snapshots.length - 1; i >= 0; i--) {
+    const snap = snapshots[i];
+    try {
+      await fs2.writeFile(snap.notePath, snap.raw);
+      const prev = snap.previousDeliveryId;
+      if (prev === void 0) {
+        delete snap.box.fm[OUTPUT_PROVENANCE_FIELD];
+      } else {
+        snap.box.fm[OUTPUT_PROVENANCE_FIELD] = prev;
+      }
+    } catch (err) {
+      failures.push({
+        outputId: snap.outputId,
+        notePath: snap.notePath,
+        error: err instanceof Error ? err.message : String(err)
+      });
+    }
+  }
+  if (failures.length > 0) {
+    throw new OutputProvenanceError(
+      "BIND_ROLLBACK_FAILED",
+      `Failed to roll back Output provenance bind for ${failures.length} file(s); disk may be partially bound.`,
+      { failures }
+    );
+  }
+}
+async function bindOutputsToDeliveryUnlocked(fs2, tent, outputNodeIds, deliveryId) {
+  const { outputIds, boxes } = validateOutputBindingsForAccept(tent, outputNodeIds, deliveryId);
+  const planned = [];
+  for (let i = 0; i < boxes.length; i++) {
+    const box = boxes[i];
+    const outputId = outputIds[i];
+    const { alreadyBound } = assertOutputBindable(box, deliveryId);
+    if (alreadyBound) continue;
+    const notePath = boxNotePath(box.path);
+    const raw = await fs2.readFile(notePath);
+    planned.push({
+      box,
+      outputId,
+      notePath,
+      raw,
+      previousDeliveryId: readOutputDeliveryId(box.fm)
+    });
+  }
+  const snapshots = [];
+  const changedIds = [];
+  try {
+    for (const item of planned) {
+      const { data, body, keyOrder } = parseFrontmatter(item.raw);
+      data[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      const nextRaw = serializeFrontmatter(data, body, outputKeyOrder(keyOrder));
+      await fs2.writeFile(item.notePath, nextRaw);
+      snapshots.push({
+        outputId: item.outputId,
+        notePath: item.notePath,
+        raw: item.raw,
+        box: item.box,
+        previousDeliveryId: item.previousDeliveryId
+      });
+      item.box.fm[OUTPUT_PROVENANCE_FIELD] = deliveryId;
+      changedIds.push(item.outputId);
+    }
+  } catch (err) {
+    try {
+      await restoreOutputBindSnapshots(fs2, snapshots);
+    } catch (rollbackErr) {
+      if (rollbackErr instanceof OutputProvenanceError) throw rollbackErr;
+      throw new OutputProvenanceError(
+        "BIND_ROLLBACK_FAILED",
+        `Output provenance bind failed and rollback also failed: ${rollbackErr instanceof Error ? rollbackErr.message : String(rollbackErr)} (original: ${err instanceof Error ? err.message : String(err)})`,
+        {
+          originalError: err instanceof Error ? err.message : String(err)
+        }
+      );
+    }
+    throw err;
+  }
+  return { boundIds: outputIds, changedIds, snapshots };
+}
+function outputKeyOrder(existing) {
+  const preferred = [...BOX_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
+  return [
+    ...preferred,
+    ...existing.filter((key) => !preferred.includes(key))
+  ];
+}
+var OUTPUT_PROVENANCE_FIELD, OutputProvenanceError;
+var init_output = __esm({
+  "src/core/output.ts"() {
+    "use strict";
+    init_delivery();
+    init_frontmatter();
+    init_task();
+    init_task_model();
+    init_tree();
+    init_typeRegistry();
+    OUTPUT_PROVENANCE_FIELD = "deliveryId";
+    OutputProvenanceError = class extends Error {
+      constructor(code, message, details) {
+        super(message);
+        this.code = code;
+        this.name = "OutputProvenanceError";
+        this.details = details;
+      }
+    };
+  }
+});
+
 // src/core/task-lifecycle.ts
 async function taskClaim(env, taskPath, options = {}) {
   return withMutation(env.fs, async () => {
@@ -2253,6 +2458,10 @@ async function taskAccept(env, taskPath, options) {
       dispatchedBy: task.dispatchedBy,
       action: "accept"
     });
+    if (options.outputNodeIds && options.outputNodeIds.length > 0) {
+      const tent = await loadTent(env.fs);
+      validateOutputBindingsForAccept(tent, options.outputNodeIds, delivery.id);
+    }
     const commits = options.commits ?? delivery.commits;
     return {
       deliveryId: delivery.id,
@@ -2283,18 +2492,75 @@ async function taskAccept(env, taskPath, options) {
       dispatchedBy: task.dispatchedBy,
       action: "accept"
     });
-    delivery.status = "accepted";
-    delivery.integrationMode = "manual-accept";
-    delivery.review = { by: options.actor, decision: "accept" };
-    delivery.updatedAt = env.clock.now();
-    await writeDelivery(env.fs, delivery);
-    const next = await patchTaskEnvelope(env.fs, taskPath, {
-      state: "accepted",
-      wait: null,
-      updatedAt: env.clock.now()
-    });
-    return { task: next, delivery };
+    const deliveryRawBefore = await env.fs.readFile(delivery.path);
+    const taskRawBefore = await env.fs.readFile(taskPath);
+    const tent = await loadTent(env.fs);
+    let outputSnapshots = [];
+    try {
+      const bindResult = await bindOutputsToDeliveryUnlocked(
+        env.fs,
+        tent,
+        options.outputNodeIds,
+        delivery.id
+      );
+      outputSnapshots = bindResult.snapshots;
+      delivery.status = "accepted";
+      delivery.integrationMode = "manual-accept";
+      delivery.review = { by: options.actor, decision: "accept" };
+      delivery.updatedAt = env.clock.now();
+      await writeDelivery(env.fs, delivery);
+      const next = await patchTaskEnvelope(env.fs, taskPath, {
+        state: "accepted",
+        wait: null,
+        updatedAt: env.clock.now()
+      });
+      return {
+        task: next,
+        delivery,
+        boundOutputIds: bindResult.boundIds,
+        changedOutputIds: bindResult.changedIds
+      };
+    } catch (err) {
+      await compensateAcceptAfterOutputBind(env.fs, {
+        deliveryPath: delivery.path,
+        deliveryRawBefore,
+        taskPath,
+        taskRawBefore,
+        outputSnapshots
+      });
+      throw err;
+    }
   });
+}
+async function compensateAcceptAfterOutputBind(fs2, args) {
+  const failures = [];
+  try {
+    await fs2.writeFile(args.deliveryPath, args.deliveryRawBefore);
+  } catch (err) {
+    failures.push(
+      `delivery ${args.deliveryPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await fs2.writeFile(args.taskPath, args.taskRawBefore);
+  } catch (err) {
+    failures.push(
+      `task ${args.taskPath}: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  try {
+    await restoreOutputBindSnapshots(fs2, args.outputSnapshots);
+  } catch (err) {
+    failures.push(
+      `outputs: ${err instanceof Error ? err.message : String(err)}`
+    );
+  }
+  if (failures.length > 0) {
+    throw new TaskLifecycleError(
+      "ACCEPT_ROLLBACK_FAILED",
+      `task.accept failed after Output bind and compensating rollback also failed: ${failures.join("; ")}`
+    );
+  }
 }
 async function taskReject(env, taskPath, options) {
   return withMutation(env.fs, async () => {
@@ -2399,6 +2665,7 @@ var init_task_lifecycle = __esm({
     init_adapter();
     init_claim();
     init_delivery();
+    init_output();
     init_tree();
     init_task();
     init_paths();
@@ -3737,11 +4004,13 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     "readable",
     "writable",
     "status",
-    "relations"
+    "relations",
+    // Output provenance: only formal task.accept bind path may write deliveryId.
+    "deliveryId"
   ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
     );
   }
   if (box.archived || box.mode === "archived") {

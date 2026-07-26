@@ -3257,6 +3257,51 @@ function validateBoxName(value) {
 // src/core/task-lifecycle.ts
 init_adapter();
 init_claim();
+
+// src/core/output.ts
+init_frontmatter();
+init_task();
+init_task_model();
+init_tree();
+init_typeRegistry();
+function parseOutputPointer(fm, body) {
+  const result = {};
+  const fmWorkspace = fieldString(fm.workspace);
+  if (fmWorkspace) result.workspace = fmWorkspace;
+  const fmRef = fieldString(fm.ref);
+  if (fmRef) result.ref = fmRef;
+  for (const rawLine of body.split(/\r?\n/)) {
+    const line = normalizeLabelLine(rawLine);
+    if (!result.workspace) {
+      const workspace = matchField(line, ["workspace", "workspace \u8DEF\u5F84", "repo", "pointer", "\u8DEF\u5F84"]);
+      if (workspace) result.workspace = workspace;
+    }
+    if (!result.ref) {
+      const ref = matchField(line, ["git ref", "git-ref", "\u5F53\u524D ref", "commit", "ref"]);
+      if (ref) result.ref = ref;
+    }
+  }
+  return result;
+}
+function fieldString(value) {
+  return typeof value === "string" && value.trim() ? cleanValue(value) : void 0;
+}
+function normalizeLabelLine(line) {
+  return line.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "").replace(/`([^`]+)`/g, "$1").trim();
+}
+function matchField(line, fields) {
+  for (const field of fields) {
+    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const match = new RegExp(`^${escaped}\\s*[:\uFF1A]\\s*(.+)$`, "i").exec(line);
+    if (match) return cleanValue(match[1]);
+  }
+  return void 0;
+}
+function cleanValue(value) {
+  return value.trim().replace(/^`|`$/g, "").trim();
+}
+
+// src/core/task-lifecycle.ts
 init_tree();
 init_task();
 init_paths();
@@ -3894,44 +3939,6 @@ function requireBoxById2(tent, boxId) {
 }
 async function withMutation2(fs10, action) {
   return withTentMutation(fs10, action);
-}
-
-// src/core/output.ts
-function parseOutputPointer(fm, body) {
-  const result = {};
-  const fmWorkspace = fieldString(fm.workspace);
-  if (fmWorkspace) result.workspace = fmWorkspace;
-  const fmRef = fieldString(fm.ref);
-  if (fmRef) result.ref = fmRef;
-  for (const rawLine of body.split(/\r?\n/)) {
-    const line = normalizeLabelLine(rawLine);
-    if (!result.workspace) {
-      const workspace = matchField(line, ["workspace", "workspace \u8DEF\u5F84", "repo", "pointer", "\u8DEF\u5F84"]);
-      if (workspace) result.workspace = workspace;
-    }
-    if (!result.ref) {
-      const ref = matchField(line, ["git ref", "git-ref", "\u5F53\u524D ref", "commit", "ref"]);
-      if (ref) result.ref = ref;
-    }
-  }
-  return result;
-}
-function fieldString(value) {
-  return typeof value === "string" && value.trim() ? cleanValue(value) : void 0;
-}
-function normalizeLabelLine(line) {
-  return line.trim().replace(/^[-*]\s+/, "").replace(/\*\*/g, "").replace(/`([^`]+)`/g, "$1").trim();
-}
-function matchField(line, fields) {
-  for (const field of fields) {
-    const escaped = field.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-    const match = new RegExp(`^${escaped}\\s*[:\uFF1A]\\s*(.+)$`, "i").exec(line);
-    if (match) return cleanValue(match[1]);
-  }
-  return void 0;
-}
-function cleanValue(value) {
-  return value.trim().replace(/^`|`$/g, "").trim();
 }
 
 // src/cli/tent.ts
@@ -5407,8 +5414,14 @@ var ServiceClient = class {
   taskDeliver(workspaceId, taskPath, args) {
     return this.call("task.deliver", { workspaceId, taskPath, ...args });
   }
-  taskAccept(workspaceId, taskPath, actor, commits) {
-    return this.call("task.accept", { workspaceId, taskPath, actor, commits });
+  taskAccept(workspaceId, taskPath, actor, commits, opts) {
+    return this.call("task.accept", {
+      workspaceId,
+      taskPath,
+      actor,
+      commits,
+      ...opts?.outputNodeIds ? { outputNodeIds: opts.outputNodeIds } : {}
+    });
   }
   taskReject(workspaceId, taskPath, actor, opts) {
     return this.call("task.reject", { workspaceId, taskPath, actor, ...opts });
@@ -5483,6 +5496,16 @@ var ServiceClient = class {
     return this.call("node.collaborations", {
       workspaceId,
       ids
+    });
+  }
+  /**
+   * V0.2 Output provenance: Output → Delivery → Task → sourceNode by id.
+   * Unbound type=output returns bound:false; never infers by path/name/time.
+   */
+  outputProvenance(workspaceId, idOrPath) {
+    return this.call("output.provenance", {
+      workspaceId,
+      ...idOrPath
     });
   }
   /**
@@ -6009,19 +6032,24 @@ ${row.relayPrompt}` : "");
         const taskPath = positionals[0];
         if (!taskPath || positionals.length > 1) {
           return failUsage(
-            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]"
+            "Usage: tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--outputs id,id] [--workspace <path>] [--json]"
           );
         }
         const actor = flags.actor || flags.by || process.env.TENT_ROLE;
         if (!actor) return failUsage("tent task accept requires --actor <user|role>");
         const commits = parseCommitsFlag(flags.commits);
-        const result = await client.taskAccept(workspaceId, taskPath, actor, commits);
+        const outputNodeIds = parseCommitsFlag(flags.outputs) ?? parseCommitsFlag(flags["output-ids"]);
+        const result = await client.taskAccept(workspaceId, taskPath, actor, commits, {
+          outputNodeIds
+        });
         return okPrint(result, json, (r) => {
           const row = r;
+          const bound = row.boundOutputIds && row.boundOutputIds.length ? `boundOutputs: ${row.boundOutputIds.join(",")}
+` : "";
           return `\u2713 Accepted via service RPC
 taskPath: ${row.taskPath}
 state: ${row.state ?? "accepted"}
-`;
+` + bound;
         });
       }
       case "reject": {
