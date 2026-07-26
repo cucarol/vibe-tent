@@ -10,6 +10,7 @@ import { test } from "node:test";
 import {
   TaskInputStore,
   formatTaskInputPrompt,
+  isTaskInputDeliveryBlockingStatus,
   makeTaskInputId,
   normalizeTaskInputKind,
   type TaskInputRecord,
@@ -35,6 +36,121 @@ function pending(
     ...partial,
   };
 }
+
+test("task input store: delivery-blocking status helper matches open/retryable only", () => {
+  assert.equal(isTaskInputDeliveryBlockingStatus("pending"), true);
+  assert.equal(isTaskInputDeliveryBlockingStatus("processing"), true);
+  assert.equal(isTaskInputDeliveryBlockingStatus("failed"), true);
+  assert.equal(isTaskInputDeliveryBlockingStatus("uncertain"), false);
+  assert.equal(isTaskInputDeliveryBlockingStatus("delivered"), false);
+  assert.equal(isTaskInputDeliveryBlockingStatus("consumed"), false);
+  assert.equal(isTaskInputDeliveryBlockingStatus("cancelled"), false);
+});
+
+test("task input store: listBlockingForDeliver excludes terminal and uncertain", async () => {
+  const dataDir = await tempDir("tent-ti-block-");
+  const store = new TaskInputStore(dataDir);
+  const workspaceId = "ws-block";
+  const taskPath = "temp/r/tasks/block.md";
+  const now = new Date().toISOString();
+
+  await store.add(
+    pending({
+      id: "ti-pending",
+      workspaceId,
+      taskPath,
+      text: "pending row",
+      createdAt: now,
+    })
+  );
+  await store.add(
+    pending({
+      id: "ti-processing",
+      workspaceId,
+      taskPath,
+      text: "processing row",
+      createdAt: now,
+    })
+  );
+  await store.markProcessing("ti-processing");
+  await store.add(
+    pending({
+      id: "ti-failed",
+      workspaceId,
+      taskPath,
+      text: "failed row",
+      createdAt: now,
+    })
+  );
+  await store.markFailed("ti-failed", "inject failed");
+  await store.add(
+    pending({
+      id: "ti-delivered",
+      workspaceId,
+      taskPath,
+      text: "delivered row",
+      createdAt: now,
+    })
+  );
+  await store.markDelivered("ti-delivered");
+  await store.add(
+    pending({
+      id: "ti-uncertain",
+      workspaceId,
+      taskPath,
+      text: "uncertain row",
+      createdAt: now,
+    })
+  );
+  await store.markUncertain("ti-uncertain", "confirm failed");
+  // Cancel only a dedicated row (do not bulk-cancel other open blockers).
+  await store.add(
+    pending({
+      id: "ti-cancelled",
+      workspaceId,
+      taskPath: "temp/r/tasks/other.md",
+      text: "other task cancel",
+      createdAt: now,
+    })
+  );
+  await store.cancelTask(workspaceId, "temp/r/tasks/other.md", "cleanup");
+
+  // Seed a cancelled row on the target task without touching open blockers:
+  // use cancelSession on a dedicated session-bound pending.
+  await store.add(
+    pending({
+      id: "ti-cancel-target",
+      workspaceId,
+      taskPath,
+      sessionId: "ss-only-cancel",
+      text: "cancel me",
+      createdAt: now,
+    })
+  );
+  await store.cancelSession("ss-only-cancel", "cleanup");
+  const cancelled = await store.get("ti-cancel-target", workspaceId, taskPath);
+  assert.equal(cancelled?.status, "cancelled");
+
+  const blockers = await store.listBlockingForDeliver(workspaceId, taskPath);
+  const ids = blockers.map((b) => b.id).sort();
+  assert.deepEqual(ids, ["ti-failed", "ti-pending", "ti-processing"].sort());
+  assert.ok(blockers.every((b) => isTaskInputDeliveryBlockingStatus(b.status)));
+  assert.equal(
+    blockers.some(
+      (b) =>
+        b.status === "uncertain" ||
+        b.status === "delivered" ||
+        b.status === "cancelled"
+    ),
+    false
+  );
+
+  // Other task's open rows must not appear.
+  assert.equal(
+    blockers.some((b) => b.taskPath !== taskPath),
+    false
+  );
+});
 
 test("task input store: cancel is pending-only; delivered survives cancelTask/Session", async () => {
   const dataDir = await tempDir("tent-ti-store-");

@@ -4015,6 +4015,49 @@ async function assertManagedTurnIdleForPublicDeliver(
 }
 
 /**
+ * Shared authority: any TaskInput still pending, processing, or failed-but-
+ * retryable on this task blocks a ready Delivery. Same check for public
+ * task.deliver / task.requestReview and managed auto-deliver.
+ *
+ * Uncertain is at-most-once (already sent; store safety) and does not block.
+ * delivered / consumed / cancelled terminal rows do not block.
+ * Does not invent a unified Pending domain — reads TaskInputStore only.
+ */
+async function assertNoBlockingTaskInputsForDeliver(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: { path: string; id?: string; state: string }
+): Promise<void> {
+  const blockers = await ctx.taskInputs.listBlockingForDeliver(
+    workspaceId,
+    task.path
+  );
+  if (blockers.length === 0) return;
+  // Stable order for UI invalidation (createdAt ASC, then id).
+  const ordered = [...blockers].sort(
+    (a, b) =>
+      a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  );
+  const first = ordered[0]!;
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: task has ${ordered.length} open TaskInput(s) ` +
+      `(first ${first.id} status=${first.status}); consume or resolve them before Delivery ` +
+      `(task remains ${task.state}, no ready Delivery)`,
+    {
+      code: "PENDING_TASK_INPUT",
+      taskPath: task.path,
+      ...(task.id ? { taskId: task.id } : {}),
+      count: ordered.length,
+      inputIds: ordered.map((i) => i.id),
+      statuses: ordered.map((i) => i.status),
+      firstInputId: first.id,
+      firstStatus: first.status,
+    }
+  );
+}
+
+/**
  * Resolve the exact task/role worktree path for dirtiness inspection only.
  * Prefer envelope.worktree when present; otherwise ensure the lane (same helpers
  * as startSession). Intentionally does **not** re-validate envelope workspace /
@@ -4109,6 +4152,8 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     // turn is still busy (tools/write/commit may still race). Task stays
     // running; no ready Delivery is published.
     await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+    // Open TaskInput (pending/processing/retryable failed) must be consumed first.
+    await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
     // Same gate for public deliver: dirty task worktree must not publish stale commits.
     await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
     const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
@@ -7854,6 +7899,10 @@ async function tryManagedAutoDeliver(
         return;
       }
 
+      // Same authority as public task.deliver: open TaskInputs block ready Delivery.
+      // Must run after seal so we do not cancel blockers in sealManagedSessionBeforeDelivery.
+      await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
+
       // Seal-after, publish-before: refuse dirty task worktree so uncommitted
       // agent edits cannot be skipped in favor of stale already-committed SHAs.
       // Fail-loud keeps task running for commit-then-retry (same as public deliver).
@@ -8011,13 +8060,17 @@ async function collectManagedDeliveryCommits(
 
 /**
  * Seal the managed turn before publishing Delivery.
- * Stops the process (and cancels pending tool asks / U2A rows) so post-response
- * worktree mutations cannot land after the task enters delivered.
+ * Stops the process (and cancels pending tool asks / A2U UserAsks) so
+ * post-response worktree mutations cannot land after the task enters delivered.
  * Returns true when the session is no longer able to mutate (dead / terminal).
  * Returns false only when a stop was required and the process is still alive.
  *
- * Registry resume metadata is retained (stopReason=user). Managed-inject pins
- * keep in-flight TaskInput rows non-cancelable across this window.
+ * Registry resume metadata is retained (stopReason=user).
+ *
+ * **Must not cancel TaskInput rows.** Open pending/processing/failed inputs are
+ * Delivery blockers; silently cancelling them on seal would let a ready Delivery
+ * publish without consumption. Authority stays on assertNoBlockingTaskInputsForDeliver.
+ * Post-success cleanup may still cancel leftover open rows in stopManagedSessionAfterDelivery.
  */
 async function sealManagedSessionBeforeDelivery(
   ctx: HandlerContext,
@@ -8039,17 +8092,8 @@ async function sealManagedSessionBeforeDelivery(
     } catch {
       // ignore
     }
-    try {
-      // Only pending inputs cancel; managed-inject pin / delivered stay.
-      await cancelTaskInputsForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "session.stop_after_deliver"
-      );
-    } catch {
-      // ignore
-    }
+    // Intentionally do NOT cancelTaskInputsForSession here — seal must not
+    // rewrite open U2A rows that still block ready Delivery.
     const probe = await ctx.runtime.probe(input.sessionId);
     if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
       await ctx.runtime.stopSession(input.sessionId, "user");
@@ -8115,7 +8159,9 @@ async function stopManagedSessionAfterDelivery(
       // ignore
     }
     try {
-      // Only pending inputs cancel; managed-delivered rows stay delivered.
+      // After a successful ready Delivery, open rows should already be terminal
+      // (gate refused otherwise). Cancel only still-open pending/failed leftovers;
+      // delivered / processing pin / uncertain stay.
       await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,

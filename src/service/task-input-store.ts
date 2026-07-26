@@ -115,6 +115,19 @@ export function isTaskInputOpenStatus(status: TaskInputStatus): boolean {
 }
 
 /**
+ * Delivery-blocking rows for a task: must be consumed (managed inject/ack or
+ * legitimate terminal) before a ready Delivery may publish.
+ * - pending / processing / failed (retryable) → block
+ * - uncertain → does **not** block (at-most-once; store safety, no re-inject)
+ * - delivered / consumed / cancelled → do not block
+ */
+export function isTaskInputDeliveryBlockingStatus(
+  status: TaskInputStatus
+): boolean {
+  return isTaskInputOpenStatus(status);
+}
+
+/**
  * Cancel-eligible: not yet delivered/consumed/uncertain and not mid-inject.
  * Uncertain is terminal for inject (already sent); cancel must not rewrite it.
  */
@@ -405,6 +418,40 @@ export class TaskInputStore {
           i.taskPath === taskPath
       )
       .map(cloneInput);
+  }
+
+  /**
+   * All TaskInput rows for one (workspaceId, taskPath), any status.
+   * Used by Delivery gate authority (not a global inbox).
+   */
+  async listForTask(
+    workspaceId: string,
+    taskPath: string
+  ): Promise<TaskInputRecord[]> {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.listForTask requires workspaceId and taskPath (no global inbox)"
+      );
+    }
+    await this.ensureLoaded();
+    return [...this.items.values()]
+      .filter(
+        (i) => i.workspaceId === workspaceId && i.taskPath === taskPath
+      )
+      .map(cloneInput)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  }
+
+  /**
+   * Rows that must block a ready Delivery for this task (pending/processing/failed).
+   * Uncertain and terminal statuses are excluded.
+   */
+  async listBlockingForDeliver(
+    workspaceId: string,
+    taskPath: string
+  ): Promise<TaskInputRecord[]> {
+    const all = await this.listForTask(workspaceId, taskPath);
+    return all.filter((i) => isTaskInputDeliveryBlockingStatus(i.status));
   }
 
   /**
