@@ -35,8 +35,9 @@ export class NodeFs implements FsAdapter {
   }
 
   async writeFile(path: string, content: string): Promise<void> {
-    await fs.mkdir(nodePath.dirname(this.abs(path)), { recursive: true });
-    await fs.writeFile(this.abs(path), content, "utf8");
+    const abs = this.abs(path);
+    await fs.mkdir(nodePath.dirname(abs), { recursive: true });
+    await this.atomicReplace(abs, content, "utf8");
   }
 
   async readBinary(path: string): Promise<Uint8Array> {
@@ -47,15 +48,38 @@ export class NodeFs implements FsAdapter {
   async writeBinary(path: string, data: Uint8Array): Promise<void> {
     const abs = this.abs(path);
     await fs.mkdir(nodePath.dirname(abs), { recursive: true });
-    // Atomic replace: write temp sibling then rename into place.
-    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    await this.atomicReplace(abs, payload);
+  }
+
+  private async atomicReplace(
+    abs: string,
+    data: string | Uint8Array,
+    encoding?: BufferEncoding
+  ): Promise<void> {
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      await fs.writeFile(tmp, payload);
-      await fs.rename(tmp, abs);
+      await fs.writeFile(tmp, data, encoding);
+      await this.renameReplacingWithRetry(tmp, abs);
     } catch (err) {
       await fs.rm(tmp, { force: true }).catch(() => undefined);
       throw err;
+    }
+  }
+
+  private async renameReplacingWithRetry(from: string, to: string): Promise<void> {
+    const attempts = process.platform === "win32" ? 10 : 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        await fs.rename(from, to);
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException).code;
+        const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+        if (!transient || attempt === attempts - 1) throw err;
+        const delayMs = Math.min(10 * 2 ** attempt, 100);
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+      }
     }
   }
 

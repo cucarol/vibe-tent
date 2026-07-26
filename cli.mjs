@@ -1800,8 +1800,9 @@ var NodeFs = class {
     return fs2.readFile(this.abs(path9), "utf8");
   }
   async writeFile(path9, content) {
-    await fs2.mkdir(nodePath.dirname(this.abs(path9)), { recursive: true });
-    await fs2.writeFile(this.abs(path9), content, "utf8");
+    const abs = this.abs(path9);
+    await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
+    await this.atomicReplace(abs, content, "utf8");
   }
   async readBinary(path9) {
     const buf = await fs2.readFile(this.abs(path9));
@@ -1810,14 +1811,32 @@ var NodeFs = class {
   async writeBinary(path9, data) {
     const abs = this.abs(path9);
     await fs2.mkdir(nodePath.dirname(abs), { recursive: true });
-    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    await this.atomicReplace(abs, payload);
+  }
+  async atomicReplace(abs, data, encoding) {
+    const tmp = `${abs}.tmp-${process.pid}-${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`;
     try {
-      await fs2.writeFile(tmp, payload);
-      await fs2.rename(tmp, abs);
+      await fs2.writeFile(tmp, data, encoding);
+      await this.renameReplacingWithRetry(tmp, abs);
     } catch (err) {
       await fs2.rm(tmp, { force: true }).catch(() => void 0);
       throw err;
+    }
+  }
+  async renameReplacingWithRetry(from, to) {
+    const attempts = process.platform === "win32" ? 10 : 1;
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      try {
+        await fs2.rename(from, to);
+        return;
+      } catch (err) {
+        const code = err.code;
+        const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
+        if (!transient || attempt === attempts - 1) throw err;
+        const delayMs = Math.min(10 * 2 ** attempt, 100);
+        await new Promise((resolve10) => setTimeout(resolve10, delayMs));
+      }
     }
   }
   async exists(path9) {

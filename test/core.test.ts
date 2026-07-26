@@ -35,6 +35,29 @@ test("NodeFs:rejects paths that resolve outside the Tent root", async () => {
   assert.equal(await exists(path.join(victim, "keep.txt")), true);
 });
 
+test("NodeFs: text replacement never exposes a partial file to readers", async () => {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), "tent-node-fs-atomic-"));
+  const fsa = new NodeFs(root);
+  const oldValue = `old:${"a".repeat(256 * 1024)}`;
+  const newValue = `new:${"b".repeat(256 * 1024)}`;
+  await fsa.writeFile("state.json", oldValue);
+
+  const observed = new Set<string>();
+  const writer = (async () => {
+    for (let i = 0; i < 20; i += 1) {
+      await fsa.writeFile("state.json", i % 2 === 0 ? newValue : oldValue);
+    }
+  })();
+  const readers = Array.from({ length: 80 }, async () => {
+    observed.add(await fsa.readFile("state.json"));
+  });
+  await Promise.all([writer, ...readers]);
+
+  for (const value of observed) {
+    assert.ok(value === oldValue || value === newValue);
+  }
+});
+
 test("syncOkfBundle:生成 index/log 并把唯一 wiki 链接投影为 Markdown 链接", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
