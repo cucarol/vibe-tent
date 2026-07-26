@@ -33,7 +33,21 @@ tent task accept <taskPath> --actor <user|role> …
 tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resume] …
 tent task cancel <taskPath> …
 tent task dispatch <boxId> <role> …
+tent task dispatch <boxId> --profile <profileId> …
 ```
+
+Dispatch forms:
+
+| Form | Assignee | Session |
+| --- | --- | --- |
+| `tent task dispatch <boxId> <role> [prompt…]` | Durable **role** (registry) | Queued only; no auto start |
+| `tent task dispatch <boxId> --profile <id> [prompt…]` | One-shot **agentProfile** | Always `startSession`; prints `sessionId` / `sessionState` |
+
+- `--profile` does **not** register or create a role. Envelope lands under `temp/agent-profiles/<profileId>/…`.
+- A bare role-like string is **never** inferred as a profile; use `--profile` explicitly.
+- Do not pass low-level `--assignee-kind` / `--start-session` on the CLI.
+- Prompt: positionals **or** `--prompt <text>|-`, not both. With `--profile`, every positional after `boxId` is prompt text.
+- Sub-dispatch: `--as-sub --by <role>` (or `TENT_ROLE`); profile form then sends `callerKind=role`.
 
 Agents should **not** self-accept their own delivery unless the product path explicitly authorizes it.
 

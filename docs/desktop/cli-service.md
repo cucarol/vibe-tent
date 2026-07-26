@@ -45,7 +45,8 @@ tent-core (sole domain rules)
 | `tent task get <taskPath>` | `task.get` | Read-only |
 | `tent task claim <taskPath>` | `task.claim` | Required for external agents |
 | `tent task deliver <taskPath> --summary <text>\|-` | `task.deliver` | Required for external agents |
-| `tent task dispatch <boxId> <role> …` | `task.dispatch` | Optional RPC mapping |
+| `tent task dispatch <boxId> <role> …` | `task.dispatch` | Durable **role** assignee (queued; no auto session) |
+| `tent task dispatch <boxId> --profile <profileId> …` | `task.dispatch` | One-shot **agentProfile** + `startSession: true`; does **not** register a role. Prints managed `sessionId` / `sessionState` when returned. Positionals after `boxId` are prompt only — never inferred as a profile. |
 | `tent task accept <taskPath> --actor …` | `task.accept` | Optional RPC mapping |
 | `tent task reject <taskPath> --actor …` | `task.reject` | Optional RPC mapping |
 | `tent task cancel <taskPath>` | `task.cancel` | Optional RPC mapping |

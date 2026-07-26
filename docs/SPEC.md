@@ -302,7 +302,9 @@ Run from a Tent root:
 tent role-init <role>
 tent roles
 tent task list|get|claim|deliver|accept|reject|…
-tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
+tent task dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]
+tent task dispatch <boxId> --profile <profileId> [prompt...]   # one-shot agentProfile + startSession; does not register a role
+tent dispatch <boxId> <role> [prompt...] [--as-sub --by <role>]   # legacy external root only
 tent task-ack <taskPath>
 tent task-cancel <taskPath>
 tent complete|stamp                  # retired (no Node owner/status dual-write)

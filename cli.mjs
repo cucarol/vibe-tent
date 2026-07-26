@@ -5998,44 +5998,72 @@ state: ${row.state ?? "delivered"}
         });
       }
       case "dispatch": {
-        const boxId = positionals[0];
-        const role = positionals[1];
-        const promptParts = positionals.slice(2);
-        if (!boxId || !role) {
+        const usageRole = "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
+        const usageProfile = "Usage: tent task dispatch <boxId> --profile <profileId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
+        const usageBoth = `${usageRole}
+   or: ${usageProfile.replace(/^Usage: /, "")}`;
+        if (Object.prototype.hasOwnProperty.call(flags, "assignee-kind") || Object.prototype.hasOwnProperty.call(flags, "assigneeKind")) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Do not pass --assignee-kind; use <role> for durable role dispatch or --profile <profileId> for managed one-shot agentProfile dispatch"
           );
+        }
+        if (Object.prototype.hasOwnProperty.call(flags, "start-session") || Object.prototype.hasOwnProperty.call(flags, "startSession")) {
+          return failUsage(
+            "Do not pass --start-session; managed --profile dispatch always starts a session"
+          );
+        }
+        const boxId = positionals[0];
+        if (!boxId) {
+          return failUsage(usageBoth);
+        }
+        const hasProfileFlag = Object.prototype.hasOwnProperty.call(flags, "profile");
+        const profileIdRaw = hasProfileFlag ? String(flags.profile ?? "").trim() : "";
+        if (hasProfileFlag && !profileIdRaw) {
+          return failUsage(`--profile requires <profileId>
+${usageProfile}`);
+        }
+        const isProfileForm = hasProfileFlag;
+        const role = isProfileForm ? void 0 : positionals[1];
+        const promptParts = isProfileForm ? positionals.slice(1) : positionals.slice(2);
+        if (!isProfileForm && !role) {
+          return failUsage(usageBoth);
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Pass prompt either as positionals or via --prompt <text>|- , not both\n" + usageBoth
           );
         }
         let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
         if (prompt === "-") prompt = await readStdinText();
         const asSub = flags["as-sub"] === "true";
-        const dispatchedBy = flags.by || flags.from || flags["dispatched-by"] || process.env.TENT_ROLE || "user";
+        const explicitBy = flags.by || flags.from || flags["dispatched-by"];
+        const dispatchedBy = explicitBy || process.env.TENT_ROLE || "user";
         if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
           return failUsage("--as-sub requires --by <dispatching-role> or TENT_ROLE");
         }
-        const result = await client.taskDispatch(workspaceId, {
-          boxId,
-          role,
-          prompt,
-          dispatchedBy,
-          asSub: asSub || void 0,
-          deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy
-        });
-        return okPrint(result, json, (r) => {
-          const row = r;
-          return `\u2713 Dispatched via service RPC
-taskPath: ${row.taskPath}
-state: ${row.state ?? "queued"}
-` + (row.asSub ? `asSub: true
-` : "") + (row.relayPrompt ? `
---- Relay prompt ---
-${row.relayPrompt}` : "");
-        });
+        const callerKind = asSub || Boolean(explicitBy) ? "role" : "user";
+        const result = await client.taskDispatch(
+          workspaceId,
+          isProfileForm ? {
+            boxId,
+            assigneeKind: "agentProfile",
+            profileId: profileIdRaw,
+            prompt,
+            dispatchedBy,
+            asSub: asSub || void 0,
+            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
+            startSession: true,
+            callerKind
+          } : {
+            boxId,
+            role,
+            prompt,
+            dispatchedBy,
+            asSub: asSub || void 0,
+            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy
+          }
+        );
+        return okPrint(result, json, (r) => formatTaskDispatch(r));
       }
       case "accept": {
         const taskPath = positionals[0];
@@ -6311,6 +6339,26 @@ taskPath: ${row.taskPath ?? taskPath}
     return { exitCode: 1, stdout: "", stderr: message + "\n" };
   }
 }
+function formatTaskDispatch(result) {
+  const row = result;
+  const nested = row.session && "session" in row.session ? row.session.session : void 0;
+  const sessionView = nested ?? row.session ?? void 0;
+  const sessionId = sessionView && (sessionView.sessionId || sessionView.id) ? String(sessionView.sessionId || sessionView.id) : void 0;
+  const sessionState = sessionView?.state ? String(sessionView.state) : void 0;
+  const sessionProfileId = sessionView?.profileId ? String(sessionView.profileId) : void 0;
+  return `\u2713 Dispatched via service RPC
+taskPath: ${row.taskPath}
+state: ${row.state ?? "queued"}
+` + (row.assigneeKind ? `assigneeKind: ${row.assigneeKind}
+` : "") + (row.assignee ? `assignee: ${row.assignee}
+` : "") + (row.asSub ? `asSub: true
+` : "") + (sessionId ? `sessionId: ${sessionId}
+` : "") + (sessionState ? `sessionState: ${sessionState}
+` : "") + (sessionProfileId ? `sessionProfileId: ${sessionProfileId}
+` : "") + (row.relayPrompt ? `
+--- Relay prompt ---
+${row.relayPrompt}` : "");
+}
 function formatTaskList(result) {
   const row = result;
   const tasks = row.tasks ?? [];
@@ -6492,6 +6540,10 @@ Commands:
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+  tent task dispatch <boxId> --profile <profileId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+      # role form: durable role assignee (queued; no auto session)
+      # --profile form: one-shot agentProfile + startSession (prints sessionId/sessionState); does not register a role
+      # Do not pass --assignee-kind; a bare role-like string is never inferred as a profile
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]
