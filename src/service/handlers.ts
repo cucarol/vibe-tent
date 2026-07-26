@@ -3419,6 +3419,12 @@ function parseUserAskChoices(raw: unknown): UserAskChoice[] | undefined {
  *
  * Managed inject for one (workspaceId, taskPath) is FIFO-serialized with other
  * U2A items (including lifecycle review-feedback). Unrelated tasks stay concurrent.
+ *
+ * **Ordering with Delivery:** task-state validation + durable TaskInput.add run on
+ * the same workspace MutationBus as task.deliver publish. Honest either-way races:
+ * input first → Delivery gate blocks; Delivery first → sendInput rechecks state and
+ * refuses (cannot slip a pending row between final gate and taskDeliver). Background
+ * inject is scheduled only after durable accept, outside the mutation.
  */
 async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -3444,6 +3450,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
   }
 
   // Fail loud when a business UserAsk is still pending — reply path is userAsk.reply.
+  // Outside the mutation bus (machine-local ask store; not Delivery publish authority).
   const pendingAsk = await ctx.userAsks.getPendingForTask(workspaceId, taskPath);
   if (pendingAsk) {
     throw new RpcError(
@@ -3453,29 +3460,34 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     );
   }
 
-  const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (current.state !== "running" && current.state !== "waiting") {
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      `task.sendInput requires running or waiting task (state=${current.state})`,
-      { taskPath, state: current.state }
-    );
-  }
+  // Serialize with Delivery publish: re-read task state under the bus so a concurrent
+  // deliver cannot leave a new pending input between the final gate and taskDeliver.
+  const { current, input } = await ctx.mutations.run(workspaceId, async () => {
+    const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current.state !== "running" && current.state !== "waiting") {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.sendInput requires running or waiting task (state=${current.state})`,
+        { taskPath, state: current.state }
+      );
+    }
 
-  const now = new Date().toISOString();
-  const input = await ctx.taskInputs.add({
-    id: makeTaskInputId(),
-    workspaceId,
-    taskPath,
-    taskId: current.id || undefined,
-    sessionId: current.sessionId || undefined,
-    role: current.role || undefined,
-    kind: "user-input",
-    ...(text ? { text } : {}),
-    ...(contextRefs.length > 0 ? { contextRefs } : {}),
-    status: "pending",
-    createdAt: now,
-    updatedAt: now,
+    const now = new Date().toISOString();
+    const input = await ctx.taskInputs.add({
+      id: makeTaskInputId(),
+      workspaceId,
+      taskPath,
+      taskId: current.id || undefined,
+      sessionId: current.sessionId || undefined,
+      role: current.role || undefined,
+      kind: "user-input",
+      ...(text ? { text } : {}),
+      ...(contextRefs.length > 0 ? { contextRefs } : {}),
+      status: "pending",
+      createdAt: now,
+      updatedAt: now,
+    });
+    return { current, input };
   });
 
   ctx.events.emit(
@@ -3496,8 +3508,8 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
   );
 
   // Fast accept: durable pending is the contract. Managed inject runs on the
-  // per-task FIFO in the background — RPC must not await the full Agent turn
-  // (CLI false timeouts). External / no session: leave pending for poll+ack.
+  // per-task FIFO in the background — outside the mutation after durable add.
+  // RPC must not await the full Agent turn (CLI false timeouts).
   const hasManagedSession = !!(current.sessionId?.trim());
   if (hasManagedSession) {
     enqueueManagedTaskInputBackground(ctx, input, {
@@ -7767,6 +7779,9 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
  *   *before* publishing Delivery so post-response tool/write/commit cannot race
  *   dispatcher rebase or user accept. turn busy/idle is an internal fact; session
  *   live alone is not "turn done".
+ * - **TaskInput ordering:** assert open TaskInputs **before** seal so refusal leaves
+ *   the managed Session live; re-assert under the final publish mutation (TOCTOU).
+ *   Seal never cancels TaskInput blockers.
  */
 async function tryManagedAutoDeliver(
   ctx: HandlerContext,
@@ -7859,9 +7874,15 @@ async function tryManagedAutoDeliver(
       await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
     }
 
+    // Pre-seal TaskInput gate: refuse BEFORE stopping the managed session so
+    // open blockers leave Session live and intact. Same authority code as public
+    // deliver. Seal must not cancel TaskInput rows (see sealManagedSessionBeforeDelivery).
+    await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, pre);
+
     // Seal turn BEFORE Delivery: process must not keep mutating the worktree
     // after the task enters delivered. stop-after-deliver semantics preserved
     // (role slot freed; registry resume metadata retained) but ordered first.
+    // Only reached when no open TaskInput blockers at pre-seal check.
     const sealed = await sealManagedSessionBeforeDelivery(ctx, {
       workspaceId: input.workspaceId,
       sessionId,
@@ -7899,8 +7920,9 @@ async function tryManagedAutoDeliver(
         return;
       }
 
-      // Same authority as public task.deliver: open TaskInputs block ready Delivery.
-      // Must run after seal so we do not cancel blockers in sealManagedSessionBeforeDelivery.
+      // TOCTOU revalidation: same TaskInput authority under the publish mutation
+      // so a concurrent sendInput cannot slip a blocker past the pre-seal gate.
+      // sendInput state+add is also on this MutationBus (honest either-way race).
       await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
 
       // Seal-after, publish-before: refuse dirty task worktree so uncommitted
