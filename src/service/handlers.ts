@@ -7714,7 +7714,7 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
 /**
  * Managed ACP path: capture final assistant response → same task.deliver lifecycle.
  * - summary/report = assistant final reply
- * - never auto-accept; manual → pending review; bypass/agent-decide use existing policy
+ * - never auto-accept; review → pending independent accept; bypass/agent-decide use existing policy
  * - empty/error already filtered by adapter; still refuse empty here
  * - duplicate completion / already-delivered / terminal → ignore (no second delivery)
  * - production auto-collects pending commits from the task's authoritative role lane

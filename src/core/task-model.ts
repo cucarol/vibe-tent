@@ -19,20 +19,14 @@ export type LegacyTaskStatus = "pending" | "taken";
 
 /**
  * Canonical delivery-policy wire values (V0.2).
- * Product-facing terms (not localized): Review / Bypass / Agent Decide.
- * Historical on-disk `manual` is normalized to `review` only at a narrow read boundary.
+ * Product-facing display labels (Review / Bypass / Agent Decide) live in UI/docs,
+ * not Core. Historical on-disk `manual` is normalized to `review` only at a narrow
+ * read boundary.
  */
 export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
 
 /** Default for new tasks / workspace settings when policy is omitted. */
 export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = "review";
-
-/** Stable product labels for Review / Bypass / Agent Decide (English, not localized). */
-export const DELIVERY_POLICY_PRODUCT_LABELS: Record<DeliveryPolicy, string> = {
-  review: "Review",
-  bypass: "Bypass",
-  "agent-decide": "Agent Decide",
-};
 
 export type DeliverDecision = "integrate" | "request-review";
 export type WaitReason = "user-input" | "a2a-approval" | "review" | "external";

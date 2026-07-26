@@ -14,6 +14,11 @@ import {
   WORKSPACE_SETTINGS_PATH,
 } from "../src/core/paths.js";
 import {
+  DEFAULT_DELIVERY_POLICY,
+  isDeliveryPolicy,
+  normalizeDeliveryPolicyRead,
+} from "../src/core/task-model.js";
+import {
   defaultWorkspaceSettings,
   loadWorkspaceSettings,
   normalizeWorkspaceSettings,
@@ -32,6 +37,21 @@ test("settings.json is registered as a system file", () => {
   assert.equal(WORKSPACE_SETTINGS_PATH, "settings.json");
   assert.ok(SYSTEM_REGISTRY_FILES.has(WORKSPACE_SETTINGS_PATH));
   assert.ok(isSystemNoteName(WORKSPACE_SETTINGS_PATH));
+});
+
+test("DEFAULT_DELIVERY_POLICY is canonical on task-model (no workspace-settings re-export shim)", async () => {
+  assert.equal(DEFAULT_DELIVERY_POLICY, "review");
+  assert.equal(defaultWorkspaceSettings().defaultDeliveryPolicy, DEFAULT_DELIVERY_POLICY);
+  assert.equal(isDeliveryPolicy("review"), true);
+  assert.equal(isDeliveryPolicy("manual"), false);
+  assert.equal(normalizeDeliveryPolicyRead("manual"), "review");
+  assert.equal(normalizeDeliveryPolicyRead("review"), "review");
+  // Display labels are UI/docs-owned; Core must not export product label maps.
+  const taskModel = await import("../src/core/task-model.js");
+  assert.equal("DELIVERY_POLICY_PRODUCT_LABELS" in taskModel, false);
+  // V0.2 canonical default lives on task-model; workspace-settings imports it, does not re-export.
+  const settingsMod = await import("../src/core/workspace-settings.js");
+  assert.equal("DEFAULT_DELIVERY_POLICY" in settingsMod, false);
 });
 
 test("normalizeWorkspaceSettings: missing/invalid defaultDeliveryPolicy → review", () => {

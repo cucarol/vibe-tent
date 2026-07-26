@@ -81,7 +81,7 @@ export interface DispatchOptions {
    * and a durable dispatcher role in dispatchedBy (validated by service/CLI).
    */
   asSub?: boolean;
-  /** Delivery policy for this task (default manual). */
+  /** Delivery policy for this task (default review). */
   deliveryPolicy?: DeliveryPolicy;
   /**
    * Defaults to role. agentProfile requires profileId and must not register a role.

@@ -50,7 +50,7 @@ Agents should **not** self-accept their own delivery unless the product path exp
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. Envelope is the delivery record; box body is the task definition.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
-   Creates a reviewable delivery; does **not** accept. Manual `deliveryPolicy` waits for user.
+   Creates a reviewable delivery; does **not** accept. `deliveryPolicy=review` (default) waits for independent user accept/reject; `bypass` auto-integrates; `agent-decide` requires integrate or request-review.
 
 ```bash
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>
