@@ -344,22 +344,28 @@ export async function taskAccept(
       action: "accept",
     });
 
-    // Full validate + bind Outputs BEFORE Task/Delivery accepted writes.
-    // Multi-Output bind uses raw snapshots + compensating rollback (no partial bind).
-    const tent = await loadTent(env.fs);
-    const bindResult = await bindOutputsToDeliveryUnlocked(
-      env.fs,
-      tent,
-      options.outputNodeIds,
-      delivery.id
-    );
-
-    // Snapshot operational files before accepted writes so Delivery/Task failures
-    // can restore pre-accept state together with Output rollback.
+    // Snapshot Delivery + Task raw BEFORE any Output write so a later snapshot-read
+    // failure cannot leave Outputs bound with no operational rollback material.
+    // Order (final mutation, after delivery revalidation):
+    //   1) operational raw snapshots (fail here → zero Output writes)
+    //   2) Output bind (own raw snapshots + write rollback)
+    //   3) accepted Delivery/Task persistence (compensate with 1+2 on failure)
     const deliveryRawBefore = await env.fs.readFile(delivery.path);
     const taskRawBefore = await env.fs.readFile(taskPath);
 
+    const tent = await loadTent(env.fs);
+    /** Populated only after bind returns; mid-bind failures roll back inside bind. */
+    let outputSnapshots: OutputBindSnapshot[] = [];
+
     try {
+      const bindResult = await bindOutputsToDeliveryUnlocked(
+        env.fs,
+        tent,
+        options.outputNodeIds,
+        delivery.id
+      );
+      outputSnapshots = bindResult.snapshots;
+
       delivery.status = "accepted";
       delivery.integrationMode = "manual-accept";
       delivery.review = { by: options.actor, decision: "accept" };
@@ -380,12 +386,15 @@ export async function taskAccept(
         changedOutputIds: bindResult.changedIds,
       };
     } catch (err) {
+      // Restore Delivery/Task from pre-accept raw (no-op if never written).
+      // Restore Outputs when bind completed and a later step failed.
+      // Snapshot-read failures never reach here with bound Outputs.
       await compensateAcceptAfterOutputBind(env.fs, {
         deliveryPath: delivery.path,
         deliveryRawBefore,
         taskPath,
         taskRawBefore,
-        outputSnapshots: bindResult.snapshots,
+        outputSnapshots,
       });
       throw err;
     }

@@ -139,6 +139,109 @@ test("multi-output bind: second write failure rolls back first Output; Task/Deli
   );
 });
 
+test("accept: delivery/task snapshot read failure before Output write leaves all byte-identical", async () => {
+  const dir = await makeTent();
+  const base = env(dir);
+  const outA = await createOutputBox(base, "snap-fail-a");
+  const outB = await createOutputBox(base, "snap-fail-b");
+  const { delivery, taskPath } = await readyAcceptFixture(dir);
+
+  const noteA = boxNotePath(outA.path);
+  const noteB = boxNotePath(outB.path);
+  const rawABefore = await base.fs.readFile(noteA);
+  const rawBBefore = await base.fs.readFile(noteB);
+  const taskBefore = await base.fs.readFile(taskPath);
+  const deliveryBefore = await base.fs.readFile(delivery.path);
+
+  // Fail the pre-bind Delivery raw snapshot.
+  // delivery.path reads during taskAccept: (1) prepared requireActiveReadyDelivery,
+  // (2) final-mutation requireActiveReadyDelivery, (3) pre-bind snapshot — fail on (3).
+  // Outputs must never be written if this fails.
+  class FailDeliverySnapshotReadFs extends NodeFs {
+    private deliveryReads = 0;
+    override async readFile(path: string): Promise<string> {
+      if (path === delivery.path) {
+        this.deliveryReads += 1;
+        if (this.deliveryReads >= 3) {
+          throw new Error("injected delivery snapshot read failure");
+        }
+      }
+      return super.readFile(path);
+    }
+  }
+
+  const failEnv = { ...base, fs: new FailDeliverySnapshotReadFs(dir) };
+  await assert.rejects(
+    () =>
+      taskAccept(failEnv as any, taskPath, {
+        actor: "user",
+        outputNodeIds: [outA.id, outB.id],
+      }),
+    (err: unknown) =>
+      err instanceof Error && /injected delivery snapshot read failure/i.test(err.message)
+  );
+
+  assert.equal(await base.fs.readFile(noteA), rawABefore);
+  assert.equal(await base.fs.readFile(noteB), rawBBefore);
+  assert.equal(await base.fs.readFile(taskPath), taskBefore);
+  assert.equal(await base.fs.readFile(delivery.path), deliveryBefore);
+  assertUnbound(await base.fs.readFile(noteA));
+  assertUnbound(await base.fs.readFile(noteB));
+  assert.equal((await loadTaskEnvelope(base.fs, taskPath)).state, "delivered");
+  assert.equal((await loadDelivery(base.fs, delivery.path)).status, "ready");
+});
+
+test("accept: task snapshot read failure before Output write leaves all byte-identical", async () => {
+  const dir = await makeTent();
+  const base = env(dir);
+  const out = await createOutputBox(base, "snap-task-fail");
+  const { delivery, taskPath } = await readyAcceptFixture(dir);
+
+  const notePath = boxNotePath(out.path);
+  const rawOutBefore = await base.fs.readFile(notePath);
+  const taskBefore = await base.fs.readFile(taskPath);
+  const deliveryBefore = await base.fs.readFile(delivery.path);
+
+  // Delivery snapshot succeeds; task snapshot read fails — still before any Output write.
+  class FailTaskSnapshotReadFs extends NodeFs {
+    override async readFile(path: string): Promise<string> {
+      if (path === taskPath) {
+        // loadTaskEnvelope at start of mutation also reads taskPath — allow that,
+        // fail only the second read (pre-bind snapshot after revalidation).
+        // Heuristic: if content would be returned, track calls.
+        return super.readFile(path).then((raw) => {
+          // Use a side channel on the instance.
+          const self = this as FailTaskSnapshotReadFs & { _taskReads?: number };
+          self._taskReads = (self._taskReads ?? 0) + 1;
+          if (self._taskReads >= 2) {
+            throw new Error("injected task snapshot read failure");
+          }
+          return raw;
+        });
+      }
+      return super.readFile(path);
+    }
+  }
+
+  const failEnv = { ...base, fs: new FailTaskSnapshotReadFs(dir) };
+  await assert.rejects(
+    () =>
+      taskAccept(failEnv as any, taskPath, {
+        actor: "user",
+        outputNodeIds: [out.id],
+      }),
+    (err: unknown) =>
+      err instanceof Error && /injected task snapshot read failure/i.test(err.message)
+  );
+
+  assert.equal(await base.fs.readFile(notePath), rawOutBefore);
+  assert.equal(await base.fs.readFile(taskPath), taskBefore);
+  assert.equal(await base.fs.readFile(delivery.path), deliveryBefore);
+  assertUnbound(await base.fs.readFile(notePath));
+  assert.equal((await loadTaskEnvelope(base.fs, taskPath)).state, "delivered");
+  assert.equal((await loadDelivery(base.fs, delivery.path)).status, "ready");
+});
+
 test("accept: delivery write failure after Output binds rolls Outputs + keeps Task delivered/ready", async () => {
   const dir = await makeTent();
   const base = env(dir);
