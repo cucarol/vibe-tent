@@ -15,8 +15,13 @@ import { loadRolesRegistry } from "../src/core/skillRoleRegistry.js";
 import { loadTaskEnvelope } from "../src/core/task.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { runTaskCommand, taskHelpText } from "../src/cli/task-rpc.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
+import {
+  defaultAgentProfiles,
+} from "../src/service/profiles.js";
+import type { AgentProfileConfig } from "../src/runtime/types.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
@@ -562,6 +567,86 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
     } finally {
       if (previous === undefined) delete process.env.TENT_ROLE;
       else process.env.TENT_ROLE = previous;
+    }
+  }
+});
+
+async function firstAgentProfileTaskPath(
+  ws: string,
+  profileId: string
+): Promise<string> {
+  const tempRoot = path.join(ws, ".tent", "temp", "agent-profiles", profileId, "tasks");
+  const names = await fs.readdir(tempRoot);
+  const md = names.find((n) => n.endsWith(".md"));
+  assert.ok(md, `expected task envelope under agent-profiles/${profileId}`);
+  return `temp/agent-profiles/${profileId}/tasks/${md}`;
+}
+
+test("CLI --profile surfaces original start failure and non-running Task after compensate", async () => {
+  // A2A deny via role attribution: original deny message; Task interrupted (audit kept).
+  {
+    const ws = await makeWorkspace(
+      "cli-ap-deny",
+      { orchestrator: "deny" },
+      { orchestrator: ["fake-default"] }
+    );
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-ap-deny-"));
+    const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+    try {
+      const { boxId } = await mountWorkItem(svc, ws, "cli-deny-box");
+      const result = await runTaskCommand(
+        "dispatch",
+        [boxId, "--profile", "fake-default", "cli deny", "--by", "orchestrator", "--json"],
+        { ...cliGlobals(ws, dataDir), json: true }
+      );
+      assert.notEqual(result.exitCode, 0);
+      assert.match(result.stderr + result.stdout, /denies|A2A/i);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const taskPath = await firstAgentProfileTaskPath(ws, "fake-default");
+      const envelope = await loadTaskEnvelope(envFs, taskPath);
+      assert.equal(envelope.state, "interrupted");
+      assert.ok(!envelope.sessionId);
+    } finally {
+      await svc.stop();
+    }
+  }
+
+  // Provider launch failure: original message; Task stays failed (not interrupted).
+  {
+    const profiles: AgentProfileConfig[] = [
+      ...defaultAgentProfiles(),
+      {
+        id: "fake-launch-fail",
+        adapterId: FAKE_ADAPTER_ID,
+        displayNameKey: "profile.fake.launchFail",
+        fake: { failLaunch: "cli deterministic launch failure" },
+      },
+    ];
+    const ws = await makeWorkspace("cli-ap-launch-fail");
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-cli-ap-lf-"));
+    const svc = await startLocalTentService({
+      dataDir,
+      writeEndpoint: true,
+      profiles,
+    });
+    try {
+      const { boxId } = await mountWorkItem(svc, ws, "cli-lf-box");
+      const result = await runTaskCommand(
+        "dispatch",
+        [boxId, "--profile", "fake-launch-fail", "cli launch fail", "--json"],
+        { ...cliGlobals(ws, dataDir), json: true }
+      );
+      assert.notEqual(result.exitCode, 0);
+      assert.match(result.stderr + result.stdout, /cli deterministic launch failure/i);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const taskPath = await firstAgentProfileTaskPath(ws, "fake-launch-fail");
+      const envelope = await loadTaskEnvelope(envFs, taskPath);
+      assert.equal(envelope.state, "failed");
+      assert.ok(!envelope.sessionId);
+    } finally {
+      await svc.stop();
     }
   }
 });

@@ -3274,16 +3274,28 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     // Claim then startSession so running+sessionId bind together.
     // Do not pass relayPrompt as bootstrap — relay still tells external agents to claim+deliver;
     // startSession builds managed bootstrap (Context Card + user prompt; auto-deliver on end).
+    // Combined convenience only: if startSession fails before any Session bind while the
+    // Task is still running without sessionId, release via the existing interrupt path
+    // (preserve audit; no deletion of non-queued Tasks). Separate claim/startSession APIs
+    // are unchanged. Do not overwrite honest waiting/failed from A2A ask or provider launch.
     await taskClaimRpc(ctx, {
       workspaceId,
       taskPath: dispatched.taskPath,
     });
-    session = await taskStartSessionRpc(ctx, {
-      workspaceId,
-      taskPath: dispatched.taskPath,
-      profileId,
-      callerKind,
-    });
+    try {
+      session = await taskStartSessionRpc(ctx, {
+        workspaceId,
+        taskPath: dispatched.taskPath,
+        profileId,
+        callerKind,
+      });
+    } catch (err) {
+      await compensateCombinedDispatchStartSessionFailure(ctx, {
+        workspaceId,
+        taskPath: dispatched.taskPath,
+      });
+      throw err;
+    }
   }
 
   const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
@@ -3296,7 +3308,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
     asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
-    state: startSession ? "running" : "queued",
+    // Prefer durable envelope state so success/failure projections stay honest.
+    state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane
       ? {
@@ -3307,6 +3320,57 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
         }
       : undefined,
   };
+}
+
+/**
+ * Combined task.dispatch(startSession=true) compensation only.
+ * When startSession rejects before binding a Session and the Task is still
+ * running without sessionId, transition through task.interrupt (preserve Task
+ * audit; no deletion of claimed Tasks). Leaves waiting(a2a-approval) and failed
+ * (provider launch/recovery) alone.
+ *
+ * Atomicity: running/no-session precondition and interrupt share one workspace
+ * MutationBus section so a concurrent Session bind cannot be interrupted or stopped.
+ * Best-effort: always rethrow the original RPC error from the caller.
+ */
+async function compensateCombinedDispatchStartSessionFailure(
+  ctx: HandlerContext,
+  input: { workspaceId: string; taskPath: string }
+): Promise<void> {
+  try {
+    // Test-only pause point: runs before the MutationBus section so a concurrent
+    // Session bind can complete; production never sets this hook.
+    if (beforeCombinedDispatchCompensateForTests) {
+      await beforeCombinedDispatchCompensateForTests(input);
+    }
+    const mount = ctx.host.get(input.workspaceId);
+    if (!mount) return;
+    await ctx.mutations.run(input.workspaceId, async () => {
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (!task) return;
+      if (task.state !== "running") return;
+      // Concurrent startSession bind: never interrupt or stop that Session.
+      if (task.sessionId) return;
+      // No sessionId on this path — same side-effects as task.interrupt without stopSession.
+      ctx.host.markSelfWrite(input.workspaceId);
+      const interrupted = await taskInterrupt(mount.env, input.taskPath);
+      emitTaskState(ctx, input.workspaceId, interrupted, "task.interrupt");
+      await cancelUserAsksForTask(
+        ctx,
+        input.workspaceId,
+        input.taskPath,
+        "task.interrupt"
+      );
+      await cancelTaskInputsForTask(
+        ctx,
+        input.workspaceId,
+        input.taskPath,
+        "task.interrupt"
+      );
+    });
+  } catch {
+    // Best-effort only; the original startSession RpcError is rethrown by the caller.
+  }
 }
 
 /**
@@ -8630,6 +8694,21 @@ export function setRejectResumePostStartFailureForTests(
 }
 
 /**
+ * Test-only: pause combined-dispatch compensation before the atomic
+ * running/no-session interrupt section. Lets tests bind a Session concurrently
+ * and prove compensation skips. Production never sets this.
+ */
+let beforeCombinedDispatchCompensateForTests:
+  | ((input: { workspaceId: string; taskPath: string }) => Promise<void>)
+  | null = null;
+
+export function setBeforeCombinedDispatchCompensateForTests(
+  fn: ((input: { workspaceId: string; taskPath: string }) => Promise<void>) | null
+): void {
+  beforeCombinedDispatchCompensateForTests = fn;
+}
+
+/**
  * Test-only: after commit-bearing deliver snapshots targetHead and before
  * integrate/assert runs, invoke this hook (e.g. advance target branch).
  * Production never sets this.
@@ -8651,6 +8730,7 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   rejectResumeNativeInFlight.clear();
   taskStartSessionInFlight.clear();
   rejectResumePostStartFailureForTests = null;
+  beforeCombinedDispatchCompensateForTests = null;
 }
 
 /** Test helper: clear per-task startSession single-flight slots. */

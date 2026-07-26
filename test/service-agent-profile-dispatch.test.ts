@@ -16,8 +16,34 @@ import { loadDeliveries } from "../src/core/delivery.js";
 import { loadRolesRegistry } from "../src/core/skillRoleRegistry.js";
 import { previewOperationalRetention } from "../src/core/retention.js";
 import { ensureTaskWorkspace } from "../src/core/workspace.js";
-import { RPC_A2A_DENIED } from "../src/service/types.js";
+import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import {
+  defaultAgentProfiles,
+  FAKE_DEFAULT_PROFILE_ID,
+} from "../src/service/profiles.js";
+import {
+  resetManagedAutoDeliverDedupForTests,
+  setBeforeCombinedDispatchCompensateForTests,
+} from "../src/service/handlers.js";
+import {
+  RPC_A2A_ASK,
+  RPC_A2A_DENIED,
+} from "../src/service/types.js";
+import type { AgentProfileConfig } from "../src/runtime/types.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
+
+/** Catalog with fake-default plus a deterministic launch-fail profile. */
+function profilesWithLaunchFail(): AgentProfileConfig[] {
+  return [
+    ...defaultAgentProfiles(),
+    {
+      id: "fake-launch-fail",
+      adapterId: FAKE_ADAPTER_ID,
+      displayNameKey: "profile.fake.launchFail",
+      fake: { failLaunch: "deterministic launch failure for combined dispatch" },
+    },
+  ];
+}
 
 async function makeWorkspace(
   name = "ap-dispatch",
@@ -755,6 +781,364 @@ test("invalid/missing assignee combinations fail loud", async () => {
     assert.ok(noProfile.error);
     assert.equal(noProfile.error!.code, -32602);
   });
+});
+
+test("combined dispatch startSession=true compensates pre-bind start failures", async () => {
+  // A2A deny: claim+start leaves running without sessionId → interrupt; box free.
+  {
+    const ws = await makeWorkspace(
+      "ap-combo-deny",
+      { orchestrator: "deny" },
+      { orchestrator: ["fake-default"] }
+    );
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-deny");
+      const denied = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "fake-default",
+        prompt: "combined deny",
+        startSession: true,
+        callerKind: "role",
+        dispatchedBy: "orchestrator",
+      });
+      assert.ok(denied.error);
+      assert.equal(denied.error!.code, RPC_A2A_DENIED);
+      assert.match(String(denied.error!.message), /denies|A2A/i);
+
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      assert.ok(!listed.error);
+      const tasks = (listed.result as { tasks: { path: string; state: string; sessionId?: string }[] })
+        .tasks;
+      const profileTasks = tasks.filter((t) => t.path.includes("agent-profiles"));
+      assert.equal(profileTasks.length, 1);
+      assert.equal(profileTasks[0]!.state, "interrupted");
+      assert.equal(profileTasks[0]!.sessionId, undefined);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const task = await loadTaskEnvelope(envFs, profileTasks[0]!.path);
+      assert.equal(task.state, "interrupted");
+      assert.ok(!task.sessionId);
+      // Audit preserved (envelope not deleted).
+      assert.ok(await envFs.exists(profileTasks[0]!.path));
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      assert.ok(!proj.error, JSON.stringify(proj.error));
+      const projection = proj.result as { status: string; activeTaskId?: string };
+      assert.notEqual(projection.status, "doing");
+      assert.ok(!projection.activeTaskId);
+
+      // Same box can be re-dispatched after compensation.
+      const again = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "fake-default",
+        prompt: "re-dispatch after deny compensate",
+      });
+      assert.ok(!again.error, JSON.stringify(again.error));
+    });
+  }
+
+  // A2A ask: waiting(a2a-approval) + pending approval intact (do not interrupt).
+  {
+    const ws = await makeWorkspace(
+      "ap-combo-ask",
+      { orchestrator: "ask" },
+      { orchestrator: ["fake-default"] }
+    );
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-ask");
+      const ask = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "fake-default",
+        prompt: "combined ask",
+        startSession: true,
+        callerKind: "role",
+        dispatchedBy: "orchestrator",
+      });
+      assert.ok(ask.error);
+      assert.equal(ask.error!.code, RPC_A2A_ASK);
+      const approvalId = (ask.error!.data as { approvalId: string }).approvalId;
+      assert.match(approvalId, /^ap-/);
+
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      const tasks = (listed.result as { tasks: { path: string; state: string }[] }).tasks;
+      const profileTasks = tasks.filter((t) => t.path.includes("agent-profiles"));
+      assert.equal(profileTasks.length, 1);
+      assert.equal(profileTasks[0]!.state, "waiting");
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const task = await loadTaskEnvelope(envFs, profileTasks[0]!.path);
+      assert.equal(task.state, "waiting");
+      assert.equal(task.wait?.reason, "a2a-approval");
+      assert.ok(!task.sessionId);
+
+      const pending = await rpc(svc, "a2a.listPending", { workspaceId });
+      assert.ok(!pending.error);
+      const approvals = (pending.result as { approvals: { id: string; status: string }[] })
+        .approvals;
+      assert.ok(approvals.some((a) => a.id === approvalId && a.status === "pending"));
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      const projection = proj.result as { status: string; activeTaskId?: string };
+      assert.equal(projection.status, "doing");
+      assert.ok(projection.activeTaskId);
+    });
+  }
+
+  // Invalid / missing profile or start precondition: original error; no stale running claim.
+  {
+    const ws = await makeWorkspace("ap-combo-invalid");
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-invalid");
+
+      const unknown = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "missing-profile-xyz",
+        prompt: "unknown profile combined",
+        startSession: true,
+      });
+      assert.ok(unknown.error);
+      assert.equal(unknown.error!.code, -32004);
+      assert.match(String(unknown.error!.message), /Profile not found/i);
+
+      const missingProfileId = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "start without profileId",
+        startSession: true,
+      });
+      assert.ok(missingProfileId.error);
+      assert.equal(missingProfileId.error!.code, -32602);
+      assert.match(String(missingProfileId.error!.message), /profileId/i);
+
+      // Failed combined attempts must not leave a running agentProfile occupation.
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      const tasks = (listed.result as { tasks: { path: string; state: string }[] }).tasks;
+      assert.ok(
+        !tasks.some((t) => t.path.includes("agent-profiles") && t.state === "running"),
+        JSON.stringify(tasks)
+      );
+      assert.ok(
+        !tasks.some((t) => t.state === "running"),
+        `stale running tasks: ${JSON.stringify(tasks)}`
+      );
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      const projection = proj.result as { status: string; activeTaskId?: string };
+      assert.notEqual(projection.status, "doing");
+      assert.ok(!projection.activeTaskId);
+    });
+  }
+
+  // Provider launch failure: honest failed state from startSession path; no interrupt overwrite.
+  {
+    const ws = await makeWorkspace("ap-combo-launch-fail");
+    const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-launch-"));
+    const svc = await startLocalTentService({
+      dataDir,
+      writeEndpoint: true,
+      profiles: profilesWithLaunchFail(),
+    });
+    try {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-launch");
+      const failed = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "fake-launch-fail",
+        prompt: "combined launch fail",
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(failed.error);
+      assert.match(String(failed.error!.message), /deterministic launch failure/i);
+
+      const listed = await rpc(svc, "task.list", { workspaceId });
+      const tasks = (listed.result as { tasks: { path: string; state: string; sessionId?: string }[] })
+        .tasks;
+      const profileTasks = tasks.filter((t) => t.path.includes("fake-launch-fail"));
+      assert.equal(profileTasks.length, 1);
+      assert.equal(profileTasks[0]!.state, "failed");
+      assert.ok(!profileTasks[0]!.sessionId);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const task = await loadTaskEnvelope(envFs, profileTasks[0]!.path);
+      assert.equal(task.state, "failed");
+      assert.ok(await envFs.exists(profileTasks[0]!.path));
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      const projection = proj.result as { status: string; activeTaskId?: string };
+      assert.notEqual(projection.status, "doing");
+      assert.ok(!projection.activeTaskId);
+    } finally {
+      await svc.stop();
+    }
+  }
+
+  // Success: running + sessionId; occupation held.
+  {
+    const ws = await makeWorkspace("ap-combo-ok");
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-ok");
+      const ok = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: FAKE_DEFAULT_PROFILE_ID,
+        prompt: "combined success",
+        startSession: true,
+        callerKind: "user",
+      });
+      assert.ok(!ok.error, JSON.stringify(ok.error));
+      const result = ok.result as {
+        taskPath: string;
+        state: string;
+        session?: { session?: { sessionId?: string }; sessionId?: string };
+      };
+      assert.equal(result.state, "running");
+      const sessionId =
+        result.session?.session?.sessionId ?? result.session?.sessionId;
+      assert.ok(sessionId);
+      assert.match(String(sessionId), /^ss-/);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const task = await loadTaskEnvelope(envFs, result.taskPath);
+      assert.equal(task.state, "running");
+      assert.equal(task.sessionId, sessionId);
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      const projection = proj.result as { status: string; activeTaskId?: string };
+      assert.equal(projection.status, "doing");
+      assert.ok(projection.activeTaskId);
+    });
+  }
+
+  // Separate claim + startSession APIs are unchanged: deny still leaves running occupation.
+  {
+    const ws = await makeWorkspace(
+      "ap-separate-deny",
+      { orchestrator: "deny" },
+      { orchestrator: ["fake-default"] }
+    );
+    await withService(async (svc) => {
+      const { workspaceId, boxId } = await mountWorkItem(svc, ws, "separate-deny");
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        assigneeKind: "agentProfile",
+        profileId: "fake-default",
+        prompt: "separate path deny",
+        dispatchedBy: "orchestrator",
+      });
+      assert.ok(!d.error, JSON.stringify(d.error));
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const denied = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-default",
+        callerKind: "role",
+      });
+      assert.ok(denied.error);
+      assert.equal(denied.error!.code, RPC_A2A_DENIED);
+
+      const envFs = new NodeFs(path.join(ws, ".tent"));
+      const task = await loadTaskEnvelope(envFs, taskPath);
+      assert.equal(task.state, "running");
+      assert.ok(!task.sessionId);
+
+      const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+      const projection = proj.result as { status: string };
+      assert.equal(projection.status, "doing");
+    });
+  }
+});
+
+test("combined dispatch compensation skips when Session binds concurrently", async () => {
+  // Deterministic race: pause compensation, bind sessionId via concurrent startSession,
+  // then prove compensation skips (Task stays running with sessionId; Session not stopped).
+  const ws = await makeWorkspace(
+    "ap-combo-race",
+    { orchestrator: "deny" },
+    { orchestrator: ["fake-default"] }
+  );
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-ap-race-"));
+  const svc = await startLocalTentService({ dataDir, writeEndpoint: true });
+  resetManagedAutoDeliverDedupForTests();
+  try {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws, "combo-race");
+
+    let taskPathForRace = "";
+    let concurrentBindDone = false;
+
+    setBeforeCombinedDispatchCompensateForTests(async (input) => {
+      taskPathForRace = input.taskPath;
+      // Pause point is before MutationBus: concurrent user startSession binds sessionId.
+      // User caller bypasses A2A deny that rejected the combined path.
+      const bind = await rpc(svc, "task.startSession", {
+        workspaceId: input.workspaceId,
+        taskPath: input.taskPath,
+        profileId: "fake-default",
+        callerKind: "user",
+      });
+      assert.ok(!bind.error, JSON.stringify(bind.error));
+      concurrentBindDone = true;
+    });
+
+    const denied = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      assigneeKind: "agentProfile",
+      profileId: "fake-default",
+      prompt: "combined race bind-before-compensate",
+      startSession: true,
+      callerKind: "role",
+      dispatchedBy: "orchestrator",
+    });
+    assert.ok(denied.error);
+    assert.equal(denied.error!.code, RPC_A2A_DENIED);
+    assert.ok(concurrentBindDone);
+    assert.ok(taskPathForRace);
+
+    const envFs = new NodeFs(path.join(ws, ".tent"));
+    const task = await loadTaskEnvelope(envFs, taskPathForRace);
+    assert.equal(task.state, "running", "compensation must not interrupt after concurrent bind");
+    assert.ok(task.sessionId, "sessionId from concurrent bind must remain");
+    assert.match(String(task.sessionId), /^ss-/);
+
+    const got = await rpc(svc, "session.get", {
+      workspaceId,
+      sessionId: task.sessionId,
+    });
+    assert.ok(!got.error, JSON.stringify(got.error));
+    const session = got.result as {
+      session?: { id?: string; state?: string };
+      id?: string;
+      state?: string;
+    };
+    const sessionState = session.session?.state ?? session.state;
+    assert.ok(
+      sessionState && !/stopped|failed|exited|interrupted/i.test(sessionState),
+      `Session must not be stopped by compensation: ${JSON.stringify(got.result)}`
+    );
+
+    const proj = await rpc(svc, "box.projection", { workspaceId, boxId });
+    const projection = proj.result as { status: string; activeTaskId?: string };
+    assert.equal(projection.status, "doing");
+    assert.ok(projection.activeTaskId);
+  } finally {
+    setBeforeCombinedDispatchCompensateForTests(null);
+    resetManagedAutoDeliverDedupForTests();
+    await svc.stop();
+  }
 });
 
 test("missing assigneeKind on historical envelope reads as role", async () => {
