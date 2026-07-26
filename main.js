@@ -43,8 +43,8 @@ function workspaceRootFromSystemRoot(systemRoot) {
   const parent = normalized.replace(/[\\/]+[^\\/]+$/, "");
   return parent || void 0;
 }
-function isOperationalPath(relativePath3) {
-  const path = relativePath3.replace(/\\/g, "/").replace(/^\.\/+/, "");
+function isOperationalPath(relativePath4) {
+  const path = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!path) return false;
   const top = path.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
@@ -149,6 +149,7 @@ function parseFrontmatter(raw) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+    if (/^-\s*/.test(trimmed)) continue;
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
@@ -189,37 +190,166 @@ function coerce(v) {
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
   }
+  if (v.startsWith("{")) {
+    if (!v.endsWith("}")) {
+      throw new Error("Invalid frontmatter YAML: unterminated flow mapping.");
+    }
+    return parseFlowMapping(v);
+  }
   if (v.startsWith("[") && !v.endsWith("]")) {
     throw new Error("Invalid frontmatter YAML: unterminated flow array.");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerce(item.trim()));
   }
   return v;
 }
 function isBlockSequenceStart(line) {
   return line !== void 0 && /^\s*-\s*/.test(line);
 }
+function leadingIndent(line) {
+  const match = line.match(/^(\s*)/);
+  return match ? match[1].length : 0;
+}
 function readBlockSequence(lines, startIndex, key) {
   const value = [];
   let i = startIndex;
-  for (; i < lines.length; i++) {
+  while (i < lines.length) {
     const line = lines[i];
-    const match = line.match(/^\s*-\s*(.*)$/);
-    if (!match) break;
-    const item = stripInlineComment(match[1].trim());
-    value.push(coerceForKey(key, item));
+    const itemMatch = line.match(/^(\s*)-\s*(.*)$/);
+    if (!itemMatch) break;
+    const itemIndent = itemMatch[1].length;
+    const rest = stripInlineComment(itemMatch[2].trim());
+    i += 1;
+    const inlineMap = rest.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (inlineMap && !(rest.startsWith("{") || rest.startsWith("["))) {
+      const obj = {};
+      const firstKey = inlineMap[1];
+      const firstVal = stripInlineComment(inlineMap[2].trim());
+      obj[firstKey] = firstVal === "" ? void 0 : coerceForKey(key, firstVal);
+      while (i < lines.length) {
+        const cont = lines[i];
+        if (!cont.trim() || cont.trim().startsWith("#")) {
+          i += 1;
+          continue;
+        }
+        if (leadingIndent(cont) <= itemIndent) break;
+        if (/^\s*-\s*/.test(cont)) break;
+        const trimmed = cont.trim();
+        const colon = trimmed.indexOf(":");
+        if (colon === -1) break;
+        const fieldKey = trimmed.slice(0, colon).trim();
+        const fieldVal = stripInlineComment(trimmed.slice(colon + 1).trim());
+        obj[fieldKey] = fieldVal === "" ? void 0 : coerceForKey(key, fieldVal);
+        i += 1;
+      }
+      for (const k of Object.keys(obj)) {
+        if (obj[k] === void 0) delete obj[k];
+      }
+      value.push(obj);
+      continue;
+    }
+    value.push(rest === "" ? null : coerceForKey(key, rest));
   }
   return { value, nextIndex: i };
+}
+function parseFlowMapping(raw) {
+  const inner = raw.slice(1, -1).trim();
+  if (!inner) return {};
+  const parts = splitFlowCollection(inner);
+  const out = {};
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colon = findTopLevelColon(trimmed);
+    if (colon === -1) {
+      throw new Error(`Invalid frontmatter YAML: flow mapping entry missing colon: ${trimmed}`);
+    }
+    const k = trimmed.slice(0, colon).trim();
+    const v = trimmed.slice(colon + 1).trim();
+    if (!k) throw new Error("Invalid frontmatter YAML: empty flow mapping key.");
+    out[k] = v === "" ? null : coerce(v);
+  }
+  return out;
+}
+function findTopLevelColon(s) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+function splitFlowCollection(inner) {
+  const items = [];
+  let current = "";
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && quote === '"' && i + 1 < inner.length) {
+        current += inner[++i];
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
 }
 function coerceForKey(key, raw) {
   if (key !== "commits") return coerce(raw);
   if (raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerceCommitItem(item.trim()));
   }
   return coerceCommitItem(raw);
 }
@@ -273,31 +403,8 @@ function normalizeWindowsPathValue(value) {
   if (typeof value !== "string" || !/^[A-Za-z]:\\/.test(value)) return value;
   return value.replace(/\\{2,}/g, "\\");
 }
-function splitFlowArray(inner) {
-  const items = [];
-  let current = "";
-  let quote = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (quote) {
-      current += ch;
-      if (ch === quote && inner[i - 1] !== "\\") quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      items.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  items.push(current);
-  return items;
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function serializeFrontmatter(data, body, keyOrder = []) {
   const keys = orderedKeys(data, keyOrder);
@@ -305,6 +412,17 @@ function serializeFrontmatter(data, body, keyOrder = []) {
   for (const k of keys) {
     const val = data[k];
     if (val === void 0) continue;
+    if (Array.isArray(val) && val.some(isPlainObject)) {
+      lines.push(`${k}:`);
+      if (val.length === 0) {
+        lines[lines.length - 1] = `${k}: []`;
+      } else {
+        for (const item of val) {
+          lines.push(`  - ${emit(item)}`);
+        }
+      }
+      continue;
+    }
     lines.push(`${k}: ${emit(val)}`);
   }
   lines.push(FENCE);
@@ -336,8 +454,13 @@ function emit(v) {
     if (v.length === 0) return "[]";
     return "[" + v.map((item) => emit(item)).join(", ") + "]";
   }
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== void 0);
+    if (keys.length === 0) return "{}";
+    return "{" + keys.map((k) => `${k}: ${emit(v[k])}`).join(", ") + "}";
+  }
   const s = String(v);
-  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]]/.test(s) || s !== s.trim() || s === "") {
+  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]{}]/.test(s) || s !== s.trim() || s === "") {
     return JSON.stringify(s);
   }
   return s;
@@ -347,7 +470,7 @@ var init_frontmatter = __esm({
   "src/core/frontmatter.ts"() {
     "use strict";
     FENCE = "---";
-    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
+    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
   }
 });
 
@@ -531,6 +654,144 @@ var init_typeRegistry = __esm({
   }
 });
 
+// src/core/relations.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRelationId(id) {
+  return id.startsWith(RELATION_ID_PREFIX) && id.length > RELATION_ID_PREFIX.length;
+}
+function normalizeRelationTarget(raw) {
+  if (!isRecord2(raw)) {
+    throw new RelationError("INVALID_INPUT", "relation target must be an object");
+  }
+  const hasNodeId = Object.prototype.hasOwnProperty.call(raw, "nodeId");
+  const hasUnresolved = Object.prototype.hasOwnProperty.call(raw, "unresolved");
+  if (hasNodeId && hasUnresolved) {
+    throw new RelationError(
+      "INVALID_INPUT",
+      "relation target must be exactly one of { nodeId } or { unresolved }"
+    );
+  }
+  if (hasNodeId) {
+    if (typeof raw.nodeId !== "string" || !raw.nodeId.trim()) {
+      throw new RelationError("INVALID_INPUT", "relation target.nodeId must be a non-empty string");
+    }
+    return { nodeId: raw.nodeId.trim() };
+  }
+  if (hasUnresolved) {
+    if (typeof raw.unresolved !== "string" || !raw.unresolved.trim()) {
+      throw new RelationError(
+        "INVALID_INPUT",
+        "relation target.unresolved must be a non-empty string"
+      );
+    }
+    return { unresolved: raw.unresolved.trim() };
+  }
+  throw new RelationError(
+    "INVALID_INPUT",
+    "relation target must be exactly one of { nodeId } or { unresolved }"
+  );
+}
+function normalizeRelationDirection(raw) {
+  if (raw === "directed" || raw === "bidirectional") return raw;
+  throw new RelationError(
+    "INVALID_INPUT",
+    'relation direction must be "directed" or "bidirectional"'
+  );
+}
+function normalizeRelationKind(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new RelationError("INVALID_INPUT", "relation kind must be a non-empty string");
+  }
+  const kind = raw.trim();
+  if (/[\r\n]/.test(kind)) {
+    throw new RelationError("INVALID_INPUT", "relation kind cannot contain newlines");
+  }
+  return kind;
+}
+function normalizeRelationLabel(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "string") {
+    throw new RelationError("INVALID_INPUT", "relation label must be a string when present");
+  }
+  const label = raw.trim();
+  return label.length > 0 ? label : void 0;
+}
+function parseRelationRecord(raw) {
+  if (!isRecord2(raw)) return null;
+  if (typeof raw.id !== "string" || !isRelationId(raw.id)) return null;
+  let kind;
+  let direction;
+  let target;
+  let label;
+  try {
+    kind = normalizeRelationKind(raw.kind);
+    direction = normalizeRelationDirection(raw.direction);
+    label = normalizeRelationLabel(raw.label);
+    if (isRecord2(raw.target)) {
+      target = normalizeRelationTarget(raw.target);
+    } else if (Object.prototype.hasOwnProperty.call(raw, "nodeId") || Object.prototype.hasOwnProperty.call(raw, "unresolved")) {
+      target = normalizeRelationTarget({
+        ...Object.prototype.hasOwnProperty.call(raw, "nodeId") ? { nodeId: raw.nodeId } : {},
+        ...Object.prototype.hasOwnProperty.call(raw, "unresolved") ? { unresolved: raw.unresolved } : {}
+      });
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const out = { id: raw.id, kind, direction, target };
+  if (label !== void 0) out.label = label;
+  return out;
+}
+function normalizeRelationsList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    const parsed = parseRelationRecord(item);
+    if (!parsed) continue;
+    if (seen.has(parsed.id)) continue;
+    seen.add(parsed.id);
+    out.push(parsed);
+  }
+  return out;
+}
+function relationToFrontmatterItem(record) {
+  const item = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction
+  };
+  if (record.label !== void 0) item.label = record.label;
+  if ("nodeId" in record.target) item.nodeId = record.target.nodeId;
+  else item.unresolved = record.target.unresolved;
+  return item;
+}
+function relationsToFrontmatterValue(records) {
+  if (records.length === 0) return void 0;
+  return records.map(relationToFrontmatterItem);
+}
+var RELATION_ID_PREFIX, RelationError;
+var init_relations = __esm({
+  "src/core/relations.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_tree();
+    RELATION_ID_PREFIX = "rl-";
+    RelationError = class extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = "RelationError";
+      }
+    };
+  }
+});
+
 // src/core/tree.ts
 function boxNotePath(boxPath) {
   return join2(boxPath, baseName(boxPath) + ".md");
@@ -583,6 +844,7 @@ async function reloadLoadedBox(fs2, tent, path) {
   if (identity.fm.id !== box.id) throw new Error("Incremental reload cannot change box id.");
   box.type = identity.fm.type;
   box.tags = identity.tags;
+  box.relations = identity.relations;
   box.fm = identity.fm;
   box.body = body;
   for (const root of tent.roots) resolveSubtree(root, tent.typeRegistry);
@@ -609,11 +871,12 @@ async function loadBox(fs2, path, parent, registry) {
   }
   const { data, body } = parsed;
   const name = baseName(path);
-  const { fm, tags } = normalizeIdentity(data);
+  const { fm, tags, relations } = normalizeIdentity(data);
   const box = {
     id: fm.id,
     type: fm.type,
     tags,
+    relations,
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -655,7 +918,11 @@ function normalizeIdentity(data) {
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
-  return { fm, tags };
+  const relations = normalizeRelationsList(data.relations);
+  const fmRelations = relationsToFrontmatterValue(relations);
+  if (fmRelations) fm.relations = fmRelations;
+  else delete fm.relations;
+  return { fm, tags, relations };
 }
 function parseNodeMode(value) {
   if (value === "archived") return "archived";
@@ -744,6 +1011,7 @@ var init_tree = __esm({
     init_order();
     init_typeRegistry();
     init_paths();
+    init_relations();
   }
 });
 
@@ -836,7 +1104,7 @@ async function writeBoxTags(fs2, box, tags) {
   await fs2.writeFile(path, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
-  if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
+  if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
   const tags = [];
   for (const valueTag of value.tags) {
     if (typeof valueTag !== "string") continue;
@@ -876,7 +1144,7 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var init_tags = __esm({
@@ -1084,13 +1352,13 @@ function findRoleIndex(roles, ref) {
   return roles.findIndex((role) => role.name === key);
 }
 function normalizeRolesRegistryWithMigration(value) {
-  const root = isRecord3(value) ? value : {};
+  const root = isRecord4(value) ? value : {};
   const roles = [];
   let migrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
-      if (!isRecord3(item)) continue;
+      if (!isRecord4(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
       const role = normalizeRoleDefinition(item, {
@@ -1165,7 +1433,7 @@ function normalizeA2APolicy(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
+  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
   if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
@@ -1214,7 +1482,7 @@ async function writeJson(fs2, path, value) {
   if (!await fs2.exists(".tent")) await fs2.mkdir(".tent");
   await fs2.writeFile(path, JSON.stringify(value, null, 2) + "\n");
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 var DEFAULT_ROLES_REGISTRY;
@@ -2570,16 +2838,20 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
     if (typeof data.id === "string" && data.id !== box.id) {
       throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
     }
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, rewriteOpts);
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
     if (!rewritten.changed) continue;
-    const afterPath = pathMap.get(box.path) ?? box.path;
     plannedWrites.push({
-      writePath: boxNotePath(afterPath),
+      writePath: restyleFromNotePath,
       originalPath: notePath,
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
     });
-    rewrittenNotes.push(afterPath);
+    rewrittenNotes.push(afterBoxPath);
   }
   await env.fs.move(oldPath, newPath);
   let identityRenamed = false;
@@ -2743,12 +3015,19 @@ function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, o
   if (isUnqualifiedName(pathPart)) {
     return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
   }
+  const restyleFrom = opts?.restyleFromNotePath ?? fromNotePath;
+  const sourceMoved = restyleFrom.replace(/\\/g, "/") !== fromNotePath.replace(/\\/g, "/");
+  const isRelativeForm = pathPart.startsWith("./") || pathPart.startsWith("../");
   const normalized = normalizeTarget(pathPart, fromNotePath);
-  const newAbs = resolveMappedPath(normalized, pathMap, oldPaths);
-  if (!newAbs) return void 0;
+  const mapped = resolveMappedPath(normalized, pathMap, oldPaths);
+  if (!mapped && !(isRelativeForm && sourceMoved)) {
+    return void 0;
+  }
+  const newAbs = mapped ?? normalized;
   const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
   const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
-  const styled = restyleRelative(pathPart, fromNotePath, absTarget, sourceHadMd);
+  const styled = restyleRelative(pathPart, restyleFrom, absTarget, sourceHadMd);
+  if (styled === pathPart) return void 0;
   return styled + tail;
 }
 function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
@@ -2854,6 +3133,251 @@ var init_renameOps = __esm({
   }
 });
 
+// src/core/moveOps.ts
+async function moveNode(env, conceptId, newParentId, position) {
+  return withTentMutation(
+    env.fs,
+    async () => moveNodeUnlocked(env, conceptId, newParentId, position)
+  );
+}
+async function moveNodeUnlocked(env, conceptId, newParentId, position) {
+  const id = conceptId.trim();
+  if (!id) throw new Error("Concept id is required for move.");
+  const tent = await loadTent(env.fs);
+  const moved = tent.byId.get(id);
+  if (!moved) throw new Error(`Concept not found: ${id}.`);
+  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  assertContentMutable(moved, "moved");
+  if (moved.invalid || moved.archived) {
+    throw new Error("Invalid or archived boxes cannot be moved.");
+  }
+  assertNotOperationalPath2(moved.path);
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const movedHit = findActiveOccupation(tent, moved, tasks);
+  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
+    throw new Error(
+      "Ranges with an active task cannot be moved; complete or interrupt the task first."
+    );
+  }
+  const parentBox = resolveNewParent(tent, newParentId);
+  if (parentBox) {
+    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parentBox, "used as move parent");
+    assertNotOperationalPath2(parentBox.path);
+  }
+  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : void 0;
+  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
+    throw new Error(
+      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
+    );
+  }
+  const newParentPath = parentBox ? parentBox.path : "";
+  if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
+    throw new Error("Cannot move a box into its own subtree.");
+  }
+  if (position.mode !== "inside") {
+    const sibling = tent.byId.get(position.siblingId);
+    if (!sibling) throw new Error(`Sibling not found: ${position.siblingId}.`);
+    const siblingParentId = sibling.parent ? sibling.parent.id : null;
+    const destParentId = parentBox ? parentBox.id : null;
+    if (siblingParentId !== destParentId) {
+      throw new Error("before/after sibling must be under the destination parent.");
+    }
+    if (sibling.id === moved.id) {
+      throw new Error("Cannot position a box relative to itself.");
+    }
+  }
+  const oldPath = moved.path;
+  const movedName = moved.name;
+  const destination = join2(newParentPath, movedName);
+  const parentChanged = dirName(oldPath) !== newParentPath;
+  if (parentChanged) {
+    if (await env.fs.exists(destination)) {
+      throw new Error(`Move target already exists: ${destination}.`);
+    }
+    const destSiblings = parentBox ? parentBox.children : tent.roots;
+    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
+      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
+    }
+  }
+  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
+  const siblings = (parentBox ? parentBox.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
+  let insertAt;
+  if (position.mode === "inside") {
+    insertAt = siblings.length;
+  } else {
+    const idx = siblings.indexOf(position.siblingId);
+    insertAt = idx === -1 ? siblings.length : position.mode === "before" ? idx : idx + 1;
+  }
+  siblings.splice(insertAt, 0, moved.id);
+  if (!parentChanged) {
+    const order = await loadOrder(env.fs);
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+    const identityMap = {};
+    for (const box of collectSubtree3(moved)) {
+      identityMap[box.path] = box.path;
+      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
+        /\.md$/i,
+        ""
+      );
+    }
+    return {
+      id: moved.id,
+      oldPath,
+      path: oldPath,
+      pathMap: identityMap,
+      rewrittenNotes: []
+    };
+  }
+  const subtree2 = collectSubtree3(moved);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath3(oldPath, box.path);
+    const nextBoxPath = rel ? join2(destination, rel) : destination;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: moved.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
+    }
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
+    if (!rewritten.changed) continue;
+    plannedWrites.push({
+      writePath: restyleFromNotePath,
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterBoxPath);
+  }
+  const orderBefore = await loadOrder(env.fs);
+  const orderSnapshot = JSON.stringify(orderBefore);
+  await env.fs.move(oldPath, destination);
+  const completedWrites = [];
+  try {
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+    const order = JSON.parse(orderSnapshot);
+    if (order[oldParentKey]) {
+      order[oldParentKey] = order[oldParentKey].filter((sid) => sid !== moved.id);
+    }
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await rollbackMove(env.fs, {
+      oldPath,
+      newPath: destination,
+      completedWrites,
+      orderSnapshot
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: moved.id,
+    oldPath,
+    path: destination,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackMove(fs2, args) {
+  const { oldPath, newPath, completedWrites, orderSnapshot } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs2.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    if (await fs2.exists(newPath) && !await fs2.exists(oldPath)) {
+      await fs2.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await saveOrder(fs2, JSON.parse(orderSnapshot));
+  } catch (err) {
+    restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Move failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveNewParent(tent, newParentId) {
+  if (newParentId === null || newParentId === void 0 || newParentId === "") {
+    return null;
+  }
+  const parent = tent.byId.get(newParentId.trim());
+  if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
+  return parent;
+}
+function assertNotOperationalPath2(path) {
+  if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
+  }
+  const top = path.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be moved as concepts.");
+  }
+}
+function collectSubtree3(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree3(child, out);
+  return out;
+}
+function relativePath3(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+var init_moveOps = __esm({
+  "src/core/moveOps.ts"() {
+    "use strict";
+    init_adapter();
+    init_claim();
+    init_frontmatter();
+    init_okf();
+    init_order();
+    init_paths();
+    init_renameOps();
+    init_task();
+    init_tree();
+  }
+});
+
 // src/core/ops.ts
 var ops_exports = {};
 __export(ops_exports, {
@@ -2869,6 +3393,7 @@ __export(ops_exports, {
   dispatch: () => dispatch,
   forceRelease: () => forceRelease,
   forkNode: () => forkNode,
+  moveNode: () => moveNode,
   patchBody: () => patchBody,
   patchBox: () => patchBox,
   placeBox: () => placeBox,
@@ -3204,12 +3729,19 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
-    (key) => key in patch
-  );
+  const reserved = [
+    "id",
+    "owner",
+    "mode",
+    "archived",
+    "readable",
+    "writable",
+    "status",
+    "relations"
+  ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
     );
   }
   if (box.archived || box.mode === "archived") {
@@ -3440,6 +3972,7 @@ var init_ops = __esm({
     init_task_lifecycle();
     init_forkOps();
     init_renameOps();
+    init_moveOps();
     STAMP_RETIRED_MESSAGE = "stamp/complete no longer write Node owner/status. Use task.deliver + task.accept (or task.fail) for collaboration completion.";
   }
 });

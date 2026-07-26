@@ -14,7 +14,7 @@ import * as http from "node:http";
 
 // src/core/frontmatter.ts
 var FENCE = "---";
-var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
+var BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
 function parseFrontmatter(raw) {
   const text3 = raw.replace(/\r\n/g, "\n");
   if (!text3.startsWith(FENCE + "\n")) {
@@ -34,6 +34,7 @@ function parseFrontmatter(raw) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+    if (/^-\s*/.test(trimmed)) continue;
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
@@ -74,37 +75,166 @@ function coerce(v) {
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
   }
+  if (v.startsWith("{")) {
+    if (!v.endsWith("}")) {
+      throw new Error("Invalid frontmatter YAML: unterminated flow mapping.");
+    }
+    return parseFlowMapping(v);
+  }
   if (v.startsWith("[") && !v.endsWith("]")) {
     throw new Error("Invalid frontmatter YAML: unterminated flow array.");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerce(item.trim()));
   }
   return v;
 }
 function isBlockSequenceStart(line) {
   return line !== void 0 && /^\s*-\s*/.test(line);
 }
+function leadingIndent(line) {
+  const match = line.match(/^(\s*)/);
+  return match ? match[1].length : 0;
+}
 function readBlockSequence(lines, startIndex, key) {
   const value = [];
   let i = startIndex;
-  for (; i < lines.length; i++) {
+  while (i < lines.length) {
     const line = lines[i];
-    const match = line.match(/^\s*-\s*(.*)$/);
-    if (!match) break;
-    const item = stripInlineComment(match[1].trim());
-    value.push(coerceForKey(key, item));
+    const itemMatch = line.match(/^(\s*)-\s*(.*)$/);
+    if (!itemMatch) break;
+    const itemIndent = itemMatch[1].length;
+    const rest = stripInlineComment(itemMatch[2].trim());
+    i += 1;
+    const inlineMap = rest.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (inlineMap && !(rest.startsWith("{") || rest.startsWith("["))) {
+      const obj = {};
+      const firstKey = inlineMap[1];
+      const firstVal = stripInlineComment(inlineMap[2].trim());
+      obj[firstKey] = firstVal === "" ? void 0 : coerceForKey(key, firstVal);
+      while (i < lines.length) {
+        const cont = lines[i];
+        if (!cont.trim() || cont.trim().startsWith("#")) {
+          i += 1;
+          continue;
+        }
+        if (leadingIndent(cont) <= itemIndent) break;
+        if (/^\s*-\s*/.test(cont)) break;
+        const trimmed = cont.trim();
+        const colon = trimmed.indexOf(":");
+        if (colon === -1) break;
+        const fieldKey = trimmed.slice(0, colon).trim();
+        const fieldVal = stripInlineComment(trimmed.slice(colon + 1).trim());
+        obj[fieldKey] = fieldVal === "" ? void 0 : coerceForKey(key, fieldVal);
+        i += 1;
+      }
+      for (const k of Object.keys(obj)) {
+        if (obj[k] === void 0) delete obj[k];
+      }
+      value.push(obj);
+      continue;
+    }
+    value.push(rest === "" ? null : coerceForKey(key, rest));
   }
   return { value, nextIndex: i };
+}
+function parseFlowMapping(raw) {
+  const inner = raw.slice(1, -1).trim();
+  if (!inner) return {};
+  const parts = splitFlowCollection(inner);
+  const out = {};
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colon = findTopLevelColon(trimmed);
+    if (colon === -1) {
+      throw new Error(`Invalid frontmatter YAML: flow mapping entry missing colon: ${trimmed}`);
+    }
+    const k = trimmed.slice(0, colon).trim();
+    const v = trimmed.slice(colon + 1).trim();
+    if (!k) throw new Error("Invalid frontmatter YAML: empty flow mapping key.");
+    out[k] = v === "" ? null : coerce(v);
+  }
+  return out;
+}
+function findTopLevelColon(s) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+function splitFlowCollection(inner) {
+  const items = [];
+  let current = "";
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && quote === '"' && i + 1 < inner.length) {
+        current += inner[++i];
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
 }
 function coerceForKey(key, raw) {
   if (key !== "commits") return coerce(raw);
   if (raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerceCommitItem(item.trim()));
   }
   return coerceCommitItem(raw);
 }
@@ -158,31 +288,8 @@ function normalizeWindowsPathValue(value) {
   if (typeof value !== "string" || !/^[A-Za-z]:\\/.test(value)) return value;
   return value.replace(/\\{2,}/g, "\\");
 }
-function splitFlowArray(inner) {
-  const items = [];
-  let current = "";
-  let quote = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (quote) {
-      current += ch;
-      if (ch === quote && inner[i - 1] !== "\\") quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      items.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  items.push(current);
-  return items;
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function serializeFrontmatter(data, body, keyOrder = []) {
   const keys = orderedKeys(data, keyOrder);
@@ -190,6 +297,17 @@ function serializeFrontmatter(data, body, keyOrder = []) {
   for (const k of keys) {
     const val = data[k];
     if (val === void 0) continue;
+    if (Array.isArray(val) && val.some(isPlainObject)) {
+      lines.push(`${k}:`);
+      if (val.length === 0) {
+        lines[lines.length - 1] = `${k}: []`;
+      } else {
+        for (const item of val) {
+          lines.push(`  - ${emit(item)}`);
+        }
+      }
+      continue;
+    }
     lines.push(`${k}: ${emit(val)}`);
   }
   lines.push(FENCE);
@@ -221,8 +339,13 @@ function emit(v) {
     if (v.length === 0) return "[]";
     return "[" + v.map((item) => emit(item)).join(", ") + "]";
   }
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== void 0);
+    if (keys.length === 0) return "{}";
+    return "{" + keys.map((k) => `${k}: ${emit(v[k])}`).join(", ") + "}";
+  }
   const s = String(v);
-  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]]/.test(s) || s !== s.trim() || s === "") {
+  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]{}]/.test(s) || s !== s.trim() || s === "") {
     return JSON.stringify(s);
   }
   return s;
@@ -279,8 +402,8 @@ function systemRootFromWorkspace(workspaceRoot) {
   const sep3 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
   return `${root}${sep3}${TENT_SYSTEM_DIR}`;
 }
-function isOperationalPath(relativePath3) {
-  const path22 = relativePath3.replace(/\\/g, "/").replace(/^\.\/+/, "");
+function isOperationalPath(relativePath4) {
+  const path22 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
   if (!path22) return false;
   const top = path22.split("/")[0] ?? "";
   return OPERATIONAL_TOP_LEVEL.has(top);
@@ -471,6 +594,376 @@ function isRecord(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
+// src/core/adapter.ts
+function withTentMutation(fs21, action) {
+  return fs21.withLock ? fs21.withLock(MUTATION_LOCK_PATH, action) : action();
+}
+
+// src/core/relations.ts
+var RELATION_ID_PREFIX = "rl-";
+var REL_ALPHABET = "0123456789abcdefghjkmnpqrstvwxyz";
+var RelationError = class extends Error {
+  constructor(code, message2) {
+    super(message2);
+    this.code = code;
+    this.name = "RelationError";
+  }
+};
+var CANONICAL_RELATION_KEYS = /* @__PURE__ */ new Set([
+  "id",
+  "kind",
+  "direction",
+  "label",
+  "nodeId",
+  "unresolved",
+  "target"
+]);
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function makeRelationId(rand = Math.random, len = 8) {
+  let s = "";
+  for (let i = 0; i < len; i++) {
+    s += REL_ALPHABET[Math.floor(rand() * REL_ALPHABET.length)];
+  }
+  return RELATION_ID_PREFIX + s;
+}
+function makeUniqueRelationId(existing, rand = Math.random) {
+  for (let attempt = 0; attempt < 50; attempt++) {
+    const id = makeRelationId(rand);
+    if (!existing.has(id)) return id;
+  }
+  return makeRelationId(rand, 12);
+}
+function isRelationId(id) {
+  return id.startsWith(RELATION_ID_PREFIX) && id.length > RELATION_ID_PREFIX.length;
+}
+function cloneRelation(record) {
+  const out = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction,
+    target: "nodeId" in record.target ? { nodeId: record.target.nodeId } : { unresolved: record.target.unresolved }
+  };
+  if (record.label !== void 0) out.label = record.label;
+  return out;
+}
+function normalizeRelationTarget(raw) {
+  if (!isRecord2(raw)) {
+    throw new RelationError("INVALID_INPUT", "relation target must be an object");
+  }
+  const hasNodeId = Object.prototype.hasOwnProperty.call(raw, "nodeId");
+  const hasUnresolved = Object.prototype.hasOwnProperty.call(raw, "unresolved");
+  if (hasNodeId && hasUnresolved) {
+    throw new RelationError(
+      "INVALID_INPUT",
+      "relation target must be exactly one of { nodeId } or { unresolved }"
+    );
+  }
+  if (hasNodeId) {
+    if (typeof raw.nodeId !== "string" || !raw.nodeId.trim()) {
+      throw new RelationError("INVALID_INPUT", "relation target.nodeId must be a non-empty string");
+    }
+    return { nodeId: raw.nodeId.trim() };
+  }
+  if (hasUnresolved) {
+    if (typeof raw.unresolved !== "string" || !raw.unresolved.trim()) {
+      throw new RelationError(
+        "INVALID_INPUT",
+        "relation target.unresolved must be a non-empty string"
+      );
+    }
+    return { unresolved: raw.unresolved.trim() };
+  }
+  throw new RelationError(
+    "INVALID_INPUT",
+    "relation target must be exactly one of { nodeId } or { unresolved }"
+  );
+}
+function normalizeRelationDirection(raw) {
+  if (raw === "directed" || raw === "bidirectional") return raw;
+  throw new RelationError(
+    "INVALID_INPUT",
+    'relation direction must be "directed" or "bidirectional"'
+  );
+}
+function normalizeRelationKind(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new RelationError("INVALID_INPUT", "relation kind must be a non-empty string");
+  }
+  const kind = raw.trim();
+  if (/[\r\n]/.test(kind)) {
+    throw new RelationError("INVALID_INPUT", "relation kind cannot contain newlines");
+  }
+  return kind;
+}
+function normalizeRelationLabel(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "string") {
+    throw new RelationError("INVALID_INPUT", "relation label must be a string when present");
+  }
+  const label = raw.trim();
+  return label.length > 0 ? label : void 0;
+}
+function parseRelationRecord(raw) {
+  if (!isRecord2(raw)) return null;
+  if (typeof raw.id !== "string" || !isRelationId(raw.id)) return null;
+  let kind;
+  let direction;
+  let target;
+  let label;
+  try {
+    kind = normalizeRelationKind(raw.kind);
+    direction = normalizeRelationDirection(raw.direction);
+    label = normalizeRelationLabel(raw.label);
+    if (isRecord2(raw.target)) {
+      target = normalizeRelationTarget(raw.target);
+    } else if (Object.prototype.hasOwnProperty.call(raw, "nodeId") || Object.prototype.hasOwnProperty.call(raw, "unresolved")) {
+      target = normalizeRelationTarget({
+        ...Object.prototype.hasOwnProperty.call(raw, "nodeId") ? { nodeId: raw.nodeId } : {},
+        ...Object.prototype.hasOwnProperty.call(raw, "unresolved") ? { unresolved: raw.unresolved } : {}
+      });
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const out = { id: raw.id, kind, direction, target };
+  if (label !== void 0) out.label = label;
+  return out;
+}
+function normalizeRelationsList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    const parsed = parseRelationRecord(item);
+    if (!parsed) continue;
+    if (seen.has(parsed.id)) continue;
+    seen.add(parsed.id);
+    out.push(parsed);
+  }
+  return out;
+}
+function assertRawRelationsCanonicalForMutation(value) {
+  if (value === void 0) return [];
+  if (!Array.isArray(value)) {
+    throw new RelationError(
+      "CORRUPT",
+      "Source relations must be an array of canonical relation records"
+    );
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!isRecord2(item)) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations[${i}] is not a canonical relation record`
+      );
+    }
+    for (const key of Object.keys(item)) {
+      if (!CANONICAL_RELATION_KEYS.has(key)) {
+        throw new RelationError(
+          "CORRUPT",
+          `Source relations[${i}] has unrecognized field: ${key}`
+        );
+      }
+    }
+    if (isRecord2(item.target)) {
+      for (const key of Object.keys(item.target)) {
+        if (key !== "nodeId" && key !== "unresolved") {
+          throw new RelationError(
+            "CORRUPT",
+            `Source relations[${i}].target has unrecognized field: ${key}`
+          );
+        }
+      }
+    }
+    const parsed = parseRelationRecord(item);
+    if (!parsed) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations[${i}] is corrupt or non-canonical`
+      );
+    }
+    if (seen.has(parsed.id)) {
+      throw new RelationError(
+        "CORRUPT",
+        `Source relations contain duplicate id: ${parsed.id}`
+      );
+    }
+    seen.add(parsed.id);
+    out.push(parsed);
+  }
+  return out;
+}
+async function loadCanonicalRelationsForMutation(fs21, boxPath) {
+  const notePath = boxNotePath(boxPath);
+  const { data } = parseFrontmatter(await fs21.readFile(notePath));
+  return assertRawRelationsCanonicalForMutation(data.relations);
+}
+function relationToFrontmatterItem(record) {
+  const item = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction
+  };
+  if (record.label !== void 0) item.label = record.label;
+  if ("nodeId" in record.target) item.nodeId = record.target.nodeId;
+  else item.unresolved = record.target.unresolved;
+  return item;
+}
+function relationsToFrontmatterValue(records) {
+  if (records.length === 0) return void 0;
+  return records.map(relationToFrontmatterItem);
+}
+function boxKeyOrder(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+  ];
+}
+async function writeBoxRelations(fs21, box, relations) {
+  const path22 = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(path22));
+  const value = relationsToFrontmatterValue(relations);
+  if (value === void 0) delete data.relations;
+  else data.relations = value;
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+}
+function assertSourceMutable(box) {
+  if (box.invalid) {
+    throw new RelationError("INVALID", `Invalid boxes cannot own relations: ${box.path}`);
+  }
+  if (box.archived || box.mode === "archived") {
+    throw new RelationError("ARCHIVED", `Archived boxes cannot own relations: ${box.path}`);
+  }
+}
+function assertResolvedTargetUsable(tent, target) {
+  if (!("nodeId" in target)) return;
+  const targetBox = tent.byId.get(target.nodeId);
+  if (!targetBox) {
+    throw new RelationError("TARGET", `Relation target node not found: ${target.nodeId}`);
+  }
+  if (!isUsableBox(targetBox)) {
+    throw new RelationError(
+      "TARGET",
+      `Relation target is not a usable Node: ${target.nodeId}`
+    );
+  }
+}
+function listRelationsForNode(tent, nodeId) {
+  const box = tent.byId.get(nodeId);
+  if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${nodeId}`);
+  const outgoing = box.relations.map(cloneRelation);
+  const incoming = [];
+  for (const other of tent.byId.values()) {
+    for (const rel of other.relations) {
+      if (!("nodeId" in rel.target)) continue;
+      if (rel.target.nodeId !== nodeId) continue;
+      if (other.id === nodeId) continue;
+      incoming.push({
+        ...cloneRelation(rel),
+        sourceId: other.id,
+        sourcePath: other.path
+      });
+    }
+  }
+  incoming.sort((a, b) => {
+    const byPath = a.sourcePath.localeCompare(b.sourcePath);
+    if (byPath !== 0) return byPath;
+    return a.id.localeCompare(b.id);
+  });
+  return {
+    nodeId: box.id,
+    path: box.path,
+    outgoing,
+    incoming
+  };
+}
+async function createRelation(fs21, sourceId, input, rand = Math.random, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const box = tent.byId.get(sourceId);
+    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
+    assertSourceMutable(box);
+    const base = await loadCanonicalRelationsForMutation(fs21, box.path);
+    const kind = normalizeRelationKind(input.kind);
+    const direction = normalizeRelationDirection(input.direction);
+    const label = normalizeRelationLabel(input.label);
+    const target = normalizeRelationTarget(input.target);
+    assertResolvedTargetUsable(tent, target);
+    const existing = /* @__PURE__ */ new Set();
+    for (const b of tent.byId.values()) {
+      for (const r of b.relations) existing.add(r.id);
+    }
+    for (const r of base) existing.add(r.id);
+    const id = makeUniqueRelationId(existing, rand);
+    const record = { id, kind, direction, target };
+    if (label !== void 0) record.label = label;
+    const next = [...base.map(cloneRelation), record];
+    await writeBoxRelations(fs21, box, next);
+    box.relations = next.map(cloneRelation);
+    box.fm.relations = relationsToFrontmatterValue(next);
+    return cloneRelation(record);
+  });
+}
+async function updateRelation(fs21, sourceId, relationId, patch, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const box = tent.byId.get(sourceId);
+    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
+    assertSourceMutable(box);
+    const base = await loadCanonicalRelationsForMutation(fs21, box.path);
+    const idx = base.findIndex((r) => r.id === relationId);
+    if (idx < 0) {
+      throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
+    }
+    const current = cloneRelation(base[idx]);
+    if (patch.kind !== void 0) current.kind = normalizeRelationKind(patch.kind);
+    if (patch.direction !== void 0) {
+      current.direction = normalizeRelationDirection(patch.direction);
+    }
+    if (Object.prototype.hasOwnProperty.call(patch, "label")) {
+      const nextLabel = normalizeRelationLabel(patch.label);
+      if (nextLabel === void 0) delete current.label;
+      else current.label = nextLabel;
+    }
+    if (patch.target !== void 0) {
+      current.target = normalizeRelationTarget(patch.target);
+      assertResolvedTargetUsable(tent, current.target);
+    }
+    const next = base.map((r, i) => i === idx ? current : cloneRelation(r));
+    await writeBoxRelations(fs21, box, next);
+    box.relations = next.map(cloneRelation);
+    box.fm.relations = relationsToFrontmatterValue(next);
+    return cloneRelation(current);
+  });
+}
+async function deleteRelation(fs21, sourceId, relationId, loadedTent) {
+  return withTentMutation(fs21, async () => {
+    const tent = loadedTent ?? await loadTent(fs21);
+    const box = tent.byId.get(sourceId);
+    if (!box) throw new RelationError("NOT_FOUND", `Concept not found: ${sourceId}`);
+    assertSourceMutable(box);
+    const base = await loadCanonicalRelationsForMutation(fs21, box.path);
+    const idx = base.findIndex((r) => r.id === relationId);
+    if (idx < 0) {
+      throw new RelationError("NOT_FOUND", `Relation not found: ${relationId}`);
+    }
+    const next = base.filter((_, i) => i !== idx).map(cloneRelation);
+    await writeBoxRelations(fs21, box, next);
+    box.relations = next.map(cloneRelation);
+    const fmValue = relationsToFrontmatterValue(next);
+    if (fmValue === void 0) delete box.fm.relations;
+    else box.fm.relations = fmValue;
+    return { deleted: relationId };
+  });
+}
+
 // src/core/tree.ts
 function boxNotePath(boxPath) {
   return join(boxPath, baseName(boxPath) + ".md");
@@ -536,11 +1029,12 @@ async function loadBox(fs21, path22, parent, registry) {
   }
   const { data, body } = parsed;
   const name = baseName(path22);
-  const { fm, tags } = normalizeIdentity(data);
+  const { fm, tags, relations } = normalizeIdentity(data);
   const box = {
     id: fm.id,
     type: fm.type,
     tags,
+    relations,
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -582,7 +1076,11 @@ function normalizeIdentity(data) {
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
-  return { fm, tags };
+  const relations = normalizeRelationsList(data.relations);
+  const fmRelations = relationsToFrontmatterValue(relations);
+  if (fmRelations) fm.relations = fmRelations;
+  else delete fm.relations;
+  return { fm, tags, relations };
 }
 function parseNodeMode(value) {
   if (value === "archived") return "archived";
@@ -666,11 +1164,6 @@ function baseName(path22) {
 function dirName(path22) {
   const i = path22.lastIndexOf("/");
   return i === -1 ? "" : path22.slice(0, i);
-}
-
-// src/core/adapter.ts
-function withTentMutation(fs21, action) {
-  return fs21.withLock ? fs21.withLock(MUTATION_LOCK_PATH, action) : action();
 }
 
 // src/core/manifest.ts
@@ -1176,10 +1669,10 @@ async function writeBoxTags(fs21, box, tags) {
   const next = uniqueSorted(tags);
   if (next.length === 0) delete data.tags;
   else data.tags = next;
-  await fs21.writeFile(path22, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
+  await fs21.writeFile(path22, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
 }
 function normalizeRegistry2(value) {
-  if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
+  if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
   const tags = [];
   for (const valueTag of value.tags) {
     if (typeof valueTag !== "string") continue;
@@ -1213,13 +1706,13 @@ function normalizeTagList(values) {
 function uniqueSorted(values) {
   return [...new Set(values)].sort((a, b) => a.localeCompare(b));
 }
-function boxKeyOrder(existing) {
+function boxKeyOrder2(existing) {
   return [
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -1348,13 +1841,13 @@ function findRoleIndex(roles, ref) {
   return roles.findIndex((role) => role.name === key);
 }
 function normalizeRolesRegistryWithMigration(value) {
-  const root = isRecord3(value) ? value : {};
+  const root = isRecord4(value) ? value : {};
   const roles = [];
   let migrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
-      if (!isRecord3(item)) continue;
+      if (!isRecord4(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
       const role = normalizeRoleDefinition(item, {
@@ -1439,7 +1932,7 @@ function normalizeA2APolicy(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
+  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
   if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
@@ -1488,7 +1981,7 @@ async function writeJson(fs21, path22, value) {
   if (!await fs21.exists(".tent")) await fs21.mkdir(".tent");
   await fs21.writeFile(path22, JSON.stringify(value, null, 2) + "\n");
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -9788,16 +10281,20 @@ async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
     if (typeof data.id === "string" && data.id !== box.id) {
       throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
     }
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, rewriteOpts);
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
     if (!rewritten.changed) continue;
-    const afterPath = pathMap.get(box.path) ?? box.path;
     plannedWrites.push({
-      writePath: boxNotePath(afterPath),
+      writePath: restyleFromNotePath,
       originalPath: notePath,
       originalContent: raw,
       newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
     });
-    rewrittenNotes.push(afterPath);
+    rewrittenNotes.push(afterBoxPath);
   }
   await env.fs.move(oldPath, newPath);
   let identityRenamed = false;
@@ -9961,12 +10458,19 @@ function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, o
   if (isUnqualifiedName(pathPart)) {
     return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
   }
+  const restyleFrom = opts?.restyleFromNotePath ?? fromNotePath;
+  const sourceMoved = restyleFrom.replace(/\\/g, "/") !== fromNotePath.replace(/\\/g, "/");
+  const isRelativeForm = pathPart.startsWith("./") || pathPart.startsWith("../");
   const normalized = normalizeTarget(pathPart, fromNotePath);
-  const newAbs = resolveMappedPath(normalized, pathMap, oldPaths);
-  if (!newAbs) return void 0;
+  const mapped = resolveMappedPath(normalized, pathMap, oldPaths);
+  if (!mapped && !(isRelativeForm && sourceMoved)) {
+    return void 0;
+  }
+  const newAbs = mapped ?? normalized;
   const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
   const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
-  const styled = restyleRelative(pathPart, fromNotePath, absTarget, sourceHadMd);
+  const styled = restyleRelative(pathPart, restyleFrom, absTarget, sourceHadMd);
+  if (styled === pathPart) return void 0;
   return styled + tail;
 }
 function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
@@ -10056,6 +10560,237 @@ function relativeMarkdownPath(fromNotePath, toNotePath) {
   const up = fromParts.map(() => "..");
   const rel = [...up, ...toParts].join("/");
   return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+// src/core/moveOps.ts
+async function moveNode(env, conceptId, newParentId, position2) {
+  return withTentMutation(
+    env.fs,
+    async () => moveNodeUnlocked(env, conceptId, newParentId, position2)
+  );
+}
+async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
+  const id = conceptId.trim();
+  if (!id) throw new Error("Concept id is required for move.");
+  const tent = await loadTent(env.fs);
+  const moved = tent.byId.get(id);
+  if (!moved) throw new Error(`Concept not found: ${id}.`);
+  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  assertContentMutable(moved, "moved");
+  if (moved.invalid || moved.archived) {
+    throw new Error("Invalid or archived boxes cannot be moved.");
+  }
+  assertNotOperationalPath2(moved.path);
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const movedHit = findActiveOccupation(tent, moved, tasks);
+  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
+    throw new Error(
+      "Ranges with an active task cannot be moved; complete or interrupt the task first."
+    );
+  }
+  const parentBox = resolveNewParent(tent, newParentId);
+  if (parentBox) {
+    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parentBox, "used as move parent");
+    assertNotOperationalPath2(parentBox.path);
+  }
+  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : void 0;
+  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
+    throw new Error(
+      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
+    );
+  }
+  const newParentPath = parentBox ? parentBox.path : "";
+  if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
+    throw new Error("Cannot move a box into its own subtree.");
+  }
+  if (position2.mode !== "inside") {
+    const sibling = tent.byId.get(position2.siblingId);
+    if (!sibling) throw new Error(`Sibling not found: ${position2.siblingId}.`);
+    const siblingParentId = sibling.parent ? sibling.parent.id : null;
+    const destParentId = parentBox ? parentBox.id : null;
+    if (siblingParentId !== destParentId) {
+      throw new Error("before/after sibling must be under the destination parent.");
+    }
+    if (sibling.id === moved.id) {
+      throw new Error("Cannot position a box relative to itself.");
+    }
+  }
+  const oldPath = moved.path;
+  const movedName = moved.name;
+  const destination = join(newParentPath, movedName);
+  const parentChanged = dirName(oldPath) !== newParentPath;
+  if (parentChanged) {
+    if (await env.fs.exists(destination)) {
+      throw new Error(`Move target already exists: ${destination}.`);
+    }
+    const destSiblings = parentBox ? parentBox.children : tent.roots;
+    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
+      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
+    }
+  }
+  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
+  const siblings = (parentBox ? parentBox.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
+  let insertAt;
+  if (position2.mode === "inside") {
+    insertAt = siblings.length;
+  } else {
+    const idx = siblings.indexOf(position2.siblingId);
+    insertAt = idx === -1 ? siblings.length : position2.mode === "before" ? idx : idx + 1;
+  }
+  siblings.splice(insertAt, 0, moved.id);
+  if (!parentChanged) {
+    const order = await loadOrder(env.fs);
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+    const identityMap = {};
+    for (const box of collectSubtree3(moved)) {
+      identityMap[box.path] = box.path;
+      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
+        /\.md$/i,
+        ""
+      );
+    }
+    return {
+      id: moved.id,
+      oldPath,
+      path: oldPath,
+      pathMap: identityMap,
+      rewrittenNotes: []
+    };
+  }
+  const subtree2 = collectSubtree3(moved);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath3(oldPath, box.path);
+    const nextBoxPath = rel ? join(destination, rel) : destination;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: moved.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
+    }
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
+    if (!rewritten.changed) continue;
+    plannedWrites.push({
+      writePath: restyleFromNotePath,
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterBoxPath);
+  }
+  const orderBefore = await loadOrder(env.fs);
+  const orderSnapshot = JSON.stringify(orderBefore);
+  await env.fs.move(oldPath, destination);
+  const completedWrites = [];
+  try {
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+    const order = JSON.parse(orderSnapshot);
+    if (order[oldParentKey]) {
+      order[oldParentKey] = order[oldParentKey].filter((sid) => sid !== moved.id);
+    }
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await rollbackMove(env.fs, {
+      oldPath,
+      newPath: destination,
+      completedWrites,
+      orderSnapshot
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: moved.id,
+    oldPath,
+    path: destination,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackMove(fs21, args) {
+  const { oldPath, newPath, completedWrites, orderSnapshot } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs21.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+      await fs21.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await saveOrder(fs21, JSON.parse(orderSnapshot));
+  } catch (err) {
+    restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Move failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveNewParent(tent, newParentId) {
+  if (newParentId === null || newParentId === void 0 || newParentId === "") {
+    return null;
+  }
+  const parent = tent.byId.get(newParentId.trim());
+  if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
+  return parent;
+}
+function assertNotOperationalPath2(path22) {
+  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
+  }
+  const top = path22.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be moved as concepts.");
+  }
+}
+function collectSubtree3(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree3(child, out);
+  return out;
+}
+function relativePath3(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
 }
 
 // src/core/ops.ts
@@ -10236,12 +10971,19 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
   const tent = loadedTent ?? await loadTent(env.fs);
   const box = tent.byPath.get(boxPath);
   if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = ["id", "owner", "mode", "archived", "readable", "writable", "status"].filter(
-    (key) => key in patch
-  );
+  const reserved = [
+    "id",
+    "owner",
+    "mode",
+    "archived",
+    "readable",
+    "writable",
+    "status",
+    "relations"
+  ].filter((key) => key in patch);
   if (reserved.length > 0) {
     throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection.`
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs.`
     );
   }
   if (box.archived || box.mode === "archived") {
@@ -10268,7 +11010,7 @@ async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
   if (tagsTouched) {
     const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
     await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
@@ -10339,7 +11081,7 @@ async function patchFrontmatter(fs21, box, patch) {
     if (v === void 0) delete data[k];
     else data[k] = v;
   }
-  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder2(keyOrder)));
+  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
 }
 async function ensureDir3(fs21, path22) {
   if (path22 && !await fs21.exists(path22)) await fs21.mkdir(path22);
@@ -10355,7 +11097,7 @@ function normalizeTagPatch(value) {
   }
   return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
 }
-function boxKeyOrder2(existing) {
+function boxKeyOrder3(existing) {
   return [
     ...BOX_FRONTMATTER_KEY_ORDER,
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
@@ -10651,12 +11393,12 @@ function markdownAttachmentDestination(destination) {
   if (!/[\s<>()]/.test(destination)) return destination;
   return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
-function attachmentResult(relativePath3, label, sourceNotePath) {
-  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath3) : relativePath3;
+function attachmentResult(relativePath4, label, sourceNotePath) {
+  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath4) : relativePath4;
   return {
-    relativePath: relativePath3,
+    relativePath: relativePath4,
     markdown: `![](${markdownAttachmentDestination(target)})`,
-    artifactRef: { kind: "path", target: relativePath3, label }
+    artifactRef: { kind: "path", target: relativePath4, label }
   };
 }
 
@@ -10917,8 +11659,8 @@ function normalizeSystemRelativePath(raw) {
   if (parts.length === 0) return null;
   return parts.join("/");
 }
-function mimeFromPath(relativePath3) {
-  const ext = nodePath2.posix.extname(relativePath3).toLowerCase();
+function mimeFromPath(relativePath4) {
+  const ext = nodePath2.posix.extname(relativePath4).toLowerCase();
   return ACP_IMAGE_MIME_BY_EXT[ext];
 }
 function isAllowedImageMime(mime) {
@@ -10944,8 +11686,8 @@ function sniffImageMime(bytes) {
   }
   return void 0;
 }
-function fileUriForSystemRelative(relativePath3, systemRoot) {
-  const rel = normalizeSystemRelativePath(relativePath3);
+function fileUriForSystemRelative(relativePath4, systemRoot) {
+  const rel = normalizeSystemRelativePath(relativePath4);
   if (!rel || !systemRoot || !systemRoot.trim()) return void 0;
   const root = nodePath2.resolve(systemRoot.trim());
   const abs = nodePath2.resolve(root, ...rel.split("/"));
@@ -11522,7 +12264,7 @@ function isDeliveryPolicyValue(value) {
   return value === "manual" || value === "bypass" || value === "agent-decide";
 }
 function normalizeWorkspaceSettings(value) {
-  if (!isRecord4(value)) {
+  if (!isRecord5(value)) {
     return { ...DEFAULT_SETTINGS };
   }
   const out = { ...value };
@@ -11556,7 +12298,7 @@ async function loadWorkspaceSettings(fs21) {
 }
 async function updateWorkspaceSettings(fs21, patch) {
   return withTentMutation(fs21, async () => {
-    if (!isRecord4(patch)) {
+    if (!isRecord5(patch)) {
       throw new WorkspaceSettingsError(
         "INVALID_PATCH",
         "workspace.settings.update patch must be an object"
@@ -11614,14 +12356,14 @@ function stableStringify(value) {
 }
 function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
-  if (!isRecord4(value)) return value;
+  if (!isRecord5(value)) return value;
   const out = {};
   for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
     out[key] = sortKeysDeep(value[key]);
   }
   return out;
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -11749,7 +12491,7 @@ var AnnotationError = class extends Error {
   }
 };
 var ANNOTATION_STATUSES = /* @__PURE__ */ new Set(["open", "resolved"]);
-function isRecord5(value) {
+function isRecord6(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function isRequiredString(value) {
@@ -11879,7 +12621,7 @@ function projectAnnotation(record, documentBody) {
   };
 }
 function parseAnnotation(value) {
-  if (!isRecord5(value)) return null;
+  if (!isRecord6(value)) return null;
   const {
     id,
     nodeId,
@@ -11913,7 +12655,7 @@ function parseAnnotation(value) {
   };
 }
 function parseAnnotationFile(value) {
-  if (!isRecord5(value) || !Array.isArray(value.annotations)) return null;
+  if (!isRecord6(value) || !Array.isArray(value.annotations)) return null;
   const annotations = [];
   for (const item of value.annotations) {
     const parsed = parseAnnotation(item);
@@ -12592,14 +13334,14 @@ function assertSessionId(sessionId) {
 function isNonEmptyString(value) {
   return typeof value === "string" && value.length > 0;
 }
-function isPlainObject(value) {
+function isPlainObject2(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isSessionState(value) {
   return typeof value === "string" && SESSION_STATES.has(value);
 }
 function parseSessionRecord(data, sessionId) {
-  if (!isPlainObject(data)) return null;
+  if (!isPlainObject2(data)) return null;
   if (!isNonEmptyString(data.id) || data.id !== sessionId) return null;
   if (!isNonEmptyString(data.profileId)) return null;
   if (!isNonEmptyString(data.adapterId)) return null;
@@ -12642,11 +13384,11 @@ function parseSessionRecord(data, sessionId) {
     if (typeof data.contextRestored !== "boolean") return null;
   }
   if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
-    if (!isPlainObject(data.runtimeWorkspace)) return null;
+    if (!isPlainObject2(data.runtimeWorkspace)) return null;
     if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
   }
   if ("workspaceLane" in data && data.workspaceLane !== void 0) {
-    if (!isPlainObject(data.workspaceLane)) return null;
+    if (!isPlainObject2(data.workspaceLane)) return null;
     const lane = data.workspaceLane;
     if (!isNonEmptyString(lane.workspace)) return null;
     if (!isNonEmptyString(lane.worktree)) return null;
@@ -12656,7 +13398,7 @@ function parseSessionRecord(data, sessionId) {
     }
   }
   if ("profileSnapshot" in data && data.profileSnapshot !== void 0) {
-    if (!isPlainObject(data.profileSnapshot)) return null;
+    if (!isPlainObject2(data.profileSnapshot)) return null;
   }
   return data;
 }
@@ -12837,7 +13579,7 @@ var A2A_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
 function cloneApproval(item) {
   return { ...item };
 }
-function isRecord6(value) {
+function isRecord7(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString2(value) {
@@ -12850,7 +13592,7 @@ function isValidDate2(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseA2AApproval(value) {
-  if (!isRecord6(value)) return null;
+  if (!isRecord7(value)) return null;
   const {
     id,
     workspaceId,
@@ -13026,7 +13768,7 @@ var USER_ASK_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "cancelled"
 ]);
-function isRecord7(value) {
+function isRecord8(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString3(value) {
@@ -13039,13 +13781,13 @@ function isValidDate3(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseChoice(value) {
-  if (!isRecord7(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
+  if (!isRecord8(value) || !isRequiredString3(value.id) || !isRequiredString3(value.label)) {
     return null;
   }
   return { id: value.id, label: value.label };
 }
 function parseAsk(value) {
-  if (!isRecord7(value)) return null;
+  if (!isRecord8(value)) return null;
   const {
     id,
     workspaceId,
@@ -13396,7 +14138,7 @@ function normalizeTaskInputKind(kind) {
   if (kind === "review-feedback") return "review-feedback";
   return "user-input";
 }
-function isRecord8(value) {
+function isRecord9(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString4(value) {
@@ -13409,7 +14151,7 @@ function isValidDate4(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseInput(value) {
-  if (!isRecord8(value)) return null;
+  if (!isRecord9(value)) return null;
   const {
     id,
     workspaceId,
@@ -14064,6 +14806,14 @@ var CLIENT_METHODS = [
    */
   "docs.rename",
   /**
+   * User-only structural move / reparent (MutationBus).
+   * Resolve moved node + destination by cx-; require expectedPath (stale → -32009 path_stale).
+   * Reparent rewrites path links; same-parent reorder is order-only.
+   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   * Canonical name is docs.move — no docs.reparent alias.
+   */
+  "docs.move",
+  /**
    * Set Node mode (editable | archived). Sole mode mutation RPC.
    * Ordinary docs.write cannot set mode/id/collaboration reserved fields.
    */
@@ -14098,6 +14848,15 @@ var CLIENT_METHODS = [
    * Does not prune the global registry. Success emits concept.changed reason docs.tag.remove.
    */
   "docs.tag.remove",
+  /**
+   * First-class semantic Node relations (source frontmatter `relations` array).
+   * list is read-only; create/update/delete are user-only MutationBus + source baseEtag.
+   * Not Markdown/wiki body links; kind is an open identifier (no registry).
+   */
+  "relation.list",
+  "relation.create",
+  "relation.update",
+  "relation.delete",
   "registry.types",
   /**
    * User-only custom secondary type create (MutationBus).
@@ -14118,7 +14877,9 @@ var CLIENT_METHODS = [
   "registry.tag.create",
   /**
    * User-only global tag delete + cascade off all Nodes (MutationBus).
-   * Success emits registry.tags.updated.
+   * Success emits exactly one registry.tags.updated (no per-Node concept.changed).
+   * Clients must treat that event as invalidating tag candidates and graph/node
+   * projections whose tags may have been rewritten by the cascade.
    */
   "registry.tag.delete",
   "registry.roles",
@@ -14178,23 +14939,39 @@ var CLIENT_METHODS = [
   "delivery.list",
   "delivery.get",
   /**
-   * Stable box collaboration projection (task-api §2.3).
+   * @deprecated Prefer node.collaboration (V0.2). Migration-only.
+   * Stable box collaboration projection (legacy task-api §2.3).
    * Params: workspaceId + id|path|boxId (same resolver as docs.get).
    * Result: { workspaceId, boxId, status, assignee?, activeTaskId? }.
    */
   "box.projection",
   /**
+   * @deprecated Prefer node.collaborations (V0.2). Migration-only.
    * Batch box collaboration projection (same item semantics as box.projection).
    * Params: workspaceId + ids: string[] (stable cx- handles).
    * Result: { workspaceId, projections } with projections ordered as ids.
-   * Avoids UI N+1 fan-out; does not invent a second collab state machine.
    */
   "box.projections",
   /**
+   * V0.2 Node-keyed collaboration projection (task-api §2.3).
+   * Params: workspaceId + id|path|boxId (same resolver as docs.get).
+   * Result: { workspaceId, nodeId, task, session, delivery } with nulls when idle.
+   * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
+   */
+  "node.collaboration",
+  /**
+   * V0.2 batch Node collaboration projection (same item semantics as node.collaboration).
+   * Params: workspaceId + ids: string[] (stable cx- handles).
+   * Result: { workspaceId, items } ordered as ids. Empty ids → empty items.
+   * Loads tent/tasks/sessions/deliveries once per batch (no N+1).
+   */
+  "node.collaborations",
+  /**
    * Workspace-level graph projection for Working-set Canvas.
    * Params: workspaceId.
-   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki } }.
-   * Node summaries only (no body); unresolved markdown/wiki links kept explicitly.
+   * Result: { workspaceId, nodes, edges: { parent, markdown, wiki, relation } }.
+   * Node summaries only (no body); unresolved markdown/wiki links and relation targets kept explicitly.
+   * Semantic relation edges are a separate collection — never merged with parent/markdown/wiki.
    * Placement / view state is never projected or persisted here.
    */
   "graph.projection",
@@ -14272,11 +15049,12 @@ var RESERVED_DOCS_WRITE_FIELDS = [
   "archived",
   ...PROTECTED_COLLAB_FIELDS
 ];
-var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags"];
+var SEMANTIC_DOCS_WRITE_FIELDS = ["type", "tags", "relations"];
 var RPC_UNAUTHORIZED = -32001;
 var RPC_A2A_DENIED = -32020;
 var RPC_A2A_ASK = -32021;
 var RPC_LIFECYCLE = -32022;
+var RPC_COLLAB_AMBIGUOUS = -32023;
 
 // src/service/profiles.ts
 import * as fs14 from "node:fs/promises";
@@ -16213,7 +16991,7 @@ function readBootstrapImageClientOptions(plan) {
   if (systemRoot) {
     out.bootstrapImageSystemRoot = systemRoot;
     const nodeFs3 = new NodeFs(systemRoot);
-    out.readBootstrapImageBinary = (relativePath3) => nodeFs3.readBinary(relativePath3);
+    out.readBootstrapImageBinary = (relativePath4) => nodeFs3.readBinary(relativePath4);
   }
   return out;
 }
@@ -16639,7 +17417,8 @@ function createCodexAcpAdapter(options) {
 
 // src/adapters/claude-acp/types.ts
 var CLAUDE_ACP_ADAPTER_ID = "claude-acp";
-var CLAUDE_ACP_NPX_PACKAGE = "@agentclientprotocol/claude-agent-acp@0.62.0";
+var CLAUDE_ACP_NPX_VERSION = "0.62.0";
+var CLAUDE_ACP_NPX_PACKAGE = `@agentclientprotocol/claude-agent-acp@${CLAUDE_ACP_NPX_VERSION}`;
 
 // src/adapters/claude-acp/index.ts
 var ClaudeAcpProviderAdapter = class {
@@ -18496,6 +19275,8 @@ async function dispatchMethod(ctx, method, params) {
         return docsFork(ctx, p);
       case "docs.rename":
         return docsRename(ctx, p);
+      case "docs.move":
+        return docsMove(ctx, p);
       case "docs.setMode":
         return docsSetMode(ctx, p);
       case "docs.search":
@@ -18512,6 +19293,14 @@ async function dispatchMethod(ctx, method, params) {
         return docsTagAdd(ctx, p);
       case "docs.tag.remove":
         return docsTagRemove(ctx, p);
+      case "relation.list":
+        return relationList(ctx, p);
+      case "relation.create":
+        return relationCreate(ctx, p);
+      case "relation.update":
+        return relationUpdate(ctx, p);
+      case "relation.delete":
+        return relationDelete(ctx, p);
       case "registry.types":
         return registryTypes(ctx, p);
       case "registry.type.create":
@@ -18592,6 +19381,10 @@ async function dispatchMethod(ctx, method, params) {
         return boxProjectionRpc(ctx, p);
       case "box.projections":
         return boxProjectionsRpc(ctx, p);
+      case "node.collaboration":
+        return nodeCollaborationRpc(ctx, p);
+      case "node.collaborations":
+        return nodeCollaborationsRpc(ctx, p);
       case "graph.projection":
         return graphProjectionRpc(ctx, p);
       case "proposal.list":
@@ -19477,6 +20270,234 @@ async function docsTagRemove(ctx, p) {
     };
   });
 }
+function projectRelationWire(record) {
+  const out = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction,
+    target: "nodeId" in record.target ? { nodeId: record.target.nodeId } : { unresolved: record.target.unresolved }
+  };
+  if (record.label !== void 0) out.label = record.label;
+  return out;
+}
+function projectIncomingWire(view) {
+  return {
+    ...projectRelationWire(view),
+    sourceId: view.sourceId,
+    sourcePath: view.sourcePath
+  };
+}
+async function relationList(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept2(tent, p);
+  try {
+    const listed = listRelationsForNode(tent, concept.id);
+    return {
+      workspaceId,
+      nodeId: listed.nodeId,
+      path: listed.path,
+      outgoing: listed.outgoing.map(projectRelationWire),
+      incoming: listed.incoming.map(projectIncomingWire)
+    };
+  } catch (err) {
+    throw mapRelationError(err, "relation.list");
+  }
+}
+async function relationCreate(ctx, p) {
+  requireUserActor(p, "relation.create");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const kind = requireString(p, "kind");
+  const direction = requireString(p, "direction");
+  const label = optionalString(p, "label");
+  if (!isRecord10(p.target)) {
+    throw new RpcError(-32602, "relation.create requires target: { nodeId } | { unresolved }");
+  }
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "relation.create");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.create");
+    ctx.host.markSelfWrite(workspaceId);
+    let record;
+    try {
+      record = await createRelation(
+        mount.env.fs,
+        concept.id,
+        {
+          kind,
+          direction,
+          ...label !== void 0 ? { label } : {},
+          target: p.target
+        },
+        Math.random,
+        tent
+      );
+    } catch (err) {
+      throw mapRelationError(err, "relation.create");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.create",
+        relationId: record.id
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      relation: projectRelationWire(record)
+    };
+  });
+}
+async function relationUpdate(ctx, p) {
+  requireUserActor(p, "relation.update");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const relationId = requireString(p, "relationId");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  const patch = {};
+  if (Object.prototype.hasOwnProperty.call(p, "kind")) {
+    patch.kind = requireString(p, "kind");
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "direction")) {
+    patch.direction = requireString(p, "direction");
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "label")) {
+    const rawLabel = p.label;
+    if (rawLabel === null) patch.label = null;
+    else if (typeof rawLabel === "string") patch.label = rawLabel;
+    else throw new RpcError(-32602, "relation.update label must be string or null");
+  }
+  if (Object.prototype.hasOwnProperty.call(p, "target")) {
+    if (!isRecord10(p.target)) {
+      throw new RpcError(-32602, "relation.update target must be { nodeId } | { unresolved }");
+    }
+    patch.target = p.target;
+  }
+  if (Object.keys(patch).length === 0) {
+    throw new RpcError(
+      -32602,
+      "relation.update requires at least one of kind, direction, label, target"
+    );
+  }
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "relation.update");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.update");
+    ctx.host.markSelfWrite(workspaceId);
+    let record;
+    try {
+      record = await updateRelation(mount.env.fs, concept.id, relationId, patch, tent);
+    } catch (err) {
+      throw mapRelationError(err, "relation.update");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.update",
+        relationId: record.id
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      relation: projectRelationWire(record)
+    };
+  });
+}
+async function relationDelete(ctx, p) {
+  requireUserActor(p, "relation.delete");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const relationId = requireString(p, "relationId");
+  const baseEtag = optionalString(p, "baseEtag") ?? optionalString(p, "etag");
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = resolveConcept2(tent, p);
+    assertDocsModeMutable(concept, "relation.delete");
+    const notePath = boxNotePath(concept.path);
+    await assertDocsSemanticBaseEtag(mount.env.fs, notePath, concept, baseEtag, "relation.delete");
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      await deleteRelation(mount.env.fs, concept.id, relationId, tent);
+    } catch (err) {
+      throw mapRelationError(err, "relation.delete");
+    }
+    const afterRaw = await mount.env.fs.readFile(notePath);
+    ctx.events.emit(
+      "concept.changed",
+      workspaceId,
+      {
+        id: concept.id,
+        path: concept.path,
+        reason: "relation.delete",
+        relationId
+      },
+      "self"
+    );
+    return {
+      workspaceId,
+      id: concept.id,
+      path: concept.path,
+      etag: contentEtag(afterRaw),
+      deleted: relationId
+    };
+  });
+}
+function mapRelationError(err, surface) {
+  if (err instanceof RpcError) return err;
+  if (err instanceof RelationError) {
+    if (err.code === "NOT_FOUND") return new RpcError(-32004, err.message);
+    if (err.code === "ARCHIVED" || err.code === "INVALID") {
+      return new RpcError(-32010, `${surface} rejected: ${err.message}`, { code: err.code });
+    }
+    if (err.code === "CORRUPT") {
+      return new RpcError(-32602, err.message, {
+        code: "relations_corrupt",
+        reason: err.code
+      });
+    }
+    if (err.code === "TARGET" || err.code === "INVALID_INPUT") {
+      return new RpcError(-32602, err.message, { code: err.code });
+    }
+    return new RpcError(-32e3, err.message, { code: err.code });
+  }
+  const message2 = err instanceof Error ? err.message : `${surface} failed`;
+  if (/not found|Box not found|Concept not found|Relation not found/i.test(message2)) {
+    return new RpcError(-32004, message2);
+  }
+  if (/archived|invalid/i.test(message2)) {
+    return new RpcError(-32010, message2);
+  }
+  if (/corrupt|non-canonical|unrecognized field|duplicate id/i.test(message2)) {
+    return new RpcError(-32602, message2, { code: "relations_corrupt" });
+  }
+  return new RpcError(-32e3, message2);
+}
+function isRecord10(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
 function emitRegistryTypesUpdated(ctx, workspaceId, payload) {
   ctx.events.emit(
     "registry.types.updated",
@@ -20277,6 +21298,102 @@ function mapDocsRenameError(err) {
     return new RpcError(-32004, message2);
   }
   if (/already exists|cannot be empty|path separators|control characters|newlines|longer than|Invalid or archived|Claimed ranges|Cannot rename|System directories|system pipelines|sibling concept|Identity note missing|id drift|immutable/i.test(
+    message2
+  )) {
+    return new RpcError(-32602, message2);
+  }
+  return new RpcError(-32e3, message2);
+}
+async function docsMove(ctx, p) {
+  requireUserActor(p, "docs.move");
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const id = requireString(p, "id");
+  const expectedPath = requireString(p, "expectedPath");
+  if ("newId" in p) {
+    throw new RpcError(-32602, "docs.move cannot change concept id; cx- is immutable");
+  }
+  if ("newParentId" in p && p.newParentId !== null && p.newParentId !== void 0 && typeof p.newParentId !== "string") {
+    throw new RpcError(-32602, "docs.move newParentId must be a string or null");
+  }
+  const newParentId = p.newParentId === null || p.newParentId === void 0 || p.newParentId === "" ? null : String(p.newParentId);
+  const position2 = parseMovePosition(p.position);
+  return ctx.mutations.run(workspaceId, async () => {
+    const tent = await loadTent(mount.env.fs);
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    const normalizedExpected = expectedPath.replace(/\\/g, "/").replace(/^\.\//, "");
+    const currentPath = concept.path;
+    if (currentPath !== normalizedExpected) {
+      throw new RpcError(-32009, "path stale", {
+        code: "path_stale",
+        currentPath,
+        expectedPath: normalizedExpected,
+        id: concept.id
+      });
+    }
+    if (newParentId !== null) {
+      const parent = tent.byId.get(newParentId);
+      if (!parent) {
+        throw new RpcError(-32004, `Target parent not found: ${newParentId}`);
+      }
+    }
+    ctx.host.markSelfWrite(workspaceId);
+    try {
+      const result = await moveNode(mount.env, concept.id, newParentId, position2);
+      ctx.events.emit(
+        "concept.changed",
+        workspaceId,
+        {
+          id: result.id,
+          path: result.path,
+          oldPath: result.oldPath,
+          reason: "docs.move",
+          pathMap: result.pathMap
+        },
+        "self"
+      );
+      return {
+        workspaceId,
+        id: result.id,
+        cx: result.id,
+        path: result.path,
+        oldPath: result.oldPath,
+        pathMap: result.pathMap,
+        rewrittenNotes: result.rewrittenNotes
+      };
+    } catch (err) {
+      throw mapDocsMoveError(err);
+    }
+  });
+}
+function parseMovePosition(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new RpcError(-32602, "docs.move position must be an object");
+  }
+  const pos = raw;
+  const mode = pos.mode;
+  if (mode === "inside") {
+    return { mode: "inside" };
+  }
+  if (mode === "before" || mode === "after") {
+    const siblingId = pos.siblingId;
+    if (typeof siblingId !== "string" || !siblingId.trim()) {
+      throw new RpcError(-32602, `docs.move position.${mode} requires siblingId`);
+    }
+    return { mode, siblingId: siblingId.trim() };
+  }
+  throw new RpcError(-32602, "docs.move position.mode must be inside, before, or after");
+}
+function mapDocsMoveError(err) {
+  if (err instanceof RpcError) return err;
+  const message2 = err instanceof Error ? err.message : "docs.move failed";
+  if (/not found/i.test(message2)) {
+    return new RpcError(-32004, message2);
+  }
+  if (/already exists|Invalid or archived|Cannot move|active task|System directories|system pipelines|sibling concept|id drift|immutable|own subtree|relative to itself|destination parent|Concept id is required/i.test(
     message2
   )) {
     return new RpcError(-32602, message2);
@@ -21714,6 +22831,170 @@ async function boxProjectionsRpc(ctx, p) {
   }
   return { workspaceId, projections };
 }
+async function nodeCollaborationRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const tent = await loadTent(mount.env.fs);
+  const concept = resolveConcept2(tent, p);
+  if (concept.invalid) {
+    throw new RpcError(
+      -32004,
+      `Concept is invalid and has no collaboration projection: ${concept.path}`,
+      { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+    );
+  }
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const selected = resolveDirectActiveTaskForNode(concept.id, tasks);
+  const sessionsById = await loadSessionSummariesForCollaboration(
+    ctx,
+    selected ? collectExplicitSessionIds([selected]) : []
+  );
+  return projectNodeCollaborationFromSelected(
+    workspaceId,
+    concept.id,
+    selected,
+    deliveries,
+    sessionsById
+  );
+}
+async function nodeCollaborationsRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const idsRaw = p.ids;
+  if (!Array.isArray(idsRaw)) {
+    throw new RpcError(-32602, "node.collaborations requires ids: string[]");
+  }
+  const ids = [];
+  for (let i = 0; i < idsRaw.length; i++) {
+    const id = idsRaw[i];
+    if (typeof id !== "string" || !id.trim()) {
+      throw new RpcError(-32602, `node.collaborations ids[${i}] must be a non-empty string`);
+    }
+    ids.push(id.trim());
+  }
+  if (ids.length === 0) {
+    return { workspaceId, items: [] };
+  }
+  const tent = await loadTent(mount.env.fs);
+  const tasks = await loadTaskEnvelopes(mount.env.fs);
+  const deliveries = await loadDeliveries(mount.env.fs);
+  const selectedByNodeId = /* @__PURE__ */ new Map();
+  for (const id of ids) {
+    if (selectedByNodeId.has(id)) continue;
+    const concept = tent.byId.get(id);
+    if (!concept) {
+      throw new RpcError(-32004, `Concept not found: ${id}`);
+    }
+    if (concept.invalid) {
+      throw new RpcError(
+        -32004,
+        `Concept is invalid and has no collaboration projection: ${concept.path}`,
+        { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
+      );
+    }
+    selectedByNodeId.set(id, resolveDirectActiveTaskForNode(id, tasks));
+  }
+  const sessionsById = await loadSessionSummariesForCollaboration(
+    ctx,
+    collectExplicitSessionIds([...selectedByNodeId.values()])
+  );
+  const items = [];
+  for (const id of ids) {
+    items.push(
+      projectNodeCollaborationFromSelected(
+        workspaceId,
+        id,
+        selectedByNodeId.get(id) ?? null,
+        deliveries,
+        sessionsById
+      )
+    );
+  }
+  return { workspaceId, items };
+}
+async function loadSessionSummariesForCollaboration(ctx, sessionIds) {
+  const byId = /* @__PURE__ */ new Map();
+  for (const sessionId of sessionIds) {
+    if (byId.has(sessionId)) continue;
+    const rec = await ctx.runtime.registry.read(sessionId);
+    if (!rec) continue;
+    const probe = await ctx.runtime.probe(sessionId);
+    byId.set(sessionId, {
+      id: sessionId,
+      state: probe.state,
+      alive: probe.alive,
+      turnBusy: probe.turnBusy === true
+    });
+  }
+  return byId;
+}
+function collectExplicitSessionIds(selected) {
+  const seen = /* @__PURE__ */ new Set();
+  const out = [];
+  for (const task of selected) {
+    const sid = task?.sessionId?.trim();
+    if (!sid || seen.has(sid)) continue;
+    seen.add(sid);
+    out.push(sid);
+  }
+  return out;
+}
+function resolveDirectActiveTaskForNode(nodeId, tasks) {
+  const matches = tasks.filter(
+    (t) => t.claims.includes(nodeId) && isActiveTaskState(t.state)
+  );
+  if (matches.length === 0) return null;
+  if (matches.length === 1) return matches[0];
+  const taskIds = matches.map((t) => t.id || t.path);
+  throw new RpcError(
+    RPC_COLLAB_AMBIGUOUS,
+    `Multiple active tasks directly claim node ${nodeId}: ${taskIds.join(", ")}`,
+    { nodeId, taskIds }
+  );
+}
+function projectNodeCollaborationFromSelected(workspaceId, nodeId, activeTask, deliveries, sessionsById) {
+  if (!activeTask) {
+    return {
+      workspaceId,
+      nodeId,
+      task: null,
+      session: null,
+      delivery: null
+    };
+  }
+  const assigneeKind = taskAssigneeKind(activeTask);
+  const taskSummary = {
+    id: activeTask.id || activeTask.path,
+    state: activeTask.state,
+    assigneeKind
+  };
+  if (assigneeKind === "agentProfile") {
+    taskSummary.profileId = activeTask.role;
+  } else {
+    taskSummary.role = activeTask.role;
+  }
+  if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
+  if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
+  let session = null;
+  if (activeTask.sessionId) {
+    session = sessionsById.get(activeTask.sessionId) ?? null;
+  }
+  let delivery = null;
+  if (activeTask.activeDeliveryId) {
+    const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
+    if (found) {
+      delivery = { id: found.id, status: found.status };
+    }
+  }
+  return {
+    workspaceId,
+    nodeId,
+    task: taskSummary,
+    session,
+    delivery
+  };
+}
 async function graphProjectionRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
@@ -21764,6 +23045,7 @@ function buildGraphProjection(workspaceId, tent) {
   const parentEdges = [];
   const markdownEdges = [];
   const wikiEdges = [];
+  const relationEdges = [];
   const visit = (box, parentId) => {
     nodes.push(projectGraphNodeSummary(box));
     parentEdges.push({ parentId, childId: box.id });
@@ -21794,13 +23076,33 @@ function buildGraphProjection(workspaceId, tent) {
     for (const child of box.children) emitLinks(child);
   };
   for (const root of tent.roots) emitLinks(root);
+  const emitRelations = (box) => {
+    for (const rel of box.relations) {
+      const edge = {
+        id: rel.id,
+        fromId: box.id,
+        kind: rel.kind,
+        direction: rel.direction
+      };
+      if (rel.label !== void 0) edge.label = rel.label;
+      if ("nodeId" in rel.target) {
+        edge.toId = rel.target.nodeId;
+      } else {
+        edge.unresolved = rel.target.unresolved;
+      }
+      relationEdges.push(edge);
+    }
+    for (const child of box.children) emitRelations(child);
+  };
+  for (const root of tent.roots) emitRelations(root);
   return {
     workspaceId,
     nodes,
     edges: {
       parent: parentEdges,
       markdown: markdownEdges,
-      wiki: wikiEdges
+      wiki: wikiEdges,
+      relation: relationEdges
     }
   };
 }
@@ -24659,7 +25961,7 @@ function assertSemanticDocsWriteFields(frontmatter) {
   if (hit.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    `docs.write cannot set semantic fields: ${hit.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove / relation.create|update|delete.`,
     { fields: hit }
   );
 }
@@ -24684,16 +25986,30 @@ function assertRawDocsWriteSemantic(disk, next) {
   if (diskTags !== nextTags) {
     changed.push("tags");
   }
+  const diskRelations = JSON.stringify(normalizeRelationsForCompare(disk.relations));
+  const nextRelations = JSON.stringify(normalizeRelationsForCompare(next.relations));
+  if (diskRelations !== nextRelations) {
+    changed.push("relations");
+  }
   if (changed.length === 0) return;
   throw new RpcError(
     -32010,
-    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove.`,
+    `docs.write cannot change semantic fields: ${changed.join(", ")}. Use docs.setType / docs.tags.set / docs.tag.add / docs.tag.remove / relation.create|update|delete.`,
     { fields: changed }
   );
 }
 function normalizeTagsForCompare(value) {
   if (!Array.isArray(value)) return [];
   return value.filter((item) => typeof item === "string").map((t) => t.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+}
+function normalizeRelationsForCompare(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => isRecord10(item)).map((item) => {
+    const keys = Object.keys(item).sort((a, b) => a.localeCompare(b));
+    const ordered = {};
+    for (const k of keys) ordered[k] = item[k];
+    return ordered;
+  }).sort((a, b) => String(a.id ?? "").localeCompare(String(b.id ?? "")));
 }
 function tagsFromFrontmatterData(data) {
   if (!Array.isArray(data.tags)) return [];
@@ -25541,7 +26857,7 @@ var TOOL_APPROVAL_STATUSES = /* @__PURE__ */ new Set([
   "denied",
   "expired"
 ]);
-function isRecord9(value) {
+function isRecord11(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString5(value) {
@@ -25554,7 +26870,7 @@ function isValidDate6(value) {
   return Number.isFinite(Date.parse(value));
 }
 function parseApproval(value) {
-  if (!isRecord9(value)) return null;
+  if (!isRecord11(value)) return null;
   const {
     id,
     workspaceId,
@@ -25576,7 +26892,7 @@ function parseApproval(value) {
   }
   const parsedOptions = [];
   for (const option of options) {
-    if (!isRecord9(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
+    if (!isRecord11(option) || !isRequiredString5(option.optionId) || !isOptionalString4(option.kind) || !isOptionalString4(option.name)) {
       return null;
     }
     parsedOptions.push({
@@ -25958,7 +27274,7 @@ import * as path17 from "node:path";
 function cloneDraft(item) {
   return { ...item };
 }
-function isRecord10(value) {
+function isRecord12(value) {
   return !!value && typeof value === "object" && !Array.isArray(value);
 }
 function isRequiredString6(value) {
@@ -25974,7 +27290,7 @@ function draftKey(workspaceId, taskPath) {
   return `${workspaceId}::${taskPath}`;
 }
 function parseDraft(value) {
-  if (!isRecord10(value)) return null;
+  if (!isRecord12(value)) return null;
   const {
     id,
     workspaceId,

@@ -34,6 +34,7 @@ function parseFrontmatter(raw) {
     const line = lines[i];
     const trimmed = line.trim();
     if (!trimmed || trimmed.startsWith("#")) continue;
+    if (/^-\s*/.test(trimmed)) continue;
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
     const key = trimmed.slice(0, colon).trim();
@@ -74,37 +75,166 @@ function coerce(v) {
   if (v.startsWith("'") && v.endsWith("'")) {
     return v.slice(1, -1).replace(/''/g, "'");
   }
+  if (v.startsWith("{")) {
+    if (!v.endsWith("}")) {
+      throw new Error("Invalid frontmatter YAML: unterminated flow mapping.");
+    }
+    return parseFlowMapping(v);
+  }
   if (v.startsWith("[") && !v.endsWith("]")) {
     throw new Error("Invalid frontmatter YAML: unterminated flow array.");
   }
   if (v.startsWith("[") && v.endsWith("]")) {
     const inner = v.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerce(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerce(item.trim()));
   }
   return v;
 }
 function isBlockSequenceStart(line) {
   return line !== void 0 && /^\s*-\s*/.test(line);
 }
+function leadingIndent(line) {
+  const match = line.match(/^(\s*)/);
+  return match ? match[1].length : 0;
+}
 function readBlockSequence(lines, startIndex, key) {
   const value = [];
   let i = startIndex;
-  for (; i < lines.length; i++) {
+  while (i < lines.length) {
     const line = lines[i];
-    const match = line.match(/^\s*-\s*(.*)$/);
-    if (!match) break;
-    const item = stripInlineComment(match[1].trim());
-    value.push(coerceForKey(key, item));
+    const itemMatch = line.match(/^(\s*)-\s*(.*)$/);
+    if (!itemMatch) break;
+    const itemIndent = itemMatch[1].length;
+    const rest = stripInlineComment(itemMatch[2].trim());
+    i += 1;
+    const inlineMap = rest.match(/^([A-Za-z_][\w-]*)\s*:\s*(.*)$/);
+    if (inlineMap && !(rest.startsWith("{") || rest.startsWith("["))) {
+      const obj = {};
+      const firstKey = inlineMap[1];
+      const firstVal = stripInlineComment(inlineMap[2].trim());
+      obj[firstKey] = firstVal === "" ? void 0 : coerceForKey(key, firstVal);
+      while (i < lines.length) {
+        const cont = lines[i];
+        if (!cont.trim() || cont.trim().startsWith("#")) {
+          i += 1;
+          continue;
+        }
+        if (leadingIndent(cont) <= itemIndent) break;
+        if (/^\s*-\s*/.test(cont)) break;
+        const trimmed = cont.trim();
+        const colon = trimmed.indexOf(":");
+        if (colon === -1) break;
+        const fieldKey = trimmed.slice(0, colon).trim();
+        const fieldVal = stripInlineComment(trimmed.slice(colon + 1).trim());
+        obj[fieldKey] = fieldVal === "" ? void 0 : coerceForKey(key, fieldVal);
+        i += 1;
+      }
+      for (const k of Object.keys(obj)) {
+        if (obj[k] === void 0) delete obj[k];
+      }
+      value.push(obj);
+      continue;
+    }
+    value.push(rest === "" ? null : coerceForKey(key, rest));
   }
   return { value, nextIndex: i };
+}
+function parseFlowMapping(raw) {
+  const inner = raw.slice(1, -1).trim();
+  if (!inner) return {};
+  const parts = splitFlowCollection(inner);
+  const out = {};
+  for (const part of parts) {
+    const trimmed = part.trim();
+    if (!trimmed) continue;
+    const colon = findTopLevelColon(trimmed);
+    if (colon === -1) {
+      throw new Error(`Invalid frontmatter YAML: flow mapping entry missing colon: ${trimmed}`);
+    }
+    const k = trimmed.slice(0, colon).trim();
+    const v = trimmed.slice(colon + 1).trim();
+    if (!k) throw new Error("Invalid frontmatter YAML: empty flow mapping key.");
+    out[k] = v === "" ? null : coerce(v);
+  }
+  return out;
+}
+function findTopLevelColon(s) {
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < s.length; i++) {
+    const ch = s[i];
+    if (quote) {
+      if (ch === "\\" && quote === '"') {
+        i += 1;
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      continue;
+    }
+    if (ch === ":" && depth === 0) return i;
+  }
+  return -1;
+}
+function splitFlowCollection(inner) {
+  const items = [];
+  let current = "";
+  let depth = 0;
+  let quote = null;
+  for (let i = 0; i < inner.length; i++) {
+    const ch = inner[i];
+    if (quote) {
+      current += ch;
+      if (ch === "\\" && quote === '"' && i + 1 < inner.length) {
+        current += inner[++i];
+        continue;
+      }
+      if (ch === quote) quote = null;
+      continue;
+    }
+    if (ch === '"' || ch === "'") {
+      quote = ch;
+      current += ch;
+      continue;
+    }
+    if (ch === "{" || ch === "[") {
+      depth += 1;
+      current += ch;
+      continue;
+    }
+    if (ch === "}" || ch === "]") {
+      depth = Math.max(0, depth - 1);
+      current += ch;
+      continue;
+    }
+    if (ch === "," && depth === 0) {
+      items.push(current);
+      current = "";
+      continue;
+    }
+    current += ch;
+  }
+  items.push(current);
+  return items;
 }
 function coerceForKey(key, raw) {
   if (key !== "commits") return coerce(raw);
   if (raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1).trim();
     if (!inner) return [];
-    return splitFlowArray(inner).map((item) => coerceCommitItem(item.trim()));
+    return splitFlowCollection(inner).map((item) => coerceCommitItem(item.trim()));
   }
   return coerceCommitItem(raw);
 }
@@ -158,31 +288,8 @@ function normalizeWindowsPathValue(value) {
   if (typeof value !== "string" || !/^[A-Za-z]:\\/.test(value)) return value;
   return value.replace(/\\{2,}/g, "\\");
 }
-function splitFlowArray(inner) {
-  const items = [];
-  let current = "";
-  let quote = null;
-  for (let i = 0; i < inner.length; i++) {
-    const ch = inner[i];
-    if (quote) {
-      current += ch;
-      if (ch === quote && inner[i - 1] !== "\\") quote = null;
-      continue;
-    }
-    if (ch === '"' || ch === "'") {
-      quote = ch;
-      current += ch;
-      continue;
-    }
-    if (ch === ",") {
-      items.push(current);
-      current = "";
-      continue;
-    }
-    current += ch;
-  }
-  items.push(current);
-  return items;
+function isPlainObject(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 function serializeFrontmatter(data, body, keyOrder = []) {
   const keys = orderedKeys(data, keyOrder);
@@ -190,6 +297,17 @@ function serializeFrontmatter(data, body, keyOrder = []) {
   for (const k of keys) {
     const val = data[k];
     if (val === void 0) continue;
+    if (Array.isArray(val) && val.some(isPlainObject)) {
+      lines.push(`${k}:`);
+      if (val.length === 0) {
+        lines[lines.length - 1] = `${k}: []`;
+      } else {
+        for (const item of val) {
+          lines.push(`  - ${emit(item)}`);
+        }
+      }
+      continue;
+    }
     lines.push(`${k}: ${emit(val)}`);
   }
   lines.push(FENCE);
@@ -221,8 +339,13 @@ function emit(v) {
     if (v.length === 0) return "[]";
     return "[" + v.map((item) => emit(item)).join(", ") + "]";
   }
+  if (isPlainObject(v)) {
+    const keys = Object.keys(v).filter((k) => v[k] !== void 0);
+    if (keys.length === 0) return "{}";
+    return "{" + keys.map((k) => `${k}: ${emit(v[k])}`).join(", ") + "}";
+  }
   const s = String(v);
-  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]]/.test(s) || s !== s.trim() || s === "") {
+  if (/^-?(?:\d+|\d*\.\d+)$/.test(s) || /[:,#\[\]{}]/.test(s) || s !== s.trim() || s === "") {
     return JSON.stringify(s);
   }
   return s;
@@ -232,7 +355,7 @@ var init_frontmatter = __esm({
   "src/core/frontmatter.ts"() {
     "use strict";
     FENCE = "---";
-    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode"];
+    BOX_FRONTMATTER_KEY_ORDER = ["id", "type", "tags", "mode", "relations"];
   }
 });
 
@@ -501,6 +624,155 @@ var init_typeRegistry = __esm({
   }
 });
 
+// src/core/adapter.ts
+function withTentMutation(fs10, action) {
+  return fs10.withLock ? fs10.withLock(MUTATION_LOCK_PATH, action) : action();
+}
+var init_adapter = __esm({
+  "src/core/adapter.ts"() {
+    "use strict";
+    init_paths();
+  }
+});
+
+// src/core/relations.ts
+function isRecord2(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function isRelationId(id) {
+  return id.startsWith(RELATION_ID_PREFIX) && id.length > RELATION_ID_PREFIX.length;
+}
+function normalizeRelationTarget(raw) {
+  if (!isRecord2(raw)) {
+    throw new RelationError("INVALID_INPUT", "relation target must be an object");
+  }
+  const hasNodeId = Object.prototype.hasOwnProperty.call(raw, "nodeId");
+  const hasUnresolved = Object.prototype.hasOwnProperty.call(raw, "unresolved");
+  if (hasNodeId && hasUnresolved) {
+    throw new RelationError(
+      "INVALID_INPUT",
+      "relation target must be exactly one of { nodeId } or { unresolved }"
+    );
+  }
+  if (hasNodeId) {
+    if (typeof raw.nodeId !== "string" || !raw.nodeId.trim()) {
+      throw new RelationError("INVALID_INPUT", "relation target.nodeId must be a non-empty string");
+    }
+    return { nodeId: raw.nodeId.trim() };
+  }
+  if (hasUnresolved) {
+    if (typeof raw.unresolved !== "string" || !raw.unresolved.trim()) {
+      throw new RelationError(
+        "INVALID_INPUT",
+        "relation target.unresolved must be a non-empty string"
+      );
+    }
+    return { unresolved: raw.unresolved.trim() };
+  }
+  throw new RelationError(
+    "INVALID_INPUT",
+    "relation target must be exactly one of { nodeId } or { unresolved }"
+  );
+}
+function normalizeRelationDirection(raw) {
+  if (raw === "directed" || raw === "bidirectional") return raw;
+  throw new RelationError(
+    "INVALID_INPUT",
+    'relation direction must be "directed" or "bidirectional"'
+  );
+}
+function normalizeRelationKind(raw) {
+  if (typeof raw !== "string" || !raw.trim()) {
+    throw new RelationError("INVALID_INPUT", "relation kind must be a non-empty string");
+  }
+  const kind = raw.trim();
+  if (/[\r\n]/.test(kind)) {
+    throw new RelationError("INVALID_INPUT", "relation kind cannot contain newlines");
+  }
+  return kind;
+}
+function normalizeRelationLabel(raw) {
+  if (raw === void 0 || raw === null) return void 0;
+  if (typeof raw !== "string") {
+    throw new RelationError("INVALID_INPUT", "relation label must be a string when present");
+  }
+  const label = raw.trim();
+  return label.length > 0 ? label : void 0;
+}
+function parseRelationRecord(raw) {
+  if (!isRecord2(raw)) return null;
+  if (typeof raw.id !== "string" || !isRelationId(raw.id)) return null;
+  let kind;
+  let direction;
+  let target;
+  let label;
+  try {
+    kind = normalizeRelationKind(raw.kind);
+    direction = normalizeRelationDirection(raw.direction);
+    label = normalizeRelationLabel(raw.label);
+    if (isRecord2(raw.target)) {
+      target = normalizeRelationTarget(raw.target);
+    } else if (Object.prototype.hasOwnProperty.call(raw, "nodeId") || Object.prototype.hasOwnProperty.call(raw, "unresolved")) {
+      target = normalizeRelationTarget({
+        ...Object.prototype.hasOwnProperty.call(raw, "nodeId") ? { nodeId: raw.nodeId } : {},
+        ...Object.prototype.hasOwnProperty.call(raw, "unresolved") ? { unresolved: raw.unresolved } : {}
+      });
+    } else {
+      return null;
+    }
+  } catch {
+    return null;
+  }
+  const out = { id: raw.id, kind, direction, target };
+  if (label !== void 0) out.label = label;
+  return out;
+}
+function normalizeRelationsList(value) {
+  if (!Array.isArray(value)) return [];
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (const item of value) {
+    const parsed = parseRelationRecord(item);
+    if (!parsed) continue;
+    if (seen.has(parsed.id)) continue;
+    seen.add(parsed.id);
+    out.push(parsed);
+  }
+  return out;
+}
+function relationToFrontmatterItem(record) {
+  const item = {
+    id: record.id,
+    kind: record.kind,
+    direction: record.direction
+  };
+  if (record.label !== void 0) item.label = record.label;
+  if ("nodeId" in record.target) item.nodeId = record.target.nodeId;
+  else item.unresolved = record.target.unresolved;
+  return item;
+}
+function relationsToFrontmatterValue(records) {
+  if (records.length === 0) return void 0;
+  return records.map(relationToFrontmatterItem);
+}
+var RELATION_ID_PREFIX, RelationError;
+var init_relations = __esm({
+  "src/core/relations.ts"() {
+    "use strict";
+    init_adapter();
+    init_frontmatter();
+    init_tree();
+    RELATION_ID_PREFIX = "rl-";
+    RelationError = class extends Error {
+      constructor(code, message) {
+        super(message);
+        this.code = code;
+        this.name = "RelationError";
+      }
+    };
+  }
+});
+
 // src/core/tree.ts
 function boxNotePath(boxPath) {
   return join3(boxPath, baseName(boxPath) + ".md");
@@ -566,11 +838,12 @@ async function loadBox(fs10, path9, parent, registry) {
   }
   const { data, body } = parsed;
   const name = baseName(path9);
-  const { fm, tags } = normalizeIdentity(data);
+  const { fm, tags, relations } = normalizeIdentity(data);
   const box = {
     id: fm.id,
     type: fm.type,
     tags,
+    relations,
     mode: "editable",
     archived: false,
     invalid: !!parseError,
@@ -612,7 +885,11 @@ function normalizeIdentity(data) {
   const mode = parseNodeMode(data.mode);
   if (mode && mode !== "editable") fm.mode = mode;
   else delete fm.mode;
-  return { fm, tags };
+  const relations = normalizeRelationsList(data.relations);
+  const fmRelations = relationsToFrontmatterValue(relations);
+  if (fmRelations) fm.relations = fmRelations;
+  else delete fm.relations;
+  return { fm, tags, relations };
 }
 function parseNodeMode(value) {
   if (value === "archived") return "archived";
@@ -698,6 +975,7 @@ var init_tree = __esm({
     init_order();
     init_typeRegistry();
     init_paths();
+    init_relations();
   }
 });
 
@@ -2337,13 +2615,8 @@ function formatAgentHooksResults(batch) {
 // src/cli/tent.ts
 init_tree();
 
-// src/core/adapter.ts
-init_paths();
-function withTentMutation(fs10, action) {
-  return fs10.withLock ? fs10.withLock(MUTATION_LOCK_PATH, action) : action();
-}
-
 // src/core/ops.ts
+init_adapter();
 init_tree();
 
 // src/core/manifest.ts
@@ -2446,6 +2719,7 @@ init_claim();
 init_tree();
 
 // src/core/tags.ts
+init_adapter();
 init_frontmatter();
 init_tree();
 init_registryRecovery();
@@ -2535,7 +2809,7 @@ async function writeBoxTags(fs10, box, tags) {
   await fs10.writeFile(path9, serializeFrontmatter(data, body, boxKeyOrder(keyOrder)));
 }
 function normalizeRegistry2(value) {
-  if (!isRecord2(value) || !Array.isArray(value.tags)) return { tags: [] };
+  if (!isRecord3(value) || !Array.isArray(value.tags)) return { tags: [] };
   const tags = [];
   for (const valueTag of value.tags) {
     if (typeof valueTag !== "string") continue;
@@ -2563,7 +2837,7 @@ function boxKeyOrder(existing) {
     ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
   ];
 }
-function isRecord2(value) {
+function isRecord3(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -2571,6 +2845,7 @@ function isRecord2(value) {
 init_typeRegistry();
 
 // src/core/skillRoleRegistry.ts
+init_adapter();
 init_id();
 init_registryRecovery();
 init_paths();
@@ -2609,13 +2884,13 @@ function assertRoleNameAvailable(name) {
   }
 }
 function normalizeRolesRegistryWithMigration(value) {
-  const root = isRecord3(value) ? value : {};
+  const root = isRecord4(value) ? value : {};
   const roles = [];
   let migrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
-      if (!isRecord3(item)) continue;
+      if (!isRecord4(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
       const role = normalizeRoleDefinition(item, {
@@ -2690,7 +2965,7 @@ function normalizeA2APolicy(value) {
 }
 function normalizeCliConfig(value) {
   if (value === void 0) return void 0;
-  if (!isRecord3(value)) throw new Error("role.cli must be an object.");
+  if (!isRecord4(value)) throw new Error("role.cli must be an object.");
   const command = typeof value.command === "string" ? value.command.trim() : "";
   if (!command) throw new Error("role.cli.command must be a non-empty string.");
   const cli = { command };
@@ -2730,7 +3005,7 @@ async function writeJson(fs10, path9, value) {
   if (!await fs10.exists(".tent")) await fs10.mkdir(".tent");
   await fs10.writeFile(path9, JSON.stringify(value, null, 2) + "\n");
 }
-function isRecord3(value) {
+function isRecord4(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -2740,6 +3015,7 @@ init_task_model();
 init_paths();
 
 // src/core/delivery.ts
+init_adapter();
 init_frontmatter();
 init_paths();
 init_tree();
@@ -2960,6 +3236,7 @@ function validateBoxName(value) {
 }
 
 // src/core/task-lifecycle.ts
+init_adapter();
 init_claim();
 init_tree();
 init_task();
@@ -3054,6 +3331,7 @@ async function withMutation(fs10, action) {
 }
 
 // src/core/forkOps.ts
+init_adapter();
 init_frontmatter();
 init_id();
 init_order();
@@ -3145,10 +3423,12 @@ async function ensureIdentityFileName(fs10, newBoxPath, oldBoxPath) {
 }
 
 // src/core/renameOps.ts
+init_adapter();
 init_claim();
 init_frontmatter();
 
 // src/core/okf.ts
+init_adapter();
 init_frontmatter();
 init_tree();
 async function syncOkfBundle(fs10) {
@@ -3302,6 +3582,15 @@ function markdownLinkDestination(destination) {
 init_paths();
 
 // src/core/renameOps.ts
+init_paths();
+init_task();
+init_tree();
+
+// src/core/moveOps.ts
+init_adapter();
+init_claim();
+init_frontmatter();
+init_order();
 init_paths();
 init_task();
 init_tree();
@@ -3631,6 +3920,7 @@ init_typeRegistry();
 init_task();
 
 // src/core/proposal.ts
+init_adapter();
 init_frontmatter();
 init_tree();
 async function submitProposal(fs10, clock, role, boxId, body) {
@@ -3927,6 +4217,7 @@ async function exists(target) {
 }
 
 // src/cli/tent.ts
+init_adapter();
 init_paths();
 
 // src/core/migration.ts
@@ -3978,16 +4269,16 @@ function rewriteCanonicalConceptType(type) {
 }
 function migrateTypeRegistryJson(value) {
   const changes = [];
-  const root = isRecord4(value) ? deepClone(value) : {};
-  const hadNestedBuckets = isRecord4(root.primary) || isRecord4(root.secondary);
+  const root = isRecord5(value) ? deepClone(value) : {};
+  const hadNestedBuckets = isRecord5(root.primary) || isRecord5(root.secondary);
   const hadRetiredFields = jsonHadRetiredFields(value);
   const hadLegacyKeys = jsonHadLegacyTypeKeys(value);
   let flat = {};
   if (hadNestedBuckets) {
-    if (isRecord4(root.primary)) {
+    if (isRecord5(root.primary)) {
       mergeLegacyKeysInto(flat, root.primary, changes, "primary");
     }
-    if (isRecord4(root.secondary)) {
+    if (isRecord5(root.secondary)) {
       mergeLegacyKeysInto(flat, root.secondary, changes, "secondary");
     }
   } else {
@@ -3996,7 +4287,7 @@ function migrateTypeRegistryJson(value) {
   const registry = normalizeRegistry(flat);
   const beforeSlim = isAlreadySlimV02Registry(value);
   if (!beforeSlim) {
-    if (!isRecord4(value) || Object.keys(flat).length === 0) {
+    if (!isRecord5(value) || Object.keys(flat).length === 0) {
       changes.push("seeded default V0.2 type registry");
     } else if (hadNestedBuckets) {
       changes.push("normalized primary/secondary registry to V0.2 slim shape");
@@ -4016,11 +4307,11 @@ function migrateTypeRegistryJson(value) {
   return { registry, changes: uniqueChanges(changes) };
 }
 function isAlreadySlimV02Registry(value) {
-  if (!isRecord4(value)) return false;
+  if (!isRecord5(value)) return false;
   if ("primary" in value || "secondary" in value) return false;
   for (const [name, raw] of Object.entries(value)) {
     if (name === "note" || name === "artifact" || name === "open" || name === "sealed") return false;
-    if (!isRecord4(raw)) return false;
+    if (!isRecord5(raw)) return false;
     const keys = Object.keys(raw);
     if (keys.length === 0) continue;
     if (keys.length === 1 && keys[0] === "tier" && (raw.tier === "base" || raw.tier === "modifier")) {
@@ -4031,9 +4322,9 @@ function isAlreadySlimV02Registry(value) {
   return true;
 }
 function jsonHadLegacyTypeKeys(value) {
-  if (!isRecord4(value)) return false;
+  if (!isRecord5(value)) return false;
   const walk = (node) => {
-    if (!isRecord4(node)) return false;
+    if (!isRecord5(node)) return false;
     for (const [k, v] of Object.entries(node)) {
       if (k === "note" || k === "artifact" || k === "open" || k === "sealed") return true;
       if (walk(v)) return true;
@@ -4058,7 +4349,7 @@ function mergeLegacyKeysInto(target, source, changes, label) {
       changes.push(`mapped ${label}.artifact \u2192 output`);
     }
     if (target[nextKey] === void 0) {
-      target[nextKey] = isRecord4(raw) ? slimTypeDef(raw) : raw;
+      target[nextKey] = isRecord5(raw) ? slimTypeDef(raw) : raw;
     }
   }
 }
@@ -4067,9 +4358,9 @@ function slimTypeDef(raw) {
   return { tier };
 }
 function jsonHadRetiredFields(value) {
-  if (!isRecord4(value)) return false;
+  if (!isRecord5(value)) return false;
   const walk = (node) => {
-    if (!isRecord4(node)) return false;
+    if (!isRecord5(node)) return false;
     for (const [k, v] of Object.entries(node)) {
       if (k === "readable" || k === "writable" || k === "coordination" || k === "color" || k === "description" || k === "workspacePointer") {
         return true;
@@ -4573,7 +4864,7 @@ function samePath(a, b) {
 function deepClone(value) {
   return JSON.parse(JSON.stringify(value));
 }
-function isRecord4(value) {
+function isRecord5(value) {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
@@ -4650,11 +4941,11 @@ import * as crypto from "node:crypto";
 var AUTH_TOKEN_HEADER = "x-tent-token";
 
 // src/service/client.ts
-function isPlainObject(value) {
+function isPlainObject2(value) {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 function parseRpcErrorBody(value) {
-  if (!isPlainObject(value)) return null;
+  if (!isPlainObject2(value)) return null;
   if (!Number.isInteger(value.code) || typeof value.message !== "string") return null;
   const error = { code: value.code, message: value.message };
   if (Object.prototype.hasOwnProperty.call(value, "data")) {
@@ -4717,10 +5008,10 @@ var ServiceClient = class {
       if (res.ok) throw new Error("Service RPC: invalid JSON response");
       throw new Error(`Service RPC HTTP ${res.status}`);
     }
-    if (!isPlainObject(parsed) || parsed.jsonrpc !== "2.0") {
+    if (!isPlainObject2(parsed) || parsed.jsonrpc !== "2.0") {
       if (res.ok) {
         throw new Error(
-          !isPlainObject(parsed) ? "Service RPC: response must be a plain object" : "Service RPC: invalid jsonrpc version"
+          !isPlainObject2(parsed) ? "Service RPC: response must be a plain object" : "Service RPC: invalid jsonrpc version"
         );
       }
       throw new Error(`Service RPC HTTP ${res.status}`);
@@ -4837,6 +5128,15 @@ var ServiceClient = class {
     return this.call("docs.rename", { workspaceId, ...args });
   }
   /**
+   * User-only structural move / reparent (MutationBus).
+   * Resolve by stable cx- id; expectedPath required for stale-path conflict.
+   * newParentId null = tent root. position: inside | before/after siblingId.
+   * Success emits exactly one concept.changed (reason docs.move) with oldPath/path/pathMap.
+   */
+  docsMove(workspaceId, args) {
+    return this.call("docs.move", { workspaceId, ...args });
+  }
+  /**
    * Set Node mode (editable | archived). Sole mode mutation client surface.
    */
   docsSetMode(workspaceId, args) {
@@ -4880,6 +5180,47 @@ var ServiceClient = class {
   /** User-only detach one tag from Node (does not prune registry). */
   docsTagRemove(workspaceId, args) {
     return this.call("docs.tag.remove", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /**
+   * Read-only first-class semantic relations for a Node.
+   * Outgoing from source frontmatter; incoming derived from other Nodes.
+   * Does not include Markdown/wiki body links.
+   */
+  relationList(workspaceId, args) {
+    return this.call("relation.list", { workspaceId, ...args });
+  }
+  /**
+   * User-only create semantic relation on source Node (MutationBus + baseEtag).
+   * Missing baseEtag → -32008; stale → -32009. Emits concept.changed reason relation.create.
+   */
+  relationCreate(workspaceId, args) {
+    return this.call("relation.create", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /**
+   * User-only update semantic relation (cannot change id/source).
+   * label: null clears. Emits concept.changed reason relation.update.
+   */
+  relationUpdate(workspaceId, args) {
+    return this.call("relation.update", {
+      workspaceId,
+      ...args,
+      actor: args.actor ?? "user"
+    });
+  }
+  /**
+   * User-only delete semantic relation by id on source Node.
+   * Missing id fails loudly. Emits concept.changed reason relation.delete.
+   */
+  relationDelete(workspaceId, args) {
+    return this.call("relation.delete", {
       workspaceId,
       ...args,
       actor: args.actor ?? "user"
@@ -5086,7 +5427,8 @@ var ServiceClient = class {
     );
   }
   /**
-   * Stable box collaboration projection (task-api §2.3).
+   * @deprecated Prefer nodeCollaboration (V0.2). Migration-only.
+   * Stable box collaboration projection (legacy task-api §2.3).
    * Resolve by id, boxId, or path (same conventions as docs.get).
    * Active task is authoritative; without one, only persisted done is preserved.
    */
@@ -5094,11 +5436,35 @@ var ServiceClient = class {
     return this.call("box.projection", { workspaceId, ...idOrPath });
   }
   /**
+   * @deprecated Prefer nodeCollaborations (V0.2). Migration-only.
    * Batch box collaboration projection — same item semantics as box.projection.
    * `ids` order is preserved in the returned `projections` array.
    */
   boxProjections(workspaceId, ids) {
     return this.call("box.projections", { workspaceId, ids });
+  }
+  /**
+   * V0.2 Node-keyed collaboration projection (task-api §2.3).
+   * Resolve by id, boxId, or path (same conventions as docs.get).
+   * At most one directly-claiming nonterminal Task; Session/Delivery only via explicit ids.
+   * Idle Node returns null task/session/delivery.
+   */
+  nodeCollaboration(workspaceId, idOrPath) {
+    return this.call("node.collaboration", {
+      workspaceId,
+      ...idOrPath
+    });
+  }
+  /**
+   * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
+   * `ids` order is preserved in the returned `items` array. Empty ids → empty items.
+   * Loads workspace tasks/sessions/deliveries once per batch (no N+1).
+   */
+  nodeCollaborations(workspaceId, ids) {
+    return this.call("node.collaborations", {
+      workspaceId,
+      ids
+    });
   }
   /**
    * Workspace-level graph projection for Working-set Canvas.

@@ -72,7 +72,7 @@ export class ClaudeAcpProviderAdapter implements ProviderAdapter {
   }
 
   capabilities(): ProviderCapabilities {
-    // Verified 2026-07-25: @agentclientprotocol/claude-agent-acp@0.62.0 advertises
+    // The verified package spec is pinned in types.ts. Version 0.62.0 advertises
     // load + resume; provider session ids are native Claude session ids.
     return loadSessionAcpCapabilities("external-app");
   }
