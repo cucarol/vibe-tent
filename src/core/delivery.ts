@@ -29,6 +29,12 @@ export interface DeliveryRecord {
   status: DeliveryStatus;
   summary: string;
   commits: string[];
+  /**
+   * Full SHA of the resolved integration target branch HEAD at ready Delivery
+   * creation (commit-bearing only). Compared again before accept / auto-integrate
+   * applies Git. Absent on no-commit Deliveries and on legacy pre-field rows.
+   */
+  targetHead?: string;
   checks: DeliveryCheck[];
   artifactRefs: ArtifactRef[];
   integrationMode: IntegrationMode;
@@ -44,6 +50,11 @@ export interface CreateDeliveryInput {
   role: string;
   summary: string;
   commits?: string[];
+  /**
+   * Required for new commit-bearing ready Deliveries: resolved target branch HEAD
+   * at creation/review time. Omitted for zero-commit Deliveries.
+   */
+  targetHead?: string;
   checks?: DeliveryCheck[];
   artifactRefs?: ArtifactRef[];
   status?: DeliveryStatus;
@@ -64,6 +75,7 @@ const KEY_ORDER = [
   "role",
   "status",
   "commits",
+  "targetHead",
   "checksJson",
   "artifactRefsJson",
   "integrationMode",
@@ -97,6 +109,8 @@ export async function createDeliveryUnlocked(
   const path = join(deliveriesDir, `${id}.md`);
   if (await fs.exists(path)) throw new Error(`Delivery already exists: ${path}.`);
 
+  const commits = uniqueCommits(input.commits ?? []);
+  const targetHead = normalizeTargetHead(input.targetHead);
   const record: DeliveryRecord = {
     path,
     id,
@@ -105,7 +119,8 @@ export async function createDeliveryUnlocked(
     role: input.role,
     status: input.status ?? "ready",
     summary,
-    commits: uniqueCommits(input.commits ?? []),
+    commits,
+    ...(targetHead ? { targetHead } : {}),
     checks: input.checks ?? [],
     artifactRefs: input.artifactRefs ?? [],
     integrationMode: input.integrationMode ?? null,
@@ -132,6 +147,9 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
     data.reviewDecision === "accept" || data.reviewDecision === "reject"
       ? data.reviewDecision
       : undefined;
+  const targetHead = normalizeTargetHead(
+    typeof data.targetHead === "string" ? data.targetHead : undefined
+  );
   return {
     path,
     id: data.id,
@@ -143,6 +161,7 @@ export async function loadDelivery(fs: FsAdapter, inputPath: string): Promise<De
     commits: Array.isArray(data.commits)
       ? uniqueCommits(data.commits.filter((c): c is string => typeof c === "string"))
       : [],
+    ...(targetHead ? { targetHead } : {}),
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
     integrationMode: parseIntegrationMode(data.integrationMode),
@@ -210,16 +229,28 @@ export async function updateDelivery(
   patch: Partial<
     Pick<
       DeliveryRecord,
-      "status" | "summary" | "commits" | "checks" | "artifactRefs" | "integrationMode" | "review"
+      | "status"
+      | "summary"
+      | "commits"
+      | "targetHead"
+      | "checks"
+      | "artifactRefs"
+      | "integrationMode"
+      | "review"
     >
   >
 ): Promise<DeliveryRecord> {
   return withTentMutation(fs, async () => {
     const current = await loadDelivery(fs, inputPath);
+    const nextTargetHead =
+      patch.targetHead !== undefined
+        ? normalizeTargetHead(patch.targetHead)
+        : current.targetHead;
     const next: DeliveryRecord = {
       ...current,
       ...patch,
       commits: patch.commits ? uniqueCommits(patch.commits) : current.commits,
+      ...(nextTargetHead ? { targetHead: nextTargetHead } : { targetHead: undefined }),
       updatedAt: clock.now(),
     };
     await writeDelivery(fs, next);
@@ -250,6 +281,7 @@ export async function writeDelivery(fs: FsAdapter, record: DeliveryRecord): Prom
     role: record.role,
     status: record.status,
     commits: record.commits,
+    targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : undefined,
     artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : undefined,
     integrationMode: record.integrationMode,
@@ -343,4 +375,10 @@ async function ensureDir(fs: FsAdapter, path: string): Promise<void> {
 
 function uniqueCommits(commits: string[]): string[] {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+
+/** Normalize optional full-SHA target HEAD; empty → undefined. */
+function normalizeTargetHead(value: string | undefined): string | undefined {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : undefined;
 }

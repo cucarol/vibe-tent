@@ -63,6 +63,11 @@ export interface TaskWaitOptions {
 export interface TaskDeliverOptions {
   summary: string;
   commits?: string[];
+  /**
+   * Review-time full SHA of the resolved integration target branch HEAD.
+   * Service snapshots this for commit-bearing Deliveries; Core persists it.
+   */
+  targetHead?: string;
   checks?: DeliveryCheck[];
   artifactRefs?: ArtifactRef[];
   /** Required when deliveryPolicy=agent-decide. */
@@ -221,6 +226,7 @@ export async function taskDeliver(
       role: task.role,
       summary: options.summary,
       commits: options.commits,
+      targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "ready",
@@ -270,6 +276,7 @@ export async function taskDeliver(
       role: task.role,
       summary: options.summary,
       commits: options.commits,
+      targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "accepted",

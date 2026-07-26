@@ -345,6 +345,12 @@ export type DeliveryProjection = {
   status: string;
   summary: string;
   commits: string[];
+  /**
+   * Full SHA of the integration target branch HEAD snapshotted when a
+   * commit-bearing ready Delivery was created. Absent when commits are empty
+   * or on legacy rows written before this field existed.
+   */
+  targetHead?: string;
   integrationMode: string | null;
   review?: { by: string; decision: string; note?: string };
   createdAt?: string;

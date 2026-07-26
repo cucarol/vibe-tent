@@ -4292,11 +4292,24 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
     // Same gate for public deliver: dirty task worktree must not publish stale commits.
     await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
-    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
+    const pendingCommits = uniqueCommitRefs(commits);
+    // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
+    const targetHead =
+      pendingCommits.length > 0
+        ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate)
+        : undefined;
+    if (targetHead && afterTargetHeadSnapshotForTests) {
+      await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+    }
+    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+      expectedTargetHead: targetHead,
+      action: "task.deliver",
+    });
 
     const result = await taskDeliver(mount.env, taskPath, {
       summary,
       commits,
+      ...(targetHead ? { targetHead } : {}),
       checks,
       artifactRefs,
       decision,
@@ -4341,6 +4354,11 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   return ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+    // Review-time target HEAD lives on the ready Delivery; missing → TARGET_MOVED at integrate.
+    const expectedTargetHead = await loadReadyDeliveryTargetHead(
+      mount.env.fs,
+      taskForIntegrate
+    );
     let result: Awaited<ReturnType<typeof taskAccept>>;
     try {
       result = await taskAccept(mount.env, taskPath, {
@@ -4349,7 +4367,11 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
         outputNodeIds,
         // Core requires integrate whenever delivery commits are non-empty.
         // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
-        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate),
+        // Integrator re-resolves target HEAD vs Delivery.targetHead before any Git write.
+        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+          expectedTargetHead,
+          action: "task.accept",
+        }),
       });
     } catch (err) {
       if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
@@ -8297,9 +8319,20 @@ async function tryManagedAutoDeliver(
       if (commits === undefined) {
         commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
       }
+      const pendingCommits = uniqueCommitRefs(commits);
+      const targetHead =
+        pendingCommits.length > 0
+          ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task)
+          : undefined;
+      if (targetHead && afterTargetHeadSnapshotForTests) {
+        await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+      }
 
       ctx.host.markSelfWrite(input.workspaceId);
-      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
+      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task, {
+        expectedTargetHead: targetHead,
+        action: "task.deliver",
+      });
 
       // agent-decide without an explicit agent decision: request-review (never auto-accept).
       const policy = task.deliveryPolicy ?? "review";
@@ -8310,7 +8343,8 @@ async function tryManagedAutoDeliver(
         summary,
         decision,
         integrate,
-        ...(commits.length > 0 ? { commits } : {}),
+        ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
+        ...(targetHead ? { targetHead } : {}),
       });
 
       managedAutoDeliverDone.add(key);
@@ -8593,6 +8627,21 @@ export function setRejectResumePostStartFailureForTests(
   fn: (() => Error) | null
 ): void {
   rejectResumePostStartFailureForTests = fn;
+}
+
+/**
+ * Test-only: after commit-bearing deliver snapshots targetHead and before
+ * integrate/assert runs, invoke this hook (e.g. advance target branch).
+ * Production never sets this.
+ */
+let afterTargetHeadSnapshotForTests:
+  | ((workspaceRoot: string) => Promise<void>)
+  | null = null;
+
+export function setAfterTargetHeadSnapshotForTests(
+  fn: ((workspaceRoot: string) => Promise<void>) | null
+): void {
+  afterTargetHeadSnapshotForTests = fn;
 }
 
 /** Test helper: clear in-process managed deliver dedup (does not touch disk). */
@@ -9467,15 +9516,37 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
  * P0-2: integrate delivery commits into the real workspace Git main/target branch.
  * Reuses core ensureRoleWorkspace + integrateWorkspaceCommits (idempotent).
  * Failures propagate so accept/bypass cannot mark accepted/done or release occupation.
+ *
+ * Before any Git write, re-resolves the integration contract and compares the
+ * current target branch HEAD to the review-time snapshot (Delivery.targetHead or
+ * the expected SHA captured at deliver/auto-integrate start). Drift or a missing
+ * snapshot fails loud with stable retryable TARGET_MOVED and does not touch Git.
  */
 function makeCommitIntegrator(
   ctx: HandlerContext,
   workspaceRoot: string,
-  task: TaskEnvelope
+  task: TaskEnvelope,
+  options: {
+    /**
+     * Review-time snapshot: Delivery.targetHead on accept, or SHA captured at
+     * deliver / auto-integrate start for commit-bearing paths.
+     * Missing on commit-bearing integrate → TARGET_MOVED (legacy fail-loud).
+     */
+    expectedTargetHead?: string;
+    action: "task.accept" | "task.deliver";
+  }
 ): (commits: string[]) => Promise<void> {
   return async (commits: string[]) => {
-    const refs = [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+    const refs = uniqueCommitRefs(commits);
     if (refs.length === 0) return;
+
+    await assertIntegrationTargetHeadUnchanged(
+      workspaceRoot,
+      task,
+      options.expectedTargetHead,
+      { action: options.action }
+    );
+
     if (ctx.integrateCommits) {
       await ctx.integrateCommits(workspaceRoot, refs, task.role);
       return;
@@ -9491,6 +9562,87 @@ async function integrateWorkspaceCommitsForTask(
 ): Promise<void> {
   const contract = await resolveIntegrationContract(workspaceRoot, task);
   await integrateWorkspaceCommits(contract, commits);
+}
+
+function uniqueCommitRefs(commits: string[] | undefined): string[] {
+  return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
+}
+
+/**
+ * Capture full SHA of the resolved integration target branch HEAD for a
+ * commit-bearing Delivery. Fail-loud when the contract/target cannot be resolved.
+ */
+async function snapshotIntegrationTargetHead(
+  workspaceRoot: string,
+  task: TaskEnvelope
+): Promise<string> {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  return readRoleBranchTip(contract.workspace, contract.targetBranch);
+}
+
+/**
+ * Before Git integrate: re-resolve contract and require current target HEAD to
+ * match the review-time snapshot. Missing snapshot (legacy ready Delivery) and
+ * clean target advance both fail with TARGET_MOVED — never silently guess.
+ */
+async function assertIntegrationTargetHeadUnchanged(
+  workspaceRoot: string,
+  task: TaskEnvelope,
+  expectedTargetHead: string | undefined,
+  meta: { action: "task.accept" | "task.deliver" }
+): Promise<void> {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
+  const expected = expectedTargetHead?.trim() || "";
+  if (!expected) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `${meta.action} refused: commit-bearing Delivery is missing targetHead snapshot ` +
+        `(legacy or incomplete row); re-deliver so review can re-snapshot target ` +
+        `${contract.targetBranch} HEAD (task/delivery state unchanged; Git not touched)`,
+      {
+        code: "TARGET_MOVED",
+        reason: "missing_snapshot",
+        action: meta.action,
+        taskPath: task.path,
+        ...(task.id ? { taskId: task.id } : {}),
+        targetBranch: contract.targetBranch,
+        currentTargetHead: current,
+      }
+    );
+  }
+  if (current !== expected) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `${meta.action} refused: integration target HEAD moved since Delivery review ` +
+        `(target=${contract.targetBranch} expected=${expected} current=${current}); ` +
+        `re-review or re-deliver (task/delivery state unchanged; Git not touched)`,
+      {
+        code: "TARGET_MOVED",
+        reason: "head_moved",
+        action: meta.action,
+        taskPath: task.path,
+        ...(task.id ? { taskId: task.id } : {}),
+        targetBranch: contract.targetBranch,
+        expectedTargetHead: expected,
+        currentTargetHead: current,
+      }
+    );
+  }
+}
+
+/** Load targetHead from the task's active ready Delivery (accept path). */
+async function loadReadyDeliveryTargetHead(
+  fs: import("../core/adapter.js").FsAdapter,
+  task: TaskEnvelope
+): Promise<string | undefined> {
+  const taskId = task.id || task.path;
+  const deliveries = await loadDeliveries(fs, { taskId });
+  const activeId = task.activeDeliveryId?.trim();
+  const ready =
+    (activeId ? deliveries.find((d) => d.id === activeId && d.status === "ready") : undefined) ??
+    deliveries.find((d) => d.status === "ready");
+  return ready?.targetHead?.trim() || undefined;
 }
 
 /**
@@ -9890,6 +10042,7 @@ function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): Deliv
     status: d.status,
     summary: d.summary,
     commits: d.commits,
+    ...(d.targetHead ? { targetHead: d.targetHead } : {}),
     integrationMode: d.integrationMode,
     review: d.review,
     createdAt: d.createdAt,
