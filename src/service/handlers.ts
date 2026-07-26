@@ -4748,49 +4748,64 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
  * A2A gate → AgentRuntimePort.startSession → bind task.sessionId only.
  * Clients never call AgentRuntimePort.* directly.
  *
- * Single-flight / idempotent per Task (workspaceId + taskPath):
- * - While a start is in progress, same-profile callers coalesce to that result;
- *   a different profileId fails with a stable retryable RPC_LIFECYCLE conflict.
- * - If a usable bound Session already exists, exclusive path returns/reuses it
- *   without starting another provider process.
- * - Explicit replacement after waiting(session_unavailable) still allocates a
- *   new (or native-resumed) Session once the prior row is terminal; late events
- *   from the old sessionId remain harmless via sessionId mismatch guards.
- * Does not add a Task state; in-memory flight map only.
+ * Authorized per-Task launch single-flight (workspaceId + taskPath):
+ * - Every caller independently passes A2A / approval / policy / profile /
+ *   task-state gates **before** joining any provider-launch flight.
+ * - After authorization, same-profile in-flight callers coalesce to one launch
+ *   result; a different profileId fails with stable retryable RPC_LIFECYCLE.
+ * - If a usable bound Session already exists, return/reuse it without starting
+ *   another provider (no flight). Late events from a prior sessionId remain
+ *   harmless via sessionId mismatch guards elsewhere.
+ * Does not add a Task state; does not implement force-fresh Session replacement.
  */
 async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const taskPath = requireString(p, "taskPath");
-  // profileId is required before flight acquisition so concurrent mismatch can
-  // fail-loud without launching a second provider.
   const profileId = requireProfileId(p);
-  const flightKey = taskStartSessionFlightKey(workspaceId, taskPath);
-  const existing = taskStartSessionInFlight.get(flightKey);
-  if (existing) {
-    if (existing.profileId !== profileId) {
-      throw new RpcError(RPC_LIFECYCLE, START_SESSION_IN_PROGRESS_MESSAGE, {
-        taskPath,
-        profileId,
-        inFlightProfileId: existing.profileId,
-        retryable: true,
-      });
-    }
-    return existing.promise;
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  if ("a2aPolicyOverride" in p) {
+    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
 
-  // Start exclusive work and publish the promise before the first outer await so
-  // same-tick concurrent callers coalesce (exclusive runs only until its first
-  // inner await before returning this promise; set is still synchronous here).
-  const operation = taskStartSessionRpcExclusive(
+  // Per-caller gates first — unauthorized callers never join a launch flight.
+  const prepared = await prepareAuthorizedTaskStartSession(
     ctx,
     p,
     workspaceId,
     taskPath,
-    profileId
+    profileId,
+    callerKind
   );
+  if (prepared.kind === "reuse") {
+    return prepared.result;
+  }
+
+  const flightKey = taskStartSessionFlightKey(workspaceId, taskPath);
+  const existing = taskStartSessionInFlight.get(flightKey);
+  if (existing) {
+    return joinOrConflictTaskStartSessionFlight(existing, profileId, taskPath);
+  }
+
+  // Claim the flight slot synchronously before any await so authorized concurrent
+  // callers (after their own gates) coalesce; losers join without a second launch.
+  // Deferred promise: register before launch await so joiners attach while we run.
+  let settle!: (value: unknown) => void;
+  let rejectFlight!: (reason: unknown) => void;
+  const operation = new Promise<unknown>((resolve, reject) => {
+    settle = resolve;
+    rejectFlight = reject;
+  });
+  // Avoid unhandledRejection when no coalesced waiter is attached yet.
+  operation.catch(() => undefined);
   taskStartSessionInFlight.set(flightKey, { profileId, promise: operation });
+
   try {
-    return await operation;
+    const result = await launchAndBindTaskStartSession(ctx, prepared);
+    settle(result);
+    return result;
+  } catch (err) {
+    rejectFlight(err);
+    throw err;
   } finally {
     if (taskStartSessionInFlight.get(flightKey)?.promise === operation) {
       taskStartSessionInFlight.delete(flightKey);
@@ -4798,18 +4813,31 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
   }
 }
 
-async function taskStartSessionRpcExclusive(
+type PreparedTaskStartSession =
+  | { kind: "reuse"; result: ReturnType<typeof projectStartSessionResult> }
+  | {
+      kind: "launch";
+      workspaceId: string;
+      taskPath: string;
+      profileId: string;
+      task: TaskEnvelope;
+      isProfileTask: boolean;
+      bootstrapPrompt?: string;
+    };
+
+/**
+ * Per-caller authorization + task-state preparation for startSession.
+ * Must run before any provider-launch flight join/coalesce.
+ */
+async function prepareAuthorizedTaskStartSession(
   ctx: HandlerContext,
   p: Record<string, unknown>,
   workspaceId: string,
   taskPath: string,
-  profileId: string
-) {
+  profileId: string,
+  callerKind: "user" | "role"
+): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
-  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
-  if ("a2aPolicyOverride" in p) {
-    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
-  }
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
 
@@ -4974,9 +5002,12 @@ async function taskStartSessionRpcExclusive(
                   updatedAt: mount.env.clock.now(),
                 });
               });
-        return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-          cwd: boundTask.worktree || mount.workspaceRoot,
-        });
+        return {
+          kind: "reuse",
+          result: projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+            cwd: boundTask.worktree || mount.workspaceRoot,
+          }),
+        };
       }
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -4993,11 +5024,37 @@ async function taskStartSessionRpcExclusive(
     // Profile task idempotency: same task already bound to an active session.
     const prior = await ctx.runtime.registry.read(task.sessionId);
     if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
-      return projectStartSessionResult(workspaceId, taskPath, task, prior, {
-        cwd: task.worktree || mount.workspaceRoot,
-      });
+      return {
+        kind: "reuse",
+        result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
+          cwd: task.worktree || mount.workspaceRoot,
+        }),
+      };
     }
   }
+
+  return {
+    kind: "launch",
+    workspaceId,
+    taskPath,
+    profileId,
+    task,
+    isProfileTask,
+    bootstrapPrompt,
+  };
+}
+
+/**
+ * Provider launch + envelope sessionId bind. Only reached after per-caller
+ * authorization and (for concurrent callers) after joining the task flight.
+ */
+async function launchAndBindTaskStartSession(
+  ctx: HandlerContext,
+  prepared: Extract<PreparedTaskStartSession, { kind: "launch" }>
+) {
+  const { workspaceId, taskPath, profileId, isProfileTask } = prepared;
+  const mount = ctx.host.require(workspaceId);
+  let task = prepared.task;
 
   // Capture lane + roleBranchBase only after the execution slot is acquired.
   // Role: durable tent-role lane. Profile: task-scoped tent-task/<taskId> lane.
@@ -5018,7 +5075,7 @@ async function taskStartSessionRpcExclusive(
   // Does not copy box/manifest bodies. Does not instruct claim/get/deliver CLI —
   // Local Service auto-delivers the final assistant response. External relay is separate.
   const sessionBootstrap =
-    bootstrapPrompt?.trim() ||
+    prepared.bootstrapPrompt?.trim() ||
     buildSessionBootstrapPrompt(task, {
       workspaceRoot: mount.workspaceRoot,
       systemRoot: mount.systemRoot,
@@ -7441,9 +7498,14 @@ const managedAutoDeliverDone = new Set<string>();
 const rejectResumeNativeInFlight = new Set<string>();
 
 /**
- * Per-task single-flight for `task.startSession` (key = workspaceId + taskPath).
- * Concurrent / repeated callers coalesce onto one provider launch until the
- * envelope `sessionId` bind completes (or the attempt fails and the slot clears).
+ * Per-task single-flight for the **provider launch** half of `task.startSession`
+ * (key = workspaceId + taskPath).
+ *
+ * Trust is not keyed by profileId alone: every caller must independently pass
+ * A2A / approval / policy / profile / task-state gates before joining a flight.
+ * Same-profile coalescing only shares the launch result among already-authorized
+ * callers. Different profileId while a launch is in flight → retryable conflict.
+ * Slot clears when the attempt settles (success bind or failure).
  * Does not introduce a Task state; in-memory only for the live Service process.
  */
 type TaskStartSessionInFlight = {
@@ -7458,6 +7520,30 @@ const START_SESSION_IN_PROGRESS_MESSAGE =
 
 function taskStartSessionFlightKey(workspaceId: string, taskPath: string): string {
   return `${workspaceId}\0${taskPath}`;
+}
+
+/** Test helper: whether a launch flight is held for this task key. */
+export function isTaskStartSessionInFlightForTests(
+  workspaceId: string,
+  taskPath: string
+): boolean {
+  return taskStartSessionInFlight.has(taskStartSessionFlightKey(workspaceId, taskPath));
+}
+
+function joinOrConflictTaskStartSessionFlight(
+  existing: TaskStartSessionInFlight,
+  profileId: string,
+  taskPath: string
+): Promise<unknown> {
+  if (existing.profileId !== profileId) {
+    throw new RpcError(RPC_LIFECYCLE, START_SESSION_IN_PROGRESS_MESSAGE, {
+      taskPath,
+      profileId,
+      inFlightProfileId: existing.profileId,
+      retryable: true,
+    });
+  }
+  return existing.promise;
 }
 
 /**

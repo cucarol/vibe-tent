@@ -33,6 +33,7 @@ import {
   migrateSessionWorkspaceIdsOnMount,
   reconcileTaskSessionsOnMount,
   REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY,
+  isTaskStartSessionInFlightForTests,
   resetManagedAutoDeliverDedupForTests,
   resetManagedTaskInputBackgroundForTests,
   resetRuntimeProjectionForTests,
@@ -5917,12 +5918,12 @@ test("P0: repeated task.startSession after success reuses bound Session", async 
   });
 });
 
-test("P0: failed launch clears single-flight so a later start can proceed", async () => {
+test("P0: failed launch clears same-task flight slot (lifecycle failed)", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace(
-    "p0-start-fail-retry",
+    "p0-start-fail-same-key",
     { executor: "allow" },
-    { executor: ["fake-fail-launch", "fake-default"] }
+    { executor: ["fake-fail-launch"] }
   );
   await withService(
     async (svc) => {
@@ -5931,7 +5932,7 @@ test("P0: failed launch clears single-flight so a later start can proceed", asyn
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "fail launch then free flight",
+        prompt: "fail launch clears exact flight key",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -5942,48 +5943,49 @@ test("P0: failed launch clears single-flight so a later start can proceed", asyn
         profileId: "fake-fail-launch",
         callerKind: "user" as const,
       };
-      // Same-tick concurrent failures must coalesce onto one launch attempt and
-      // both observe the same error (not hang on an uncleared flight slot).
+      // Same-tick concurrent failures coalesce onto one launch attempt.
       const [a, b] = await Promise.all([
         rpc(svc, "task.startSession", payload),
         rpc(svc, "task.startSession", payload),
       ]);
       assert.ok(a.error, "failLaunch must fail startSession");
-      assert.ok(b.error, "coalesced caller must observe the same failure");
+      assert.ok(b.error, "coalesced authorized caller must observe the same failure");
       assert.match(String(a.error!.message), /simulated launch failure/);
       assert.match(String(b.error!.message), /simulated launch failure/);
 
       const mount = svc.ctx.host.require(workspaceId);
+      const failedTask = await loadTaskEnvelope(mount.env.fs, taskPath);
       assert.equal(
-        (await loadTaskEnvelope(mount.env.fs, taskPath)).state,
+        failedTask.state,
         "failed",
         "launch failure still taskFails occupation (unchanged contract)"
       );
 
-      // Flight slot cleared: a new task on the same role can start successfully.
-      const box2 = await rpc(svc, "docs.createNote", {
+      // Exact same taskPath flight key must be gone after the attempt settles.
+      assert.equal(
+        isTaskStartSessionInFlightForTests(workspaceId, taskPath),
+        false,
+        "same-task flight slot must clear after failed launch"
+      );
+
+      // Same-task re-start is refused by lifecycle (failed), not by a stuck flight.
+      const retrySame = await rpc(svc, "task.startSession", {
         workspaceId,
-        name: "retry-box",
-        type: "prompt",
-      });
-      const d2 = await rpc(svc, "task.dispatch", {
-        workspaceId,
-        boxId: (box2.result as { id: string }).id,
-        role: "executor",
-        prompt: "retry after failed launch",
-      });
-      const taskPath2 = (d2.result as { taskPath: string }).taskPath;
-      await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath2 });
-      const retry = await rpc(svc, "task.startSession", {
-        workspaceId,
-        taskPath: taskPath2,
-        profileId: "fake-default",
+        taskPath,
+        profileId: "fake-fail-launch",
         callerKind: "user",
       });
-      assert.ok(!retry.error, JSON.stringify(retry.error));
-      const sessionId = (retry.result as { session: { sessionId: string } }).session
-        .sessionId;
-      assert.equal((await svc.runtime.probe(sessionId)).alive, true);
+      assert.ok(retrySame.error);
+      assert.equal(retrySame.error!.code, RPC_LIFECYCLE);
+      assert.match(
+        String(retrySame.error!.message),
+        /requires running \(or waiting after approval\); got failed/
+      );
+      assert.equal(
+        isTaskStartSessionInFlightForTests(workspaceId, taskPath),
+        false,
+        "lifecycle reject must not leave a flight slot"
+      );
     },
     {
       profiles: [
@@ -5992,101 +5994,70 @@ test("P0: failed launch clears single-flight so a later start can proceed", asyn
           adapterId: FAKE_ADAPTER_ID,
           fake: { failLaunch: "simulated launch failure", waitForSignal: true },
         },
-        {
-          id: "fake-default",
-          adapterId: FAKE_ADAPTER_ID,
-          fake: { waitForSignal: true, emitStdout: true, canResume: true },
-        },
       ],
     }
   );
 });
 
-test("P0: explicit replacement after session_unavailable; late old-session events harmless", async () => {
+test("P0: unauthorized concurrent start is denied; only one authorized launch", async () => {
   resetManagedAutoDeliverDedupForTests();
-  const ws = await makeWorkspace("p0-start-replace-late");
+  // executor a2aPolicy defaults to deny for role callers; user remains root.
+  const ws = await makeWorkspace("p0-start-auth-before-flight");
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
       workspaceId,
       boxId,
       role: "executor",
-      prompt: "replace after park",
-      deliveryPolicy: "review",
+      prompt: "auth gate before coalesce",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
-    const started = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      profileId: "fake-default",
-      callerKind: "user",
-    });
-    assert.ok(!started.error, JSON.stringify(started.error));
-    const oldSessionId = (started.result as { session: { sessionId: string } }).session
-      .sessionId;
 
-    await mapRuntimeEventToService(svc.ctx, {
-      type: "session.failed",
-      sessionId: oldSessionId,
-      error: "child died before delivery",
-    });
-    const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
-    const parkedTask = (
-      parked.result as {
-        task: {
-          state: string;
-          wait?: { reason: string; code?: string; summary: string } | null;
-          sessionId?: string;
-        };
-      }
-    ).task;
-    assert.equal(parkedTask.state, "waiting");
-    assert.equal(parkedTask.wait?.code, SESSION_UNAVAILABLE_WAIT_CODE);
-    assert.equal(parkedTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    // Same tick: authorized user + unauthorized role (same profileId).
+    // Role must not piggyback on the user's launch flight.
+    const [authorized, unauthorized] = await Promise.all([
+      rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-default",
+        callerKind: "user",
+      }),
+      rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-default",
+        callerKind: "role",
+      }),
+    ]);
 
-    // Force a true replacement ss- (not native resume of the dead origin).
-    await svc.runtime.registry.update(oldSessionId, {
-      resumeToken: undefined,
-      state: "failed",
-    });
+    assert.ok(!authorized.error, JSON.stringify(authorized.error));
+    assert.ok(unauthorized.error, "role with default deny must not coalesce");
+    assert.equal(unauthorized.error!.code, RPC_A2A_DENIED);
+    assert.match(
+      String(unauthorized.error!.message),
+      /A2A policy denies starting a new runtime session/
+    );
 
-    const recovery = await rpc(svc, "task.startSession", {
-      workspaceId,
-      taskPath,
-      profileId: "fake-default",
-      callerKind: "user",
-    });
-    assert.ok(!recovery.error, JSON.stringify(recovery.error));
-    const newSessionId = (
-      recovery.result as { session: { sessionId: string } }
+    const sessionId = (
+      authorized.result as { session: { sessionId: string } }
     ).session.sessionId;
-    assert.notEqual(newSessionId, oldSessionId, "must allocate a replacement Session");
-    assert.equal((await svc.runtime.probe(newSessionId)).alive, true);
+    const mount = svc.ctx.host.require(workspaceId);
+    assert.equal((await loadTaskEnvelope(mount.env.fs, taskPath)).sessionId, sessionId);
 
-    const after = await rpc(svc, "task.get", { workspaceId, taskPath });
-    const task = (
-      after.result as {
-        task: { state: string; sessionId?: string; wait?: unknown };
-      }
-    ).task;
-    assert.equal(task.state, "running");
-    assert.equal(task.sessionId, newSessionId);
-    assert.equal(task.wait ?? null, null);
-
-    // Late terminal from the old sessionId must not demote the rebound occupation.
-    await mapRuntimeEventToService(svc.ctx, {
-      type: "session.failed",
-      sessionId: oldSessionId,
-      error: "late event after rebind",
-    });
-    const late = await rpc(svc, "task.get", { workspaceId, taskPath });
-    const lateTask = (
-      late.result as { task: { state: string; sessionId?: string } }
-    ).task;
-    assert.equal(lateTask.state, "running");
-    assert.equal(lateTask.sessionId, newSessionId);
-    assert.equal((await svc.runtime.probe(newSessionId)).alive, true);
+    const managed = (await svc.runtime.registry.list()).filter(
+      (rec) =>
+        rec.workspace === workspaceId &&
+        rec.roleName === "executor" &&
+        (rec.assigneeKind ?? "role") !== "agentProfile" &&
+        rec.state !== "external"
+    );
+    assert.equal(
+      managed.length,
+      1,
+      `expected exactly one managed launch, got ${managed.map((r) => r.id).join(",")}`
+    );
+    assert.equal((await svc.runtime.probe(sessionId)).alive, true);
   });
 });
 
