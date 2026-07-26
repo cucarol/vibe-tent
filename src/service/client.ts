@@ -183,7 +183,8 @@ export class ServiceClient {
   }
   /**
    * Read workspace collaboration settings projection (defaultDeliveryPolicy, extensible).
-   * Missing file/field resolves to defaultDeliveryPolicy=manual.
+   * Missing file/field resolves to defaultDeliveryPolicy=review.
+   * Historical on-disk `manual` is normalized to `review` at the settings read boundary.
    */
   workspaceSettings(workspaceId: string) {
     return this.call("workspace.settings", { workspaceId });
@@ -192,11 +193,12 @@ export class ServiceClient {
    * User-only settings mutation (MutationBus).
    * Emits exactly one workspace.settings.updated on successful actual change; no-op emits none.
    * `actor` defaults to "user"; non-user is rejected by the service.
+   * New writes accept review | bypass | agent-decide only (not historical manual).
    */
   workspaceSettingsUpdate(
     workspaceId: string,
     patch: {
-      defaultDeliveryPolicy?: "manual" | "bypass" | "agent-decide";
+      defaultDeliveryPolicy?: "review" | "bypass" | "agent-decide";
     },
     actor = "user"
   ) {

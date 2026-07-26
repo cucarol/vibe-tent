@@ -142,12 +142,12 @@ export async function runTaskCommand(
         const promptParts = positionals.slice(2);
         if (!boxId || !role) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
@@ -760,7 +760,7 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]
+  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]

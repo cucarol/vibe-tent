@@ -197,7 +197,7 @@ test("P0: dirty worktree preserves report draft; clean retry publishes and clear
       boxId,
       role: "executor",
       prompt: "preserve draft on dirty refuse",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -306,7 +306,7 @@ test("P0: report draft survives service restart; retry publishes without re-prom
         boxId: mounted.boxId,
         role: "executor",
         prompt: "restart must keep draft",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       taskPath = (d.result as { taskPath: string }).taskPath;

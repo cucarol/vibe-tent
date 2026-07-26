@@ -145,7 +145,7 @@ test("task.askUser parks running task; second ask rejected; reply resumes + pers
       boxId,
       role: "executor",
       prompt: "Need a product decision",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -241,7 +241,7 @@ test("userAsk.deny resumes task; interrupt cancels pending ask", async () => {
       boxId: created.id,
       role: "executor",
       prompt: "Ask then deny",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -307,7 +307,7 @@ test("managed ACP: UserAsk reply continues same session with User Answer prompt 
       boxId: created.id,
       role: "executor",
       prompt: "Managed ask flow",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -430,7 +430,7 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
       "dispatchedBy: user\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
-      "deliveryPolicy: manual\n" +
+      "deliveryPolicy: review\n" +
       `createdAt: "${now}"\n` +
       `updatedAt: "${now}"\n` +
       "---\n" +

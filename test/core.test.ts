@@ -431,7 +431,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.equal(tasks[0].status, "pending");
   assert.equal(tasks[0].state, "queued");
   assert.equal(tasks[0].dispatchedBy, "user");
-  assert.equal(tasks[0].deliveryPolicy, "manual");
+  assert.equal(tasks[0].deliveryPolicy, "review");
   assert.ok(tasks[0].id?.startsWith("tk-"));
   const relay = relayPromptForTask(tasks[1], dir);
   assert.match(relay, /^A Tent task has been dispatched to role reviewer\./);

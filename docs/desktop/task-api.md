@@ -51,7 +51,7 @@ workspaceLane:                   # omit when tent has no Git/workspace lane (pur
   branch: …                      # role: tent-role/<role>; profile: tent-task/<taskId>
   targetBranch: …                # peer → mainline; sub → dispatcher role branch tent-role/<dispatcher>
   roleBranchBase: <full-sha>      # captured once when managed execution acquires the lane slot
-deliveryPolicy: manual | bypass | agent-decide
+deliveryPolicy: review | bypass | agent-decide
 wait:
   reason: user-input | a2a-approval | review | external
   summary: …
@@ -335,7 +335,7 @@ Agents submit task targets (role / **AgentProfile** id / capability). They never
 **Managed invariants:**
 
 1. **Report ≡ final assistant reply.** Tent does not invent a second “report” channel; delivery.summary is that text only — not intermediate assistant updates, thoughts, or tool/status diagnostics concatenated into one blob.
-2. **No auto-accept.** `deliveryPolicy=manual` → `delivered` + ready delivery pending user review. `bypass` / `agent-decide` use existing policy routing only (`agent-decide` without an integrate decision defaults to **request-review**).
+2. **No auto-accept.** `deliveryPolicy=review` → `delivered` + ready delivery pending user review. `bypass` / `agent-decide` use existing policy routing only (`agent-decide` without an integrate decision defaults to **request-review**).
 3. **No forge on failure.** Empty assistant text, ACP error, timeout, stop, or interrupt → **no** delivery; task/session projects `failed` or `interrupted` with recoverable semantics where applicable.
 4. **No double delivery.** Reconnect / duplicate `session.prompt_complete` / already `delivered|accepted|…` is ignored or fails loudly at lifecycle authority — never two ready deliveries.
 5. **Tool permissionPolicy** remains `deny|ask|allow` (default **deny**). Tool-less tasks must still complete via the managed report path.
@@ -422,17 +422,17 @@ Successful create/update/delete emits **exactly one** `registry.roles.updated` (
 
 ---
 
-## 5. Delivery policies: `manual` / `bypass` / `agent-decide`
+## 5. Delivery policies: `review` / `bypass` / `agent-decide`
 
 ### 5.1 Definitions
 
 | Policy | Behavior |
 | --- | --- |
-| `manual` | After `deliver`, task stays `delivered` until human/authorized review `accept` or `reject` |
+| `review` | After `deliver`, task stays `delivered` until human/authorized review `accept` or `reject` |
 | `bypass` | After `deliver`, service **automatically** integrates and `accept`s, still writing a full delivery audit record |
 | `agent-decide` | Executing agent chooses, at deliver time, either **direct integrate** or **upgrade to review**—it does **not** impersonate an independent reviewer |
 
-MVP default for tent/box/task inheritance: **`manual`**.
+MVP default for tent/box/task inheritance: **`review`**.
 
 ### 5.2 Corrected `agent-decide` semantics (normative)
 
@@ -452,11 +452,11 @@ task.deliver({
 | `decision` | Service behavior |
 | --- | --- |
 | `integrate` | Service runs the **auto-integrate** path (same mechanical integrate as bypass). Audit: `integrationMode: agent-decided-integrate`. **No** `review.by=submitter`. Actor for integrate is the **service policy engine**, not a fake peer review. |
-| `request-review` | Identical to `manual`: task → `delivered` / delivery `ready`; only a non-submitter may `accept`/`reject`. Equivalent explicit call: `task.requestReview`. |
+| `request-review` | Identical to `review`: task → `delivered` / delivery `ready`; only a non-submitter may `accept`/`reject`. Equivalent explicit call: `task.requestReview`. |
 
 Hard rules:
 
-1. If `deliveryPolicy=manual` and caller passes `decision=integrate` → error `POLICY_FORBIDS_AUTO_INTEGRATE`.
+1. If `deliveryPolicy=review` and caller passes `decision=integrate` → error `POLICY_FORBIDS_AUTO_INTEGRATE`.
 2. If `deliveryPolicy=bypass` → ignore `decision`; always attempt auto-integrate; audit `integrationMode: bypass-auto`.
 3. If `deliveryPolicy=agent-decide` and `decision` missing/invalid → error `DECISION_REQUIRED`.
 4. **Never** allow the deliverer to call `task.accept` on its own delivery, including under `agent-decide`. Auto-integrate is a policy action, not self-review.
@@ -467,7 +467,8 @@ Hard rules:
 ### 5.3 Policy placement
 
 - Workspace setting `defaultDeliveryPolicy` lives in **`.tent/settings.json`** (system-root relative `settings.json`; registered system file).
-- Values: `manual` | `bypass` | `agent-decide`. Missing file or field → **`manual`**. Corrupt file → backup + reset + warning (same registry recovery convention).
+- Values: `review` | `bypass` | `agent-decide`. Product-facing terms (not localized): **Review** / **Bypass** / **Agent Decide**. Missing file or field → **`review`**. Corrupt file → backup + reset + warning (same registry recovery convention).
+- **Terminology migration (V0.2):** historical on-disk `manual` is normalized to `review` only at the narrow task-envelope / workspace-settings **read** boundary so existing development tents remain readable. New RPC writes (`task.dispatch`, `workspace.settings.update`) and new serialization **reject** `manual` and **write** `review`. Projections never expose `manual`. Do not build a broad compatibility shell.
 - Schema is **extensible**: core preserves unknown on-disk keys and clients must tolerate extra fields. The current update RPC accepts only explicitly defined fields (`defaultDeliveryPolicy`); future settings extend the schema deliberately.
 - RPCs:
   | API | Auth | Effect |
@@ -623,8 +624,8 @@ This B0 document is satisfied when later implementation matches:
 2. Full state machine including `waiting` for user input and A2A ask.
 3. Task API surface above; CLI aliases do not redefine semantics.
 4. **`A2APolicy`** `allow` / `ask` / `deny` enforced only in service at spawn/start; clients use `task.*` only.
-5. Delivery policies:
-   - `manual` always waits for non-submitter review;
+5. Delivery policies (product terms: Review / Bypass / Agent Decide):
+   - `review` always waits for non-submitter accept/reject;
    - `bypass` auto-integrates with audit;
    - `agent-decide` chooses **integrate vs request-review**, never pretends the executor is an independent reviewer, never self-`accept`.
 6. Operational terminal data short-retained then cleaned; promotable to OKF concepts.

@@ -83,7 +83,7 @@ test("interaction.listPending aggregates four kinds with stable sort and counts"
       boxId,
       role: "executor",
       prompt: "Need decisions and review",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string; task?: { id?: string } };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);

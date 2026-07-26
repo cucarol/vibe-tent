@@ -8,9 +8,11 @@ import {
 import { join } from "./tree.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import {
+  DEFAULT_DELIVERY_POLICY,
   isTaskId,
   legacyStatusToState,
   makeTaskId,
+  normalizeDeliveryPolicyRead,
   stateToLegacyStatus,
   type AssigneeKind,
   type DeliveryPolicy,
@@ -186,7 +188,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
   }
-  if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
+  // Narrow read boundary: historical on-disk `manual` projects as `review`.
+  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
+  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
@@ -342,7 +346,7 @@ export function sessionBootstrapPromptForTask(
     readyLine +
     `${formatTaskPointers(task)}\n` +
     `Service status: this task is already claimed (state=${task.state || "running"}).\n` +
-    `Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (manual review stays pending; no auto-accept).\n` +
+    `Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (Review policy waits for independent accept; no auto-accept).\n` +
     (kind === "agentProfile"
       ? `One-shot agentProfile task: rely on task/manifest pointers only — no role init.\n`
       : "") +
@@ -401,7 +405,7 @@ export async function writeTaskEnvelope(
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? "manual",
+    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
     createdAt: now,
     updatedAt: now,
   };
@@ -539,10 +543,6 @@ function parseTaskState(value: unknown, legacy: TaskEnvelopeStatus): TaskState {
     return value;
   }
   return legacyStatusToState(legacy);
-}
-
-function isDeliveryPolicy(value: unknown): value is DeliveryPolicy {
-  return value === "manual" || value === "bypass" || value === "agent-decide";
 }
 
 function parseWaitFields(data: Record<string, unknown>): TaskWait | undefined {

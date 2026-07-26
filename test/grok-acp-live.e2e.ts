@@ -67,7 +67,7 @@ async function rmTreeWithRetry(target: string): Promise<void> {
   });
 }
 
-test("real Grok ACP: dispatch → managed report → manual accept", async () => {
+test("real Grok ACP: dispatch → managed report → review accept", async () => {
   assert.ok(apiKey, `${DEFAULT_GROK_ENV_KEY} is required`);
   assert.ok(baseUrl, `${DEFAULT_GROK_BASE_URL_ENV_KEY} is required`);
 
@@ -108,7 +108,7 @@ test("real Grok ACP: dispatch → managed report → manual accept", async () =>
       boxId,
       role: "e2e",
       prompt: "Reply with a short delivery report containing the marker TENT_GROK_E2E_OK. Do not call tools.",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;

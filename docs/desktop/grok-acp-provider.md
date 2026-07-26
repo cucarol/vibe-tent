@@ -2,7 +2,7 @@
 
 The explicit live smoke test is `npm run test:grok-e2e`. It requires
 `CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured CPA service,
-and exercises dispatch → managed ACP report → manual accept. It is intentionally
+and exercises dispatch → managed ACP report → review accept. It is intentionally
 excluded from the default offline `npm test` suite. The same command also stops
 the first bridge process, restores its provider session through `session/load`,
 and verifies that a second prompt can recover a nonce known only to the first turn.
@@ -212,7 +212,7 @@ Clipboard / dispatch **relayPrompt** is separate: external manual agents still `
 | Map `session.prompt_complete` → `task.deliver` | Local Service (`mapRuntimeEventToService`) — same lifecycle as CLI deliver |
 | Dedup | In-process key `sessionId::taskPath` + lifecycle authority (ready delivery / non-running state) |
 
-`deliveryPolicy` is unchanged: **manual** → pending review; **bypass** → auto-integrate; **agent-decide** without an integrate decision → **request-review** (never forge accept).
+`deliveryPolicy` wire values: **review** → pending independent accept/reject; **bypass** → auto-integrate; **agent-decide** without an integrate decision → **request-review** (never forge accept). Product terms: Review / Bypass / Agent Decide.
 
 ## Permission policy (tools)
 

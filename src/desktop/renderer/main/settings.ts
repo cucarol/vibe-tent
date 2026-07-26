@@ -75,7 +75,7 @@ let credentials: CredentialProjection[] = [];
 let skills: BundledSkillListEntry[] = [];
 let fullRoles: RoleRegistryEntryProjection[] = [];
 let fullProfiles: AgentProfileProjection[] = [];
-let settingsPolicy: DeliveryPolicy = "manual";
+let settingsPolicy: DeliveryPolicy = "review";
 let agentsContent = "";
 let agentsEtag = "";
 let agentsExists = false;
@@ -218,7 +218,7 @@ async function loadWorkspaceSettings(): Promise<void> {
   const result = (await window.tentDesktop.rpc("workspace.settings", {
     workspaceId,
   })) as { settings?: { defaultDeliveryPolicy?: DeliveryPolicy } };
-  settingsPolicy = result.settings?.defaultDeliveryPolicy || "manual";
+  settingsPolicy = result.settings?.defaultDeliveryPolicy || "review";
 }
 
 async function loadAgents(): Promise<void> {
@@ -879,7 +879,7 @@ function wireSection(s: SettingsSection, root: HTMLElement): void {
 async function onSavePolicy(): Promise<void> {
   if (!workspaceId) return;
   const sel = document.getElementById("set-delivery-policy") as HTMLSelectElement | null;
-  const value = (sel?.value || "manual") as DeliveryPolicy;
+  const value = (sel?.value || "review") as DeliveryPolicy;
   try {
     await window.tentDesktop.rpc("workspace.settings.update", {
       workspaceId,

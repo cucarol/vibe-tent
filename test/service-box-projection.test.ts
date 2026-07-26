@@ -167,7 +167,7 @@ test("box.projection: accepted → done (no assignee, no activeTaskId)", async (
       boxId,
       role: "executor",
       prompt: "finish work",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     await client.taskDeliver(workspaceId, dispatched.taskPath, {

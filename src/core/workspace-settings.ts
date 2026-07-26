@@ -1,10 +1,16 @@
 // Workspace collaboration settings under system root (.tent/settings.json).
 // Extensible projection: unknown fields are preserved on load/save.
-// defaultDeliveryPolicy defaults to manual when missing/invalid.
+// defaultDeliveryPolicy defaults to review when missing/invalid.
+// Historical on-disk `manual` normalizes to `review` at this read boundary only.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { backupCorruptRegistry, warnRegistryRecovered } from "./registryRecovery.js";
-import type { DeliveryPolicy } from "./task-model.js";
+import {
+  DEFAULT_DELIVERY_POLICY,
+  isDeliveryPolicy,
+  normalizeDeliveryPolicyRead,
+  type DeliveryPolicy,
+} from "./task-model.js";
 import { WORKSPACE_SETTINGS_PATH } from "./paths.js";
 
 export { WORKSPACE_SETTINGS_PATH };
@@ -23,19 +29,19 @@ export type WorkspaceSettings = {
   [key: string]: unknown;
 };
 
-export const DEFAULT_DELIVERY_POLICY: WorkspaceDeliveryPolicy = "manual";
-
 const DEFAULT_SETTINGS: WorkspaceSettings = {
   defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY,
 };
 
+/** Canonical write/RPC values only — historical `manual` is not accepted on write. */
 export function isDeliveryPolicyValue(value: unknown): value is WorkspaceDeliveryPolicy {
-  return value === "manual" || value === "bypass" || value === "agent-decide";
+  return isDeliveryPolicy(value);
 }
 
 /**
  * Normalize raw JSON into WorkspaceSettings.
- * Missing / invalid defaultDeliveryPolicy → manual.
+ * Missing / invalid defaultDeliveryPolicy → review.
+ * Historical on-disk `manual` → review (narrow read/migration only).
  * Non-object roots become the default object (no extra keys).
  * Other own enumerable keys are preserved as-is for extensibility.
  */
@@ -44,9 +50,8 @@ export function normalizeWorkspaceSettings(value: unknown): WorkspaceSettings {
     return { ...DEFAULT_SETTINGS };
   }
   const out: WorkspaceSettings = { ...value } as WorkspaceSettings;
-  if (!isDeliveryPolicyValue(out.defaultDeliveryPolicy)) {
-    out.defaultDeliveryPolicy = DEFAULT_DELIVERY_POLICY;
-  }
+  const normalized = normalizeDeliveryPolicyRead(out.defaultDeliveryPolicy);
+  out.defaultDeliveryPolicy = normalized ?? DEFAULT_DELIVERY_POLICY;
   return out;
 }
 

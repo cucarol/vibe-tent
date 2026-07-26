@@ -35,6 +35,7 @@ import { agentProfileDeliveriesDir } from "./paths.js";
 import {
   assertReviewAuthority,
   assertTransition,
+  DEFAULT_DELIVERY_POLICY,
   evaluateA2A,
   projectBoxFromTask,
   resolveDeliverRouting,
@@ -200,7 +201,7 @@ export async function taskDeliver(
     if (!boxId) throw new Error("task.deliver requires a non-root box claim.");
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
-    const policy: DeliveryPolicy = task.deliveryPolicy ?? "manual";
+    const policy: DeliveryPolicy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
     const routing = resolveDeliverRouting(policy, options.decision);
 
     if (routing.autoIntegrate) {
@@ -250,7 +251,7 @@ export async function taskDeliver(
     }
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
 
-    const policy: DeliveryPolicy = task.deliveryPolicy ?? "manual";
+    const policy: DeliveryPolicy = task.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY;
     const routing = resolveDeliverRouting(policy, options.decision);
     if (!routing.autoIntegrate) {
       throw new Error("Delivery policy changed during integrate; refusing state write.");

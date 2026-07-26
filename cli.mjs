@@ -1063,6 +1063,14 @@ var init_id = __esm({
 });
 
 // src/core/task-model.ts
+function isDeliveryPolicy(value) {
+  return value === "review" || value === "bypass" || value === "agent-decide";
+}
+function normalizeDeliveryPolicyRead(value) {
+  if (value === "manual") return "review";
+  if (isDeliveryPolicy(value)) return value;
+  return void 0;
+}
 function isActiveTaskState(state) {
   return ACTIVE_TASK_STATES.has(state);
 }
@@ -1125,11 +1133,12 @@ function allowedTransitions(from) {
       return [];
   }
 }
-var ACTIVE_TASK_STATES, TaskLifecycleError;
+var DEFAULT_DELIVERY_POLICY, ACTIVE_TASK_STATES, TaskLifecycleError;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
     "use strict";
     init_id();
+    DEFAULT_DELIVERY_POLICY = "review";
     ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
       "queued",
       "running",
@@ -1362,7 +1371,8 @@ async function loadTaskEnvelope(fs10, path9) {
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
   }
-  if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
+  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
+  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
@@ -1452,7 +1462,7 @@ function sessionBootstrapPromptForTask(task, _roots) {
 `;
   return readyLine + `${formatTaskPointers(task)}
 Service status: this task is already claimed (state=${task.state || "running"}).
-Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (manual review stays pending; no auto-accept).
+Managed path: Local Service already claimed this task; your final assistant reply is the report and will be delivered automatically (Review policy waits for independent accept; no auto-accept).
 ` + (kind === "agentProfile" ? `One-shot agentProfile task: rely on task/manifest pointers only \u2014 no role init.
 ` : "") + (userPrompt ? `
 ## User Prompt
@@ -1505,7 +1515,7 @@ async function writeTaskEnvelope(fs10, clock, input) {
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? "manual",
+    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
     createdAt: now,
     updatedAt: now
   };
@@ -1601,9 +1611,6 @@ function parseTaskState(value, legacy) {
     return value;
   }
   return legacyStatusToState(legacy);
-}
-function isDeliveryPolicy(value) {
-  return value === "manual" || value === "bypass" || value === "agent-decide";
 }
 function parseWaitFields(data) {
   const reason = data.waitReason;
@@ -5087,7 +5094,8 @@ var ServiceClient = class {
   }
   /**
    * Read workspace collaboration settings projection (defaultDeliveryPolicy, extensible).
-   * Missing file/field resolves to defaultDeliveryPolicy=manual.
+   * Missing file/field resolves to defaultDeliveryPolicy=review.
+   * Historical on-disk `manual` is normalized to `review` at the settings read boundary.
    */
   workspaceSettings(workspaceId) {
     return this.call("workspace.settings", { workspaceId });
@@ -5096,6 +5104,7 @@ var ServiceClient = class {
    * User-only settings mutation (MutationBus).
    * Emits exactly one workspace.settings.updated on successful actual change; no-op emits none.
    * `actor` defaults to "user"; non-user is rejected by the service.
+   * New writes accept review | bypass | agent-decide only (not historical manual).
    */
   workspaceSettingsUpdate(workspaceId, patch, actor = "user") {
     return this.call("workspace.settings.update", {
@@ -5994,12 +6003,12 @@ state: ${row.state ?? "delivered"}
         const promptParts = positionals.slice(2);
         if (!boxId || !role) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
           return failUsage(
-            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]"
+            "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]"
           );
         }
         let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
@@ -6482,7 +6491,7 @@ Commands:
   tent task get <taskPath> [--workspace <path>] [--json]
   tent task claim <taskPath> [--session <sessionId>] [--workspace <path>] [--json]
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
-  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--as-sub --by <role>] [--workspace <path>] [--json]
+  tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
   tent task accept <taskPath> --actor <user|role> [--commits sha,sha] [--workspace <path>] [--json]
   tent task reject <taskPath> --actor <user|role> [--note <text>] [--resume|--no-resume] [--workspace <path>] [--json]
   tent task cancel <taskPath> [--workspace <path>] [--json]

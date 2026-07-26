@@ -77,7 +77,7 @@ test("CLIENT_METHODS includes workspace.settings and workspace.settings.update",
   assert.ok(CLIENT_METHODS.includes("workspace.settings.update"));
 });
 
-test("workspace.settings: missing file projects defaultDeliveryPolicy=manual", async () => {
+test("workspace.settings: missing file projects defaultDeliveryPolicy=review", async () => {
   const ws = await makeWorkspace("defaults");
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -87,7 +87,7 @@ test("workspace.settings: missing file projects defaultDeliveryPolicy=manual", a
       settings: { defaultDeliveryPolicy: string };
     };
     assert.equal(result.workspaceId, workspaceId);
-    assert.equal(result.settings.defaultDeliveryPolicy, "manual");
+    assert.equal(result.settings.defaultDeliveryPolicy, "review");
   });
 });
 
@@ -173,6 +173,15 @@ test("workspace.settings.update: user-only, MutationBus, one event on actual cha
     ) as { defaultDeliveryPolicy: string };
     assert.equal(onDisk.defaultDeliveryPolicy, "bypass");
 
+    // Historical wire value `manual` is rejected on new RPC writes.
+    const rejectManual = await rpc(svc, "workspace.settings.update", {
+      workspaceId,
+      defaultDeliveryPolicy: "manual",
+      actor: "user",
+    });
+    assert.ok(rejectManual.error);
+    assert.equal(rejectManual.error!.code, -32602);
+
     unsub();
   });
 });
@@ -195,14 +204,14 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
     const box2 = await createBox("work-item-two");
     const box3 = await createBox("work-item-three");
 
-    // Default (no settings file) → manual
+    // Default (no settings file) → review
     const d1 = (await client.taskDispatch(workspaceId, {
       boxId: box1,
       role: "executor",
-      prompt: "first task uses default manual",
+      prompt: "first task uses default review",
     })) as { taskPath: string };
     const t1 = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
-    assert.equal(t1.deliveryPolicy, "manual");
+    assert.equal(t1.deliveryPolicy, "review");
 
     await client.workspaceSettingsUpdate(workspaceId, {
       defaultDeliveryPolicy: "bypass",
@@ -228,13 +237,49 @@ test("task.dispatch: omitted deliveryPolicy snapshots workspace default; explici
 
     // Existing tasks never change when settings change.
     await client.workspaceSettingsUpdate(workspaceId, {
-      defaultDeliveryPolicy: "manual",
+      defaultDeliveryPolicy: "review",
     });
     const t1Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d1.taskPath);
     const t2Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d2.taskPath);
-    assert.equal(t1Again.deliveryPolicy, "manual");
+    assert.equal(t1Again.deliveryPolicy, "review");
     assert.equal(t2Again.deliveryPolicy, "bypass");
     const t3Again = await loadTaskEnvelope(new NodeFs(path.join(ws, ".tent")), d3.taskPath);
     assert.equal(t3Again.deliveryPolicy, "agent-decide");
+
+    // Explicit historical `manual` is rejected on dispatch (use review).
+    const rejectManual = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: await createBox("work-item-manual-reject"),
+      role: "executor",
+      prompt: "must reject manual wire",
+      deliveryPolicy: "manual",
+    });
+    assert.ok(rejectManual.error);
+    assert.equal(rejectManual.error!.code, -32602);
+  });
+});
+
+test("task envelope on-disk manual projects as review; new serialize writes review", async () => {
+  const ws = await makeWorkspace("historical-manual");
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+    const d = (await client.taskDispatch(workspaceId, {
+      boxId,
+      role: "executor",
+      prompt: "new wire writes review",
+    })) as { taskPath: string; task?: { deliveryPolicy?: string } };
+    const fsa = new NodeFs(path.join(ws, ".tent"));
+    const raw = await fsa.readFile(d.taskPath);
+    assert.match(raw, /deliveryPolicy:\s*review/);
+    assert.doesNotMatch(raw, /deliveryPolicy:\s*manual/);
+
+    // Plant historical on-disk manual; load projects review without rewriting disk.
+    const planted = raw.replace(/deliveryPolicy:\s*review/, "deliveryPolicy: manual");
+    await fsa.writeFile(d.taskPath, planted);
+    const loaded = await loadTaskEnvelope(fsa, d.taskPath);
+    assert.equal(loaded.deliveryPolicy, "review");
+    const stillOnDisk = await fsa.readFile(d.taskPath);
+    assert.match(stillOnDisk, /deliveryPolicy:\s*manual/);
   });
 });

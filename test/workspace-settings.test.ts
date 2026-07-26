@@ -34,18 +34,22 @@ test("settings.json is registered as a system file", () => {
   assert.ok(isSystemNoteName(WORKSPACE_SETTINGS_PATH));
 });
 
-test("normalizeWorkspaceSettings: missing/invalid defaultDeliveryPolicy → manual", () => {
+test("normalizeWorkspaceSettings: missing/invalid defaultDeliveryPolicy → review", () => {
   assert.deepEqual(normalizeWorkspaceSettings(undefined), {
-    defaultDeliveryPolicy: "manual",
+    defaultDeliveryPolicy: "review",
   });
   assert.deepEqual(normalizeWorkspaceSettings(null), {
-    defaultDeliveryPolicy: "manual",
+    defaultDeliveryPolicy: "review",
   });
   assert.deepEqual(normalizeWorkspaceSettings({}), {
-    defaultDeliveryPolicy: "manual",
+    defaultDeliveryPolicy: "review",
   });
   assert.deepEqual(normalizeWorkspaceSettings({ defaultDeliveryPolicy: "nope" }), {
-    defaultDeliveryPolicy: "manual",
+    defaultDeliveryPolicy: "review",
+  });
+  // Historical on-disk `manual` normalizes to `review` at the read boundary only.
+  assert.deepEqual(normalizeWorkspaceSettings({ defaultDeliveryPolicy: "manual" }), {
+    defaultDeliveryPolicy: "review",
   });
   assert.deepEqual(normalizeWorkspaceSettings({ defaultDeliveryPolicy: "bypass" }), {
     defaultDeliveryPolicy: "bypass",
@@ -55,11 +59,11 @@ test("normalizeWorkspaceSettings: missing/invalid defaultDeliveryPolicy → manu
   });
   // Extensibility: unknown keys preserved
   const ext = normalizeWorkspaceSettings({
-    defaultDeliveryPolicy: "manual",
+    defaultDeliveryPolicy: "review",
     futureFlag: true,
     nested: { a: 1 },
   });
-  assert.equal(ext.defaultDeliveryPolicy, "manual");
+  assert.equal(ext.defaultDeliveryPolicy, "review");
   assert.equal(ext.futureFlag, true);
   assert.deepEqual(ext.nested, { a: 1 });
 });
@@ -77,6 +81,16 @@ test("loadWorkspaceSettings: missing file → defaults; valid file loads", async
   const loaded = await loadWorkspaceSettings(fsa);
   assert.equal(loaded.defaultDeliveryPolicy, "bypass");
   assert.equal(loaded.note, "x");
+});
+
+test("loadWorkspaceSettings: historical on-disk manual → review projection", async () => {
+  const { fsa } = await makeSystemRoot();
+  await fsa.writeFile(
+    WORKSPACE_SETTINGS_PATH,
+    JSON.stringify({ defaultDeliveryPolicy: "manual" }, null, 2) + "\n"
+  );
+  const loaded = await loadWorkspaceSettings(fsa);
+  assert.equal(loaded.defaultDeliveryPolicy, "review");
 });
 
 test("loadWorkspaceSettings: corrupt file → backup, reset, warning", async () => {
@@ -99,7 +113,7 @@ test("loadWorkspaceSettings: corrupt file → backup, reset, warning", async () 
   const entries = await fs.readdir(root);
   assert.ok(entries.some((n) => n.startsWith("settings.json.corrupt-")));
   const resetRaw = await fsa.readFile(WORKSPACE_SETTINGS_PATH);
-  assert.equal(JSON.parse(resetRaw).defaultDeliveryPolicy, "manual");
+  assert.equal(JSON.parse(resetRaw).defaultDeliveryPolicy, "review");
 });
 
 test("saveWorkspaceSettings + updateWorkspaceSettings: mutation-safe and no-op detection", async () => {
@@ -130,6 +144,16 @@ test("saveWorkspaceSettings + updateWorkspaceSettings: mutation-safe and no-op d
 
   await assert.rejects(
     () => updateWorkspaceSettings(fsa, { defaultDeliveryPolicy: "nope" }),
+    (err: unknown) => {
+      assert.ok(err instanceof WorkspaceSettingsError);
+      assert.equal(err.code, "INVALID_DELIVERY_POLICY");
+      return true;
+    }
+  );
+
+  // New writes reject historical `manual` (read-only migration value).
+  await assert.rejects(
+    () => updateWorkspaceSettings(fsa, { defaultDeliveryPolicy: "manual" as never }),
     (err: unknown) => {
       assert.ok(err instanceof WorkspaceSettingsError);
       assert.equal(err.code, "INVALID_DELIVERY_POLICY");

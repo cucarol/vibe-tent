@@ -17,7 +17,23 @@ export type TaskState =
 /** Legacy envelope two-state (B2 / dogfood CLI). */
 export type LegacyTaskStatus = "pending" | "taken";
 
-export type DeliveryPolicy = "manual" | "bypass" | "agent-decide";
+/**
+ * Canonical delivery-policy wire values (V0.2).
+ * Product-facing terms (not localized): Review / Bypass / Agent Decide.
+ * Historical on-disk `manual` is normalized to `review` only at a narrow read boundary.
+ */
+export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
+
+/** Default for new tasks / workspace settings when policy is omitted. */
+export const DEFAULT_DELIVERY_POLICY: DeliveryPolicy = "review";
+
+/** Stable product labels for Review / Bypass / Agent Decide (English, not localized). */
+export const DELIVERY_POLICY_PRODUCT_LABELS: Record<DeliveryPolicy, string> = {
+  review: "Review",
+  bypass: "Bypass",
+  "agent-decide": "Agent Decide",
+};
+
 export type DeliverDecision = "integrate" | "request-review";
 export type WaitReason = "user-input" | "a2a-approval" | "review" | "external";
 export type AssigneeKind = "role" | "agentProfile";
@@ -25,6 +41,22 @@ export type A2APolicy = "allow" | "ask" | "deny";
 
 export type DeliveryStatus = "draft" | "ready" | "accepted" | "rejected";
 export type IntegrationMode = "manual-accept" | "bypass-auto" | "agent-decided-integrate" | null;
+
+/** True for canonical wire values only (not historical `manual`). */
+export function isDeliveryPolicy(value: unknown): value is DeliveryPolicy {
+  return value === "review" || value === "bypass" || value === "agent-decide";
+}
+
+/**
+ * Narrow read/migration boundary for on-disk task/workspace policy fields.
+ * Historical `manual` → `review`. Canonical values pass through. Other values → undefined.
+ * Does not accept `manual` as a write/RPC value — callers must reject that at write boundaries.
+ */
+export function normalizeDeliveryPolicyRead(value: unknown): DeliveryPolicy | undefined {
+  if (value === "manual") return "review";
+  if (isDeliveryPolicy(value)) return value;
+  return undefined;
+}
 
 export type ArtifactRef = {
   kind: "path" | "dir" | "commit" | "url" | "other";
@@ -194,11 +226,11 @@ export function resolveDeliverRouting(
   if (policy === "bypass") {
     return { autoIntegrate: true, integrationMode: "bypass-auto", enterDelivered: false };
   }
-  if (policy === "manual") {
+  if (policy === "review") {
     if (decision === "integrate") {
       throw new TaskLifecycleError(
         "POLICY_FORBIDS_AUTO_INTEGRATE",
-        "deliveryPolicy=manual forbids decision=integrate; use request-review or change policy."
+        "deliveryPolicy=review forbids decision=integrate; use request-review or change policy."
       );
     }
     return { autoIntegrate: false, integrationMode: null, enterDelivered: true };

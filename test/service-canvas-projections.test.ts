@@ -272,7 +272,7 @@ test("box.projections: order stable; item semantics match box.projection", async
       boxId: c.id,
       role: "executor",
       prompt: "finish c",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, { summary: "c done" });

@@ -763,7 +763,8 @@ function workspaceSetForeground(ctx: HandlerContext, p: Record<string, unknown>)
 
 /**
  * Read projection of workspace collaboration settings.
- * Missing file/field → defaultDeliveryPolicy=manual (normalized in core).
+ * Missing file/field → defaultDeliveryPolicy=review (normalized in core).
+ * Historical on-disk `manual` is normalized to `review` at the settings read boundary.
  */
 async function workspaceSettingsRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -841,9 +842,10 @@ function parseWorkspaceSettingsPatch(p: Record<string, unknown>): Record<string,
     out[key] = value;
   }
   // Explicit defaultDeliveryPolicy validation at the RPC boundary (clear error).
+  // New writes reject historical `manual`; use `review`.
   if ("defaultDeliveryPolicy" in out) {
     const v = out.defaultDeliveryPolicy;
-    if (v !== "manual" && v !== "bypass" && v !== "agent-decide") {
+    if (v !== "review" && v !== "bypass" && v !== "agent-decide") {
       throw new RpcError(-32602, `Invalid defaultDeliveryPolicy: ${String(v)}`, {
         code: "INVALID_DELIVERY_POLICY",
       });
@@ -7869,7 +7871,7 @@ async function tryManagedAutoDeliver(
       const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
 
       // agent-decide without an explicit agent decision: request-review (never auto-accept).
-      const policy = task.deliveryPolicy ?? "manual";
+      const policy = task.deliveryPolicy ?? "review";
       const decision =
         policy === "agent-decide" ? ("request-review" as const) : undefined;
 
@@ -8886,7 +8888,8 @@ function optionalStringArray(p: Record<string, unknown>, key: string): string[] 
 
 function parseDeliveryPolicy(raw: string | undefined): DeliveryPolicy | undefined {
   if (!raw) return undefined;
-  if (raw === "manual" || raw === "bypass" || raw === "agent-decide") return raw;
+  // New RPC writes reject historical `manual`; canonical value is `review`.
+  if (raw === "review" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
 

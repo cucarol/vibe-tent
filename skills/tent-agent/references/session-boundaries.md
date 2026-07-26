@@ -30,7 +30,7 @@ claim → work → deliver → [user review] → accept | reject
 
 - **deliver** = agent submits a Delivery (`dl-…`) with summary/commits.
 - **accept** = user (or authorized actor) accepts that delivery.
-- `deliveryPolicy: manual` never auto-accepts on deliver.
+- `deliveryPolicy: review` never auto-accepts on deliver.
 - Managed auto-deliver still awaits policy/review — chat ending ≠ user accept.
 - Agents must not flip box `status: done` to fake completion.
 

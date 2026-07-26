@@ -11,12 +11,13 @@ import type { CredentialProjection } from "../../service/credential-store.js";
 import type { ProviderCatalogEntry, ProviderVerificationLevel } from "../../service/types.js";
 import { verificationLevelLabel } from "./graph-model.js";
 
-export type DeliveryPolicy = "manual" | "bypass" | "agent-decide";
+/** Canonical wire values; product labels are English Review / Bypass / Agent Decide (not localized). */
+export type DeliveryPolicy = "review" | "bypass" | "agent-decide";
 
 export const DELIVERY_POLICY_OPTIONS: Array<{ value: DeliveryPolicy; label: string }> = [
-  { value: "manual", label: "手动确认" },
-  { value: "bypass", label: "直通" },
-  { value: "agent-decide", label: "Agent 决定" },
+  { value: "review", label: "Review" },
+  { value: "bypass", label: "Bypass" },
+  { value: "agent-decide", label: "Agent Decide" },
 ];
 
 export type RoleFormDraft = {

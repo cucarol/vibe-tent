@@ -1500,6 +1500,14 @@ var init_skillRoleRegistry = __esm({
 });
 
 // src/core/task-model.ts
+function isDeliveryPolicy(value) {
+  return value === "review" || value === "bypass" || value === "agent-decide";
+}
+function normalizeDeliveryPolicyRead(value) {
+  if (value === "manual") return "review";
+  if (isDeliveryPolicy(value)) return value;
+  return void 0;
+}
 function isActiveTaskState(state) {
   return ACTIVE_TASK_STATES.has(state);
 }
@@ -1587,11 +1595,12 @@ function assertReviewAuthority(input) {
     `task.${action} on sub task requires actor user or dispatchedBy role` + (dispatcher ? ` (${dispatcher})` : "") + `; got ${actor}.`
   );
 }
-var ACTIVE_TASK_STATES, TaskLifecycleError;
+var DEFAULT_DELIVERY_POLICY, ACTIVE_TASK_STATES, TaskLifecycleError;
 var init_task_model = __esm({
   "src/core/task-model.ts"() {
     "use strict";
     init_id();
+    DEFAULT_DELIVERY_POLICY = "review";
     ACTIVE_TASK_STATES = /* @__PURE__ */ new Set([
       "queued",
       "running",
@@ -1784,7 +1793,8 @@ async function loadTaskEnvelope(fs2, path) {
   if (typeof data.roleBranchBase === "string" && data.roleBranchBase.trim()) {
     task.roleBranchBase = data.roleBranchBase.trim();
   }
-  if (isDeliveryPolicy(data.deliveryPolicy)) task.deliveryPolicy = data.deliveryPolicy;
+  const deliveryPolicy = normalizeDeliveryPolicyRead(data.deliveryPolicy);
+  if (deliveryPolicy) task.deliveryPolicy = deliveryPolicy;
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
@@ -1900,7 +1910,7 @@ async function writeTaskEnvelope(fs2, clock, input) {
     dispatchedBy: input.dispatchedBy?.trim() || "user",
     claims: input.claims.map((claim) => claim.id),
     manifest: input.manifestPath,
-    deliveryPolicy: input.deliveryPolicy ?? "manual",
+    deliveryPolicy: input.deliveryPolicy ?? DEFAULT_DELIVERY_POLICY,
     createdAt: now,
     updatedAt: now
   };
@@ -1984,9 +1994,6 @@ function parseTaskState(value, legacy) {
     return value;
   }
   return legacyStatusToState(legacy);
-}
-function isDeliveryPolicy(value) {
-  return value === "manual" || value === "bypass" || value === "agent-decide";
 }
 function parseWaitFields(data) {
   const reason = data.waitReason;

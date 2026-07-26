@@ -345,7 +345,7 @@ test("B5: dispatch → claim → startSession → deliver → accept (manual) vi
       boxId,
       role: "executor",
       prompt: "Ship B5 wiring",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
     const taskPath = dispatched.taskPath;
@@ -1039,7 +1039,7 @@ test("B5 managed ACP: user prompt enters ACP; final response → one manual deli
         boxId,
         role: "executor",
         prompt: userPrompt,
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1134,7 +1134,7 @@ test("P0: Delivery only after turn seal — post-response tail write cannot land
         boxId,
         role: "executor",
         prompt: "prove post-response worktree mutation cannot race Delivery",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1236,7 +1236,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
         boxId,
         role: "executor",
         prompt: "manual deliver must not publish during busy managed turn",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       assert.ok(!d.error, JSON.stringify(d.error));
       const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -1403,7 +1403,7 @@ test("P0: public task.deliver/requestReview refuse while managed turnBusy; idle 
       boxId,
       role: "executor",
       prompt: "idle manual deliver still ok",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -2599,7 +2599,7 @@ test("P0-2: manual accept integrates real commits into main; already-integrated 
       boxId,
       role: "executor",
       prompt: "integrate me",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -2943,7 +2943,7 @@ test("P0 fix: managed auto-deliver collects role-lane commit; manual accept inte
       boxId,
       role: "executor",
       prompt: "auto-collect then review",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3075,7 +3075,7 @@ test("P0 fix: managed auto-deliver zero-commit / non-Git remains legal", async (
       boxId,
       role: "executor",
       prompt: "docs only managed",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3158,7 +3158,7 @@ test("P0: dirty task worktree refuses managed auto-deliver and public task.deliv
       boxId,
       role: "executor",
       prompt: "must not deliver with dirty role worktree",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3309,7 +3309,7 @@ test("P0 fix: managed auto-collect excludes pre-session role commits; includes a
       boxId,
       role: "executor",
       prompt: "only my commits",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
 
@@ -3373,7 +3373,7 @@ test("P0 fix: roleBranchBase is stable across startSession and reject-resume", a
       boxId,
       role: "executor",
       prompt: "stable baseline",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     const mount = svc.ctx.host.require(workspaceId);
@@ -3449,7 +3449,7 @@ test("reject-resume restores live managed session for durable role (no false-run
       boxId,
       role: "executor",
       prompt: "reject resume must wake session",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3530,7 +3530,7 @@ test("reject-resume restores live managed session for agentProfile tasks", async
       assigneeKind: "agentProfile",
       profileId: "fake-default",
       prompt: "profile reject resume",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!d.error, JSON.stringify(d.error));
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -3691,7 +3691,7 @@ test("reject-resume native load reuses same sessionId + provider token (mock ACP
         boxId,
         role: "executor",
         prompt: "native reject-resume continuity",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -3847,7 +3847,7 @@ test("reject-resume native load failure falls back to new session (contextRestor
         boxId,
         role: "executor",
         prompt: "native load fail then honest fallback",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4052,7 +4052,7 @@ test("late session.failed on prior after native-fallback keeps rework + review-f
         boxId,
         role: "executor",
         prompt: "late failed on prior must not demote fallback rework",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4153,7 +4153,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
       boxId,
       role: "executor",
       prompt: "delivery then late session.failed",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4225,7 +4225,7 @@ test("session.failed still fails a live running task (pre-delivery)", async () =
       boxId,
       role: "executor",
       prompt: "real failure path",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4290,7 +4290,7 @@ test("reject-resume allocates new session only when prior is not resumeCapable",
         boxId,
         role: "executor",
         prompt: "new ss when not resumeCapable",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4451,7 +4451,7 @@ test("reject-resume recovery orientation rebuilds after simulated restart/retry"
         boxId,
         role: "executor",
         prompt: "rebuild orientation after restart",
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       });
       const taskPath = (d.result as { taskPath: string }).taskPath;
       await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4591,7 +4591,7 @@ test("reject-resume post-start context failure stops orphan Session and parks oc
       boxId,
       role: "executor",
       prompt: "post-start context failure must stop orphan",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4715,7 +4715,7 @@ test("reject-resume fails loud and parks waiting when session cannot be restored
       boxId,
       role: "executor",
       prompt: "force restore failure",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4785,7 +4785,7 @@ test("P0 fix: recorded workspace lane collection errors stay retryable", async (
       boxId,
       role: "executor",
       prompt: "do not downgrade a broken lane",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (dispatched.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });
@@ -4842,7 +4842,7 @@ test("P0 fix: successful managed delivery frees same role for next task", async 
       boxId,
       role: "executor",
       prompt: "first managed task",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath1 = (d1.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath: taskPath1 });
@@ -5994,7 +5994,7 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       boxId,
       role: "executor",
       prompt: "stale envelope",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
     await rpc(svc, "task.claim", { workspaceId, taskPath });

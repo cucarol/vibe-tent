@@ -61,7 +61,7 @@ test("lifecycle: dispatch → claim → wait → resume → deliver → accept",
   assert.equal(task.state, "queued");
   assert.equal(task.status, "pending");
   assert.ok(task.id?.startsWith("tk-"));
-  assert.equal(task.deliveryPolicy, "manual");
+  assert.equal(task.deliveryPolicy, "review");
 
   task = await taskClaim(e as any, result.taskPath, { sessionId: "ss-test1" });
   assert.equal(task.state, "running");
@@ -195,7 +195,7 @@ test("lifecycle: manual accept integrate failure keeps delivered + occupation", 
   assert.ok(ready, "delivery stays ready for retry after integrate failure");
 });
 
-test("lifecycle: agent-decide without decision fails; manual forbids integrate", async () => {
+test("lifecycle: agent-decide without decision fails; review forbids integrate", async () => {
   const dir = await makeTent();
   const e = env(dir);
   const r1 = await dispatch(e as any, "bx-p1", "executor", {
@@ -210,8 +210,8 @@ test("lifecycle: agent-decide without decision fails; manual forbids integrate",
   await taskInterrupt(e as any, r1.taskPath);
 
   const r2 = await dispatch(e as any, "bx-p1", "executor", {
-    userPrompt: "manual only",
-    deliveryPolicy: "manual",
+    userPrompt: "review only",
+    deliveryPolicy: "review",
   });
   await taskClaim(e as any, r2.taskPath);
   await assert.rejects(

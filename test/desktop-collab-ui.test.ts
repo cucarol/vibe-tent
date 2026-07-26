@@ -438,7 +438,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       role: form.payload!.role,
       prompt: form.payload!.prompt,
       dispatchedBy: form.payload!.dispatchedBy,
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string; state: string };
     assert.equal(dispatched.state, "queued");
 
@@ -474,7 +474,7 @@ test("service+client: registry → create coordination box → dispatch → deli
       boxId: box2.id,
       role: "executor",
       prompt: "will be rejected",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, {
@@ -567,7 +567,7 @@ test("service+client: profile.list safe metadata + startSession/interrupt via sh
       role: "executor",
       prompt: "start via UI model",
       dispatchedBy: "user",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
       // Explicit: dispatch must not auto-start session.
       startSession: false,
     })) as { taskPath: string; state: string };

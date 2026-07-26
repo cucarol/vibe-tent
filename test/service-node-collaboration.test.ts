@@ -217,7 +217,7 @@ test("node.collaboration: delivered Task attaches Delivery summary via activeDel
       boxId: note.id,
       role: "executor",
       prompt: "ship for review",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     await client.taskDeliver(workspaceId, dispatched.taskPath, {
@@ -258,7 +258,7 @@ test("node.collaboration: accepted Task clears occupation (null task)", async ()
       boxId: note.id,
       role: "executor",
       prompt: "finish",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, dispatched.taskPath);
     await client.taskDeliver(workspaceId, dispatched.taskPath, { summary: "done" });
@@ -629,7 +629,7 @@ test("node.collaboration: terminal rejected/interrupted/failed clear occupation"
       boxId: n2.id,
       role: "executor",
       prompt: "reject me",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     await client.taskClaim(workspaceId, d2.taskPath);
     await client.taskDeliver(workspaceId, d2.taskPath, { summary: "for reject" });

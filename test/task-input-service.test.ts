@@ -163,7 +163,7 @@ test("task.sendInput: user-only, text/refs, scoped poll+ack, lifecycle cancel", 
       boxId,
       role: "executor",
       prompt: "Work that may get user append",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -382,7 +382,7 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
       "dispatchedBy: user\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
-      "deliveryPolicy: manual\n" +
+      "deliveryPolicy: review\n" +
       `createdAt: "${now}"\n` +
       `updatedAt: "${now}"\n` +
       "---\n" +
@@ -508,7 +508,7 @@ test("managed ACP: task.sendInput continues same session; delivered survives Del
       boxId: created.id,
       role: "executor",
       prompt: "Managed sendInput flow",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -660,7 +660,7 @@ test("reject-resume: review note is U2A ## Review Feedback on restored managed s
       boxId: created.id,
       role: "executor",
       prompt: "Work that will be rejected with review note",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -807,7 +807,7 @@ test("reject-resume: native resume keeps same sessionId; review-feedback injects
       boxId: created.id,
       role: "executor",
       prompt: "Native reject-resume same session",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1003,7 +1003,7 @@ test("reject-resume external (no session): review feedback stays pending for pol
       boxId: created.id,
       role: "executor",
       prompt: "External role rework",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -1087,7 +1087,7 @@ test("reject-resume: slow follow-up returns accepted without headers-timeout wai
       boxId: created.id,
       role: "executor",
       prompt: "Slow reject-resume inject",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1186,7 +1186,7 @@ test("reject-resume: background completion projects processing → delivered", a
       boxId: created.id,
       role: "executor",
       prompt: "Background reject inject",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1369,7 +1369,7 @@ test("reject-resume: second reject while rework running is rejected (no double i
       boxId: created.id,
       role: "executor",
       prompt: "Double reject protection",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1472,7 +1472,7 @@ test("reject --no-resume: terminal reject without review-feedback or session res
       boxId: created.id,
       role: "executor",
       prompt: "Terminal reject path",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -1532,7 +1532,7 @@ test("managed U2A: concurrent sends on same task are FIFO and non-overlapping", 
       boxId: created.id,
       role: "executor",
       prompt: "FIFO serialization",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -1702,7 +1702,7 @@ test("managed U2A: different tasks remain concurrent (not process-wide serial)",
         boxId: created.id,
         role,
         prompt: `concurrent ${name}`,
-        deliveryPolicy: "manual",
+        deliveryPolicy: "review",
       })) as { taskPath: string };
       const taskPath = dispatched.taskPath;
       await client.taskStartSession(workspaceId, {
@@ -1805,7 +1805,7 @@ test("managed U2A: failed inject leaves item failed (not dropped) and does not o
       boxId: created.id,
       role: "executor",
       prompt: "queue failure semantics",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     await client.taskClaim(workspaceId, taskPath);
@@ -1915,7 +1915,7 @@ test("task.sendInput: RPC returns accepted before managed turn finishes; status 
       boxId: created.id,
       role: "executor",
       prompt: "async accept path",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
 
@@ -2044,7 +2044,7 @@ test("task.sendInput: service stop drains background work without unhandled reje
       boxId: created.id,
       role: "executor",
       prompt: "drain semantics",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     const taskPath = dispatched.taskPath;
     const started = (await client.taskStartSession(workspaceId, {
@@ -2142,7 +2142,7 @@ test("task.sendInput: hung follow-up turns stop promptly; durable row retained; 
       boxId: created.id,
       role: "executor",
       prompt: "hang shutdown",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     })) as { taskPath: string };
     taskPath = dispatched.taskPath;
     const started = (await client.taskStartSession(workspaceId, {

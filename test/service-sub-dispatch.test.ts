@@ -965,7 +965,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       boxId: parentId,
       role: "orchestrator",
       prompt: "own the goal; delegate child",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!parentDispatch.error, JSON.stringify(parentDispatch.error));
     const parentTaskPath = (parentDispatch.result as { taskPath: string }).taskPath;
@@ -991,7 +991,7 @@ test("parent inherits accepted sub commits: main ends with both parent and sub a
       prompt: "produce sub artifact for parent",
       asSub: true,
       dispatchedBy: "orchestrator",
-      deliveryPolicy: "manual",
+      deliveryPolicy: "review",
     });
     assert.ok(!subDispatch.error, JSON.stringify(subDispatch.error));
     const subTaskPath = (subDispatch.result as { taskPath: string }).taskPath;

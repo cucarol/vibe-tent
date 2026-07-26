@@ -195,7 +195,7 @@ of that file is `Delivery.summary` — the same report text the user reviews —
 with commits, checks, artifactRefs, and review metadata in frontmatter.
 
 Only user confirmation (`task.accept`) completes delivery under the default
-manual policy. Agents submit via `task.deliver` / `tent task deliver`.
+`review` policy. Agents submit via `task.deliver` / `tent task deliver`.
 
 **Accept (task.accept)**
 
@@ -249,7 +249,7 @@ Delivery:
   artifactRefs, and review metadata in frontmatter;
 - lifecycle is `ready -> rejected -> ready` until `task.accept` marks it
   `accepted` (accepted files remain for operational history/retention);
-- only a ready Delivery enables completion under the default manual policy.
+- only a ready Delivery enables completion under the default `review` policy.
 
 Fork:
 
