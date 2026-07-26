@@ -509,4 +509,59 @@ test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, pla
       else process.env.TENT_ROLE = previous;
     }
   }
+
+  // 6) Explicit --by user fails before RPC (not misclassified as role)
+  {
+    const previous = process.env.TENT_ROLE;
+    delete process.env.TENT_ROLE;
+    const before = calls.length;
+    try {
+      const roleByUser = await runTaskCommand(
+        "dispatch",
+        ["cx-box-by-user", "executor", "must fail", "--by", "user", "--json"],
+        { client: client as never, cwd: ws, json: true }
+      );
+      assert.notEqual(roleByUser.exitCode, 0);
+      assert.match(
+        roleByUser.stderr + roleByUser.stdout,
+        /dispatching role|not user|omit the flag/i
+      );
+      assert.equal(calls.length, before, "role form --by user must not reach taskDispatch");
+
+      const fromUser = await runTaskCommand(
+        "dispatch",
+        ["cx-box-from-user", "executor", "must fail", "--from", "user"],
+        { client: client as never, cwd: ws }
+      );
+      assert.notEqual(fromUser.exitCode, 0);
+      assert.match(fromUser.stderr + fromUser.stdout, /dispatching role|not user|omit the flag/i);
+      assert.equal(calls.length, before, "--from user must not reach taskDispatch");
+
+      const dispatchedByUser = await runTaskCommand(
+        "dispatch",
+        [
+          "cx-box-db-user",
+          "--profile",
+          "fake-default",
+          "must fail",
+          "--dispatched-by",
+          "user",
+        ],
+        { client: client as never, cwd: ws }
+      );
+      assert.notEqual(dispatchedByUser.exitCode, 0);
+      assert.match(
+        dispatchedByUser.stderr + dispatchedByUser.stdout,
+        /dispatching role|not user|omit the flag/i
+      );
+      assert.equal(
+        calls.length,
+        before,
+        "profile form --dispatched-by user must not reach taskDispatch"
+      );
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
 });

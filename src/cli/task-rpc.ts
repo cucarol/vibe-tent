@@ -189,6 +189,14 @@ export async function runTaskCommand(
         if (prompt === "-") prompt = await readStdinText();
         const asSub = flags["as-sub"] === "true";
         const explicitBy = (flags.by || flags.from || flags["dispatched-by"] || "").trim();
+        // --by / --from / --dispatched-by name a dispatching *role*, not the user actor.
+        // Plain user-originated dispatch needs no --by; reject explicit "user" so it is
+        // never misclassified as callerKind=role.
+        if (explicitBy && explicitBy === "user") {
+          return failUsage(
+            "--by/--from/--dispatched-by must name a dispatching role, not user; omit the flag for plain user-originated dispatch"
+          );
+        }
         const tentRole = (process.env.TENT_ROLE || "").trim();
         const dispatchedBy = explicitBy || tentRole || "user";
         if (asSub && (!dispatchedBy || dispatchedBy === "user")) {

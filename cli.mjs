@@ -6037,6 +6037,11 @@ ${usageProfile}`);
         if (prompt === "-") prompt = await readStdinText();
         const asSub = flags["as-sub"] === "true";
         const explicitBy = (flags.by || flags.from || flags["dispatched-by"] || "").trim();
+        if (explicitBy && explicitBy === "user") {
+          return failUsage(
+            "--by/--from/--dispatched-by must name a dispatching role, not user; omit the flag for plain user-originated dispatch"
+          );
+        }
         const tentRole = (process.env.TENT_ROLE || "").trim();
         const dispatchedBy = explicitBy || tentRole || "user";
         if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
