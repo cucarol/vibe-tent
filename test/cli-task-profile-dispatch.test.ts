@@ -361,3 +361,152 @@ test("CLI profile dispatch rejects ambiguous prompt / low-level flags; sub wires
     await svc.stop();
   }
 });
+
+/**
+ * Capture taskDispatch RPC args via injected client (no Service needed).
+ * Proves callerKind wiring for role and profile forms.
+ */
+function capturingDispatchClient() {
+  const calls: Array<Record<string, unknown>> = [];
+  const client = {
+    listWorkspaces: async () => ({ workspaces: [] }),
+    mount: async (workspaceRoot: string) => ({
+      workspaceId: "ws-capture",
+      workspaceRoot,
+      systemRoot: path.join(workspaceRoot, ".tent"),
+    }),
+    taskDispatch: async (_workspaceId: string, args: Record<string, unknown>) => {
+      calls.push({ ...args });
+      return {
+        taskPath: "temp/capture/tasks/task-capture.md",
+        state: args.startSession ? "running" : "queued",
+        assigneeKind: args.assigneeKind ?? "role",
+        assignee: args.profileId ?? args.role,
+        asSub: args.asSub === true,
+        session: args.startSession
+          ? { session: { sessionId: "ss-capture", state: "live", profileId: args.profileId } }
+          : undefined,
+      };
+    },
+  };
+  return { client, calls };
+}
+
+test("CLI dispatch callerKind: role --by, role TENT_ROLE, profile TENT_ROLE, plain user", async () => {
+  const ws = await makeWorkspace("cli-caller-kind");
+  const { client, calls } = capturingDispatchClient();
+
+  // 1) Plain user role form → callerKind=user
+  {
+    const previous = process.env.TENT_ROLE;
+    delete process.env.TENT_ROLE;
+    try {
+      const r = await runTaskCommand(
+        "dispatch",
+        ["cx-box-user", "executor", "plain user role", "--json"],
+        { client: client as never, cwd: ws, json: true }
+      );
+      assert.equal(r.exitCode, 0, r.stderr + r.stdout);
+      const last = calls[calls.length - 1];
+      assert.equal(last.callerKind, "user");
+      assert.equal(last.dispatchedBy, "user");
+      assert.equal(last.role, "executor");
+      assert.equal(last.assigneeKind, undefined);
+      assert.equal(last.startSession, undefined);
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
+
+  // 2) Role form + explicit --by → callerKind=role
+  {
+    const previous = process.env.TENT_ROLE;
+    delete process.env.TENT_ROLE;
+    try {
+      const r = await runTaskCommand(
+        "dispatch",
+        ["cx-box-by", "executor", "role with by", "--by", "orchestrator", "--json"],
+        { client: client as never, cwd: ws, json: true }
+      );
+      assert.equal(r.exitCode, 0, r.stderr + r.stdout);
+      const last = calls[calls.length - 1];
+      assert.equal(last.callerKind, "role");
+      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.role, "executor");
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
+
+  // 3) Role form + TENT_ROLE only (no --by) → callerKind=role
+  {
+    const previous = process.env.TENT_ROLE;
+    process.env.TENT_ROLE = "orchestrator";
+    try {
+      const r = await runTaskCommand(
+        "dispatch",
+        ["cx-box-tent-role", "executor", "role via TENT_ROLE", "--json"],
+        { client: client as never, cwd: ws, json: true, env: { ...process.env, TENT_ROLE: "orchestrator" } }
+      );
+      assert.equal(r.exitCode, 0, r.stderr + r.stdout);
+      const last = calls[calls.length - 1];
+      assert.equal(last.callerKind, "role");
+      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.role, "executor");
+      assert.ok(
+        Object.prototype.hasOwnProperty.call(last, "callerKind"),
+        "role form must pass callerKind"
+      );
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
+
+  // 4) Profile form + TENT_ROLE only → callerKind=role + startSession
+  {
+    const previous = process.env.TENT_ROLE;
+    process.env.TENT_ROLE = "orchestrator";
+    try {
+      const r = await runTaskCommand(
+        "dispatch",
+        ["cx-box-prof-tr", "--profile", "fake-default", "profile via TENT_ROLE", "--json"],
+        { client: client as never, cwd: ws, json: true, env: { ...process.env, TENT_ROLE: "orchestrator" } }
+      );
+      assert.equal(r.exitCode, 0, r.stderr + r.stdout);
+      const last = calls[calls.length - 1];
+      assert.equal(last.callerKind, "role");
+      assert.equal(last.dispatchedBy, "orchestrator");
+      assert.equal(last.assigneeKind, "agentProfile");
+      assert.equal(last.profileId, "fake-default");
+      assert.equal(last.startSession, true);
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
+
+  // 5) Profile form plain user (no TENT_ROLE, no --by) → callerKind=user
+  {
+    const previous = process.env.TENT_ROLE;
+    delete process.env.TENT_ROLE;
+    try {
+      const r = await runTaskCommand(
+        "dispatch",
+        ["cx-box-prof-user", "--profile", "fake-default", "profile as user", "--json"],
+        { client: client as never, cwd: ws, json: true }
+      );
+      assert.equal(r.exitCode, 0, r.stderr + r.stdout);
+      const last = calls[calls.length - 1];
+      assert.equal(last.callerKind, "user");
+      assert.equal(last.dispatchedBy, "user");
+      assert.equal(last.assigneeKind, "agentProfile");
+      assert.equal(last.startSession, true);
+    } finally {
+      if (previous === undefined) delete process.env.TENT_ROLE;
+      else process.env.TENT_ROLE = previous;
+    }
+  }
+});

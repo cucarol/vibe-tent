@@ -6036,12 +6036,14 @@ ${usageProfile}`);
         let prompt = typeof flags.prompt === "string" ? flags.prompt : promptParts.join(" ");
         if (prompt === "-") prompt = await readStdinText();
         const asSub = flags["as-sub"] === "true";
-        const explicitBy = flags.by || flags.from || flags["dispatched-by"];
-        const dispatchedBy = explicitBy || process.env.TENT_ROLE || "user";
+        const explicitBy = (flags.by || flags.from || flags["dispatched-by"] || "").trim();
+        const tentRole = (process.env.TENT_ROLE || "").trim();
+        const dispatchedBy = explicitBy || tentRole || "user";
         if (asSub && (!dispatchedBy || dispatchedBy === "user")) {
           return failUsage("--as-sub requires --by <dispatching-role> or TENT_ROLE");
         }
-        const callerKind = asSub || Boolean(explicitBy) ? "role" : "user";
+        const roleAttributed = asSub || Boolean(explicitBy) || Boolean(tentRole && tentRole !== "user");
+        const callerKind = roleAttributed ? "role" : "user";
         const result = await client.taskDispatch(
           workspaceId,
           isProfileForm ? {
@@ -6060,7 +6062,8 @@ ${usageProfile}`);
             prompt,
             dispatchedBy,
             asSub: asSub || void 0,
-            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy
+            deliveryPolicy: flags["delivery-policy"] || flags.deliveryPolicy,
+            callerKind
           }
         );
         return okPrint(result, json, (r) => formatTaskDispatch(r));

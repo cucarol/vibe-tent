@@ -47,7 +47,7 @@ Dispatch forms:
 - A bare role-like string is **never** inferred as a profile; use `--profile` explicitly.
 - Do not pass low-level `--assignee-kind` / `--start-session` on the CLI.
 - Prompt: positionals **or** `--prompt <text>|-`, not both. With `--profile`, every positional after `boxId` is prompt text.
-- Sub-dispatch: `--as-sub --by <role>` (or `TENT_ROLE`); profile form then sends `callerKind=role`.
+- Role attribution / A2A: any dispatch with explicit `--by`/`--from`/`--dispatched-by`, or implicit `TENT_ROLE`, or `--as-sub`, sends `callerKind=role` on **both** role and profile forms; plain user dispatch sends `callerKind=user`.
 
 Agents should **not** self-accept their own delivery unless the product path explicitly authorizes it.
 
