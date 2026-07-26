@@ -673,7 +673,7 @@ export async function migrateSessionWorkspaceIdsOnMount(
  * Recovery: explicit `task.startSession` (or equivalent supported Service path); occupation held.
  */
 export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
-  "绑定的 session 已不可用（服务重启或 session 已结束）。可重新启动 session，或 interrupt 任务；occupation 保持。";
+  "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; occupation is held.";
 
 /** Stable machine-facing code for session-unavailable recoverable park (wait.reason stays external). */
 export const SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable" as const;
@@ -706,8 +706,7 @@ async function applySessionUnavailablePark(
   if (isSessionUnavailableParkedWait(current)) return null;
   // Reject-resume failure park keeps its own diagnostic summary; do not overwrite.
   if (isRejectResumeParkedWait(current)) return null;
-  // Collaboration-terminal / published Delivery never re-park here.
-  if (isTaskCollaborationTerminal(current) && current.state !== "failed") return null;
+  // running|waiting only reach here; collaboration-terminal states are filtered above.
 
   let next: TaskEnvelope;
   if (current.state === "running") {
@@ -6549,12 +6548,10 @@ async function userAskDenyRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   );
 
   // Deny still resumes task occupation so agent/external path can observe denial
-  // and deliver/interrupt — not a silent hang.
+  // and deliver/interrupt — not a silent hang. Continuation targets the Task's
+  // current bound session when rebound (see continueManagedAfterUserAsk).
   const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.deny");
-  const continueResult =
-    item.sessionId != null
-      ? await continueManagedAfterUserAsk(ctx, item)
-      : { continued: false as const, error: undefined as string | undefined };
+  const continueResult = await continueManagedAfterUserAsk(ctx, item);
 
   return {
     ask: projectUserAsk(item),
@@ -6589,31 +6586,74 @@ async function resumeTaskAfterUserAsk(
 }
 
 /**
- * Managed ACP: after user answer, feed fixed-format prompt into the same session.
- * Prefer live sendFollowUpPrompt; else resumeSession with bootstrapPrompt when capable.
+ * Resolve which managed Session should receive a UserAsk answer continuation.
+ * Prefer the Task's current bound sessionId when it has changed after recovery
+ * rebind (item.sessionId stays as audit origin of the ask). Fall back to the
+ * origin sessionId when the Task has no binding or the task row is missing.
+ */
+async function resolveUserAskContinueSessionId(
+  ctx: HandlerContext,
+  item: UserAskRecord
+): Promise<string | undefined> {
+  const origin = item.sessionId?.trim() || "";
+  try {
+    const mount = ctx.host.get(item.workspaceId);
+    if (mount) {
+      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
+        () => null
+      );
+      const bound = task?.sessionId?.trim() || "";
+      if (bound) return bound;
+    }
+  } catch {
+    // best-effort: fall back to origin
+  }
+  return origin || undefined;
+}
+
+/**
+ * Managed ACP: after user answer, feed fixed-format prompt into the live bound session.
+ * Prefer Task.current sessionId when rebound after recoverable park; item.sessionId
+ * remains audit origin only. Prefer live sendFollowUpPrompt; else resumeSession when capable.
  * External agents query userAsk.get — no auto chat.
  */
 async function continueManagedAfterUserAsk(
   ctx: HandlerContext,
   item: UserAskRecord
 ): Promise<{ continued: boolean; error?: string }> {
-  if (!item.sessionId) return { continued: false };
+  const sessionId = await resolveUserAskContinueSessionId(ctx, item);
+  if (!sessionId) return { continued: false };
   const prompt = formatUserAskAnswerPrompt(item);
   try {
-    // Live follow-up path (same process still holding the managed ACP session).
+    // Live follow-up path (prefer current bound process after replacement rebind).
     try {
-      await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
+      await ctx.runtime.sendFollowUpPrompt(sessionId, prompt);
       return { continued: true };
     } catch (liveErr) {
       const liveMessage =
         liveErr instanceof Error ? liveErr.message : String(liveErr);
+      // Live session without structured follow-up (e.g. fake process adapter):
+      // do not call resumeSession on an alive process.
+      try {
+        const liveProbe = await ctx.runtime.probe(sessionId);
+        if (liveProbe.alive && SessionRegistry.isNonTerminal(liveProbe.state)) {
+          return {
+            continued: false,
+            error:
+              liveMessage ||
+              "managed session live but does not support follow-up inject; external agent may poll userAsk.get",
+          };
+        }
+      } catch {
+        // probe failed — fall through to resume path
+      }
       // Fall through to provider-native resume when live follow-up is unavailable.
       if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
         // Unexpected live error — still try resume if possible.
       }
     }
 
-    const probe = await ctx.runtime.probe(item.sessionId);
+    const probe = await ctx.runtime.probe(sessionId);
     if (!probe.resumeCapable) {
       return {
         continued: false,
@@ -6621,10 +6661,10 @@ async function continueManagedAfterUserAsk(
           "managed session not live and not resume-capable; external agent may poll userAsk.get",
       };
     }
-    const rec = await ctx.runtime.registry.read(item.sessionId);
+    const rec = await ctx.runtime.registry.read(sessionId);
     const cwd = rec?.runtimeWorkspace?.cwd;
     await ctx.runtime.resumeSession({
-      sessionId: item.sessionId,
+      sessionId,
       bootstrapPrompt: prompt,
       ...(cwd ? { runtimeWorkspace: { cwd } } : {}),
     });
@@ -6636,7 +6676,8 @@ async function continueManagedAfterUserAsk(
       "session.state",
       item.workspaceId,
       {
-        sessionId: item.sessionId,
+        sessionId,
+        originSessionId: item.sessionId,
         taskPath: item.taskPath,
         runtimeEvent: "userAsk.continue.failed",
         error: message,
