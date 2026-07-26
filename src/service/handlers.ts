@@ -4747,12 +4747,65 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 /**
  * A2A gate → AgentRuntimePort.startSession → bind task.sessionId only.
  * Clients never call AgentRuntimePort.* directly.
+ *
+ * Single-flight / idempotent per Task (workspaceId + taskPath):
+ * - While a start is in progress, same-profile callers coalesce to that result;
+ *   a different profileId fails with a stable retryable RPC_LIFECYCLE conflict.
+ * - If a usable bound Session already exists, exclusive path returns/reuses it
+ *   without starting another provider process.
+ * - Explicit replacement after waiting(session_unavailable) still allocates a
+ *   new (or native-resumed) Session once the prior row is terminal; late events
+ *   from the old sessionId remain harmless via sessionId mismatch guards.
+ * Does not add a Task state; in-memory flight map only.
  */
 async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
+  // profileId is required before flight acquisition so concurrent mismatch can
+  // fail-loud without launching a second provider.
   const profileId = requireProfileId(p);
+  const flightKey = taskStartSessionFlightKey(workspaceId, taskPath);
+  const existing = taskStartSessionInFlight.get(flightKey);
+  if (existing) {
+    if (existing.profileId !== profileId) {
+      throw new RpcError(RPC_LIFECYCLE, START_SESSION_IN_PROGRESS_MESSAGE, {
+        taskPath,
+        profileId,
+        inFlightProfileId: existing.profileId,
+        retryable: true,
+      });
+    }
+    return existing.promise;
+  }
+
+  // Start exclusive work and publish the promise before the first outer await so
+  // same-tick concurrent callers coalesce (exclusive runs only until its first
+  // inner await before returning this promise; set is still synchronous here).
+  const operation = taskStartSessionRpcExclusive(
+    ctx,
+    p,
+    workspaceId,
+    taskPath,
+    profileId
+  );
+  taskStartSessionInFlight.set(flightKey, { profileId, promise: operation });
+  try {
+    return await operation;
+  } finally {
+    if (taskStartSessionInFlight.get(flightKey)?.promise === operation) {
+      taskStartSessionInFlight.delete(flightKey);
+    }
+  }
+}
+
+async function taskStartSessionRpcExclusive(
+  ctx: HandlerContext,
+  p: Record<string, unknown>,
+  workspaceId: string,
+  taskPath: string,
+  profileId: string
+) {
+  const mount = ctx.host.require(workspaceId);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
@@ -7388,6 +7441,26 @@ const managedAutoDeliverDone = new Set<string>();
 const rejectResumeNativeInFlight = new Set<string>();
 
 /**
+ * Per-task single-flight for `task.startSession` (key = workspaceId + taskPath).
+ * Concurrent / repeated callers coalesce onto one provider launch until the
+ * envelope `sessionId` bind completes (or the attempt fails and the slot clears).
+ * Does not introduce a Task state; in-memory only for the live Service process.
+ */
+type TaskStartSessionInFlight = {
+  profileId: string;
+  promise: Promise<unknown>;
+};
+const taskStartSessionInFlight = new Map<string, TaskStartSessionInFlight>();
+
+/** Stable retryable conflict when a concurrent start uses a different profileId. */
+const START_SESSION_IN_PROGRESS_MESSAGE =
+  "task.startSession already in progress for this task";
+
+function taskStartSessionFlightKey(workspaceId: string, taskPath: string): string {
+  return `${workspaceId}\0${taskPath}`;
+}
+
+/**
  * Per-session projection queue (key = sessionId). Different sessions proceed
  * independently; failures do not poison later events for the same session.
  * Reuses MutationBus bookkeeping (bounded tails, catch-through).
@@ -8441,7 +8514,13 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
   rejectResumeNativeInFlight.clear();
+  taskStartSessionInFlight.clear();
   rejectResumePostStartFailureForTests = null;
+}
+
+/** Test helper: clear per-task startSession single-flight slots. */
+export function resetTaskStartSessionInFlightForTests(): void {
+  taskStartSessionInFlight.clear();
 }
 
 /**
