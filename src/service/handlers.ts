@@ -667,18 +667,156 @@ export async function migrateSessionWorkspaceIdsOnMount(
 }
 
 /**
- * Chinese summary when a bound managed session is gone after service restart / remount.
- * Kept as a constant so tests and UI can match the exact contract text.
+ * Stable wait summary when a bound managed Session is unintentionally unavailable
+ * (live terminal exit/fail before Delivery, or dead after service restart / remount).
+ * Kept as a constant so tests, recovery UX, and remount reconcile share one contract text.
+ * Recovery: explicit `task.startSession` (or equivalent supported Service path); occupation held.
  */
 export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
   "绑定的 session 已不可用（服务重启或 session 已结束）。可重新启动 session，或 interrupt 任务；occupation 保持。";
+
+/** Stable machine-facing code for session-unavailable recoverable park (wait.reason stays external). */
+export const SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable" as const;
+
+/** True when Task is recoverably parked for a dead/unavailable managed Session. */
+export function isSessionUnavailableParkedWait(task: TaskEnvelope): boolean {
+  return (
+    task.state === "waiting" &&
+    task.wait?.reason === "external" &&
+    task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY
+  );
+}
+
+/**
+ * Apply waiting(reason=external) + SESSION_UNAVAILABLE_WAIT_SUMMARY under the caller's
+ * MutationBus critical section. Does not release occupation, cancel TaskInputs/UserAsks,
+ * or clear report drafts / worktree. Idempotent when already parked with the same summary.
+ * Returns the parked envelope, or null when no mutation was applied.
+ */
+async function applySessionUnavailablePark(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  emitReason: string
+): Promise<TaskEnvelope | null> {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return null;
+  const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (current.state !== "running" && current.state !== "waiting") return null;
+  if (isSessionUnavailableParkedWait(current)) return null;
+  // Reject-resume failure park keeps its own diagnostic summary; do not overwrite.
+  if (isRejectResumeParkedWait(current)) return null;
+  // Collaboration-terminal / published Delivery never re-park here.
+  if (isTaskCollaborationTerminal(current) && current.state !== "failed") return null;
+
+  let next: TaskEnvelope;
+  if (current.state === "running") {
+    next = await taskWait(mount.env, taskPath, {
+      reason: "external",
+      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    });
+  } else {
+    // waiting with another reason (user-input / a2a-approval / …): overwrite wait.
+    // taskWait only allows running→waiting; MutationBus already serializes this path.
+    next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+      state: "waiting",
+      wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
+      updatedAt: mount.env.clock.now(),
+    });
+  }
+  emitTaskState(ctx, workspaceId, next, emitReason);
+  return next;
+}
+
+/**
+ * Shared recoverable park path for an unintentionally dead managed Session before Delivery.
+ * Live runtime terminal projection and mount reconcile converge here.
+ *
+ * - Task → waiting(reason=external) with SESSION_UNAVAILABLE_WAIT_SUMMARY
+ * - Preserves occupation, worktree, report draft, TaskInputs, UserAsks, audit facts
+ * - Session registry may already be terminal/diagnostic; only Task is parked
+ * - Same-session re-entry is idempotent; rebound sessionId mismatch is a no-op
+ * - Does not auto-start or re-prompt; recovery is explicit task.startSession
+ */
+async function parkTaskForUnavailableSession(
+  ctx: HandlerContext,
+  input: {
+    workspaceId: string;
+    taskPath: string;
+    sessionId?: string;
+    reason: string;
+    /** Optional diagnostic only — never written into wait.summary (summary stays stable). */
+    detail?: string;
+  }
+): Promise<boolean> {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return false;
+
+  let applied = false;
+  let parked: TaskEnvelope | null = null;
+  await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    if (current.state !== "running" && current.state !== "waiting") return;
+    if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
+      return;
+    }
+    parked = await applySessionUnavailablePark(
+      ctx,
+      input.workspaceId,
+      input.taskPath,
+      input.reason
+    );
+    applied = parked != null;
+  });
+
+  if (applied) {
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        taskState: "waiting",
+        waitReason: "external",
+        waitCode: SESSION_UNAVAILABLE_WAIT_CODE,
+        runtimeEvent: input.reason,
+        ...(input.detail ? { error: input.detail } : {}),
+        taskFailed: false,
+        recoverable: true,
+      },
+      "service"
+    );
+  }
+
+  // Clear hanging tool-approval waiters. Do not cancel TaskInputs / UserAsks —
+  // recovery may still need them. If the process is still alive (synthetic
+  // terminal event / adapter race), stop it so probe is not a live orphan.
+  // stopReason stays non-user so this is not treated as intentional seal.
+  if (applied && input.sessionId) {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+      // ignore
+    }
+    try {
+      const probe = await ctx.runtime.probe(input.sessionId);
+      if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+        await ctx.runtime.stopSession(input.sessionId, "interrupt");
+      }
+    } catch {
+      // already dead / already stopped
+    }
+  }
+  return applied;
+}
 
 /**
  * After workspace mount (and SessionRegistry.reconcileOnBoot already ran on service start):
  * scan non-terminal running/waiting tasks with sessionId; decide via runtime.probe(sessionId)
  * (process truth), not SessionRecord.state alone. missing / terminal / dead → park the task in
- * waiting(reason=external) via MutationBus + core taskWait / patch. Keeps occupation; never
- * auto done/release. Truly alive managed sessions are left alone.
+ * waiting(reason=external) via the shared session-unavailable park helper. Keeps occupation;
+ * never auto done/release. Truly alive managed sessions are left alone.
  *
  * Note: probe may correct a stale nonterminal registry row to failed/stopped when the process
  * is gone. That correction is intentional and happens before the task park decision.
@@ -705,11 +843,7 @@ export async function reconcileTaskSessionsOnMount(
     const probe = await ctx.runtime.probe(sessionId);
     if (probe.alive) continue;
 
-    const alreadyParked =
-      task.state === "waiting" &&
-      task.wait?.reason === "external" &&
-      task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
-    if (alreadyParked) continue;
+    if (isSessionUnavailableParkedWait(task)) continue;
 
     await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
@@ -719,29 +853,15 @@ export async function reconcileTaskSessionsOnMount(
       if (current.sessionId?.trim() !== sessionId) return;
       const probe2 = await ctx.runtime.probe(sessionId);
       if (probe2.alive) return;
-      const parkedAlready =
-        current.state === "waiting" &&
-        current.wait?.reason === "external" &&
-        current.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
-      if (parkedAlready) return;
+      if (isSessionUnavailableParkedWait(current)) return;
 
-      let next = current;
-      if (current.state === "running") {
-        next = await taskWait(mount.env, task.path, {
-          reason: "external",
-          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
-        });
-      } else {
-        // waiting with another reason (user-input / a2a-approval / …): overwrite wait.
-        // taskWait only allows running→waiting; MutationBus already serializes this path.
-        next = await patchTaskEnvelope(mount.env.fs, task.path, {
-          state: "waiting",
-          wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
-          updatedAt: mount.env.clock.now(),
-        });
-      }
-      emitTaskState(ctx, workspaceId, next, "session.reconcile");
-      reconciled.push(task.path);
+      const parked = await applySessionUnavailablePark(
+        ctx,
+        workspaceId,
+        task.path,
+        "session.reconcile"
+      );
+      if (parked) reconciled.push(task.path);
     });
   }
 
@@ -7439,12 +7559,14 @@ async function projectRuntimeEventOnce(
   } else if (ev.type === "session.failed" || ev.type === "session.exited") {
     // Pending tool approvals must not hang after process death.
     await ctx.toolApprovals.cancelSession(ev.sessionId, "denied");
-    // Session terminal is diagnostic for inputs when:
-    // - intentional seal/post-deliver stop (stopReason=user) — adapter may emit
-    //   session.failed ("interrupted") rather than session.exited;
-    // - native reject-resume in flight or already parked waiting(external);
-    // - bound task already published a Delivery / is otherwise collaboration-terminal.
-    // Late terminal events must not cancel durable review-feedback or demote Delivery.
+    // Session terminal input cleanup:
+    // - intentional seal/post-deliver stop (stopReason=user);
+    // - reject-resume park / in-flight native restore;
+    // - recoverable session-unavailable park (pre-Delivery);
+    // - published Delivery / collaboration-terminal Task
+    // all retain durable TaskInputs / UserAsks. Unbound sessions still cancel by sessionId
+    // (no Task mutation owns cleanup). Bound pre-Delivery tasks park recoverably and
+    // preserve pending rows for explicit task.startSession recovery.
     const boundTaskForTerminal = await loadBoundTaskForSessionTerminal(
       ctx,
       rec,
@@ -7455,6 +7577,13 @@ async function projectRuntimeEventOnce(
       stopReason: rec?.stopReason,
       task: boundTaskForTerminal,
     });
+    // Bound pre-delivery running/waiting occupations park recoverably — retain inputs
+    // even before the park mutation lands (same event tick).
+    const boundPreDeliveryActive =
+      !!boundTaskForTerminal &&
+      (boundTaskForTerminal.state === "running" ||
+        boundTaskForTerminal.state === "waiting") &&
+      !isTaskCollaborationTerminal(boundTaskForTerminal);
     if (!retainInputsOnTerminal && !boundTaskForTerminal) {
       // Unbound session: no task mutation can own cleanup, so cancel by session.
       // Pending business UserAsks bound to this session are cancelled (not answered).
@@ -7469,6 +7598,25 @@ async function projectRuntimeEventOnce(
         ctx,
         workspaceId,
         ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+    } else if (
+      !retainInputsOnTerminal &&
+      boundTaskForTerminal &&
+      !boundPreDeliveryActive &&
+      boundTaskForTerminal.state === "failed"
+    ) {
+      // Terminal failed Task (legacy/start-launch fail path): cancel leftover pending rows.
+      await cancelUserAsksForTask(
+        ctx,
+        workspaceId,
+        boundTaskForTerminal.path,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+      await cancelTaskInputsForTask(
+        ctx,
+        workspaceId,
+        boundTaskForTerminal.path,
         ev.type === "session.failed" ? "session.failed" : "session.exited"
       );
     }
@@ -7525,10 +7673,10 @@ async function projectRuntimeEventOnce(
         (ev.type === "session.failed" || ev.type === "session.exited") &&
         (task.state === "running" || task.state === "waiting")
       ) {
-        // Session terminal → task.fail only while the task is still the active
-        // pre-delivery occupation. Once Delivery is published, reject-resume has
-        // parked waiting(external), or seal/post-deliver intentionally stopped
-        // the process, session terminal is diagnostic only.
+        // Unintentional managed Session death before Delivery → recoverable park
+        // waiting(external) (shared helper with remount reconcile). Diagnostic-only
+        // once Delivery is published, reject-resume park owns the occupation, or
+        // seal/post-deliver intentionally stopped the process (stopReason=user).
         if (
           shouldSkipTaskFailOnSessionTerminal({
             sessionId: ev.sessionId,
@@ -7539,12 +7687,12 @@ async function projectRuntimeEventOnce(
         ) {
           continue;
         }
-        await failTaskFromRuntime(ctx, {
+        await parkTaskForUnavailableSession(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
           sessionId: ev.sessionId,
           reason: ev.type,
-          summary:
+          detail:
             ev.type === "session.failed"
               ? ev.error
               : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`,
@@ -7581,12 +7729,14 @@ async function projectRuntimeEventOnce(
 }
 
 /**
- * Single core path for runtime→task failed: taskFail (occupation release) +
- * idempotent session stop. Duplicate failure/exit events are safe.
+ * Terminal fail path for cases that still release occupation (e.g. startSession
+ * launch failure with no recoverable managed Session binding). Live runtime
+ * session.failed / session.exited before Delivery use parkTaskForUnavailableSession
+ * instead — do not route those events here.
  *
- * Re-reads and mutates under one workspace lock so a late session.failed cannot
- * cancel durable review-feedback after reject-resume park, or demote a task
- * that has already left the active pre-delivery occupation.
+ * Re-reads and mutates under one workspace lock so a late event cannot cancel
+ * durable review-feedback after reject-resume park, or demote a task that has
+ * already left the active pre-delivery occupation.
  */
 async function failTaskFromRuntime(
   ctx: HandlerContext,
@@ -7714,6 +7864,7 @@ async function loadBoundTaskForSessionTerminal(
  * Whether session terminal cleanup must retain durable TaskInputs / UserAsks.
  * stopReason=user covers seal-before-deliver and post-deliver stop even when the
  * adapter reports session.failed ("interrupted") instead of session.exited.
+ * Recoverable session-unavailable park and reject-resume park also retain.
  */
 function shouldRetainInputsOnSessionTerminal(input: {
   sessionId: string;
@@ -7724,18 +7875,20 @@ function shouldRetainInputsOnSessionTerminal(input: {
   if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
   if (!input.task) return false;
   if (isRejectResumeParkedWait(input.task)) return true;
+  if (isSessionUnavailableParkedWait(input.task)) return true;
   // Published Delivery / post-review terminal: session death is diagnostic.
   if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
     return true;
   }
   // Already-failed task: still cancel leftover pending rows (cleanup), unless
-  // this was a reject-resume park (handled above).
+  // this was a recoverable park (handled above).
   return false;
 }
 
 /**
- * Whether runtime terminal must skip task.fail for this bound task.
- * Preserves legitimate running/waiting (non-park) failure behavior.
+ * Whether runtime terminal must skip Task mutation (recoverable park) for this
+ * bound task. Diagnostic-only for intentional stop, seal races, reject-resume
+ * parks, already session-unavailable parks, and published/collaboration terminals.
  */
 function shouldSkipTaskFailOnSessionTerminal(input: {
   sessionId: string;
@@ -7760,7 +7913,9 @@ function shouldSkipTaskFailOnSessionTerminal(input: {
   }
   if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
   if (isRejectResumeParkedWait(input.task)) return true;
-  // Defensive: collaboration-terminal tasks never enter the fail branch via
+  // Already parked for session unavailability — idempotent; skip re-entry noise.
+  if (isSessionUnavailableParkedWait(input.task)) return true;
+  // Defensive: collaboration-terminal tasks never enter the park branch via
   // the outer state filter, but keep the invariant local and explicit.
   if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
     return true;

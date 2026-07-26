@@ -289,17 +289,18 @@ If executable or `envKey` is missing / empty:
 
 CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `~/.grok/config.toml`). Tent does not invent `api.x.ai`.
 
-## Failure cleanup & occupation release
+## Failure cleanup & recoverable park
 
 Prompt/provider failure paths must leave **task / session / process** consistent:
 
-1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` so no live orphan remains.
-2. Service maps `session.failed` through core **`taskFail` only while the bound task is still pre-delivery active** (`running` / non-parked `waiting`): clears `wait` and **releases box occupation** (`owner`/`assignee` cleared, service-owned `doing` → `todo`).
-3. **Session terminal is diagnostic** once Task is already `delivered` / `accepted` / `rejected`, after intentional seal/post-deliver stop (`stopReason=user`, including adapter `session.failed` "interrupted"), or after reject-resume park `waiting(external)`. Do not demote a published Delivery or cancel durable review-feedback.
-4. `failed` is terminal non-active: the **same box** can be re-dispatched without manual frontmatter edits or `docs.fork`.
-5. Duplicate failure/exit events are **idempotent** (no illegal second transition / double-release error). Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
-6. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal). Service maps that to `taskFail` + occupation release when still pre-delivery — probe must not claim a live orphan.
-7. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
+1. Adapter stops the managed ACP child **before** (or as part of) emitting `session.failed` / `session.exited` so no live orphan remains.
+2. **Pre-Delivery recoverable park (shared helper):** while the bound Task is still pre-delivery active (`running` / non-diagnostic `waiting`), Service maps unintentional `session.failed` / `session.exited` to **`waiting(reason=external)`** with stable summary `SESSION_UNAVAILABLE_WAIT_SUMMARY` (wait code `session_unavailable`). **Keeps** box occupation, worktree, managed report draft, pending TaskInputs, and pending UserAsks. Does **not** call `taskFail` and does **not** auto-start a replacement Session or re-prompt the Agent. Recovery is explicit `task.startSession` (or equivalent supported Service path). Mount reconcile for dead sessions after restart uses the **same** park semantics/summary.
+3. **Session terminal is diagnostic only** once Task is already `delivered` / `accepted` / `rejected`, after intentional seal/post-deliver stop (`stopReason=user`, including adapter `session.failed` "interrupted"), or after reject-resume park `waiting(external)` with its own diagnostic summary. Do not demote a published Delivery, re-park those occupations, or cancel durable review-feedback.
+4. Explicit **`task.interrupt` / cancel** remains terminal: releases occupation and cancels pending TaskInputs/UserAsks per existing contract. That path is separate from spontaneous Session death.
+5. Duplicate same-session failure/exit events are **idempotent** (no illegal second transition / double park). Late terminal events from a prior `sessionId` after Task rebind must not affect the new occupation. Prompt-failure and spontaneous child-exit share a single terminal emission (deduped in `GrokAcpClient`).
+6. **Spontaneous Grok child exit** (process dies with no intentional `stop`, even when no JSON-RPC request is pending) still emits a managed terminal runtime event (`session.failed` for non-zero / abnormal signal, or clean `session.exited`). Service maps that to recoverable park when still pre-delivery — probe must not claim a live orphan; Session registry may stay terminal diagnostic.
+7. Launch/start failures that never establish a recoverable managed binding may still use terminal `taskFail` (occupation release). That is distinct from an already-bound Session dying mid-task.
+8. Diagnostics may mention error class; never persist stdout dumps, resume tokens, API keys, or absolute secrets into task/box/approval UI.
 
 ## Lifecycle
 
@@ -307,12 +308,12 @@ Prompt/provider failure paths must leave **task / session / process** consistent
 | --- | --- |
 | Desktop UI close | Does **not** stop agent sessions |
 | Local Service stop / shutdown | Denies pending tool asks, clears their waiters/timers, then stops push children this service started |
-| `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery |
+| `task` interrupt / session stop | Graceful stop of ACP process; **no** forged delivery; Task terminal `interrupted` + occupation release |
 | `session.waiting_user` (tool ask) | Task `waiting(user-input)`; pending tool approval in service data dir |
 | Tool approve once / deny / timeout | Resume or cancel tool; clear pending (timeout → store `expired`; late approve fails) |
 | `session.prompt_complete` | Service auto-deliver (see above) |
-| Spontaneous child exit | Terminal runtime event even with no pending RPC; deduped vs prompt failure / intentional stop |
-| `session.failed` | Stop process (idempotent) → `taskFail` + occupation release **only** for pre-delivery active tasks; otherwise Session diagnostic only |
+| Spontaneous child exit | Terminal runtime event even with no pending RPC; deduped vs prompt failure / intentional stop; pre-Delivery → recoverable park |
+| `session.failed` / pre-Delivery `session.exited` | Stop process (idempotent) → **recoverable `waiting(external)` park** for pre-delivery active tasks (preserve occupation/inputs); otherwise Session diagnostic only |
 | PID / provider session id | Machine-local session registry only — **never** written into workspace task YAML beyond `sessionId` |
 
 ## Verification (dev)

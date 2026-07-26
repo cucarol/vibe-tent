@@ -146,12 +146,12 @@ Chat-facing narrative remains the primary presentation; `delivery.summary` is th
 | --- | --- | --- |
 | `queued` | Dispatched; waiting claim / optional start | **yes** (blocks overlapping dispatch) |
 | `running` | Claimed; executing | yes |
-| `waiting` | Blocked on user input, A2A approval, or external event | yes |
+| `waiting` | Blocked on user input, A2A approval, or external event (including recoverable managed-Session unavailability before Delivery) | yes |
 | `delivered` | Delivery submitted; awaiting review (or auto-integrate path) | yes |
 | `accepted` | Review accepted / integrated; occupation released | no (terminal) |
 | `rejected` | Delivery rejected; default returns to rework | yes while reworking |
 | `interrupted` | User/orchestrator stop without integrate | no (terminal) |
-| `failed` | Unrecoverable failure | no (terminal; may be configured) |
+| `failed` | Unrecoverable failure (not used for unintentional pre-Delivery Session death) | no (terminal; may be configured) |
 
 Active set (occupies box): `queued | running | waiting | delivered`, plus `rejected` when `reject({ resume: true })` keeps rework occupation.
 
@@ -176,7 +176,9 @@ running ◄───────────────────────
                     └── reject(resume:false) ──► rejected (terminal)
 
 running | waiting | delivered ──interrupt──► interrupted
-adapter unrecoverable ──► failed | waiting(recoverable)
+unintentional managed Session death (pre-Delivery) ──► waiting(reason=external, session_unavailable)
+  # occupation + TaskInput/UserAsk/report draft preserved; explicit task.startSession to resume
+adapter / launch unrecoverable (no recoverable Session binding) ──► failed
 ```
 
 Rules:

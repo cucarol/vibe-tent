@@ -194,6 +194,19 @@ async function makeWorkspace(
                 ? { allowedProfiles: roleProfiles.orchestrator }
                 : {}),
           },
+          {
+            name: "reviewer",
+            prompt: "review work",
+            ...(rolePolicies?.reviewer ? { a2aPolicy: rolePolicies.reviewer } : {}),
+            ...(rolePolicies?.reviewer === "allow"
+              ? {
+                  allowedProfiles:
+                    roleProfiles?.reviewer ?? ["fake-default"],
+                }
+              : roleProfiles?.reviewer
+                ? { allowedProfiles: roleProfiles.reviewer }
+                : {}),
+          },
         ],
       },
       null,
@@ -1473,12 +1486,20 @@ test("B5 managed ACP: empty / error / non-end_turn do not deliver", async () => 
         });
         assert.ok(!started.error, JSON.stringify(started.error));
 
-        const failed = await pollUntil(async () => {
+        const parked = await pollUntil(async () => {
           const g = await rpc(svc, "task.get", { workspaceId, taskPath });
-          const task = (g.result as { task: { state: string } }).task;
-          return task.state === "failed" ? task : null;
-        }, 12_000, `task failed for mode=${mode}`);
-        assert.equal(failed.state, "failed");
+          const task = (
+            g.result as {
+              task: { state: string; wait?: { reason: string; summary: string } | null };
+            }
+          ).task;
+          return task.state === "waiting" && task.wait?.reason === "external"
+            ? task
+            : null;
+        }, 12_000, `task parked for mode=${mode}`);
+        assert.equal(parked.state, "waiting");
+        assert.equal(parked.wait?.reason, "external");
+        assert.equal(parked.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
 
         const list = await rpc(svc, "delivery.list", { workspaceId });
         const deliveries = (list.result as { deliveries: unknown[] }).deliveries;
@@ -2217,7 +2238,7 @@ test("B5 tool approval: ask timeout expires pending; late approve fails", async 
   );
 });
 
-test("B5 failure cleanup: prompt error stops process, taskFail releases occupation", async () => {
+test("B5 failure cleanup: prompt error stops process, parks waiting(external), keeps occupation", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-fail-clean-"));
@@ -2243,31 +2264,44 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
       const sessionId = (started.result as { session: { sessionId: string } }).session
         .sessionId;
 
-      const failed = await pollUntil(async () => {
+      const parked = await pollUntil(async () => {
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
-        const task = (g.result as { task: { state: string } }).task;
-        return task.state === "failed" ? task : null;
-      }, 12_000, "task failed after prompt error");
-      assert.equal(failed.state, "failed");
+        const task = (
+          g.result as {
+            task: {
+              state: string;
+              wait?: { reason: string; summary: string } | null;
+              sessionId?: string;
+            };
+          }
+        ).task;
+        return task.state === "waiting" && task.wait?.reason === "external" ? task : null;
+      }, 12_000, "task parked after prompt error");
+      assert.equal(parked.state, "waiting");
+      assert.equal(parked.wait?.reason, "external");
+      assert.equal(parked.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+      assert.equal(parked.sessionId, sessionId);
 
-      // No live managed session / orphan process.
+      // No live managed session / orphan process; Session may be terminal diagnostic.
       const probe = await svc.runtime.probe(sessionId);
       assert.equal(probe.alive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      // Occupation released — task oracle / box.projection, not Node FM owner/status.
-      assertOccupationReleased(await boxCollabProjection(svc, workspaceId, boxId), "fail cleanup");
+      // Occupation held for explicit task.startSession recovery.
+      assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+        label: "prompt-error park",
+      });
 
-      // Same box re-dispatch without fork.
+      // Same box cannot re-dispatch while occupation held.
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "retry after fail cleanup",
+        prompt: "must not steal parked occupation",
       });
-      assert.ok(!d2.error, JSON.stringify(d2.error));
+      assert.ok(d2.error, "re-dispatch while parked must fail");
 
-      // Duplicate session.failed must not throw / illegal transition.
+      // Duplicate session.failed must not throw / illegal transition / demote park.
       mapRuntimeEventToService(svc.ctx, {
         type: "session.failed",
         sessionId,
@@ -2275,7 +2309,14 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
       });
       await new Promise((r) => setTimeout(r, 150));
       const g2 = await rpc(svc, "task.get", { workspaceId, taskPath });
-      assert.equal((g2.result as { task: { state: string } }).task.state, "failed");
+      const afterDup = (
+        g2.result as {
+          task: { state: string; wait?: { reason: string; summary: string } | null };
+        }
+      ).task;
+      assert.equal(afterDup.state, "waiting");
+      assert.equal(afterDup.wait?.reason, "external");
+      assert.equal(afterDup.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
     },
     {
       profiles: [
@@ -2289,7 +2330,7 @@ test("B5 failure cleanup: prompt error stops process, taskFail releases occupati
   );
 });
 
-for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${exitCode} releases occupation`, async () => {
+for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${exitCode} parks waiting(external)`, async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace();
   const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-b5-spontaneous-"));
@@ -2316,31 +2357,40 @@ for (const exitCode of [7, 0]) test(`B5 spontaneous managed child exit code=${ex
         .sessionId;
 
       // Child exits after session/new even if prompt never settles. Both abnormal
-      // and clean exit without delivery are terminal for the bound task.
-      const failed = await pollUntil(async () => {
+      // and clean exit without delivery recoverably park the bound task.
+      const parked = await pollUntil(async () => {
         const g = await rpc(svc, "task.get", { workspaceId, taskPath });
-        const task = (g.result as { task: { state: string } }).task;
-        return task.state === "failed" ? task : null;
-      }, 12_000, "task failed after spontaneous child exit");
-      assert.equal(failed.state, "failed");
+        const task = (
+          g.result as {
+            task: {
+              state: string;
+              wait?: { reason: string; summary: string } | null;
+              sessionId?: string;
+            };
+          }
+        ).task;
+        return task.state === "waiting" && task.wait?.reason === "external" ? task : null;
+      }, 12_000, "task parked after spontaneous child exit");
+      assert.equal(parked.state, "waiting");
+      assert.equal(parked.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+      assert.equal(parked.sessionId, sessionId);
 
       const probe = await svc.runtime.probe(sessionId);
       assert.equal(probe.alive, false);
       assert.ok(probe.state === "failed" || probe.state === "stopped");
 
-      assertOccupationReleased(
-        await boxCollabProjection(svc, workspaceId, boxId),
-        `spontaneous exit code=${exitCode}`
-      );
+      assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+        label: `spontaneous exit code=${exitCode}`,
+      });
 
-      // Re-dispatch same box proves occupation fully released.
+      // Occupation still held — re-dispatch must fail-loud.
       const d2 = await rpc(svc, "task.dispatch", {
         workspaceId,
         boxId,
         role: "executor",
-        prompt: "retry after spontaneous death",
+        prompt: "must not steal parked occupation",
       });
-      assert.ok(!d2.error, JSON.stringify(d2.error));
+      assert.ok(d2.error, "re-dispatch while parked must fail");
     },
     {
       profiles: [
@@ -3503,6 +3553,18 @@ test("reject-resume restores live managed session for durable role (no false-run
       `session state must be non-terminal, got ${probeLive.state}`
     );
 
+    // Consume durable review-feedback before rework Delivery (TaskInput gate).
+    // fake-default may leave the row pending/failed when follow-up inject is unsupported.
+    const pendingFeedback = await svc.ctx.taskInputs.listBlockingForDeliver(
+      workspaceId,
+      taskPath
+    );
+    for (const row of pendingFeedback) {
+      if (row.status === "pending" || row.status === "failed") {
+        await svc.ctx.taskInputs.markDelivered(row.id, "test-consume-review-feedback");
+      }
+    }
+
     // Rework can deliver again (dedup cleared for session+task).
     await invokeManagedAutoDeliverForTests(svc.ctx, {
       workspaceId,
@@ -4214,7 +4276,7 @@ test("late session.failed after managed Delivery is diagnostic only", async () =
   });
 });
 
-test("session.failed still fails a live running task (pre-delivery)", async () => {
+test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskInput", async () => {
   resetManagedAutoDeliverDedupForTests();
   const ws = await makeWorkspace("legit-session-failed");
 
@@ -4224,7 +4286,7 @@ test("session.failed still fails a live running task (pre-delivery)", async () =
       workspaceId,
       boxId,
       role: "executor",
-      prompt: "real failure path",
+      prompt: "recoverable failure path",
       deliveryPolicy: "review",
     });
     const taskPath = (d.result as { taskPath: string }).taskPath;
@@ -4242,10 +4304,18 @@ test("session.failed still fails a live running task (pre-delivery)", async () =
     const sent = await rpc(svc, "task.sendInput", {
       workspaceId,
       taskPath,
-      text: "should cancel on real fail",
+      text: "must survive recoverable park",
     });
     assert.ok(!sent.error, JSON.stringify(sent.error));
     const inputId = (sent.result as { input: { id: string } }).input.id;
+
+    const ask = await rpc(svc, "task.askUser", {
+      workspaceId,
+      taskPath,
+      question: "must survive recoverable park",
+    });
+    assert.ok(!ask.error, JSON.stringify(ask.error));
+    const askId = (ask.result as { ask: { id: string } }).ask.id;
 
     await mapRuntimeEventToService(svc.ctx, {
       type: "session.failed",
@@ -4254,12 +4324,493 @@ test("session.failed still fails a live running task (pre-delivery)", async () =
     });
 
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
-    const task = (got.result as { task: { state: string } }).task;
-    assert.equal(task.state, "failed", "pre-delivery session.failed must task.fail");
+    const task = (
+      got.result as {
+        task: {
+          state: string;
+          wait?: { reason: string; summary: string } | null;
+          sessionId?: string;
+          worktree?: string;
+        };
+      }
+    ).task;
+    assert.equal(task.state, "waiting", "pre-delivery session.failed must park, not fail");
+    assert.equal(task.wait?.reason, "external");
+    assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(task.sessionId, sessionId);
+    // Worktree/lane is optional for non-Git harness workspaces; when present it is kept.
+    // Occupation + session binding are the durable park facts.
+
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      label: "session.failed park",
+    });
 
     const input = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
     assert.ok(input);
-    assert.equal(input!.status, "cancelled");
+    assert.notEqual(input!.status, "cancelled", "TaskInput must not cancel on park");
+    assert.ok(
+      input!.status === "pending" ||
+        input!.status === "failed" ||
+        input!.status === "processing" ||
+        input!.status === "delivered" ||
+        input!.status === "uncertain",
+      `expected open/retryable TaskInput (not cancelled), got ${input!.status}`
+    );
+
+    const userAsk = await svc.ctx.userAsks.get(askId);
+    assert.ok(userAsk);
+    assert.equal(userAsk!.status, "pending", "UserAsk must remain pending on park");
+
+    // Session registry may be terminal diagnostic; Task remains recoverable.
+    const probe = await svc.runtime.probe(sessionId);
+    assert.equal(probe.alive, false);
+  });
+});
+
+test("P0 pre-Delivery session.exited parks waiting(external) with stable summary", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("legit-session-exited");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "clean exit before delivery",
+      deliveryPolicy: "review",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.exited",
+      sessionId,
+      exitCode: 0,
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      got.result as {
+        task: { state: string; wait?: { reason: string; summary: string } | null };
+      }
+    ).task;
+    assert.equal(task.state, "waiting");
+    assert.equal(task.wait?.reason, "external");
+    assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      label: "session.exited park",
+    });
+  });
+});
+
+test("P0 duplicate session.failed/exited on same session is idempotent park", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("dup-session-terminal");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "duplicate terminals",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId,
+      error: "first fail",
+    });
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId,
+      error: "duplicate fail",
+    });
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.exited",
+      sessionId,
+      exitCode: 1,
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      got.result as {
+        task: { state: string; wait?: { reason: string; summary: string } | null };
+      }
+    ).task;
+    assert.equal(task.state, "waiting");
+    assert.equal(task.wait?.reason, "external");
+    assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.notEqual(task.state, "failed");
+  });
+});
+
+test("P0 late terminal from old session after rebind does not affect new occupation", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("late-old-session-rebind");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "rebind then late old exit",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const oldSessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    // Park old session first, then force a true rebind (new ss-) by clearing
+    // resume capability so late events from the old id can be proven inert.
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId: oldSessionId,
+      error: "old died",
+    });
+    const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal(
+      (parked.result as { task: { state: string } }).task.state,
+      "waiting"
+    );
+    await svc.runtime.registry.update(oldSessionId, {
+      resumeToken: undefined,
+      state: "failed",
+    });
+
+    const resumed = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!resumed.error, JSON.stringify(resumed.error));
+    const newSessionId = (resumed.result as { session: { sessionId: string } }).session
+      .sessionId;
+    assert.notEqual(
+      newSessionId,
+      oldSessionId,
+      "non-resumeCapable prior must allocate a replacement sessionId"
+    );
+
+    const afterBind = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const bound = (
+      afterBind.result as { task: { state: string; sessionId?: string; wait?: unknown } }
+    ).task;
+    assert.equal(bound.state, "running");
+    assert.equal(bound.sessionId, newSessionId);
+    assert.equal(bound.wait ?? null, null);
+
+    // Late terminal from the old Session must not re-park or fail the rebound task.
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.exited",
+      sessionId: oldSessionId,
+      exitCode: 0,
+    });
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId: oldSessionId,
+      error: "late old fail",
+    });
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      got.result as {
+        task: { state: string; sessionId?: string; wait?: { reason: string } | null };
+      }
+    ).task;
+    assert.equal(task.state, "running");
+    assert.equal(task.sessionId, newSessionId);
+    assert.equal(task.wait ?? null, null);
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      label: "after late old-session event",
+    });
+  });
+});
+
+test("P0 three independent same-tick session terminals each park only their own Task", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("same-tick-three-terminals", {
+    executor: "allow",
+    orchestrator: "allow",
+    reviewer: "allow",
+  });
+
+  await withService(async (svc) => {
+    const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+    assert.ok(!mounted.error, JSON.stringify(mounted.error));
+    const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+
+    async function seed(role: string, name: string) {
+      const created = await rpc(svc, "docs.createNote", {
+        workspaceId,
+        name,
+        type: "prompt",
+      });
+      const boxId = (created.result as { id: string }).id;
+      const d = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role,
+        prompt: `independent ${name}`,
+      });
+      const taskPath = (d.result as { taskPath: string }).taskPath;
+      await rpc(svc, "task.claim", { workspaceId, taskPath });
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        profileId: "fake-default",
+        callerKind: "user",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
+      const sessionId = (started.result as { session: { sessionId: string } }).session
+        .sessionId;
+      return { taskPath, boxId, sessionId };
+    }
+
+    const a = await seed("executor", "tick-a");
+    const b = await seed("orchestrator", "tick-b");
+    const c = await seed("reviewer", "tick-c");
+
+    // Fire all three terminals without awaiting between map calls (same tick projection).
+    const p1 = mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId: a.sessionId,
+      error: "a died",
+    });
+    const p2 = mapRuntimeEventToService(svc.ctx, {
+      type: "session.exited",
+      sessionId: b.sessionId,
+      exitCode: 0,
+    });
+    const p3 = mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId: c.sessionId,
+      error: "c died",
+    });
+    await Promise.all([p1, p2, p3]);
+
+    for (const row of [a, b, c]) {
+      const got = await rpc(svc, "task.get", { workspaceId, taskPath: row.taskPath });
+      const task = (
+        got.result as {
+          task: {
+            state: string;
+            sessionId?: string;
+            wait?: { reason: string; summary: string } | null;
+          };
+        }
+      ).task;
+      assert.equal(task.state, "waiting", row.taskPath);
+      assert.equal(task.wait?.reason, "external", row.taskPath);
+      assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY, row.taskPath);
+      assert.equal(task.sessionId, row.sessionId, row.taskPath);
+      assertOccupationHeld(await boxCollabProjection(svc, workspaceId, row.boxId), {
+        label: row.taskPath,
+      });
+    }
+  });
+});
+
+test("P0 explicit interrupt remains terminal and releases occupation after park", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("interrupt-after-park");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "park then interrupt",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const sessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    const sent = await rpc(svc, "task.sendInput", {
+      workspaceId,
+      taskPath,
+      text: "cancel on explicit interrupt only",
+    });
+    assert.ok(!sent.error, JSON.stringify(sent.error));
+    const inputId = (sent.result as { input: { id: string } }).input.id;
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId,
+      error: "spontaneous",
+    });
+    const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((parked.result as { task: { state: string } }).task.state, "waiting");
+
+    const interrupted = await rpc(svc, "task.interrupt", { workspaceId, taskPath });
+    assert.ok(!interrupted.error, JSON.stringify(interrupted.error));
+    assert.equal(
+      (interrupted.result as { task: { state: string } }).task.state,
+      "interrupted"
+    );
+
+    assertOccupationReleased(
+      await boxCollabProjection(svc, workspaceId, boxId),
+      "explicit interrupt"
+    );
+
+    const input = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
+    assert.ok(input);
+    assert.equal(input!.status, "cancelled", "interrupt cancels pending TaskInput");
+  });
+});
+
+test("P0 explicit replacement session resume after recoverable park", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  const ws = await makeWorkspace("replace-session-resume");
+
+  await withService(async (svc) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "recover with new session",
+      deliveryPolicy: "review",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const started = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!started.error, JSON.stringify(started.error));
+    const oldSessionId = (started.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    const sent = await rpc(svc, "task.sendInput", {
+      workspaceId,
+      taskPath,
+      text: "survive park and rebind",
+    });
+    assert.ok(!sent.error, JSON.stringify(sent.error));
+    const inputId = (sent.result as { input: { id: string } }).input.id;
+
+    // Seed a report draft that must survive park (no auto re-prompt).
+    await svc.ctx.managedDeliveryReportDrafts.preserve({
+      workspaceId,
+      taskPath,
+      sessionId: oldSessionId,
+      assistantText: "draft preserved across park",
+    });
+
+    await mapRuntimeEventToService(svc.ctx, {
+      type: "session.failed",
+      sessionId: oldSessionId,
+      error: "child died",
+    });
+
+    const parked = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const parkedTask = (
+      parked.result as {
+        task: {
+          state: string;
+          wait?: { reason: string; summary: string } | null;
+          sessionId?: string;
+        };
+      }
+    ).task;
+    assert.equal(parkedTask.state, "waiting");
+    assert.equal(parkedTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+
+    const draft = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+    assert.ok(draft, "report draft preserved");
+    assert.equal(draft!.assistantText, "draft preserved across park");
+
+    const inputBefore = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
+    assert.ok(inputBefore);
+    assert.notEqual(inputBefore!.status, "cancelled");
+
+    // Explicit recovery — does not auto-rerun. Supported path may native-resume
+    // the same Tent sessionId when resumeCapable, or allocate a replacement ss-.
+    const recovery = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!recovery.error, JSON.stringify(recovery.error));
+    const recoverySessionId = (
+      recovery.result as { session: { sessionId: string } }
+    ).session.sessionId;
+    assert.ok(recoverySessionId, "recovery must bind a live session");
+
+    const after = await rpc(svc, "task.get", { workspaceId, taskPath });
+    const task = (
+      after.result as {
+        task: {
+          state: string;
+          sessionId?: string;
+          wait?: { reason: string } | null;
+        };
+      }
+    ).task;
+    assert.equal(task.state, "running");
+    assert.equal(task.sessionId, recoverySessionId);
+    assert.equal(task.wait ?? null, null);
+    assert.equal(
+      (await svc.runtime.probe(recoverySessionId)).alive,
+      true,
+      "explicit startSession must leave a live managed process"
+    );
+
+    const inputAfter = await svc.ctx.taskInputs.get(inputId, workspaceId, taskPath);
+    assert.ok(inputAfter);
+    assert.notEqual(inputAfter!.status, "cancelled");
+
+    const draftAfter = await svc.ctx.managedDeliveryReportDrafts.get(workspaceId, taskPath);
+    assert.ok(draftAfter, "report draft still present until successful deliver");
+    assert.equal(draftAfter!.assistantText, "draft preserved across park");
+
+    assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
+      label: "after replacement session",
+    });
   });
 });
 
