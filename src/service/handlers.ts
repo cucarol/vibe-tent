@@ -680,11 +680,10 @@ export const SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable" as const;
 
 /** True when Task is recoverably parked for a dead/unavailable managed Session. */
 export function isSessionUnavailableParkedWait(task: TaskEnvelope): boolean {
-  return (
-    task.state === "waiting" &&
-    task.wait?.reason === "external" &&
-    task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY
-  );
+  if (task.state !== "waiting" || task.wait?.reason !== "external") return false;
+  // Prefer durable waitCode; fall back to stable summary for rows written before code.
+  if (task.wait.code === SESSION_UNAVAILABLE_WAIT_CODE) return true;
+  return task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
 }
 
 /**
@@ -708,18 +707,24 @@ async function applySessionUnavailablePark(
   if (isRejectResumeParkedWait(current)) return null;
   // running|waiting only reach here; collaboration-terminal states are filtered above.
 
+  const wait = {
+    reason: "external" as const,
+    summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    code: SESSION_UNAVAILABLE_WAIT_CODE,
+  };
   let next: TaskEnvelope;
   if (current.state === "running") {
     next = await taskWait(mount.env, taskPath, {
-      reason: "external",
-      summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+      reason: wait.reason,
+      summary: wait.summary,
+      code: wait.code,
     });
   } else {
     // waiting with another reason (user-input / a2a-approval / …): overwrite wait.
     // taskWait only allows running→waiting; MutationBus already serializes this path.
     next = await patchTaskEnvelope(mount.env.fs, taskPath, {
       state: "waiting",
-      wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
+      wait,
       updatedAt: mount.env.clock.now(),
     });
   }

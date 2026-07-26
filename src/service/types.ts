@@ -323,7 +323,7 @@ export type TaskProjection = {
   deliveryPolicy?: string;
   assigneeKind?: string;
   sessionId?: string;
-  wait?: { reason: string; summary: string };
+  wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
   workspaceLane?: {
     workspace?: string;

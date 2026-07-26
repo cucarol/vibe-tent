@@ -38,6 +38,7 @@ import {
   resetRuntimeProjectionForTests,
   setRejectResumePostStartFailureForTests,
   setRuntimeProjectionTestHooksForTests,
+  SESSION_UNAVAILABLE_WAIT_CODE,
   SESSION_UNAVAILABLE_WAIT_SUMMARY,
   stopManagedTaskInputBackgroundAccept,
 } from "../src/service/handlers.js";
@@ -4328,7 +4329,7 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
       got.result as {
         task: {
           state: string;
-          wait?: { reason: string; summary: string } | null;
+          wait?: { reason: string; summary: string; code?: string } | null;
           sessionId?: string;
           worktree?: string;
         };
@@ -4337,6 +4338,11 @@ test("P0 pre-Delivery session.failed parks waiting(external) and preserves TaskI
     assert.equal(task.state, "waiting", "pre-delivery session.failed must park, not fail");
     assert.equal(task.wait?.reason, "external");
     assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(
+      task.wait?.code,
+      SESSION_UNAVAILABLE_WAIT_CODE,
+      "durable waitCode must persist on envelope"
+    );
     assert.equal(task.sessionId, sessionId);
     // Worktree/lane is optional for non-Git harness workspaces; when present it is kept.
     // Occupation + session binding are the durable park facts.
@@ -4407,6 +4413,10 @@ test("P0 pre-Delivery session.exited parks waiting(external) with stable summary
     assert.equal(task.state, "waiting");
     assert.equal(task.wait?.reason, "external");
     assert.equal(task.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(
+      (task.wait as { code?: string } | undefined)?.code,
+      SESSION_UNAVAILABLE_WAIT_CODE
+    );
     assertOccupationHeld(await boxCollabProjection(svc, workspaceId, boxId), {
       label: "session.exited park",
     });
@@ -5956,6 +5966,10 @@ test("mount reconcile: dead/missing/stale-live session → waiting(external); tr
     assert.equal(deadTask.state, "waiting");
     assert.equal(deadTask.wait?.reason, "external");
     assert.equal(deadTask.wait?.summary, SESSION_UNAVAILABLE_WAIT_SUMMARY);
+    assert.equal(
+      (deadTask.wait as { code?: string } | undefined)?.code,
+      SESSION_UNAVAILABLE_WAIT_CODE
+    );
     assert.equal(deadTask.sessionId, "ss-dead0001");
 
     const missingTask = await get(idA2, missing.taskPath);

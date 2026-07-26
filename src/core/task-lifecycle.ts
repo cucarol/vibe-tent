@@ -56,6 +56,8 @@ export interface TaskClaimOptions {
 export interface TaskWaitOptions {
   reason: WaitReason;
   summary: string;
+  /** Optional stable machine code (e.g. session_unavailable). */
+  code?: string;
 }
 
 export interface TaskDeliverOptions {
@@ -153,9 +155,14 @@ export async function taskWait(env: OpsEnv, taskPath: string, options: TaskWaitO
     assertTransition(task.state, "wait", "waiting");
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
+    const code = options.code?.trim();
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "waiting",
-      wait: { reason: options.reason, summary },
+      wait: {
+        reason: options.reason,
+        summary,
+        ...(code ? { code } : {}),
+      },
       updatedAt: env.clock.now(),
     });
   });

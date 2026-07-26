@@ -176,8 +176,9 @@ running ◄───────────────────────
                     └── reject(resume:false) ──► rejected (terminal)
 
 running | waiting | delivered ──interrupt──► interrupted
-unintentional managed Session death (pre-Delivery) ──► waiting(reason=external, session_unavailable)
-  # occupation + TaskInput/UserAsk/report draft preserved; explicit task.startSession to resume
+unintentional managed Session death (pre-Delivery) ──► waiting(reason=external, code=session_unavailable)
+  # durable waitCode + stable English summary; occupation + TaskInput/UserAsk/report draft preserved
+  # explicit task.startSession to resume (no auto re-prompt)
 adapter / launch unrecoverable (no recoverable Session binding) ──► failed
 ```
 

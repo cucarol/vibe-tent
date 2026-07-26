@@ -489,9 +489,13 @@ export async function patchTaskEnvelope(
   if (patch.wait === null) {
     delete data.waitReason;
     delete data.waitSummary;
+    delete data.waitCode;
   } else if (patch.wait) {
     data.waitReason = patch.wait.reason;
     data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
   }
 
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
@@ -555,7 +559,11 @@ function parseWaitFields(data: Record<string, unknown>): TaskWait | undefined {
       reason === "external") &&
     typeof summary === "string"
   ) {
-    return { reason, summary };
+    const code =
+      typeof data.waitCode === "string" && data.waitCode.trim()
+        ? data.waitCode.trim()
+        : undefined;
+    return { reason, summary, ...(code ? { code } : {}) };
   }
   return undefined;
 }

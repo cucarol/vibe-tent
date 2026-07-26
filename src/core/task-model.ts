@@ -68,6 +68,11 @@ export type WorkspaceLane = {
 export type TaskWait = {
   reason: WaitReason;
   summary: string;
+  /**
+   * Optional stable machine code for recovery UX (e.g. session_unavailable).
+   * Human text stays in `summary`; UI localization uses `code` when present.
+   */
+  code?: string;
 };
 
 export type DeliveryCheck = {
