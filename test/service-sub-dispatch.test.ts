@@ -753,20 +753,22 @@ test("resolveIntegrationContract: sub targetBranch mismatch fails loud", async (
     const commit = (await git(lane.worktree, "rev-parse", "HEAD")).trim();
 
     await rpc(svc, "task.claim", { workspaceId, taskPath });
-    await rpc(svc, "task.deliver", {
+    // Commit-bearing deliver re-resolves integration contract (targetHead snapshot);
+    // corrupted targetBranch fails before Task reaches delivered.
+    const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
       summary: "x",
       commits: [commit],
     });
-    const accepted = await rpc(svc, "task.accept", {
-      workspaceId,
-      taskPath,
-      actor: "user",
-      commits: [commit],
-    });
-    assert.ok(accepted.error);
-    assert.match(String(accepted.error!.message), /targetBranch mismatch|expected=tent-role\/orchestrator/i);
+    assert.ok(delivered.error, "sub targetBranch mismatch must fail at deliver");
+    assert.match(
+      String(delivered.error!.message),
+      /targetBranch mismatch|expected=tent-role\/orchestrator/i
+    );
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "running");
   });
 });
 

@@ -274,9 +274,11 @@ test("task RPC layer: claim → deliver; ServiceClient observes same state; serv
     assert.ok(found);
     assert.equal(found!.state, "running");
 
+    // Zero-commit deliver: commit-bearing Delivery requires an honest Git
+    // integration target; non-Git fixtures must not invent deadbeef SHAs.
     const deliver = await runTaskCommand(
       "deliver",
-      [taskPath, "--summary", "Done via CLI RPC", "--commits", "deadbeef"],
+      [taskPath, "--summary", "Done via CLI RPC"],
       { client: observer, cwd: ws, dataDir }
     );
     assert.equal(deliver.exitCode, 0, deliver.stderr);

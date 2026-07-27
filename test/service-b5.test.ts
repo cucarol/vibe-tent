@@ -7258,28 +7258,24 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
     await rpc(svc, "task.claim", { workspaceId, taskPath });
 
     // Corrupt envelope targetBranch after dispatch — must not be trusted blindly.
+    // Commit-bearing deliver snapshots target HEAD via resolveIntegrationContract,
+    // so mismatch fails at deliver-time (Task stays running; no ready Delivery).
     await corruptTaskLane(ws, taskPath, { targetBranch: "not-the-real-main" });
 
-    await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
       summary: "ready",
       commits: [sourceRef],
     });
-    const accepted = await rpc(svc, "task.accept", {
-      workspaceId,
-      taskPath,
-      actor: "user",
-    });
-    assert.ok(accepted.error, "stale targetBranch must fail re-validation");
-    assert.match(String(accepted.error!.message), /targetBranch mismatch/);
+    assert.ok(delivered.error, "stale targetBranch must fail re-validation at deliver");
+    assert.match(String(delivered.error!.message), /targetBranch mismatch/);
 
-    // Task stays delivered + occupation held (integrate never succeeded).
     const got = await rpc(svc, "task.get", { workspaceId, taskPath });
-    assert.equal((got.result as { task: { state: string } }).task.state, "delivered");
+    assert.equal((got.result as { task: { state: string } }).task.state, "running");
   });
 
-  // Wrong workspace root on envelope.
+  // Wrong workspace root on envelope — also fail-loud at commit-bearing deliver.
   await withService(async (svc) => {
     const { workspaceId, boxId } = await mountWorkItem(svc, ws);
     const d = await rpc(svc, "task.dispatch", {
@@ -7295,19 +7291,17 @@ test("P0 fix: resolveIntegrationContract re-validates envelope workspace/targetB
       workspace: path.join(os.tmpdir(), "other-workspace-not-mounted"),
     });
 
-    await rpc(svc, "task.deliver", {
+    const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
       summary: "ready",
       commits: [sourceRef],
     });
-    const accepted = await rpc(svc, "task.accept", {
-      workspaceId,
-      taskPath,
-      actor: "user",
-    });
-    assert.ok(accepted.error, "workspace mismatch must fail re-validation");
-    assert.match(String(accepted.error!.message), /workspace mismatch/);
+    assert.ok(delivered.error, "workspace mismatch must fail re-validation at deliver");
+    assert.match(String(delivered.error!.message), /workspace mismatch/);
+
+    const got = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((got.result as { task: { state: string } }).task.state, "running");
   });
 });
 
