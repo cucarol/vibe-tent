@@ -25,6 +25,21 @@ function isServiceRpcError(
   return false;
 }
 
+/**
+ * TaskLifecycleError may surface as a plain Error when class identity splits.
+ * Narrow by name or stable INVALID_TRANSITION message; optional `code` is read
+ * after the guard without an Error→{code:string} cast (strict TS).
+ */
+function isTaskLifecycleErrorHttp(
+  error: unknown
+): error is Error & { code?: unknown } {
+  if (!(error instanceof Error)) return false;
+  return (
+    error.name === "TaskLifecycleError" ||
+    /^Invalid task transition:/.test(error.message)
+  );
+}
+
 export interface JsonRpcRequest {
   jsonrpc?: string;
   id?: string | number | null;
@@ -304,15 +319,9 @@ async function handleRequest(
         return;
       }
       // TaskLifecycleError may surface as a plain Error when class identity splits.
-      if (
-        error instanceof Error &&
-        (/^Invalid task transition:/.test(error.message) ||
-          error.name === "TaskLifecycleError")
-      ) {
+      if (isTaskLifecycleErrorHttp(error)) {
         const dataCode =
-          typeof (error as { code?: unknown }).code === "string"
-            ? (error as { code: string }).code
-            : "INVALID_TRANSITION";
+          typeof error.code === "string" ? error.code : "INVALID_TRANSITION";
         writeJson(res, 200, {
           jsonrpc: "2.0",
           id,
