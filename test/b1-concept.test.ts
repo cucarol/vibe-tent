@@ -18,6 +18,9 @@ import { makeConceptId, isConceptId, isLegacyBoxId } from "../src/core/id.js";
 import { createBox } from "../src/core/ops.js";
 import { configureTestGitIdentity, git } from "./helpers.js";
 
+/** Host FsAdapter factory — Core import path no longer constructs NodeFs itself. */
+const createFs = (root: string) => new NodeFs(root);
+
 test("id:新 handle 为 cx- 前缀", () => {
   const id = makeConceptId(() => 0.1);
   assert.equal(isConceptId(id), true);
@@ -472,6 +475,7 @@ test("importExternalTentRoot:dry-run 不写目标且不标记源", async () => {
   const report = await importExternalTentRoot({
     sourceRoot: source,
     workspaceRoot: workspace,
+    createFs,
     dryRun: true,
     rand: () => 0.1,
   });
@@ -497,6 +501,7 @@ test("importExternalTentRoot:拒绝覆盖已有 .tent", async () => {
       importExternalTentRoot({
         sourceRoot: source,
         workspaceRoot: workspace,
+        createFs,
         dryRun: false,
         force: true, // force must NOT enable overwrite
       }),
@@ -516,6 +521,7 @@ test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且�
   const report = await importExternalTentRoot({
     sourceRoot: source,
     workspaceRoot: workspace,
+    createFs,
     dryRun: false,
     rand: () => 0.1,
   });
@@ -567,6 +573,7 @@ test("importExternalTentRoot:live 复制保留层级/正文/注册表/task 且�
       importExternalTentRoot({
         sourceRoot: source,
         workspaceRoot: workspace,
+        createFs,
         dryRun: false,
       }),
     /Refusing to import|already has/
@@ -584,6 +591,7 @@ test("importExternalTentRoot:中途 schema 失败后无 .tent / marker / staging
       importExternalTentRoot({
         sourceRoot: source,
         workspaceRoot: workspace,
+        createFs,
         dryRun: false,
         rand: () => 0.1,
         _testHooks: {
@@ -604,6 +612,7 @@ test("importExternalTentRoot:中途 schema 失败后无 .tent / marker / staging
   const report = await importExternalTentRoot({
     sourceRoot: source,
     workspaceRoot: workspace,
+    createFs,
     dryRun: false,
     rand: () => 0.1,
   });
@@ -624,6 +633,7 @@ test("importExternalTentRoot:copy 阶段失败后无最终 .tent 且无 marker",
       importExternalTentRoot({
         sourceRoot: source,
         workspaceRoot: workspace,
+        createFs,
         dryRun: false,
         _testHooks: {
           afterCopy: async () => {
@@ -671,6 +681,7 @@ test("importExternalTentRoot:不跟随符号链接并记入 skipped/warnings", a
   const report = await importExternalTentRoot({
     sourceRoot: source,
     workspaceRoot: workspace,
+    createFs,
     dryRun: false,
     rand: () => 0.1,
   });

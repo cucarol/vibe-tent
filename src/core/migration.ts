@@ -5,7 +5,6 @@
 
 import * as nodeFs from "node:fs/promises";
 import * as nodePath from "node:path";
-import { NodeFs } from "../fs/node-fs.js";
 import { FsAdapter } from "./adapter.js";
 import { BOX_FRONTMATTER_KEY_ORDER, parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { CONCEPT_ID_PREFIX, isLegacyBoxId, makeUniqueConceptId, type RandomSource } from "./id.js";
@@ -623,11 +622,19 @@ export function replaceExactIdTokens(text: string, from: string, to: string): st
  * - 不跟随/不复制符号链接（跳过并记入 skipped/warnings），避免带入 source root 外内容
  * - dry-run 只报告，不写目标、不标记旧源
  */
+/** Host factory for Node/Obsidian FsAdapter — Core never imports `src/fs`. */
+export type MigrationFsFactory = (root: string) => FsAdapter;
+
 export interface ImportExternalTentOptions {
   /** Absolute or relative path to legacy tent root (contains RULES.md + boxes/temp/…). */
   sourceRoot: string;
   /** Absolute or relative path to target workspace root (receives `.tent/`). */
   workspaceRoot: string;
+  /**
+   * Host FsAdapter factory (e.g. `(root) => new NodeFs(root)`).
+   * Required so Core stays free of `src/fs` imports for build:core.
+   */
+  createFs: MigrationFsFactory;
   dryRun?: boolean;
   rand?: RandomSource;
   rewriteOperationalRefs?: boolean;
@@ -696,6 +703,12 @@ export async function importExternalTentRoot(
   const systemRoot = systemRootFromWorkspace(workspaceRoot);
   const warnings: string[] = [];
   const skipped: string[] = [];
+  const createFs = options.createFs;
+  if (typeof createFs !== "function") {
+    throw new Error(
+      "importExternalTentRoot requires createFs (host FsAdapter factory); Core does not import src/fs"
+    );
+  }
 
   if (!(await pathExists(sourceRoot))) {
     throw new Error(`Source tent root does not exist: ${sourceRoot}`);
@@ -733,7 +746,7 @@ export async function importExternalTentRoot(
 
   // Pre-flight occupancy on source via active Task envelopes (informational; --force continues).
   // Node FM owner/status is no longer product truth and may be stripped on migrate.
-  const sourceFs = new NodeFs(sourceRoot);
+  const sourceFs = createFs(sourceRoot);
   try {
     const { loadTaskEnvelopes } = await import("./task.js");
     const { envelopeIsActiveOccupation } = await import("./claim.js");
@@ -793,7 +806,7 @@ export async function importExternalTentRoot(
     await copyHostTree(sourceRoot, stagingRoot, skipped, warnings);
     if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
 
-    const destFs = new NodeFs(stagingRoot);
+    const destFs = createFs(stagingRoot);
     const schema = await migrateLegacySchema(destFs, {
       dryRun: false,
       rand: options.rand,
@@ -802,7 +815,7 @@ export async function importExternalTentRoot(
     if (options._testHooks?.afterSchema) await options._testHooks.afterSchema(stagingRoot);
 
     // Workspace gitignore for `.tent/` (idempotent) — before atomic switch.
-    const workspaceFs = new NodeFs(workspaceRoot);
+    const workspaceFs = createFs(workspaceRoot);
     await ensureWorkspaceGitignore(workspaceFs);
 
     if (options._testHooks?.beforeRename) {

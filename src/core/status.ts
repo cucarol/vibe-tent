@@ -1,6 +1,6 @@
 import * as fs from "node:fs/promises";
 import * as path from "node:path";
-import { NodeFs } from "../fs/node-fs.js";
+import type { FsAdapter } from "./adapter.js";
 import { loadProposals } from "./proposal.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { loadTent, type LoadedTent } from "./tree.js";
@@ -9,11 +9,23 @@ import { resolveTentWorkspace } from "./workspace.js";
 
 export const NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
 
-export async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE): Promise<string> {
+/** Host factory for Node/Obsidian FsAdapter — Core never imports `src/fs`. */
+export type StatusFsFactory = (systemRoot: string) => FsAdapter;
+
+export async function renderTentStatus(
+  cwd = process.cwd(),
+  role = process.env.TENT_ROLE,
+  createFs?: StatusFsFactory
+): Promise<string> {
   const systemRoot = await findTentSystemRoot(cwd);
   if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
+  if (!createFs) {
+    throw new Error(
+      "renderTentStatus requires createFs (host FsAdapter factory); Core does not import src/fs"
+    );
+  }
 
-  const fsAdapter = new NodeFs(systemRoot);
+  const fsAdapter = createFs(systemRoot);
   const tent = await loadTent(fsAdapter);
   const workspace = resolveTentWorkspace(tent, systemRoot);
   const lines = [

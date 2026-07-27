@@ -248,6 +248,7 @@ async function main() {
       const report = await importExternalTentRoot({
         sourceRoot: path.resolve(source),
         workspaceRoot: path.resolve(workspace),
+        createFs: (root) => new NodeFs(root),
         dryRun,
         force,
       });
@@ -457,7 +458,9 @@ async function main() {
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
       try {
-        process.stdout.write(await renderTentStatus(process.cwd(), process.env.TENT_ROLE));
+        process.stdout.write(
+          await renderTentStatus(process.cwd(), process.env.TENT_ROLE, (root) => new NodeFs(root))
+        );
       } catch (error) {
         if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail(error.message);
         throw error;

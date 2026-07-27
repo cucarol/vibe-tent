@@ -17,9 +17,12 @@ import type {
   Root,
 } from "mdast";
 import { buildConceptIndex, resolveConcept, type OkfConcept } from "../core/okf.js";
+import { normalizeTarget } from "../core/link-target.js";
 import { ATTACHMENTS_DIR } from "../core/paths.js";
 import type { Box } from "../core/types.js";
 import type { BacklinkHit, OutLink, ResolvedLink } from "./types.js";
+
+export { normalizeTarget } from "../core/link-target.js";
 
 const EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
 const ARTIFACT_SCHEME_RE = /^(https?:|mailto:|tent-artifact:)/i;
@@ -144,24 +147,6 @@ export function buildBacklinkIndex(
     }
   }
   return reverse;
-}
-
-export function normalizeTarget(raw: string, fromNotePath?: string): string {
-  let t = raw.trim().replace(/\\/g, "/");
-  if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
-  t = safePercentDecode(t);
-  t = (t.split("#")[0]?.split("?")[0] ?? t).trim();
-
-  if ((t.startsWith("./") || t.startsWith("../")) && fromNotePath) {
-    const base = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
-    for (const part of t.split("/")) {
-      if (part === "." || part === "") continue;
-      if (part === "..") base.pop();
-      else base.push(part);
-    }
-    t = base.join("/");
-  }
-  return t.replace(/\.md$/i, "");
 }
 
 // --- AST walk + extraction -------------------------------------------------
@@ -373,15 +358,6 @@ function isAttachmentPath(href: string): boolean {
     else stack.push(p);
   }
   return stack[0] === ATTACHMENTS_DIR;
-}
-
-function safePercentDecode(value: string): string {
-  try {
-    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
 }
 
 function isEscaped(text: string, index: number): boolean {

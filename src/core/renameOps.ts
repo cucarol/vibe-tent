@@ -5,7 +5,7 @@ import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { findActiveOccupation, isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex, resolveConcept, type OkfConcept } from "./okf.js";
-import { normalizeTarget } from "../markdown/links.js";
+import { normalizeTarget } from "./link-target.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateBoxName } from "./scaffold.js";
