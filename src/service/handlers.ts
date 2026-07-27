@@ -91,16 +91,20 @@ import {
 import {
   boxProjectionOf,
   findActiveTaskForBox,
-  taskAccept,
+  finalizeTaskAccept,
+  finalizeTaskDeliverAuto,
+  prepareTaskAccept,
+  prepareTaskDeliver,
   taskCancel,
   taskClaim,
-  taskDeliver,
   taskFail,
   taskInterrupt,
   taskReject,
   taskResume,
   taskWait,
+  type TaskDeliverResult,
 } from "../core/task-lifecycle.js";
+import { runTaskLifecycle } from "./task-lifecycle-flight.js";
 import {
   normalizeKeepTerminalTasksDays,
   previewOperationalRetention,
@@ -306,6 +310,31 @@ export interface HandlerContext {
     commits: string[],
     role: string
   ) => Promise<void>;
+}
+
+/**
+ * TaskLifecycleError may cross tsx dual-module boundaries where `instanceof` fails.
+ * Match by class, name, or stable INVALID_TRANSITION message shape.
+ */
+function isTaskLifecycleErrorLike(
+  error: unknown
+): error is { message: string; code: string } {
+  if (error instanceof TaskLifecycleError) {
+    return true;
+  }
+  if (!(error instanceof Error)) return false;
+  if (error.name === "TaskLifecycleError") {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" && code.length > 0;
+  }
+  // Last-resort: core assertTransition message when class identity is split.
+  if (/^Invalid task transition:/.test(error.message)) {
+    const code = (error as { code?: unknown }).code;
+    if (typeof code === "string" && code.length > 0) return true;
+    (error as { code?: string }).code = "INVALID_TRANSITION";
+    return true;
+  }
+  return false;
 }
 
 export async function dispatchMethod(
@@ -563,7 +592,7 @@ export async function dispatchMethod(
           : ((error as { code?: string }).code ?? "INVALID_PATCH");
       throw new RpcError(-32602, error.message, { code });
     }
-    if (error instanceof TaskLifecycleError) {
+    if (isTaskLifecycleErrorLike(error)) {
       throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
     }
     throw error;
@@ -3650,9 +3679,10 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
     );
   }
 
-  // Serialize with Delivery publish: re-read task state under the bus so a concurrent
-  // deliver cannot leave a new pending input between the final gate and taskDeliver.
-  const { current, input } = await ctx.mutations.run(workspaceId, async () => {
+  // Per-Task lifecycle flight + MutationBus: wait out same-Task accept/auto-deliver
+  // Git windows, then re-read state so sendInput cannot slip past auto-deliver.
+  const { current, input } = await runTaskLifecycle(workspaceId, taskPath, () =>
+  ctx.mutations.run(workspaceId, async () => {
     const current = await loadTaskEnvelope(mount.env.fs, taskPath);
     if (current.state !== "running" && current.state !== "waiting") {
       throw new RpcError(
@@ -3678,7 +3708,7 @@ async function taskSendInputRpc(ctx: HandlerContext, p: Record<string, unknown>)
       updatedAt: now,
     });
     return { current, input };
-  });
+  }));
 
   ctx.events.emit(
     "taskInput.pending",
@@ -4371,61 +4401,84 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     ? (p.artifactRefs as import("../core/task-model.js").ArtifactRef[])
     : undefined;
 
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    // Fail-loud authority: do not honor caller "I'm done" while the managed
-    // turn is still busy (tools/write/commit may still race). Task stays
-    // running; no ready Delivery is published.
-    await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
-    // Open TaskInput (pending/processing/retryable failed) must be consumed first.
-    await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
-    // Same gate for public deliver: dirty task worktree must not publish stale commits.
-    await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+  // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    let targetHead: string | undefined;
+    const prepared = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      // Fail-loud authority: do not honor caller "I'm done" while the managed
+      // turn is still busy (tools/write/commit may still race). Task stays
+      // running; no ready Delivery is published.
+      await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+      // Open TaskInput (pending/processing/retryable failed) must be consumed first.
+      await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
+      // Same gate for public deliver: dirty task worktree must not publish stale commits.
+      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+      const pendingCommits = uniqueCommitRefs(commits);
+      // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
+      targetHead =
+        pendingCommits.length > 0
+          ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate)
+          : undefined;
+      if (targetHead && afterTargetHeadSnapshotForTests) {
+        await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+      }
+      return prepareTaskDeliver(mount.env, taskPath, {
+        summary,
+        commits,
+        ...(targetHead ? { targetHead } : {}),
+        checks,
+        artifactRefs,
+        decision,
+      });
+    });
+    if (prepared.kind === "done") return prepared.result;
     const pendingCommits = uniqueCommitRefs(commits);
-    // Commit-bearing Deliveries durably snapshot resolved target HEAD at review time.
-    const targetHead =
-      pendingCommits.length > 0
-        ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate)
-        : undefined;
-    if (targetHead && afterTargetHeadSnapshotForTests) {
-      await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+    if (pendingCommits.length > 0) {
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+        expectedTargetHead: targetHead,
+        action: "task.deliver",
+      })(pendingCommits);
     }
-    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
-      expectedTargetHead: targetHead,
-      action: "task.deliver",
+    return ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      return finalizeTaskDeliverAuto(
+        mount.env,
+        taskPath,
+        {
+          summary,
+          commits,
+          ...(targetHead ? { targetHead } : {}),
+          checks,
+          artifactRefs,
+          decision,
+        },
+        prepared
+      );
     });
-
-    const result = await taskDeliver(mount.env, taskPath, {
-      summary,
-      commits,
-      ...(targetHead ? { targetHead } : {}),
-      checks,
-      artifactRefs,
-      decision,
-      integrate,
-    });
-    emitTaskState(ctx, workspaceId, result.task, "task.deliver");
-    ctx.events.emit(
-      "delivery.updated",
-      workspaceId,
-      {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
-        reason: "task.deliver",
-      },
-      "self"
-    );
-    return {
-      workspaceId,
-      taskPath,
-      task: projectTask(result.task),
-      delivery: projectDelivery(result.delivery),
-      autoIntegrated: result.autoIntegrated,
-      state: result.task.state,
-    };
   });
+  emitTaskState(ctx, workspaceId, result.task, "task.deliver");
+  ctx.events.emit(
+    "delivery.updated",
+    workspaceId,
+    {
+      id: result.delivery.id,
+      taskId: result.delivery.taskId,
+      status: result.delivery.status,
+      reason: "task.deliver",
+    },
+    "self"
+  );
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(result.task),
+    delivery: projectDelivery(result.delivery),
+    autoIntegrated: result.autoIntegrated,
+    state: result.task.state,
+  };
 }
 
 /** Explicit review-queue path (agent-decide chooses request-review). */
@@ -4441,72 +4494,85 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const commits = optionalStringArray(p, "commits");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
 
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    // Review-time target HEAD lives on the ready Delivery; missing → TARGET_MOVED at integrate.
-    const expectedTargetHead = await loadReadyDeliveryTargetHead(
-      mount.env.fs,
-      taskForIntegrate
-    );
-    let result: Awaited<ReturnType<typeof taskAccept>>;
+  const acceptOptions = { actor, commits, outputNodeIds };
+  // Per-Task flight spans prepare → Git → finalize; MutationBus only around prepare/finalize.
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    let prepared: Awaited<ReturnType<typeof prepareTaskAccept>>;
+    let expectedTargetHead: string | undefined;
     try {
-      result = await taskAccept(mount.env, taskPath, {
-        actor,
-        commits,
-        outputNodeIds,
-        // Core requires integrate whenever delivery commits are non-empty.
-        // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
-        // Integrator re-resolves target HEAD vs Delivery.targetHead before any Git write.
-        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
-          expectedTargetHead,
-          action: "task.accept",
-        }),
+      prepared = await ctx.mutations.run(workspaceId, async () => {
+        ctx.host.markSelfWrite(workspaceId);
+        const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+        // Review-time target HEAD lives on the ready Delivery; missing → TARGET_MOVED at integrate.
+        expectedTargetHead = await loadReadyDeliveryTargetHead(
+          mount.env.fs,
+          taskForIntegrate
+        );
+        return prepareTaskAccept(mount.env, taskPath, acceptOptions);
       });
     } catch (err) {
       if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
       throw err;
     }
-    emitTaskState(ctx, workspaceId, result.task, "task.accept");
+    if (prepared.commits.length > 0) {
+      // Core requires integrate whenever delivery commits are non-empty.
+      // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
+      // Integrator re-resolves target HEAD vs Delivery.targetHead before any Git write.
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+        expectedTargetHead,
+        action: "task.accept",
+      })(prepared.commits);
+    }
+    try {
+      return await ctx.mutations.run(workspaceId, async () => {
+        ctx.host.markSelfWrite(workspaceId);
+        return finalizeTaskAccept(mount.env, taskPath, acceptOptions, prepared);
+      });
+    } catch (err) {
+      if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+      throw err;
+    }
+  });
+  emitTaskState(ctx, workspaceId, result.task, "task.accept");
+  ctx.events.emit(
+    "delivery.updated",
+    workspaceId,
+    {
+      id: result.delivery.id,
+      taskId: result.delivery.taskId,
+      status: result.delivery.status,
+      reason: "task.accept",
+    },
+    "self"
+  );
+  for (const claimId of result.task.claims) {
+    if (claimId === "root") continue;
     ctx.events.emit(
-      "delivery.updated",
+      "concept.changed",
       workspaceId,
-      {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
-        reason: "task.accept",
-      },
+      { id: claimId, reason: "task.accept-projection" },
       "self"
     );
-    for (const claimId of result.task.claims) {
-      if (claimId === "root") continue;
-      ctx.events.emit(
-        "concept.changed",
-        workspaceId,
-        { id: claimId, reason: "task.accept-projection" },
-        "self"
-      );
-    }
-    // Output provenance bind invalidation: only Outputs that newly wrote deliveryId.
-    for (const outputId of result.changedOutputIds) {
-      ctx.events.emit(
-        "concept.changed",
-        workspaceId,
-        { id: outputId, reason: "output.provenance-bind" },
-        "self"
-      );
-    }
-    return {
+  }
+  // Output provenance bind invalidation: only Outputs that newly wrote deliveryId.
+  for (const outputId of result.changedOutputIds) {
+    ctx.events.emit(
+      "concept.changed",
       workspaceId,
-      taskPath,
-      task: projectTask(result.task),
-      delivery: projectDelivery(result.delivery),
-      state: result.task.state,
-      boundOutputIds: result.boundOutputIds,
-      changedOutputIds: result.changedOutputIds,
-    };
-  });
+      { id: outputId, reason: "output.provenance-bind" },
+      "self"
+    );
+  }
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(result.task),
+    delivery: projectDelivery(result.delivery),
+    state: result.task.state,
+    boundOutputIds: result.boundOutputIds,
+    changedOutputIds: result.changedOutputIds,
+  };
 }
 
 /**
@@ -4602,9 +4668,10 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
 
-  // Core reject first (MutationBus). Managed session restore happens after so
-  // runtime start/resume never nests inside the mutation lock.
-  const result = await ctx.mutations.run(workspaceId, async () => {
+  // Per-Task lifecycle flight + MutationBus: wait out same-Task accept mid-Git.
+  // Managed session restore happens after so runtime never nests inside either lock.
+  const result = await runTaskLifecycle(workspaceId, taskPath, () =>
+  ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const rejected = await taskReject(mount.env, taskPath, {
       actor,
@@ -4624,7 +4691,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       "self"
     );
     return rejected;
-  });
+  }));
 
   // Terminal reject: collaboration only; no session restore / no review U2A.
   if (!resume) {
@@ -4799,7 +4866,8 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  return ctx.mutations.run(workspaceId, async () => {
+  return runTaskLifecycle(workspaceId, taskPath, () =>
+  ctx.mutations.run(workspaceId, async () => {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
@@ -4835,7 +4903,7 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
       }
     }
     return { workspaceId, taskPath, task: projectTask(task), state: task.state };
-  });
+  }));
 }
 
 async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -4843,7 +4911,8 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  return ctx.mutations.run(workspaceId, async () => {
+  return runTaskLifecycle(workspaceId, taskPath, () =>
+  ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
     ctx.events.emit(
@@ -4853,7 +4922,7 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       "self"
     );
     return { workspaceId, taskPath, state: "interrupted", cancelled: true };
-  });
+  }));
 }
 
 /**
@@ -8735,74 +8804,118 @@ async function tryManagedAutoDeliver(
       );
     }
 
-    // Re-load authority state under mutation bus after seal.
+    // Per-Task flight after seal: prepare → Git → finalize (MutationBus short).
     let published = false;
-    await ctx.mutations.run(input.workspaceId, async () => {
-      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+      type Phase =
+        | { kind: "skip" }
+        | { kind: "done"; result: TaskDeliverResult }
+        | {
+            kind: "auto";
+            boxId: string;
+            commits: string[];
+            targetHead?: string;
+            opts: {
+              summary: string;
+              decision?: DeliverDecision;
+              commits?: string[];
+              targetHead?: string;
+            };
+          };
+      const phase = await ctx.mutations.run(input.workspaceId, async (): Promise<Phase> => {
+        const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
 
-      // Only deliver from active running managed session for this sessionId.
-      if (task.state !== "running") {
-        // Already delivered / review / terminal / interrupted — ignore duplicate.
-        return;
-      }
-      if (task.sessionId && task.sessionId !== sessionId) {
-        return;
-      }
+        // Only deliver from active running managed session for this sessionId.
+        if (task.state !== "running") {
+          // Already delivered / review / terminal / interrupted — ignore duplicate.
+          return { kind: "skip" };
+        }
+        if (task.sessionId && task.sessionId !== sessionId) {
+          return { kind: "skip" };
+        }
 
-      // Ready delivery already present → lifecycle forbids double ready.
-      const existing = await loadDeliveries(mount.env.fs, {
-        taskId: task.id || input.taskPath,
+        // Ready delivery already present → lifecycle forbids double ready.
+        const existing = await loadDeliveries(mount.env.fs, {
+          taskId: task.id || input.taskPath,
+        });
+        if (existing.some((d) => d.status === "ready")) {
+          managedAutoDeliverDone.add(key);
+          published = true;
+          return { kind: "skip" };
+        }
+
+        // TOCTOU revalidation: same TaskInput authority under the publish mutation
+        // so a concurrent sendInput cannot slip a blocker past the pre-seal gate.
+        // sendInput state+add is also on this MutationBus + lifecycle flight.
+        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
+
+        // Seal-after, publish-before: refuse dirty task worktree so uncommitted
+        // agent edits cannot be skipped in favor of stale already-committed SHAs.
+        // Fail-loud keeps task running for commit-then-retry (same as public deliver).
+        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+
+        // Collect pending role-lane commits unless the caller supplied an explicit list
+        // (tests only). Production always auto-collects via the authoritative lane contract.
+        // Collection runs after seal so tail commits after end_turn cannot appear.
+        let commits = input.commits;
+        if (commits === undefined) {
+          commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
+        }
+        const pendingCommits = uniqueCommitRefs(commits);
+        const targetHead =
+          pendingCommits.length > 0
+            ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task)
+            : undefined;
+        if (targetHead && afterTargetHeadSnapshotForTests) {
+          await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+        }
+
+        ctx.host.markSelfWrite(input.workspaceId);
+
+        // agent-decide without an explicit agent decision: request-review (never auto-accept).
+        const policy = task.deliveryPolicy ?? "review";
+        const decision =
+          policy === "agent-decide" ? ("request-review" as const) : undefined;
+
+        const opts = {
+          summary,
+          decision,
+          ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
+          ...(targetHead ? { targetHead } : {}),
+        };
+        const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
+        if (prepared.kind === "done") {
+          return { kind: "done", result: prepared.result };
+        }
+        return {
+          kind: "auto",
+          boxId: prepared.boxId,
+          commits: pendingCommits,
+          ...(targetHead ? { targetHead } : {}),
+          opts,
+        };
       });
-      if (existing.some((d) => d.status === "ready")) {
-        managedAutoDeliverDone.add(key);
-        published = true;
-        return;
+
+      if (phase.kind === "skip") return;
+      let result: TaskDeliverResult;
+      if (phase.kind === "done") {
+        result = phase.result;
+      } else {
+        if (phase.commits.length > 0) {
+          const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+          await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+            expectedTargetHead: phase.targetHead,
+            action: "task.deliver",
+          })(phase.commits);
+        }
+        result = await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          return finalizeTaskDeliverAuto(mount.env, input.taskPath, phase.opts, {
+            kind: "auto",
+            boxId: phase.boxId,
+          });
+        });
       }
-
-      // TOCTOU revalidation: same TaskInput authority under the publish mutation
-      // so a concurrent sendInput cannot slip a blocker past the pre-seal gate.
-      // sendInput state+add is also on this MutationBus (honest either-way race).
-      await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
-
-      // Seal-after, publish-before: refuse dirty task worktree so uncommitted
-      // agent edits cannot be skipped in favor of stale already-committed SHAs.
-      // Fail-loud keeps task running for commit-then-retry (same as public deliver).
-      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
-
-      // Collect pending role-lane commits unless the caller supplied an explicit list
-      // (tests only). Production always auto-collects via the authoritative lane contract.
-      // Collection runs after seal so tail commits after end_turn cannot appear.
-      let commits = input.commits;
-      if (commits === undefined) {
-        commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
-      }
-      const pendingCommits = uniqueCommitRefs(commits);
-      const targetHead =
-        pendingCommits.length > 0
-          ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task)
-          : undefined;
-      if (targetHead && afterTargetHeadSnapshotForTests) {
-        await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
-      }
-
-      ctx.host.markSelfWrite(input.workspaceId);
-      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task, {
-        expectedTargetHead: targetHead,
-        action: "task.deliver",
-      });
-
-      // agent-decide without an explicit agent decision: request-review (never auto-accept).
-      const policy = task.deliveryPolicy ?? "review";
-      const decision =
-        policy === "agent-decide" ? ("request-review" as const) : undefined;
-
-      const result = await taskDeliver(mount.env, input.taskPath, {
-        summary,
-        decision,
-        integrate,
-        ...(pendingCommits.length > 0 ? { commits: pendingCommits } : {}),
-        ...(targetHead ? { targetHead } : {}),
-      });
 
       managedAutoDeliverDone.add(key);
       published = true;

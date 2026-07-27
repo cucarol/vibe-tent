@@ -2779,6 +2779,270 @@ test("P0-2: agent-decide integrate with commits merges into main", async () => {
   });
 });
 
+/** Blocked integrate harness: MutationBus free during Git; per-Task flight still serializes. */
+async function withBlockedIntegrate(
+  label: string,
+  run: (ctx: {
+    svc: Awaited<ReturnType<typeof startLocalTentService>>;
+    order: string[];
+    waitIntegrate: () => Promise<void>;
+    release: () => void;
+  }) => Promise<void>
+): Promise<void> {
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), `tent-b5-${label}-`));
+  let release!: () => void;
+  const hold = new Promise<void>((r) => {
+    release = r;
+  });
+  let entered = false;
+  const order: string[] = [];
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    integrateCommits: async () => {
+      entered = true;
+      order.push("integrate-enter");
+      await hold;
+      order.push("integrate-exit");
+    },
+  });
+  const waitIntegrate = async () => {
+    const deadline = Date.now() + 15000;
+    while (!entered && Date.now() < deadline) await new Promise((r) => setTimeout(r, 10));
+    assert.equal(entered, true, `${label}: must reach integrate outside MutationBus`);
+  };
+  try {
+    await run({ svc, order, waitIntegrate, release: () => release() });
+  } finally {
+    release();
+    await svc.stop();
+  }
+}
+
+async function claimDeliveredReviewTask(
+  svc: Awaited<ReturnType<typeof startLocalTentService>>,
+  ws: string,
+  sourceRef: string,
+  prompt: string
+): Promise<{ workspaceId: string; taskPath: string }> {
+  const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+  const d = await rpc(svc, "task.dispatch", {
+    workspaceId,
+    boxId,
+    role: "executor",
+    prompt,
+    deliveryPolicy: "review",
+  });
+  const taskPath = (d.result as { taskPath: string }).taskPath;
+  await rpc(svc, "task.claim", { workspaceId, taskPath });
+  const delivered = await rpc(svc, "task.deliver", {
+    workspaceId,
+    taskPath,
+    summary: "ready",
+    commits: [sourceRef],
+  });
+  assert.ok(!delivered.error, JSON.stringify(delivered.error));
+  assert.equal((delivered.result as { state: string }).state, "delivered");
+  return { workspaceId, taskPath };
+}
+
+/** MutationBus must not span Git: unrelated docs complete while accept is mid-integrate. */
+test("P0-2: task.accept releases MutationBus during blocked Git integrate", async () => {
+  const ws = await makeWorkspace("p0-bus-accept");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "bus.txt", "bus\n", "bus accept");
+  await withBlockedIntegrate("bus-accept", async ({ svc, order, waitIntegrate, release }) => {
+    const { workspaceId, taskPath } = await claimDeliveredReviewTask(
+      svc,
+      ws,
+      sourceRef,
+      "block bus during accept integrate"
+    );
+    const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" });
+    await waitIntegrate();
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "unrelated-while-integrate",
+      type: "prompt",
+    });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    order.push("docs-done");
+    release();
+    const accepted = await acceptPromise;
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    order.push("accept-done");
+    assert.deepEqual(order, ["integrate-enter", "docs-done", "integrate-exit", "accept-done"]);
+  });
+});
+
+/** Commit-bearing auto-integrate deliver also releases MutationBus during Git. */
+test("P0-2: bypass deliver releases MutationBus during blocked Git integrate", async () => {
+  const ws = await makeWorkspace("p0-bus-bypass");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "bypass-bus.txt", "x\n", "bypass bus");
+  await withBlockedIntegrate("bus-bypass", async ({ svc, order, waitIntegrate, release }) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "block bus during bypass integrate",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const deliverPromise = rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "auto integrate outside bus",
+      commits: [sourceRef],
+    });
+    await waitIntegrate();
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "unrelated-while-bypass-integrate",
+      type: "prompt",
+    });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    order.push("docs-done");
+    release();
+    const delivered = await deliverPromise;
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { autoIntegrated: boolean }).autoIntegrated, true);
+    assert.equal((delivered.result as { state: string }).state, "accepted");
+    order.push("deliver-done");
+    assert.deepEqual(order, ["integrate-enter", "docs-done", "integrate-exit", "deliver-done"]);
+  });
+});
+
+/**
+ * Same-Task reject waits on per-Task flight spanning accept Git, then refuses accepted
+ * (no integrated-code / state-not-accepted split). Docs still complete early.
+ */
+test("P0-2: same-Task reject waits for accept Git then refuses accepted", async () => {
+  const ws = await makeWorkspace("p0-life-reject");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "life-reject.txt", "r\n", "life reject");
+  await withBlockedIntegrate("life-reject", async ({ svc, order, waitIntegrate, release }) => {
+    const { workspaceId, taskPath } = await claimDeliveredReviewTask(
+      svc,
+      ws,
+      sourceRef,
+      "same-task reject serializes with accept"
+    );
+    const acceptPromise = rpc(svc, "task.accept", { workspaceId, taskPath, actor: "user" }).then(
+      (res) => {
+        order.push("accept-done");
+        return res;
+      }
+    );
+    await waitIntegrate();
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "unrelated-while-same-task-reject-waits",
+      type: "prompt",
+    });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    order.push("docs-done");
+    const rejectPromise = rpc(svc, "task.reject", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      note: "should wait then refuse",
+      resume: false,
+    }).then((res) => {
+      order.push("reject-done");
+      return res;
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(!order.includes("reject-done"), "reject must not finish during accept Git");
+    assert.ok(!order.includes("accept-done"), "accept must not finish while Git is held");
+    release();
+    const [accepted, rejected] = await Promise.all([acceptPromise, rejectPromise]);
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    assert.ok(rejected.error, "reject must refuse after accept completed");
+    assert.equal(rejected.error?.code, RPC_LIFECYCLE, JSON.stringify(rejected.error));
+    assert.match(
+      String(rejected.error?.message ?? ""),
+      /Invalid task transition|No ready delivery/i,
+      JSON.stringify(rejected.error)
+    );
+    const get = await rpc(svc, "task.get", { workspaceId, taskPath });
+    assert.equal((get.result as { task: { state: string } }).task.state, "accepted");
+    assert.ok(order.indexOf("docs-done") < order.indexOf("integrate-exit"));
+    assert.ok(order.indexOf("integrate-exit") < order.indexOf("accept-done"));
+    assert.ok(order.indexOf("accept-done") < order.indexOf("reject-done"));
+  });
+});
+
+/**
+ * Same-Task sendInput waits on bypass auto-deliver Git, then refuses accepted
+ * (cannot slip a pending TaskInput past auto-deliver).
+ */
+test("P0-2: same-Task sendInput waits for auto-deliver Git then refuses accepted", async () => {
+  const ws = await makeWorkspace("p0-life-sendinput");
+  await initGitOnWorkspace(ws);
+  const sourceRef = await roleCommit(ws, "executor", "life-send.txt", "s\n", "life send");
+  await withBlockedIntegrate("life-send", async ({ svc, order, waitIntegrate, release }) => {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const d = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId,
+      role: "executor",
+      prompt: "same-task sendInput serializes with bypass deliver",
+      deliveryPolicy: "bypass",
+    });
+    const taskPath = (d.result as { taskPath: string }).taskPath;
+    await rpc(svc, "task.claim", { workspaceId, taskPath });
+    const deliverPromise = rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "auto integrate with sendInput race",
+      commits: [sourceRef],
+    }).then((res) => {
+      order.push("deliver-done");
+      return res;
+    });
+    await waitIntegrate();
+    const note = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "unrelated-while-same-task-sendinput-waits",
+      type: "prompt",
+    });
+    assert.ok(!note.error, JSON.stringify(note.error));
+    order.push("docs-done");
+    const sendPromise = rpc(svc, "task.sendInput", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+      text: "must not slip past auto-deliver",
+    }).then((res) => {
+      order.push("send-done");
+      return res;
+    });
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(!order.includes("send-done"), "sendInput must not finish during auto-deliver Git");
+    assert.ok(!order.includes("deliver-done"), "deliver must not finish while Git is held");
+    release();
+    const [delivered, sent] = await Promise.all([deliverPromise, sendPromise]);
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { autoIntegrated: boolean }).autoIntegrated, true);
+    assert.equal((delivered.result as { state: string }).state, "accepted");
+    assert.ok(sent.error, "sendInput must refuse after auto-deliver accepted");
+    assert.equal(sent.error?.code, RPC_LIFECYCLE);
+    assert.match(String(sent.error?.message ?? ""), /running or waiting/i);
+    const pending = await rpc(svc, "taskInput.listPending", { workspaceId, taskPath });
+    assert.ok(!pending.error, JSON.stringify(pending.error));
+    const inputs = (pending.result as { inputs?: unknown[] }).inputs ?? [];
+    assert.equal(inputs.length, 0, "no pending TaskInput may slip past auto-deliver");
+    assert.ok(order.indexOf("docs-done") < order.indexOf("integrate-exit"));
+    assert.ok(order.indexOf("integrate-exit") < order.indexOf("deliver-done"));
+    assert.ok(order.indexOf("deliver-done") < order.indexOf("send-done"));
+  });
+});
+
 test("P0-2: accept integration conflict keeps delivered + occupation; no done", async () => {
   const ws = await makeWorkspace("p0-conflict-accept");
   await initGitOnWorkspace(ws);

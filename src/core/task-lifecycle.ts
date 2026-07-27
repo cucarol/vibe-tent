@@ -193,20 +193,41 @@ export interface TaskDeliverResult {
   autoIntegrated: boolean;
 }
 
-export async function taskDeliver(
+/**
+ * First deliver section under mutation.lock.
+ * Manual/review: publishes ready Delivery and returns done.
+ * Auto-integrate policies: validates only and returns auto (caller integrates Git outside lock).
+ */
+export type TaskDeliverPrepared =
+  | { kind: "done"; result: TaskDeliverResult }
+  | { kind: "auto"; boxId: string };
+
+export interface TaskAcceptPrepared {
+  deliveryId: string;
+  deliveryPath: string;
+  commits: string[];
+}
+
+export interface TaskAcceptResult {
+  task: TaskEnvelope;
+  delivery: DeliveryRecord;
+  /** Output Node ids successfully bound (including same-delivery idempotent). */
+  boundOutputIds: string[];
+  /** Subset that newly wrote deliveryId (for concept.changed). */
+  changedOutputIds: string[];
+}
+
+/**
+ * Prepare deliver under cross-process mutation.lock only.
+ * Service callers should wrap this in a short MutationBus section and run
+ * integrateCommits outside MutationBus when kind==="auto" and commits exist.
+ */
+export async function prepareTaskDeliver(
   env: OpsEnv,
   taskPath: string,
   options: TaskDeliverOptions
-): Promise<TaskDeliverResult> {
-  // Manual path: single atomic lock section (no Git).
-  // Auto-integrate path: validate under lock → Git outside lock → re-validate +
-  // state write under lock. Failure before the second section keeps running and
-  // leaves no delivery (same semantics as holding the lock across integrate).
-  type DeliverPhase =
-    | { kind: "done"; result: TaskDeliverResult }
-    | { kind: "auto"; boxId: string };
-
-  const phase = await withMutation(env.fs, async (): Promise<DeliverPhase> => {
+): Promise<TaskDeliverPrepared> {
+  return withMutation(env.fs, async (): Promise<TaskDeliverPrepared> => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
     const boxId = primaryBoxId(task);
@@ -242,24 +263,23 @@ export async function taskDeliver(
     });
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
   });
+}
 
-  if (phase.kind === "done") return phase.result;
-
-  const pendingCommits = [
-    ...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean)),
-  ];
-  if (pendingCommits.length > 0) {
-    if (!options.integrate) {
-      throw new Error("Auto-integrate path requires integrate() when commits are present.");
-    }
-    await options.integrate(pendingCommits);
-  }
-
+/**
+ * Finalize auto-integrate deliver under mutation.lock after Git ran outside the lock.
+ * Failure leaves running with no Delivery (same as holding the lock across integrate).
+ */
+export async function finalizeTaskDeliverAuto(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskDeliverOptions,
+  prepared: Extract<TaskDeliverPrepared, { kind: "auto" }>
+): Promise<TaskDeliverResult> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
     const boxId = primaryBoxId(task);
-    if (!boxId || boxId !== phase.boxId) {
+    if (!boxId || boxId !== prepared.boxId) {
       throw new Error("task.deliver requires a non-root box claim.");
     }
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
@@ -296,21 +316,41 @@ export async function taskDeliver(
   });
 }
 
-export async function taskAccept(
+export async function taskDeliver(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskDeliverOptions
+): Promise<TaskDeliverResult> {
+  // Manual path: single atomic lock section (no Git).
+  // Auto-integrate path: validate under lock → Git outside lock → re-validate +
+  // state write under lock. Failure before the second section keeps running and
+  // leaves no delivery (same semantics as holding the lock across integrate).
+  const phase = await prepareTaskDeliver(env, taskPath, options);
+  if (phase.kind === "done") return phase.result;
+
+  const pendingCommits = [
+    ...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean)),
+  ];
+  if (pendingCommits.length > 0) {
+    if (!options.integrate) {
+      throw new Error("Auto-integrate path requires integrate() when commits are present.");
+    }
+    await options.integrate(pendingCommits);
+  }
+
+  return finalizeTaskDeliverAuto(env, taskPath, options, phase);
+}
+
+/**
+ * Prepare accept under mutation.lock: authority, ready Delivery, optional Output pre-check.
+ * Service should wrap in a short MutationBus section; Git integrate must run outside both.
+ */
+export async function prepareTaskAccept(
   env: OpsEnv,
   taskPath: string,
   options: TaskAcceptOptions
-): Promise<{
-  task: TaskEnvelope;
-  delivery: DeliveryRecord;
-  /** Output Node ids successfully bound (including same-delivery idempotent). */
-  boundOutputIds: string[];
-  /** Subset that newly wrote deliveryId (for concept.changed). */
-  changedOutputIds: string[];
-}> {
-  // Validate authority + ready delivery under lock; Git integrate outside;
-  // then re-validate, bind Outputs, and write accepted atomically under lock.
-  const prepared = await withMutation(env.fs, async () => {
+): Promise<TaskAcceptPrepared> {
+  return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
@@ -333,14 +373,18 @@ export async function taskAccept(
       commits: [...commits],
     };
   });
+}
 
-  if (prepared.commits.length > 0) {
-    if (!options.integrate) {
-      throw new Error("Delivery contains commits; workspace integration is required.");
-    }
-    await options.integrate(prepared.commits);
-  }
-
+/**
+ * Finalize accept under mutation.lock after Git integrate (when any) ran outside the lock.
+ * Revalidates Delivery/authority, binds Outputs, writes accepted Task/Delivery atomically.
+ */
+export async function finalizeTaskAccept(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskAcceptOptions,
+  prepared: TaskAcceptPrepared
+): Promise<TaskAcceptResult> {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
@@ -414,6 +458,25 @@ export async function taskAccept(
       throw err;
     }
   });
+}
+
+export async function taskAccept(
+  env: OpsEnv,
+  taskPath: string,
+  options: TaskAcceptOptions
+): Promise<TaskAcceptResult> {
+  // Validate authority + ready delivery under lock; Git integrate outside;
+  // then re-validate, bind Outputs, and write accepted atomically under lock.
+  const prepared = await prepareTaskAccept(env, taskPath, options);
+
+  if (prepared.commits.length > 0) {
+    if (!options.integrate) {
+      throw new Error("Delivery contains commits; workspace integration is required.");
+    }
+    await options.integrate(prepared.commits);
+  }
+
+  return finalizeTaskAccept(env, taskPath, options, prepared);
 }
 
 /**

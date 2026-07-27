@@ -6,8 +6,24 @@ import type { EventEnvelope } from "./types.js";
 import type { EventBus } from "./events.js";
 import { dispatchMethod, RpcError, type HandlerContext } from "./handlers.js";
 import { extractRequestToken, tokensEqual } from "./auth.js";
-import { RPC_UNAUTHORIZED } from "./types.js";
+import { RPC_LIFECYCLE, RPC_UNAUTHORIZED } from "./types.js";
 import { isLoopbackServiceHost, serviceBaseUrl } from "./data-dir.js";
+
+/**
+ * RpcError may cross tsx dual-module boundaries where `instanceof` fails.
+ * Accept class identity, name, or numeric application code shape.
+ */
+function isServiceRpcError(
+  error: unknown
+): error is { code: number; message: string; data?: unknown } {
+  if (error instanceof RpcError) return true;
+  if (!(error instanceof Error)) return false;
+  if (error.name === "RpcError" || error.constructor?.name === "RpcError") {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "number";
+  }
+  return false;
+}
 
 export interface JsonRpcRequest {
   jsonrpc?: string;
@@ -278,11 +294,33 @@ async function handleRequest(
       const result = await dispatchMethod(ctx, message.method, params);
       writeJson(res, 200, { jsonrpc: "2.0", id, result });
     } catch (error) {
-      if (error instanceof RpcError) {
+      // Prefer instanceof; also accept dual-module RpcError (tsx path splits).
+      if (isServiceRpcError(error)) {
         writeJson(res, 200, {
           jsonrpc: "2.0",
           id,
           error: { code: error.code, message: error.message, data: error.data },
+        });
+        return;
+      }
+      // TaskLifecycleError may surface as a plain Error when class identity splits.
+      if (
+        error instanceof Error &&
+        (/^Invalid task transition:/.test(error.message) ||
+          error.name === "TaskLifecycleError")
+      ) {
+        const dataCode =
+          typeof (error as { code?: unknown }).code === "string"
+            ? (error as { code: string }).code
+            : "INVALID_TRANSITION";
+        writeJson(res, 200, {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: RPC_LIFECYCLE,
+            message: error.message,
+            data: { code: dataCode },
+          },
         });
         return;
       }
