@@ -1574,9 +1574,13 @@ async function patchTaskEnvelope(fs10, path9, patch) {
   if (patch.wait === null) {
     delete data.waitReason;
     delete data.waitSummary;
+    delete data.waitCode;
   } else if (patch.wait) {
     data.waitReason = patch.wait.reason;
     data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
   }
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
@@ -1616,7 +1620,8 @@ function parseWaitFields(data) {
   const reason = data.waitReason;
   const summary = data.waitSummary;
   if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
-    return { reason, summary };
+    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
+    return { reason, summary, ...code ? { code } : {} };
   }
   return void 0;
 }
@@ -3059,6 +3064,9 @@ async function loadDelivery(fs10, inputPath) {
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  const targetHead = normalizeTargetHead(
+    typeof data.targetHead === "string" ? data.targetHead : void 0
+  );
   return {
     path: path9,
     id: data.id,
@@ -3068,6 +3076,7 @@ async function loadDelivery(fs10, inputPath) {
     status,
     summary: body.trim(),
     commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    ...targetHead ? { targetHead } : {},
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
     integrationMode: parseIntegrationMode(data.integrationMode),
@@ -3179,6 +3188,10 @@ function parseArtifactRefs(value) {
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+function normalizeTargetHead(value) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : void 0;
 }
 
 // src/core/scaffold.ts
@@ -7813,12 +7826,18 @@ function normalizeTemplateRoles(value) {
 }
 var entry = process.argv[1] ? path8.resolve(process.argv[1]) : "";
 var thisFile = path8.resolve(fileURLToPath2(import.meta.url));
-if (entry && (entry === thisFile || entry === thisFile.replace(/\.ts$/i, ".js"))) {
-  main().catch((e) => {
-    console.error(e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
-}
+var normalizeEntryPath = (value) => process.platform === "win32" ? value.toLowerCase() : value;
+void (async () => {
+  if (!entry) return;
+  const realEntry = await fs9.realpath(entry).catch(() => entry);
+  const realThisFile = await fs9.realpath(thisFile).catch(() => thisFile);
+  const isDirectEntry = normalizeEntryPath(realEntry) === normalizeEntryPath(realThisFile) || normalizeEntryPath(realEntry) === normalizeEntryPath(realThisFile.replace(/\.ts$/i, ".js"));
+  if (!isDirectEntry) return;
+  await main();
+})().catch((e) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});
 export {
   inWorkspaceLegacyMutationMessage,
   isInWorkspaceSystemRoot,

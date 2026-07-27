@@ -919,11 +919,23 @@ function normalizeTemplateRoles(value: unknown): RolesRegistry {
 }
 
 // Only auto-run when this file is the process entry (not when imported by tests).
+// Resolve through realpath so Windows junctions / global-style symlink entries still match.
+// Async IIFE (not top-level await): esbuild CLI target is es2021.
 const entry = process.argv[1] ? path.resolve(process.argv[1]) : "";
 const thisFile = path.resolve(fileURLToPath(import.meta.url));
-if (entry && (entry === thisFile || entry === thisFile.replace(/\.ts$/i, ".js"))) {
-  main().catch((e) => {
-    console.error(e instanceof Error ? e.message : e);
-    process.exit(1);
-  });
-}
+const normalizeEntryPath = (value: string) =>
+  process.platform === "win32" ? value.toLowerCase() : value;
+
+void (async () => {
+  if (!entry) return;
+  const realEntry = await fs.realpath(entry).catch(() => entry);
+  const realThisFile = await fs.realpath(thisFile).catch(() => thisFile);
+  const isDirectEntry =
+    normalizeEntryPath(realEntry) === normalizeEntryPath(realThisFile) ||
+    normalizeEntryPath(realEntry) === normalizeEntryPath(realThisFile.replace(/\.ts$/i, ".js"));
+  if (!isDirectEntry) return;
+  await main();
+})().catch((e) => {
+  console.error(e instanceof Error ? e.message : e);
+  process.exit(1);
+});
