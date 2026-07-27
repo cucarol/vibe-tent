@@ -37,17 +37,17 @@ function parseFrontmatter(raw) {
     if (/^-\s*/.test(trimmed)) continue;
     const colon = trimmed.indexOf(":");
     if (colon === -1) continue;
-    const key = trimmed.slice(0, colon).trim();
+    const key2 = trimmed.slice(0, colon).trim();
     let valuePart = trimmed.slice(colon + 1).trim();
     valuePart = stripInlineComment(valuePart);
     if (valuePart === "" && isBlockSequenceStart(lines[i + 1])) {
-      const { value, nextIndex } = readBlockSequence(lines, i + 1, key);
-      data[key] = normalizeValueForKey(key, value);
+      const { value, nextIndex } = readBlockSequence(lines, i + 1, key2);
+      data[key2] = normalizeValueForKey(key2, value);
       i = nextIndex - 1;
     } else {
-      data[key] = normalizeValueForKey(key, coerceForKey(key, valuePart));
+      data[key2] = normalizeValueForKey(key2, coerceForKey(key2, valuePart));
     }
-    keyOrder.push(key);
+    keyOrder.push(key2);
   }
   return { data, body, keyOrder };
 }
@@ -98,7 +98,7 @@ function leadingIndent(line) {
   const match = line.match(/^(\s*)/);
   return match ? match[1].length : 0;
 }
-function readBlockSequence(lines, startIndex, key) {
+function readBlockSequence(lines, startIndex, key2) {
   const value = [];
   let i = startIndex;
   while (i < lines.length) {
@@ -113,7 +113,7 @@ function readBlockSequence(lines, startIndex, key) {
       const obj = {};
       const firstKey = inlineMap[1];
       const firstVal = stripInlineComment(inlineMap[2].trim());
-      obj[firstKey] = firstVal === "" ? void 0 : coerceForKey(key, firstVal);
+      obj[firstKey] = firstVal === "" ? void 0 : coerceForKey(key2, firstVal);
       while (i < lines.length) {
         const cont = lines[i];
         if (!cont.trim() || cont.trim().startsWith("#")) {
@@ -127,7 +127,7 @@ function readBlockSequence(lines, startIndex, key) {
         if (colon === -1) break;
         const fieldKey = trimmed.slice(0, colon).trim();
         const fieldVal = stripInlineComment(trimmed.slice(colon + 1).trim());
-        obj[fieldKey] = fieldVal === "" ? void 0 : coerceForKey(key, fieldVal);
+        obj[fieldKey] = fieldVal === "" ? void 0 : coerceForKey(key2, fieldVal);
         i += 1;
       }
       for (const k of Object.keys(obj)) {
@@ -136,7 +136,7 @@ function readBlockSequence(lines, startIndex, key) {
       value.push(obj);
       continue;
     }
-    value.push(rest === "" ? null : coerceForKey(key, rest));
+    value.push(rest === "" ? null : coerceForKey(key2, rest));
   }
   return { value, nextIndex: i };
 }
@@ -229,8 +229,8 @@ function splitFlowCollection(inner) {
   items.push(current);
   return items;
 }
-function coerceForKey(key, raw) {
-  if (key !== "commits") return coerce(raw);
+function coerceForKey(key2, raw) {
+  if (key2 !== "commits") return coerce(raw);
   if (raw.startsWith("[") && raw.endsWith("]")) {
     const inner = raw.slice(1, -1).trim();
     if (!inner) return [];
@@ -275,11 +275,11 @@ function unescapeYamlDoubleQuoted(value) {
   }
   return out;
 }
-function normalizeValueForKey(key, value) {
-  if (key === "workspace" || key === "path" || key === "ref") {
+function normalizeValueForKey(key2, value) {
+  if (key2 === "workspace" || key2 === "path" || key2 === "ref") {
     return normalizeWindowsPathValue(value);
   }
-  if (key === "paths" && Array.isArray(value)) {
+  if (key2 === "paths" && Array.isArray(value)) {
     return value.map((item) => normalizeWindowsPathValue(item));
   }
   return value;
@@ -764,20 +764,20 @@ function assertRawRelationsCanonicalForMutation(value) {
         `Source relations[${i}] is not a canonical relation record`
       );
     }
-    for (const key of Object.keys(item)) {
-      if (!CANONICAL_RELATION_KEYS.has(key)) {
+    for (const key2 of Object.keys(item)) {
+      if (!CANONICAL_RELATION_KEYS.has(key2)) {
         throw new RelationError(
           "CORRUPT",
-          `Source relations[${i}] has unrecognized field: ${key}`
+          `Source relations[${i}] has unrecognized field: ${key2}`
         );
       }
     }
     if (isRecord2(item.target)) {
-      for (const key of Object.keys(item.target)) {
-        if (key !== "nodeId" && key !== "unresolved") {
+      for (const key2 of Object.keys(item.target)) {
+        if (key2 !== "nodeId" && key2 !== "unresolved") {
           throw new RelationError(
             "CORRUPT",
-            `Source relations[${i}].target has unrecognized field: ${key}`
+            `Source relations[${i}].target has unrecognized field: ${key2}`
           );
         }
       }
@@ -823,7 +823,7 @@ function relationsToFrontmatterValue(records) {
 function boxKeyOrder(existing) {
   return [
     ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
 async function writeBoxRelations(fs21, box, relations) {
@@ -1249,9 +1249,9 @@ function dedupe(entries) {
   const seen = /* @__PURE__ */ new Set();
   const out = [];
   for (const e of entries) {
-    const key = `${e.id ?? ""}|${e.path}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+    const key2 = `${e.id ?? ""}|${e.path}`;
+    if (seen.has(key2)) continue;
+    seen.add(key2);
     out.push(e);
   }
   return out;
@@ -1314,14 +1314,14 @@ function makeUniqueRoleId(existing, rand = Math.random) {
   return makeUniquePrefixedId(ROLE_ID_PREFIX, existing, rand);
 }
 function deterministicRoleIdFromName(name, existing = /* @__PURE__ */ new Set()) {
-  const key = name.trim();
-  const digest = deterministicDigest(`tent.role.id.v1:${key}`, 32);
+  const key2 = name.trim();
+  const digest = deterministicDigest(`tent.role.id.v1:${key2}`, 32);
   for (let len = 6; len <= 16; len++) {
     const id = ROLE_ID_PREFIX + encodeAlphabetBytes(digest, len);
     if (!existing.has(id)) return id;
   }
   const fallback = deterministicDigest(
-    `tent.role.id.v1.fallback:${key}:${[...existing].sort().join(",")}`,
+    `tent.role.id.v1.fallback:${key2}:${[...existing].sort().join(",")}`,
     32
   );
   return ROLE_ID_PREFIX + encodeAlphabetBytes(fallback, 12);
@@ -1718,7 +1718,7 @@ function uniqueSorted(values) {
 function boxKeyOrder2(existing) {
   return [
     ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
+    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
   ];
 }
 function isRecord3(value) {
@@ -1836,18 +1836,18 @@ async function deleteRole(fs21, ref, confirmation) {
   });
 }
 function resolveRole(roles, ref) {
-  const key = typeof ref === "string" ? ref.trim() : "";
-  if (!key) return void 0;
-  const byId = roles.find((role) => role.id === key);
+  const key2 = typeof ref === "string" ? ref.trim() : "";
+  if (!key2) return void 0;
+  const byId = roles.find((role) => role.id === key2);
   if (byId) return byId;
-  return roles.find((role) => role.name === key);
+  return roles.find((role) => role.name === key2);
 }
 function findRoleIndex(roles, ref) {
-  const key = typeof ref === "string" ? ref.trim() : "";
-  if (!key) return -1;
-  let idx = roles.findIndex((role) => role.id === key);
+  const key2 = typeof ref === "string" ? ref.trim() : "";
+  if (!key2) return -1;
+  let idx = roles.findIndex((role) => role.id === key2);
   if (idx !== -1) return idx;
-  return roles.findIndex((role) => role.name === key);
+  return roles.findIndex((role) => role.name === key2);
 }
 function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord4(value) ? value : {};
@@ -2253,18 +2253,22 @@ async function patchTaskEnvelope(fs21, path22, patch) {
   if (patch.wait === null) {
     delete data.waitReason;
     delete data.waitSummary;
+    delete data.waitCode;
   } else if (patch.wait) {
     data.waitReason = patch.wait.reason;
     data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
   }
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
   if (patch.deliveryPolicy) data.deliveryPolicy = patch.deliveryPolicy;
   if (patch.updatedAt) data.updatedAt = patch.updatedAt;
-  for (const key of ["workspace", "worktree", "branch", "targetBranch"]) {
-    const value = patch[key];
-    if (value === null) delete data[key];
-    else if (typeof value === "string") data[key] = value;
+  for (const key2 of ["workspace", "worktree", "branch", "targetBranch"]) {
+    const value = patch[key2];
+    if (value === null) delete data[key2];
+    else if (typeof value === "string") data[key2] = value;
   }
   if (patch.roleBranchBase === null) delete data.roleBranchBase;
   else if (typeof patch.roleBranchBase === "string" && patch.roleBranchBase.trim()) {
@@ -2286,7 +2290,8 @@ function parseWaitFields(data) {
   const reason = data.waitReason;
   const summary = data.waitSummary;
   if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
-    return { reason, summary };
+    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
+    return { reason, summary, ...code ? { code } : {} };
   }
   return void 0;
 }
@@ -2314,6 +2319,7 @@ var KEY_ORDER = [
   "role",
   "status",
   "commits",
+  "targetHead",
   "checksJson",
   "artifactRefsJson",
   "integrationMode",
@@ -2332,6 +2338,8 @@ async function createDeliveryUnlocked(fs21, clock, input) {
   await ensureDir2(fs21, deliveriesDir);
   const path22 = join(deliveriesDir, `${id}.md`);
   if (await fs21.exists(path22)) throw new Error(`Delivery already exists: ${path22}.`);
+  const commits = uniqueCommits(input.commits ?? []);
+  const targetHead = normalizeTargetHead(input.targetHead);
   const record = {
     path: path22,
     id,
@@ -2340,7 +2348,8 @@ async function createDeliveryUnlocked(fs21, clock, input) {
     role: input.role,
     status: input.status ?? "ready",
     summary,
-    commits: uniqueCommits(input.commits ?? []),
+    commits,
+    ...targetHead ? { targetHead } : {},
     checks: input.checks ?? [],
     artifactRefs: input.artifactRefs ?? [],
     integrationMode: input.integrationMode ?? null,
@@ -2363,6 +2372,9 @@ async function loadDelivery(fs21, inputPath) {
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  const targetHead = normalizeTargetHead(
+    typeof data.targetHead === "string" ? data.targetHead : void 0
+  );
   return {
     path: path22,
     id: data.id,
@@ -2372,6 +2384,7 @@ async function loadDelivery(fs21, inputPath) {
     status,
     summary: body.trim(),
     commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    ...targetHead ? { targetHead } : {},
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
     integrationMode: parseIntegrationMode(data.integrationMode),
@@ -2435,6 +2448,7 @@ async function writeDelivery(fs21, record) {
     role: record.role,
     status: record.status,
     commits: record.commits,
+    targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
     artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
     integrationMode: record.integrationMode,
@@ -2506,6 +2520,10 @@ async function ensureDir2(fs21, path22) {
 }
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+}
+function normalizeTargetHead(value) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : void 0;
 }
 
 // src/core/scaffold.ts
@@ -2846,7 +2864,7 @@ function outputKeyOrder(existing) {
   const preferred = [...BOX_FRONTMATTER_KEY_ORDER, OUTPUT_PROVENANCE_FIELD];
   return [
     ...preferred,
-    ...existing.filter((key) => !preferred.includes(key))
+    ...existing.filter((key2) => !preferred.includes(key2))
   ];
 }
 
@@ -2893,9 +2911,14 @@ async function taskWait(env, taskPath, options) {
     assertTransition(task.state, "wait", "waiting");
     const summary = options.summary.trim();
     if (!summary) throw new Error("task.wait requires a non-empty summary.");
+    const code = options.code?.trim();
     return patchTaskEnvelope(env.fs, taskPath, {
       state: "waiting",
-      wait: { reason: options.reason, summary },
+      wait: {
+        reason: options.reason,
+        summary,
+        ...code ? { code } : {}
+      },
       updatedAt: env.clock.now()
     });
   });
@@ -2912,8 +2935,8 @@ async function taskResume(env, taskPath) {
     });
   });
 }
-async function taskDeliver(env, taskPath, options) {
-  const phase = await withMutation(env.fs, async () => {
+async function prepareTaskDeliver(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
     const boxId = primaryBoxId(task);
@@ -2930,6 +2953,7 @@ async function taskDeliver(env, taskPath, options) {
       role: task.role,
       summary: options.summary,
       commits: options.commits,
+      targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "ready",
@@ -2944,21 +2968,13 @@ async function taskDeliver(env, taskPath, options) {
     });
     return { kind: "done", result: { task: next, delivery, autoIntegrated: false } };
   });
-  if (phase.kind === "done") return phase.result;
-  const pendingCommits = [
-    ...new Set((options.commits ?? []).map((c) => c.trim()).filter(Boolean))
-  ];
-  if (pendingCommits.length > 0) {
-    if (!options.integrate) {
-      throw new Error("Auto-integrate path requires integrate() when commits are present.");
-    }
-    await options.integrate(pendingCommits);
-  }
+}
+async function finalizeTaskDeliverAuto(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertDeliverPreconditions(task);
     const boxId = primaryBoxId(task);
-    if (!boxId || boxId !== phase.boxId) {
+    if (!boxId || boxId !== prepared.boxId) {
       throw new Error("task.deliver requires a non-root box claim.");
     }
     await assertNoReadyDelivery(env.fs, task.id || taskPath);
@@ -2973,6 +2989,7 @@ async function taskDeliver(env, taskPath, options) {
       role: task.role,
       summary: options.summary,
       commits: options.commits,
+      targetHead: options.targetHead,
       checks: options.checks,
       artifactRefs: options.artifactRefs,
       status: "accepted",
@@ -2988,8 +3005,8 @@ async function taskDeliver(env, taskPath, options) {
     return { task: next, delivery, autoIntegrated: true };
   });
 }
-async function taskAccept(env, taskPath, options) {
-  const prepared = await withMutation(env.fs, async () => {
+async function prepareTaskAccept(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
@@ -3011,12 +3028,8 @@ async function taskAccept(env, taskPath, options) {
       commits: [...commits]
     };
   });
-  if (prepared.commits.length > 0) {
-    if (!options.integrate) {
-      throw new Error("Delivery contains commits; workspace integration is required.");
-    }
-    await options.integrate(prepared.commits);
-  }
+}
+async function finalizeTaskAccept(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
@@ -3367,22 +3380,1240 @@ function toConcept(box) {
     type: box.type
   };
 }
-function addIndex(index2, key, concept) {
-  const clean = key.trim();
+function addIndex(index2, key2, concept) {
+  const clean = key2.trim();
   if (!clean) return;
   addRawIndex(index2, clean, concept);
   addRawIndex(index2, normalizeLookupKey(clean), concept);
   addRawIndex(index2, "__all__", concept);
 }
-function addRawIndex(index2, key, concept) {
-  if (!key) return;
-  const list2 = index2.get(key) ?? [];
+function addRawIndex(index2, key2, concept) {
+  if (!key2) return;
+  const list2 = index2.get(key2) ?? [];
   if (!list2.some((item) => item.id === concept.id)) list2.push(concept);
-  index2.set(key, list2);
+  index2.set(key2, list2);
 }
 function normalizeLookupKey(value) {
   return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
 }
+
+// src/core/link-target.ts
+function safePercentDecode(value) {
+  try {
+    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
+function normalizeTarget(raw, fromNotePath) {
+  let t = raw.trim().replace(/\\/g, "/");
+  if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
+  t = safePercentDecode(t);
+  t = (t.split("#")[0]?.split("?")[0] ?? t).trim();
+  if ((t.startsWith("./") || t.startsWith("../")) && fromNotePath) {
+    const base = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
+    for (const part of t.split("/")) {
+      if (part === "." || part === "") continue;
+      if (part === "..") base.pop();
+      else base.push(part);
+    }
+    t = base.join("/");
+  }
+  return t.replace(/\.md$/i, "");
+}
+
+// src/core/renameOps.ts
+async function renameNode(env, conceptIdOrPath, newNameRaw) {
+  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
+}
+async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
+  const newName = validateBoxName(newNameRaw);
+  const tent = await loadTent(env.fs);
+  const target = resolveRenameTarget(tent, conceptIdOrPath);
+  if (!isUsableBox(target)) {
+    throw new Error("Invalid or archived boxes cannot be renamed.");
+  }
+  assertContentMutable(target, "renamed");
+  if (isFrozen(target)) {
+    throw new Error("Invalid or archived boxes cannot be renamed.");
+  }
+  await assertRenameOccupationAllowed(env, tent, target);
+  const oldPath = target.path;
+  const oldName = target.name;
+  if (newName === oldName) {
+    return {
+      id: target.id,
+      oldPath,
+      path: oldPath,
+      name: oldName,
+      pathMap: { [oldPath]: oldPath },
+      rewrittenNotes: []
+    };
+  }
+  const parentPath = dirName(oldPath);
+  const newPath = join(parentPath, newName);
+  assertNotOperationalPath(oldPath);
+  assertNotOperationalPath(newPath);
+  if (await env.fs.exists(newPath)) {
+    throw new Error(`Rename target already exists: ${newPath}.`);
+  }
+  const siblings = target.parent ? target.parent.children : tent.roots;
+  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
+    throw new Error(`A sibling concept already uses the name: ${newName}.`);
+  }
+  const subtree2 = collectSubtree2(target);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath2(oldPath, box.path);
+    const nextBoxPath = rel ? join(newPath, rel) : newPath;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: target.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
+    }
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
+    if (!rewritten.changed) continue;
+    plannedWrites.push({
+      writePath: restyleFromNotePath,
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterBoxPath);
+  }
+  await env.fs.move(oldPath, newPath);
+  let identityRenamed = false;
+  const completedWrites = [];
+  try {
+    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+  } catch (error) {
+    await rollbackRename(env.fs, {
+      oldPath,
+      newPath,
+      oldName,
+      identityRenamed,
+      completedWrites
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: target.id,
+    oldPath,
+    path: newPath,
+    name: newName,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackRename(fs21, args) {
+  const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs21.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    const expectedNew = boxNotePath(newPath);
+    const legacyAfterMove = join(newPath, `${oldName}.md`);
+    if ((identityRenamed || await fs21.exists(expectedNew)) && await fs21.exists(expectedNew) && !await fs21.exists(legacyAfterMove)) {
+      await fs21.move(expectedNew, legacyAfterMove);
+    }
+  } catch (err) {
+    restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+      const expectedNew = boxNotePath(newPath);
+      const legacyAfterMove = join(newPath, `${oldName}.md`);
+      if (!await fs21.exists(legacyAfterMove) && await fs21.exists(expectedNew)) {
+        try {
+          await fs21.move(expectedNew, legacyAfterMove);
+        } catch {
+        }
+      }
+      await fs21.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Rename failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveRenameTarget(tent, conceptIdOrPath) {
+  const key2 = conceptIdOrPath.trim().replace(/\\/g, "/");
+  const byId = tent.byId.get(key2);
+  if (byId) return byId;
+  const byPath = tent.byPath.get(key2);
+  if (byPath) return byPath;
+  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
+}
+async function assertRenameOccupationAllowed(env, tent, concept) {
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const hit = findActiveOccupation(tent, concept, tasks);
+  if (hit) {
+    throw new Error(
+      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
+    );
+  }
+}
+function assertNotOperationalPath(path22) {
+  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
+  }
+  const top = path22.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be renamed as concepts.");
+  }
+}
+function collectSubtree2(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree2(child, out);
+  return out;
+}
+function relativePath2(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+async function ensureIdentityFileName2(fs21, newBoxPath, oldName) {
+  const expected = boxNotePath(newBoxPath);
+  if (await fs21.exists(expected)) return false;
+  const legacy = join(newBoxPath, `${oldName}.md`);
+  if (await fs21.exists(legacy)) {
+    await fs21.move(legacy, expected);
+    return true;
+  }
+  const entries = await fs21.listDir(newBoxPath);
+  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newBoxPath, e.name));
+  if (candidates.length === 1) {
+    await fs21.move(candidates[0], expected);
+    return true;
+  }
+  throw new Error(`Identity note missing after rename: expected ${expected}.`);
+}
+function rewriteConceptLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
+  if (pathMap.size === 0) return { body, changed: false };
+  const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
+  let next = body;
+  let changed = false;
+  next = next.replace(/\[([^\]]*)\]\((<[^>\n]+>|[^)\n]+)\)/g, (full, label, destRaw) => {
+    const angled = destRaw.startsWith("<") && destRaw.endsWith(">");
+    const inner = angled ? destRaw.slice(1, -1) : destRaw;
+    const { url, titleTail } = splitMdUrlAndTitle(inner);
+    if (!url || isExternalOrAnchor(url)) return full;
+    const mapped = mapLinkTarget(url, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+    if (!mapped) return full;
+    changed = true;
+    const dest = angled ? `<${mapped}${titleTail}>` : `${mapped}${titleTail}`;
+    return `[${label}](${dest})`;
+  });
+  next = next.replace(
+    /(^|[^!])\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
+    (full, prefix, rawTarget, rawLabel) => {
+      const target = rawTarget.trim();
+      if (!target) return full;
+      const { head, suffix } = splitWikiTarget(target);
+      if (!head || isExternalOrAnchor(head)) return full;
+      const nextHead = mapLinkTarget(head, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
+      if (!nextHead || nextHead === head) return full;
+      changed = true;
+      const labelPart = rawLabel !== void 0 ? `|${rawLabel}` : "";
+      return `${prefix}[[${nextHead}${suffix}${labelPart}]]`;
+    }
+  );
+  return { body: next, changed };
+}
+function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, opts) {
+  const { pathPart, tail } = splitDestTail(raw);
+  if (!pathPart) return void 0;
+  if (isUnqualifiedName(pathPart)) {
+    return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
+  }
+  const restyleFrom = opts?.restyleFromNotePath ?? fromNotePath;
+  const sourceMoved = restyleFrom.replace(/\\/g, "/") !== fromNotePath.replace(/\\/g, "/");
+  const isRelativeForm = pathPart.startsWith("./") || pathPart.startsWith("../");
+  const normalized = normalizeTarget(pathPart, fromNotePath);
+  const mapped = resolveMappedPath(normalized, pathMap, oldPaths);
+  if (!mapped && !(isRelativeForm && sourceMoved)) {
+    return void 0;
+  }
+  const newAbs = mapped ?? normalized;
+  const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
+  const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
+  const styled = restyleRelative(pathPart, restyleFrom, absTarget, sourceHadMd);
+  if (styled === pathPart) return void 0;
+  return styled + tail;
+}
+function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
+  if (!opts || oldName === newName) return void 0;
+  const bare = pathPart.replace(/\.md$/i, "");
+  const resolved = resolveConcept(opts.conceptIndex, bare);
+  if (!resolved || resolved.boxId !== opts.renameBoxId) return void 0;
+  const sourceHadMd = /\.md$/i.test(pathPart);
+  const nextBare = bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName) ? newName : newName;
+  return (sourceHadMd ? `${nextBare}.md` : nextBare) + tail;
+}
+function resolveMappedPath(normalized, pathMap, oldPaths) {
+  const clean = normalized.replace(/\\/g, "/").replace(/^\.\//, "");
+  if (pathMap.has(clean)) return pathMap.get(clean);
+  const noMd = clean.replace(/\.md$/i, "");
+  if (pathMap.has(noMd)) return pathMap.get(noMd);
+  for (const oldPath of oldPaths) {
+    if (clean === oldPath || noMd === oldPath || clean === `${oldPath}.md`) {
+      return pathMap.get(oldPath);
+    }
+  }
+  return void 0;
+}
+function isUnqualifiedName(raw) {
+  const t = raw.trim().replace(/\\/g, "/");
+  if (!t || t.includes("/") || t.startsWith(".")) return false;
+  return true;
+}
+function normalizeLookupLoose(value) {
+  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
+}
+function splitMdUrlAndTitle(inner) {
+  const t = inner.trim();
+  const m = t.match(/^(\S+?)(\s+(".*"|'.*'|\(.*\)))\s*$/);
+  if (m) return { url: m[1], titleTail: m[2] ?? "" };
+  return { url: t, titleTail: "" };
+}
+function splitWikiTarget(raw) {
+  const t = raw.trim();
+  const caret = t.lastIndexOf("^");
+  if (caret > 0) {
+    const before = t.slice(0, caret);
+    const hash2 = before.indexOf("#");
+    if (hash2 >= 0) {
+      return { head: before.slice(0, hash2).trim(), suffix: before.slice(hash2) + t.slice(caret) };
+    }
+    return { head: before.trim(), suffix: t.slice(caret) };
+  }
+  const hash = t.indexOf("#");
+  if (hash >= 0) return { head: t.slice(0, hash).trim(), suffix: t.slice(hash) };
+  return { head: t, suffix: "" };
+}
+function splitDestTail(dest) {
+  const t = dest.trim();
+  const hash = t.indexOf("#");
+  const query = t.indexOf("?");
+  let cut = -1;
+  if (hash >= 0 && query >= 0) cut = Math.min(hash, query);
+  else if (hash >= 0) cut = hash;
+  else if (query >= 0) cut = query;
+  if (cut < 0) return { pathPart: t, tail: "" };
+  return { pathPart: t.slice(0, cut), tail: t.slice(cut) };
+}
+function isExternalOrAnchor(dest) {
+  const t = dest.trim();
+  if (!t || t.startsWith("#")) return true;
+  return /^[a-z][a-z0-9+.-]*:/i.test(t);
+}
+function restyleRelative(originalPathPart, fromNotePath, absoluteNext, keepMd) {
+  const orig = originalPathPart.replace(/\\/g, "/");
+  if (orig.startsWith("./") || orig.startsWith("../")) {
+    const toNote = absoluteNext.endsWith(".md") ? absoluteNext : `${absoluteNext}.md`;
+    let rel = relativeMarkdownPath(fromNotePath, toNote);
+    if (!keepMd) rel = rel.replace(/\.md$/i, "");
+    return rel;
+  }
+  if (!keepMd && absoluteNext.endsWith(".md")) return absoluteNext.replace(/\.md$/i, "");
+  return absoluteNext;
+}
+function relativeMarkdownPath(fromNotePath, toNotePath) {
+  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
+  const toParts = toNotePath.split("/").filter(Boolean);
+  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
+    fromParts.shift();
+    toParts.shift();
+  }
+  const up = fromParts.map(() => "..");
+  const rel = [...up, ...toParts].join("/");
+  return rel.startsWith(".") ? rel : `./${rel}`;
+}
+
+// src/core/moveOps.ts
+async function moveNode(env, conceptId, newParentId, position2) {
+  return withTentMutation(
+    env.fs,
+    async () => moveNodeUnlocked(env, conceptId, newParentId, position2)
+  );
+}
+async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
+  const id = conceptId.trim();
+  if (!id) throw new Error("Concept id is required for move.");
+  const tent = await loadTent(env.fs);
+  const moved = tent.byId.get(id);
+  if (!moved) throw new Error(`Concept not found: ${id}.`);
+  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
+  assertContentMutable(moved, "moved");
+  if (moved.invalid || moved.archived) {
+    throw new Error("Invalid or archived boxes cannot be moved.");
+  }
+  assertNotOperationalPath2(moved.path);
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const movedHit = findActiveOccupation(tent, moved, tasks);
+  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
+    throw new Error(
+      "Ranges with an active task cannot be moved; complete or interrupt the task first."
+    );
+  }
+  const parentBox = resolveNewParent(tent, newParentId);
+  if (parentBox) {
+    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parentBox, "used as move parent");
+    assertNotOperationalPath2(parentBox.path);
+  }
+  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : void 0;
+  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
+    throw new Error(
+      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
+    );
+  }
+  const newParentPath = parentBox ? parentBox.path : "";
+  if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
+    throw new Error("Cannot move a box into its own subtree.");
+  }
+  if (position2.mode !== "inside") {
+    const sibling = tent.byId.get(position2.siblingId);
+    if (!sibling) throw new Error(`Sibling not found: ${position2.siblingId}.`);
+    const siblingParentId = sibling.parent ? sibling.parent.id : null;
+    const destParentId = parentBox ? parentBox.id : null;
+    if (siblingParentId !== destParentId) {
+      throw new Error("before/after sibling must be under the destination parent.");
+    }
+    if (sibling.id === moved.id) {
+      throw new Error("Cannot position a box relative to itself.");
+    }
+  }
+  const oldPath = moved.path;
+  const movedName = moved.name;
+  const destination = join(newParentPath, movedName);
+  const parentChanged = dirName(oldPath) !== newParentPath;
+  if (parentChanged) {
+    if (await env.fs.exists(destination)) {
+      throw new Error(`Move target already exists: ${destination}.`);
+    }
+    const destSiblings = parentBox ? parentBox.children : tent.roots;
+    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
+      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
+    }
+  }
+  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
+  const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
+  const siblings = (parentBox ? parentBox.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
+  let insertAt;
+  if (position2.mode === "inside") {
+    insertAt = siblings.length;
+  } else {
+    const idx = siblings.indexOf(position2.siblingId);
+    insertAt = idx === -1 ? siblings.length : position2.mode === "before" ? idx : idx + 1;
+  }
+  siblings.splice(insertAt, 0, moved.id);
+  if (!parentChanged) {
+    const order = await loadOrder(env.fs);
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+    const identityMap = {};
+    for (const box of collectSubtree3(moved)) {
+      identityMap[box.path] = box.path;
+      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
+        /\.md$/i,
+        ""
+      );
+    }
+    return {
+      id: moved.id,
+      oldPath,
+      path: oldPath,
+      pathMap: identityMap,
+      rewrittenNotes: []
+    };
+  }
+  const subtree2 = collectSubtree3(moved);
+  const pathMap = /* @__PURE__ */ new Map();
+  for (const box of subtree2) {
+    const rel = relativePath3(oldPath, box.path);
+    const nextBoxPath = rel ? join(destination, rel) : destination;
+    pathMap.set(box.path, nextBoxPath);
+    pathMap.set(
+      boxNotePath(box.path).replace(/\.md$/i, ""),
+      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
+    );
+  }
+  const conceptIndex = buildConceptIndex(tent.byPath.values());
+  const rewriteOpts = {
+    renameBoxId: moved.id,
+    conceptIndex
+  };
+  const plannedWrites = [];
+  const rewrittenNotes = [];
+  for (const box of tent.byPath.values()) {
+    const notePath = boxNotePath(box.path);
+    if (!await env.fs.exists(notePath)) continue;
+    const raw = await env.fs.readFile(notePath);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    if (typeof data.id === "string" && data.id !== box.id) {
+      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
+    }
+    const afterBoxPath = pathMap.get(box.path) ?? box.path;
+    const restyleFromNotePath = boxNotePath(afterBoxPath);
+    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
+      ...rewriteOpts,
+      restyleFromNotePath
+    });
+    if (!rewritten.changed) continue;
+    plannedWrites.push({
+      writePath: restyleFromNotePath,
+      originalPath: notePath,
+      originalContent: raw,
+      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
+    });
+    rewrittenNotes.push(afterBoxPath);
+  }
+  const orderBefore = await loadOrder(env.fs);
+  const orderSnapshot = JSON.stringify(orderBefore);
+  await env.fs.move(oldPath, destination);
+  const completedWrites = [];
+  try {
+    for (const write of plannedWrites) {
+      await env.fs.writeFile(write.writePath, write.newContent);
+      completedWrites.push(write);
+    }
+    const order = JSON.parse(orderSnapshot);
+    if (order[oldParentKey]) {
+      order[oldParentKey] = order[oldParentKey].filter((sid) => sid !== moved.id);
+    }
+    order[parentKey] = siblings;
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await rollbackMove(env.fs, {
+      oldPath,
+      newPath: destination,
+      completedWrites,
+      orderSnapshot
+    });
+    throw error;
+  }
+  const pathMapRecord = {};
+  for (const [from, to] of pathMap) pathMapRecord[from] = to;
+  return {
+    id: moved.id,
+    oldPath,
+    path: destination,
+    pathMap: pathMapRecord,
+    rewrittenNotes: rewrittenNotes.sort()
+  };
+}
+async function rollbackMove(fs21, args) {
+  const { oldPath, newPath, completedWrites, orderSnapshot } = args;
+  const restoreErrors = [];
+  for (let i = completedWrites.length - 1; i >= 0; i--) {
+    const write = completedWrites[i];
+    try {
+      await fs21.writeFile(write.writePath, write.originalContent);
+    } catch (err) {
+      restoreErrors.push(
+        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
+      );
+    }
+  }
+  try {
+    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
+      await fs21.move(newPath, oldPath);
+    }
+  } catch (err) {
+    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  try {
+    await saveOrder(fs21, JSON.parse(orderSnapshot));
+  } catch (err) {
+    restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
+  }
+  if (restoreErrors.length > 0) {
+    throw new Error(
+      `Move failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
+    );
+  }
+}
+function resolveNewParent(tent, newParentId) {
+  if (newParentId === null || newParentId === void 0 || newParentId === "") {
+    return null;
+  }
+  const parent = tent.byId.get(newParentId.trim());
+  if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
+  return parent;
+}
+function assertNotOperationalPath2(path22) {
+  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
+  }
+  const top = path22.split("/")[0] ?? "";
+  if (top === "attachments" || top === ".tent") {
+    throw new Error("System directories cannot be moved as concepts.");
+  }
+}
+function collectSubtree3(box, out = []) {
+  out.push(box);
+  for (const child of box.children) collectSubtree3(child, out);
+  return out;
+}
+function relativePath3(root, child) {
+  if (child === root) return "";
+  return child.slice(root.length + 1);
+}
+
+// src/core/ops.ts
+async function dispatch(env, claimId, role, promptOrOptions) {
+  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
+}
+async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
+  const tent = await loadTent(env.fs);
+  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
+  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
+  const userPrompt = options.userPrompt?.trim() || "";
+  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
+  let assigneeLabel;
+  if (assigneeKind === "agentProfile") {
+    const profileId = options.profileId?.trim() || "";
+    if (!profileId) {
+      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
+    }
+    if (role?.trim() && role.trim() !== profileId) {
+      throw new Error(
+        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
+      );
+    }
+    assigneeLabel = assertProfileId(profileId);
+  } else {
+    const roleName = role?.trim() || "";
+    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
+    assigneeLabel = assertRoleName(roleName);
+  }
+  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
+  const tasks = await loadTaskEnvelopes(env.fs);
+  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
+  const createdRootExisted = await env.fs.exists(createdRoot);
+  const asSub = options.asSub === true;
+  const dispatcher = (options.dispatchedBy || "").trim();
+  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
+  if (claim.root) {
+    const blocker = findAnyActiveTask(tasks);
+    if (blocker) {
+      const claimLabel = blocker.claims.includes("root") ? "root" : blocker.claims[0] || "unknown";
+      throw new Error(
+        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
+      );
+    }
+  } else {
+    const structural = structuralClaimGate(claim.box);
+    if (!structural.ok) {
+      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
+    }
+    const claimable = canClaim(claim.box, {
+      tent,
+      tasks,
+      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
+    });
+    if (!claimable.ok) {
+      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
+    }
+  }
+  try {
+    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
+    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
+    const manifest = buildManifest(tent, input);
+    const yaml = manifestToYaml(manifest);
+    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
+    let manifestPath;
+    let initPath;
+    if (assigneeKind === "agentProfile") {
+      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+    } else {
+      manifestPath = join("temp", assigneeLabel, "manifest.yml");
+      await ensureDir3(env.fs, dirName(manifestPath));
+      await env.fs.writeFile(manifestPath, yaml);
+      const registry = await loadRolesRegistry(env.fs);
+      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
+      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
+    }
+    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
+      role: assigneeLabel,
+      claims: taskClaims,
+      manifestPath,
+      userPrompt,
+      workspace: options.workspace,
+      dispatchedBy: options.dispatchedBy,
+      asSub: options.asSub === true,
+      deliveryPolicy: options.deliveryPolicy,
+      assigneeKind,
+      id: taskId,
+      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
+    });
+    const relayPrompt = relayPromptForTask(
+      {
+        path: taskPath,
+        role: assigneeLabel,
+        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
+        manifest: manifestPath,
+        status: "pending",
+        state: "queued",
+        assigneeKind,
+        id: taskId
+      },
+      env.tentRoot || env.tentName
+    );
+    return {
+      manifestPath,
+      manifestYaml: yaml,
+      initPath,
+      taskPath,
+      relayPrompt,
+      assigneeKind,
+      assignee: assigneeLabel
+    };
+  } catch (error) {
+    if (!createdRootExisted && await env.fs.exists(createdRoot)) {
+      await env.fs.remove(createdRoot);
+    }
+    throw error;
+  }
+}
+function assertProfileId(profileId) {
+  const id = profileId.trim();
+  if (!id) throw new Error("profileId cannot be empty.");
+  if (/[\/\\\r\n]/.test(id)) {
+    throw new Error("profileId cannot contain path separators or newlines.");
+  }
+  return id;
+}
+function resolveDispatchClaim(tent, claimId, tentName) {
+  const id = claimId.trim();
+  if (id === "." || id === "root" || id === tentName) {
+    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
+  }
+  const box = requireBoxById2(tent, id);
+  return { root: false, id: box.id, name: box.name, box };
+}
+async function createBox(env, input) {
+  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
+}
+async function createBoxUnlocked(env, input) {
+  assertNotTempPath(input.parentPath);
+  const name = validateBoxName(input.name);
+  const tent = await loadTent(env.fs);
+  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
+  if (input.parentPath) {
+    const parent2 = tent.byPath.get(input.parentPath);
+    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
+    assertContentMutable(parent2, "used as create parent");
+  }
+  const existing = new Set(tent.byId.keys());
+  const id = makeUniqueConceptId(existing, env.rand);
+  const path22 = join(input.parentPath, name);
+  assertNotTempPath(path22);
+  await ensureDir3(env.fs, path22);
+  const fm = { id, type: input.type };
+  const content3 = serializeFrontmatter(fm, `
+# ${name}
+`, BOX_FRONTMATTER_KEY_ORDER);
+  await env.fs.writeFile(boxNotePath(path22), content3);
+  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
+  const parentKey = parent ? parent.id : ROOT_KEY;
+  try {
+    const order = await loadOrder(env.fs);
+    const siblings = order[parentKey] ?? [];
+    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
+    await saveOrder(env.fs, order);
+  } catch (error) {
+    await env.fs.remove(path22);
+    throw error;
+  }
+  return id;
+}
+async function patchBox(env, boxPath, patch, loadedTent) {
+  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
+}
+async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
+  const tent = loadedTent ?? await loadTent(env.fs);
+  const box = tent.byPath.get(boxPath);
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  const reserved = [
+    "id",
+    "owner",
+    "mode",
+    "archived",
+    "readable",
+    "writable",
+    "status",
+    "relations",
+    // Output provenance: only formal task.accept bind path may write deliveryId.
+    "deliveryId"
+  ].filter((key2) => key2 in patch);
+  if (reserved.length > 0) {
+    throw new Error(
+      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
+    );
+  }
+  if (box.archived || box.mode === "archived") {
+    throw new Error("Archived boxes can only be restored or permanently deleted.");
+  }
+  if (box.invalid) {
+    const keys = Object.keys(patch);
+    if (box.id !== box.invalidRootId || keys.some((key2) => key2 !== "type")) {
+      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
+    }
+  }
+  if ("type" in patch) {
+    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
+    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
+  }
+  const tagsTouched = "tags" in patch;
+  const previousTags = box.tags.slice();
+  if (tagsTouched) {
+    patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
+  }
+  const boxFile = boxNotePath(boxPath);
+  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+  if (tagsTouched) {
+    const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
+    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
+  }
+}
+async function patchBody(env, boxPath, newBody, loadedTent) {
+  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
+}
+async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
+  const tent = loadedTent ?? await loadTent(env.fs);
+  const box = tent.byPath.get(boxPath);
+  if (!box) throw new Error(`Box not found: ${boxPath}.`);
+  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
+  assertContentMutable(box, "body-edited");
+  const boxFile = boxNotePath(boxPath);
+  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
+  await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
+}
+async function setNodeMode(env, boxId, mode) {
+  await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
+}
+async function setNodeModeUnlocked(env, boxId, mode) {
+  if (mode === "read-only") {
+    throw new Error(
+      'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
+    );
+  }
+  const next = parseNodeMode(mode);
+  if (!next || next !== "editable" && next !== "archived") {
+    throw new Error('mode must be "editable" or "archived".');
+  }
+  const tent = await loadTent(env.fs);
+  const box = requireBoxById2(tent, boxId);
+  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
+  if (box.archived && !isExplicitArchiveRoot(box)) {
+    if (next === "archived") {
+      throw new Error("Invalid or already archived boxes cannot be archived.");
+    }
+    throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
+  }
+  const current = isExplicitArchiveRoot(box) ? "archived" : "editable";
+  if (current === next) {
+    if (next === "editable") {
+      await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
+    } else {
+      await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
+    }
+    return;
+  }
+  if (next === "archived" || current !== "archived") {
+    const tasks = await loadTaskEnvelopes(env.fs);
+    if (findActiveOccupation(tent, box, tasks)) {
+      throw new Error(
+        next === "archived" ? "Ranges with an active task cannot be archived; complete or interrupt the task first." : "Ranges with an active task cannot change mode; complete or interrupt the task first."
+      );
+    }
+  }
+  if (next === "archived") {
+    await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
+    return;
+  }
+  await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
+}
+async function patchFrontmatter(fs21, box, patch) {
+  const boxFile = boxNotePath(box.path);
+  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
+  for (const [k, v] of Object.entries(patch)) {
+    if (v === void 0) delete data[k];
+    else data[k] = v;
+  }
+  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
+}
+async function ensureDir3(fs21, path22) {
+  if (path22 && !await fs21.exists(path22)) await fs21.mkdir(path22);
+}
+function normalizeTagPatch(value) {
+  if (value === void 0) return void 0;
+  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
+  const tags = [];
+  for (const item of value) {
+    if (typeof item !== "string") throw new Error("Tags must be a string array.");
+    const tag = normalizeTagName(item);
+    if (!tags.includes(tag)) tags.push(tag);
+  }
+  return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
+}
+function boxKeyOrder3(existing) {
+  return [
+    ...BOX_FRONTMATTER_KEY_ORDER,
+    ...existing.filter((key2) => !BOX_FRONTMATTER_KEY_ORDER.includes(key2))
+  ];
+}
+function assertNotTempPath(path22) {
+  if (path22 === "temp" || path22.startsWith("temp/")) {
+    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
+  }
+}
+function assertRoleName(role) {
+  const name = role.trim();
+  if (!name) throw new Error("Role name cannot be empty.");
+  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
+  assertRoleNameAvailable(name);
+  return name;
+}
+function roleManifestClaims(tent, role, current, tasks) {
+  const claims = /* @__PURE__ */ new Map();
+  for (const task of tasks) {
+    if (taskAssigneeKind(task) !== "role") continue;
+    if (task.role !== role) continue;
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      const box = tent.byId.get(claimId);
+      if (box) claims.set(box.id, box);
+    }
+  }
+  claims.set(current.id, current);
+  return [...claims.values()];
+}
+function requireBoxById2(tent, boxId) {
+  if (tent.duplicateIds.has(boxId)) {
+    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
+  }
+  const box = tent.byId.get(boxId);
+  if (!box) throw new Error(`Box not found: ${boxId}.`);
+  return box;
+}
+async function withMutation2(fs21, action) {
+  return withTentMutation(fs21, action);
+}
+
+// src/core/typeManagement.ts
+async function createType(fs21, name, definition2) {
+  await withTentMutation(fs21, async () => {
+    assertTypeName(name);
+    if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
+      throw new Error(`Built-in primary types cannot be created: ${name}.`);
+    }
+    if (BUILTIN_SECONDARY_TYPES.includes(name)) {
+      throw new Error(`Built-in secondary types already exist: ${name}.`);
+    }
+    if (definition2.tier !== "modifier") {
+      throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
+    }
+    const registry = await loadTypeRegistry(fs21);
+    if (registry[name]) throw new Error(`Type already exists: ${name}.`);
+    registry[name] = { tier: "modifier" };
+    await writeTypeRegistryUnlocked(fs21, registry);
+  });
+}
+async function createSecondaryType(fs21, name, _definition) {
+  void _definition;
+  await createType(fs21, name, { tier: "modifier" });
+}
+async function inspectTypeDeletion(fs21, level, name) {
+  void level;
+  const tent = await loadTent(fs21);
+  const registry = tent.typeRegistry;
+  const boxes = [...tent.byId.values()];
+  const referenced = boxes.filter((box) => {
+    const { base, modifier } = splitType(box.type);
+    return box.type === name || base === name || modifier === name;
+  });
+  const tasks = await loadTaskEnvelopes(fs21);
+  const ownerMap = /* @__PURE__ */ new Map();
+  const relatedIds = /* @__PURE__ */ new Set();
+  for (const reference of referenced) {
+    for (const box of relatedBoxes(reference, boxes)) {
+      relatedIds.add(box.id);
+    }
+  }
+  for (const task of tasks) {
+    if (!envelopeIsActiveOccupation(task)) continue;
+    for (const claimId of task.claims) {
+      if (claimId === "root") {
+        if (referenced.length > 0) {
+          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
+        }
+        continue;
+      }
+      if (!relatedIds.has(claimId)) continue;
+      const box = tent.byId.get(claimId);
+      if (!box) continue;
+      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
+    }
+  }
+  const builtIn = name in DEFAULT_TYPE_REGISTRY || isCanonicalPrimary(name) || BUILTIN_SECONDARY_TYPES.includes(name);
+  return {
+    level: "type",
+    name,
+    builtIn,
+    exists: name in registry,
+    references: referenced.map(({ id, path: path22, name: boxName }) => ({ id, path: path22, name: boxName })),
+    activeOwners: [...ownerMap.values()]
+  };
+}
+async function deleteCustomType(fs21, level, name, confirmation) {
+  return withTentMutation(fs21, async () => {
+    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
+    const inspection = await inspectTypeDeletion(fs21, level, name);
+    if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
+    if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
+    if (inspection.references.length > 0) {
+      throw new Error(
+        `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references.map((x) => x.path).join(", ")}.`
+      );
+    }
+    if (inspection.activeOwners.length > 0) {
+      throw new Error(
+        `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
+      );
+    }
+    const registry = await loadTypeRegistry(fs21);
+    delete registry[name];
+    await writeTypeRegistryUnlocked(fs21, registry);
+    return inspection;
+  });
+}
+async function writeTypeRegistryUnlocked(fs21, registry) {
+  const slim = {};
+  for (const [name, def] of Object.entries(registry)) {
+    slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
+  }
+  await fs21.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
+}
+function assertTypeName(name) {
+  if (!name.trim()) throw new Error("Type name cannot be empty.");
+  if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
+  if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
+}
+function relatedBoxes(reference, boxes) {
+  return boxes.filter(
+    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
+  );
+}
+
+// src/core/context-card.ts
+var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
+function buildContextCard(ref, options) {
+  const kind = ref.kind;
+  const id = ref.id.trim();
+  if (!id) throw new Error("ContextRef.id cannot be empty.");
+  if (!kind) throw new Error("ContextRef.kind is required.");
+  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
+  const prompt = formatContextCardPrompt(ref, options);
+  return {
+    contextRef: {
+      kind,
+      id,
+      path: ref.path,
+      fragment: ref.fragment
+    },
+    prompt,
+    label,
+    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
+  };
+}
+function formatContextCardPrompt(ref, hints) {
+  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
+  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
+  const workspaceRoot = opts.workspaceRoot?.trim() || "";
+  const lines = [
+    "Tent contextCard v1",
+    `contextRef: ${ref.kind}/${ref.id}`
+  ];
+  if (ref.path) lines.push(`path: ${ref.path}`);
+  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
+  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
+  if (systemRoot) {
+    lines.push(`systemRoot: ${systemRoot}`);
+    lines.push(`tentRoot: ${systemRoot}`);
+  }
+  if (ref.path) {
+    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
+    if (rel && !rel.startsWith(".tent/")) {
+      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
+    }
+  }
+  lines.push(
+    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
+  );
+  lines.push("Do not invent missing content; fetch by id before answering.");
+  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
+  return lines.join("\n");
+}
+function taskContextCard(taskId, opts) {
+  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
+}
+
+// src/markdown/attachments.ts
+import { createHash } from "node:crypto";
+import * as nodePath from "node:path";
+var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
+function sanitizeAttachmentFileName(fileName) {
+  const source = fileName.normalize("NFKC");
+  if (!source.trim()) throw new Error("Attachment file name is required");
+  if (source.includes("/") || source.includes("\\") || source === "." || source === "..") {
+    throw new Error("Attachment file name must be a single path segment");
+  }
+  let clean = source.replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "");
+  if (!clean || clean === "." || clean === "..") clean = "file";
+  if (clean.length > 120) {
+    const ext2 = nodePath.posix.extname(clean).slice(0, 20);
+    const stem2 = clean.slice(0, Math.max(1, 120 - ext2.length));
+    clean = `${stem2}${ext2}`;
+  }
+  const ext = nodePath.posix.extname(clean);
+  const stem = ext ? clean.slice(0, -ext.length) : clean;
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) {
+    clean = `file-${clean}`;
+  }
+  return clean;
+}
+function decodeBase64Strict(b64) {
+  const compact = b64.replace(/\s+/g, "");
+  if (!compact) throw new Error("Invalid base64: empty payload");
+  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
+    throw new Error("Invalid base64: non-alphabet characters");
+  }
+  if (compact.length % 4 !== 0) {
+    throw new Error("Invalid base64: length must be a multiple of 4");
+  }
+  let buf;
+  try {
+    buf = Buffer.from(compact, "base64");
+  } catch {
+    throw new Error("Invalid base64: decode failed");
+  }
+  const reencoded = buf.toString("base64");
+  if (reencoded !== compact) {
+    throw new Error("Invalid base64: strict decode mismatch");
+  }
+  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
+}
+function assertAttachmentSize(byteLength) {
+  if (byteLength < 0 || !Number.isFinite(byteLength)) {
+    throw new Error("Invalid attachment size");
+  }
+  if (byteLength > MAX_ATTACHMENT_BYTES) {
+    throw new Error(
+      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${byteLength} bytes)`
+    );
+  }
+}
+function contentId(bytes) {
+  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
+}
+function attachmentRelativePath(conceptId, safeName, bytes) {
+  const id = contentId(bytes);
+  const ext = nodePath.posix.extname(safeName);
+  const base = nodePath.posix.basename(safeName, ext) || "file";
+  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
+}
+function bytesEqual(a, b) {
+  if (a.byteLength !== b.byteLength) return false;
+  for (let i = 0; i < a.byteLength; i++) {
+    if (a[i] !== b[i]) return false;
+  }
+  return true;
+}
+async function storeAttachmentBytes(fs21, conceptId, fileName, bytes, sourceNotePath) {
+  if (!conceptId.trim()) throw new Error("Concept id is required");
+  const safe = sanitizeAttachmentFileName(fileName);
+  assertAttachmentSize(bytes.byteLength);
+  const rel = attachmentRelativePath(conceptId, safe, bytes);
+  const normalized = rel.replace(/\\/g, "/");
+  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
+    throw new Error(`Attachment path rejected: ${rel}`);
+  }
+  if (await fs21.exists(rel)) {
+    const existing = await fs21.readBinary(rel);
+    if (!bytesEqual(existing, bytes)) {
+      throw new Error(`Attachment content-address collision at ${rel}`);
+    }
+    return attachmentResult(rel, safe, sourceNotePath);
+  }
+  await fs21.writeBinary(rel, bytes);
+  return attachmentResult(rel, safe, sourceNotePath);
+}
+function markdownAttachmentDestination(destination) {
+  if (!/[\s<>()]/.test(destination)) return destination;
+  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
+}
+function attachmentResult(relativePath4, label, sourceNotePath) {
+  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath4) : relativePath4;
+  return {
+    relativePath: relativePath4,
+    markdown: `![](${markdownAttachmentDestination(target)})`,
+    artifactRef: { kind: "path", target: relativePath4, label }
+  };
+}
+
+// src/adapters/acp/image-prompt.ts
+import * as nodePath2 from "node:path";
+import { pathToFileURL } from "node:url";
 
 // ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
@@ -10270,29 +11501,29 @@ function configure(combined, extensions) {
   }
 }
 function extension(combined, extension2) {
-  let key;
-  for (key in extension2) {
-    if (own2.call(extension2, key)) {
-      switch (key) {
+  let key2;
+  for (key2 in extension2) {
+    if (own2.call(extension2, key2)) {
+      switch (key2) {
         case "canContainEols": {
-          const right = extension2[key];
+          const right = extension2[key2];
           if (right) {
-            combined[key].push(...right);
+            combined[key2].push(...right);
           }
           break;
         }
         case "transforms": {
-          const right = extension2[key];
+          const right = extension2[key2];
           if (right) {
-            combined[key].push(...right);
+            combined[key2].push(...right);
           }
           break;
         }
         case "enter":
         case "exit": {
-          const right = extension2[key];
+          const right = extension2[key2];
           if (right) {
-            Object.assign(combined[key], right);
+            Object.assign(combined[key2], right);
           }
           break;
         }
@@ -10317,1495 +11548,7 @@ function defaultOnError(left, right) {
   }
 }
 
-// src/markdown/links.ts
-var EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
-var ARTIFACT_SCHEME_RE = /^(https?:|mailto:|tent-artifact:)/i;
-function extractOutLinksDetailed(body) {
-  const tree = fromMarkdown(body);
-  const out = [];
-  const seen = /* @__PURE__ */ new Set();
-  const definitions = collectDefinitions(tree);
-  walk(tree, (node2) => {
-    if (node2.type === "link") {
-      const link2 = outLinkFromMdast(node2);
-      if (link2) pushLink(out, seen, link2);
-      return "skip";
-    }
-    if (node2.type === "linkReference") {
-      const definition2 = definitions.get(normalizeIdentifier2(node2.identifier));
-      const link2 = definition2 ? outLinkFromReference(node2, definition2) : null;
-      if (link2) pushLink(out, seen, link2);
-      return "skip";
-    }
-    if (node2.type === "image") return "skip";
-    if (node2.type === "text") {
-      const start = node2.position?.start?.offset;
-      const end = node2.position?.end?.offset;
-      const text3 = start != null && end != null ? body.slice(start, end) : node2.value;
-      scanWikiInProse(text3, out, seen);
-    }
-  });
-  return out;
-}
-function indexFromBoxes(boxes) {
-  return buildConceptIndex(boxes);
-}
-function resolveOutLink(index2, link2, fromNotePath) {
-  if (link2.kind === "artifact") {
-    return { raw: link2.raw, kind: "artifact", label: link2.label };
-  }
-  const meta = link2;
-  const resolutionRaw = meta.conceptTarget ?? (link2.kind === "wiki" ? stripWikiSuffix(link2.raw).target : splitHref(link2.raw).pathPart);
-  const target = normalizeTarget(resolutionRaw, fromNotePath);
-  if (!isConceptCandidate(target) && !isConceptCandidate(resolutionRaw)) {
-    return { raw: link2.raw, kind: "unresolved", label: link2.label };
-  }
-  const concept = resolveConcept(index2, target) ?? resolveConcept(index2, resolutionRaw);
-  if (!concept) return { raw: link2.raw, kind: "unresolved", label: link2.label };
-  return {
-    raw: link2.raw,
-    kind: link2.kind,
-    targetCx: concept.id,
-    targetPath: concept.path,
-    label: link2.label ?? concept.name
-  };
-}
-function buildBacklinkIndex(concepts) {
-  const list2 = [...concepts];
-  const index2 = /* @__PURE__ */ new Map();
-  for (const c of list2) {
-    const concept = {
-      id: c.id,
-      boxId: c.id,
-      path: c.path,
-      notePath: c.notePath,
-      name: c.name,
-      type: "prompt"
-    };
-    add(index2, concept.id, concept);
-    add(index2, concept.path, concept);
-    add(index2, concept.notePath, concept);
-    add(index2, concept.name, concept);
-  }
-  const reverse = /* @__PURE__ */ new Map();
-  for (const c of list2) {
-    for (const link2 of extractOutLinksDetailed(c.body)) {
-      if (link2.kind === "artifact") continue;
-      const resolved = resolveOutLink(index2, link2, c.notePath);
-      if (!resolved.targetCx) continue;
-      const arr = reverse.get(resolved.targetCx) ?? [];
-      arr.push({
-        fromCx: c.id,
-        fromPath: c.path,
-        fromName: c.name,
-        raw: link2.raw,
-        kind: link2.kind === "wiki" ? "wiki" : "md"
-      });
-      reverse.set(resolved.targetCx, arr);
-    }
-  }
-  return reverse;
-}
-function normalizeTarget(raw, fromNotePath) {
-  let t = raw.trim().replace(/\\/g, "/");
-  if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
-  t = safePercentDecode(t);
-  t = (t.split("#")[0]?.split("?")[0] ?? t).trim();
-  if ((t.startsWith("./") || t.startsWith("../")) && fromNotePath) {
-    const base = fromNotePath.replace(/\\/g, "/").split("/").slice(0, -1);
-    for (const part of t.split("/")) {
-      if (part === "." || part === "") continue;
-      if (part === "..") base.pop();
-      else base.push(part);
-    }
-    t = base.join("/");
-  }
-  return t.replace(/\.md$/i, "");
-}
-function walk(node2, visit) {
-  if (visit(node2) === "skip") return;
-  if ("children" in node2 && Array.isArray(node2.children)) {
-    for (const child of node2.children) walk(child, visit);
-  }
-}
-function outLinkFromMdast(node2) {
-  return outLinkFromHref(node2.url, collectText(node2));
-}
-function outLinkFromReference(node2, definition2) {
-  return outLinkFromHref(definition2.url, collectText(node2));
-}
-function outLinkFromHref(url, rawLabel) {
-  const href = (url ?? "").trim();
-  if (!href) return null;
-  const label = rawLabel.replace(/\s+/g, " ").trim() || void 0;
-  if (ARTIFACT_SCHEME_RE.test(href) || isExternalHref(href)) {
-    return { raw: href, kind: "artifact", label, conceptTarget: href };
-  }
-  if (isPureAnchor(href)) return null;
-  const { pathPart, fragment } = splitHref(href);
-  if (!pathPart || isAttachmentPath(pathPart)) return null;
-  return { raw: href, kind: "md", label, fragment, conceptTarget: pathPart };
-}
-function collectDefinitions(tree) {
-  const definitions = /* @__PURE__ */ new Map();
-  walk(tree, (node2) => {
-    if (node2.type === "definition") {
-      const key = normalizeIdentifier2(node2.identifier);
-      if (!definitions.has(key)) definitions.set(key, node2);
-    }
-  });
-  return definitions;
-}
-function normalizeIdentifier2(identifier) {
-  return identifier.trim().replace(/\s+/g, " ").toLowerCase();
-}
-function collectText(node2) {
-  if ("value" in node2 && typeof node2.value === "string") return node2.value;
-  if ("children" in node2 && Array.isArray(node2.children)) {
-    return node2.children.map(collectText).join("");
-  }
-  return "";
-}
-function scanWikiInProse(text3, out, seen) {
-  let i = 0;
-  while (i < text3.length) {
-    if (text3[i] === "\\" && i + 1 < text3.length) {
-      i += 2;
-      continue;
-    }
-    if (text3[i] === "!" && text3[i + 1] === "[" && text3[i + 2] === "[") {
-      const embedEnd = findWikiEnd(text3, i + 2);
-      i = embedEnd === -1 ? i + 3 : embedEnd + 1;
-      continue;
-    }
-    if (text3[i] === "[" && text3[i + 1] === "[") {
-      const parsed = tryParseWikiLink(text3, i);
-      if (parsed) {
-        if (parsed.link) pushLink(out, seen, parsed.link);
-        i = parsed.next;
-        continue;
-      }
-    }
-    i += 1;
-  }
-}
-function tryParseWikiLink(text3, start) {
-  if (text3[start] !== "[" || text3[start + 1] !== "[" || isEscaped(text3, start)) return null;
-  const end = findWikiEnd(text3, start + 2);
-  if (end === -1) return null;
-  const next = end + 1;
-  const inner = text3.slice(start + 2, end);
-  if (!inner) return { link: null, next };
-  let targetPart = inner;
-  let label;
-  const pipe = findUnescapedChar(inner, "|");
-  if (pipe !== -1) {
-    targetPart = inner.slice(0, pipe);
-    label = inner.slice(pipe + 1).trim() || void 0;
-  }
-  const rawTarget = targetPart.trim();
-  if (!rawTarget) return { link: null, next };
-  const { target, fragment, blockRef } = stripWikiSuffix(rawTarget);
-  if (!target || isAttachmentPath(target) || isPureAnchor(target) || isExternalHref(target)) {
-    return { link: null, next };
-  }
-  return {
-    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, conceptTarget: target },
-    next
-  };
-}
-function findWikiEnd(text3, from) {
-  for (let i = from; i < text3.length - 1; i++) {
-    if (text3[i] === "]" && text3[i + 1] === "]" && !isEscaped(text3, i)) return i;
-    if (text3[i] === "[" && text3[i + 1] === "[" && !isEscaped(text3, i)) return -1;
-  }
-  return -1;
-}
-function pushLink(out, seen, link2) {
-  const key = `${link2.kind}:${link2.raw}|${link2.label ?? ""}`;
-  if (seen.has(key)) return;
-  seen.add(key);
-  out.push(link2);
-}
-function stripWikiSuffix(raw) {
-  const t = raw.trim();
-  const caret = t.lastIndexOf("^");
-  if (caret > 0) {
-    const blockRef = t.slice(caret + 1).trim() || void 0;
-    const before = t.slice(0, caret);
-    const hash2 = before.indexOf("#");
-    if (hash2 >= 0) {
-      return {
-        target: before.slice(0, hash2).trim(),
-        fragment: before.slice(hash2 + 1).trim() || void 0,
-        blockRef
-      };
-    }
-    return { target: before.trim(), blockRef };
-  }
-  const hash = t.indexOf("#");
-  if (hash >= 0) {
-    return { target: t.slice(0, hash).trim(), fragment: t.slice(hash + 1).trim() || void 0 };
-  }
-  return { target: t };
-}
-function splitHref(href) {
-  const t = href.trim();
-  const q = t.indexOf("?");
-  const h = t.indexOf("#");
-  let pathEnd = t.length;
-  if (q >= 0) pathEnd = Math.min(pathEnd, q);
-  if (h >= 0) pathEnd = Math.min(pathEnd, h);
-  return {
-    pathPart: t.slice(0, pathEnd),
-    fragment: h >= 0 ? t.slice(h + 1).split("?")[0] || void 0 : void 0
-  };
-}
-function isConceptCandidate(target) {
-  const t = target.trim();
-  return Boolean(t) && !isPureAnchor(t) && !isExternalHref(t) && !isAttachmentPath(t);
-}
-function isPureAnchor(href) {
-  const t = href.trim();
-  return t.startsWith("#") || t === "";
-}
-function isExternalHref(href) {
-  const t = href.trim();
-  return t.startsWith("//") || ARTIFACT_SCHEME_RE.test(t) || EXTERNAL_SCHEME_RE.test(t);
-}
-function isAttachmentPath(href) {
-  const t = href.trim().replace(/\\/g, "/").replace(/^\.\//, "");
-  if (!t) return false;
-  if (t === ATTACHMENTS_DIR || t.startsWith(`${ATTACHMENTS_DIR}/`)) return true;
-  if (t.includes(`/${ATTACHMENTS_DIR}/`)) return true;
-  const stack = [];
-  for (const p of t.split("/")) {
-    if (p === "." || p === "") continue;
-    if (p === "..") stack.pop();
-    else stack.push(p);
-  }
-  return stack[0] === ATTACHMENTS_DIR;
-}
-function safePercentDecode(value) {
-  try {
-    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-function isEscaped(text3, index2) {
-  let bs = 0;
-  for (let i = index2 - 1; i >= 0 && text3[i] === "\\"; i--) bs += 1;
-  return bs % 2 === 1;
-}
-function findUnescapedChar(text3, ch) {
-  for (let i = 0; i < text3.length; i++) {
-    if (text3[i] === ch && !isEscaped(text3, i)) return i;
-  }
-  return -1;
-}
-function add(index2, key, concept) {
-  if (!key) return;
-  const list2 = index2.get(key) ?? [];
-  if (!list2.some((c) => c.id === concept.id)) list2.push(concept);
-  index2.set(key, list2);
-  const all2 = index2.get("__all__") ?? [];
-  if (!all2.some((c) => c.id === concept.id)) all2.push(concept);
-  index2.set("__all__", all2);
-}
-
-// src/core/renameOps.ts
-async function renameNode(env, conceptIdOrPath, newNameRaw) {
-  return withTentMutation(env.fs, async () => renameNodeUnlocked(env, conceptIdOrPath, newNameRaw));
-}
-async function renameNodeUnlocked(env, conceptIdOrPath, newNameRaw) {
-  const newName = validateBoxName(newNameRaw);
-  const tent = await loadTent(env.fs);
-  const target = resolveRenameTarget(tent, conceptIdOrPath);
-  if (!isUsableBox(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
-  }
-  assertContentMutable(target, "renamed");
-  if (isFrozen(target)) {
-    throw new Error("Invalid or archived boxes cannot be renamed.");
-  }
-  await assertRenameOccupationAllowed(env, tent, target);
-  const oldPath = target.path;
-  const oldName = target.name;
-  if (newName === oldName) {
-    return {
-      id: target.id,
-      oldPath,
-      path: oldPath,
-      name: oldName,
-      pathMap: { [oldPath]: oldPath },
-      rewrittenNotes: []
-    };
-  }
-  const parentPath = dirName(oldPath);
-  const newPath = join(parentPath, newName);
-  assertNotOperationalPath(oldPath);
-  assertNotOperationalPath(newPath);
-  if (await env.fs.exists(newPath)) {
-    throw new Error(`Rename target already exists: ${newPath}.`);
-  }
-  const siblings = target.parent ? target.parent.children : tent.roots;
-  if (siblings.some((box) => box.id !== target.id && box.name === newName)) {
-    throw new Error(`A sibling concept already uses the name: ${newName}.`);
-  }
-  const subtree2 = collectSubtree2(target);
-  const pathMap = /* @__PURE__ */ new Map();
-  for (const box of subtree2) {
-    const rel = relativePath2(oldPath, box.path);
-    const nextBoxPath = rel ? join(newPath, rel) : newPath;
-    pathMap.set(box.path, nextBoxPath);
-    pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
-    );
-  }
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
-  const rewriteOpts = {
-    renameBoxId: target.id,
-    conceptIndex
-  };
-  const plannedWrites = [];
-  const rewrittenNotes = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
-    if (!await env.fs.exists(notePath)) continue;
-    const raw = await env.fs.readFile(notePath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse rename: frontmatter id drift on ${box.path}.`);
-    }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, oldName, newName, {
-      ...rewriteOpts,
-      restyleFromNotePath
-    });
-    if (!rewritten.changed) continue;
-    plannedWrites.push({
-      writePath: restyleFromNotePath,
-      originalPath: notePath,
-      originalContent: raw,
-      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
-    });
-    rewrittenNotes.push(afterBoxPath);
-  }
-  await env.fs.move(oldPath, newPath);
-  let identityRenamed = false;
-  const completedWrites = [];
-  try {
-    identityRenamed = await ensureIdentityFileName2(env.fs, newPath, oldName);
-    for (const write of plannedWrites) {
-      await env.fs.writeFile(write.writePath, write.newContent);
-      completedWrites.push(write);
-    }
-  } catch (error) {
-    await rollbackRename(env.fs, {
-      oldPath,
-      newPath,
-      oldName,
-      identityRenamed,
-      completedWrites
-    });
-    throw error;
-  }
-  const pathMapRecord = {};
-  for (const [from, to] of pathMap) pathMapRecord[from] = to;
-  return {
-    id: target.id,
-    oldPath,
-    path: newPath,
-    name: newName,
-    pathMap: pathMapRecord,
-    rewrittenNotes: rewrittenNotes.sort()
-  };
-}
-async function rollbackRename(fs21, args) {
-  const { oldPath, newPath, oldName, identityRenamed, completedWrites } = args;
-  const restoreErrors = [];
-  for (let i = completedWrites.length - 1; i >= 0; i--) {
-    const write = completedWrites[i];
-    try {
-      await fs21.writeFile(write.writePath, write.originalContent);
-    } catch (err) {
-      restoreErrors.push(
-        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-  try {
-    const expectedNew = boxNotePath(newPath);
-    const legacyAfterMove = join(newPath, `${oldName}.md`);
-    if ((identityRenamed || await fs21.exists(expectedNew)) && await fs21.exists(expectedNew) && !await fs21.exists(legacyAfterMove)) {
-      await fs21.move(expectedNew, legacyAfterMove);
-    }
-  } catch (err) {
-    restoreErrors.push(`identity: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  try {
-    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
-      const expectedNew = boxNotePath(newPath);
-      const legacyAfterMove = join(newPath, `${oldName}.md`);
-      if (!await fs21.exists(legacyAfterMove) && await fs21.exists(expectedNew)) {
-        try {
-          await fs21.move(expectedNew, legacyAfterMove);
-        } catch {
-        }
-      }
-      await fs21.move(newPath, oldPath);
-    }
-  } catch (err) {
-    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (restoreErrors.length > 0) {
-    throw new Error(
-      `Rename failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
-    );
-  }
-}
-function resolveRenameTarget(tent, conceptIdOrPath) {
-  const key = conceptIdOrPath.trim().replace(/\\/g, "/");
-  const byId = tent.byId.get(key);
-  if (byId) return byId;
-  const byPath = tent.byPath.get(key);
-  if (byPath) return byPath;
-  throw new Error(`Concept not found: ${conceptIdOrPath}.`);
-}
-async function assertRenameOccupationAllowed(env, tent, concept) {
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const hit = findActiveOccupation(tent, concept, tasks);
-  if (hit) {
-    throw new Error(
-      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
-    );
-  }
-}
-function assertNotOperationalPath(path22) {
-  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be renamed as concepts.");
-  }
-  const top = path22.split("/")[0] ?? "";
-  if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be renamed as concepts.");
-  }
-}
-function collectSubtree2(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree2(child, out);
-  return out;
-}
-function relativePath2(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-async function ensureIdentityFileName2(fs21, newBoxPath, oldName) {
-  const expected = boxNotePath(newBoxPath);
-  if (await fs21.exists(expected)) return false;
-  const legacy = join(newBoxPath, `${oldName}.md`);
-  if (await fs21.exists(legacy)) {
-    await fs21.move(legacy, expected);
-    return true;
-  }
-  const entries = await fs21.listDir(newBoxPath);
-  const candidates = entries.filter((e) => !e.isDir && e.name.endsWith(".md") && e.name !== "index.md").map((e) => join(newBoxPath, e.name));
-  if (candidates.length === 1) {
-    await fs21.move(candidates[0], expected);
-    return true;
-  }
-  throw new Error(`Identity note missing after rename: expected ${expected}.`);
-}
-function rewriteConceptLinks(body, fromNotePath, pathMap, oldName, newName, opts) {
-  if (pathMap.size === 0) return { body, changed: false };
-  const oldPaths = [...pathMap.keys()].sort((a, b) => b.length - a.length);
-  let next = body;
-  let changed = false;
-  next = next.replace(/\[([^\]]*)\]\((<[^>\n]+>|[^)\n]+)\)/g, (full, label, destRaw) => {
-    const angled = destRaw.startsWith("<") && destRaw.endsWith(">");
-    const inner = angled ? destRaw.slice(1, -1) : destRaw;
-    const { url, titleTail } = splitMdUrlAndTitle(inner);
-    if (!url || isExternalOrAnchor(url)) return full;
-    const mapped = mapLinkTarget(url, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
-    if (!mapped) return full;
-    changed = true;
-    const dest = angled ? `<${mapped}${titleTail}>` : `${mapped}${titleTail}`;
-    return `[${label}](${dest})`;
-  });
-  next = next.replace(
-    /(^|[^!])\[\[([^\]|]+)(?:\|([^\]]+))?\]\]/g,
-    (full, prefix, rawTarget, rawLabel) => {
-      const target = rawTarget.trim();
-      if (!target) return full;
-      const { head, suffix } = splitWikiTarget(target);
-      if (!head || isExternalOrAnchor(head)) return full;
-      const nextHead = mapLinkTarget(head, fromNotePath, pathMap, oldPaths, oldName, newName, opts);
-      if (!nextHead || nextHead === head) return full;
-      changed = true;
-      const labelPart = rawLabel !== void 0 ? `|${rawLabel}` : "";
-      return `${prefix}[[${nextHead}${suffix}${labelPart}]]`;
-    }
-  );
-  return { body: next, changed };
-}
-function mapLinkTarget(raw, fromNotePath, pathMap, oldPaths, oldName, newName, opts) {
-  const { pathPart, tail } = splitDestTail(raw);
-  if (!pathPart) return void 0;
-  if (isUnqualifiedName(pathPart)) {
-    return mapUnqualifiedName(pathPart, tail, oldName, newName, opts);
-  }
-  const restyleFrom = opts?.restyleFromNotePath ?? fromNotePath;
-  const sourceMoved = restyleFrom.replace(/\\/g, "/") !== fromNotePath.replace(/\\/g, "/");
-  const isRelativeForm = pathPart.startsWith("./") || pathPart.startsWith("../");
-  const normalized = normalizeTarget(pathPart, fromNotePath);
-  const mapped = resolveMappedPath(normalized, pathMap, oldPaths);
-  if (!mapped && !(isRelativeForm && sourceMoved)) {
-    return void 0;
-  }
-  const newAbs = mapped ?? normalized;
-  const sourceHadMd = /\.md$/i.test(pathPart.split(/[?#]/)[0] ?? pathPart);
-  const absTarget = sourceHadMd ? newAbs.endsWith(".md") ? newAbs : `${newAbs}.md` : newAbs.replace(/\.md$/i, "");
-  const styled = restyleRelative(pathPart, restyleFrom, absTarget, sourceHadMd);
-  if (styled === pathPart) return void 0;
-  return styled + tail;
-}
-function mapUnqualifiedName(pathPart, tail, oldName, newName, opts) {
-  if (!opts || oldName === newName) return void 0;
-  const bare = pathPart.replace(/\.md$/i, "");
-  const resolved = resolveConcept(opts.conceptIndex, bare);
-  if (!resolved || resolved.boxId !== opts.renameBoxId) return void 0;
-  const sourceHadMd = /\.md$/i.test(pathPart);
-  const nextBare = bare === oldName || normalizeLookupLoose(bare) === normalizeLookupLoose(oldName) ? newName : newName;
-  return (sourceHadMd ? `${nextBare}.md` : nextBare) + tail;
-}
-function resolveMappedPath(normalized, pathMap, oldPaths) {
-  const clean = normalized.replace(/\\/g, "/").replace(/^\.\//, "");
-  if (pathMap.has(clean)) return pathMap.get(clean);
-  const noMd = clean.replace(/\.md$/i, "");
-  if (pathMap.has(noMd)) return pathMap.get(noMd);
-  for (const oldPath of oldPaths) {
-    if (clean === oldPath || noMd === oldPath || clean === `${oldPath}.md`) {
-      return pathMap.get(oldPath);
-    }
-  }
-  return void 0;
-}
-function isUnqualifiedName(raw) {
-  const t = raw.trim().replace(/\\/g, "/");
-  if (!t || t.includes("/") || t.startsWith(".")) return false;
-  return true;
-}
-function normalizeLookupLoose(value) {
-  return value.toLowerCase().replace(/[\s、，,。:：;；/\\_\-.()[\]（）【】"'`]+/g, "");
-}
-function splitMdUrlAndTitle(inner) {
-  const t = inner.trim();
-  const m = t.match(/^(\S+?)(\s+(".*"|'.*'|\(.*\)))\s*$/);
-  if (m) return { url: m[1], titleTail: m[2] ?? "" };
-  return { url: t, titleTail: "" };
-}
-function splitWikiTarget(raw) {
-  const t = raw.trim();
-  const caret = t.lastIndexOf("^");
-  if (caret > 0) {
-    const before = t.slice(0, caret);
-    const hash2 = before.indexOf("#");
-    if (hash2 >= 0) {
-      return { head: before.slice(0, hash2).trim(), suffix: before.slice(hash2) + t.slice(caret) };
-    }
-    return { head: before.trim(), suffix: t.slice(caret) };
-  }
-  const hash = t.indexOf("#");
-  if (hash >= 0) return { head: t.slice(0, hash).trim(), suffix: t.slice(hash) };
-  return { head: t, suffix: "" };
-}
-function splitDestTail(dest) {
-  const t = dest.trim();
-  const hash = t.indexOf("#");
-  const query = t.indexOf("?");
-  let cut = -1;
-  if (hash >= 0 && query >= 0) cut = Math.min(hash, query);
-  else if (hash >= 0) cut = hash;
-  else if (query >= 0) cut = query;
-  if (cut < 0) return { pathPart: t, tail: "" };
-  return { pathPart: t.slice(0, cut), tail: t.slice(cut) };
-}
-function isExternalOrAnchor(dest) {
-  const t = dest.trim();
-  if (!t || t.startsWith("#")) return true;
-  return /^[a-z][a-z0-9+.-]*:/i.test(t);
-}
-function restyleRelative(originalPathPart, fromNotePath, absoluteNext, keepMd) {
-  const orig = originalPathPart.replace(/\\/g, "/");
-  if (orig.startsWith("./") || orig.startsWith("../")) {
-    const toNote = absoluteNext.endsWith(".md") ? absoluteNext : `${absoluteNext}.md`;
-    let rel = relativeMarkdownPath(fromNotePath, toNote);
-    if (!keepMd) rel = rel.replace(/\.md$/i, "");
-    return rel;
-  }
-  if (!keepMd && absoluteNext.endsWith(".md")) return absoluteNext.replace(/\.md$/i, "");
-  return absoluteNext;
-}
-function relativeMarkdownPath(fromNotePath, toNotePath) {
-  const fromParts = dirName(fromNotePath).split("/").filter(Boolean);
-  const toParts = toNotePath.split("/").filter(Boolean);
-  while (fromParts.length > 0 && toParts.length > 0 && fromParts[0] === toParts[0]) {
-    fromParts.shift();
-    toParts.shift();
-  }
-  const up = fromParts.map(() => "..");
-  const rel = [...up, ...toParts].join("/");
-  return rel.startsWith(".") ? rel : `./${rel}`;
-}
-
-// src/core/moveOps.ts
-async function moveNode(env, conceptId, newParentId, position2) {
-  return withTentMutation(
-    env.fs,
-    async () => moveNodeUnlocked(env, conceptId, newParentId, position2)
-  );
-}
-async function moveNodeUnlocked(env, conceptId, newParentId, position2) {
-  const id = conceptId.trim();
-  if (!id) throw new Error("Concept id is required for move.");
-  const tent = await loadTent(env.fs);
-  const moved = tent.byId.get(id);
-  if (!moved) throw new Error(`Concept not found: ${id}.`);
-  if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
-  assertContentMutable(moved, "moved");
-  if (moved.invalid || moved.archived) {
-    throw new Error("Invalid or archived boxes cannot be moved.");
-  }
-  assertNotOperationalPath2(moved.path);
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const movedHit = findActiveOccupation(tent, moved, tasks);
-  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
-    throw new Error(
-      "Ranges with an active task cannot be moved; complete or interrupt the task first."
-    );
-  }
-  const parentBox = resolveNewParent(tent, newParentId);
-  if (parentBox) {
-    if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
-    assertContentMutable(parentBox, "used as move parent");
-    assertNotOperationalPath2(parentBox.path);
-  }
-  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : void 0;
-  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
-    throw new Error(
-      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
-    );
-  }
-  const newParentPath = parentBox ? parentBox.path : "";
-  if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
-    throw new Error("Cannot move a box into its own subtree.");
-  }
-  if (position2.mode !== "inside") {
-    const sibling = tent.byId.get(position2.siblingId);
-    if (!sibling) throw new Error(`Sibling not found: ${position2.siblingId}.`);
-    const siblingParentId = sibling.parent ? sibling.parent.id : null;
-    const destParentId = parentBox ? parentBox.id : null;
-    if (siblingParentId !== destParentId) {
-      throw new Error("before/after sibling must be under the destination parent.");
-    }
-    if (sibling.id === moved.id) {
-      throw new Error("Cannot position a box relative to itself.");
-    }
-  }
-  const oldPath = moved.path;
-  const movedName = moved.name;
-  const destination = join(newParentPath, movedName);
-  const parentChanged = dirName(oldPath) !== newParentPath;
-  if (parentChanged) {
-    if (await env.fs.exists(destination)) {
-      throw new Error(`Move target already exists: ${destination}.`);
-    }
-    const destSiblings = parentBox ? parentBox.children : tent.roots;
-    if (destSiblings.some((box) => box.id !== moved.id && box.name === movedName)) {
-      throw new Error(`A sibling concept already uses the name: ${movedName}.`);
-    }
-  }
-  const parentKey = parentBox ? parentBox.id : ROOT_KEY;
-  const oldParentKey = moved.parent ? moved.parent.id : ROOT_KEY;
-  const siblings = (parentBox ? parentBox.children : tent.roots).filter((b) => b.id !== moved.id).map((b) => b.id);
-  let insertAt;
-  if (position2.mode === "inside") {
-    insertAt = siblings.length;
-  } else {
-    const idx = siblings.indexOf(position2.siblingId);
-    insertAt = idx === -1 ? siblings.length : position2.mode === "before" ? idx : idx + 1;
-  }
-  siblings.splice(insertAt, 0, moved.id);
-  if (!parentChanged) {
-    const order = await loadOrder(env.fs);
-    order[parentKey] = siblings;
-    await saveOrder(env.fs, order);
-    const identityMap = {};
-    for (const box of collectSubtree3(moved)) {
-      identityMap[box.path] = box.path;
-      identityMap[boxNotePath(box.path).replace(/\.md$/i, "")] = boxNotePath(box.path).replace(
-        /\.md$/i,
-        ""
-      );
-    }
-    return {
-      id: moved.id,
-      oldPath,
-      path: oldPath,
-      pathMap: identityMap,
-      rewrittenNotes: []
-    };
-  }
-  const subtree2 = collectSubtree3(moved);
-  const pathMap = /* @__PURE__ */ new Map();
-  for (const box of subtree2) {
-    const rel = relativePath3(oldPath, box.path);
-    const nextBoxPath = rel ? join(destination, rel) : destination;
-    pathMap.set(box.path, nextBoxPath);
-    pathMap.set(
-      boxNotePath(box.path).replace(/\.md$/i, ""),
-      boxNotePath(nextBoxPath).replace(/\.md$/i, "")
-    );
-  }
-  const conceptIndex = buildConceptIndex(tent.byPath.values());
-  const rewriteOpts = {
-    renameBoxId: moved.id,
-    conceptIndex
-  };
-  const plannedWrites = [];
-  const rewrittenNotes = [];
-  for (const box of tent.byPath.values()) {
-    const notePath = boxNotePath(box.path);
-    if (!await env.fs.exists(notePath)) continue;
-    const raw = await env.fs.readFile(notePath);
-    const { data, body, keyOrder } = parseFrontmatter(raw);
-    if (typeof data.id === "string" && data.id !== box.id) {
-      throw new Error(`Refuse move: frontmatter id drift on ${box.path}.`);
-    }
-    const afterBoxPath = pathMap.get(box.path) ?? box.path;
-    const restyleFromNotePath = boxNotePath(afterBoxPath);
-    const rewritten = rewriteConceptLinks(body, notePath, pathMap, movedName, movedName, {
-      ...rewriteOpts,
-      restyleFromNotePath
-    });
-    if (!rewritten.changed) continue;
-    plannedWrites.push({
-      writePath: restyleFromNotePath,
-      originalPath: notePath,
-      originalContent: raw,
-      newContent: serializeFrontmatter(data, rewritten.body, keyOrder)
-    });
-    rewrittenNotes.push(afterBoxPath);
-  }
-  const orderBefore = await loadOrder(env.fs);
-  const orderSnapshot = JSON.stringify(orderBefore);
-  await env.fs.move(oldPath, destination);
-  const completedWrites = [];
-  try {
-    for (const write of plannedWrites) {
-      await env.fs.writeFile(write.writePath, write.newContent);
-      completedWrites.push(write);
-    }
-    const order = JSON.parse(orderSnapshot);
-    if (order[oldParentKey]) {
-      order[oldParentKey] = order[oldParentKey].filter((sid) => sid !== moved.id);
-    }
-    order[parentKey] = siblings;
-    await saveOrder(env.fs, order);
-  } catch (error) {
-    await rollbackMove(env.fs, {
-      oldPath,
-      newPath: destination,
-      completedWrites,
-      orderSnapshot
-    });
-    throw error;
-  }
-  const pathMapRecord = {};
-  for (const [from, to] of pathMap) pathMapRecord[from] = to;
-  return {
-    id: moved.id,
-    oldPath,
-    path: destination,
-    pathMap: pathMapRecord,
-    rewrittenNotes: rewrittenNotes.sort()
-  };
-}
-async function rollbackMove(fs21, args) {
-  const { oldPath, newPath, completedWrites, orderSnapshot } = args;
-  const restoreErrors = [];
-  for (let i = completedWrites.length - 1; i >= 0; i--) {
-    const write = completedWrites[i];
-    try {
-      await fs21.writeFile(write.writePath, write.originalContent);
-    } catch (err) {
-      restoreErrors.push(
-        `note ${write.writePath}: ${err instanceof Error ? err.message : String(err)}`
-      );
-    }
-  }
-  try {
-    if (await fs21.exists(newPath) && !await fs21.exists(oldPath)) {
-      await fs21.move(newPath, oldPath);
-    }
-  } catch (err) {
-    restoreErrors.push(`tree: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  try {
-    await saveOrder(fs21, JSON.parse(orderSnapshot));
-  } catch (err) {
-    restoreErrors.push(`order: ${err instanceof Error ? err.message : String(err)}`);
-  }
-  if (restoreErrors.length > 0) {
-    throw new Error(
-      `Move failed after filesystem move, and rollback also failed: ${restoreErrors.join("; ")}`
-    );
-  }
-}
-function resolveNewParent(tent, newParentId) {
-  if (newParentId === null || newParentId === void 0 || newParentId === "") {
-    return null;
-  }
-  const parent = tent.byId.get(newParentId.trim());
-  if (!parent) throw new Error(`Target parent not found: ${newParentId}.`);
-  return parent;
-}
-function assertNotOperationalPath2(path22) {
-  if (isOperationalPath(path22) || path22 === "temp" || path22.startsWith("temp/")) {
-    throw new Error("temp/ and other system pipelines cannot be moved as concepts.");
-  }
-  const top = path22.split("/")[0] ?? "";
-  if (top === "attachments" || top === ".tent") {
-    throw new Error("System directories cannot be moved as concepts.");
-  }
-}
-function collectSubtree3(box, out = []) {
-  out.push(box);
-  for (const child of box.children) collectSubtree3(child, out);
-  return out;
-}
-function relativePath3(root, child) {
-  if (child === root) return "";
-  return child.slice(root.length + 1);
-}
-
-// src/core/ops.ts
-async function dispatch(env, claimId, role, promptOrOptions) {
-  return withMutation2(env.fs, async () => dispatchUnlocked(env, claimId, role, promptOrOptions));
-}
-async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
-  const tent = await loadTent(env.fs);
-  const options = typeof promptOrOptions === "string" ? { userPrompt: promptOrOptions } : promptOrOptions;
-  const assigneeKind = options.assigneeKind === "agentProfile" ? "agentProfile" : "role";
-  const userPrompt = options.userPrompt?.trim() || "";
-  if (!userPrompt) throw new Error("Dispatch requires a user prompt.");
-  let assigneeLabel;
-  if (assigneeKind === "agentProfile") {
-    const profileId = options.profileId?.trim() || "";
-    if (!profileId) {
-      throw new Error("Dispatch with assigneeKind=agentProfile requires profileId.");
-    }
-    if (role?.trim() && role.trim() !== profileId) {
-      throw new Error(
-        "Dispatch with assigneeKind=agentProfile must not pass a different role; use profileId as the assignee label."
-      );
-    }
-    assigneeLabel = assertProfileId(profileId);
-  } else {
-    const roleName = role?.trim() || "";
-    if (!roleName) throw new Error("Dispatch with assigneeKind=role requires role.");
-    assigneeLabel = assertRoleName(roleName);
-  }
-  const claim = resolveDispatchClaim(tent, claimId, env.tentName);
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join("temp", assigneeLabel);
-  const createdRootExisted = await env.fs.exists(createdRoot);
-  const asSub = options.asSub === true;
-  const dispatcher = (options.dispatchedBy || "").trim();
-  const subUnderDispatcher = asSub && Boolean(dispatcher) && dispatcher !== "user" && dispatcher !== assigneeLabel;
-  if (claim.root) {
-    const blocker = findAnyActiveTask(tasks);
-    if (blocker) {
-      const claimLabel = blocker.claims.includes("root") ? "root" : blocker.claims[0] || "unknown";
-      throw new Error(
-        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
-      );
-    }
-  } else {
-    const structural = structuralClaimGate(claim.box);
-    if (!structural.ok) {
-      throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
-    }
-    const claimable = canClaim(claim.box, {
-      tent,
-      tasks,
-      ...subUnderDispatcher ? { allowAncestorClaimedBy: dispatcher } : {}
-    });
-    if (!claimable.ok) {
-      throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
-    }
-  }
-  try {
-    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
-    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
-    const manifest = buildManifest(tent, input);
-    const yaml = manifestToYaml(manifest);
-    const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
-    let manifestPath;
-    let initPath;
-    if (assigneeKind === "agentProfile") {
-      manifestPath = agentProfileManifestPath(assigneeLabel, taskId);
-      await ensureDir3(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
-    } else {
-      manifestPath = join("temp", assigneeLabel, "manifest.yml");
-      await ensureDir3(env.fs, dirName(manifestPath));
-      await env.fs.writeFile(manifestPath, yaml);
-      const registry = await loadRolesRegistry(env.fs);
-      const roleDefinition = registry.roles.find((item) => item.name === assigneeLabel) ?? { name: assigneeLabel };
-      initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
-    }
-    const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
-    const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
-      role: assigneeLabel,
-      claims: taskClaims,
-      manifestPath,
-      userPrompt,
-      workspace: options.workspace,
-      dispatchedBy: options.dispatchedBy,
-      asSub: options.asSub === true,
-      deliveryPolicy: options.deliveryPolicy,
-      assigneeKind,
-      id: taskId,
-      tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
-    });
-    const relayPrompt = relayPromptForTask(
-      {
-        path: taskPath,
-        role: assigneeLabel,
-        claims: taskClaims.map((taskClaim2) => taskClaim2.id),
-        manifest: manifestPath,
-        status: "pending",
-        state: "queued",
-        assigneeKind,
-        id: taskId
-      },
-      env.tentRoot || env.tentName
-    );
-    return {
-      manifestPath,
-      manifestYaml: yaml,
-      initPath,
-      taskPath,
-      relayPrompt,
-      assigneeKind,
-      assignee: assigneeLabel
-    };
-  } catch (error) {
-    if (!createdRootExisted && await env.fs.exists(createdRoot)) {
-      await env.fs.remove(createdRoot);
-    }
-    throw error;
-  }
-}
-function assertProfileId(profileId) {
-  const id = profileId.trim();
-  if (!id) throw new Error("profileId cannot be empty.");
-  if (/[\/\\\r\n]/.test(id)) {
-    throw new Error("profileId cannot contain path separators or newlines.");
-  }
-  return id;
-}
-function resolveDispatchClaim(tent, claimId, tentName) {
-  const id = claimId.trim();
-  if (id === "." || id === "root" || id === tentName) {
-    throw new Error("Cannot dispatch the whole Tent directly; dispatch a specific box (boxId cannot be ., root, or the Tent name).");
-  }
-  const box = requireBoxById2(tent, id);
-  return { root: false, id: box.id, name: box.name, box };
-}
-async function createBox(env, input) {
-  return withMutation2(env.fs, async () => createBoxUnlocked(env, input));
-}
-async function createBoxUnlocked(env, input) {
-  assertNotTempPath(input.parentPath);
-  const name = validateBoxName(input.name);
-  const tent = await loadTent(env.fs);
-  if (!typeExists(input.type, tent.typeRegistry)) throw new Error(`Unknown type: ${input.type}.`);
-  if (input.parentPath) {
-    const parent2 = tent.byPath.get(input.parentPath);
-    if (!parent2 || !isUsableBox(parent2)) throw new Error("Target parent box is invalid or archived.");
-    assertContentMutable(parent2, "used as create parent");
-  }
-  const existing = new Set(tent.byId.keys());
-  const id = makeUniqueConceptId(existing, env.rand);
-  const path22 = join(input.parentPath, name);
-  assertNotTempPath(path22);
-  await ensureDir3(env.fs, path22);
-  const fm = { id, type: input.type };
-  const content3 = serializeFrontmatter(fm, `
-# ${name}
-`, BOX_FRONTMATTER_KEY_ORDER);
-  await env.fs.writeFile(boxNotePath(path22), content3);
-  const parent = input.parentPath ? tent.byPath.get(input.parentPath) : void 0;
-  const parentKey = parent ? parent.id : ROOT_KEY;
-  try {
-    const order = await loadOrder(env.fs);
-    const siblings = order[parentKey] ?? [];
-    order[parentKey] = siblings.includes(id) ? siblings : [...siblings, id];
-    await saveOrder(env.fs, order);
-  } catch (error) {
-    await env.fs.remove(path22);
-    throw error;
-  }
-  return id;
-}
-async function patchBox(env, boxPath, patch, loadedTent) {
-  await withMutation2(env.fs, async () => patchBoxUnlocked(env, boxPath, patch, loadedTent));
-}
-async function patchBoxUnlocked(env, boxPath, patch, loadedTent) {
-  const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  const reserved = [
-    "id",
-    "owner",
-    "mode",
-    "archived",
-    "readable",
-    "writable",
-    "status",
-    "relations",
-    // Output provenance: only formal task.accept bind path may write deliveryId.
-    "deliveryId"
-  ].filter((key) => key in patch);
-  if (reserved.length > 0) {
-    throw new Error(
-      `Reserved or retired fields cannot be edited here: ${reserved.join(", ")}. Use docs.setMode for archive; collaboration status lives on Task projection; relations use relation.* RPCs; Output deliveryId binds via task.accept.`
-    );
-  }
-  if (box.archived || box.mode === "archived") {
-    throw new Error("Archived boxes can only be restored or permanently deleted.");
-  }
-  if (box.invalid) {
-    const keys = Object.keys(patch);
-    if (box.id !== box.invalidRootId || keys.some((key) => key !== "type")) {
-      throw new Error("Invalid subtrees can only be repaired by changing the type at the invalid root.");
-    }
-  }
-  if ("type" in patch) {
-    if (typeof patch.type !== "string" || !patch.type) throw new Error("Primary type cannot be cleared.");
-    if (!typeExists(patch.type, tent.typeRegistry)) throw new Error(`Unknown type: ${patch.type}.`);
-  }
-  const tagsTouched = "tags" in patch;
-  const previousTags = box.tags.slice();
-  if (tagsTouched) {
-    patch = { ...patch, tags: normalizeTagPatch(patch.tags) };
-  }
-  const boxFile = boxNotePath(boxPath);
-  const { data, body, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
-  if (tagsTouched) {
-    const nextTags = Array.isArray(patch.tags) ? patch.tags : [];
-    await syncTagRegistryAfterBoxTagsChangeUnlocked(env.fs, previousTags, nextTags);
-  }
-}
-async function patchBody(env, boxPath, newBody, loadedTent) {
-  await withMutation2(env.fs, async () => patchBodyUnlocked(env, boxPath, newBody, loadedTent));
-}
-async function patchBodyUnlocked(env, boxPath, newBody, loadedTent) {
-  const tent = loadedTent ?? await loadTent(env.fs);
-  const box = tent.byPath.get(boxPath);
-  if (!box) throw new Error(`Box not found: ${boxPath}.`);
-  if (!isUsableBox(box)) throw new Error("Invalid or archived boxes cannot have their body edited.");
-  assertContentMutable(box, "body-edited");
-  const boxFile = boxNotePath(boxPath);
-  const { data, keyOrder } = parseFrontmatter(await env.fs.readFile(boxFile));
-  await env.fs.writeFile(boxFile, serializeFrontmatter(data, newBody, keyOrder));
-}
-async function setNodeMode(env, boxId, mode) {
-  await withMutation2(env.fs, async () => setNodeModeUnlocked(env, boxId, mode));
-}
-async function setNodeModeUnlocked(env, boxId, mode) {
-  if (mode === "read-only") {
-    throw new Error(
-      'read-only mode is retired in V0.2; use "editable" or "archived" (archive freezes the subtree).'
-    );
-  }
-  const next = parseNodeMode(mode);
-  if (!next || next !== "editable" && next !== "archived") {
-    throw new Error('mode must be "editable" or "archived".');
-  }
-  const tent = await loadTent(env.fs);
-  const box = requireBoxById2(tent, boxId);
-  if (box.invalid) throw new Error("Invalid boxes cannot change mode.");
-  if (box.archived && !isExplicitArchiveRoot(box)) {
-    if (next === "archived") {
-      throw new Error("Invalid or already archived boxes cannot be archived.");
-    }
-    throw new Error("Only an explicit archive root can leave archived mode; restore the archive root first.");
-  }
-  const current = isExplicitArchiveRoot(box) ? "archived" : "editable";
-  if (current === next) {
-    if (next === "editable") {
-      await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
-    } else {
-      await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
-    }
-    return;
-  }
-  if (next === "archived" || current !== "archived") {
-    const tasks = await loadTaskEnvelopes(env.fs);
-    if (findActiveOccupation(tent, box, tasks)) {
-      throw new Error(
-        next === "archived" ? "Ranges with an active task cannot be archived; complete or interrupt the task first." : "Ranges with an active task cannot change mode; complete or interrupt the task first."
-      );
-    }
-  }
-  if (next === "archived") {
-    await patchFrontmatter(env.fs, box, { mode: "archived", archived: void 0 });
-    return;
-  }
-  await patchFrontmatter(env.fs, box, { mode: void 0, archived: void 0 });
-}
-async function patchFrontmatter(fs21, box, patch) {
-  const boxFile = boxNotePath(box.path);
-  const { data, body, keyOrder } = parseFrontmatter(await fs21.readFile(boxFile));
-  for (const [k, v] of Object.entries(patch)) {
-    if (v === void 0) delete data[k];
-    else data[k] = v;
-  }
-  await fs21.writeFile(boxFile, serializeFrontmatter(data, body, boxKeyOrder3(keyOrder)));
-}
-async function ensureDir3(fs21, path22) {
-  if (path22 && !await fs21.exists(path22)) await fs21.mkdir(path22);
-}
-function normalizeTagPatch(value) {
-  if (value === void 0) return void 0;
-  if (!Array.isArray(value)) throw new Error("Tags must be a string array.");
-  const tags = [];
-  for (const item of value) {
-    if (typeof item !== "string") throw new Error("Tags must be a string array.");
-    const tag = normalizeTagName(item);
-    if (!tags.includes(tag)) tags.push(tag);
-  }
-  return tags.length > 0 ? tags.sort((a, b) => a.localeCompare(b)) : void 0;
-}
-function boxKeyOrder3(existing) {
-  return [
-    ...BOX_FRONTMATTER_KEY_ORDER,
-    ...existing.filter((key) => !BOX_FRONTMATTER_KEY_ORDER.includes(key))
-  ];
-}
-function assertNotTempPath(path22) {
-  if (path22 === "temp" || path22.startsWith("temp/")) {
-    throw new Error("temp/ is a system pipeline; typed boxes cannot be created or moved there.");
-  }
-}
-function assertRoleName(role) {
-  const name = role.trim();
-  if (!name) throw new Error("Role name cannot be empty.");
-  if (/[\/\\\r\n]/.test(name)) throw new Error("Role name cannot contain path separators or newlines.");
-  assertRoleNameAvailable(name);
-  return name;
-}
-function roleManifestClaims(tent, role, current, tasks) {
-  const claims = /* @__PURE__ */ new Map();
-  for (const task of tasks) {
-    if (taskAssigneeKind(task) !== "role") continue;
-    if (task.role !== role) continue;
-    if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      const box = tent.byId.get(claimId);
-      if (box) claims.set(box.id, box);
-    }
-  }
-  claims.set(current.id, current);
-  return [...claims.values()];
-}
-function requireBoxById2(tent, boxId) {
-  if (tent.duplicateIds.has(boxId)) {
-    throw new Error(`Duplicate box id '${boxId}' found; repair or fork the duplicate boxes before using this id.`);
-  }
-  const box = tent.byId.get(boxId);
-  if (!box) throw new Error(`Box not found: ${boxId}.`);
-  return box;
-}
-async function withMutation2(fs21, action) {
-  return withTentMutation(fs21, action);
-}
-
-// src/core/typeManagement.ts
-async function createType(fs21, name, definition2) {
-  await withTentMutation(fs21, async () => {
-    assertTypeName(name);
-    if (isCanonicalPrimary(name) || CANONICAL_PRIMARY_TYPES.includes(name)) {
-      throw new Error(`Built-in primary types cannot be created: ${name}.`);
-    }
-    if (BUILTIN_SECONDARY_TYPES.includes(name)) {
-      throw new Error(`Built-in secondary types already exist: ${name}.`);
-    }
-    if (definition2.tier !== "modifier") {
-      throw new Error("V0.2 only allows creating custom secondary (modifier) types; primaries are fixed.");
-    }
-    const registry = await loadTypeRegistry(fs21);
-    if (registry[name]) throw new Error(`Type already exists: ${name}.`);
-    registry[name] = { tier: "modifier" };
-    await writeTypeRegistryUnlocked(fs21, registry);
-  });
-}
-async function createSecondaryType(fs21, name, _definition) {
-  void _definition;
-  await createType(fs21, name, { tier: "modifier" });
-}
-async function inspectTypeDeletion(fs21, level, name) {
-  void level;
-  const tent = await loadTent(fs21);
-  const registry = tent.typeRegistry;
-  const boxes = [...tent.byId.values()];
-  const referenced = boxes.filter((box) => {
-    const { base, modifier } = splitType(box.type);
-    return box.type === name || base === name || modifier === name;
-  });
-  const tasks = await loadTaskEnvelopes(fs21);
-  const ownerMap = /* @__PURE__ */ new Map();
-  const relatedIds = /* @__PURE__ */ new Set();
-  for (const reference of referenced) {
-    for (const box of relatedBoxes(reference, boxes)) {
-      relatedIds.add(box.id);
-    }
-  }
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        if (referenced.length > 0) {
-          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
-        }
-        continue;
-      }
-      if (!relatedIds.has(claimId)) continue;
-      const box = tent.byId.get(claimId);
-      if (!box) continue;
-      ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
-    }
-  }
-  const builtIn = name in DEFAULT_TYPE_REGISTRY || isCanonicalPrimary(name) || BUILTIN_SECONDARY_TYPES.includes(name);
-  return {
-    level: "type",
-    name,
-    builtIn,
-    exists: name in registry,
-    references: referenced.map(({ id, path: path22, name: boxName }) => ({ id, path: path22, name: boxName })),
-    activeOwners: [...ownerMap.values()]
-  };
-}
-async function deleteCustomType(fs21, level, name, confirmation) {
-  return withTentMutation(fs21, async () => {
-    if (confirmation !== name) throw new Error(`Confirmation mismatch; enter the type name ${name}.`);
-    const inspection = await inspectTypeDeletion(fs21, level, name);
-    if (!inspection.exists) throw new Error(`Type does not exist: ${name}.`);
-    if (inspection.builtIn) throw new Error(`Built-in types cannot be deleted: ${name}.`);
-    if (inspection.references.length > 0) {
-      throw new Error(
-        `Type still in use by ${inspection.references.length} node(s); retype them first: ${inspection.references.map((x) => x.path).join(", ")}.`
-      );
-    }
-    if (inspection.activeOwners.length > 0) {
-      throw new Error(
-        `Referenced range still has an active task; cancel or fail first: ${inspection.activeOwners.map((x) => x.path).join(", ")}.`
-      );
-    }
-    const registry = await loadTypeRegistry(fs21);
-    delete registry[name];
-    await writeTypeRegistryUnlocked(fs21, registry);
-    return inspection;
-  });
-}
-async function writeTypeRegistryUnlocked(fs21, registry) {
-  const slim = {};
-  for (const [name, def] of Object.entries(registry)) {
-    slim[name] = { tier: def.tier === "modifier" ? "modifier" : "base" };
-  }
-  await fs21.writeFile(TYPE_REGISTRY_PATH, JSON.stringify(slim, null, 2) + "\n");
-}
-function assertTypeName(name) {
-  if (!name.trim()) throw new Error("Type name cannot be empty.");
-  if (name === "temp") throw new Error("temp/ is a system pipeline and cannot be used as a type.");
-  if (name.includes("-")) throw new Error("Type names cannot contain '-' (compound separator).");
-}
-function relatedBoxes(reference, boxes) {
-  return boxes.filter(
-    (box) => box.path === reference.path || box.path.startsWith(reference.path + "/") || reference.path.startsWith(box.path + "/")
-  );
-}
-
-// src/core/context-card.ts
-var CONTEXT_CARD_TEMPLATE_VERSION = "v1";
-function buildContextCard(ref, options) {
-  const kind = ref.kind;
-  const id = ref.id.trim();
-  if (!id) throw new Error("ContextRef.id cannot be empty.");
-  if (!kind) throw new Error("ContextRef.kind is required.");
-  const label = options?.label?.trim() || (ref.path ? `${kind}:${ref.path}` : `${kind}:${id}`);
-  const prompt = formatContextCardPrompt(ref, options);
-  return {
-    contextRef: {
-      kind,
-      id,
-      path: ref.path,
-      fragment: ref.fragment
-    },
-    prompt,
-    label,
-    templateVersion: CONTEXT_CARD_TEMPLATE_VERSION
-  };
-}
-function formatContextCardPrompt(ref, hints) {
-  const opts = typeof hints === "string" ? { tentRootHint: hints } : hints ?? {};
-  const systemRoot = opts.systemRoot?.trim() || opts.tentRootHint?.trim() || "";
-  const workspaceRoot = opts.workspaceRoot?.trim() || "";
-  const lines = [
-    "Tent contextCard v1",
-    `contextRef: ${ref.kind}/${ref.id}`
-  ];
-  if (ref.path) lines.push(`path: ${ref.path}`);
-  if (ref.fragment) lines.push(`fragment: ${ref.fragment}`);
-  if (workspaceRoot) lines.push(`workspaceRoot: ${workspaceRoot}`);
-  if (systemRoot) {
-    lines.push(`systemRoot: ${systemRoot}`);
-    lines.push(`tentRoot: ${systemRoot}`);
-  }
-  if (ref.path) {
-    const rel = ref.path.replace(/\\/g, "/").replace(/^\.\/+/, "");
-    if (rel && !rel.startsWith(".tent/")) {
-      lines.push(`fileRead: .tent/${rel} (relative to workspaceRoot) or \${systemRoot}/${rel}`);
-    }
-  }
-  lines.push(
-    "CLI: run tent from workspaceRoot; taskPath is relative to systemRoot (.tent)."
-  );
-  lines.push("Do not invent missing content; fetch by id before answering.");
-  lines.push("Do not resolve operational files as <workspaceRoot>/temp \u2014 use .tent/temp.");
-  return lines.join("\n");
-}
-function taskContextCard(taskId, opts) {
-  return buildContextCard({ kind: "task", id: taskId, path: opts?.path }, opts);
-}
-
-// src/markdown/attachments.ts
-import { createHash } from "node:crypto";
-import * as nodePath from "node:path";
-var MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
-function sanitizeAttachmentFileName(fileName) {
-  const source = fileName.normalize("NFKC");
-  if (!source.trim()) throw new Error("Attachment file name is required");
-  if (source.includes("/") || source.includes("\\") || source === "." || source === "..") {
-    throw new Error("Attachment file name must be a single path segment");
-  }
-  let clean = source.replace(/[<>:"|?*\x00-\x1f]/g, "_").replace(/[. ]+$/g, "");
-  if (!clean || clean === "." || clean === "..") clean = "file";
-  if (clean.length > 120) {
-    const ext2 = nodePath.posix.extname(clean).slice(0, 20);
-    const stem2 = clean.slice(0, Math.max(1, 120 - ext2.length));
-    clean = `${stem2}${ext2}`;
-  }
-  const ext = nodePath.posix.extname(clean);
-  const stem = ext ? clean.slice(0, -ext.length) : clean;
-  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(stem) || /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean)) {
-    clean = `file-${clean}`;
-  }
-  return clean;
-}
-function decodeBase64Strict(b64) {
-  const compact = b64.replace(/\s+/g, "");
-  if (!compact) throw new Error("Invalid base64: empty payload");
-  if (!/^[A-Za-z0-9+/]+={0,2}$/.test(compact)) {
-    throw new Error("Invalid base64: non-alphabet characters");
-  }
-  if (compact.length % 4 !== 0) {
-    throw new Error("Invalid base64: length must be a multiple of 4");
-  }
-  let buf;
-  try {
-    buf = Buffer.from(compact, "base64");
-  } catch {
-    throw new Error("Invalid base64: decode failed");
-  }
-  const reencoded = buf.toString("base64");
-  if (reencoded !== compact) {
-    throw new Error("Invalid base64: strict decode mismatch");
-  }
-  return new Uint8Array(buf.buffer, buf.byteOffset, buf.byteLength);
-}
-function assertAttachmentSize(byteLength) {
-  if (byteLength < 0 || !Number.isFinite(byteLength)) {
-    throw new Error("Invalid attachment size");
-  }
-  if (byteLength > MAX_ATTACHMENT_BYTES) {
-    throw new Error(
-      `Attachment exceeds max size of ${MAX_ATTACHMENT_BYTES} bytes (${byteLength} bytes)`
-    );
-  }
-}
-function contentId(bytes) {
-  return createHash("sha256").update(Buffer.from(bytes)).digest("hex").slice(0, 12);
-}
-function attachmentRelativePath(conceptId, safeName, bytes) {
-  const id = contentId(bytes);
-  const ext = nodePath.posix.extname(safeName);
-  const base = nodePath.posix.basename(safeName, ext) || "file";
-  return `${ATTACHMENTS_DIR}/${conceptId}/${base}-${id}${ext}`;
-}
-function bytesEqual(a, b) {
-  if (a.byteLength !== b.byteLength) return false;
-  for (let i = 0; i < a.byteLength; i++) {
-    if (a[i] !== b[i]) return false;
-  }
-  return true;
-}
-async function storeAttachmentBytes(fs21, conceptId, fileName, bytes, sourceNotePath) {
-  if (!conceptId.trim()) throw new Error("Concept id is required");
-  const safe = sanitizeAttachmentFileName(fileName);
-  assertAttachmentSize(bytes.byteLength);
-  const rel = attachmentRelativePath(conceptId, safe, bytes);
-  const normalized = rel.replace(/\\/g, "/");
-  if (!normalized.startsWith(`${ATTACHMENTS_DIR}/${conceptId}/`) || normalized.split("/").some((p) => p === ".." || p === "")) {
-    throw new Error(`Attachment path rejected: ${rel}`);
-  }
-  if (await fs21.exists(rel)) {
-    const existing = await fs21.readBinary(rel);
-    if (!bytesEqual(existing, bytes)) {
-      throw new Error(`Attachment content-address collision at ${rel}`);
-    }
-    return attachmentResult(rel, safe, sourceNotePath);
-  }
-  await fs21.writeBinary(rel, bytes);
-  return attachmentResult(rel, safe, sourceNotePath);
-}
-function markdownAttachmentDestination(destination) {
-  if (!/[\s<>()]/.test(destination)) return destination;
-  return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
-}
-function attachmentResult(relativePath4, label, sourceNotePath) {
-  const target = sourceNotePath ? nodePath.posix.relative(nodePath.posix.dirname(sourceNotePath.replace(/\\/g, "/")), relativePath4) : relativePath4;
-  return {
-    relativePath: relativePath4,
-    markdown: `![](${markdownAttachmentDestination(target)})`,
-    artifactRef: { kind: "path", target: relativePath4, label }
-  };
-}
-
 // src/adapters/acp/image-prompt.ts
-import * as nodePath2 from "node:path";
-import { pathToFileURL } from "node:url";
 var MAX_ACP_IMAGE_BYTES = MAX_ATTACHMENT_BYTES;
 var MAX_ACP_IMAGES_PER_PROMPT = 8;
 var MAX_ACP_IMAGES_TOTAL_BYTES = MAX_ATTACHMENT_BYTES;
@@ -11831,9 +11574,9 @@ function extractMarkdownImageRefs(body, options) {
     if (isExternalOrDataUrl(rawUrl)) return;
     const resolved = resolveLocalImagePath(rawUrl, fromNotePath);
     if (!resolved) return;
-    const key = resolved.toLowerCase();
-    if (seen.has(key)) return;
-    seen.add(key);
+    const key2 = resolved.toLowerCase();
+    if (seen.has(key2)) return;
+    seen.add(key2);
     const alt = typeof img.alt === "string" && img.alt.trim() ? img.alt.trim() : void 0;
     const markdownPointer = alt ? `![${alt}](${rawUrl})` : `![](${rawUrl})`;
     out.push({
@@ -12123,9 +11866,9 @@ async function collectBootstrapImageRefsFromTask(input) {
   const seen = /* @__PURE__ */ new Set();
   const pushAll = (refs) => {
     for (const r of refs) {
-      const key = r.relativePath.toLowerCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
+      const key2 = r.relativePath.toLowerCase();
+      if (seen.has(key2)) continue;
+      seen.add(key2);
       out.push(r);
     }
   };
@@ -12250,6 +11993,38 @@ function normalizeRole(role) {
   if (!normalized) throw new Error("Proposal role cannot be empty; set TENT_ROLE before running tent propose.");
   if (normalized.includes("..") || /[\/\\\r\n]/.test(normalized)) throw new Error(`Invalid proposal role: ${role}`);
   return normalized;
+}
+
+// src/service/mutation-bus.ts
+var MutationBus = class {
+  constructor() {
+    this.tails = /* @__PURE__ */ new Map();
+  }
+  async run(workspaceId, action) {
+    const prev = this.tails.get(workspaceId) ?? Promise.resolve();
+    let release;
+    const gate = new Promise((resolve14) => {
+      release = resolve14;
+    });
+    const chain = prev.catch(() => void 0).then(() => gate);
+    this.tails.set(workspaceId, chain);
+    await prev.catch(() => void 0);
+    try {
+      return await action();
+    } finally {
+      release();
+      if (this.tails.get(workspaceId) === chain) {
+        this.tails.delete(workspaceId);
+      }
+    }
+  }
+};
+
+// src/service/task-lifecycle-flight.ts
+var queue = new MutationBus();
+var key = (ws, path22) => `${ws}\0${path22}`;
+function runTaskLifecycle(workspaceId, taskPath, action) {
+  return queue.run(key(workspaceId, taskPath), action);
 }
 
 // src/core/retention.ts
@@ -12733,8 +12508,8 @@ async function updateWorkspaceSettings(fs21, patch) {
     }
     const before = await loadWorkspaceSettings(fs21);
     const nextRaw = { ...before };
-    for (const [key, value] of Object.entries(patch)) {
-      if (key === "defaultDeliveryPolicy") {
+    for (const [key2, value] of Object.entries(patch)) {
+      if (key2 === "defaultDeliveryPolicy") {
         if (value === void 0) continue;
         if (!isDeliveryPolicyValue(value)) {
           throw new WorkspaceSettingsError(
@@ -12746,7 +12521,7 @@ async function updateWorkspaceSettings(fs21, patch) {
         continue;
       }
       if (value === void 0) continue;
-      nextRaw[key] = value;
+      nextRaw[key2] = value;
     }
     const next = normalizeWorkspaceSettings(nextRaw);
     const changed = !settingsEqual(before, next);
@@ -12766,12 +12541,12 @@ var WorkspaceSettingsError = class extends Error {
 async function writeSettingsUnlocked(fs21, settings) {
   const known = ["defaultDeliveryPolicy"];
   const ordered = {};
-  for (const key of known) {
-    if (key in settings) ordered[key] = settings[key];
+  for (const key2 of known) {
+    if (key2 in settings) ordered[key2] = settings[key2];
   }
   const rest = Object.keys(settings).filter((k) => !known.includes(k)).sort((a, b) => a.localeCompare(b));
-  for (const key of rest) {
-    ordered[key] = settings[key];
+  for (const key2 of rest) {
+    ordered[key2] = settings[key2];
   }
   await fs21.writeFile(WORKSPACE_SETTINGS_PATH, JSON.stringify(ordered, null, 2) + "\n");
 }
@@ -12785,8 +12560,8 @@ function sortKeysDeep(value) {
   if (Array.isArray(value)) return value.map(sortKeysDeep);
   if (!isRecord5(value)) return value;
   const out = {};
-  for (const key of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
-    out[key] = sortKeysDeep(value[key]);
+  for (const key2 of Object.keys(value).sort((a, b) => a.localeCompare(b))) {
+    out[key2] = sortKeysDeep(value[key2]);
   }
   return out;
 }
@@ -13664,8 +13439,8 @@ function isSessionId(id) {
   return id.startsWith(SESSION_ID_PREFIX) && id.length > SESSION_ID_PREFIX.length;
 }
 function recordExternalKey(rec) {
-  const key = rec.externalKey?.trim();
-  return key || void 0;
+  const key2 = rec.externalKey?.trim();
+  return key2 || void 0;
 }
 
 // src/runtime/session-registry.ts
@@ -13785,7 +13560,7 @@ function parseSessionRecord(data, sessionId) {
       return null;
     }
   }
-  for (const key of [
+  for (const key2 of [
     "roleName",
     "resumeToken",
     "workspace",
@@ -13793,7 +13568,7 @@ function parseSessionRecord(data, sessionId) {
     "lastError",
     "externalKey"
   ]) {
-    if (key in data && data[key] !== void 0 && typeof data[key] !== "string") {
+    if (key2 in data && data[key2] !== void 0 && typeof data[key2] !== "string") {
       return null;
     }
   }
@@ -13809,6 +13584,15 @@ function parseSessionRecord(data, sessionId) {
   }
   if ("contextRestored" in data && data.contextRestored !== void 0) {
     if (typeof data.contextRestored !== "boolean") return null;
+  }
+  for (const key2 of [
+    "restoreReason",
+    "replacedSessionId",
+    "replacedBySessionId"
+  ]) {
+    if (key2 in data && data[key2] !== void 0 && typeof data[key2] !== "string") {
+      return null;
+    }
   }
   if ("runtimeWorkspace" in data && data.runtimeWorkspace !== void 0) {
     if (!isPlainObject2(data.runtimeWorkspace)) return null;
@@ -13962,36 +13746,285 @@ var SessionRegistry = class _SessionRegistry {
 import * as nodeFs2 from "node:fs/promises";
 import * as nodePath5 from "node:path";
 
+// src/markdown/links.ts
+var EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
+var ARTIFACT_SCHEME_RE = /^(https?:|mailto:|tent-artifact:)/i;
+function extractOutLinksDetailed(body) {
+  const tree = fromMarkdown(body);
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  const definitions = collectDefinitions(tree);
+  walk(tree, (node2) => {
+    if (node2.type === "link") {
+      const link2 = outLinkFromMdast(node2);
+      if (link2) pushLink(out, seen, link2);
+      return "skip";
+    }
+    if (node2.type === "linkReference") {
+      const definition2 = definitions.get(normalizeIdentifier2(node2.identifier));
+      const link2 = definition2 ? outLinkFromReference(node2, definition2) : null;
+      if (link2) pushLink(out, seen, link2);
+      return "skip";
+    }
+    if (node2.type === "image") return "skip";
+    if (node2.type === "text") {
+      const start = node2.position?.start?.offset;
+      const end = node2.position?.end?.offset;
+      const text3 = start != null && end != null ? body.slice(start, end) : node2.value;
+      scanWikiInProse(text3, out, seen);
+    }
+  });
+  return out;
+}
+function indexFromBoxes(boxes) {
+  return buildConceptIndex(boxes);
+}
+function resolveOutLink(index2, link2, fromNotePath) {
+  if (link2.kind === "artifact") {
+    return { raw: link2.raw, kind: "artifact", label: link2.label };
+  }
+  const meta = link2;
+  const resolutionRaw = meta.conceptTarget ?? (link2.kind === "wiki" ? stripWikiSuffix(link2.raw).target : splitHref(link2.raw).pathPart);
+  const target = normalizeTarget(resolutionRaw, fromNotePath);
+  if (!isConceptCandidate(target) && !isConceptCandidate(resolutionRaw)) {
+    return { raw: link2.raw, kind: "unresolved", label: link2.label };
+  }
+  const concept = resolveConcept(index2, target) ?? resolveConcept(index2, resolutionRaw);
+  if (!concept) return { raw: link2.raw, kind: "unresolved", label: link2.label };
+  return {
+    raw: link2.raw,
+    kind: link2.kind,
+    targetCx: concept.id,
+    targetPath: concept.path,
+    label: link2.label ?? concept.name
+  };
+}
+function buildBacklinkIndex(concepts) {
+  const list2 = [...concepts];
+  const index2 = /* @__PURE__ */ new Map();
+  for (const c of list2) {
+    const concept = {
+      id: c.id,
+      boxId: c.id,
+      path: c.path,
+      notePath: c.notePath,
+      name: c.name,
+      type: "prompt"
+    };
+    add(index2, concept.id, concept);
+    add(index2, concept.path, concept);
+    add(index2, concept.notePath, concept);
+    add(index2, concept.name, concept);
+  }
+  const reverse = /* @__PURE__ */ new Map();
+  for (const c of list2) {
+    for (const link2 of extractOutLinksDetailed(c.body)) {
+      if (link2.kind === "artifact") continue;
+      const resolved = resolveOutLink(index2, link2, c.notePath);
+      if (!resolved.targetCx) continue;
+      const arr = reverse.get(resolved.targetCx) ?? [];
+      arr.push({
+        fromCx: c.id,
+        fromPath: c.path,
+        fromName: c.name,
+        raw: link2.raw,
+        kind: link2.kind === "wiki" ? "wiki" : "md"
+      });
+      reverse.set(resolved.targetCx, arr);
+    }
+  }
+  return reverse;
+}
+function walk(node2, visit) {
+  if (visit(node2) === "skip") return;
+  if ("children" in node2 && Array.isArray(node2.children)) {
+    for (const child of node2.children) walk(child, visit);
+  }
+}
+function outLinkFromMdast(node2) {
+  return outLinkFromHref(node2.url, collectText(node2));
+}
+function outLinkFromReference(node2, definition2) {
+  return outLinkFromHref(definition2.url, collectText(node2));
+}
+function outLinkFromHref(url, rawLabel) {
+  const href = (url ?? "").trim();
+  if (!href) return null;
+  const label = rawLabel.replace(/\s+/g, " ").trim() || void 0;
+  if (ARTIFACT_SCHEME_RE.test(href) || isExternalHref(href)) {
+    return { raw: href, kind: "artifact", label, conceptTarget: href };
+  }
+  if (isPureAnchor(href)) return null;
+  const { pathPart, fragment } = splitHref(href);
+  if (!pathPart || isAttachmentPath(pathPart)) return null;
+  return { raw: href, kind: "md", label, fragment, conceptTarget: pathPart };
+}
+function collectDefinitions(tree) {
+  const definitions = /* @__PURE__ */ new Map();
+  walk(tree, (node2) => {
+    if (node2.type === "definition") {
+      const key2 = normalizeIdentifier2(node2.identifier);
+      if (!definitions.has(key2)) definitions.set(key2, node2);
+    }
+  });
+  return definitions;
+}
+function normalizeIdentifier2(identifier) {
+  return identifier.trim().replace(/\s+/g, " ").toLowerCase();
+}
+function collectText(node2) {
+  if ("value" in node2 && typeof node2.value === "string") return node2.value;
+  if ("children" in node2 && Array.isArray(node2.children)) {
+    return node2.children.map(collectText).join("");
+  }
+  return "";
+}
+function scanWikiInProse(text3, out, seen) {
+  let i = 0;
+  while (i < text3.length) {
+    if (text3[i] === "\\" && i + 1 < text3.length) {
+      i += 2;
+      continue;
+    }
+    if (text3[i] === "!" && text3[i + 1] === "[" && text3[i + 2] === "[") {
+      const embedEnd = findWikiEnd(text3, i + 2);
+      i = embedEnd === -1 ? i + 3 : embedEnd + 1;
+      continue;
+    }
+    if (text3[i] === "[" && text3[i + 1] === "[") {
+      const parsed = tryParseWikiLink(text3, i);
+      if (parsed) {
+        if (parsed.link) pushLink(out, seen, parsed.link);
+        i = parsed.next;
+        continue;
+      }
+    }
+    i += 1;
+  }
+}
+function tryParseWikiLink(text3, start) {
+  if (text3[start] !== "[" || text3[start + 1] !== "[" || isEscaped(text3, start)) return null;
+  const end = findWikiEnd(text3, start + 2);
+  if (end === -1) return null;
+  const next = end + 1;
+  const inner = text3.slice(start + 2, end);
+  if (!inner) return { link: null, next };
+  let targetPart = inner;
+  let label;
+  const pipe = findUnescapedChar(inner, "|");
+  if (pipe !== -1) {
+    targetPart = inner.slice(0, pipe);
+    label = inner.slice(pipe + 1).trim() || void 0;
+  }
+  const rawTarget = targetPart.trim();
+  if (!rawTarget) return { link: null, next };
+  const { target, fragment, blockRef } = stripWikiSuffix(rawTarget);
+  if (!target || isAttachmentPath(target) || isPureAnchor(target) || isExternalHref(target)) {
+    return { link: null, next };
+  }
+  return {
+    link: { raw: rawTarget, kind: "wiki", label, fragment, blockRef, conceptTarget: target },
+    next
+  };
+}
+function findWikiEnd(text3, from) {
+  for (let i = from; i < text3.length - 1; i++) {
+    if (text3[i] === "]" && text3[i + 1] === "]" && !isEscaped(text3, i)) return i;
+    if (text3[i] === "[" && text3[i + 1] === "[" && !isEscaped(text3, i)) return -1;
+  }
+  return -1;
+}
+function pushLink(out, seen, link2) {
+  const key2 = `${link2.kind}:${link2.raw}|${link2.label ?? ""}`;
+  if (seen.has(key2)) return;
+  seen.add(key2);
+  out.push(link2);
+}
+function stripWikiSuffix(raw) {
+  const t = raw.trim();
+  const caret = t.lastIndexOf("^");
+  if (caret > 0) {
+    const blockRef = t.slice(caret + 1).trim() || void 0;
+    const before = t.slice(0, caret);
+    const hash2 = before.indexOf("#");
+    if (hash2 >= 0) {
+      return {
+        target: before.slice(0, hash2).trim(),
+        fragment: before.slice(hash2 + 1).trim() || void 0,
+        blockRef
+      };
+    }
+    return { target: before.trim(), blockRef };
+  }
+  const hash = t.indexOf("#");
+  if (hash >= 0) {
+    return { target: t.slice(0, hash).trim(), fragment: t.slice(hash + 1).trim() || void 0 };
+  }
+  return { target: t };
+}
+function splitHref(href) {
+  const t = href.trim();
+  const q = t.indexOf("?");
+  const h = t.indexOf("#");
+  let pathEnd = t.length;
+  if (q >= 0) pathEnd = Math.min(pathEnd, q);
+  if (h >= 0) pathEnd = Math.min(pathEnd, h);
+  return {
+    pathPart: t.slice(0, pathEnd),
+    fragment: h >= 0 ? t.slice(h + 1).split("?")[0] || void 0 : void 0
+  };
+}
+function isConceptCandidate(target) {
+  const t = target.trim();
+  return Boolean(t) && !isPureAnchor(t) && !isExternalHref(t) && !isAttachmentPath(t);
+}
+function isPureAnchor(href) {
+  const t = href.trim();
+  return t.startsWith("#") || t === "";
+}
+function isExternalHref(href) {
+  const t = href.trim();
+  return t.startsWith("//") || ARTIFACT_SCHEME_RE.test(t) || EXTERNAL_SCHEME_RE.test(t);
+}
+function isAttachmentPath(href) {
+  const t = href.trim().replace(/\\/g, "/").replace(/^\.\//, "");
+  if (!t) return false;
+  if (t === ATTACHMENTS_DIR || t.startsWith(`${ATTACHMENTS_DIR}/`)) return true;
+  if (t.includes(`/${ATTACHMENTS_DIR}/`)) return true;
+  const stack = [];
+  for (const p of t.split("/")) {
+    if (p === "." || p === "") continue;
+    if (p === "..") stack.pop();
+    else stack.push(p);
+  }
+  return stack[0] === ATTACHMENTS_DIR;
+}
+function isEscaped(text3, index2) {
+  let bs = 0;
+  for (let i = index2 - 1; i >= 0 && text3[i] === "\\"; i--) bs += 1;
+  return bs % 2 === 1;
+}
+function findUnescapedChar(text3, ch) {
+  for (let i = 0; i < text3.length; i++) {
+    if (text3[i] === ch && !isEscaped(text3, i)) return i;
+  }
+  return -1;
+}
+function add(index2, key2, concept) {
+  if (!key2) return;
+  const list2 = index2.get(key2) ?? [];
+  if (!list2.some((c) => c.id === concept.id)) list2.push(concept);
+  index2.set(key2, list2);
+  const all2 = index2.get("__all__") ?? [];
+  if (!all2.some((c) => c.id === concept.id)) all2.push(concept);
+  index2.set("__all__", all2);
+}
+
 // src/service/etag.ts
 import { createHash as createHash2 } from "node:crypto";
 function contentEtag(content3) {
   return createHash2("sha256").update(content3, "utf8").digest("hex").slice(0, 24);
 }
-
-// src/service/mutation-bus.ts
-var MutationBus = class {
-  constructor() {
-    this.tails = /* @__PURE__ */ new Map();
-  }
-  async run(workspaceId, action) {
-    const prev = this.tails.get(workspaceId) ?? Promise.resolve();
-    let release;
-    const gate = new Promise((resolve14) => {
-      release = resolve14;
-    });
-    const chain = prev.catch(() => void 0).then(() => gate);
-    this.tails.set(workspaceId, chain);
-    await prev.catch(() => void 0);
-    try {
-      return await action();
-    } finally {
-      release();
-      if (this.tails.get(workspaceId) === chain) {
-        this.tails.delete(workspaceId);
-      }
-    }
-  }
-};
 
 // src/service/a2a-store.ts
 import * as fs4 from "node:fs/promises";
@@ -14554,6 +14587,12 @@ var TASK_INPUT_STATUSES = /* @__PURE__ */ new Set([
   "consumed",
   "cancelled"
 ]);
+function isTaskInputOpenStatus(status) {
+  return status === "pending" || status === "processing" || status === "failed";
+}
+function isTaskInputDeliveryBlockingStatus(status) {
+  return isTaskInputOpenStatus(status);
+}
 function isTaskInputCancelEligibleStatus(status) {
   return status === "pending" || status === "failed";
 }
@@ -14667,6 +14706,8 @@ var TaskInputStore = class {
      * these rows to cancelled or markDelivered loses the race with delivery cleanup.
      */
     this.managedInjectInFlight = /* @__PURE__ */ new Set();
+    /** Test-only: next persistSnapshot fails once, then clears. */
+    this.nextPersistErrorForTests = null;
     this.file = path6.join(dataDir, "task-inputs.json");
     this.writeState = options?.writeState ?? writeJsonAtomic;
   }
@@ -14759,6 +14800,29 @@ var TaskInputStore = class {
     ).map(cloneInput);
   }
   /**
+   * All TaskInput rows for one (workspaceId, taskPath), any status.
+   * Used by Delivery gate authority (not a global inbox).
+   */
+  async listForTask(workspaceId, taskPath) {
+    if (!workspaceId?.trim() || !taskPath?.trim()) {
+      throw new Error(
+        "TaskInput.listForTask requires workspaceId and taskPath (no global inbox)"
+      );
+    }
+    await this.ensureLoaded();
+    return [...this.items.values()].filter(
+      (i) => i.workspaceId === workspaceId && i.taskPath === taskPath
+    ).map(cloneInput).sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id));
+  }
+  /**
+   * Rows that must block a ready Delivery for this task (pending/processing/failed).
+   * Uncertain and terminal statuses are excluded.
+   */
+  async listBlockingForDeliver(workspaceId, taskPath) {
+    const all2 = await this.listForTask(workspaceId, taskPath);
+    return all2.filter((i) => isTaskInputDeliveryBlockingStatus(i.status));
+  }
+  /**
    * Scoped get: id alone is insufficient; workspaceId+taskPath must match.
    * Cross-workspace or wrong-task lookups return undefined (no leak).
    */
@@ -14792,51 +14856,75 @@ var TaskInputStore = class {
       return cloneInput(stored);
     });
   }
-  /**
-   * Rebind a still-pending input to the session that will inject/consume it.
-   * Used after reject-resume creates a new ss- so review-feedback is not left
-   * keyed to a dead prior session (cancelSession / projection / poll honesty).
-   * Idempotent when sessionId already matches. Fail-loud on missing/scope/terminal.
-   */
+  /** Single-row rebind; multi-row same-task rebind uses {@link rebindOpenSessions}. */
   async rebindSession(id, workspaceId, taskPath, sessionId) {
+    const [row] = await this.rebindOpenSessions(workspaceId, taskPath, sessionId, [id]);
+    if (!row) throw new Error(`TaskInput not found: ${id}`);
+    return row;
+  }
+  /**
+   * Atomic batch rebind of open TaskInputs (pending/failed/processing): validate all,
+   one persist, all-or-none. `processing` included for replaceSession mid-FIFO claims.
+   */
+  async rebindOpenSessions(workspaceId, taskPath, sessionId, inputIds) {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
-      throw new Error(
-        "TaskInput.rebindSession requires workspaceId and taskPath"
-      );
+      throw new Error("TaskInput.rebindOpenSessions requires workspaceId and taskPath");
     }
     const nextSession = sessionId?.trim();
     if (!nextSession) {
-      throw new Error("TaskInput.rebindSession requires non-empty sessionId");
+      throw new Error("TaskInput.rebindOpenSessions requires non-empty sessionId");
     }
     if (this.closed) throw new Error("TaskInput store is closed");
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
-      const item = this.items.get(id);
-      if (!item) throw new Error(`TaskInput not found: ${id}`);
-      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
-        throw new Error(`TaskInput not found: ${id}`);
-      }
-      if (item.status !== "pending" && item.status !== "failed") {
-        throw new Error(
-          `TaskInput.rebindSession requires pending or failed status; got ${item.status}: ${id}`
+      const isRebindable = (status) => status === "pending" || status === "failed" || status === "processing";
+      let targets;
+      if (inputIds !== void 0) {
+        targets = [];
+        for (const rawId of inputIds) {
+          const id = rawId?.trim();
+          if (!id) throw new Error("TaskInput.rebindOpenSessions requires non-empty input ids");
+          const item = this.items.get(id);
+          if (!item || item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+            throw new Error(`TaskInput not found: ${id}`);
+          }
+          if (!isRebindable(item.status)) {
+            throw new Error(
+              `TaskInput.rebindOpenSessions requires pending, failed, or processing status; got ${item.status}: ${id}`
+            );
+          }
+          targets.push(item);
+        }
+      } else {
+        targets = [...this.items.values()].filter(
+          (i) => isRebindable(i.status) && i.workspaceId === workspaceId && i.taskPath === taskPath
         );
       }
-      if (item.sessionId === nextSession) {
-        return cloneInput(item);
-      }
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      const rebound = {
-        ...item,
-        sessionId: nextSession,
-        updatedAt: now
-      };
+      let anyChange = false;
       const next = new Map(this.items);
-      next.set(id, rebound);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneInput(rebound);
+      const rebound = [];
+      for (const item of targets) {
+        if (item.sessionId === nextSession) {
+          rebound.push(cloneInput(item));
+          continue;
+        }
+        anyChange = true;
+        const updated = { ...item, sessionId: nextSession, updatedAt: now };
+        next.set(item.id, updated);
+        rebound.push(cloneInput(updated));
+      }
+      if (anyChange) {
+        await this.persistSnapshot(next);
+        this.items = next;
+      }
+      return rebound;
     });
+  }
+  /** Test helper: fail the next persistSnapshot once (proves atomic rebind). */
+  setNextPersistErrorForTests(error) {
+    this.nextPersistErrorForTests = error;
   }
   /**
    * Claim a pending/failed row for background managed inject: → processing.
@@ -15131,6 +15219,11 @@ var TaskInputStore = class {
     return this.shutdownPromise;
   }
   async persistSnapshot(snapshot) {
+    if (this.nextPersistErrorForTests) {
+      const err = this.nextPersistErrorForTests;
+      this.nextPersistErrorForTests = null;
+      throw err;
+    }
     const items = [...snapshot.values()];
     const open2 = items.filter(
       (i) => i.status === "pending" || i.status === "processing" || i.status === "failed" || i.status === "uncertain" || i.status === "delivered"
@@ -15361,6 +15454,16 @@ var CLIENT_METHODS = [
   "task.interrupt",
   "task.cancel",
   "task.startSession",
+  /**
+   * Explicit fresh managed Session on the same Task (unusable provider context).
+   * Never a silent fallback from task.startSession. Same A2A gate as startSession.
+   * Shares the per-Task managed-session execution slot with startSession.
+   * Preserves claims/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
+   * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
+   * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
+   * waiting only when durable waitCode=session_unavailable (not user-input/a2a/tool).
+   */
+  "task.replaceSession",
   "task.list",
   "task.get",
   "delivery.list",
@@ -15538,32 +15641,32 @@ function isUnderAllowedSkillRoots(absolutePath, allowedRoots) {
   const abs = path7.resolve(absolutePath);
   return allowedRoots.some((root) => isPathInsideRoot(abs, root));
 }
-function parseNonEmptyString(raw, key) {
+function parseNonEmptyString(raw, key2) {
   if (typeof raw !== "string") {
-    return fieldErr(`Invalid string param: ${key}`);
+    return fieldErr(`Invalid string param: ${key2}`);
   }
   const v = raw.trim();
   if (!v) {
-    return fieldErr(`Invalid string param: ${key} must be non-empty when set`);
+    return fieldErr(`Invalid string param: ${key2} must be non-empty when set`);
   }
   return fieldOk(v);
 }
-function parseEnvKeyName(raw, key) {
-  const base = parseNonEmptyString(raw, key);
+function parseEnvKeyName(raw, key2) {
+  const base = parseNonEmptyString(raw, key2);
   if (!base.ok) return base;
   if (!ENV_KEY_RE.test(base.value)) {
     return fieldErr(
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
     );
   }
   return fieldOk(base.value);
 }
-function parseCredentialId(raw, key) {
-  const base = parseNonEmptyString(raw, key);
+function parseCredentialId(raw, key2) {
+  const base = parseNonEmptyString(raw, key2);
   if (!base.ok) return base;
   if (!CREDENTIAL_ID_RE.test(base.value)) {
     return fieldErr(
-      `Invalid ${key}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
+      `Invalid ${key2}: must match ${CREDENTIAL_ID_RE} (vault id, not secret value)`
     );
   }
   return fieldOk(base.value);
@@ -15589,11 +15692,11 @@ function parseStringRecord(raw, field, valueParse, maxEntries) {
   }
   const out = {};
   for (const [k, v] of entries) {
-    const key = k.trim();
-    if (!key) return fieldErr(`Invalid ${field}: empty key`);
-    const parsed = valueParse(v, `${field}.${key}`);
+    const key2 = k.trim();
+    if (!key2) return fieldErr(`Invalid ${field}: empty key`);
+    const parsed = valueParse(v, `${field}.${key2}`);
     if (!parsed.ok) return parsed;
-    out[key] = parsed.value;
+    out[key2] = parsed.value;
   }
   return fieldOk(out);
 }
@@ -15628,9 +15731,9 @@ function parseSkillRefValue(raw, allowedRoots) {
     return fieldErr("Invalid skills[] entry: must be an object with name");
   }
   const o = raw;
-  for (const key of Object.keys(o)) {
-    if (key !== "name" && key !== "path" && key !== "enabled") {
-      return fieldErr(`Unknown skills[] field: ${key}`);
+  for (const key2 of Object.keys(o)) {
+    if (key2 !== "name" && key2 !== "path" && key2 !== "enabled") {
+      return fieldErr(`Unknown skills[] field: ${key2}`);
     }
   }
   const nameR = assertSafeSkillName(o.name);
@@ -15666,11 +15769,11 @@ function parseSkillsArrayValue(raw, allowedRoots = defaultAllowedSkillRoots()) {
   for (const item of raw) {
     const r = parseSkillRefValue(item, allowedRoots);
     if (!r.ok) return r;
-    const key = r.value.name.toLowerCase();
-    if (seen.has(key)) {
+    const key2 = r.value.name.toLowerCase();
+    if (seen.has(key2)) {
       return fieldErr(`Duplicate skill name in skills: ${r.value.name}`);
     }
-    seen.add(key);
+    seen.add(key2);
     out.push(r.value);
   }
   return fieldOk(out);
@@ -15721,15 +15824,15 @@ function parseMcpServerValue(raw) {
     "headerEnvKeys",
     "headerCredentialRefs"
   ]);
-  for (const key of Object.keys(o)) {
-    if (!allowed.has(key)) {
-      const lower = key.toLowerCase();
+  for (const key2 of Object.keys(o)) {
+    if (!allowed.has(key2)) {
+      const lower = key2.toLowerCase();
       if (lower === "env" || lower === "headers" || lower.includes("secret") || lower.includes("token") || lower.includes("apikey") || lower.includes("password") || lower.includes("authorization") || lower.includes("bearer")) {
         return fieldErr(
-          `Rejected dangerous or unsupported mcpServers[] field: ${key} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
+          `Rejected dangerous or unsupported mcpServers[] field: ${key2} (use envKeys/envCredentialRefs/headerEnvKeys/headerCredentialRefs)`
         );
       }
-      return fieldErr(`Unknown mcpServers[] field: ${key}`);
+      return fieldErr(`Unknown mcpServers[] field: ${key2}`);
     }
   }
   const nameR = parseMcpName(o.name);
@@ -15829,11 +15932,11 @@ function parseMcpServersArrayValue(raw) {
   for (const item of raw) {
     const r = parseMcpServerValue(item);
     if (!r.ok) return r;
-    const key = r.value.name.toLowerCase();
-    if (seen.has(key)) {
+    const key2 = r.value.name.toLowerCase();
+    if (seen.has(key2)) {
       return fieldErr(`Duplicate mcpServers name: ${r.value.name}`);
     }
-    seen.add(key);
+    seen.add(key2);
     out.push(r.value);
   }
   return fieldOk(out);
@@ -16219,10 +16322,10 @@ function summarizeRpcErrorData(data) {
     return `dataType=${Array.isArray(data) ? "array" : typeof data}`;
   }
   const safe = {};
-  for (const [key, value] of Object.entries(data)) {
-    if (!RPC_ERROR_SAFE_KEYS.has(key)) continue;
+  for (const [key2, value] of Object.entries(data)) {
+    if (!RPC_ERROR_SAFE_KEYS.has(key2)) continue;
     if (value == null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") {
-      safe[key] = value == null ? null : typeof value === "string" ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
+      safe[key2] = value == null ? null : typeof value === "string" ? value.slice(0, RPC_ERROR_DATA_MAX_CHARS) : value;
     }
   }
   if (Object.keys(safe).length === 0) return void 0;
@@ -17418,8 +17521,8 @@ import * as path9 from "node:path";
 function readAcpExtras(extras, legacyKeys = []) {
   if (!extras || typeof extras !== "object") return {};
   if (extras.acp !== void 0) return extras.acp;
-  for (const key of legacyKeys) {
-    if (extras[key] !== void 0) return extras[key];
+  for (const key2 of legacyKeys) {
+    if (extras[key2] !== void 0) return extras[key2];
   }
   return {};
 }
@@ -18545,9 +18648,9 @@ function normalizeMetadata(raw) {
       out.label = t;
     }
   }
-  for (const key of Object.keys(obj)) {
-    if (key !== "label") {
-      throw new Error(`Unknown credential metadata field: ${key}`);
+  for (const key2 of Object.keys(obj)) {
+    if (key2 !== "label") {
+      throw new Error(`Unknown credential metadata field: ${key2}`);
     }
   }
   return Object.keys(out).length > 0 ? out : void 0;
@@ -18835,22 +18938,22 @@ function parseProfileIdValue(raw, field = "id") {
   }
   return fieldOk2(id);
 }
-function parseNonEmptyStringValue(raw, key) {
+function parseNonEmptyStringValue(raw, key2) {
   if (typeof raw !== "string") {
-    return fieldErr2(`Invalid string param: ${key}`);
+    return fieldErr2(`Invalid string param: ${key2}`);
   }
   const v = raw.trim();
   if (!v) {
-    return fieldErr2(`Invalid string param: ${key} must be non-empty when set`);
+    return fieldErr2(`Invalid string param: ${key2} must be non-empty when set`);
   }
   return fieldOk2(v);
 }
-function parseEnvKeyValue(raw, key) {
-  const base = parseNonEmptyStringValue(raw, key);
+function parseEnvKeyValue(raw, key2) {
+  const base = parseNonEmptyStringValue(raw, key2);
   if (!base.ok) return base;
   if (!ENV_KEY_RE2.test(base.value)) {
     return fieldErr2(
-      `Invalid ${key}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
+      `Invalid ${key2}: must be a process env name (A-Za-z_ then A-Za-z0-9_)`
     );
   }
   return fieldOk2(base.value);
@@ -18887,10 +18990,10 @@ function parsePermissionPolicyValue(raw) {
   }
   return fieldOk2(raw);
 }
-function parsePositiveTimeoutValue(raw, key) {
+function parsePositiveTimeoutValue(raw, key2) {
   if (typeof raw !== "number" || !Number.isInteger(raw) || raw <= 0 || raw > MAX_TIMEOUT_MS) {
     return fieldErr2(
-      `Invalid ${key}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
+      `Invalid ${key2}: must be a positive integer no greater than ${MAX_TIMEOUT_MS}`
     );
   }
   return fieldOk2(raw);
@@ -19023,10 +19126,10 @@ function parseDiskAcpBag(value) {
   if (typeof value !== "object" || Array.isArray(value)) return null;
   const raw = value;
   const acp = {};
-  for (const key of Object.keys(raw)) {
-    if (!DISK_ACP_KEYS.has(key)) return null;
-    const v = raw[key];
-    switch (key) {
+  for (const key2 of Object.keys(raw)) {
+    if (!DISK_ACP_KEYS.has(key2)) return null;
+    const v = raw[key2];
+    switch (key2) {
       case "executable": {
         const s = diskOptional(v, (x) => parseNonEmptyStringValue(x, "executable"));
         if (s === null) return null;
@@ -19091,10 +19194,10 @@ function parseDiskFakeBag(value) {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return null;
   const raw = value;
   const fake = {};
-  for (const key of Object.keys(raw)) {
-    if (!DISK_FAKE_KEYS.has(key)) return null;
-    const v = raw[key];
-    switch (key) {
+  for (const key2 of Object.keys(raw)) {
+    if (!DISK_FAKE_KEYS.has(key2)) return null;
+    const v = raw[key2];
+    switch (key2) {
       case "sleepMs": {
         if (v === void 0 || v === null) break;
         if (typeof v !== "number" || !Number.isFinite(v)) return null;
@@ -19160,8 +19263,8 @@ function parseDiskArgs(value) {
 function parseAgentProfileDiskRow(value) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const item = value;
-  for (const key of Object.keys(item)) {
-    if (!DISK_PROFILE_TOP_LEVEL_KEYS.has(key)) return null;
+  for (const key2 of Object.keys(item)) {
+    if (!DISK_PROFILE_TOP_LEVEL_KEYS.has(key2)) return null;
   }
   const idResult = parseProfileIdValue(item.id);
   if (!idResult.ok) return null;
@@ -19497,6 +19600,7 @@ function projectProviderCatalog() {
 var RpcError = class extends Error {
   constructor(code, message2, data) {
     super(message2);
+    this.name = "RpcError";
     this.code = code;
     this.data = data;
   }
@@ -19682,6 +19786,23 @@ async function existsPath(target) {
 }
 
 // src/service/handlers.ts
+function isTaskLifecycleErrorLike(error) {
+  if (error instanceof TaskLifecycleError) {
+    return true;
+  }
+  if (!(error instanceof Error)) return false;
+  if (error.name === "TaskLifecycleError") {
+    const code = error.code;
+    return typeof code === "string" && code.length > 0;
+  }
+  if (/^Invalid task transition:/.test(error.message)) {
+    const code = error.code;
+    if (typeof code === "string" && code.length > 0) return true;
+    error.code = "INVALID_TRANSITION";
+    return true;
+  }
+  return false;
+}
 async function dispatchMethod(ctx, method, params) {
   if (method.startsWith("AgentRuntimePort.") || method.startsWith("AgentRuntime.")) {
     throw new RpcError(
@@ -19823,6 +19944,8 @@ async function dispatchMethod(ctx, method, params) {
         return taskCancelRpc(ctx, p);
       case "task.startSession":
         return taskStartSessionRpc(ctx, p);
+      case "task.replaceSession":
+        return taskReplaceSessionRpc(ctx, p);
       case "task.list":
         return taskList(ctx, p);
       case "task.get":
@@ -19917,7 +20040,7 @@ async function dispatchMethod(ctx, method, params) {
       const code = error instanceof WorkspaceSettingsError ? error.code : error.code ?? "INVALID_PATCH";
       throw new RpcError(-32602, error.message, { code });
     }
-    if (error instanceof TaskLifecycleError) {
+    if (isTaskLifecycleErrorLike(error)) {
       throw new RpcError(RPC_LIFECYCLE, error.message, { code: error.code });
     }
     throw error;
@@ -19981,7 +20104,95 @@ async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
   }
   return { migrated };
 }
-var SESSION_UNAVAILABLE_WAIT_SUMMARY = "\u7ED1\u5B9A\u7684 session \u5DF2\u4E0D\u53EF\u7528\uFF08\u670D\u52A1\u91CD\u542F\u6216 session \u5DF2\u7ED3\u675F\uFF09\u3002\u53EF\u91CD\u65B0\u542F\u52A8 session\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
+var SESSION_UNAVAILABLE_WAIT_SUMMARY = "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; occupation is held.";
+var SESSION_UNAVAILABLE_WAIT_CODE = "session_unavailable";
+function isSessionUnavailableParkedWait(task) {
+  if (task.state !== "waiting" || task.wait?.reason !== "external") return false;
+  if (task.wait.code === SESSION_UNAVAILABLE_WAIT_CODE) return true;
+  return task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
+}
+async function applySessionUnavailablePark(ctx, workspaceId, taskPath, emitReason) {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return null;
+  const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (current.state !== "running" && current.state !== "waiting") return null;
+  if (isSessionUnavailableParkedWait(current)) return null;
+  if (isRejectResumeParkedWait(current)) return null;
+  const wait = {
+    reason: "external",
+    summary: SESSION_UNAVAILABLE_WAIT_SUMMARY,
+    code: SESSION_UNAVAILABLE_WAIT_CODE
+  };
+  let next;
+  if (current.state === "running") {
+    next = await taskWait(mount.env, taskPath, {
+      reason: wait.reason,
+      summary: wait.summary,
+      code: wait.code
+    });
+  } else {
+    next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+      state: "waiting",
+      wait,
+      updatedAt: mount.env.clock.now()
+    });
+  }
+  emitTaskState(ctx, workspaceId, next, emitReason);
+  return next;
+}
+async function parkTaskForUnavailableSession(ctx, input) {
+  const mount = ctx.host.get(input.workspaceId);
+  if (!mount) return false;
+  let applied = false;
+  let parked = null;
+  await ctx.mutations.run(input.workspaceId, async () => {
+    ctx.host.markSelfWrite(input.workspaceId);
+    const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+    if (current.state !== "running" && current.state !== "waiting") return;
+    if (input.sessionId && current.sessionId && current.sessionId !== input.sessionId) {
+      return;
+    }
+    parked = await applySessionUnavailablePark(
+      ctx,
+      input.workspaceId,
+      input.taskPath,
+      input.reason
+    );
+    applied = parked != null;
+  });
+  if (applied) {
+    ctx.events.emit(
+      "session.state",
+      input.workspaceId,
+      {
+        sessionId: input.sessionId,
+        taskPath: input.taskPath,
+        taskState: "waiting",
+        waitReason: "external",
+        waitCode: SESSION_UNAVAILABLE_WAIT_CODE,
+        runtimeEvent: input.reason,
+        ...input.detail ? { error: input.detail } : {},
+        taskFailed: false,
+        recoverable: true
+      },
+      "service"
+    );
+  }
+  if (applied && input.sessionId) {
+    try {
+      await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
+    } catch {
+    }
+    try {
+      const probe = await ctx.runtime.probe(input.sessionId);
+      if (probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+        await ctx.runtime.stopSession(input.sessionId, "interrupt");
+      }
+    } catch {
+    }
+  }
+  return applied;
+}
 async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
   const mount = ctx.host.require(workspaceId);
   const tasks = await loadTaskEnvelopes(mount.env.fs);
@@ -19992,8 +20203,7 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
     if (!sessionId) continue;
     const probe = await ctx.runtime.probe(sessionId);
     if (probe.alive) continue;
-    const alreadyParked = task.state === "waiting" && task.wait?.reason === "external" && task.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
-    if (alreadyParked) continue;
+    if (isSessionUnavailableParkedWait(task)) continue;
     await ctx.mutations.run(workspaceId, async () => {
       ctx.host.markSelfWrite(workspaceId);
       const current = await loadTaskEnvelope(mount.env.fs, task.path);
@@ -20001,23 +20211,14 @@ async function reconcileTaskSessionsOnMount(ctx, workspaceId) {
       if (current.sessionId?.trim() !== sessionId) return;
       const probe2 = await ctx.runtime.probe(sessionId);
       if (probe2.alive) return;
-      const parkedAlready = current.state === "waiting" && current.wait?.reason === "external" && current.wait.summary === SESSION_UNAVAILABLE_WAIT_SUMMARY;
-      if (parkedAlready) return;
-      let next = current;
-      if (current.state === "running") {
-        next = await taskWait(mount.env, task.path, {
-          reason: "external",
-          summary: SESSION_UNAVAILABLE_WAIT_SUMMARY
-        });
-      } else {
-        next = await patchTaskEnvelope(mount.env.fs, task.path, {
-          state: "waiting",
-          wait: { reason: "external", summary: SESSION_UNAVAILABLE_WAIT_SUMMARY },
-          updatedAt: mount.env.clock.now()
-        });
-      }
-      emitTaskState(ctx, workspaceId, next, "session.reconcile");
-      reconciled.push(task.path);
+      if (isSessionUnavailableParkedWait(current)) return;
+      const parked = await applySessionUnavailablePark(
+        ctx,
+        workspaceId,
+        task.path,
+        "session.reconcile"
+      );
+      if (parked) reconciled.push(task.path);
     });
   }
   return { reconciled };
@@ -20077,13 +20278,13 @@ function parseWorkspaceSettingsPatch(p) {
   const reserved = /* @__PURE__ */ new Set(["workspaceId", "actor", "patch"]);
   const supported = /* @__PURE__ */ new Set(["defaultDeliveryPolicy"]);
   const out = {};
-  for (const [key, value] of Object.entries(p)) {
-    if (reserved.has(key)) continue;
-    if (!supported.has(key)) {
-      throw new RpcError(-32602, `Unknown workspace setting: ${key}`);
+  for (const [key2, value] of Object.entries(p)) {
+    if (reserved.has(key2)) continue;
+    if (!supported.has(key2)) {
+      throw new RpcError(-32602, `Unknown workspace setting: ${key2}`);
     }
     if (value === void 0) continue;
-    out[key] = value;
+    out[key2] = value;
   }
   if ("defaultDeliveryPolicy" in out) {
     const v = out.defaultDeliveryPolicy;
@@ -21106,9 +21307,9 @@ async function registryRoleUpdate(ctx, p) {
   const patch = parseRoleDefinitionParams(p, { requireName: false, forUpdate: true });
   const { name: _ignoredName, id: _ignoredId, displayName: _ignoredDn, ...fields } = patch;
   const updatePatch = { ...fields };
-  for (const key of ["prompt", "description", "color"]) {
-    if (key in p && (p[key] === null || typeof p[key] === "string" && !p[key].trim())) {
-      updatePatch[key] = void 0;
+  for (const key2 of ["prompt", "description", "color"]) {
+    if (key2 in p && (p[key2] === null || typeof p[key2] === "string" && !p[key2].trim())) {
+      updatePatch[key2] = void 0;
     }
   }
   if ("displayName" in p) {
@@ -21963,12 +22164,20 @@ async function taskDispatch(ctx, p) {
       workspaceId,
       taskPath: dispatched.taskPath
     });
-    session = await taskStartSessionRpc(ctx, {
-      workspaceId,
-      taskPath: dispatched.taskPath,
-      profileId,
-      callerKind
-    });
+    try {
+      session = await taskStartSessionRpc(ctx, {
+        workspaceId,
+        taskPath: dispatched.taskPath,
+        profileId,
+        callerKind
+      });
+    } catch (err) {
+      await compensateCombinedDispatchStartSessionFailure(ctx, {
+        workspaceId,
+        taskPath: dispatched.taskPath
+      });
+      throw err;
+    }
   }
   const taskAfter = await loadTaskEnvelope(mount.env.fs, dispatched.taskPath).catch(() => null);
   return {
@@ -21980,7 +22189,8 @@ async function taskDispatch(ctx, p) {
     assigneeKind: dispatched.assigneeKind,
     assignee: dispatched.assignee,
     asSub: taskAfter ? taskAsSub(taskAfter) : asSub,
-    state: startSession ? "running" : "queued",
+    // Prefer durable envelope state so success/failure projections stay honest.
+    state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane ? {
       workspace: workspaceLane.workspace,
@@ -21989,6 +22199,37 @@ async function taskDispatch(ctx, p) {
       targetBranch: workspaceLane.targetBranch
     } : void 0
   };
+}
+async function compensateCombinedDispatchStartSessionFailure(ctx, input) {
+  try {
+    if (beforeCombinedDispatchCompensateForTests) {
+      await beforeCombinedDispatchCompensateForTests(input);
+    }
+    const mount = ctx.host.get(input.workspaceId);
+    if (!mount) return;
+    await ctx.mutations.run(input.workspaceId, async () => {
+      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath).catch(() => null);
+      if (!task) return;
+      if (task.state !== "running") return;
+      if (task.sessionId) return;
+      ctx.host.markSelfWrite(input.workspaceId);
+      const interrupted = await taskInterrupt(mount.env, input.taskPath);
+      emitTaskState(ctx, input.workspaceId, interrupted, "task.interrupt");
+      await cancelUserAsksForTask(
+        ctx,
+        input.workspaceId,
+        input.taskPath,
+        "task.interrupt"
+      );
+      await cancelTaskInputsForTask(
+        ctx,
+        input.workspaceId,
+        input.taskPath,
+        "task.interrupt"
+      );
+    });
+  } catch {
+  }
 }
 async function assertSubDispatchPreconditions(fs21, input) {
   const dispatcher = (input.dispatcher || "").trim();
@@ -22214,29 +22455,32 @@ async function taskSendInputRpc(ctx, p) {
       { askId: pendingAsk.id, workspaceId, taskPath }
     );
   }
-  const current = await loadTaskEnvelope(mount.env.fs, taskPath);
-  if (current.state !== "running" && current.state !== "waiting") {
-    throw new RpcError(
-      RPC_LIFECYCLE,
-      `task.sendInput requires running or waiting task (state=${current.state})`,
-      { taskPath, state: current.state }
-    );
-  }
-  const now = (/* @__PURE__ */ new Date()).toISOString();
-  const input = await ctx.taskInputs.add({
-    id: makeTaskInputId(),
-    workspaceId,
-    taskPath,
-    taskId: current.id || void 0,
-    sessionId: current.sessionId || void 0,
-    role: current.role || void 0,
-    kind: "user-input",
-    ...text3 ? { text: text3 } : {},
-    ...contextRefs.length > 0 ? { contextRefs } : {},
-    status: "pending",
-    createdAt: now,
-    updatedAt: now
-  });
+  const { current, input } = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
+    const current2 = await loadTaskEnvelope(mount.env.fs, taskPath);
+    if (current2.state !== "running" && current2.state !== "waiting") {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.sendInput requires running or waiting task (state=${current2.state})`,
+        { taskPath, state: current2.state }
+      );
+    }
+    const now = (/* @__PURE__ */ new Date()).toISOString();
+    const input2 = await ctx.taskInputs.add({
+      id: makeTaskInputId(),
+      workspaceId,
+      taskPath,
+      taskId: current2.id || void 0,
+      sessionId: current2.sessionId || void 0,
+      role: current2.role || void 0,
+      kind: "user-input",
+      ...text3 ? { text: text3 } : {},
+      ...contextRefs.length > 0 ? { contextRefs } : {},
+      status: "pending",
+      createdAt: now,
+      updatedAt: now
+    });
+    return { current: current2, input: input2 };
+  }));
   ctx.events.emit(
     "taskInput.pending",
     workspaceId,
@@ -22299,6 +22543,18 @@ var managedTaskInputBackgroundInflight = /* @__PURE__ */ new Set();
 var managedTaskInputAccepting = true;
 function managedTaskInputQueueKey(workspaceId, taskPath) {
   return `${workspaceId}\0${taskPath}`;
+}
+var managedTaskInputQueueHoldForTests = /* @__PURE__ */ new Map();
+async function resolveManagedInjectSessionId(ctx, latest, opts) {
+  try {
+    const mount = ctx.host.get(latest.workspaceId);
+    if (mount) {
+      const bound = (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim();
+      if (bound) return bound;
+    }
+  } catch {
+  }
+  return latest.sessionId?.trim() || opts?.sessionIdOverride?.trim() || void 0;
 }
 function trackManagedTaskInputBackground(work) {
   managedTaskInputBackgroundInflight.add(work);
@@ -22365,17 +22621,14 @@ function enableManagedTaskInputBackgroundAccept() {
   managedTaskInputAccepting = true;
 }
 async function deliverManagedTaskInput(ctx, item, opts) {
-  const sessionId = opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "" || void 0;
-  if (!sessionId) {
-    return { input: item, continued: false };
-  }
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
-    let latest = await ctx.taskInputs.get(
-      item.id,
-      item.workspaceId,
-      item.taskPath
-    );
+    const hold = managedTaskInputQueueHoldForTests.get(queueKey);
+    if (hold) {
+      hold.notifyEntered();
+      await hold.wait;
+    }
+    let latest = await ctx.taskInputs.get(item.id, item.workspaceId, item.taskPath);
     if (!latest) {
       return {
         input: item,
@@ -22390,6 +22643,16 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         continueError: `TaskInput already ${latest.status}; skip managed inject`
       };
     }
+    let sessionId = await resolveManagedInjectSessionId(ctx, latest, opts);
+    if (!sessionId) return { input: latest, continued: false };
+    const failRebind = async (prefix, err) => {
+      const message2 = err instanceof Error ? err.message : String(err);
+      try {
+        latest = await ctx.taskInputs.markFailed(latest.id, `${prefix}: ${message2}`, "service");
+      } catch {
+      }
+      return { input: latest, continued: false, continueError: `${prefix}: ${message2}` };
+    };
     if ((latest.sessionId?.trim() || "") !== sessionId) {
       try {
         latest = await ctx.taskInputs.rebindSession(
@@ -22399,20 +22662,7 @@ async function deliverManagedTaskInput(ctx, item, opts) {
           sessionId
         );
       } catch (err) {
-        const message2 = err instanceof Error ? err.message : String(err);
-        try {
-          latest = await ctx.taskInputs.markFailed(
-            latest.id,
-            `TaskInput rebind to inject session failed: ${message2}`,
-            "service"
-          );
-        } catch {
-        }
-        return {
-          input: latest,
-          continued: false,
-          continueError: `TaskInput rebind to inject session failed: ${message2}`
-        };
+        return failRebind("TaskInput rebind to inject session failed", err);
       }
     }
     try {
@@ -22425,10 +22675,22 @@ async function deliverManagedTaskInput(ctx, item, opts) {
         continueError: `TaskInput markProcessing failed: ${message2}`
       };
     }
-    const forInject = {
-      ...latest,
-      sessionId
-    };
+    latest = await ctx.taskInputs.get(latest.id, latest.workspaceId, latest.taskPath) ?? latest;
+    sessionId = await resolveManagedInjectSessionId(ctx, latest, opts) || sessionId;
+    if ((latest.sessionId?.trim() || "") && latest.sessionId.trim() !== sessionId) {
+      try {
+        const rows = await ctx.taskInputs.rebindOpenSessions(
+          latest.workspaceId,
+          latest.taskPath,
+          sessionId,
+          [latest.id]
+        );
+        latest = rows[0] ?? latest;
+      } catch (err) {
+        return failRebind("TaskInput inject session drift rebind failed", err);
+      }
+    }
+    const forInject = { ...latest, sessionId };
     ctx.taskInputs.beginManagedInject(forInject.id);
     let continueResult;
     let finalInput = forInject;
@@ -22595,6 +22857,31 @@ async function assertManagedTurnIdleForPublicDeliver(ctx, task) {
     }
   );
 }
+async function assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, task) {
+  const blockers = await ctx.taskInputs.listBlockingForDeliver(
+    workspaceId,
+    task.path
+  );
+  if (blockers.length === 0) return;
+  const ordered = [...blockers].sort(
+    (a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id)
+  );
+  const first = ordered[0];
+  throw new RpcError(
+    RPC_LIFECYCLE,
+    `task.deliver refused: task has ${ordered.length} open TaskInput(s) (first ${first.id} status=${first.status}); consume or resolve them before Delivery (task remains ${task.state}, no ready Delivery)`,
+    {
+      code: "PENDING_TASK_INPUT",
+      taskPath: task.path,
+      ...task.id ? { taskId: task.id } : {},
+      count: ordered.length,
+      inputIds: ordered.map((i) => i.id),
+      statuses: ordered.map((i) => i.status),
+      firstInputId: first.id,
+      firstStatus: first.status
+    }
+  );
+}
 async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
   const hasRecordedLane = Boolean(
     task.workspace || task.worktree || task.branch || task.targetBranch
@@ -22652,41 +22939,74 @@ async function taskDeliverRpc(ctx, p) {
   const decision = optionalString(p, "decision");
   const checks = Array.isArray(p.checks) ? p.checks : void 0;
   const artifactRefs = Array.isArray(p.artifactRefs) ? p.artifactRefs : void 0;
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
-    await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
-    const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate);
-    const result = await taskDeliver(mount.env, taskPath, {
-      summary,
-      commits,
-      checks,
-      artifactRefs,
-      decision,
-      integrate
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    let targetHead;
+    const prepared = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      await assertManagedTurnIdleForPublicDeliver(ctx, taskForIntegrate);
+      await assertNoBlockingTaskInputsForDeliver(ctx, workspaceId, taskForIntegrate);
+      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, taskForIntegrate);
+      const pendingCommits2 = uniqueCommitRefs(commits);
+      targetHead = pendingCommits2.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, taskForIntegrate) : void 0;
+      if (targetHead && afterTargetHeadSnapshotForTests) {
+        await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+      }
+      return prepareTaskDeliver(mount.env, taskPath, {
+        summary,
+        commits,
+        ...targetHead ? { targetHead } : {},
+        checks,
+        artifactRefs,
+        decision
+      });
     });
-    emitTaskState(ctx, workspaceId, result.task, "task.deliver");
-    ctx.events.emit(
-      "delivery.updated",
-      workspaceId,
-      {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
-        reason: "task.deliver"
-      },
-      "self"
-    );
-    return {
-      workspaceId,
-      taskPath,
-      task: projectTask(result.task),
-      delivery: projectDelivery(result.delivery),
-      autoIntegrated: result.autoIntegrated,
-      state: result.task.state
-    };
+    if (prepared.kind === "done") return prepared.result;
+    const pendingCommits = uniqueCommitRefs(commits);
+    if (pendingCommits.length > 0) {
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+        expectedTargetHead: targetHead,
+        action: "task.deliver"
+      })(pendingCommits);
+    }
+    return ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      return finalizeTaskDeliverAuto(
+        mount.env,
+        taskPath,
+        {
+          summary,
+          commits,
+          ...targetHead ? { targetHead } : {},
+          checks,
+          artifactRefs,
+          decision
+        },
+        prepared
+      );
+    });
   });
+  emitTaskState(ctx, workspaceId, result.task, "task.deliver");
+  ctx.events.emit(
+    "delivery.updated",
+    workspaceId,
+    {
+      id: result.delivery.id,
+      taskId: result.delivery.taskId,
+      status: result.delivery.status,
+      reason: "task.deliver"
+    },
+    "self"
+  );
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(result.task),
+    delivery: projectDelivery(result.delivery),
+    autoIntegrated: result.autoIntegrated,
+    state: result.task.state
+  };
 }
 async function taskRequestReviewRpc(ctx, p) {
   return taskDeliverRpc(ctx, { ...p, decision: p.decision ?? "request-review" });
@@ -22698,62 +23018,79 @@ async function taskAcceptRpc(ctx, p) {
   const actor = requireString(p, "actor");
   const commits = optionalStringArray(p, "commits");
   const outputNodeIds = optionalStringArray(p, "outputNodeIds");
-  return ctx.mutations.run(workspaceId, async () => {
-    ctx.host.markSelfWrite(workspaceId);
-    const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
-    let result;
+  const acceptOptions = { actor, commits, outputNodeIds };
+  const result = await runTaskLifecycle(workspaceId, taskPath, async () => {
+    let prepared;
+    let expectedTargetHead;
     try {
-      result = await taskAccept(mount.env, taskPath, {
-        actor,
-        commits,
-        outputNodeIds,
-        // Core requires integrate whenever delivery commits are non-empty.
-        // Failure must not reach accepted/done/occupation release (lifecycle orders integrate first).
-        integrate: makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate)
+      prepared = await ctx.mutations.run(workspaceId, async () => {
+        ctx.host.markSelfWrite(workspaceId);
+        const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+        expectedTargetHead = await loadReadyDeliveryTargetHead(
+          mount.env.fs,
+          taskForIntegrate
+        );
+        return prepareTaskAccept(mount.env, taskPath, acceptOptions);
       });
     } catch (err) {
       if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
       throw err;
     }
-    emitTaskState(ctx, workspaceId, result.task, "task.accept");
+    if (prepared.commits.length > 0) {
+      const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, taskPath);
+      await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+        expectedTargetHead,
+        action: "task.accept"
+      })(prepared.commits);
+    }
+    try {
+      return await ctx.mutations.run(workspaceId, async () => {
+        ctx.host.markSelfWrite(workspaceId);
+        return finalizeTaskAccept(mount.env, taskPath, acceptOptions, prepared);
+      });
+    } catch (err) {
+      if (err instanceof OutputProvenanceError) throw outputProvenanceErrorToRpc(err);
+      throw err;
+    }
+  });
+  emitTaskState(ctx, workspaceId, result.task, "task.accept");
+  ctx.events.emit(
+    "delivery.updated",
+    workspaceId,
+    {
+      id: result.delivery.id,
+      taskId: result.delivery.taskId,
+      status: result.delivery.status,
+      reason: "task.accept"
+    },
+    "self"
+  );
+  for (const claimId of result.task.claims) {
+    if (claimId === "root") continue;
     ctx.events.emit(
-      "delivery.updated",
+      "concept.changed",
       workspaceId,
-      {
-        id: result.delivery.id,
-        taskId: result.delivery.taskId,
-        status: result.delivery.status,
-        reason: "task.accept"
-      },
+      { id: claimId, reason: "task.accept-projection" },
       "self"
     );
-    for (const claimId of result.task.claims) {
-      if (claimId === "root") continue;
-      ctx.events.emit(
-        "concept.changed",
-        workspaceId,
-        { id: claimId, reason: "task.accept-projection" },
-        "self"
-      );
-    }
-    for (const outputId of result.changedOutputIds) {
-      ctx.events.emit(
-        "concept.changed",
-        workspaceId,
-        { id: outputId, reason: "output.provenance-bind" },
-        "self"
-      );
-    }
-    return {
+  }
+  for (const outputId of result.changedOutputIds) {
+    ctx.events.emit(
+      "concept.changed",
       workspaceId,
-      taskPath,
-      task: projectTask(result.task),
-      delivery: projectDelivery(result.delivery),
-      state: result.task.state,
-      boundOutputIds: result.boundOutputIds,
-      changedOutputIds: result.changedOutputIds
-    };
-  });
+      { id: outputId, reason: "output.provenance-bind" },
+      "self"
+    );
+  }
+  return {
+    workspaceId,
+    taskPath,
+    task: projectTask(result.task),
+    delivery: projectDelivery(result.delivery),
+    state: result.task.state,
+    boundOutputIds: result.boundOutputIds,
+    changedOutputIds: result.changedOutputIds
+  };
 }
 async function outputProvenanceRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -22809,7 +23146,7 @@ async function taskRejectRpc(ctx, p) {
   const noteForDelivery = optionalString(p, "note");
   const noteExact = optionalStringExact(p, "note");
   const resume = p.resume !== false;
-  const result = await ctx.mutations.run(workspaceId, async () => {
+  const result = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     const rejected = await taskReject(mount.env, taskPath, {
       actor,
@@ -22829,7 +23166,7 @@ async function taskRejectRpc(ctx, p) {
       "self"
     );
     return rejected;
-  });
+  }));
   if (!resume) {
     return {
       workspaceId,
@@ -22955,7 +23292,7 @@ async function taskInterruptRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  return ctx.mutations.run(workspaceId, async () => {
+  return runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
@@ -22987,13 +23324,13 @@ async function taskInterruptRpc(ctx, p) {
       }
     }
     return { workspaceId, taskPath, task: projectTask(task), state: task.state };
-  });
+  }));
 }
 async function taskCancelRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  return ctx.mutations.run(workspaceId, async () => {
+  return runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
     ctx.events.emit(
@@ -23003,19 +23340,45 @@ async function taskCancelRpc(ctx, p) {
       "self"
     );
     return { workspaceId, taskPath, state: "interrupted", cancelled: true };
-  });
+  }));
 }
 async function taskStartSessionRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
-  const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
   const profileId = requireProfileId(p);
   const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
   if ("a2aPolicyOverride" in p) {
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
+  const prepared = await prepareAuthorizedTaskStartSession(
+    ctx,
+    p,
+    workspaceId,
+    taskPath,
+    profileId,
+    callerKind
+  );
+  if (prepared.kind === "reuse") {
+    const existing = managedSessionInFlight.get(managedSessionFlightKey(workspaceId, taskPath));
+    if (existing) {
+      return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
+    }
+    return prepared.result;
+  }
+  return runManagedSessionFlight(
+    workspaceId,
+    taskPath,
+    profileId,
+    "startSession",
+    () => launchAndBindTaskStartSession(ctx, prepared)
+  );
+}
+async function prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, opts) {
+  const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
+  const operation = opts?.operation ?? "startSession";
+  const verbLabel = operation === "replaceSession" ? "replaceSession" : "startSession";
   if (approvalId) {
     const approval = await ctx.a2a.get(approvalId);
     if (!approval || approval.status !== "approved") {
@@ -23087,7 +23450,7 @@ async function taskStartSessionRpc(ctx, p) {
           taskPath,
           role: authorityRole || task2.role,
           profileId,
-          summary: `Role ${authorityRole || task2.role} requests startSession on profile ${profileId}`
+          summary: `Role ${authorityRole || task2.role} requests ${verbLabel} on profile ${profileId}`
         },
         "service"
       );
@@ -23101,13 +23464,28 @@ async function taskStartSessionRpc(ctx, p) {
           emitTaskState(ctx, workspaceId, waited, "a2a.ask");
         });
       }
-      throw new RpcError(RPC_A2A_ASK, "A2A policy requires user approval before startSession", {
-        approvalId: item.id,
-        policy: "ask"
-      });
+      throw new RpcError(
+        RPC_A2A_ASK,
+        `A2A policy requires user approval before ${verbLabel}`,
+        {
+          approvalId: item.id,
+          policy: "ask"
+        }
+      );
     }
   }
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (opts?.skipReuseAndLaunchPrep) {
+    return {
+      kind: "launch",
+      workspaceId,
+      taskPath,
+      profileId,
+      task,
+      isProfileTask: taskAssigneeKind(task) === "agentProfile",
+      bootstrapPrompt
+    };
+  }
   if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
     throw new RpcError(
       -32602,
@@ -23142,9 +23520,12 @@ async function taskStartSessionRpc(ctx, p) {
             updatedAt: mount.env.clock.now()
           });
         });
-        return projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
-          cwd: boundTask.worktree || mount.workspaceRoot
-        });
+        return {
+          kind: "reuse",
+          result: projectStartSessionResult(workspaceId, taskPath, boundTask, activeForRole, {
+            cwd: boundTask.worktree || mount.workspaceRoot
+          })
+        };
       }
       throw new RpcError(
         RPC_LIFECYCLE,
@@ -23160,11 +23541,28 @@ async function taskStartSessionRpc(ctx, p) {
   } else if (task.sessionId) {
     const prior = await ctx.runtime.registry.read(task.sessionId);
     if (prior && SessionRegistry.isNonTerminal(prior.state) && prior.state !== "external") {
-      return projectStartSessionResult(workspaceId, taskPath, task, prior, {
-        cwd: task.worktree || mount.workspaceRoot
-      });
+      return {
+        kind: "reuse",
+        result: projectStartSessionResult(workspaceId, taskPath, task, prior, {
+          cwd: task.worktree || mount.workspaceRoot
+        })
+      };
     }
   }
+  return {
+    kind: "launch",
+    workspaceId,
+    taskPath,
+    profileId,
+    task,
+    isProfileTask,
+    bootstrapPrompt
+  };
+}
+async function launchAndBindTaskStartSession(ctx, prepared) {
+  const { workspaceId, taskPath, profileId, isProfileTask } = prepared;
+  const mount = ctx.host.require(workspaceId);
+  let task = prepared.task;
   task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
   const cwd = task.worktree || mount.workspaceRoot;
   const workspaceLane = task.workspace || task.worktree || task.branch ? {
@@ -23173,7 +23571,7 @@ async function taskStartSessionRpc(ctx, p) {
     branch: task.branch || "HEAD",
     targetBranch: task.targetBranch
   } : void 0;
-  const sessionBootstrap = bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, {
+  const sessionBootstrap = prepared.bootstrapPrompt?.trim() || buildSessionBootstrapPrompt(task, {
     workspaceRoot: mount.workspaceRoot,
     systemRoot: mount.systemRoot
   });
@@ -23280,6 +23678,308 @@ async function taskStartSessionRpc(ctx, p) {
     roleName: handle.roleName,
     runtimeWorkspace: handle.runtimeWorkspace
   }, { cwd });
+}
+var REPLACE_SESSION_RESTORE_REASON = "task.replaceSession.fresh";
+async function taskReplaceSessionRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const taskPath = requireString(p, "taskPath");
+  const profileId = requireProfileId(p, "task.replaceSession");
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  if ("a2aPolicyOverride" in p) {
+    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
+  }
+  if ("force" in p && p.force !== void 0 && p.force !== false) {
+    throw new RpcError(-32602, "task.replaceSession does not support force; wait for turnBusy=false and retry", {
+      code: "FORCE_NOT_SUPPORTED"
+    });
+  }
+  await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
+    operation: "replaceSession",
+    skipReuseAndLaunchPrep: true
+  });
+  return runManagedSessionFlight(
+    workspaceId,
+    taskPath,
+    profileId,
+    "replaceSession",
+    () => runTaskLifecycle(workspaceId, taskPath, async () => {
+      await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+      return executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId);
+    })
+  );
+}
+async function assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId) {
+  const mount = ctx.host.require(workspaceId);
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new RpcError(
+      -32602,
+      `task.replaceSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
+      { taskAssignee: task.role, profileId }
+    );
+  }
+  if (task.state !== "running" && task.state !== "waiting") {
+    throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
+      code: "INVALID_TASK_STATE",
+      state: task.state
+    });
+  }
+  if (task.state === "waiting" && !isSessionUnavailableParkedWait(task)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input / a2a / tool waits first",
+      {
+        code: "REPLACE_SESSION_WAIT_NOT_ELIGIBLE",
+        state: task.state,
+        waitReason: task.wait?.reason,
+        waitCode: task.wait?.code
+      }
+    );
+  }
+  const priorSessionId = task.sessionId?.trim() || "";
+  if (!priorSessionId) {
+    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession requires a bound managed sessionId on the task", {
+      code: "NO_BOUND_SESSION",
+      taskPath
+    });
+  }
+  try {
+    if ((await ctx.runtime.probe(priorSessionId)).turnBusy === true) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.replaceSession refused: managed session ${priorSessionId} still has an in-flight turn (turnBusy); retry when the turn settles`,
+        { code: "TURN_BUSY", sessionId: priorSessionId, taskPath, turnBusy: true }
+      );
+    }
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
+  }
+}
+async function executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId) {
+  const mount = ctx.host.require(workspaceId);
+  await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const priorSessionId = task.sessionId.trim();
+  const preserved = {
+    taskId: task.id,
+    claims: [...task.claims ?? []],
+    worktree: task.worktree,
+    branch: task.branch,
+    deliveryPolicy: task.deliveryPolicy,
+    role: task.role
+  };
+  if (task.state === "waiting") {
+    await taskResumeRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+  let retirementBegun = false;
+  let startedSessionId;
+  const parkAfterRetirement = async (detail) => {
+    try {
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (startedSessionId && current.sessionId === startedSessionId && current.sessionId !== priorSessionId) {
+        await ctx.mutations.run(workspaceId, async () => {
+          ctx.host.markSelfWrite(workspaceId);
+          await patchTaskEnvelope(mount.env.fs, taskPath, {
+            sessionId: priorSessionId,
+            updatedAt: mount.env.clock.now()
+          });
+        });
+      }
+    } catch {
+    }
+    await parkTaskForUnavailableSession(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: priorSessionId,
+      reason: "task.replaceSession.failed",
+      detail
+    });
+  };
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(priorSessionId, "denied");
+    } catch {
+    }
+    try {
+      const priorProbe = await ctx.runtime.probe(priorSessionId);
+      if (priorProbe.alive || SessionRegistry.isNonTerminal(priorProbe.state)) {
+        await ctx.runtime.stopSession(priorSessionId, "user");
+      } else {
+        try {
+          await ctx.runtime.registry.update(priorSessionId, {
+            stopReason: "user",
+            state: priorProbe.state === "failed" || priorProbe.state === "stopped" ? priorProbe.state : "stopped"
+          });
+        } catch {
+        }
+      }
+    } catch (err) {
+      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
+    retirementBegun = true;
+    clearManagedAutoDeliverDedup(priorSessionId, taskPath);
+    task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
+    const cwd = task.worktree || mount.workspaceRoot;
+    const workspaceLane = task.workspace || task.worktree || task.branch ? {
+      workspace: task.workspace || mount.workspaceRoot,
+      worktree: task.worktree || mount.workspaceRoot,
+      branch: task.branch || "HEAD",
+      targetBranch: task.targetBranch
+    } : void 0;
+    const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+    const handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: buildFreshReplaceSessionBootstrap(task, {
+        workspaceRoot: mount.workspaceRoot,
+        systemRoot: mount.systemRoot,
+        priorSessionId
+      }),
+      ...bootstrapImageRefs.length > 0 ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot } : {},
+      lastTaskId: task.id || taskPath,
+      workspace: workspaceId
+    });
+    startedSessionId = handle.sessionId;
+    await ctx.runtime.registry.update(handle.sessionId, {
+      contextRestored: false,
+      restoreReason: REPLACE_SESSION_RESTORE_REASON,
+      replacedSessionId: priorSessionId
+    });
+    try {
+      const priorRow = await ctx.runtime.registry.read(priorSessionId);
+      if (priorRow) {
+        const { lastTaskId: _detach, ...rest } = priorRow;
+        await ctx.runtime.registry.write({
+          ...rest,
+          replacedBySessionId: handle.sessionId,
+          lastError: `replaced by ${handle.sessionId} (${REPLACE_SESSION_RESTORE_REASON})`,
+          updatedAt: (/* @__PURE__ */ new Date()).toISOString()
+        });
+      }
+    } catch {
+    }
+    clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
+    const bound = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (current.id !== preserved.taskId || current.deliveryPolicy !== preserved.deliveryPolicy) {
+        throw new RpcError(RPC_LIFECYCLE, "task.replaceSession: task identity changed during replace", {
+          code: "TASK_IDENTITY_DRIFT"
+        });
+      }
+      const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+        sessionId: handle.sessionId,
+        state: "running",
+        wait: null,
+        updatedAt: mount.env.clock.now()
+      });
+      emitTaskState(ctx, workspaceId, next, "task.replaceSession");
+      ctx.events.emit(
+        "session.state",
+        workspaceId,
+        {
+          sessionId: handle.sessionId,
+          state: handle.state,
+          profileId: handle.profileId,
+          taskPath,
+          reason: REPLACE_SESSION_RESTORE_REASON,
+          contextRestored: false,
+          priorSessionId,
+          replacedSessionId: priorSessionId
+        },
+        "self"
+      );
+      return next;
+    });
+    const claims = bound.claims ?? [];
+    if (bound.id !== preserved.taskId || bound.role !== preserved.role || bound.deliveryPolicy !== preserved.deliveryPolicy || bound.worktree !== preserved.worktree || bound.branch !== preserved.branch || claims.length !== preserved.claims.length || claims.some((c, i) => c !== preserved.claims[i])) {
+      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/claims/identity", {
+        code: "TASK_IDENTITY_DRIFT"
+      });
+    }
+    try {
+      await ctx.taskInputs.rebindOpenSessions(workspaceId, taskPath, handle.sessionId);
+    } catch (err) {
+      const message2 = err instanceof Error ? err.message : String(err);
+      throw new RpcError(RPC_LIFECYCLE, `task.replaceSession TaskInput rebind failed: ${message2}`, {
+        code: "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED",
+        taskPath,
+        priorSessionId,
+        newSessionId: handle.sessionId
+      });
+    }
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(bound),
+      session: {
+        sessionId: handle.sessionId,
+        profileId: handle.profileId,
+        adapterId: handle.adapterId,
+        state: handle.state,
+        cwd,
+        contextRestored: false,
+        restoreReason: REPLACE_SESSION_RESTORE_REASON,
+        replacedSessionId: priorSessionId
+      },
+      priorSessionId,
+      replaced: true
+    };
+  } catch (err) {
+    if (startedSessionId) {
+      try {
+        await ctx.runtime.stopSession(startedSessionId, "interrupt");
+      } catch {
+      }
+      try {
+        await ctx.runtime.registry.update(startedSessionId, {
+          lastError: "replace-session orphan stopped after launch/rebind failure",
+          contextRestored: false,
+          restoreReason: REPLACE_SESSION_RESTORE_REASON
+        });
+      } catch {
+      }
+    }
+    const message2 = err instanceof Error ? err.message : String(err);
+    if (retirementBegun) await parkAfterRetirement(message2);
+    if (err instanceof RpcError) throw err;
+    throw new RpcError(RPC_LIFECYCLE, `task.replaceSession failed to start replacement session: ${message2}`, {
+      code: "REPLACE_SESSION_LAUNCH_FAILED",
+      taskPath,
+      priorSessionId,
+      ...startedSessionId ? { orphanSessionId: startedSessionId } : {}
+    });
+  }
+}
+function buildFreshReplaceSessionBootstrap(task, roots) {
+  const base = buildSessionBootstrapPrompt(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot
+  });
+  const tail = [
+    "--- Tent replace-session recovery ---",
+    "contextRestored: false",
+    "restoreReason: task.replaceSession.fresh",
+    "Provider context was replaced explicitly. This is an independent managed Session on the same task/workspace lane.",
+    "Do not invent prior chat/cache continuity. Use Task/Node refs below.",
+    `priorSessionId: ${roots.priorSessionId}`,
+    `Task envelope: ${task.path}`,
+    ...task.id ? [`Task id: ${task.id}`] : [],
+    ...task.manifest ? [`Manifest: ${task.manifest}`] : [],
+    ...task.claims?.length ? [`claims (Node refs): ${task.claims.join(", ")}`] : [],
+    "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only."
+  ].join("\n");
+  return `${base}
+
+${tail}
+`;
 }
 async function taskList(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -23743,6 +24443,7 @@ async function sessionList(ctx, p) {
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
       ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
+      ...sessionReplaceAuditFields(rec),
       turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
@@ -23768,6 +24469,7 @@ async function sessionGet(ctx, p) {
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
     ...rec.contextRestored !== void 0 ? { contextRestored: rec.contextRestored } : {},
+    ...sessionReplaceAuditFields(rec),
     turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
@@ -23776,6 +24478,13 @@ async function sessionGet(ctx, p) {
     updatedAt: rec.updatedAt
   };
   return { session: projection };
+}
+function sessionReplaceAuditFields(rec) {
+  return {
+    ...rec.restoreReason !== void 0 ? { restoreReason: rec.restoreReason } : {},
+    ...rec.replacedSessionId !== void 0 ? { replacedSessionId: rec.replacedSessionId } : {},
+    ...rec.replacedBySessionId !== void 0 ? { replacedBySessionId: rec.replacedBySessionId } : {}
+  };
 }
 async function sessionEnter(ctx, p) {
   const workspaceId = optionalString(p, "workspaceId");
@@ -24363,7 +25072,7 @@ async function userAskDenyRpc(ctx, p) {
     "self"
   );
   const resume = await resumeTaskAfterUserAsk(ctx, item, "userAsk.deny");
-  const continueResult = item.sessionId != null ? await continueManagedAfterUserAsk(ctx, item) : { continued: false, error: void 0 };
+  const continueResult = await continueManagedAfterUserAsk(ctx, item);
   return {
     ask: projectUserAsk(item),
     task: resume.task,
@@ -24390,29 +25099,55 @@ async function resumeTaskAfterUserAsk(ctx, item, reason) {
     return { task: null, state: null };
   }
 }
+async function resolveUserAskContinueSessionId(ctx, item) {
+  const origin = item.sessionId?.trim() || "";
+  try {
+    const mount = ctx.host.get(item.workspaceId);
+    if (mount) {
+      const task = await loadTaskEnvelope(mount.env.fs, item.taskPath).catch(
+        () => null
+      );
+      const bound = task?.sessionId?.trim() || "";
+      if (bound) return bound;
+    }
+  } catch {
+  }
+  return origin || void 0;
+}
 async function continueManagedAfterUserAsk(ctx, item) {
-  if (!item.sessionId) return { continued: false };
+  const sessionId = await resolveUserAskContinueSessionId(ctx, item);
+  if (!sessionId) return { continued: false };
   const prompt = formatUserAskAnswerPrompt(item);
   try {
     try {
-      await ctx.runtime.sendFollowUpPrompt(item.sessionId, prompt);
+      await ctx.runtime.sendFollowUpPrompt(sessionId, prompt);
       return { continued: true };
     } catch (liveErr) {
       const liveMessage = liveErr instanceof Error ? liveErr.message : String(liveErr);
+      try {
+        const liveProbe = await ctx.runtime.probe(sessionId);
+        if (liveProbe.alive && SessionRegistry.isNonTerminal(liveProbe.state)) {
+          return {
+            continued: false,
+            error: liveMessage || "managed session live but does not support follow-up inject; external agent may poll userAsk.get"
+          };
+        }
+      } catch {
+      }
       if (!/not alive|does not support live follow-up/i.test(liveMessage)) {
       }
     }
-    const probe = await ctx.runtime.probe(item.sessionId);
+    const probe = await ctx.runtime.probe(sessionId);
     if (!probe.resumeCapable) {
       return {
         continued: false,
         error: "managed session not live and not resume-capable; external agent may poll userAsk.get"
       };
     }
-    const rec = await ctx.runtime.registry.read(item.sessionId);
+    const rec = await ctx.runtime.registry.read(sessionId);
     const cwd = rec?.runtimeWorkspace?.cwd;
     await ctx.runtime.resumeSession({
-      sessionId: item.sessionId,
+      sessionId,
       bootstrapPrompt: prompt,
       ...cwd ? { runtimeWorkspace: { cwd } } : {}
     });
@@ -24423,7 +25158,8 @@ async function continueManagedAfterUserAsk(ctx, item) {
       "session.state",
       item.workspaceId,
       {
-        sessionId: item.sessionId,
+        sessionId,
+        originSessionId: item.sessionId,
         taskPath: item.taskPath,
         runtimeEvent: "userAsk.continue.failed",
         error: message2,
@@ -24960,6 +25696,49 @@ function emitRetentionPurged(ctx, workspaceId, result) {
 var managedAutoDeliverInFlight = /* @__PURE__ */ new Set();
 var managedAutoDeliverDone = /* @__PURE__ */ new Set();
 var rejectResumeNativeInFlight = /* @__PURE__ */ new Set();
+var managedSessionInFlight = /* @__PURE__ */ new Map();
+var MANAGED_SESSION_IN_PROGRESS_MESSAGE = "managed session operation already in progress for this task";
+function managedSessionFlightKey(workspaceId, taskPath) {
+  return `${workspaceId}\0${taskPath}`;
+}
+function joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath) {
+  if (existing.profileId !== profileId || existing.operation !== operation) {
+    throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
+      taskPath,
+      profileId,
+      operation,
+      inFlightProfileId: existing.profileId,
+      inFlightOperation: existing.operation,
+      retryable: true
+    });
+  }
+  return existing.promise;
+}
+async function runManagedSessionFlight(workspaceId, taskPath, profileId, operation, run) {
+  const flightKey = managedSessionFlightKey(workspaceId, taskPath);
+  const existing = managedSessionInFlight.get(flightKey);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath);
+  let settle;
+  let rejectFlight;
+  const flightPromise = new Promise((resolve14, reject) => {
+    settle = resolve14;
+    rejectFlight = reject;
+  });
+  flightPromise.catch(() => void 0);
+  managedSessionInFlight.set(flightKey, { profileId, operation, promise: flightPromise });
+  try {
+    const result = await run();
+    settle(result);
+    return result;
+  } catch (err) {
+    rejectFlight(err);
+    throw err;
+  } finally {
+    if (managedSessionInFlight.get(flightKey)?.promise === flightPromise) {
+      managedSessionInFlight.delete(flightKey);
+    }
+  }
+}
 var runtimeProjectionQueue = new MutationBus();
 var PROJECTION_RETRY_DELAY_MS = 40;
 var runtimeProjectionTestHooks = null;
@@ -25090,6 +25869,7 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
       stopReason: rec?.stopReason,
       task: boundTaskForTerminal
     });
+    const boundPreDeliveryActive = !!boundTaskForTerminal && (boundTaskForTerminal.state === "running" || boundTaskForTerminal.state === "waiting") && !isTaskCollaborationTerminal(boundTaskForTerminal);
     if (!retainInputsOnTerminal && !boundTaskForTerminal) {
       await cancelUserAsksForSession(
         ctx,
@@ -25101,6 +25881,19 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
         ctx,
         workspaceId,
         ev.sessionId,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+    } else if (!retainInputsOnTerminal && boundTaskForTerminal && !boundPreDeliveryActive && boundTaskForTerminal.state === "failed") {
+      await cancelUserAsksForTask(
+        ctx,
+        workspaceId,
+        boundTaskForTerminal.path,
+        ev.type === "session.failed" ? "session.failed" : "session.exited"
+      );
+      await cancelTaskInputsForTask(
+        ctx,
+        workspaceId,
+        boundTaskForTerminal.path,
         ev.type === "session.failed" ? "session.failed" : "session.exited"
       );
     }
@@ -25148,12 +25941,12 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
         })) {
           continue;
         }
-        await failTaskFromRuntime(ctx, {
+        await parkTaskForUnavailableSession(ctx, {
           workspaceId: mount.workspaceId,
           taskPath: task.path,
           sessionId: ev.sessionId,
           reason: ev.type,
-          summary: ev.type === "session.failed" ? ev.error : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`
+          detail: ev.type === "session.failed" ? ev.error : `Managed session exited before delivery (code=${ev.exitCode ?? "unknown"})`
         });
       } else if (ev.type === "session.prompt_complete") {
         await tryManagedAutoDeliver(ctx, {
@@ -25261,6 +26054,7 @@ function shouldRetainInputsOnSessionTerminal(input) {
   if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
   if (!input.task) return false;
   if (isRejectResumeParkedWait(input.task)) return true;
+  if (isSessionUnavailableParkedWait(input.task)) return true;
   if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
     return true;
   }
@@ -25276,6 +26070,7 @@ function shouldSkipTaskFailOnSessionTerminal(input) {
   }
   if (rejectResumeNativeInFlight.has(input.sessionId)) return true;
   if (isRejectResumeParkedWait(input.task)) return true;
+  if (isSessionUnavailableParkedWait(input.task)) return true;
   if (isTaskCollaborationTerminal(input.task) && input.task.state !== "failed") {
     return true;
   }
@@ -25302,11 +26097,11 @@ async function tryManagedAutoDeliver(ctx, input) {
   if (!summary || !sessionId) {
     return;
   }
-  const key = managedDeliverKey(sessionId, input.taskPath);
-  if (managedAutoDeliverDone.has(key) || managedAutoDeliverInFlight.has(key)) {
+  const key2 = managedDeliverKey(sessionId, input.taskPath);
+  if (managedAutoDeliverDone.has(key2) || managedAutoDeliverInFlight.has(key2)) {
     return;
   }
-  managedAutoDeliverInFlight.add(key);
+  managedAutoDeliverInFlight.add(key2);
   let draftPreserved = false;
   try {
     const mount = ctx.host.get(input.workspaceId);
@@ -25322,7 +26117,7 @@ async function tryManagedAutoDeliver(ctx, input) {
       taskId: pre.id || input.taskPath
     });
     if (existingReady.some((d) => d.status === "ready")) {
-      managedAutoDeliverDone.add(key);
+      managedAutoDeliverDone.add(key2);
       try {
         await ctx.managedDeliveryReportDrafts.clear(input.workspaceId, input.taskPath);
       } catch {
@@ -25340,6 +26135,7 @@ async function tryManagedAutoDeliver(ctx, input) {
     if (input.commits === void 0) {
       await ensureTaskWorkspaceLane(ctx, input.workspaceId, pre);
     }
+    await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, pre);
     const sealed = await sealManagedSessionBeforeDelivery(ctx, {
       workspaceId: input.workspaceId,
       sessionId,
@@ -25351,38 +26147,76 @@ async function tryManagedAutoDeliver(ctx, input) {
       );
     }
     let published = false;
-    await ctx.mutations.run(input.workspaceId, async () => {
-      const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
-      if (task.state !== "running") {
-        return;
-      }
-      if (task.sessionId && task.sessionId !== sessionId) {
-        return;
-      }
-      const existing = await loadDeliveries(mount.env.fs, {
-        taskId: task.id || input.taskPath
+    await runTaskLifecycle(input.workspaceId, input.taskPath, async () => {
+      const phase = await ctx.mutations.run(input.workspaceId, async () => {
+        const task = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+        if (task.state !== "running") {
+          return { kind: "skip" };
+        }
+        if (task.sessionId && task.sessionId !== sessionId) {
+          return { kind: "skip" };
+        }
+        const existing = await loadDeliveries(mount.env.fs, {
+          taskId: task.id || input.taskPath
+        });
+        if (existing.some((d) => d.status === "ready")) {
+          managedAutoDeliverDone.add(key2);
+          published = true;
+          return { kind: "skip" };
+        }
+        await assertNoBlockingTaskInputsForDeliver(ctx, input.workspaceId, task);
+        await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
+        let commits = input.commits;
+        if (commits === void 0) {
+          commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
+        }
+        const pendingCommits = uniqueCommitRefs(commits);
+        const targetHead = pendingCommits.length > 0 ? await snapshotIntegrationTargetHead(mount.workspaceRoot, task) : void 0;
+        if (targetHead && afterTargetHeadSnapshotForTests) {
+          await afterTargetHeadSnapshotForTests(mount.workspaceRoot);
+        }
+        ctx.host.markSelfWrite(input.workspaceId);
+        const policy = task.deliveryPolicy ?? "review";
+        const decision = policy === "agent-decide" ? "request-review" : void 0;
+        const opts = {
+          summary,
+          decision,
+          ...pendingCommits.length > 0 ? { commits: pendingCommits } : {},
+          ...targetHead ? { targetHead } : {}
+        };
+        const prepared = await prepareTaskDeliver(mount.env, input.taskPath, opts);
+        if (prepared.kind === "done") {
+          return { kind: "done", result: prepared.result };
+        }
+        return {
+          kind: "auto",
+          boxId: prepared.boxId,
+          commits: pendingCommits,
+          ...targetHead ? { targetHead } : {},
+          opts
+        };
       });
-      if (existing.some((d) => d.status === "ready")) {
-        managedAutoDeliverDone.add(key);
-        published = true;
-        return;
+      if (phase.kind === "skip") return;
+      let result;
+      if (phase.kind === "done") {
+        result = phase.result;
+      } else {
+        if (phase.commits.length > 0) {
+          const taskForIntegrate = await loadTaskEnvelope(mount.env.fs, input.taskPath);
+          await makeCommitIntegrator(ctx, mount.workspaceRoot, taskForIntegrate, {
+            expectedTargetHead: phase.targetHead,
+            action: "task.deliver"
+          })(phase.commits);
+        }
+        result = await ctx.mutations.run(input.workspaceId, async () => {
+          ctx.host.markSelfWrite(input.workspaceId);
+          return finalizeTaskDeliverAuto(mount.env, input.taskPath, phase.opts, {
+            kind: "auto",
+            boxId: phase.boxId
+          });
+        });
       }
-      await assertTaskWorktreeCleanForDeliver(mount.workspaceRoot, task);
-      let commits = input.commits;
-      if (commits === void 0) {
-        commits = await collectManagedDeliveryCommits(mount.workspaceRoot, task);
-      }
-      ctx.host.markSelfWrite(input.workspaceId);
-      const integrate = makeCommitIntegrator(ctx, mount.workspaceRoot, task);
-      const policy = task.deliveryPolicy ?? "review";
-      const decision = policy === "agent-decide" ? "request-review" : void 0;
-      const result = await taskDeliver(mount.env, input.taskPath, {
-        summary,
-        decision,
-        integrate,
-        ...commits.length > 0 ? { commits } : {}
-      });
-      managedAutoDeliverDone.add(key);
+      managedAutoDeliverDone.add(key2);
       published = true;
       emitTaskState(ctx, input.workspaceId, result.task, "session.prompt_complete");
       ctx.events.emit(
@@ -25453,7 +26287,7 @@ async function tryManagedAutoDeliver(ctx, input) {
     } catch {
     }
   } finally {
-    managedAutoDeliverInFlight.delete(key);
+    managedAutoDeliverInFlight.delete(key2);
   }
 }
 async function collectManagedDeliveryCommits(workspaceRoot, task) {
@@ -25481,15 +26315,6 @@ async function sealManagedSessionBeforeDelivery(ctx, input) {
     }
     try {
       await cancelUserAsksForSession(
-        ctx,
-        input.workspaceId,
-        input.sessionId,
-        "session.stop_after_deliver"
-      );
-    } catch {
-    }
-    try {
-      await cancelTaskInputsForSession(
         ctx,
         input.workspaceId,
         input.sessionId,
@@ -25583,10 +26408,12 @@ async function stopManagedSessionAfterDelivery(ctx, input) {
   }
 }
 var rejectResumePostStartFailureForTests = null;
+var beforeCombinedDispatchCompensateForTests = null;
+var afterTargetHeadSnapshotForTests = null;
 function clearManagedAutoDeliverDedup(sessionId, taskPath) {
-  const key = managedDeliverKey(sessionId, taskPath);
-  managedAutoDeliverDone.delete(key);
-  managedAutoDeliverInFlight.delete(key);
+  const key2 = managedDeliverKey(sessionId, taskPath);
+  managedAutoDeliverDone.delete(key2);
+  managedAutoDeliverInFlight.delete(key2);
 }
 var REJECT_RESUME_SESSION_FAILED_WAIT_SUMMARY = "\u9A73\u56DE\u7EED\u8DD1\u672A\u80FD\u6062\u590D managed session\u3002\u53EF\u91CD\u65B0 startSession\uFF0C\u6216 interrupt \u4EFB\u52A1\uFF1Boccupation \u4FDD\u6301\u3002";
 function buildRejectResumeRecoveryOrientation(task, roots, opts) {
@@ -26032,31 +26859,31 @@ function requireWorkspaceId(ctx, p) {
   if (fg) return fg;
   throw new RpcError(-32602, "workspaceId is required when no foreground workspace is set");
 }
-function requireString(p, key) {
-  const v = p[key];
+function requireString(p, key2) {
+  const v = p[key2];
   if (typeof v !== "string" || !v.trim()) {
-    throw new RpcError(-32602, `Missing or invalid string param: ${key}`);
+    throw new RpcError(-32602, `Missing or invalid string param: ${key2}`);
   }
   return v.trim();
 }
-function optionalString(p, key) {
-  const v = p[key];
+function optionalString(p, key2) {
+  const v = p[key2];
   if (v === void 0 || v === null) return void 0;
-  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
+  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key2}`);
   const t = v.trim();
   return t || void 0;
 }
-function optionalStringExact(p, key) {
-  const v = p[key];
+function optionalStringExact(p, key2) {
+  const v = p[key2];
   if (v === void 0 || v === null) return void 0;
-  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key}`);
+  if (typeof v !== "string") throw new RpcError(-32602, `Invalid string param: ${key2}`);
   return v;
 }
-function optionalStringArray(p, key) {
-  const v = p[key];
+function optionalStringArray(p, key2) {
+  const v = p[key2];
   if (v === void 0 || v === null) return void 0;
   if (!Array.isArray(v) || !v.every((x) => typeof x === "string")) {
-    throw new RpcError(-32602, `Invalid string[] param: ${key}`);
+    throw new RpcError(-32602, `Invalid string[] param: ${key2}`);
   }
   return v;
 }
@@ -26065,12 +26892,12 @@ function parseDeliveryPolicy(raw) {
   if (raw === "review" || raw === "bypass" || raw === "agent-decide") return raw;
   throw new RpcError(-32602, `Invalid deliveryPolicy: ${raw}`);
 }
-function requireProfileId(p) {
+function requireProfileId(p, verb = "task.startSession") {
   const profileId = optionalString(p, "profileId");
   if (!profileId) {
     throw new RpcError(
       -32602,
-      "task.startSession requires explicit profileId (no fake-default or product-profile fallback)"
+      `${verb} requires explicit profileId (no fake-default or product-profile fallback)`
     );
   }
   return profileId;
@@ -26153,10 +26980,16 @@ function parseArtifactRefs2(data) {
   }
   return out;
 }
-function makeCommitIntegrator(ctx, workspaceRoot, task) {
+function makeCommitIntegrator(ctx, workspaceRoot, task, options) {
   return async (commits) => {
-    const refs = [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
+    const refs = uniqueCommitRefs(commits);
     if (refs.length === 0) return;
+    await assertIntegrationTargetHeadUnchanged(
+      workspaceRoot,
+      task,
+      options.expectedTargetHead,
+      { action: options.action }
+    );
     if (ctx.integrateCommits) {
       await ctx.integrateCommits(workspaceRoot, refs, task.role);
       return;
@@ -26167,6 +27000,56 @@ function makeCommitIntegrator(ctx, workspaceRoot, task) {
 async function integrateWorkspaceCommitsForTask(workspaceRoot, task, commits) {
   const contract = await resolveIntegrationContract(workspaceRoot, task);
   await integrateWorkspaceCommits(contract, commits);
+}
+function uniqueCommitRefs(commits) {
+  return [...new Set((commits ?? []).map((c) => c.trim()).filter(Boolean))];
+}
+async function snapshotIntegrationTargetHead(workspaceRoot, task) {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  return readRoleBranchTip(contract.workspace, contract.targetBranch);
+}
+async function assertIntegrationTargetHeadUnchanged(workspaceRoot, task, expectedTargetHead, meta) {
+  const contract = await resolveIntegrationContract(workspaceRoot, task);
+  const current = await readRoleBranchTip(contract.workspace, contract.targetBranch);
+  const expected = expectedTargetHead?.trim() || "";
+  if (!expected) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `${meta.action} refused: commit-bearing Delivery is missing targetHead snapshot (legacy or incomplete row); re-deliver so review can re-snapshot target ${contract.targetBranch} HEAD (task/delivery state unchanged; Git not touched)`,
+      {
+        code: "TARGET_MOVED",
+        reason: "missing_snapshot",
+        action: meta.action,
+        taskPath: task.path,
+        ...task.id ? { taskId: task.id } : {},
+        targetBranch: contract.targetBranch,
+        currentTargetHead: current
+      }
+    );
+  }
+  if (current !== expected) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      `${meta.action} refused: integration target HEAD moved since Delivery review (target=${contract.targetBranch} expected=${expected} current=${current}); re-review or re-deliver (task/delivery state unchanged; Git not touched)`,
+      {
+        code: "TARGET_MOVED",
+        reason: "head_moved",
+        action: meta.action,
+        taskPath: task.path,
+        ...task.id ? { taskId: task.id } : {},
+        targetBranch: contract.targetBranch,
+        expectedTargetHead: expected,
+        currentTargetHead: current
+      }
+    );
+  }
+}
+async function loadReadyDeliveryTargetHead(fs21, task) {
+  const taskId = task.id || task.path;
+  const deliveries = await loadDeliveries(fs21, { taskId });
+  const activeId = task.activeDeliveryId?.trim();
+  const ready = (activeId ? deliveries.find((d) => d.id === activeId && d.status === "ready") : void 0) ?? deliveries.find((d) => d.status === "ready");
+  return ready?.targetHead?.trim() || void 0;
 }
 async function resolveIntegrationContract(workspaceRoot, task) {
   const mountedRoot = nodePath5.resolve(workspaceRoot);
@@ -26429,6 +27312,7 @@ function projectDelivery(d) {
     status: d.status,
     summary: d.summary,
     commits: d.commits,
+    ...d.targetHead ? { targetHead: d.targetHead } : {},
     integrationMode: d.integrationMode,
     review: d.review,
     createdAt: d.createdAt,
@@ -26657,6 +27541,19 @@ async function removeServiceEndpoint(dataDir, expectedInstanceId) {
 }
 
 // src/service/http-server.ts
+function isServiceRpcError(error) {
+  if (error instanceof RpcError) return true;
+  if (!(error instanceof Error)) return false;
+  if (error.name === "RpcError" || error.constructor?.name === "RpcError") {
+    const code = error.code;
+    return typeof code === "number";
+  }
+  return false;
+}
+function isTaskLifecycleErrorHttp(error) {
+  if (!(error instanceof Error)) return false;
+  return error.name === "TaskLifecycleError" || /^Invalid task transition:/.test(error.message);
+}
 var FETCH_BLOCKED_PORTS = /* @__PURE__ */ new Set([
   1,
   7,
@@ -26930,11 +27827,24 @@ async function handleRequest(req, res, options, closeSseConnections) {
       const result = await dispatchMethod(ctx, message2.method, params);
       writeJson2(res, 200, { jsonrpc: "2.0", id, result });
     } catch (error) {
-      if (error instanceof RpcError) {
+      if (isServiceRpcError(error)) {
         writeJson2(res, 200, {
           jsonrpc: "2.0",
           id,
           error: { code: error.code, message: error.message, data: error.data }
+        });
+        return;
+      }
+      if (isTaskLifecycleErrorHttp(error)) {
+        const dataCode = typeof error.code === "string" ? error.code : "INVALID_TRANSITION";
+        writeJson2(res, 200, {
+          jsonrpc: "2.0",
+          id,
+          error: {
+            code: RPC_LIFECYCLE,
+            message: error.message,
+            data: { code: dataCode }
+          }
         });
         return;
       }
@@ -26962,7 +27872,7 @@ function handleSse(req, res, events, closeSseConnections) {
   let closed = false;
   let blocked = false;
   let queuedBytes = 0;
-  const queue = [];
+  const queue2 = [];
   let unsubscribe = () => {
   };
   const cleanup = () => {
@@ -26970,7 +27880,7 @@ function handleSse(req, res, events, closeSseConnections) {
     closed = true;
     clearInterval(heartbeat);
     unsubscribe();
-    queue.length = 0;
+    queue2.length = 0;
     queuedBytes = 0;
     closeSseConnections.delete(close);
     req.off("close", cleanup);
@@ -26990,7 +27900,7 @@ function handleSse(req, res, events, closeSseConnections) {
       return;
     }
     if (blocked) {
-      queue.push({ payload, bytes });
+      queue2.push({ payload, bytes });
       queuedBytes += bytes;
       return;
     }
@@ -27003,8 +27913,8 @@ function handleSse(req, res, events, closeSseConnections) {
   function flush() {
     if (closed) return;
     blocked = false;
-    while (queue.length > 0) {
-      const next = queue.shift();
+    while (queue2.length > 0) {
+      const next = queue2.shift();
       queuedBytes -= next.bytes;
       try {
         if (!res.write(next.payload)) {
@@ -27962,9 +28872,9 @@ var ManagedDeliveryReportDraftStore = class {
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
-      const key = draftKey(workspaceId, taskPath);
+      const key2 = draftKey(workspaceId, taskPath);
       const now = (/* @__PURE__ */ new Date()).toISOString();
-      const existing = this.items.get(key);
+      const existing = this.items.get(key2);
       const taskId = input.taskId?.trim();
       const nextRow = existing ? {
         ...existing,
@@ -27986,7 +28896,7 @@ var ManagedDeliveryReportDraftStore = class {
       };
       delete nextRow.lastError;
       const next = new Map(this.items);
-      next.set(key, nextRow);
+      next.set(key2, nextRow);
       await this.persistSnapshot(next);
       this.items = next;
       return cloneDraft(nextRow);
@@ -28006,8 +28916,8 @@ var ManagedDeliveryReportDraftStore = class {
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
-      const key = draftKey(workspaceId, taskPath);
-      const item = this.items.get(key);
+      const key2 = draftKey(workspaceId, taskPath);
+      const item = this.items.get(key2);
       if (!item) return void 0;
       const now = (/* @__PURE__ */ new Date()).toISOString();
       const message2 = (error || "managed auto-deliver failed").trim() || "managed auto-deliver failed";
@@ -28017,7 +28927,7 @@ var ManagedDeliveryReportDraftStore = class {
         lastError: message2
       };
       const next = new Map(this.items);
-      next.set(key, nextRow);
+      next.set(key2, nextRow);
       await this.persistSnapshot(next);
       this.items = next;
       return cloneDraft(nextRow);
@@ -28037,10 +28947,10 @@ var ManagedDeliveryReportDraftStore = class {
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("ManagedDeliveryReportDraft store is closed");
-      const key = draftKey(workspaceId, taskPath);
-      if (!this.items.has(key)) return false;
+      const key2 = draftKey(workspaceId, taskPath);
+      if (!this.items.has(key2)) return false;
       const next = new Map(this.items);
-      next.delete(key);
+      next.delete(key2);
       await this.persistSnapshot(next);
       this.items = next;
       return true;
@@ -28070,41 +28980,41 @@ function unwrapField(result) {
 }
 function rejectUnknownAndDangerous(raw, allowed) {
   const allowedSet = new Set(allowed);
-  for (const key of Object.keys(raw)) {
-    if (allowedSet.has(key)) continue;
-    const lower = key.toLowerCase();
+  for (const key2 of Object.keys(raw)) {
+    if (allowedSet.has(key2)) continue;
+    const lower = key2.toLowerCase();
     const dangerous = DANGEROUS_FIELD_HINTS.some(
       (d) => lower === d.toLowerCase() || lower.includes(d.toLowerCase())
     );
     if (dangerous || lower.includes("secret") || lower.includes("token") || lower.includes("apikey")) {
       throw new RpcError(
         -32602,
-        `Rejected dangerous or unsupported profile field: ${key}`
+        `Rejected dangerous or unsupported profile field: ${key2}`
       );
     }
-    throw new RpcError(-32602, `Unknown profile field: ${key}`);
+    throw new RpcError(-32602, `Unknown profile field: ${key2}`);
   }
 }
 function requireProfileId2(raw, field = "id") {
   return unwrapField(parseProfileIdValue(raw, field));
 }
-function optionalNonEmptyString(raw, key) {
-  if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
-  return unwrapField(parseNonEmptyStringValue(raw[key], key));
+function optionalNonEmptyString(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
+  return unwrapField(parseNonEmptyStringValue(raw[key2], key2));
 }
-function clearableNonEmptyString(raw, key) {
-  if (!(key in raw) || raw[key] === void 0) return void 0;
-  if (raw[key] === null) return null;
-  return unwrapField(parseNonEmptyStringValue(raw[key], key));
+function clearableNonEmptyString(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
+  if (raw[key2] === null) return null;
+  return unwrapField(parseNonEmptyStringValue(raw[key2], key2));
 }
-function optionalEnvKey(raw, key) {
-  if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
-  return unwrapField(parseEnvKeyValue(raw[key], key));
+function optionalEnvKey(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
+  return unwrapField(parseEnvKeyValue(raw[key2], key2));
 }
-function clearableEnvKey(raw, key) {
-  if (!(key in raw) || raw[key] === void 0) return void 0;
-  if (raw[key] === null) return null;
-  return unwrapField(parseEnvKeyValue(raw[key], key));
+function clearableEnvKey(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
+  if (raw[key2] === null) return null;
+  return unwrapField(parseEnvKeyValue(raw[key2], key2));
 }
 function optionalCredentialRef(raw) {
   if (!("credentialRef" in raw) || raw.credentialRef === void 0 || raw.credentialRef === null) {
@@ -28137,14 +29047,14 @@ function clearablePermissionPolicy(raw) {
   if (raw.permissionPolicy === null) return null;
   return unwrapField(parsePermissionPolicyValue(raw.permissionPolicy));
 }
-function optionalPositiveInt(raw, key) {
-  if (!(key in raw) || raw[key] === void 0 || raw[key] === null) return void 0;
-  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
+function optionalPositiveInt(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0 || raw[key2] === null) return void 0;
+  return unwrapField(parsePositiveTimeoutValue(raw[key2], key2));
 }
-function clearablePositiveInt(raw, key) {
-  if (!(key in raw) || raw[key] === void 0) return void 0;
-  if (raw[key] === null) return null;
-  return unwrapField(parsePositiveTimeoutValue(raw[key], key));
+function clearablePositiveInt(raw, key2) {
+  if (!(key2 in raw) || raw[key2] === void 0) return void 0;
+  if (raw[key2] === null) return null;
+  return unwrapField(parsePositiveTimeoutValue(raw[key2], key2));
 }
 function parseAcpFieldsCreate(raw) {
   const displayName = optionalNonEmptyString(raw, "displayName");
@@ -28225,13 +29135,13 @@ function applyClearablePatch(current, patch) {
   } else if (patch.displayName !== void 0) {
     next.displayName = patch.displayName;
   }
-  const assign = (key, value) => {
+  const assign = (key2, value) => {
     if (value === void 0) return;
     if (value === null) {
-      delete g[key];
+      delete g[key2];
       return;
     }
-    g[key] = value;
+    g[key2] = value;
   };
   assign("model", patch.model);
   assign("executable", patch.executable);
@@ -28480,9 +29390,9 @@ var ProcessSupervisor = class {
       ...process.env,
       ...launch.env
     };
-    for (const key of Object.keys(env)) {
-      if (/^(.*_)?(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key) && launch.env[key] === void 0) {
-        delete env[key];
+    for (const key2 of Object.keys(env)) {
+      if (/^(.*_)?(API_KEY|TOKEN|SECRET|PASSWORD)$/i.test(key2) && launch.env[key2] === void 0) {
+        delete env[key2];
       }
     }
     const child = spawn4(launch.command, launch.args, {
@@ -28688,6 +29598,8 @@ var AgentRuntime = class {
     this.managedTerminalInFlight = /* @__PURE__ */ new Map();
     this.sinks = /* @__PURE__ */ new Map();
     this.globalSinks = /* @__PURE__ */ new Set();
+    /** Test-only: every sendFollowUpPrompt attempt (including not-alive / unsupported). */
+    this.followUpAttemptsForTests = [];
     this.closing = false;
     this.closed = false;
     this.registry = new SessionRegistry(options.dataDir);
@@ -29344,6 +30256,7 @@ var AgentRuntime = class {
     this.assertOpen();
     const text3 = prompt.trim();
     if (!text3) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    this.followUpAttemptsForTests.push({ sessionId });
     const managed = this.managed.get(sessionId);
     if (!managed || !managed.isAlive()) {
       throw new Error(`Session not alive for follow-up: ${sessionId}`);
@@ -29355,6 +30268,14 @@ var AgentRuntime = class {
     }
     await this.registry.update(sessionId, { state: "live" });
     await managed.sendFollowUpPrompt(text3);
+  }
+  /** Test helper: follow-up inject attempts (sessionId only; no prompt body). */
+  getFollowUpAttemptsForTests() {
+    return this.followUpAttemptsForTests.slice();
+  }
+  /** Test helper: clear follow-up attempt log. */
+  clearFollowUpAttemptsForTests() {
+    this.followUpAttemptsForTests.length = 0;
   }
   async stopSession(sessionId, reason) {
     this.assertOpen();
@@ -29941,9 +30862,9 @@ function walk2(node2, visit) {
 function push2(out, seen, raw, kind, sourcePath) {
   const path22 = resolveAttachmentPath(raw, sourcePath);
   if (!path22) return;
-  const key = `${kind}:${path22}`;
-  if (seen.has(key)) return;
-  seen.add(key);
+  const key2 = `${kind}:${path22}`;
+  if (seen.has(key2)) return;
+  seen.add(key2);
   out.push({ path: path22, kind, raw });
 }
 

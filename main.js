@@ -1969,9 +1969,13 @@ async function patchTaskEnvelope(fs2, path, patch) {
   if (patch.wait === null) {
     delete data.waitReason;
     delete data.waitSummary;
+    delete data.waitCode;
   } else if (patch.wait) {
     data.waitReason = patch.wait.reason;
     data.waitSummary = patch.wait.summary;
+    const code = patch.wait.code?.trim();
+    if (code) data.waitCode = code;
+    else delete data.waitCode;
   }
   if (patch.activeDeliveryId === null) delete data.activeDeliveryId;
   else if (typeof patch.activeDeliveryId === "string") data.activeDeliveryId = patch.activeDeliveryId;
@@ -1999,7 +2003,8 @@ function parseWaitFields(data) {
   const reason = data.waitReason;
   const summary = data.waitSummary;
   if ((reason === "user-input" || reason === "a2a-approval" || reason === "review" || reason === "external") && typeof summary === "string") {
-    return { reason, summary };
+    const code = typeof data.waitCode === "string" && data.waitCode.trim() ? data.waitCode.trim() : void 0;
+    return { reason, summary, ...code ? { code } : {} };
   }
   return void 0;
 }
@@ -2041,6 +2046,9 @@ async function loadDelivery(fs2, inputPath) {
   const status = parseDeliveryStatus(data.status);
   const reviewBy = typeof data.reviewBy === "string" ? data.reviewBy : void 0;
   const reviewDecision = data.reviewDecision === "accept" || data.reviewDecision === "reject" ? data.reviewDecision : void 0;
+  const targetHead = normalizeTargetHead(
+    typeof data.targetHead === "string" ? data.targetHead : void 0
+  );
   return {
     path,
     id: data.id,
@@ -2050,6 +2058,7 @@ async function loadDelivery(fs2, inputPath) {
     status,
     summary: body.trim(),
     commits: Array.isArray(data.commits) ? uniqueCommits(data.commits.filter((c) => typeof c === "string")) : [],
+    ...targetHead ? { targetHead } : {},
     checks: parseJsonArrayField(data.checksJson, parseChecks),
     artifactRefs: parseJsonArrayField(data.artifactRefsJson, parseArtifactRefs),
     integrationMode: parseIntegrationMode(data.integrationMode),
@@ -2113,6 +2122,7 @@ async function writeDelivery(fs2, record) {
     role: record.role,
     status: record.status,
     commits: record.commits,
+    targetHead: record.targetHead,
     checksJson: record.checks.length ? JSON.stringify(record.checks) : void 0,
     artifactRefsJson: record.artifactRefs.length ? JSON.stringify(record.artifactRefs) : void 0,
     integrationMode: record.integrationMode,
@@ -2182,6 +2192,10 @@ function parseArtifactRefs(value) {
 function uniqueCommits(commits) {
   return [...new Set(commits.map((c) => c.trim()).filter(Boolean))];
 }
+function normalizeTargetHead(value) {
+  const trimmed = value?.trim();
+  return trimmed ? trimmed : void 0;
+}
 var KEY_ORDER;
 var init_delivery = __esm({
   "src/core/delivery.ts"() {
@@ -2199,6 +2213,7 @@ var init_delivery = __esm({
       "role",
       "status",
       "commits",
+      "targetHead",
       "checksJson",
       "artifactRefsJson",
       "integrationMode",
@@ -2453,8 +2468,8 @@ async function taskClaim(env, taskPath, options = {}) {
     return loadTaskEnvelope(env.fs, taskPath);
   });
 }
-async function taskAccept(env, taskPath, options) {
-  const prepared = await withMutation(env.fs, async () => {
+async function prepareTaskAccept(env, taskPath, options) {
+  return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
     const delivery = await requireActiveReadyDelivery(env.fs, task);
@@ -2476,12 +2491,8 @@ async function taskAccept(env, taskPath, options) {
       commits: [...commits]
     };
   });
-  if (prepared.commits.length > 0) {
-    if (!options.integrate) {
-      throw new Error("Delivery contains commits; workspace integration is required.");
-    }
-    await options.integrate(prepared.commits);
-  }
+}
+async function finalizeTaskAccept(env, taskPath, options, prepared) {
   return withMutation(env.fs, async () => {
     const task = await loadTaskEnvelope(env.fs, taskPath);
     assertTransition(task.state, "accept", "accepted");
@@ -2538,6 +2549,16 @@ async function taskAccept(env, taskPath, options) {
       throw err;
     }
   });
+}
+async function taskAccept(env, taskPath, options) {
+  const prepared = await prepareTaskAccept(env, taskPath, options);
+  if (prepared.commits.length > 0) {
+    if (!options.integrate) {
+      throw new Error("Delivery contains commits; workspace integration is required.");
+    }
+    await options.integrate(prepared.commits);
+  }
+  return finalizeTaskAccept(env, taskPath, options, prepared);
 }
 async function compensateAcceptAfterOutputBind(fs2, args) {
   const failures = [];
@@ -3014,7 +3035,15 @@ var init_okf = __esm({
   }
 });
 
-// src/markdown/links.ts
+// src/core/link-target.ts
+function safePercentDecode(value) {
+  try {
+    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
+    return decodeURIComponent(value);
+  } catch {
+    return value;
+  }
+}
 function normalizeTarget(raw, fromNotePath) {
   let t = raw.trim().replace(/\\/g, "/");
   if (t.startsWith("<") && t.endsWith(">")) t = t.slice(1, -1).trim();
@@ -3031,19 +3060,9 @@ function normalizeTarget(raw, fromNotePath) {
   }
   return t.replace(/\.md$/i, "");
 }
-function safePercentDecode(value) {
-  try {
-    if (!/%[0-9A-Fa-f]{2}/.test(value)) return value;
-    return decodeURIComponent(value);
-  } catch {
-    return value;
-  }
-}
-var init_links = __esm({
-  "src/markdown/links.ts"() {
+var init_link_target = __esm({
+  "src/core/link-target.ts"() {
     "use strict";
-    init_okf();
-    init_paths();
   }
 });
 
@@ -3399,7 +3418,7 @@ var init_renameOps = __esm({
     init_claim();
     init_frontmatter();
     init_okf();
-    init_links();
+    init_link_target();
     init_paths();
     init_scaffold();
     init_task();

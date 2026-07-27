@@ -3662,9 +3662,6 @@ function markdownLinkDestination(destination) {
   return `<${destination.replace(/</g, "%3C").replace(/>/g, "%3E")}>`;
 }
 
-// src/markdown/links.ts
-init_paths();
-
 // src/core/renameOps.ts
 init_paths();
 init_task();
@@ -4190,10 +4187,15 @@ function git(cwd, args) {
 
 // src/core/status.ts
 var NOT_INSIDE_TENT_MESSAGE = "Not inside a Tent (no .tent/ system root with RULES.md found).";
-async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE) {
+async function renderTentStatus(cwd = process.cwd(), role = process.env.TENT_ROLE, createFs) {
   const systemRoot = await findTentSystemRoot(cwd);
   if (!systemRoot) throw new Error(NOT_INSIDE_TENT_MESSAGE);
-  const fsAdapter = new NodeFs(systemRoot);
+  if (!createFs) {
+    throw new Error(
+      "renderTentStatus requires createFs (host FsAdapter factory); Core does not import src/fs"
+    );
+  }
+  const fsAdapter = createFs(systemRoot);
   const tent = await loadTent(fsAdapter);
   const workspace = resolveTentWorkspace(tent, systemRoot);
   const lines = [
@@ -4267,11 +4269,11 @@ init_adapter();
 init_paths();
 
 // src/core/migration.ts
-import * as nodeFs2 from "node:fs/promises";
-import * as nodePath3 from "node:path";
 init_frontmatter();
 init_id();
 init_paths();
+import * as nodeFs2 from "node:fs/promises";
+import * as nodePath3 from "node:path";
 init_tree();
 init_typeRegistry();
 var NESTED_REGISTRY_FILES = [
@@ -4686,6 +4688,12 @@ async function importExternalTentRoot(options) {
   const systemRoot = systemRootFromWorkspace(workspaceRoot);
   const warnings = [];
   const skipped = [];
+  const createFs = options.createFs;
+  if (typeof createFs !== "function") {
+    throw new Error(
+      "importExternalTentRoot requires createFs (host FsAdapter factory); Core does not import src/fs"
+    );
+  }
   if (!await pathExists2(sourceRoot)) {
     throw new Error(`Source tent root does not exist: ${sourceRoot}`);
   }
@@ -4714,7 +4722,7 @@ async function importExternalTentRoot(options) {
       `Refusing to import: target already has ${TENT_SYSTEM_DIR} at ${systemRoot}. No silent overwrite. Move/rename the existing system dir first if you intend to replace it.`
     );
   }
-  const sourceFs = new NodeFs(sourceRoot);
+  const sourceFs = createFs(sourceRoot);
   try {
     const { loadTaskEnvelopes: loadTaskEnvelopes2 } = await Promise.resolve().then(() => (init_task(), task_exports));
     const { envelopeIsActiveOccupation: envelopeIsActiveOccupation2 } = await Promise.resolve().then(() => (init_claim(), claim_exports));
@@ -4764,14 +4772,14 @@ async function importExternalTentRoot(options) {
   try {
     await copyHostTree(sourceRoot, stagingRoot, skipped, warnings);
     if (options._testHooks?.afterCopy) await options._testHooks.afterCopy(stagingRoot);
-    const destFs = new NodeFs(stagingRoot);
+    const destFs = createFs(stagingRoot);
     const schema = await migrateLegacySchema(destFs, {
       dryRun: false,
       rand: options.rand,
       rewriteOperationalRefs: options.rewriteOperationalRefs
     });
     if (options._testHooks?.afterSchema) await options._testHooks.afterSchema(stagingRoot);
-    const workspaceFs = new NodeFs(workspaceRoot);
+    const workspaceFs = createFs(workspaceRoot);
     await ensureWorkspaceGitignore(workspaceFs);
     if (options._testHooks?.beforeRename) {
       await options._testHooks.beforeRename(stagingRoot, systemRoot);
@@ -5456,6 +5464,15 @@ var ServiceClient = class {
   }
   taskStartSession(workspaceId, args) {
     return this.call("task.startSession", { workspaceId, ...args });
+  }
+  /**
+   * Explicit fresh managed Session on the same Task when the bound provider
+   * context is unusable. Not a silent fallback from taskStartSession.
+   * Same A2A params as startSession; refuses turnBusy with TURN_BUSY (no force).
+   * Shares the per-Task managed-session execution slot with startSession.
+   */
+  taskReplaceSession(workspaceId, args) {
+    return this.call("task.replaceSession", { workspaceId, ...args });
   }
   taskList(workspaceId) {
     return this.call("task.list", { workspaceId });
@@ -7209,6 +7226,7 @@ Usage: tent agent-hooks install|doctor|remove [--agent all|claude|codex|agy|copi
       const report = await importExternalTentRoot({
         sourceRoot: path8.resolve(source),
         workspaceRoot: path8.resolve(workspace),
+        createFs: (root) => new NodeFs(root),
         dryRun,
         force
       });
@@ -7407,7 +7425,9 @@ ${r.relayPrompt}`);
     case "status": {
       if (args.length > 0) return fail("Usage: tent status");
       try {
-        process.stdout.write(await renderTentStatus(process.cwd(), process.env.TENT_ROLE));
+        process.stdout.write(
+          await renderTentStatus(process.cwd(), process.env.TENT_ROLE, (root) => new NodeFs(root))
+        );
       } catch (error) {
         if (error instanceof Error && error.message === NOT_INSIDE_TENT_MESSAGE) return fail(error.message);
         throw error;
