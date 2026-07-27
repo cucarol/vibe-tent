@@ -64,7 +64,7 @@ Agents should **not** self-accept their own delivery unless the product path exp
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. Envelope is the delivery record; box body is the task definition.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
-   Creates a reviewable delivery; does **not** accept. `deliveryPolicy=review` (default) waits for independent user accept/reject; `bypass` auto-integrates; `agent-decide` requires integrate or request-review.  
+   Creates a reviewable delivery; does **not** accept. `deliveryPolicy=review` (default) waits for independent user accept/reject; `bypass` auto-integrates; `agent-decide` requires integrate or request-review.
    Service refuses ready Delivery while this task still has open TaskInput (`pending` / `processing` / retryable `failed`) with stable code `PENDING_TASK_INPUT` — consume via managed inject or `task-input ack` first; do not expect seal/cleanup to cancel blockers for you.
 
 ```bash
