@@ -3777,13 +3777,11 @@ async function resolveManagedInjectSessionId(
 ): Promise<string | undefined> {
   try {
     const mount = ctx.host.get(latest.workspaceId);
-    const bound = mount
-      ? (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim()
-      : undefined;
-    if (bound) return bound;
-  } catch {
-    /* fall through */
-  }
+    if (mount) {
+      const bound = (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim();
+      if (bound) return bound;
+    }
+  } catch { /* fall through */ }
   return latest.sessionId?.trim() || opts?.sessionIdOverride?.trim() || undefined;
 }
 
@@ -4205,20 +4203,13 @@ export function holdManagedTaskInputQueueForTests(
 ): { entered: Promise<void>; release: () => void } {
   const key = managedTaskInputQueueKey(workspaceId, taskPath);
   let release!: () => void;
-  const wait = new Promise<void>((r) => {
-    release = r;
-  });
+  const wait = new Promise<void>((r) => { release = r; });
   let notifyEntered!: () => void;
-  const entered = new Promise<void>((r) => {
-    notifyEntered = r;
-  });
+  const entered = new Promise<void>((r) => { notifyEntered = r; });
   managedTaskInputQueueHoldForTests.set(key, { wait, notifyEntered });
   return {
     entered,
-    release: () => {
-      managedTaskInputQueueHoldForTests.delete(key);
-      release();
-    },
+    release: () => { managedTaskInputQueueHoldForTests.delete(key); release(); },
   };
 }
 
@@ -6302,16 +6293,8 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       assigneeKind: rec.assigneeKind ?? "role",
       alive: probe.alive,
       resumeCapable: probe.resumeCapable,
-      ...(rec.contextRestored !== undefined
-        ? { contextRestored: rec.contextRestored }
-        : {}),
-      ...(rec.restoreReason !== undefined ? { restoreReason: rec.restoreReason } : {}),
-      ...(rec.replacedSessionId !== undefined
-        ? { replacedSessionId: rec.replacedSessionId }
-        : {}),
-      ...(rec.replacedBySessionId !== undefined
-        ? { replacedBySessionId: rec.replacedBySessionId }
-        : {}),
+      ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
+      ...sessionReplaceAuditFields(rec),
       turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
@@ -6337,16 +6320,8 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     assigneeKind: rec.assigneeKind ?? "role",
     alive: probe.alive,
     resumeCapable: probe.resumeCapable,
-    ...(rec.contextRestored !== undefined
-      ? { contextRestored: rec.contextRestored }
-      : {}),
-    ...(rec.restoreReason !== undefined ? { restoreReason: rec.restoreReason } : {}),
-    ...(rec.replacedSessionId !== undefined
-      ? { replacedSessionId: rec.replacedSessionId }
-      : {}),
-    ...(rec.replacedBySessionId !== undefined
-      ? { replacedBySessionId: rec.replacedBySessionId }
-      : {}),
+    ...(rec.contextRestored !== undefined ? { contextRestored: rec.contextRestored } : {}),
+    ...sessionReplaceAuditFields(rec),
     turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
     workspace: rec.workspace,
@@ -6355,6 +6330,19 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     updatedAt: rec.updatedAt,
   };
   return { session: projection };
+}
+
+/** Optional replace/resume audit fields on Session projections. */
+function sessionReplaceAuditFields(rec: {
+  restoreReason?: string;
+  replacedSessionId?: string;
+  replacedBySessionId?: string;
+}): Partial<SessionProjection> {
+  return {
+    ...(rec.restoreReason !== undefined ? { restoreReason: rec.restoreReason } : {}),
+    ...(rec.replacedSessionId !== undefined ? { replacedSessionId: rec.replacedSessionId } : {}),
+    ...(rec.replacedBySessionId !== undefined ? { replacedBySessionId: rec.replacedBySessionId } : {}),
+  };
 }
 
 /**

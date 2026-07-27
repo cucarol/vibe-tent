@@ -427,6 +427,7 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
     await withService(async (svc) => {
       const { workspaceId, boxId } = await mountWorkItem(svc, ws);
       const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(svc, workspaceId, boxId);
+      svc.runtime.clearFollowUpAttemptsForTests();
       const hold = holdManagedTaskInputQueueForTests(workspaceId, taskPath);
       const send = await rpc(svc, "task.sendInput", {
         workspaceId, taskPath, text: "stale worker must not inject prior after replace", actor: "user",
@@ -444,18 +445,21 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       const mid = await getInput(svc, workspaceId, taskPath, inputId);
       assert.equal(mid.sessionId, newSessionId);
       assert.ok(mid.status === "pending" || mid.status === "failed");
+      // No inject attempt while held (replace only rebinds durable row).
+      assert.deepEqual(svc.runtime.getFollowUpAttemptsForTests(), []);
       hold.release();
       await pollUntil(async () => {
         const input = await getInput(svc, workspaceId, taskPath, inputId);
-        return input.sessionId === newSessionId ? input : null;
-      }, 8_000, "input stays on new session after worker release");
+        // Worker finished attempt (success or honest fail) and never left prior binding.
+        return input.sessionId === newSessionId && input.status !== "processing" ? input : null;
+      }, 8_000, "input settled on new session after worker release");
       const finalInput = await getInput(svc, workspaceId, taskPath, inputId);
       assert.equal(finalInput.sessionId, newSessionId);
-      assert.notEqual(finalInput.sessionId, priorSessionId);
-      assert.ok(
-        ["pending", "failed", "delivered", "processing", "uncertain"].includes(finalInput.status),
-        `unexpected status ${finalInput.status}`
-      );
+      const attempts = svc.runtime.getFollowUpAttemptsForTests();
+      assert.equal(attempts.filter((a) => a.sessionId === priorSessionId).length, 0,
+        "retired prior Session must receive zero follow-up inject attempts");
+      // Any inject attempt must target the replacement Session only.
+      assert.ok(attempts.every((a) => a.sessionId === newSessionId));
       const task = await getTask(svc, workspaceId, taskPath);
       assert.equal(task.sessionId, newSessionId);
       assert.equal((await svc.runtime.probe(priorSessionId)).alive, false);

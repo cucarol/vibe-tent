@@ -118,6 +118,8 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
   private readonly resolveCredentialRef?: ResolveCredentialRef;
+  /** Test-only: every sendFollowUpPrompt attempt (including not-alive / unsupported). */
+  private readonly followUpAttemptsForTests: Array<{ sessionId: string }> = [];
   private shutdownPromise?: Promise<void>;
   private closing = false;
   private closed = false;
@@ -901,6 +903,8 @@ export class AgentRuntime implements AgentRuntimePort {
     this.assertOpen();
     const text = prompt.trim();
     if (!text) throw new Error("sendFollowUpPrompt requires non-empty prompt");
+    // Record before liveness checks so tests can prove retired sessions get zero inject attempts.
+    this.followUpAttemptsForTests.push({ sessionId });
     const managed = this.managed.get(sessionId);
     if (!managed || !managed.isAlive()) {
       throw new Error(`Session not alive for follow-up: ${sessionId}`);
@@ -912,6 +916,16 @@ export class AgentRuntime implements AgentRuntimePort {
     }
     await this.registry.update(sessionId, { state: "live" });
     await managed.sendFollowUpPrompt(text);
+  }
+
+  /** Test helper: follow-up inject attempts (sessionId only; no prompt body). */
+  getFollowUpAttemptsForTests(): ReadonlyArray<{ sessionId: string }> {
+    return this.followUpAttemptsForTests.slice();
+  }
+
+  /** Test helper: clear follow-up attempt log. */
+  clearFollowUpAttemptsForTests(): void {
+    this.followUpAttemptsForTests.length = 0;
   }
 
   async stopSession(sessionId: string, reason: StopReason): Promise<void> {
