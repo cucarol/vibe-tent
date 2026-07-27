@@ -9,6 +9,7 @@ import * as path from "node:path";
 import { test } from "node:test";
 import { fileURLToPath } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
+import { ensureRoleWorkspace } from "../src/core/workspace.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -26,6 +27,7 @@ import {
 } from "../src/service/handlers.js";
 import { DEFAULT_GROK_MODEL, GROK_ACP_ADAPTER_ID } from "../src/adapters/grok-acp/index.js";
 import { FAKE_ADAPTER_ID } from "../src/adapters/fake/index.js";
+import { configureTestGitIdentity, git } from "./helpers.js";
 
 const MOCK_ACP = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures", "mock-acp-server.mjs");
 type Svc = Awaited<ReturnType<typeof startLocalTentService>>;
@@ -464,5 +466,167 @@ test("replaceSession: startSession never silent-replaces; shared flight; managed
       assert.equal(task.sessionId, newSessionId);
       assert.equal((await svc.runtime.probe(priorSessionId)).alive, false);
     });
+  }
+});
+
+/**
+ * replaceSession joins the same per-Task lifecycle flight as accept prepare→Git→finalize.
+ * While accept holds the flight mid-Git, same-Task replaceSession waits; after accept it
+ * refuses authoritative accepted state. Unrelated Task (other role) replace stays concurrent.
+ */
+test("replaceSession: waits on same-Task accept Git then refuses accepted; unrelated concurrent", async () => {
+  resetManagedAutoDeliverDedupForTests();
+  // Two roles so each Task can hold its own managed session (role occupancy).
+  const ws = await makeWorkspace(
+    "replace-life-flight",
+    { executor: "allow", orchestrator: "allow" },
+    { executor: ["fake-default"], orchestrator: ["fake-default"] }
+  );
+  await git(ws, "init", "-q", "-b", "main");
+  await configureTestGitIdentity(ws);
+  await fs.writeFile(path.join(ws, ".gitignore"), ".tent/\n");
+  await fs.writeFile(path.join(ws, "README.md"), "# repo\n");
+  await git(ws, "add", ".gitignore", "README.md");
+  await git(ws, "commit", "-q", "-m", "init");
+  const contract = await ensureRoleWorkspace(ws, "executor");
+  await fs.writeFile(path.join(contract.worktree, "life-replace.txt"), "r\n");
+  await git(contract.worktree, "add", "life-replace.txt");
+  await git(contract.worktree, "commit", "-q", "-m", "life replace");
+  const sourceRef = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+
+  const dataDir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-replace-life-"));
+  let releaseIntegrate!: () => void;
+  const integrateHold = new Promise<void>((resolve) => {
+    releaseIntegrate = resolve;
+  });
+  let integrateEntered = false;
+  const order: string[] = [];
+
+  const svc = await startLocalTentService({
+    dataDir,
+    writeEndpoint: true,
+    integrateCommits: async () => {
+      integrateEntered = true;
+      order.push("integrate-enter");
+      await integrateHold;
+      order.push("integrate-exit");
+    },
+  });
+  try {
+    const { workspaceId, boxId } = await mountWorkItem(svc, ws);
+    const { taskPath, sessionId: priorSessionId } = await dispatchClaimStart(
+      svc,
+      workspaceId,
+      boxId
+    );
+    assert.ok(priorSessionId);
+
+    // Unrelated Task B on orchestrator role (own session lane).
+    const otherNote = await rpc(svc, "docs.createNote", {
+      workspaceId,
+      name: "unrelated-replace-task",
+      type: "prompt",
+    });
+    assert.ok(!otherNote.error, JSON.stringify(otherNote.error));
+    const otherBoxId = (otherNote.result as { id: string }).id;
+    const otherDispatch = await rpc(svc, "task.dispatch", {
+      workspaceId,
+      boxId: otherBoxId,
+      role: "orchestrator",
+      prompt: "unrelated concurrent replace",
+      deliveryPolicy: "review",
+    });
+    assert.ok(!otherDispatch.error, JSON.stringify(otherDispatch.error));
+    const otherTaskPath = (otherDispatch.result as { taskPath: string }).taskPath;
+    if ((otherDispatch.result as { state?: string }).state === "queued") {
+      await rpc(svc, "task.claim", { workspaceId, taskPath: otherTaskPath });
+    }
+    const otherStarted = await rpc(svc, "task.startSession", {
+      workspaceId,
+      taskPath: otherTaskPath,
+      callerKind: "user",
+      profileId: "fake-default",
+    });
+    assert.ok(!otherStarted.error, JSON.stringify(otherStarted.error));
+    const otherPrior = (otherStarted.result as { session: { sessionId: string } }).session
+      .sessionId;
+
+    const delivered = await rpc(svc, "task.deliver", {
+      workspaceId,
+      taskPath,
+      summary: "ready for accept/replace race",
+      commits: [sourceRef],
+    });
+    assert.ok(!delivered.error, JSON.stringify(delivered.error));
+    assert.equal((delivered.result as { state: string }).state, "delivered");
+
+    const acceptPromise = rpc(svc, "task.accept", {
+      workspaceId,
+      taskPath,
+      actor: "user",
+    }).then((res) => {
+      order.push("accept-done");
+      return res;
+    });
+
+    const deadline = Date.now() + 15000;
+    while (!integrateEntered && Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, 10));
+    }
+    assert.equal(integrateEntered, true, "accept must enter Git before concurrent replaceSession");
+
+    // Unrelated Task B replace completes while Task A accept still holds Git.
+    const otherReplace = await rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath: otherTaskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    });
+    assert.ok(!otherReplace.error, JSON.stringify(otherReplace.error));
+    const otherNew = (otherReplace.result as { session: { sessionId: string } }).session
+      .sessionId;
+    assert.notEqual(otherNew, otherPrior);
+    order.push("unrelated-replace-done");
+
+    const replacePromise = rpc(svc, "task.replaceSession", {
+      workspaceId,
+      taskPath,
+      profileId: "fake-default",
+      callerKind: "user",
+    }).then((res) => {
+      order.push("replace-done");
+      return res;
+    });
+
+    await new Promise((r) => setTimeout(r, 50));
+    assert.ok(!order.includes("replace-done"), "replaceSession must wait on same-Task accept Git");
+    assert.ok(!order.includes("accept-done"), "accept must not finish while Git is held");
+    assert.ok(
+      order.includes("unrelated-replace-done"),
+      "unrelated Task replace must not wait on Task A lifecycle flight"
+    );
+
+    releaseIntegrate();
+    const [accepted, replaced] = await Promise.all([acceptPromise, replacePromise]);
+    assert.ok(!accepted.error, JSON.stringify(accepted.error));
+    assert.equal((accepted.result as { state: string }).state, "accepted");
+    assert.ok(replaced.error, "replaceSession must refuse after accept completed");
+    assert.equal(replaced.error?.code, RPC_LIFECYCLE, JSON.stringify(replaced.error));
+    assert.match(
+      String(replaced.error?.message ?? ""),
+      /requires running or waiting|accepted/i,
+      JSON.stringify(replaced.error)
+    );
+    assert.equal(errCode(replaced), "INVALID_TASK_STATE");
+
+    const get = await getTask(svc, workspaceId, taskPath);
+    assert.equal(get.state, "accepted");
+
+    assert.ok(order.indexOf("unrelated-replace-done") < order.indexOf("integrate-exit"));
+    assert.ok(order.indexOf("integrate-exit") < order.indexOf("accept-done"));
+    assert.ok(order.indexOf("accept-done") < order.indexOf("replace-done"));
+  } finally {
+    releaseIntegrate();
+    await svc.stop();
   }
 });

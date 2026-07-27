@@ -5411,9 +5411,14 @@ async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unkn
     operation: "replaceSession",
     skipReuseAndLaunchPrep: true,
   });
-  await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+  // Outer managed-session flight: concurrent same-profile replace/start still join/coalesce.
+  // Inner per-Task lifecycle flight: whole replace (eligibility → launch/bind/rebind) waits on
+  // same-Task accept/deliver/reject/sendInput and vice versa. Neither queue spans provider turns.
   return runManagedSessionFlight(workspaceId, taskPath, profileId, "replaceSession", () =>
-    executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId)
+    runTaskLifecycle(workspaceId, taskPath, async () => {
+      await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+      return executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId);
+    })
   );
 }
 
