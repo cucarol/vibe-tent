@@ -455,6 +455,8 @@ export async function dispatchMethod(
         return taskCancelRpc(ctx, p);
       case "task.startSession":
         return taskStartSessionRpc(ctx, p);
+      case "task.replaceSession":
+        return taskReplaceSessionRpc(ctx, p);
       case "task.list":
         return taskList(ctx, p);
       case "task.get":
@@ -670,7 +672,7 @@ export async function migrateSessionWorkspaceIdsOnMount(
  * Stable wait summary when a bound managed Session is unintentionally unavailable
  * (live terminal exit/fail before Delivery, or dead after service restart / remount).
  * Kept as a constant so tests, recovery UX, and remount reconcile share one contract text.
- * Recovery: explicit `task.startSession` (or equivalent supported Service path); occupation held.
+ * Recovery: explicit `task.startSession` or explicit `task.replaceSession`; occupation held.
  */
 export const SESSION_UNAVAILABLE_WAIT_SUMMARY =
   "Bound session unavailable (service restart or session ended). Restart the session or interrupt the task; occupation is held.";
@@ -740,7 +742,7 @@ async function applySessionUnavailablePark(
  * - Preserves occupation, worktree, report draft, TaskInputs, UserAsks, audit facts
  * - Session registry may already be terminal/diagnostic; only Task is parked
  * - Same-session re-entry is idempotent; rebound sessionId mismatch is a no-op
- * - Does not auto-start or re-prompt; recovery is explicit task.startSession
+ * - Does not auto-start or re-prompt; recovery is explicit task.startSession or task.replaceSession
  */
 async function parkTaskForUnavailableSession(
   ctx: HandlerContext,
@@ -3761,6 +3763,30 @@ function managedTaskInputQueueKey(
   return `${workspaceId}\0${taskPath}`;
 }
 
+/** Test-only hold gate for managed U2A FIFO race coverage (replaceSession). */
+const managedTaskInputQueueHoldForTests = new Map<
+  string,
+  { wait: Promise<void>; notifyEntered: () => void }
+>();
+
+/** Prefer Task binding, then row, then override — never a stale pre-replace capture. */
+async function resolveManagedInjectSessionId(
+  ctx: HandlerContext,
+  latest: TaskInputRecord,
+  opts?: { sessionIdOverride?: string }
+): Promise<string | undefined> {
+  try {
+    const mount = ctx.host.get(latest.workspaceId);
+    const bound = mount
+      ? (await loadTaskEnvelope(mount.env.fs, latest.taskPath)).sessionId?.trim()
+      : undefined;
+    if (bound) return bound;
+  } catch {
+    /* fall through */
+  }
+  return latest.sessionId?.trim() || opts?.sessionIdOverride?.trim() || undefined;
+}
+
 export type ManagedTaskInputDelivery = {
   input: TaskInputRecord;
   continued: boolean;
@@ -3888,45 +3914,24 @@ export function resetManagedTaskInputBackgroundForTests(): void {
 }
 
 /**
- * Shared U2A delivery primitive for managed ACP and external pending.
- *
- * - Persist is already done by the caller (TaskInputStore.add).
- * - Managed live/resume inject uses formatTaskInputPrompt (## User Input or
- *   ## Review Feedback) via the same transport as sendInput.
- * - When sessionIdOverride differs from the stored row (reject-resume new ss- only
- *   when prior was not resume-capable), rebind the pending/failed row to the inject
- *   target before pin/inject so durable state matches the live session.
- * - FIFO: concurrent deliverManagedTaskInput for the same task never overlap
- *   turns or reorder; different tasks run concurrently.
- * - Failure: status=failed with lastError (not dropped); later queue items still run.
- *   Lifecycle interrupt/cancel cancels pending|failed only (not processing/delivered).
- * - managed-inject pin + processing status preserved across inject→markDelivered race
- *   with session.prompt_complete cleanup.
- * - task.sendInput and task.reject(resume:true) both enqueue this in the background
- *   after durable accept + (for reject) session restore; neither RPC awaits the
- *   full Agent turn. Poll taskInput.get / events for processing→delivered|failed|uncertain.
+ * Shared U2A delivery for managed ACP / external pending.
+ * Authoritative inject session is derived inside the per-task FIFO (Task binding
+ * wins). Pre-replace workers must never rebind/inject a retired session.
  */
 async function deliverManagedTaskInput(
   ctx: HandlerContext,
   item: TaskInputRecord,
   opts?: { sessionIdOverride?: string }
 ): Promise<ManagedTaskInputDelivery> {
-  const sessionId =
-    (opts?.sessionIdOverride?.trim() || item.sessionId?.trim() || "") ||
-    undefined;
-  // External / no managed session: leave pending for scoped poll+ack.
-  if (!sessionId) {
-    return { input: item, continued: false };
-  }
-
   const queueKey = managedTaskInputQueueKey(item.workspaceId, item.taskPath);
   return managedTaskInputQueue.run(queueKey, async () => {
-    // Re-read: interrupt/cancel may have cancelled this row while queued.
-    let latest = await ctx.taskInputs.get(
-      item.id,
-      item.workspaceId,
-      item.taskPath
-    );
+    const hold = managedTaskInputQueueHoldForTests.get(queueKey);
+    if (hold) {
+      hold.notifyEntered();
+      await hold.wait;
+    }
+
+    let latest = await ctx.taskInputs.get(item.id, item.workspaceId, item.taskPath);
     if (!latest) {
       return {
         input: item,
@@ -3935,18 +3940,26 @@ async function deliverManagedTaskInput(
       };
     }
     if (latest.status !== "pending" && latest.status !== "failed") {
-      // Already processing/delivered/uncertain/consumed/cancelled — do not re-inject.
-      // uncertain is at-most-once (provider already accepted); never treat as open retry.
       return {
         input: latest,
-        continued:
-          latest.status === "delivered" || latest.status === "uncertain",
+        continued: latest.status === "delivered" || latest.status === "uncertain",
         continueError: `TaskInput already ${latest.status}; skip managed inject`,
       };
     }
 
-    // Persist inject target session when it differs from create-time binding
-    // (reject-resume may allocate a new ss- when prior was not resume-capable).
+    let sessionId = await resolveManagedInjectSessionId(ctx, latest, opts);
+    if (!sessionId) return { input: latest, continued: false };
+
+    const failRebind = async (prefix: string, err: unknown): Promise<ManagedTaskInputDelivery> => {
+      const message = err instanceof Error ? err.message : String(err);
+      try {
+        latest = await ctx.taskInputs.markFailed(latest!.id, `${prefix}: ${message}`, "service");
+      } catch {
+        /* keep prior */
+      }
+      return { input: latest!, continued: false, continueError: `${prefix}: ${message}` };
+    };
+
     if ((latest.sessionId?.trim() || "") !== sessionId) {
       try {
         latest = await ctx.taskInputs.rebindSession(
@@ -3956,26 +3969,10 @@ async function deliverManagedTaskInput(
           sessionId
         );
       } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        try {
-          latest = await ctx.taskInputs.markFailed(
-            latest.id,
-            `TaskInput rebind to inject session failed: ${message}`,
-            "service"
-          );
-        } catch {
-          // keep prior row
-        }
-        return {
-          input: latest,
-          continued: false,
-          continueError: `TaskInput rebind to inject session failed: ${message}`,
-        };
+        return failRebind("TaskInput rebind to inject session failed", err);
       }
     }
 
-    // Claim for background/awaited inject so projections show processing and
-    // cancel skips mid-turn rows.
     try {
       latest = await ctx.taskInputs.markProcessing(latest.id);
     } catch (err) {
@@ -3987,10 +3984,25 @@ async function deliverManagedTaskInput(
       };
     }
 
-    const forInject: TaskInputRecord = {
-      ...latest,
-      sessionId,
-    };
+    // Re-derive after claim: replace may have rebound Task+row while we waited.
+    latest =
+      (await ctx.taskInputs.get(latest.id, latest.workspaceId, latest.taskPath)) ?? latest;
+    sessionId = (await resolveManagedInjectSessionId(ctx, latest, opts)) || sessionId;
+    if ((latest.sessionId?.trim() || "") && latest.sessionId!.trim() !== sessionId) {
+      try {
+        const rows = await ctx.taskInputs.rebindOpenSessions(
+          latest.workspaceId,
+          latest.taskPath,
+          sessionId,
+          [latest.id]
+        );
+        latest = rows[0] ?? latest;
+      } catch (err) {
+        return failRebind("TaskInput inject session drift rebind failed", err);
+      }
+    }
+
+    const forInject: TaskInputRecord = { ...latest, sessionId };
 
     ctx.taskInputs.beginManagedInject(forInject.id);
     let continueResult: { continued: boolean; error?: string };
@@ -4182,9 +4194,32 @@ async function continueManagedAfterTaskInput(
 
 /** Test helper: reset per-task managed U2A FIFO tails (does not touch disk). */
 export function resetManagedTaskInputQueueForTests(): void {
-  // MutationBus has no public clear; replace by draining is unnecessary —
-  // tests use fresh process state. Exported for symmetry / future use.
+  managedTaskInputQueueHoldForTests.clear();
   void managedTaskInputQueue;
+}
+
+/** Hold next managed U2A FIFO worker after queue entry (replaceSession race tests). */
+export function holdManagedTaskInputQueueForTests(
+  workspaceId: string,
+  taskPath: string
+): { entered: Promise<void>; release: () => void } {
+  const key = managedTaskInputQueueKey(workspaceId, taskPath);
+  let release!: () => void;
+  const wait = new Promise<void>((r) => {
+    release = r;
+  });
+  let notifyEntered!: () => void;
+  const entered = new Promise<void>((r) => {
+    notifyEntered = r;
+  });
+  managedTaskInputQueueHoldForTests.set(key, { wait, notifyEntered });
+  return {
+    entered,
+    release: () => {
+      managedTaskInputQueueHoldForTests.delete(key);
+      release();
+    },
+  };
 }
 
 /**
@@ -4832,17 +4867,8 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
 /**
  * A2A gate → AgentRuntimePort.startSession → bind task.sessionId only.
- * Clients never call AgentRuntimePort.* directly.
- *
- * Authorized per-Task launch single-flight (workspaceId + taskPath):
- * - Every caller independently passes A2A / approval / policy / profile /
- *   task-state gates **before** joining any provider-launch flight.
- * - After authorization, same-profile in-flight callers coalesce to one launch
- *   result; a different profileId fails with stable retryable RPC_LIFECYCLE.
- * - If a usable bound Session already exists, return/reuse it without starting
- *   another provider (no flight). Late events from a prior sessionId remain
- *   harmless via sessionId mismatch guards elsewhere.
- * Does not add a Task state; does not implement force-fresh Session replacement.
+ * Shares authorized per-Task managed-session flight with task.replaceSession.
+ * Usable bound Session reuses without launch unless a flight is already held.
  */
 async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -4853,7 +4879,6 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
   }
 
-  // Per-caller gates first — unauthorized callers never join a launch flight.
   const prepared = await prepareAuthorizedTaskStartSession(
     ctx,
     p,
@@ -4863,40 +4888,16 @@ async function taskStartSessionRpc(ctx: HandlerContext, p: Record<string, unknow
     callerKind
   );
   if (prepared.kind === "reuse") {
+    const existing = managedSessionInFlight.get(managedSessionFlightKey(workspaceId, taskPath));
+    if (existing) {
+      return joinOrConflictManagedSessionFlight(existing, profileId, "startSession", taskPath);
+    }
     return prepared.result;
   }
 
-  const flightKey = taskStartSessionFlightKey(workspaceId, taskPath);
-  const existing = taskStartSessionInFlight.get(flightKey);
-  if (existing) {
-    return joinOrConflictTaskStartSessionFlight(existing, profileId, taskPath);
-  }
-
-  // Claim the flight slot synchronously before any await so authorized concurrent
-  // callers (after their own gates) coalesce; losers join without a second launch.
-  // Deferred promise: register before launch await so joiners attach while we run.
-  let settle!: (value: unknown) => void;
-  let rejectFlight!: (reason: unknown) => void;
-  const operation = new Promise<unknown>((resolve, reject) => {
-    settle = resolve;
-    rejectFlight = reject;
-  });
-  // Avoid unhandledRejection when no coalesced waiter is attached yet.
-  operation.catch(() => undefined);
-  taskStartSessionInFlight.set(flightKey, { profileId, promise: operation });
-
-  try {
-    const result = await launchAndBindTaskStartSession(ctx, prepared);
-    settle(result);
-    return result;
-  } catch (err) {
-    rejectFlight(err);
-    throw err;
-  } finally {
-    if (taskStartSessionInFlight.get(flightKey)?.promise === operation) {
-      taskStartSessionInFlight.delete(flightKey);
-    }
-  }
+  return runManagedSessionFlight(workspaceId, taskPath, profileId, "startSession", () =>
+    launchAndBindTaskStartSession(ctx, prepared)
+  );
 }
 
 type PreparedTaskStartSession =
@@ -4921,11 +4922,18 @@ async function prepareAuthorizedTaskStartSession(
   workspaceId: string,
   taskPath: string,
   profileId: string,
-  callerKind: "user" | "role"
+  callerKind: "user" | "role",
+  opts?: {
+    operation?: "startSession" | "replaceSession";
+    /** A2A/approval only — no claim, wait-resume, or session reuse (replaceSession). */
+    skipReuseAndLaunchPrep?: boolean;
+  }
 ): Promise<PreparedTaskStartSession> {
   const mount = ctx.host.require(workspaceId);
   const bootstrapPrompt = optionalString(p, "bootstrapPrompt");
   const approvalId = optionalString(p, "approvalId");
+  const operation = opts?.operation ?? "startSession";
+  const verbLabel = operation === "replaceSession" ? "replaceSession" : "startSession";
 
   // Resolve prior ask approval.
   // User approval may override the role profile whitelist (task-api §4).
@@ -5013,7 +5021,7 @@ async function prepareAuthorizedTaskStartSession(
           taskPath,
           role: authorityRole || task.role,
           profileId,
-          summary: `Role ${authorityRole || task.role} requests startSession on profile ${profileId}`,
+          summary: `Role ${authorityRole || task.role} requests ${verbLabel} on profile ${profileId}`,
         },
         "service"
       );
@@ -5028,14 +5036,31 @@ async function prepareAuthorizedTaskStartSession(
           emitTaskState(ctx, workspaceId, waited, "a2a.ask");
         });
       }
-      throw new RpcError(RPC_A2A_ASK, "A2A policy requires user approval before startSession", {
-        approvalId: item.id,
-        policy: "ask",
-      });
+      throw new RpcError(
+        RPC_A2A_ASK,
+        `A2A policy requires user approval before ${verbLabel}`,
+        {
+          approvalId: item.id,
+          policy: "ask",
+        }
+      );
     }
   }
 
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+
+  // replaceSession: A2A only — eligibility/launch owned by executeTaskReplaceSession.
+  if (opts?.skipReuseAndLaunchPrep) {
+    return {
+      kind: "launch",
+      workspaceId,
+      taskPath,
+      profileId,
+      task,
+      isProfileTask: taskAssigneeKind(task) === "agentProfile",
+      bootstrapPrompt,
+    };
+  }
 
   // Managed startSession for agentProfile tasks must use exactly the envelope profileId.
   if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
@@ -5303,6 +5328,349 @@ async function launchAndBindTaskStartSession(
     roleName: handle.roleName,
     runtimeWorkspace: handle.runtimeWorkspace,
   }, { cwd });
+}
+
+/** Stable restoreReason for explicit same-Task fresh Session replacement. */
+export const REPLACE_SESSION_RESTORE_REASON = "task.replaceSession.fresh" as const;
+
+/** Explicit fresh managed Session on the same Task (unusable provider context). */
+async function taskReplaceSessionRpc(ctx: HandlerContext, p: Record<string, unknown>) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const taskPath = requireString(p, "taskPath");
+  const profileId = requireProfileId(p, "task.replaceSession");
+  const callerKind = parseCallerKind(optionalString(p, "callerKind") ?? "user");
+  if ("a2aPolicyOverride" in p) {
+    throw new RpcError(-32602, "a2aPolicyOverride is service-internal and unavailable over RPC");
+  }
+  if ("force" in p && p.force !== undefined && p.force !== false) {
+    throw new RpcError(-32602, "task.replaceSession does not support force; wait for turnBusy=false and retry", {
+      code: "FORCE_NOT_SUPPORTED",
+    });
+  }
+  await prepareAuthorizedTaskStartSession(ctx, p, workspaceId, taskPath, profileId, callerKind, {
+    operation: "replaceSession",
+    skipReuseAndLaunchPrep: true,
+  });
+  await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+  return runManagedSessionFlight(workspaceId, taskPath, profileId, "replaceSession", () =>
+    executeTaskReplaceSession(ctx, workspaceId, taskPath, profileId)
+  );
+}
+
+async function assertReplaceSessionEligible(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  profileId: string
+): Promise<void> {
+  const mount = ctx.host.require(workspaceId);
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  if (taskAssigneeKind(task) === "agentProfile" && task.role !== profileId) {
+    throw new RpcError(
+      -32602,
+      `task.replaceSession profileId must match agentProfile task assignee (${task.role}); got ${profileId}`,
+      { taskAssignee: task.role, profileId }
+    );
+  }
+  if (task.state !== "running" && task.state !== "waiting") {
+    throw new RpcError(RPC_LIFECYCLE, `task.replaceSession requires running or waiting; got ${task.state}`, {
+      code: "INVALID_TASK_STATE",
+      state: task.state,
+    });
+  }
+  if (task.state === "waiting" && !isSessionUnavailableParkedWait(task)) {
+    throw new RpcError(
+      RPC_LIFECYCLE,
+      "task.replaceSession allows waiting only with durable waitCode=session_unavailable; resolve user-input / a2a / tool waits first",
+      {
+        code: "REPLACE_SESSION_WAIT_NOT_ELIGIBLE",
+        state: task.state,
+        waitReason: task.wait?.reason,
+        waitCode: task.wait?.code,
+      }
+    );
+  }
+  const priorSessionId = task.sessionId?.trim() || "";
+  if (!priorSessionId) {
+    throw new RpcError(RPC_LIFECYCLE, "task.replaceSession requires a bound managed sessionId on the task", {
+      code: "NO_BOUND_SESSION",
+      taskPath,
+    });
+  }
+  try {
+    if ((await ctx.runtime.probe(priorSessionId)).turnBusy === true) {
+      throw new RpcError(
+        RPC_LIFECYCLE,
+        `task.replaceSession refused: managed session ${priorSessionId} still has an in-flight turn (turnBusy); retry when the turn settles`,
+        { code: "TURN_BUSY", sessionId: priorSessionId, taskPath, turnBusy: true }
+      );
+    }
+  } catch (err) {
+    if (err instanceof RpcError) throw err;
+    if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
+  }
+}
+
+async function executeTaskReplaceSession(
+  ctx: HandlerContext,
+  workspaceId: string,
+  taskPath: string,
+  profileId: string
+) {
+  const mount = ctx.host.require(workspaceId);
+  await assertReplaceSessionEligible(ctx, workspaceId, taskPath, profileId);
+  let task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const priorSessionId = task.sessionId!.trim();
+  const preserved = {
+    taskId: task.id,
+    claims: [...(task.claims ?? [])],
+    worktree: task.worktree,
+    branch: task.branch,
+    deliveryPolicy: task.deliveryPolicy,
+    role: task.role,
+  };
+  if (task.state === "waiting") {
+    await taskResumeRpc(ctx, { workspaceId, taskPath });
+    task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  }
+
+  let retirementBegun = false;
+  let startedSessionId: string | undefined;
+  const parkAfterRetirement = async (detail: string): Promise<void> => {
+    try {
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (startedSessionId && current.sessionId === startedSessionId && current.sessionId !== priorSessionId) {
+        await ctx.mutations.run(workspaceId, async () => {
+          ctx.host.markSelfWrite(workspaceId);
+          await patchTaskEnvelope(mount.env.fs, taskPath, {
+            sessionId: priorSessionId,
+            updatedAt: mount.env.clock.now(),
+          });
+        });
+      }
+    } catch {
+      // still park on prior
+    }
+    await parkTaskForUnavailableSession(ctx, {
+      workspaceId,
+      taskPath,
+      sessionId: priorSessionId,
+      reason: "task.replaceSession.failed",
+      detail,
+    });
+  };
+
+  try {
+    try {
+      await ctx.toolApprovals.cancelSession(priorSessionId, "denied");
+    } catch {
+      /* ignore */
+    }
+    try {
+      const priorProbe = await ctx.runtime.probe(priorSessionId);
+      if (priorProbe.alive || SessionRegistry.isNonTerminal(priorProbe.state)) {
+        await ctx.runtime.stopSession(priorSessionId, "user");
+      } else {
+        try {
+          await ctx.runtime.registry.update(priorSessionId, {
+            stopReason: "user",
+            state:
+              priorProbe.state === "failed" || priorProbe.state === "stopped"
+                ? priorProbe.state
+                : "stopped",
+          });
+        } catch {
+          /* gone */
+        }
+      }
+    } catch (err) {
+      if (!/Session not found/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    }
+    retirementBegun = true;
+    clearManagedAutoDeliverDedup(priorSessionId, taskPath);
+
+    task = await ensureTaskWorkspaceLane(ctx, workspaceId, task);
+    const cwd = task.worktree || mount.workspaceRoot;
+    const workspaceLane =
+      task.workspace || task.worktree || task.branch
+        ? {
+            workspace: task.workspace || mount.workspaceRoot,
+            worktree: task.worktree || mount.workspaceRoot,
+            branch: task.branch || "HEAD",
+            targetBranch: task.targetBranch,
+          }
+        : undefined;
+    const bootstrapImageRefs = await collectTaskBootstrapImageRefs(mount.env.fs, task);
+    const handle = await ctx.runtime.startSession({
+      sessionId: makeSessionId(),
+      profileId,
+      roleName: task.role,
+      assigneeKind: taskAssigneeKind(task),
+      workspaceLane,
+      runtimeWorkspace: { cwd },
+      cwd,
+      bootstrapPrompt: buildFreshReplaceSessionBootstrap(task, {
+        workspaceRoot: mount.workspaceRoot,
+        systemRoot: mount.systemRoot,
+        priorSessionId,
+      }),
+      ...(bootstrapImageRefs.length > 0
+        ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot }
+        : {}),
+      lastTaskId: task.id || taskPath,
+      workspace: workspaceId,
+    });
+    startedSessionId = handle.sessionId;
+
+    await ctx.runtime.registry.update(handle.sessionId, {
+      contextRestored: false,
+      restoreReason: REPLACE_SESSION_RESTORE_REASON,
+      replacedSessionId: priorSessionId,
+    });
+    try {
+      const priorRow = await ctx.runtime.registry.read(priorSessionId);
+      if (priorRow) {
+        const { lastTaskId: _detach, ...rest } = priorRow;
+        await ctx.runtime.registry.write({
+          ...rest,
+          replacedBySessionId: handle.sessionId,
+          lastError: `replaced by ${handle.sessionId} (${REPLACE_SESSION_RESTORE_REASON})`,
+          updatedAt: new Date().toISOString(),
+        });
+      }
+    } catch {
+      /* ignore */
+    }
+    clearManagedAutoDeliverDedup(handle.sessionId, taskPath);
+
+    const bound = await ctx.mutations.run(workspaceId, async () => {
+      ctx.host.markSelfWrite(workspaceId);
+      const current = await loadTaskEnvelope(mount.env.fs, taskPath);
+      if (current.id !== preserved.taskId || current.deliveryPolicy !== preserved.deliveryPolicy) {
+        throw new RpcError(RPC_LIFECYCLE, "task.replaceSession: task identity changed during replace", {
+          code: "TASK_IDENTITY_DRIFT",
+        });
+      }
+      const next = await patchTaskEnvelope(mount.env.fs, taskPath, {
+        sessionId: handle.sessionId,
+        state: "running",
+        wait: null,
+        updatedAt: mount.env.clock.now(),
+      });
+      emitTaskState(ctx, workspaceId, next, "task.replaceSession");
+      ctx.events.emit(
+        "session.state",
+        workspaceId,
+        {
+          sessionId: handle.sessionId,
+          state: handle.state,
+          profileId: handle.profileId,
+          taskPath,
+          reason: REPLACE_SESSION_RESTORE_REASON,
+          contextRestored: false,
+          priorSessionId,
+          replacedSessionId: priorSessionId,
+        },
+        "self"
+      );
+      return next;
+    });
+
+    const claims = bound.claims ?? [];
+    if (
+      bound.id !== preserved.taskId ||
+      bound.role !== preserved.role ||
+      bound.deliveryPolicy !== preserved.deliveryPolicy ||
+      bound.worktree !== preserved.worktree ||
+      bound.branch !== preserved.branch ||
+      claims.length !== preserved.claims.length ||
+      claims.some((c, i) => c !== preserved.claims[i])
+    ) {
+      throw new RpcError(RPC_LIFECYCLE, "task.replaceSession mutated task lane/claims/identity", {
+        code: "TASK_IDENTITY_DRIFT",
+      });
+    }
+
+    try {
+      await ctx.taskInputs.rebindOpenSessions(workspaceId, taskPath, handle.sessionId);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      throw new RpcError(RPC_LIFECYCLE, `task.replaceSession TaskInput rebind failed: ${message}`, {
+        code: "REPLACE_SESSION_TASK_INPUT_REBIND_FAILED",
+        taskPath,
+        priorSessionId,
+        newSessionId: handle.sessionId,
+      });
+    }
+
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(bound),
+      session: {
+        sessionId: handle.sessionId,
+        profileId: handle.profileId,
+        adapterId: handle.adapterId,
+        state: handle.state,
+        cwd,
+        contextRestored: false as const,
+        restoreReason: REPLACE_SESSION_RESTORE_REASON,
+        replacedSessionId: priorSessionId,
+      },
+      priorSessionId,
+      replaced: true as const,
+    };
+  } catch (err) {
+    if (startedSessionId) {
+      try {
+        await ctx.runtime.stopSession(startedSessionId, "interrupt");
+      } catch {
+        /* ignore */
+      }
+      try {
+        await ctx.runtime.registry.update(startedSessionId, {
+          lastError: "replace-session orphan stopped after launch/rebind failure",
+          contextRestored: false,
+          restoreReason: REPLACE_SESSION_RESTORE_REASON,
+        });
+      } catch {
+        /* ignore */
+      }
+    }
+    const message = err instanceof Error ? err.message : String(err);
+    if (retirementBegun) await parkAfterRetirement(message);
+    if (err instanceof RpcError) throw err;
+    throw new RpcError(RPC_LIFECYCLE, `task.replaceSession failed to start replacement session: ${message}`, {
+      code: "REPLACE_SESSION_LAUNCH_FAILED",
+      taskPath,
+      priorSessionId,
+      ...(startedSessionId ? { orphanSessionId: startedSessionId } : {}),
+    });
+  }
+}
+
+function buildFreshReplaceSessionBootstrap(
+  task: TaskEnvelope,
+  roots: { workspaceRoot: string; systemRoot: string; priorSessionId: string }
+): string {
+  const base = buildSessionBootstrapPrompt(task, {
+    workspaceRoot: roots.workspaceRoot,
+    systemRoot: roots.systemRoot,
+  });
+  const tail = [
+    "--- Tent replace-session recovery ---",
+    "contextRestored: false",
+    "restoreReason: task.replaceSession.fresh",
+    "Provider context was replaced explicitly. This is an independent managed Session on the same task/workspace lane.",
+    "Do not invent prior chat/cache continuity. Use Task/Node refs below.",
+    `priorSessionId: ${roots.priorSessionId}`,
+    `Task envelope: ${task.path}`,
+    ...(task.id ? [`Task id: ${task.id}`] : []),
+    ...(task.manifest ? [`Manifest: ${task.manifest}`] : []),
+    ...(task.claims?.length ? [`claims (Node refs): ${task.claims.join(", ")}`] : []),
+    "Pending TaskInputs and delivery policy are preserved on this Task. Final report still goes through Delivery only.",
+  ].join("\n");
+  return `${base}\n\n${tail}\n`;
 }
 
 async function taskList(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -5937,6 +6305,13 @@ async function sessionList(ctx: HandlerContext, p: Record<string, unknown>) {
       ...(rec.contextRestored !== undefined
         ? { contextRestored: rec.contextRestored }
         : {}),
+      ...(rec.restoreReason !== undefined ? { restoreReason: rec.restoreReason } : {}),
+      ...(rec.replacedSessionId !== undefined
+        ? { replacedSessionId: rec.replacedSessionId }
+        : {}),
+      ...(rec.replacedBySessionId !== undefined
+        ? { replacedBySessionId: rec.replacedBySessionId }
+        : {}),
       turnBusy: probe.turnBusy === true,
       lastTaskId: rec.lastTaskId,
       workspace: rec.workspace,
@@ -5964,6 +6339,13 @@ async function sessionGet(ctx: HandlerContext, p: Record<string, unknown>) {
     resumeCapable: probe.resumeCapable,
     ...(rec.contextRestored !== undefined
       ? { contextRestored: rec.contextRestored }
+      : {}),
+    ...(rec.restoreReason !== undefined ? { restoreReason: rec.restoreReason } : {}),
+    ...(rec.replacedSessionId !== undefined
+      ? { replacedSessionId: rec.replacedSessionId }
+      : {}),
+    ...(rec.replacedBySessionId !== undefined
+      ? { replacedBySessionId: rec.replacedBySessionId }
       : {}),
     turnBusy: probe.turnBusy === true,
     lastTaskId: rec.lastTaskId,
@@ -7583,53 +7965,76 @@ const managedAutoDeliverDone = new Set<string>();
  */
 const rejectResumeNativeInFlight = new Set<string>();
 
-/**
- * Per-task single-flight for the **provider launch** half of `task.startSession`
- * (key = workspaceId + taskPath).
- *
- * Trust is not keyed by profileId alone: every caller must independently pass
- * A2A / approval / policy / profile / task-state gates before joining a flight.
- * Same-profile coalescing only shares the launch result among already-authorized
- * callers. Different profileId while a launch is in flight → retryable conflict.
- * Slot clears when the attempt settles (success bind or failure).
- * Does not introduce a Task state; in-memory only for the live Service process.
- */
-type TaskStartSessionInFlight = {
+/** Per-task flight for startSession/replaceSession (authorize first, then join). */
+type ManagedSessionFlightOperation = "startSession" | "replaceSession";
+type ManagedSessionInFlight = {
   profileId: string;
+  operation: ManagedSessionFlightOperation;
   promise: Promise<unknown>;
 };
-const taskStartSessionInFlight = new Map<string, TaskStartSessionInFlight>();
+const managedSessionInFlight = new Map<string, ManagedSessionInFlight>();
+const MANAGED_SESSION_IN_PROGRESS_MESSAGE =
+  "managed session operation already in progress for this task";
 
-/** Stable retryable conflict when a concurrent start uses a different profileId. */
-const START_SESSION_IN_PROGRESS_MESSAGE =
-  "task.startSession already in progress for this task";
-
-function taskStartSessionFlightKey(workspaceId: string, taskPath: string): string {
+function managedSessionFlightKey(workspaceId: string, taskPath: string): string {
   return `${workspaceId}\0${taskPath}`;
 }
 
-/** Test helper: whether a launch flight is held for this task key. */
-export function isTaskStartSessionInFlightForTests(
-  workspaceId: string,
-  taskPath: string
-): boolean {
-  return taskStartSessionInFlight.has(taskStartSessionFlightKey(workspaceId, taskPath));
+export function isTaskStartSessionInFlightForTests(workspaceId: string, taskPath: string): boolean {
+  return managedSessionInFlight.has(managedSessionFlightKey(workspaceId, taskPath));
 }
+export const isManagedSessionInFlightForTests = isTaskStartSessionInFlightForTests;
 
-function joinOrConflictTaskStartSessionFlight(
-  existing: TaskStartSessionInFlight,
+function joinOrConflictManagedSessionFlight(
+  existing: ManagedSessionInFlight,
   profileId: string,
+  operation: ManagedSessionFlightOperation,
   taskPath: string
 ): Promise<unknown> {
-  if (existing.profileId !== profileId) {
-    throw new RpcError(RPC_LIFECYCLE, START_SESSION_IN_PROGRESS_MESSAGE, {
+  if (existing.profileId !== profileId || existing.operation !== operation) {
+    throw new RpcError(RPC_LIFECYCLE, MANAGED_SESSION_IN_PROGRESS_MESSAGE, {
       taskPath,
       profileId,
+      operation,
       inFlightProfileId: existing.profileId,
+      inFlightOperation: existing.operation,
       retryable: true,
     });
   }
   return existing.promise;
+}
+
+async function runManagedSessionFlight(
+  workspaceId: string,
+  taskPath: string,
+  profileId: string,
+  operation: ManagedSessionFlightOperation,
+  run: () => Promise<unknown>
+): Promise<unknown> {
+  const flightKey = managedSessionFlightKey(workspaceId, taskPath);
+  const existing = managedSessionInFlight.get(flightKey);
+  if (existing) return joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath);
+
+  let settle!: (value: unknown) => void;
+  let rejectFlight!: (reason: unknown) => void;
+  const flightPromise = new Promise<unknown>((resolve, reject) => {
+    settle = resolve;
+    rejectFlight = reject;
+  });
+  flightPromise.catch(() => undefined);
+  managedSessionInFlight.set(flightKey, { profileId, operation, promise: flightPromise });
+  try {
+    const result = await run();
+    settle(result);
+    return result;
+  } catch (err) {
+    rejectFlight(err);
+    throw err;
+  } finally {
+    if (managedSessionInFlight.get(flightKey)?.promise === flightPromise) {
+      managedSessionInFlight.delete(flightKey);
+    }
+  }
 }
 
 /**
@@ -8728,14 +9133,14 @@ export function resetManagedAutoDeliverDedupForTests(): void {
   managedAutoDeliverInFlight.clear();
   managedAutoDeliverDone.clear();
   rejectResumeNativeInFlight.clear();
-  taskStartSessionInFlight.clear();
+  managedSessionInFlight.clear();
   rejectResumePostStartFailureForTests = null;
   beforeCombinedDispatchCompensateForTests = null;
 }
 
-/** Test helper: clear per-task startSession single-flight slots. */
+/** Test helper: clear per-task managed-session single-flight slots. */
 export function resetTaskStartSessionInFlightForTests(): void {
-  taskStartSessionInFlight.clear();
+  managedSessionInFlight.clear();
 }
 
 /**
@@ -9462,12 +9867,15 @@ function parseOptionalA2APolicy(raw: string | undefined): A2APolicy | undefined 
   throw new RpcError(-32602, `Invalid a2aPolicy: ${raw}`);
 }
 
-function requireProfileId(p: Record<string, unknown>): string {
+function requireProfileId(
+  p: Record<string, unknown>,
+  verb = "task.startSession"
+): string {
   const profileId = optionalString(p, "profileId");
   if (!profileId) {
     throw new RpcError(
       -32602,
-      "task.startSession requires explicit profileId (no fake-default or product-profile fallback)"
+      `${verb} requires explicit profileId (no fake-default or product-profile fallback)`
     );
   }
   return profileId;

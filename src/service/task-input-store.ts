@@ -312,6 +312,8 @@ export class TaskInputStore {
    * these rows to cancelled or markDelivered loses the race with delivery cleanup.
    */
   private readonly managedInjectInFlight = new Set<string>();
+  /** Test-only: next persistSnapshot fails once, then clears. */
+  private nextPersistErrorForTests: Error | null = null;
 
   constructor(dataDir: string, options?: TaskInputStoreOptions) {
     this.file = path.join(dataDir, "task-inputs.json");
@@ -494,57 +496,93 @@ export class TaskInputStore {
     });
   }
 
-  /**
-   * Rebind a still-pending input to the session that will inject/consume it.
-   * Used after reject-resume creates a new ss- so review-feedback is not left
-   * keyed to a dead prior session (cancelSession / projection / poll honesty).
-   * Idempotent when sessionId already matches. Fail-loud on missing/scope/terminal.
-   */
+  /** Single-row rebind; multi-row same-task rebind uses {@link rebindOpenSessions}. */
   async rebindSession(
     id: string,
     workspaceId: string,
     taskPath: string,
     sessionId: string
   ): Promise<TaskInputRecord> {
+    const [row] = await this.rebindOpenSessions(workspaceId, taskPath, sessionId, [id]);
+    if (!row) throw new Error(`TaskInput not found: ${id}`);
+    return row;
+  }
+
+  /**
+   * Atomic batch rebind of open TaskInputs (pending/failed/processing): validate all,
+   one persist, all-or-none. `processing` included for replaceSession mid-FIFO claims.
+   */
+  async rebindOpenSessions(
+    workspaceId: string,
+    taskPath: string,
+    sessionId: string,
+    inputIds?: readonly string[]
+  ): Promise<TaskInputRecord[]> {
     if (!workspaceId?.trim() || !taskPath?.trim()) {
-      throw new Error(
-        "TaskInput.rebindSession requires workspaceId and taskPath"
-      );
+      throw new Error("TaskInput.rebindOpenSessions requires workspaceId and taskPath");
     }
     const nextSession = sessionId?.trim();
     if (!nextSession) {
-      throw new Error("TaskInput.rebindSession requires non-empty sessionId");
+      throw new Error("TaskInput.rebindOpenSessions requires non-empty sessionId");
     }
     if (this.closed) throw new Error("TaskInput store is closed");
     await this.ensureLoaded();
     return this.enqueue(async () => {
       if (this.closed) throw new Error("TaskInput store is closed");
-      const item = this.items.get(id);
-      if (!item) throw new Error(`TaskInput not found: ${id}`);
-      if (item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
-        throw new Error(`TaskInput not found: ${id}`);
-      }
-      // Allow rebind on open rows that are not mid-inject (pending/failed).
-      if (item.status !== "pending" && item.status !== "failed") {
-        throw new Error(
-          `TaskInput.rebindSession requires pending or failed status; got ${item.status}: ${id}`
+      const isRebindable = (status: TaskInputStatus): boolean =>
+        status === "pending" || status === "failed" || status === "processing";
+
+      let targets: TaskInputRecord[];
+      if (inputIds !== undefined) {
+        targets = [];
+        for (const rawId of inputIds) {
+          const id = rawId?.trim();
+          if (!id) throw new Error("TaskInput.rebindOpenSessions requires non-empty input ids");
+          const item = this.items.get(id);
+          if (!item || item.workspaceId !== workspaceId || item.taskPath !== taskPath) {
+            throw new Error(`TaskInput not found: ${id}`);
+          }
+          if (!isRebindable(item.status)) {
+            throw new Error(
+              `TaskInput.rebindOpenSessions requires pending, failed, or processing status; got ${item.status}: ${id}`
+            );
+          }
+          targets.push(item);
+        }
+      } else {
+        targets = [...this.items.values()].filter(
+          (i) =>
+            isRebindable(i.status) &&
+            i.workspaceId === workspaceId &&
+            i.taskPath === taskPath
         );
       }
-      if (item.sessionId === nextSession) {
-        return cloneInput(item);
-      }
+
       const now = new Date().toISOString();
-      const rebound: TaskInputRecord = {
-        ...item,
-        sessionId: nextSession,
-        updatedAt: now,
-      };
+      let anyChange = false;
       const next = new Map(this.items);
-      next.set(id, rebound);
-      await this.persistSnapshot(next);
-      this.items = next;
-      return cloneInput(rebound);
+      const rebound: TaskInputRecord[] = [];
+      for (const item of targets) {
+        if (item.sessionId === nextSession) {
+          rebound.push(cloneInput(item));
+          continue;
+        }
+        anyChange = true;
+        const updated: TaskInputRecord = { ...item, sessionId: nextSession, updatedAt: now };
+        next.set(item.id, updated);
+        rebound.push(cloneInput(updated));
+      }
+      if (anyChange) {
+        await this.persistSnapshot(next);
+        this.items = next;
+      }
+      return rebound;
     });
+  }
+
+  /** Test helper: fail the next persistSnapshot once (proves atomic rebind). */
+  setNextPersistErrorForTests(error: Error | null): void {
+    this.nextPersistErrorForTests = error;
   }
 
   /**
@@ -901,6 +939,11 @@ export class TaskInputStore {
   private async persistSnapshot(
     snapshot: Map<string, TaskInputRecord>
   ): Promise<void> {
+    if (this.nextPersistErrorForTests) {
+      const err = this.nextPersistErrorForTests;
+      this.nextPersistErrorForTests = null;
+      throw err;
+    }
     const items = [...snapshot.values()];
     // Keep open + delivered + uncertain + a bounded tail of terminal rows.
     // processing/failed/pending/uncertain survive restart; processing reloads as uncertain.

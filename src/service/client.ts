@@ -815,6 +815,24 @@ export class ServiceClient {
   ) {
     return this.call("task.startSession", { workspaceId, ...args });
   }
+  /**
+   * Explicit fresh managed Session on the same Task when the bound provider
+   * context is unusable. Not a silent fallback from taskStartSession.
+   * Same A2A params as startSession; refuses turnBusy with TURN_BUSY (no force).
+   * Shares the per-Task managed-session execution slot with startSession.
+   */
+  taskReplaceSession(
+    workspaceId: string,
+    args: {
+      taskPath: string;
+      /** Required — must match agentProfile assignee when applicable. */
+      profileId: string;
+      callerKind?: "user" | "role";
+      approvalId?: string;
+    }
+  ) {
+    return this.call("task.replaceSession", { workspaceId, ...args });
+  }
   taskList(workspaceId: string) {
     return this.call("task.list", { workspaceId });
   }

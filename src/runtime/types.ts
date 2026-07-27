@@ -184,6 +184,21 @@ export interface SessionRecord {
    */
   contextRestored?: boolean;
   /**
+   * Stable reason for how this Session was bound (reject-resume path or explicit
+   * task.replaceSession). Optional audit field — not a second Task state.
+   */
+  restoreReason?: string;
+  /**
+   * When this Session replaced a prior managed Session on the same Task
+   * (task.replaceSession), the retired Tent session id. Audit linkage only.
+   */
+  replacedSessionId?: string;
+  /**
+   * When this Session was retired by task.replaceSession, the newly bound
+   * Tent session id. Audit linkage only; late events must still ignore rebound Tasks.
+   */
+  replacedBySessionId?: string;
+  /**
    * Stable pull-host / external-GUI idempotency key within a workspace.
    * First-class field on the session row — not profile env.
    */

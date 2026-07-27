@@ -478,6 +478,15 @@ export type SessionProjection = {
    */
   contextRestored?: boolean;
   /**
+   * Stable restore / replace reason when the Session was rebound without native continuity
+   * (e.g. task.reject.resume.* or task.replaceSession.fresh).
+   */
+  restoreReason?: string;
+  /** Prior Tent session id when this Session replaced one (audit). */
+  replacedSessionId?: string;
+  /** Successor Tent session id when this Session was replaced (audit). */
+  replacedBySessionId?: string;
+  /**
    * Managed turn in flight (session/prompt settling). Distinct from `alive`:
    * a live role session may be turn-idle between prompts. Optional for wire
    * compatibility; omitted/false when no managed turn is busy.
@@ -813,6 +822,16 @@ export const CLIENT_METHODS = [
   "task.interrupt",
   "task.cancel",
   "task.startSession",
+  /**
+   * Explicit fresh managed Session on the same Task (unusable provider context).
+   * Never a silent fallback from task.startSession. Same A2A gate as startSession.
+   * Shares the per-Task managed-session execution slot with startSession.
+   * Preserves claims/worktree/branch/lane/pending TaskInputs/deliveryPolicy;
+   * stops the old Session first; new ss- has contextRestored=false + stable restoreReason.
+   * turnBusy → fail-loud TURN_BUSY (retryable); no force flag in this contract.
+   * waiting only when durable waitCode=session_unavailable (not user-input/a2a/tool).
+   */
+  "task.replaceSession",
   "task.list",
   "task.get",
   "delivery.list",

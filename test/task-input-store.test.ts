@@ -296,8 +296,53 @@ test("task input store: rebindSession updates pending session; cancel old id lea
 
   await assert.rejects(
     () => store.rebindSession(id, workspaceId, taskPath, "ss-later"),
-    /pending or failed status/
+    /pending, failed, or processing status/
   );
+});
+
+test("task input store: rebindOpenSessions is atomic (all-or-none on persist failure)", async () => {
+  const dataDir = await tempDir("tent-ti-rebind-batch-");
+  const store = new TaskInputStore(dataDir);
+  const workspaceId = "ws-batch";
+  const taskPath = "temp/r/tasks/batch.md";
+  const now = new Date().toISOString();
+  await store.add(
+    pending({
+      id: "ti-a",
+      workspaceId,
+      taskPath,
+      sessionId: "ss-old",
+      text: "A",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+  await store.add(
+    pending({
+      id: "ti-b",
+      workspaceId,
+      taskPath,
+      sessionId: "ss-old",
+      text: "B",
+      createdAt: now,
+      updatedAt: now,
+    })
+  );
+
+  store.setNextPersistErrorForTests(new Error("injected persist fail"));
+  await assert.rejects(
+    () => store.rebindOpenSessions(workspaceId, taskPath, "ss-new"),
+    /injected persist fail/
+  );
+  for (const id of ["ti-a", "ti-b"]) {
+    const row = await store.get(id, workspaceId, taskPath);
+    assert.equal(row?.sessionId, "ss-old");
+    assert.equal(row?.status, "pending");
+  }
+
+  const rebound = await store.rebindOpenSessions(workspaceId, taskPath, "ss-new");
+  assert.equal(rebound.length, 2);
+  assert.ok(rebound.every((r) => r.sessionId === "ss-new"));
 });
 
 test("task input store: uncertain is at-most-once (no listPending, no cancel, no retry, survives restart)", async () => {

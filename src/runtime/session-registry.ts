@@ -106,6 +106,15 @@ function parseSessionRecord(data: unknown, sessionId: string): SessionRecord | n
   if ("contextRestored" in data && data.contextRestored !== undefined) {
     if (typeof data.contextRestored !== "boolean") return null;
   }
+  for (const key of [
+    "restoreReason",
+    "replacedSessionId",
+    "replacedBySessionId",
+  ] as const) {
+    if (key in data && data[key] !== undefined && typeof data[key] !== "string") {
+      return null;
+    }
+  }
   if ("runtimeWorkspace" in data && data.runtimeWorkspace !== undefined) {
     if (!isPlainObject(data.runtimeWorkspace)) return null;
     if (!isNonEmptyString(data.runtimeWorkspace.cwd)) return null;
