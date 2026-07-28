@@ -29,7 +29,7 @@ tent agent leave   → unbind only; delivered=false, accepted=false
 1. Re-query persisted Session and Task state after restart, compaction, handoff, provider change, or replacement.
 2. Never treat an old live handle, process ID, or remembered resume token as current authority.
 3. Use `task.replaceSession` only through the Service and only when its current eligibility checks allow it; do not manufacture a replacement by editing registry files.
-4. Reuse a downstream Session only through a Core operation that confirms the current binding and compatibility. If that capability is absent, start through the existing Task lifecycle.
+4. Reuse only through Core compatibility checks: workspace, parent Role, logical `agentId`, purpose, Skills, profile/adapter, context generation, lane, exclusive idle lease, settled turn, and no pending input/Delivery must match. A failed check creates a fresh Session generation.
 5. Do not stop a process merely because its Session projection looks stale; confirm ownership and current runtime state first.
 
 ## Host tools stay with the host
@@ -40,4 +40,4 @@ tent agent leave   → unbind only; delivered=false, accepted=false
 
 ## Context is not permission
 
-The Task manifest is a context pointer, not an ACL. Open the referenced content when the Task requires it; never infer authorization from a manifest list.
+The Context Card supplies Task refs; the manifest is only an auxiliary snapshot. Neither is an ACL. Authority comes from persisted parent/reviewer, Role roster, Task lifecycle, and integration lane.

@@ -17,8 +17,8 @@ Desktop / co-located agents use **in-workspace** layout only.
 2. **Never** join operational paths as `<workspaceRoot>/temp` or `<workspaceRoot>/RULES.md`.
 3. CLI args (`taskPath`, most core-relative paths) stay `temp/...` relative to system root. On disk for editors/agents reading files: `.tent/temp/...`.
 4. Context Card / bootstrap may give `workspaceRoot` + `systemRoot`. Prefer those. If `tentRoot` appears, it means **system root** (`.tent`), not workspace.
-5. Do not invent missing envelope, manifest, or box bodies — open the path or fetch via `tent task get` first.
-6. Treat `manifest.yml` as a **context pointer** from dispatch: which claims and paths to load for this task. V0.2 `tent-task` does **not** project or enforce permission axes from the manifest.
+5. Do not invent a missing envelope, Context Card, manifest, or Node body — open the persisted source or fetch the Task first.
+6. `Task.contextCard.refs.nodes[]` is the only persisted Node-source wire. Stable Node ID is authoritative; path is a refreshable hint. A manifest is an auxiliary dispatch snapshot, not an ACL, authority source, or second Node-ref list.
 
 ## Common locations
 
@@ -40,5 +40,7 @@ When the envelope includes lane fields:
 - `worktree` — execution directory for code edits
 - `branch` — Git branch for this role/task (`tent-role/<role>` or `tent-task/<taskId>`)
 - `targetBranch` — integrate target (mainline or dispatcher role branch)
+- `baseCommit` — exact Task-lane starting commit; ordinary executor history must be linear from it
+- `integrationAuthority` — derived from exact parent/reviewer with Service as mutator
 
-If lane fields are absent, the task may be pure Tent (no Git lane). That is valid. Do not invent a worktree.
+If lane fields are absent, the Task may be pure Tent (no Git lane). That is valid. Do not invent a worktree. Durable Role worktrees persist; a clean, terminal, settled agentProfile Task worktree may be reclaimed automatically by Core.

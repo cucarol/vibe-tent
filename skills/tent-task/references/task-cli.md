@@ -27,6 +27,7 @@ tent task reject <taskPath> --actor <user|role> [--note …] [--resume|--no-resu
 tent task cancel <taskPath> …
 tent task dispatch <boxId> <role> …
 tent task dispatch <boxId> --profile <profileId> …
+tent task dispatch <boxId> --agent <agentId> …
 ```
 
 Dispatch forms:
@@ -34,17 +35,17 @@ Dispatch forms:
 | Form | Assignee | Session |
 | --- | --- | --- |
 | `tent task dispatch <boxId> <role> [prompt…]` | Durable **role** (registry) | Queued only; no auto start |
-| `tent task dispatch <boxId> --profile <id> [prompt…]` | One-shot **agentProfile** | Always `startSession`; prints `sessionId` / `sessionState` |
+| `tent task dispatch <boxId> --profile <profileId> [prompt…]` | User-direct one-shot **AgentProfile** | Starts a managed Session |
+| `tent task dispatch <boxId> --agent <agentId> [prompt…] --by <role>` | Logical worker in the parent Role roster | Resolves its machine-local Profile and starts a managed Session |
 
-- `--profile` does **not** register or create a role. Envelope lands under `temp/agent-profiles/<profileId>/…`.
+- `--agent` is the normal Role-to-downstream path. `agentId` is stable logical identity; Profile is local launch resolution. Out-of-roster dispatch fails loud.
+- `--profile` does **not** register a Role or authorize a roster worker; it is the user-direct one-shot path.
 - A bare role-like string is **never** inferred as a profile; use `--profile` explicitly.
 - Do not pass low-level `--assignee-kind` / `--start-session` on the CLI.
-- Prompt: positionals **or** `--prompt <text>|-`, not both. With `--profile`, every positional after `boxId` is prompt text.
-- Role attribution / A2A: any dispatch with explicit `--by`/`--from`/`--dispatched-by` (must name a **role**, not `user`), or implicit `TENT_ROLE`, or `--as-sub`, sends `callerKind=role` on **both** role and profile forms; plain user dispatch omits `--by` and sends `callerKind=user`. Explicit `--by user` is rejected.
+- Prompt: positionals **or** `--prompt <text>|-`, not both.
+- CLI `--by <role>` translates to explicit equal `parentActor` + `reviewer`; it never writes legacy `dispatchedBy`. User-direct dispatch uses user as both. `asSub` affects the Git lane only, never reviewer authority or Node concurrency.
 
-Agents never self-accept their own Delivery. Use the persisted Task’s current `asSub`, `dispatchedBy`, and `deliveryPolicy` fields; review authority comes from Core and persisted state.
-
-As a behavior contract, a downstream executor never requests or elevates `bypass` or `agent-decide`. If persisted state contradicts the intended review-to-parent model, fail loudly to the dispatcher. The V0.2 target replaces these compatibility fields with an explicit parent actor/reviewer contract.
+Agents never self-accept. Review authority is the exact persisted `reviewer`, which must equal `parentActor`. Downstream Task Agents always use review-to-parent and cannot elevate `bypass` or `agent-decide`; the three-state policy is only for a durable Role's user-facing Delivery.
 
 ## taskPath
 
@@ -55,12 +56,14 @@ As a behavior contract, a downstream executor never requests or elevates `bypass
 
 ## Claim / get / deliver
 
-1. **claim** — external path only when state is still `queued`. Moves task to `running`, projects box owner/status.  
+1. **claim** — external path only when state is still `queued`. Moves the Task to `running`; Node collaboration remains a projection and Node refs are non-exclusive.
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. Envelope is the delivery record; box body is the task definition.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
-   Creates a Delivery; does **not** accept. The current wire stores `deliveryPolicy` per Task: `review` waits for authorized review, `bypass` auto-integrates, and `agent-decide` requires integrate or request-review. Executors never elevate it. The V0.2 behavior target restricts downstream Task Agent → parent review and reserves the three-state choice for a durable Role’s user-facing Delivery.
+   Creates a Delivery; does **not** accept. A downstream executor delivers only for its exact parent reviewer. A durable Role's own user-facing Task may use its configured `review | bypass | agent-decide` policy.
    Service refuses ready Delivery while this task still has open TaskInput (`pending` / `processing` / retryable `failed`) with stable code `PENDING_TASK_INPUT` — consume via managed inject or `task-input ack` first; do not expect seal/cleanup to cancel blockers for you.
+
+Managed ACP final reports lead with `outcome: delivered|blocked|needs-input`. Only `delivered` may publish a ready Delivery after the turn and lane settle; `blocked` and `needs-input` remain non-delivery outcomes.
 
 ```bash
 tent task deliver temp/.../tasks/task-….md --summary "what changed" --commits <sha>

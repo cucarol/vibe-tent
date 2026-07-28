@@ -225,8 +225,8 @@ test("builtin skill composition: prompt is sole model-visible source; ACP meta i
   assert.equal(count(prefix, roleHeading), 1);
   assert.equal(count(prefix, taskHeading), 1);
   // Body identity: distinctive first lines from each SKILL after frontmatter strip.
-  const roleBodySample = "Apply this contract whenever the Agent is acting as a durable Role";
-  const taskBodySample = "Apply this contract whenever executing a Task";
+  const roleBodySample = "Apply this contract whenever acting as a durable Role";
+  const taskBodySample = "Apply this contract whenever executing a Tent Task";
   assert.equal(count(prefix, roleBodySample), 1, "tent-role body once in prefix");
   assert.equal(count(prefix, taskBodySample), 1, "tent-task body once in prefix");
   // Combined model-visible surface (prefix + ACP meta names) still has each built-in once.

@@ -1,61 +1,56 @@
 ---
 name: tent-task
-description: Execute one concrete Task inside Tent (帷幄), from Context Card and claim through scoped work, TaskInput/UserAsk handling, testing, terminal outcome, and Delivery. Use whenever any durable Role, managed ACP Agent, external Agent, or one-shot Agent is responsible for a Tent Task. Combine with tent-role when the executor is also a durable Role.
+description: "Execute one concrete Tent (帷幄) Task from its persisted Context Card through scoped work, TaskInput/UserAsk handling, isolated Git lane, verification, explicit terminal outcome, and Delivery to the exact parent reviewer. Use for every Tent Task executor: durable Role, managed ACP Agent, external Agent, or user-started one-shot Agent. Also apply tent-role when the executor is a durable Role."
 ---
 
 # tent-task
 
-Apply this contract whenever executing a Task. Load the unchanged Skill text once per Session; for later Tasks append only the new Task pointer, acceptance requirements, and incremental inputs. If the executor is a durable Role, also apply `tent-role`; being managed or external does not change that decision.
+Apply this contract whenever executing a Tent Task. Every Tent Agent uses it while doing concrete work; a durable Role additionally applies `tent-role`.
 
-## Resolve the Task
+Load unchanged Skill text once per Session. For later compatible Tasks, append only the new Context Card and incremental TaskInput/review delta; never repeat the stable prefix merely to remind the Agent.
 
-1. Work from the real workspace root containing `.tent/`. CLI task paths are relative to the `.tent` system root (`temp/...`); direct file reads use `.tent/temp/...`. Never use `<workspace>/temp`.
-2. Resolve the exact task path or Task ID from the Context Card, persisted binding, or `tent task list`.
-3. Managed ACP is already claimed by the Service; do not claim it again. External/relay execution must claim before working and may bind its host Session through `tent agent enter` or `claim --session`.
-4. Fetch the envelope and read the referenced Nodes/boxes, manifest, Context Card, acceptance requirements, and current TaskInputs. Treat the manifest as a context pointer, not an ACL.
-5. Do not infer missing Task content or use a stale Session handle as truth.
+## Resolve the authoritative Task
 
-Read [references/paths.md](references/paths.md) for path and WorkspaceLane details, [references/session-boundaries.md](references/session-boundaries.md) for managed/external Session recovery, and [references/task-cli.md](references/task-cli.md) for exact commands and wire behavior.
+1. Work from the workspace root containing `.tent/`. CLI Task paths are relative to `.tent` (`temp/...`); direct file reads use `.tent/temp/...`.
+2. Resolve the exact Task path/ID from managed binding, Context Card, or `tent task list`. Managed ACP is already claimed by Service; external/relay execution must claim before work and may bind its host Session.
+3. Read the persisted envelope and Context Card: objective, frozen decisions, included/excluded scope, acceptance, Node/Task/Delivery/Git refs, `parentActor`, exact `reviewer`, assignee, context generation, Task delta digest, and execution lane.
+4. Resolve Node refs by stable ID; treat any stored path as a refreshable hint. Node references are non-exclusive context, not tree locks or authority.
+5. Fail loud to the parent when required context or a declared ref is missing. Never infer it from prompt memory, stale Session handles, old `claims`, or a manifest.
 
-## Work inside the assigned lane
+Read [references/paths.md](references/paths.md) for path/lane details, [references/session-boundaries.md](references/session-boundaries.md) for managed/external recovery, and [references/task-cli.md](references/task-cli.md) only for commands needed by the current responsibility.
 
-- Use the envelope worktree and branch when present. If no lane exists, do not invent one.
-- Preserve unrelated and pre-existing dirty work; never reset or clean it away.
-- Stay inside the Task claims and acceptance requirements. Ask when a necessary expansion changes product intent, authority, or irreversible scope.
-- Implement, inspect, and test in proportion to risk. Commit code work when the envelope provides a Git lane; never commit `.tent/`.
+## Work inside the recorded lane
 
-## Handle mid-Task communication
+- Use the envelope worktree and branch when present; do not invent a lane. Preserve unrelated/pre-existing dirty work and never reset or clean it away.
+- Start from recorded `baseCommit`. Ordinary executors produce only linear Task commits and must not merge or rebase the parent, target, or dependency branches. Parent/Service owns integration. Core rejects unauthorized merge/foreign ancestry at Delivery.
+- Stay within Context Card scope and acceptance. Ask the parent before changing product intent, authority, irreversible scope, or explicit exclusions.
+- Implement and test in proportion to risk. Commit code work in the Task lane; never commit `.tent/`.
 
-- A2U: use `tent task ask-user` when the Task needs a user decision, then wait for the reply.
-- U2A: consume scoped TaskInputs with `task-input list|get|ack`.
-- Never self-send input to the same Task. A dispatcher may send input to a subordinate Task it owns.
+## Handle Task communication
+
+- A2U: use `tent task ask-user` for a required user decision, then wait through the supported lifecycle.
+- U2A: consume and acknowledge scoped TaskInputs with `task-input list|get|ack` (managed Sessions receive them through Service injection).
+- Never send input to the same Task as its executor. The user or parent dispatcher writes TaskInput.
 - A blocker, question, or unfinished report is not a successful Delivery.
 
-## Finish with an explicit outcome
+## Finish with one structured outcome
 
-State exactly one terminal outcome in the final Task report:
+Lead the terminal report with exactly one:
 
-- `delivered`: acceptance requirements are satisfied and evidence is ready for review/integration.
-- `blocked`: work cannot safely continue without an external state change.
-- `needs-input`: a specific decision or answer is required.
+- `outcome: delivered` — acceptance is met and stable evidence is ready;
+- `outcome: blocked` — an external state change is required;
+- `outcome: needs-input` — a specific decision/answer is required.
 
-Use `delivered`, `blocked`, and `needs-input` as report conventions only unless the host explicitly exposes a structured Task outcome channel. Current managed runtimes may auto-deliver the final assistant reply, so do not end the managed turn with a blocker or question and assume Core will suppress Delivery. Use `ask-user`, the current waiting path, or fail loudly through the runtime-supported lifecycle.
+Managed Service may publish a ready Delivery only for `delivered`, after the turn, TaskInputs, worktree, commits, and history are settled. Use `ask-user`/waiting for questions; do not end with a question and expect Core to reinterpret it.
 
-### Deliver correctly
+## Deliver to the exact parent
 
-- Managed ACP: the Service owns claim and Delivery publication. Return the explicit outcome and report only when the runtime-supported lifecycle is ready to end; do not manually claim or deliver.
-- External/relay: on `delivered`, run `tent task deliver` with an honest summary and commit SHAs. Chat text alone is not Delivery.
-- Delivery never means accept. Do not set the box to done and never accept your own Delivery.
-- Use the persisted Task’s current `asSub`, `dispatchedBy`, and `deliveryPolicy` fields; review must be authorized by Core from the persisted Task, not inferred from prompt memory.
-- As a behavior contract, a downstream executor must never request or elevate `bypass` or `agent-decide`. If persisted state contradicts the intended review-to-parent model, fail loudly to the dispatcher instead of pretending Core already selected a parent reviewer.
-- When a durable Role itself executes a user-facing Task, follow the Role’s configured `review | bypass | agent-decide` policy without elevating it. `agent-decide` means integrate or request review, never fake independent acceptance.
+- Managed ACP: Service owns claim and Delivery publication; return the structured outcome and evidence only when ready to end the turn.
+- External/relay: on `delivered`, run `tent task deliver` with an honest summary and exact commit SHAs. Chat text alone is not Delivery.
+- Delivery is never acceptance. The executor never accepts its own Delivery.
+- Use persisted `parentActor` and exact `reviewer`; never infer reviewer from history or identity labels. A downstream executor always uses review-to-parent and cannot elevate to `bypass` or `agent-decide`.
+- A durable Role executing its own user-facing Task follows that Role's configured three-state policy through `tent-role`.
 
-Before reporting `delivered`, ensure pending TaskInputs are settled and the worktree/commit state matches the report.
+Before `delivered`, ensure all TaskInputs are settled, the lane is clean as required, and reported commits/evidence match reality. Include user-confirmed decisions in the report; persist them directly only when also acting as the authorized Role.
 
-## Preserve durable decisions
-
-Include any user-confirmed decision encountered during the Task in the Delivery report. Persist it directly only when this executor is also the authorized Role; otherwise return it to the parent reviewer for placement.
-
-## Stop at the Task boundary
-
-After Delivery, wait for Core/parent review. Do not manage the durable Role prompt, roster, downstream Agent selection, or reusable downstream Session pool from this Skill; those belong to `tent-role`.
+After terminal settle, Core may automatically reclaim a clean, integrated agentProfile Task worktree. Do not force cleanup, delete audit records, or continue writing after Delivery; dirty, busy, unintegrated, ambiguous, external, and durable Role lanes remain fail-closed.

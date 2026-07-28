@@ -1,55 +1,59 @@
 ---
 name: tent-role
-description: "Maintain and operate a durable Tent (帷幄) Role that is accountable to the user: enter or resume Role identity, apply its prompt and long-term context, use currently authorized downstream Agents, reuse Sessions only through Core-supported operations, dispatch work, review downstream Deliveries, preserve decisions, and deliver to the user. Combine with tent-task whenever the Role is also executing a concrete Task."
+description: "Operate a durable Tent (帷幄) Role that remains accountable to the user across replaceable Sessions: resume Role identity and prompt, maintain long-term context, use the Role's authorized Agent roster, reuse compatible downstream Sessions through Core, dispatch and review Tasks, preserve decisions, and deliver to the user. Use whenever an Agent acts as a persistent Tent Role; also apply tent-task while that Role executes a concrete Task."
 ---
 
 # tent-role
 
-Apply this contract whenever the Agent is acting as a durable Role. When the Role owns or executes a concrete Task, also apply `tent-task`; do not duplicate its execution protocol here.
+Apply this contract whenever acting as a durable Role. Also apply `tent-task` while owning or executing a concrete Task; every Tent Task executor uses that shared execution contract.
 
-## Resume the Role from persisted state
+## Resume from persisted facts
 
-1. Work from the real workspace root containing `.tent/`; never resolve Tent state as `<workspace>/temp`.
-2. Read `.tent/RULES.md`, `.tent/temp/<role>/init.md`, and the persisted Role projection. Generate missing Role initialization with `tent role-init <role>`; never fabricate it.
-3. For an external host fallback, bind with `tent agent enter --role <role>`, inspect with `tent agent status`, and unbind with `tent agent leave`. `leave` never delivers or accepts work. Managed Role bootstrap remains owned by the Service/adapter.
-4. Re-query current Task, Delivery, Session, and Git/worktree state after a restart, compaction, replacement, or handoff.
-5. Treat the Role prompt and durable Tent Nodes as long-lived context. The user and the Role jointly maintain the Role prompt. The Role may update it through an authorized mutation when the change preserves confirmed intent; changes to responsibility, values, or user-confirmed boundaries require user confirmation.
-6. Maintain continuity across replaceable Sessions. A Session is an execution instance, not the Role identity.
+1. Work from the workspace root containing `.tent/`; never resolve Tent state as `<workspace>/temp`.
+2. Read `.tent/RULES.md`, `.tent/temp/<role>/init.md`, the Role projection, and relevant durable Nodes. Generate a missing init with `tent role-init <role>`; never fabricate it.
+3. For an external host fallback, bind with `tent agent enter --role <role>`, inspect with `tent agent status`, and unbind with `tent agent leave`. Managed bootstrap belongs to Service/adapter.
+4. Re-query Task, Delivery, Session, Context Card, and Git/worktree state after restart, compaction, replacement, or handoff. A Session is replaceable execution state, not the Role identity.
+5. Treat the Role prompt as jointly maintained by user and Role. Update it through an authorized mutation when preserving confirmed intent; ask before changing responsibility, values, or confirmed boundaries.
 
-Never invent a Role prompt, roster entry, Task, Delivery, or Session state. Persisted Tent projections and Git/worktree state are the facts.
+Never invent a Role prompt, roster entry, Task, Delivery, Session, compatibility result, or persisted state.
 
 ## Coordinate work
 
-- Understand the user’s intent, maintain the relevant Nodes, decide what the Role should do, and split only when separate work units are useful.
-- Use downstream Agents when the Role prompt or task characteristics call for them; do not make the user repeatedly remind the Role to use available authorized Agents.
-- Keep architecture, product judgment, acceptance decisions, and irreversible choices with the Role unless the user explicitly delegates them.
-- Apply `tent-task` when personally executing a Task.
+- Understand user intent, maintain relevant Nodes, make product/architecture judgments, and split work only when separate delivery units help.
+- Use authorized downstream Agents when the Role prompt or Task calls for them; do not require repeated user reminders.
+- Keep irreversible choices and final acceptance judgment with the Role unless the user explicitly delegates them.
+- Preserve user-confirmed decisions in the nearest relevant durable Node.
 
-## Use downstream Agents
+## Use the Role roster and reusable Sessions
 
-Use only the downstream-Agent roster and reusable-Session fields actually returned by Core. Never invent an `agentId`, roster entry, sub-key, lease, or compatibility generation.
+- Treat `agentId` as the stable logical worker/capability and AgentProfile as machine-local provider/model/credential launch resolution. Roster membership is the user's standing authorization for this Role; do not add per-Session allow/ask/deny.
+- Dispatch a roster worker by `agentId`; out-of-roster dispatch must fail loud. Never substitute a similarly named Profile or invent roster membership.
+- Reuse a downstream Session only when Core confirms the same workspace, parent Role, `agentId`, purpose, Skill set, profile/adapter, context generation, and compatible lane, plus an exclusive idle lease with no busy turn, pending input, or unresolved Delivery. Otherwise create a fresh Session through Task lifecycle.
+- Keep stable Skill/project/Role context cacheable. Append only the current Task Context Card and incremental TaskInput/review delta. A changed compatibility generation requires a new Session generation; never trade correctness for a cache hit.
 
-When Core exposes the V0.2 logical roster contract, treat `agentId` as the stable worker identity and AgentProfile as machine-local launch resolution; roster membership is then the standing Role authorization. Until that contract is exposed, obey the current Service A2A policy and `allowedProfiles` gates exactly as returned.
+## Dispatch and review Tasks
 
-Reuse a downstream Session only through a Core operation that confirms it is idle, compatible, and exclusively bound. If Core exposes no such operation, create or start through the existing Task lifecycle instead of inferring reuse from history. Never attach two active Tasks to one execution Session, mix worktrees, or trade correctness for a cache hit.
+- Give every downstream Task a complete Context Card: objective, frozen decisions, included and excluded scope, acceptance requirements, durable Node/Task/Delivery/Git refs, and the recorded execution lane. Missing critical context must fail loud to this Role, not be guessed by the executor.
+- Trust persisted `parentActor` and exact `reviewer`. A downstream Task Agent always delivers for review by its parent actor; it has no `bypass`, `agent-decide`, or self-accept path.
+- Inspect the real diff, commit ancestry, tests, TaskInputs, Session settle state, and Delivery evidence. Accept, reject with feedback, replace an eligible failed Session, or dispatch a fresh Task from persisted facts.
+- Keep unrelated downstream diffs and Task lanes separate. Integration authority belongs to the recorded parent/Service, not the executor.
 
-## Dispatch and review downstream work
+## Preserve cooperative continuity
 
-- Use the persisted Task’s current `asSub`, `dispatchedBy`, and `deliveryPolicy` fields; Core remains authoritative for review.
-- As a behavior contract, a downstream executor must never request or elevate `bypass` or `agent-decide`. If the persisted Task contradicts the intended review-to-parent model, fail loudly to the dispatcher instead of assuming Core already derived a parent reviewer.
-- Never accept a Delivery submitted by the same executor.
-- Inspect the actual diff, commits, tests, Task state, and Delivery evidence. Accept, reject, request correction, replace the failed Session, or continue the same Task based on persisted facts.
-- Do not mix unrelated downstream diffs during integration.
+For a planned Role Session transfer, optionally store a short continuation note with:
 
-## Remain accountable to the user
+- current objective and next action;
+- Node, Task, Delivery, and Git pointers needed to resume;
+- no copied history or replacement for authoritative state.
 
-- Preserve user-confirmed decisions in the nearest relevant Tent Node.
-- Report meaningful progress, blockers, and remaining risk without forwarding raw downstream output as judgment.
-- For the Role’s own user-facing Delivery, obey the configured `review | bypass | agent-decide` policy. Do not grant or elevate that policy yourself.
-- `agent-decide` chooses integration or user review; it never allows the Role to impersonate an independent reviewer.
+Use `tent role-checkpoint set|show|clear`. A checkpoint is bounded advisory dynamic-tail context only. Missing or corrupt content is fail-open; abnormal recovery must succeed from persisted Tent and Git facts without it.
 
-## Boundaries
+## Deliver to the user
 
-- Core enforces the authorization and review fields it currently exposes, Session state, Delivery transitions, and integration authority. Capability-gated target semantics above are not claims that the current runtime already implements them.
-- This Skill does not define Task claim, worktree, test, TaskInput, terminal-outcome, or Delivery wire details; `tent-task` owns them.
-- Do not create a new Core entity or mutually exclusive Session mode merely to represent this Skill composition.
+- For the Role's own user-facing Delivery, obey its configured `review | bypass | agent-decide` policy without elevating it.
+- `agent-decide` chooses direct integration or user review; it never impersonates an independent reviewer.
+- Report judgment, evidence, remaining risk, and meaningful blockers rather than forwarding raw downstream output.
+
+## Boundary
+
+`tent-task` owns Context Card consumption, workspace-lane execution, TaskInput/UserAsk, tests, outcomes, and Delivery wire. Do not duplicate those instructions here or create another Core entity/Session kind for Skill composition.
