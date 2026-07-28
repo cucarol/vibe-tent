@@ -101,34 +101,40 @@ export function parseContextCardNodeRefs(value: unknown): TaskContextCardRef[] {
   return out;
 }
 
+/** Stable runtime error when Task.contextCard.refs.nodes is absent (not empty). */
+export const MISSING_CONTEXT_CARD_NODES =
+  "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required (run migrateLegacyTaskNodeRefs for legacy claims).";
+
 /**
  * Authoritative Node ids referenced by a Task (direct only).
  * **Runtime:** only `contextCard.refs.nodes`. Never reads claims[].
- * Missing contextCard fails loud (new-format Tasks must carry a complete card;
- * pre-migration envelopes must run migrateLegacyTaskNodeRefs first).
- * Empty refs.nodes is legal (stable workspace context — not a Tent-wide lock).
+ *
+ * Fail-loud when `contextCard` or `refs.nodes` is **undefined/absent** — never treat
+ * that as workspace context (would silently map corrupt/unmigrated Tasks to []).
+ * An **explicitly present empty** `nodes: []` is the only valid workspace-context case.
  */
 export function taskReferencedNodeIds(task: ContextCardNodeRefSource): string[] {
+  const label = task.id || task.path || "(unknown)";
   if (task.contextCard == null) {
-    throw new Error(
-      `Task ${task.id || task.path || "(unknown)"} lacks contextCard; ` +
-        `Node refs require Task.contextCard.refs.nodes (run migrateLegacyTaskNodeRefs for legacy claims).`
-    );
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
   }
+  // Require an explicit nodes array — optional chaining that yields undefined must throw.
   const nodes = task.contextCard.refs?.nodes;
-  if (!nodes) {
-    throw new Error(
-      `Task ${task.id || task.path || "(unknown)"} contextCard.refs.nodes is missing; ` +
-        `Node refs require Task.contextCard.refs.nodes.`
-    );
+  if (nodes === undefined || nodes === null) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
   }
+  if (!Array.isArray(nodes)) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} (nodes must be an array)`);
+  }
+  // Explicit empty array → workspace context (caller: taskHasWorkspaceOnlyContext).
   return nodes.map((n) => n.id).filter((id) => id && id !== "root");
 }
 
 /**
  * True when Task has no direct Node refs (stable workspace context only).
  * Not a Tent-wide lock — concurrent workspace-context Tasks are legal.
- * Requires a present contextCard (fail-loud via taskReferencedNodeIds).
+ * Only valid when contextCard.refs.nodes is an **explicit empty array**;
+ * missing card/nodes fails loud via taskReferencedNodeIds (never silent []).
  */
 export function taskHasWorkspaceOnlyContext(task: ContextCardNodeRefSource): boolean {
   return taskReferencedNodeIds(task).length === 0;

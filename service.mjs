@@ -2983,17 +2983,18 @@ function normalizeContextCardNodeRef(raw) {
   }
   return out;
 }
+var MISSING_CONTEXT_CARD_NODES = "MISSING_CONTEXT_CARD: Task.contextCard.refs.nodes is required (run migrateLegacyTaskNodeRefs for legacy claims).";
 function taskReferencedNodeIds(task) {
+  const label = task.id || task.path || "(unknown)";
   if (task.contextCard == null) {
-    throw new Error(
-      `Task ${task.id || task.path || "(unknown)"} lacks contextCard; Node refs require Task.contextCard.refs.nodes (run migrateLegacyTaskNodeRefs for legacy claims).`
-    );
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
   }
   const nodes = task.contextCard.refs?.nodes;
-  if (!nodes) {
-    throw new Error(
-      `Task ${task.id || task.path || "(unknown)"} contextCard.refs.nodes is missing; Node refs require Task.contextCard.refs.nodes.`
-    );
+  if (nodes === void 0 || nodes === null) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label}`);
+  }
+  if (!Array.isArray(nodes)) {
+    throw new Error(`${MISSING_CONTEXT_CARD_NODES} task=${label} (nodes must be an array)`);
   }
   return nodes.map((n) => n.id).filter((id) => id && id !== "root");
 }

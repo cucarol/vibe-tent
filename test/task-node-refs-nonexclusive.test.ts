@@ -23,6 +23,7 @@ import {
   listDirectActiveTasksForNode,
   migrateAllLegacyTaskNodeRefs,
   migrateLegacyTaskNodeRefs,
+  MISSING_CONTEXT_CARD_NODES,
   normalizeContextCardNodeRef,
   taskDirectlyReferencesNode,
   taskHasWorkspaceOnlyContext,
@@ -358,6 +359,56 @@ test("listDirectActiveTasksForNode: deterministic createdAt/id/path order", asyn
   assert.equal(listed.length, 2);
   assert.equal(listed[0]!.id, "tk-earlier");
   assert.equal(listed[1]!.id, "tk-later");
+});
+
+test("taskReferencedNodeIds: missing card/nodes throws; explicit empty nodes is workspace context", () => {
+  // Absent contextCard → stable MISSING_CONTEXT_CARD (never silent []).
+  assert.throws(
+    () => taskReferencedNodeIds({ id: "tk-missing", path: "temp/x.md" }),
+    (err: unknown) =>
+      err instanceof Error &&
+      err.message.includes("MISSING_CONTEXT_CARD") &&
+      err.message.includes("tk-missing")
+  );
+  assert.throws(
+    () => taskHasWorkspaceOnlyContext({ id: "tk-missing" }),
+    /MISSING_CONTEXT_CARD/
+  );
+
+  // contextCard present but refs.nodes undefined → same fail-loud (not workspace).
+  assert.throws(
+    () =>
+      taskReferencedNodeIds({
+        id: "tk-no-nodes",
+        contextCard: { refs: {} as { nodes: never } },
+      }),
+    /MISSING_CONTEXT_CARD/
+  );
+  assert.throws(
+    () =>
+      taskReferencedNodeIds({
+        id: "tk-no-refs",
+        contextCard: {} as { refs: { nodes: never } },
+      }),
+    /MISSING_CONTEXT_CARD/
+  );
+
+  // Explicit empty nodes[] is the only valid workspace-context case.
+  const workspaceOnly = {
+    id: "tk-ws",
+    contextCard: { refs: { nodes: [] as { id: string }[] } },
+  };
+  assert.deepEqual(taskReferencedNodeIds(workspaceOnly), []);
+  assert.equal(taskHasWorkspaceOnlyContext(workspaceOnly), true);
+
+  // Non-empty nodes still returns ids; not workspace-only.
+  const withNode = {
+    id: "tk-n1",
+    contextCard: { refs: { nodes: [{ id: "cx-1" }, { id: "root" }] } },
+  };
+  assert.deepEqual(taskReferencedNodeIds(withNode), ["cx-1"]);
+  assert.equal(taskHasWorkspaceOnlyContext(withNode), false);
+  assert.equal(MISSING_CONTEXT_CARD_NODES.startsWith("MISSING_CONTEXT_CARD"), true);
 });
 
 test("normalizeContextCardNodeRef + buildTaskContextCard: full card; reject fake root", () => {
