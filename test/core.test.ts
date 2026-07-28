@@ -274,10 +274,17 @@ test("manifest:可读集=全帐 usable context,可写集=认领子树 + temp 格
   assert.ok(yaml.includes("readable:"));
   assert.ok(yaml.includes("writable:"));
   assert.equal(yaml.includes("preloaded:"), false, "preloaded 字段已删除");
+  assert.doesNotMatch(yaml, /^claims:/m, "manifest YAML must not persist a second claims source");
+  assert.ok(!("claims" in m), "Manifest object has no claims field");
   assert.deepEqual(
     Object.keys(m).sort(),
-    ["claims", "readable", "role", "tent", "writable"].sort(),
-    "manifest 仅保留 claims/readable/writable 与身份字段",
+    ["readable", "role", "tent", "writable"].sort(),
+    "manifest 仅保留 readable/writable 与身份字段（无 claims）",
+  );
+  // Writable pointer list encodes dispatch selection (id present for claimed boxes).
+  assert.ok(
+    m.writable.some((e) => e.id === "bx-p1"),
+    "writable context pointers carry selected Node ids without a claims[] field",
   );
 });
 
@@ -296,7 +303,8 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   );
 
   const rootManifest = buildManifest(tent, { tentName: "wqb", role: "architect", claimRoot: true });
-  assert.deepEqual(rootManifest.claims, ["root"]);
+  assert.ok(!("claims" in rootManifest), "root selection is not a persisted claims field");
+  assert.doesNotMatch(manifestToYaml(rootManifest), /^claims:/m);
   assert.ok(rootManifest.writable.some((e) => e.path === "./"), "帐根 claim 有顶层结构权");
   assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
 });
@@ -326,9 +334,11 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用�
   assert.doesNotMatch(result.relayPrompt, /```yaml/);
   assert.doesNotMatch(result.relayPrompt, /\ntent: wqb\nrole: analyst/);
   assert.equal(result.manifestYaml.includes("preloaded:"), false);
-  assert.match(result.manifestYaml, /claims: \[bx-p1\]/);
+  assert.doesNotMatch(result.manifestYaml, /^claims:/m, "manifest must not emit claims[]");
   assert.match(result.manifestYaml, /readable:/);
   assert.match(result.manifestYaml, /writable:/);
+  // Selection appears as writable context pointers (id), not a dual claims source.
+  assert.match(result.manifestYaml, /id: bx-p1/);
   let claimed = (await loadTent(env.fs)).byId.get("bx-p1")!;
   assert.equal(claimed.fm.owner, undefined);
   assert.equal(claimed.fm.status, undefined, "dispatch 不写 Node owner/status");
@@ -344,8 +354,10 @@ test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用�
 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
-  // Role multi-ref aggregation still appears on dynamic manifest claims list.
-  assert.match(second.manifestYaml, /claims:/);
+  // Role multi-ref aggregation still appears on dynamic manifest writable pointers.
+  assert.doesNotMatch(second.manifestYaml, /^claims:/m);
+  assert.match(second.manifestYaml, /writable:/);
+  assert.match(second.manifestYaml, /id: bx-o1/);
 
   const { cancelPendingTask, taskAck } = await import("../src/core/ops.js");
   await cancelPendingTask(env as any, result.taskPath);
@@ -503,7 +515,9 @@ test("dispatch:拒绝整帐 claim,具体框仍可派活", async () => {
   await assert.rejects(() => dispatch(env as any, "wqb", "architect", "接管全帐"), message);
 
   const result = await dispatch(env as any, "bx-p1", "architect", "处理具体框");
-  assert.match(result.manifestYaml, /claims: \[bx-p1\]/);
+  assert.doesNotMatch(result.manifestYaml, /^claims:/m);
+  assert.match(result.manifestYaml, /id: bx-p1/);
+  assert.match(result.manifestYaml, /writable:/);
 });
 
 test("Tent 动作不初始化 Tent Git", async () => {

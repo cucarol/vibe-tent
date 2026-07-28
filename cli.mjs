@@ -3501,7 +3501,7 @@ function buildManifest(tent, input) {
   return {
     tent: input.tentName,
     role,
-    claims: input.claimRoot ? ["root"] : claimBoxes.map((box) => box.id),
+    // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
     ...input.workspace ? { workspace: input.workspace } : {},
     ...input.worktree ? { worktree: input.worktree } : {},
     ...input.branch ? { branch: input.branch } : {},
@@ -3514,7 +3514,6 @@ function manifestToYaml(m) {
   const lines = [];
   lines.push(`tent: ${m.tent}`);
   lines.push(`role: ${m.role}`);
-  lines.push(`claims: [${m.claims.join(", ")}]`);
   if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
   if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
   if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
@@ -4569,8 +4568,8 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
     }
   }
   try {
-    const roleClaims = claim.root ? [] : assigneeKind === "role" ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks) : [claim.box];
-    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
+    const roleSelection = claim.root ? [] : assigneeKind === "role" ? roleManifestSelection(tent, assigneeLabel, claim.box, tasks) : [claim.box];
+    const input = claim.root ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace } : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleSelection, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
     const taskId = options.taskId && options.taskId.trim() ? options.taskId.trim() : makeTaskId();
@@ -4777,8 +4776,8 @@ function assertRoleName(role) {
   assertRoleNameAvailable(name);
   return name;
 }
-function roleManifestClaims(tent, role, current, tasks) {
-  const claims = /* @__PURE__ */ new Map();
+function roleManifestSelection(tent, role, current, tasks) {
+  const selected = /* @__PURE__ */ new Map();
   for (const task of tasks) {
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
@@ -4786,11 +4785,11 @@ function roleManifestClaims(tent, role, current, tasks) {
     if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
-      if (box) claims.set(box.id, box);
+      if (box) selected.set(box.id, box);
     }
   }
-  claims.set(current.id, current);
-  return [...claims.values()];
+  selected.set(current.id, current);
+  return [...selected.values()];
 }
 function requireBoxById2(tent, boxId) {
   if (tent.duplicateIds.has(boxId)) {

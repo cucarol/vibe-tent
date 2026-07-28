@@ -192,16 +192,16 @@ async function dispatchUnlocked(
   }
 
   try {
-    // Role tasks reuse durable multi-claim aggregation; profile tasks are one-shot
-    // and only claim the target box (do not accumulate other profile tasks as claims).
-    const roleClaims = claim.root
+    // Role tasks reuse durable multi-ref aggregation for writable context pointers;
+    // profile tasks are one-shot and only select the target box (ephemeral claimBoxes).
+    const roleSelection = claim.root
       ? []
       : assigneeKind === "role"
-        ? roleManifestClaims(tent, assigneeLabel, claim.box, tasks)
+        ? roleManifestSelection(tent, assigneeLabel, claim.box, tasks)
         : [claim.box];
     const input: DispatchInput = claim.root
       ? { tentName: env.tentName, role: assigneeLabel, claimRoot: true, ...options.workspace }
-      : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleClaims, ...options.workspace };
+      : { tentName: env.tentName, role: assigneeLabel, claimBoxes: roleSelection, ...options.workspace };
     const manifest = buildManifest(tent, input);
     const yaml = manifestToYaml(manifest);
 
@@ -218,7 +218,8 @@ async function dispatchUnlocked(
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
     } else {
-      // manifest 是 role 当前全部 claims 的动态合同；task 文档不可变。
+      // manifest is the role's dynamic readable/writable context contract (no claims[]).
+      // Task envelope is immutable and owns Node refs via contextCard only.
       manifestPath = join("temp", assigneeLabel, "manifest.yml");
       await ensureDir(env.fs, dirName(manifestPath));
       await env.fs.writeFile(manifestPath, yaml);
@@ -848,10 +849,11 @@ function assertRoleName(role: string): string {
   return name;
 }
 
-function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks: TaskEnvelope[]): Box[] {
-  const claims = new Map<string, Box>();
+/** Aggregate active role Task Node refs into ephemeral manifest selection boxes. */
+function roleManifestSelection(tent: LoadedTent, role: string, current: Box, tasks: TaskEnvelope[]): Box[] {
+  const selected = new Map<string, Box>();
   for (const task of tasks) {
-    // Only durable role tasks share multi-claim aggregation; profile tasks are one-shot.
+    // Only durable role tasks share multi-ref aggregation; profile tasks are one-shot.
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
     // Active tasks only — aggregate direct Node refs (contextCard.refs.nodes).
@@ -859,11 +861,11 @@ function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks:
     if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
-      if (box) claims.set(box.id, box);
+      if (box) selected.set(box.id, box);
     }
   }
-  claims.set(current.id, current);
-  return [...claims.values()];
+  selected.set(current.id, current);
+  return [...selected.values()];
 }
 
 function requireBoxById(tent: LoadedTent, boxId: string): Box {

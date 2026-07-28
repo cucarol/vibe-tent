@@ -159,8 +159,10 @@ workspace. Missing `asSub` reads as peer (`false`). Review authority uses
 `parentActor`/`reviewer`, not `asSub`. Legacy `dispatchedBy` migrates once to
 the explicit wire and is not dual-written.
 
-Manifest fields include `claims`, `readable`, `writable`, and the workspace
-lane. Dynamic claim/task data never enters role init.
+Manifest fields include `readable`, `writable`, and the workspace lane.
+Task Node refs live only on `Task.contextCard.refs.nodes[]` — Manifest YAML
+does not persist a second `claims` source. Dispatch selection is ephemeral
+(`claimBoxes` / `claimRoot` input only). Dynamic task data never enters role init.
 
 `temp/<role>/manifest.yml` is a snapshot from dispatch time. Changing a box's
 `readable`, `writable`, or `type` after dispatch does not affect already issued

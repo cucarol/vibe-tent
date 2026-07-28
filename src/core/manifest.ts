@@ -1,6 +1,9 @@
 // 工单(manifest)生成 —— 派活的硬执行层之一。
-// V0.2: readable/writable lists are **context pointers** (claim scope + system paths),
-// not domain R/W axes on Nodes. Deterministic for any agent/process.
+// V0.2: readable/writable lists are **context pointers** (dispatch selection scope +
+// system paths), not domain R/W axes on Nodes. Deterministic for any agent/process.
+// DispatchInput.claimBoxes / claimRoot are ephemeral caller-side selection only —
+// Manifest YAML never persists a second claims source (Task.contextCard.refs.nodes
+// is the sole Task Node-ref wire).
 
 import { Box, Manifest, ManifestEntry } from "./types.js";
 import { isUsableBox, LoadedTent, join } from "./tree.js";
@@ -8,7 +11,9 @@ import { isUsableBox, LoadedTent, join } from "./tree.js";
 export interface DispatchInput {
   tentName: string;
   role: string;
+  /** Ephemeral dispatch selection (boxes in writable scope). Not persisted as claims. */
   claimBoxes?: Box[];
+  /** Ephemeral root/workspace selection. Not persisted as claims. */
   claimRoot?: boolean;
   workspace?: string;
   worktree?: string;
@@ -35,7 +40,7 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   readable.push({ path: "roles.json", note: "System registry: available roles and persistent prompts." });
   readable.push({ path: "temp/", note: "System pipeline: read all role temp state." });
 
-  // Context writable set: claim scope (mutation authority is Task/Service, not this list).
+  // Context writable set: dispatch selection scope (mutation authority is Task/Service, not this list).
   for (const box of claimScope) {
     if (isUsableBox(box)) {
       writable.push({ id: box.id, path: box.path });
@@ -53,7 +58,7 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   return {
     tent: input.tentName,
     role,
-    claims: input.claimRoot ? ["root"] : claimBoxes.map((box) => box.id),
+    // No claims[] — writable ids/paths encode selection; Task Node refs are contextCard only.
     ...(input.workspace ? { workspace: input.workspace } : {}),
     ...(input.worktree ? { worktree: input.worktree } : {}),
     ...(input.branch ? { branch: input.branch } : {}),
@@ -63,12 +68,11 @@ export function buildManifest(tent: LoadedTent, input: DispatchInput): Manifest 
   };
 }
 
-/** 把 manifest 序列化成 YAML(落盘 + 进 prompt)。 */
+/** 把 manifest 序列化成 YAML(落盘 + 进 prompt)。 Never emits claims[]. */
 export function manifestToYaml(m: Manifest): string {
   const lines: string[] = [];
   lines.push(`tent: ${m.tent}`);
   lines.push(`role: ${m.role}`);
-  lines.push(`claims: [${m.claims.join(", ")}]`);
   if (m.workspace) lines.push(`workspace: ${yamlStr(m.workspace)}`);
   if (m.worktree) lines.push(`worktree: ${yamlStr(m.worktree)}`);
   if (m.branch) lines.push(`branch: ${yamlStr(m.branch)}`);
