@@ -17687,6 +17687,30 @@ function defaultGrokExecutable() {
   const home = process.env.HOME || os3.homedir();
   return path10.join(home, ".grok", "bin", "grok");
 }
+function defaultGrokIsolatedHome() {
+  const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
+  return path10.join(home, ".grok-acp", "home");
+}
+function injectFlagBeforeStdio(args, flag, value) {
+  if (args.includes(flag)) return;
+  const stdioIdx = args.indexOf("stdio");
+  if (stdioIdx < 0) return;
+  args.splice(stdioIdx, 0, flag, ...value === void 0 ? [] : [value]);
+}
+var DISABLED_COMPATIBILITY_ENV = [
+  "GROK_CLAUDE_SKILLS_ENABLED",
+  "GROK_CLAUDE_RULES_ENABLED",
+  "GROK_CLAUDE_AGENTS_ENABLED",
+  "GROK_CLAUDE_MCPS_ENABLED",
+  "GROK_CLAUDE_HOOKS_ENABLED",
+  "GROK_CLAUDE_SESSIONS_ENABLED",
+  "GROK_CURSOR_SKILLS_ENABLED",
+  "GROK_CURSOR_RULES_ENABLED",
+  "GROK_CURSOR_AGENTS_ENABLED",
+  "GROK_CURSOR_MCPS_ENABLED",
+  "GROK_CURSOR_HOOKS_ENABLED",
+  "GROK_CURSOR_SESSIONS_ENABLED"
+];
 function normalizeGrokOpts(raw) {
   const o = raw && typeof raw === "object" ? raw : {};
   const policy = o.permissionPolicy;
@@ -17753,14 +17777,22 @@ var GrokAcpProviderAdapter = class {
     let args;
     if (plan.args && plan.args.length > 0) {
       args = [...plan.args];
-      if (baseUrl && !args.includes("--xai-api-base-url") && args.includes("agent") && args.includes("stdio")) {
-        const stdioIdx = args.indexOf("stdio");
-        args.splice(stdioIdx, 0, "--xai-api-base-url", baseUrl);
+      if (args.includes("agent") && args.includes("stdio")) {
+        injectFlagBeforeStdio(args, "--no-leader");
+        if (baseUrl) {
+          injectFlagBeforeStdio(args, "--cli-chat-proxy-base-url", baseUrl);
+          injectFlagBeforeStdio(args, "--xai-api-base-url", baseUrl);
+        }
       }
     } else {
-      args = ["agent", "--model", model];
+      args = ["agent", "--model", model, "--no-leader"];
       if (baseUrl) {
-        args.push("--xai-api-base-url", baseUrl);
+        args.push(
+          "--cli-chat-proxy-base-url",
+          baseUrl,
+          "--xai-api-base-url",
+          baseUrl
+        );
       }
       args.push("stdio");
     }
@@ -17780,10 +17812,15 @@ var GrokAcpProviderAdapter = class {
       env.OPENAI_BASE_URL = baseUrl;
       env.OPENAI_API_BASE = baseUrl;
       env.TENT_GROK_BASE_URL = baseUrl;
+      env.GROK_MODELS_BASE_URL = baseUrl;
+      env.GROK_MODELS_LIST_URL = `${baseUrl}/models`;
     }
-    const home = process.env.USERPROFILE || process.env.HOME || os3.homedir();
-    if (!env.GROK_HOME) {
-      env.GROK_HOME = path10.join(home, ".grok");
+    const isolatedHome = defaultGrokIsolatedHome();
+    env.USERPROFILE = isolatedHome;
+    env.HOME = isolatedHome;
+    env.GROK_HOME = path10.join(isolatedHome, ".grok");
+    for (const key2 of DISABLED_COMPATIBILITY_ENV) {
+      env[key2] = "false";
     }
     return {
       command,

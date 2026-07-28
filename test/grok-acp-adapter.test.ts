@@ -396,8 +396,8 @@ test("resolveLaunch puts explicit model on argv and never targets api.x.ai", asy
   // Secret values must not appear in profile serialization surfaces — only env injection.
 });
 
-test("resolveLaunch injects CPA base URL via env + --xai-api-base-url", () => {
-  assert.equal(normalizeCpaBaseUrl("http://127.0.0.1:8317/v1/"), "http://127.0.0.1:8317/v1");
+test("resolveLaunch absorbs the Grok2API wrapper launch contract", () => {
+  assert.equal(normalizeCpaBaseUrl("http://127.0.0.1:8320/v1/"), "http://127.0.0.1:8320/v1");
   const adapter = createGrokAcpAdapter({
     resolveApiKey: () => "test-key-not-real",
   });
@@ -406,7 +406,7 @@ test("resolveLaunch injects CPA base URL via env + --xai-api-base-url", () => {
     profileId: "grok-acp-default",
     cwd: process.cwd(),
     env: {
-      [DEFAULT_GROK_BASE_URL_ENV_KEY]: "http://127.0.0.1:8317/v1/",
+      [DEFAULT_GROK_BASE_URL_ENV_KEY]: "http://127.0.0.1:8320/v1/",
     },
     command: process.execPath,
     extras: {
@@ -421,14 +421,26 @@ test("resolveLaunch injects CPA base URL via env + --xai-api-base-url", () => {
   assert.ok(launch.args.includes("--xai-api-base-url"));
   assert.equal(
     launch.args[launch.args.indexOf("--xai-api-base-url") + 1],
-    "http://127.0.0.1:8317/v1"
+    "http://127.0.0.1:8320/v1"
   );
-  assert.equal(launch.env.XAI_API_BASE_URL, "http://127.0.0.1:8317/v1");
-  assert.equal(launch.env.OPENAI_BASE_URL, "http://127.0.0.1:8317/v1");
-  assert.equal(launch.env.OPENAI_API_BASE, "http://127.0.0.1:8317/v1");
-  assert.equal(launch.env[DEFAULT_GROK_BASE_URL_ENV_KEY], "http://127.0.0.1:8317/v1");
-  assert.equal(launch.env.TENT_GROK_BASE_URL, "http://127.0.0.1:8317/v1");
+  assert.ok(launch.args.includes("--cli-chat-proxy-base-url"));
+  assert.equal(
+    launch.args[launch.args.indexOf("--cli-chat-proxy-base-url") + 1],
+    "http://127.0.0.1:8320/v1"
+  );
+  assert.ok(launch.args.includes("--no-leader"));
+  assert.equal(launch.env.XAI_API_BASE_URL, "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env.OPENAI_BASE_URL, "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env.OPENAI_API_BASE, "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env[DEFAULT_GROK_BASE_URL_ENV_KEY], "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env.TENT_GROK_BASE_URL, "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env.GROK_MODELS_BASE_URL, "http://127.0.0.1:8320/v1");
+  assert.equal(launch.env.GROK_MODELS_LIST_URL, "http://127.0.0.1:8320/v1/models");
   assert.equal(launch.env.XAI_API_KEY, "test-key-not-real");
+  assert.match(launch.env.GROK_HOME, /[\\/]\.grok-acp[\\/]home[\\/]\.grok$/);
+  assert.equal(launch.env.USERPROFILE, launch.env.HOME);
+  assert.equal(launch.env.GROK_CLAUDE_MCPS_ENABLED, "false");
+  assert.equal(launch.env.GROK_CURSOR_HOOKS_ENABLED, "false");
   assert.doesNotMatch(launch.args.join(" "), /api\.x\.ai/);
 });
 
@@ -448,13 +460,14 @@ test("resolveLaunch accepts machine-local profile baseUrl when env unset", () =>
       acp: {
         model: "grok-4.5",
         envKey: "CPA_GROK_API_KEY",
-        baseUrl: "http://10.0.0.2:8317/v1",
+        baseUrl: "http://10.0.0.2:8320/v1",
         executable: process.execPath,
       },
     },
   });
-  assert.equal(launch.env.XAI_API_BASE_URL, "http://10.0.0.2:8317/v1");
+  assert.equal(launch.env.XAI_API_BASE_URL, "http://10.0.0.2:8320/v1");
   assert.ok(launch.args.includes("--xai-api-base-url"));
+  assert.ok(launch.args.includes("--cli-chat-proxy-base-url"));
 });
 
 test("grokAcpProfileTemplate includes baseUrlEnvKey name only", () => {
@@ -463,7 +476,7 @@ test("grokAcpProfileTemplate includes baseUrlEnvKey name only", () => {
   assert.equal(t.acp.baseUrl, undefined);
   const json = JSON.stringify(t);
   assert.ok(json.includes("CPA_GROK_BASE_URL"));
-  assert.doesNotMatch(json, /127\.0\.0\.1|8317/);
+  assert.doesNotMatch(json, /127\.0\.0\.1|8320/);
 });
 
 test("mock ACP: handshake, prompt, events, stop (no network)", async () => {

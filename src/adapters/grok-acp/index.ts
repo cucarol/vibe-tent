@@ -1,5 +1,5 @@
 // Grok ACP ProviderAdapter — first real push provider for Tent Desktop MVP.
-// Machine-local credentials via process env; CPA base URL in ~/.grok/config.toml only.
+// Machine-local credentials + Grok2API/OpenAI-compatible base URL via process env.
 
 import * as fs from "node:fs";
 import * as os from "node:os";
@@ -84,6 +84,33 @@ function defaultGrokExecutable(): string {
   const home = process.env.HOME || os.homedir();
   return path.join(home, ".grok", "bin", "grok");
 }
+
+function defaultGrokIsolatedHome(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
+  return path.join(home, ".grok-acp", "home");
+}
+
+function injectFlagBeforeStdio(args: string[], flag: string, value?: string): void {
+  if (args.includes(flag)) return;
+  const stdioIdx = args.indexOf("stdio");
+  if (stdioIdx < 0) return;
+  args.splice(stdioIdx, 0, flag, ...(value === undefined ? [] : [value]));
+}
+
+const DISABLED_COMPATIBILITY_ENV = [
+  "GROK_CLAUDE_SKILLS_ENABLED",
+  "GROK_CLAUDE_RULES_ENABLED",
+  "GROK_CLAUDE_AGENTS_ENABLED",
+  "GROK_CLAUDE_MCPS_ENABLED",
+  "GROK_CLAUDE_HOOKS_ENABLED",
+  "GROK_CLAUDE_SESSIONS_ENABLED",
+  "GROK_CURSOR_SKILLS_ENABLED",
+  "GROK_CURSOR_RULES_ENABLED",
+  "GROK_CURSOR_AGENTS_ENABLED",
+  "GROK_CURSOR_MCPS_ENABLED",
+  "GROK_CURSOR_HOOKS_ENABLED",
+  "GROK_CURSOR_SESSIONS_ENABLED",
+] as const;
 
 function normalizeGrokOpts(raw: unknown): Required<
   Pick<
@@ -202,26 +229,30 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       }
     }
 
-    // Explicit model on argv — never silent default inside opaque wrapper.
-    // When plan.args is fully custom (tests/mock), preserve it; otherwise build
-    // `grok agent --model <m> [--xai-api-base-url <cpa>] stdio`.
+    // Tent is the ACP client. Do not launch the one-shot invoke-grok-acp wrapper
+    // (it is another ACP client). Instead absorb its transparent provider launch
+    // contract here: isolated Grok config, no leader, and both proxy base URLs.
+    // When plan.args is custom (tests/explicit executable), preserve it and only
+    // complete the same grok-agent-stdio flag contract.
     let args: string[];
     if (plan.args && plan.args.length > 0) {
       args = [...plan.args];
-      // If caller used default-shaped args without base URL flag, inject when we have one.
-      if (
-        baseUrl &&
-        !args.includes("--xai-api-base-url") &&
-        args.includes("agent") &&
-        args.includes("stdio")
-      ) {
-        const stdioIdx = args.indexOf("stdio");
-        args.splice(stdioIdx, 0, "--xai-api-base-url", baseUrl);
+      if (args.includes("agent") && args.includes("stdio")) {
+        injectFlagBeforeStdio(args, "--no-leader");
+        if (baseUrl) {
+          injectFlagBeforeStdio(args, "--cli-chat-proxy-base-url", baseUrl);
+          injectFlagBeforeStdio(args, "--xai-api-base-url", baseUrl);
+        }
       }
     } else {
-      args = ["agent", "--model", model];
+      args = ["agent", "--model", model, "--no-leader"];
       if (baseUrl) {
-        args.push("--xai-api-base-url", baseUrl);
+        args.push(
+          "--cli-chat-proxy-base-url",
+          baseUrl,
+          "--xai-api-base-url",
+          baseUrl
+        );
       }
       args.push("stdio");
     }
@@ -244,11 +275,19 @@ export class GrokAcpProviderAdapter implements ProviderAdapter {
       env.OPENAI_BASE_URL = baseUrl;
       env.OPENAI_API_BASE = baseUrl;
       env.TENT_GROK_BASE_URL = baseUrl;
+      env.GROK_MODELS_BASE_URL = baseUrl;
+      env.GROK_MODELS_LIST_URL = `${baseUrl}/models`;
     }
 
-    const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-    if (!env.GROK_HOME) {
-      env.GROK_HOME = path.join(home, ".grok");
+    // Resolve the executable before these child-only overrides. Managed workers
+    // use the dedicated config (chat-completions main model + Responses search
+    // helper) and do not inherit unrelated Claude/Cursor skills, hooks or MCPs.
+    const isolatedHome = defaultGrokIsolatedHome();
+    env.USERPROFILE = isolatedHome;
+    env.HOME = isolatedHome;
+    env.GROK_HOME = path.join(isolatedHome, ".grok");
+    for (const key of DISABLED_COMPATIBILITY_ENV) {
+      env[key] = "false";
     }
 
     return {

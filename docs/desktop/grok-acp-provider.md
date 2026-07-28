@@ -1,7 +1,8 @@
 # Grok ACP Provider（Desktop MVP）
 
 The explicit live smoke test is `npm run test:grok-e2e`. It requires
-`CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured CPA service,
+`CPA_GROK_API_KEY` and `CPA_GROK_BASE_URL`, contacts the configured Grok2API or
+other explicit OpenAI-compatible service,
 and exercises dispatch → managed ACP report → review accept. It is intentionally
 excluded from the default offline `npm test` suite. The same command also stops
 the first bridge process, restores its provider session through `session/load`,
@@ -15,7 +16,7 @@ Non-scope: chat UI, universal provider router, implementing non-grok ACP bridges
 
 | Tent owns | Provider owns |
 | --- | --- |
-| Task envelope / Context Card **pointers** | Model inference via Grok CLI + CPA |
+| Task envelope / Context Card **pointers** | Model inference via Grok CLI + Grok2API |
 | A2A gate → `task.startSession` | ACP stdio session lifecycle |
 | `sessionId` reference on task only | Process PID, resume tokens (machine-local) |
 | Runtime events (live / waiting / failed / exited) | Official Grok CLI UX for dialogue |
@@ -25,17 +26,21 @@ Tent is **not** a chat router. The adapter starts/observes/stops an external age
 ## Prerequisites (machine-local)
 
 1. **Grok CLI** installed (typical Windows path: `%USERPROFILE%\.grok\bin\grok.exe`).
-2. **CPA** reachable (local proxy / OpenAI-compatible endpoint).
-3. **Environment variables** on the process that starts Local Service / Desktop (machine-local only):
+2. **Grok2API** reachable (local OpenAI-compatible endpoint).
+3. Dedicated Grok config at `~/.grok-acp/home/.grok/config.toml`. The current
+   verified setup keeps the main `grok-4.5` model on `chat_completions` and the
+   `grok-4.5-high` web-search helper on `responses`.
+4. **Environment variables** on the process that starts Local Service / Desktop (machine-local only):
 
 | Env | Purpose | Default profile field |
 | --- | --- | --- |
-| `CPA_GROK_API_KEY` | API bearer for CPA | `acp.envKey` |
-| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8317/v1`) | `acp.baseUrlEnvKey` |
+| `CPA_GROK_API_KEY` | API bearer for Grok2API | `acp.envKey` |
+| `CPA_GROK_BASE_URL` | OpenAI-compatible base URL (e.g. `http://127.0.0.1:8320/v1`) | `acp.baseUrlEnvKey` |
 
 Optional fallbacks (still **not** workspace):
 
-- `~/.grok/config.toml` `[model."grok-4.5"]` `base_url` / `env_key` — Grok CLI native config when env base URL is unset.
+- `~/.grok-acp/home/.grok/config.toml` `[model."grok-4.5"]`
+  `base_url` / `env_key` — dedicated managed-worker config when env base URL is unset.
 - Machine-local `agent-profiles.json` may set `acp.baseUrl` (literal URL on **this machine only**) when the service cannot inherit a user shell env. Prefer env.
 
 Pre-canonical on-disk field `grokAcp` is still **read** on load and migrated to canonical `acp` (atomic rewrite; no dual-write).
@@ -91,15 +96,32 @@ Optional shared `acp` fields (canonical bag for all product `*-acp` profiles):
 | `permissionPolicy` | `deny` | `allow` \| `ask` \| `deny` — **never** unconditional yolo / `allow_always` |
 | `permissionTimeoutMs` | 120000 | When `ask`, **store-authoritative** timeout → expire pending + ACP `cancelled`; late approve fails |
 
-### How base URL is passed to Grok
+### How Tent absorbs the wrapper launch contract
 
 When a base URL resolves (env or profile `baseUrl`), the adapter:
 
-1. Adds `--xai-api-base-url <url>` on the `grok agent … stdio` argv (unless the launch plan already supplies a full custom argv without that flag shape).
-2. Injects child env: `CPA_GROK_BASE_URL` (or configured key), `XAI_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`, `TENT_GROK_BASE_URL`.
-3. Still injects API key as `CPA_GROK_API_KEY` + `XAI_API_KEY`.
+1. Starts the absolute Grok executable as `grok agent --model <model>
+   --no-leader --cli-chat-proxy-base-url <url> --xai-api-base-url <url> stdio`.
+2. Injects child env: `CPA_GROK_BASE_URL` (or configured key),
+   `XAI_API_BASE_URL`, `OPENAI_BASE_URL`, `OPENAI_API_BASE`,
+   `TENT_GROK_BASE_URL`, `GROK_MODELS_BASE_URL`, and
+   `GROK_MODELS_LIST_URL=<url>/models`.
+3. Injects the API key as `CPA_GROK_API_KEY` + `XAI_API_KEY`.
+4. Overrides child `USERPROFILE`, `HOME`, and `GROK_HOME` to
+   `~/.grok-acp/home` / `~/.grok-acp/home/.grok`, after resolving the absolute
+   executable path from the real user home.
+5. Disables Claude/Cursor compatibility discovery for skills, rules, agents,
+   MCPs, hooks, and sessions so a managed worker does not inherit foreign
+   harness state.
 
-Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing base URL alone is allowed so `~/.grok/config.toml` can still own the endpoint.
+Tent does **not** launch `invoke-grok-acp.mjs`: that script is itself a
+one-shot ACP client. Tent already owns initialize/authenticate/session/prompt,
+permission handling, resume, and Delivery capture; nesting the wrapper would
+create ACP-client-over-ACP-client and lose the managed lifecycle.
+
+Never hard-codes `api.x.ai`. Missing API key fails loud (Chinese error); missing
+base URL alone is allowed so the dedicated
+`~/.grok-acp/home/.grok/config.toml` can still own the endpoint.
 
 `fake-default` remains available for **tests only** when harnesses pass `profileId: "fake-default"` explicitly. Product `task.startSession` / `task.dispatch` with `startSession: true` **requires** an explicit `profileId` — there is **no** silent fallback to fake or to a product default.
 
@@ -287,7 +309,9 @@ If executable or `envKey` is missing / empty:
 - **No** fallback to `fake-cli`
 - Session record → `failed`; bound task may project `failed`
 
-CPA base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile `baseUrl` / `~/.grok/config.toml`). Tent does not invent `api.x.ai`.
+Grok2API base URL misconfiguration: set `CPA_GROK_BASE_URL` (or profile
+`baseUrl` / `~/.grok-acp/home/.grok/config.toml`). Tent does not invent
+`api.x.ai`.
 
 ## Failure cleanup & recoverable park
 
