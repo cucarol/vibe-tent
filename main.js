@@ -2048,6 +2048,11 @@ async function writeTaskEnvelope(fs2, clock, input) {
     data.worktree = input.workspace.worktree;
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
+    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
+    if (tip) {
+      data.baseCommit = tip;
+      data.roleBranchBase = tip;
+    }
   }
   const pointers = [
     ...workspaceOnly || nodeRefs.length === 0 ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
@@ -5478,6 +5483,15 @@ function resolveTentWorkspace(_tent, systemRoot) {
   const fromLayout = workspaceRootFromSystemRoot(systemRoot);
   return fromLayout ? nodePath2.resolve(fromLayout) : void 0;
 }
+async function readRoleBranchTip(workspace, branch) {
+  const root = nodePath2.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
 async function ensureRoleWorkspace(workspace, role) {
   const root = nodePath2.resolve(workspace);
   await assertGitWorkspace(root);
@@ -5491,7 +5505,9 @@ async function ensureRoleWorkspace(workspace, role) {
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath2.resolve(existing)), branch, targetBranch };
+    const wt = await nodeFs.realpath(nodePath2.resolve(existing));
+    const baseCommit2 = await readRoleBranchTip(root, branch);
+    return { workspace: root, worktree: wt, branch, targetBranch, baseCommit: baseCommit2 };
   }
   if (await pathExists(worktree)) {
     throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
@@ -5502,7 +5518,14 @@ async function ensureRoleWorkspace(workspace, role) {
   } else {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
-  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+  const baseCommit = await readRoleBranchTip(root, branch);
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+    baseCommit
+  };
 }
 async function integrateWorkspaceCommits(contract, refs) {
   const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];

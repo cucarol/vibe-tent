@@ -2077,6 +2077,11 @@ async function writeTaskEnvelope(fs23, clock, input) {
     data.worktree = input.workspace.worktree;
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
+    const tip = typeof input.workspace.baseCommit === "string" ? input.workspace.baseCommit.trim() : "";
+    if (tip) {
+      data.baseCommit = tip;
+      data.roleBranchBase = tip;
+    }
   }
   const pointers = [
     ...workspaceOnly || nodeRefs.length === 0 ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
@@ -14792,7 +14797,9 @@ async function ensureRoleWorkspace(workspace, role) {
   );
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath3.resolve(existing)), branch, targetBranch };
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const baseCommit2 = await readRoleBranchTip(root, branch);
+    return { workspace: root, worktree: wt, branch, targetBranch, baseCommit: baseCommit2 };
   }
   if (await pathExists(worktree)) {
     throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
@@ -14803,7 +14810,14 @@ async function ensureRoleWorkspace(workspace, role) {
   } else {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
-  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+  const baseCommit = await readRoleBranchTip(root, branch);
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch,
+    baseCommit
+  };
 }
 async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
   if (!await isGitWorkspace(workspace)) return void 0;
@@ -14841,11 +14855,14 @@ async function ensureTaskWorkspace(workspace, taskId, options = {}) {
   const worktree = expectedTaskWorktreePath(root, id);
   const existing = await worktreeForBranch(root, branch);
   if (existing) {
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const baseCommit2 = await readRoleBranchTip(root, branch);
     return {
       workspace: root,
-      worktree: await nodeFs.realpath(nodePath3.resolve(existing)),
+      worktree: wt,
       branch,
-      targetBranch
+      targetBranch,
+      baseCommit: baseCommit2
     };
   }
   if (await pathExists(worktree)) {
@@ -14857,11 +14874,13 @@ async function ensureTaskWorkspace(workspace, taskId, options = {}) {
   } else {
     await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
   }
+  const baseCommit = await readRoleBranchTip(root, branch);
   return {
     workspace: root,
     worktree: await nodeFs.realpath(worktree),
     branch,
-    targetBranch
+    targetBranch,
+    baseCommit
   };
 }
 async function inspectWorktreeDirtiness(worktree) {
@@ -25340,11 +25359,13 @@ async function taskDispatch(ctx, p) {
     // Prefer durable envelope state so success/failure projections stay honest.
     state: taskAfter?.state ?? (startSession ? "running" : "queued"),
     session,
+    // Prefer envelope projection (includes dispatch-time baseCommit + derived authority).
     workspaceLane: taskAfter ? projectTask(taskAfter).workspaceLane : workspaceLane ? {
       workspace: workspaceLane.workspace,
       worktree: workspaceLane.worktree,
       branch: workspaceLane.branch,
-      targetBranch: workspaceLane.targetBranch
+      targetBranch: workspaceLane.targetBranch,
+      ...workspaceLane.baseCommit ? { baseCommit: workspaceLane.baseCommit } : {}
     } : void 0
   };
 }
@@ -31294,7 +31315,8 @@ async function ensureTaskWorkspaceLane(ctx, workspaceId, task) {
       patch.targetBranch = targetBranch;
     }
     if (!currentHasBase) {
-      const tip = await readRoleBranchTip(lane.workspace, lane.branch);
+      const fromEnsure = typeof lane.baseCommit === "string" ? lane.baseCommit.trim() : "";
+      const tip = fromEnsure || await readRoleBranchTip(lane.workspace, lane.branch);
       patch.baseCommit = tip;
       if (!current.roleBranchBase?.trim()) {
         patch.roleBranchBase = tip;
@@ -31483,16 +31505,7 @@ function buildContextCardManagedBootstrap(task, contextCard, roots) {
     includeStablePrefix
   });
   if (includeStablePrefix) {
-    const kind = taskAssigneeKind(task);
-    const pathCard = taskContextCard(task.id || task.path, {
-      path: task.path,
-      workspaceRoot: roots.workspaceRoot,
-      systemRoot: roots.systemRoot,
-      label: kind === "agentProfile" ? `task:profile:${task.role}` : `task:${task.role}`
-    });
-    return `${pathCard.prompt}
-
---- Tent managed session bootstrap ---
+    return `--- Tent managed session bootstrap ---
 ${assembly.text}`;
   }
   return `--- Tent managed session delta (contextGeneration=${contextCard.contextGeneration}) ---
