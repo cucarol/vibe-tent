@@ -56,18 +56,64 @@ async function initGitOnWorkspace(workspace: string): Promise<void> {
   await git(workspace, "commit", "-q", "-m", "init");
 }
 
-async function roleCommit(
+/**
+ * Ensure durable executor Role lane exists at the current main baseline
+ * (no Task commits yet). startSession will capture this tip as baseCommit.
+ */
+async function ensureExecutorLaneAtMain(workspace: string): Promise<{
+  worktree: string;
+  branch: string;
+  tip: string;
+}> {
+  const contract = await ensureRoleWorkspace(workspace, "executor");
+  const tip = (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+  const main = (await git(workspace, "rev-parse", "main")).trim();
+  assert.equal(
+    tip,
+    main,
+    "executor Role lane must start at main baseline before Task commits"
+  );
+  return { worktree: contract.worktree, branch: contract.branch, tip };
+}
+
+/**
+ * Ordinary Task commit on the already-bound executor lane (after base capture).
+ * Must not run before claimRunningWithBase — otherwise baseCommit == tip and
+ * base..tip is empty, bypassing first-parent history.
+ */
+async function taskCommitOnExecutorLane(
   workspace: string,
-  role: string,
   filename: string,
   contents: string,
   message: string
 ): Promise<string> {
-  const contract = await ensureRoleWorkspace(workspace, role);
+  const contract = await ensureRoleWorkspace(workspace, "executor");
   await fs.writeFile(path.join(contract.worktree, filename), contents);
   await git(contract.worktree, "add", filename);
   await git(contract.worktree, "commit", "-q", "-m", message);
   return (await git(contract.worktree, "rev-parse", "HEAD")).trim();
+}
+
+/**
+ * Frozen executor-history: sourceRef is a real Task commit whose exact first
+ * parent is recorded baseCommit (non-empty base..tip).
+ */
+async function assertTaskCommitFirstParent(
+  sourceRef: string,
+  baseCommit: string,
+  workspace: string
+): Promise<void> {
+  assert.notEqual(
+    sourceRef,
+    baseCommit,
+    "commit-bearing Delivery must list a Task commit, not the base tip itself"
+  );
+  const firstParent = (await git(workspace, "rev-parse", `${sourceRef}^`)).trim();
+  assert.equal(
+    firstParent,
+    baseCommit,
+    `sourceRef^ must equal recorded baseCommit (got ${firstParent}, base ${baseCommit})`
+  );
 }
 
 async function withService<T>(
@@ -110,7 +156,8 @@ async function mountWorkItem(
 
 /**
  * Dispatch + claim + startSession so ensureTaskWorkspaceLane persists exact
- * workspaceLane.baseCommit (capture-once). Public deliver without this fails MISSING_BASE.
+ * workspaceLane.baseCommit (capture-once at lane tip — still main baseline).
+ * Task commits must be created only after this returns.
  */
 async function claimRunningWithBase(
   svc: Awaited<ReturnType<typeof startLocalTentService>>,
@@ -119,7 +166,12 @@ async function claimRunningWithBase(
     prompt: string;
     deliveryPolicy?: "review" | "bypass" | "agent-decide";
   }
-): Promise<{ workspaceId: string; taskPath: string; baseCommit: string }> {
+): Promise<{
+  workspaceId: string;
+  taskPath: string;
+  baseCommit: string;
+  worktree: string;
+}> {
   const { workspaceId, boxId } = await mountWorkItem(svc, ws);
   const d = await rpc(svc, "task.dispatch", {
     parentActor: { kind: "user", id: "user" },
@@ -142,14 +194,21 @@ async function claimRunningWithBase(
   });
   assert.ok(!started.error, JSON.stringify(started.error));
   const got = await rpc(svc, "task.get", { workspaceId, taskPath });
-  const baseCommit =
-    (
-      got.result as {
-        task: { workspaceLane?: { baseCommit?: string } };
-      }
-    ).task.workspaceLane?.baseCommit?.trim() || "";
+  const lane = (
+    got.result as {
+      task: {
+        workspaceLane?: {
+          baseCommit?: string;
+          worktree?: string;
+        };
+      };
+    }
+  ).task.workspaceLane;
+  const baseCommit = lane?.baseCommit?.trim() || "";
+  const worktree = lane?.worktree?.trim() || "";
   assert.ok(baseCommit, "startSession must persist exact workspaceLane.baseCommit");
-  return { workspaceId, taskPath, baseCommit };
+  assert.ok(worktree, "startSession must bind executor worktree");
+  return { workspaceId, taskPath, baseCommit, worktree };
 }
 
 function targetMovedData(error: { code?: number; data?: unknown } | undefined): Record<string, unknown> {
@@ -214,9 +273,8 @@ legacy row without targetHead
 test("targetHead: deliver snapshots HEAD; same-head accept integrates", async () => {
   const ws = await makeWorkspace("th-same");
   await initGitOnWorkspace(ws);
-  // Pre-create role lane so startSession captures base at the tip that will
-  // become first parent of the delivery commit.
-  const sourceRef = await roleCommit(ws, "executor", "same.txt", "same\n", "same work");
+  // Lane at main baseline first; baseCommit is captured before any Task commit.
+  await ensureExecutorLaneAtMain(ws);
   const mainHeadAtDeliver = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -224,10 +282,16 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
       prompt: "same head",
       deliveryPolicy: "review",
     });
-    // base must be exact first parent of the task commit (sourceRef tip after bind).
-    // When roleCommit ran before bind, base is the post-commit tip → empty range is ok
-    // only if tip===base; commit-bearing deliver still uses the listed commits.
-    assert.ok(baseCommit);
+    assert.equal(baseCommit, mainHeadAtDeliver, "base must be main baseline tip");
+    // Ordinary Task commit only after base capture → non-empty base..tip.
+    const sourceRef = await taskCommitOnExecutorLane(
+      ws,
+      "same.txt",
+      "same\n",
+      "same work"
+    );
+    await assertTaskCommitFirstParent(sourceRef, baseCommit, ws);
+
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -257,13 +321,21 @@ test("targetHead: deliver snapshots HEAD; same-head accept integrates", async ()
 test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git untouched", async () => {
   const ws = await makeWorkspace("th-moved");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "feat.txt", "feat\n", "feat work");
+  await ensureExecutorLaneAtMain(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
+    const { workspaceId, taskPath, baseCommit } = await claimRunningWithBase(svc, ws, {
       prompt: "target will move",
       deliveryPolicy: "review",
     });
+    const sourceRef = await taskCommitOnExecutorLane(
+      ws,
+      "feat.txt",
+      "feat\n",
+      "feat work"
+    );
+    await assertTaskCommitFirstParent(sourceRef, baseCommit, ws);
+
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -310,12 +382,21 @@ test("targetHead: clean non-conflicting target advance fails TARGET_MOVED; Git u
 test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", async () => {
   const ws = await makeWorkspace("th-empty");
   await initGitOnWorkspace(ws);
+  // Docs-only: tip remains equal to recorded base (empty base..tip is legal).
+  await ensureExecutorLaneAtMain(ws);
 
   await withService(async (svc) => {
-    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
-      prompt: "docs only",
-      deliveryPolicy: "review",
-    });
+    const { workspaceId, taskPath, baseCommit, worktree } = await claimRunningWithBase(
+      svc,
+      ws,
+      {
+        prompt: "docs only",
+        deliveryPolicy: "review",
+      }
+    );
+    const tip = (await git(worktree, "rev-parse", "HEAD")).trim();
+    assert.equal(tip, baseCommit, "zero-commit path keeps tip === baseCommit");
+
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -340,14 +421,22 @@ test("targetHead: zero-commit Delivery needs no snapshot; accept succeeds", asyn
 test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silent migration)", async () => {
   const ws = await makeWorkspace("th-legacy");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "legacy.txt", "legacy\n", "legacy work");
+  await ensureExecutorLaneAtMain(ws);
   const beforeHead = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
-    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
+    const { workspaceId, taskPath, baseCommit } = await claimRunningWithBase(svc, ws, {
       prompt: "legacy delivery",
       deliveryPolicy: "review",
     });
+    const sourceRef = await taskCommitOnExecutorLane(
+      ws,
+      "legacy.txt",
+      "legacy\n",
+      "legacy work"
+    );
+    await assertTaskCommitFirstParent(sourceRef, baseCommit, ws);
+
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
       taskPath,
@@ -383,7 +472,7 @@ test("targetHead: legacy ready row without snapshot fails TARGET_MOVED (no silen
 test("targetHead: auto-integrate race — target moves after snapshot fails TARGET_MOVED; no Delivery", async () => {
   const ws = await makeWorkspace("th-bypass-race");
   await initGitOnWorkspace(ws);
-  const sourceRef = await roleCommit(ws, "executor", "race.txt", "race\n", "race work");
+  await ensureExecutorLaneAtMain(ws);
   const headAtSnapshot = (await git(ws, "rev-parse", "main")).trim();
 
   await withService(async (svc) => {
@@ -393,10 +482,17 @@ test("targetHead: auto-integrate race — target moves after snapshot fails TARG
       await git(workspaceRoot, "commit", "-q", "-m", "main moved after deliver snapshot");
     });
 
-    const { workspaceId, taskPath } = await claimRunningWithBase(svc, ws, {
+    const { workspaceId, taskPath, baseCommit } = await claimRunningWithBase(svc, ws, {
       prompt: "bypass race",
       deliveryPolicy: "bypass",
     });
+    const sourceRef = await taskCommitOnExecutorLane(
+      ws,
+      "race.txt",
+      "race\n",
+      "race work"
+    );
+    await assertTaskCommitFirstParent(sourceRef, baseCommit, ws);
 
     const delivered = await rpc(svc, "task.deliver", {
       workspaceId,
