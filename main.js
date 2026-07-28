@@ -6143,9 +6143,9 @@ var TentView = class extends import_obsidian4.ItemView {
     };
   }
   async copyGenesisPrompt() {
-    const prompt = "Please use the tent-agent skill to create a new Tent. Lightly confirm the workspace root and initial roles, then run `tent new <workspace>` to scaffold the in-workspace `.tent` layout. Tent state itself does not use Git.";
+    const prompt = "Please use the tent-role skill to create a new Tent and initialize its durable roles. Lightly confirm the workspace root and initial roles, then run `tent new <workspace>` to scaffold the in-workspace `.tent` layout. Tent state itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
-    new import_obsidian4.Notice("\u5DF2\u590D\u5236 tent-agent \u8D77\u624B prompt");
+    new import_obsidian4.Notice("\u5DF2\u590D\u5236 tent-role \u8D77\u624B prompt");
   }
   // ---- 树 ----
   drawTree(el) {
@@ -7242,7 +7242,7 @@ var TentView = class extends import_obsidian4.ItemView {
 // src/plugin/settings-model.ts
 init_typeRegistry();
 init_skillRoleRegistry();
-var DEFAULT_RULES_TEMPLATE = "# {tent} - Project Rules\n\n> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-agent skill.\n\n- Output workspace: <real code repository path>\n- Commit / naming conventions: <fill in>\n- Other project rules: <fill in>\n";
+var DEFAULT_RULES_TEMPLATE = "# {tent} - Project Rules\n\n> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-role / tent-task skills.\n\n- Output workspace: <real code repository path>\n- Commit / naming conventions: <fill in>\n- Other project rules: <fill in>\n";
 var DEFAULT_ROLES_REGISTRY2 = { roles: [] };
 var DEFAULT_SETTINGS = {
   tentsRoot: "tents",

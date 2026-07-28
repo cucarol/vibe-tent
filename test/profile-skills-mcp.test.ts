@@ -184,7 +184,7 @@ test("resolveAcpMcpServersWire fails loud on missing env / credential", () => {
 });
 
 test("profile.create/update/list/get skill+mcp whitelist + projection without secrets", async () => {
-  const skillRoot = path.join(os.homedir(), ".agents", "skills", "tent-agent");
+  const skillRoot = path.join(os.homedir(), ".agents", "skills", "tent-task");
   // Disk-backed catalog so create/update round-trips agent-profiles.json.
   await withService(async (svc, dataDir) => {
     const created = await rpc(svc, "profile.create", {
@@ -192,7 +192,7 @@ test("profile.create/update/list/get skill+mcp whitelist + projection without se
       adapterId: "grok-acp",
       displayName: "Skill MCP profile",
       skills: [
-        { name: "tent-agent", path: skillRoot, enabled: true },
+        { name: "tent-task", path: skillRoot, enabled: true },
         { name: "review-helper", enabled: false },
       ],
       mcpServers: [

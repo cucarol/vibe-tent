@@ -2,6 +2,8 @@
 
 Collaboration lifecycle mutates only through **Local Service** (`tent task *`). CLI attaches to the machine-local service, mounts the workspace, and calls RPC. CLI exit does **not** stop the service.
 
+Read only the section needed for the current responsibility. Dispatcher and reviewer commands describe the API; they do not grant an executor authority on its own Task.
+
 ## Commands agents actually use
 
 ```text
@@ -13,15 +15,6 @@ tent task ask-user <taskPath> --question <text>|- [--choices id=label,…] [--wo
 tent task task-input list <taskPath> | --task <taskPath> [--workspace <path>] [--json]
 tent task task-input get <inputId> --task <taskPath> [--workspace <path>] [--json]
 tent task task-input ack <inputId> --task <taskPath> --actor <role|sessionId> [--workspace <path>] [--json]
-```
-
-External session lifecycle (orthogonal; no ACP spawn):
-
-```text
-tent agent enter   [--session <ss-…>] [--role <name>] [--profile <id>]
-                   [--key <externalKey>] [--host <agent>] [--task <taskId>] [--json]
-tent agent status  [sessionId|externalKey] [--key <externalKey>] [--json]
-tent agent leave   [sessionId|externalKey] [--key <externalKey>] [--json]
 ```
 
 User / dispatcher write path and review (not the executor’s self-inbox):
@@ -49,7 +42,9 @@ Dispatch forms:
 - Prompt: positionals **or** `--prompt <text>|-`, not both. With `--profile`, every positional after `boxId` is prompt text.
 - Role attribution / A2A: any dispatch with explicit `--by`/`--from`/`--dispatched-by` (must name a **role**, not `user`), or implicit `TENT_ROLE`, or `--as-sub`, sends `callerKind=role` on **both** role and profile forms; plain user dispatch omits `--by` and sends `callerKind=user`. Explicit `--by user` is rejected.
 
-Agents should **not** self-accept their own delivery unless the product path explicitly authorizes it.
+Agents never self-accept their own Delivery. Use the persisted Task’s current `asSub`, `dispatchedBy`, and `deliveryPolicy` fields; review authority comes from Core and persisted state.
+
+As a behavior contract, a downstream executor never requests or elevates `bypass` or `agent-decide`. If persisted state contradicts the intended review-to-parent model, fail loudly to the dispatcher. The V0.2 target replaces these compatibility fields with an explicit parent actor/reviewer contract.
 
 ## taskPath
 
@@ -64,7 +59,7 @@ Agents should **not** self-accept their own delivery unless the product path exp
    Managed ACP: service already claimed via `startSession` — **do not claim again**.
 2. **get** — re-read machine state after claim or mid-run. Envelope is the delivery record; box body is the task definition.
 3. **deliver** — submit Delivery with a human summary and optional commit SHAs.  
-   Creates a reviewable delivery; does **not** accept. `deliveryPolicy=review` (default) waits for independent user accept/reject; `bypass` auto-integrates; `agent-decide` requires integrate or request-review.
+   Creates a Delivery; does **not** accept. The current wire stores `deliveryPolicy` per Task: `review` waits for authorized review, `bypass` auto-integrates, and `agent-decide` requires integrate or request-review. Executors never elevate it. The V0.2 behavior target restricts downstream Task Agent → parent review and reserves the three-state choice for a durable Role’s user-facing Delivery.
    Service refuses ready Delivery while this task still has open TaskInput (`pending` / `processing` / retryable `failed`) with stable code `PENDING_TASK_INPUT` — consume via managed inject or `task-input ack` first; do not expect seal/cleanup to cancel blockers for you.
 
 ```bash
@@ -114,24 +109,12 @@ Wait for the reply through the service; do not busy-loop inventing answers.
 
 During design, review, or planning, treat explicit user confirmation as durable project context:
 
-- Write the conclusion promptly through the authorized Tent mutation path into the nearest relevant writable Node.
-- Prefer extending the current architecture, lifecycle, or feature Node; do not create one Node per conversational detail.
-- If no suitable writable Node exists, preserve the conclusion in the Delivery summary and mark it as unplaced.
+- Include the conclusion in the Delivery report.
+- Persist it into the nearest relevant writable Node only when this executor is also the authorized Role.
+- Otherwise return it to the parent reviewer for placement.
 - Before Delivery, check that confirmed decisions do not exist only in chat.
 
-## External session CLI
-
-Verified public surface (sibling lifecycle CLI):
-
-| Command | Meaning |
-| --- | --- |
-| `tent agent enter` | Register/reuse external session (`state=external`). No ACP. Idempotent. |
-| `tent agent status` | Probe session + incomplete tasks. |
-| `tent agent leave` | End binding only. **Never** deliver/accept. |
-
-Hook aliases (native install / projection): `session-start` / `session-status` / `session-end` with `--host <agent>` → same enter/status/leave via stable `externalKey`. Outside Tent: silent exit 0 for hooks.
-
-Optional bind on claim: `tent task claim … --session <ss-…>` when the host already has a session id.
+For external Session entry/status/leave, read [session-boundaries.md](session-boundaries.md). An external executor may bind an existing Session ID during claim with `tent task claim … --session <ss-…>`.
 
 ## Orientation helpers
 

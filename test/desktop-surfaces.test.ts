@@ -268,13 +268,13 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
 
 test("profile skills/mcp drafts: toggle, id/ref only, no displayName/secrets", () => {
   const skills = skillDraftsFromProjection([
-    { name: "tent-agent", path: "/home/u/.agents/skills/tent-agent", enabled: true },
+    { name: "tent-task", path: "/home/u/.agents/skills/tent-task", enabled: true },
     { name: "review-helper", enabled: false },
   ]);
   assert.equal(skills.length, 2);
   assert.equal(skills[0]!.enabled, true);
   assert.equal(skills[1]!.enabled, false);
-  assert.match(skillSourceLine(skills[0]!), /tent-agent/);
+  assert.match(skillSourceLine(skills[0]!), /tent-task/);
   assert.match(skillSourceLine(skills[1]!), /name-only/);
 
   const toggled = setSkillEnabled(skills, "review-helper", true);

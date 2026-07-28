@@ -1,0 +1,4 @@
+interface:
+  display_name: "Tent Task"
+  short_description: "Execute and deliver one Task inside a Tent"
+  default_prompt: "Use $tent-task to execute this Tent Task. Also apply $tent-role when acting as a durable Role."

@@ -505,9 +505,9 @@ export class TentView extends ItemView {
 
   private async copyGenesisPrompt() {
     const prompt =
-      "Please use the tent-agent skill to create a new Tent. Lightly confirm the workspace root and initial roles, then run `tent new <workspace>` to scaffold the in-workspace `.tent` layout. Tent state itself does not use Git.";
+      "Please use the tent-role skill to create a new Tent and initialize its durable roles. Lightly confirm the workspace root and initial roles, then run `tent new <workspace>` to scaffold the in-workspace `.tent` layout. Tent state itself does not use Git.";
     await navigator.clipboard.writeText(prompt);
-    new Notice("已复制 tent-agent 起手 prompt");
+    new Notice("已复制 tent-role 起手 prompt");
   }
 
   // ---- 树 ----

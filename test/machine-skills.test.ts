@@ -66,7 +66,7 @@ test("listSkills: reports bundled names and per-target installed status", async 
   const home = await tempDir("tent-skill-list-");
   const listed = await listSkills({ packageRoot: repoRoot, home });
   const names = listed.skills.map((s) => s.name).sort();
-  assert.deepEqual(names, ["tent-agent"]);
+  assert.deepEqual(names, ["tent-role", "tent-task"]);
 
   for (const skill of listed.skills) {
     assert.equal(skill.targets.length, SKILL_TARGET_IDS.length);
@@ -82,11 +82,11 @@ test("listSkills: reports bundled names and per-target installed status", async 
   await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-agent"],
+    skills: ["tent-task"],
     targets: ["claude"],
   });
   const after = await listSkills({ packageRoot: repoRoot, home });
-  const agent = after.skills.find((s) => s.name === "tent-agent");
+  const agent = after.skills.find((s) => s.name === "tent-task");
   assert.ok(agent);
   const claude = agent!.targets.find((t) => t.target === "claude");
   const agents = agent!.targets.find((t) => t.target === "shared-agents");
@@ -97,23 +97,23 @@ test("listSkills: reports bundled names and per-target installed status", async 
 test("installSkills: selective, skip, force, dual targets", async () => {
   const home = await tempDir("tent-skill-install-unit-");
   const bundledAgent = await fs.readFile(
-    path.join(repoRoot, "skills", "tent-agent", "SKILL.md"),
+    path.join(repoRoot, "skills", "tent-task", "SKILL.md"),
     "utf8"
   );
 
   const first = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-agent"],
+    skills: ["tent-task"],
   });
   // Default both targets.
   assert.equal(first.filter((r) => r.status === "installed").length, 2);
-  assert.ok(first.every((r) => r.skill === "tent-agent"));
+  assert.ok(first.every((r) => r.skill === "tent-task"));
   assert.ok(first.some((r) => r.target === "claude"));
   assert.ok(first.some((r) => r.target === "shared-agents"));
 
   for (const id of SKILL_TARGET_IDS) {
-    const p = path.join(skillTargetDir(id, home), "tent-agent", "SKILL.md");
+    const p = path.join(skillTargetDir(id, home), "tent-task", "SKILL.md");
     assert.equal(await fs.readFile(p, "utf8"), bundledAgent);
   }
 
@@ -121,7 +121,7 @@ test("installSkills: selective, skip, force, dual targets", async () => {
   const skipped = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-agent"],
+    skills: ["tent-task"],
     targets: ["claude"],
   });
   assert.equal(skipped.length, 1);
@@ -130,20 +130,20 @@ test("installSkills: selective, skip, force, dual targets", async () => {
 
   // Stale content + force overwrites only selected target.
   await fs.writeFile(
-    path.join(skillTargetDir("claude", home), "tent-agent", "SKILL.md"),
+    path.join(skillTargetDir("claude", home), "tent-task", "SKILL.md"),
     "# stale\n",
     "utf8"
   );
   const forced = await installSkills({
     packageRoot: repoRoot,
     home,
-    skills: ["tent-agent"],
+    skills: ["tent-task"],
     targets: ["claude"],
     force: true,
   });
   assert.equal(forced[0]!.status, "installed");
   assert.equal(
-    await fs.readFile(path.join(skillTargetDir("claude", home), "tent-agent", "SKILL.md"), "utf8"),
+    await fs.readFile(path.join(skillTargetDir("claude", home), "tent-task", "SKILL.md"), "utf8"),
     bundledAgent
   );
 });
@@ -165,7 +165,7 @@ test("installSkills: rejects traversal, unknown skill, unknown target", async ()
       installSkills({
         packageRoot: repoRoot,
         home,
-        skills: ["tent-agent/../../etc"],
+        skills: ["tent-task/../../etc"],
       }),
     /Invalid skill name/
   );
@@ -216,7 +216,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
         targets: Array<{ target: string; path: string; installed: boolean }>;
       }>;
     };
-    assert.deepEqual(listed.skills.map((s) => s.name), ["tent-agent"]);
+    assert.deepEqual(listed.skills.map((s) => s.name), ["tent-role", "tent-task"]);
     for (const s of listed.skills) {
       for (const t of s.targets) {
         assert.ok(t.path.startsWith(home), `path under injected home: ${t.path}`);
@@ -226,7 +226,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
 
     // Selective install to one target.
     const partial = (await client.skillInstall({
-      skills: ["tent-agent"],
+      skills: ["tent-task"],
       targets: ["claude"],
     })) as { results: Array<{ skill: string; status: string; target?: string }> };
     assert.equal(partial.results.length, 1);
@@ -234,19 +234,19 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     assert.equal(partial.results[0]!.target, "claude");
 
     const afterPartial = (await client.skillList()) as typeof listed;
-    const agent = afterPartial.skills.find((s) => s.name === "tent-agent")!;
+    const agent = afterPartial.skills.find((s) => s.name === "tent-task")!;
     assert.equal(agent.targets.find((t) => t.target === "claude")!.installed, true);
     assert.equal(agent.targets.find((t) => t.target === "shared-agents")!.installed, false);
 
     // Skip then force.
     const skip = (await client.skillInstall({
-      skills: ["tent-agent"],
+      skills: ["tent-task"],
       targets: ["claude"],
     })) as { results: Array<{ status: string }> };
     assert.equal(skip.results[0]!.status, "skipped");
 
     const force = (await client.skillInstall({
-      skills: ["tent-agent"],
+      skills: ["tent-task"],
       targets: ["claude"],
       force: true,
     })) as { results: Array<{ status: string }> };
@@ -264,7 +264,7 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
     await assert.rejects(
       () =>
         client.call("skill.install", {
-          skills: ["tent-agent"],
+          skills: ["tent-task"],
           source: "/tmp/evil",
         } as Record<string, unknown>),
       /does not accept source/
@@ -273,13 +273,13 @@ test("RPC skill.list / skill.install: offline dual-target + validation", async (
       () =>
         client.call("skill.install", {
           workspaceId: "ws-1",
-          skills: ["tent-agent"],
+          skills: ["tent-task"],
         } as Record<string, unknown>),
       /does not accept workspaceId/
     );
 
     // Paths never hard-coded to a real user home.
-    const diskAgent = path.join(home, ".claude", "skills", "tent-agent", "SKILL.md");
+    const diskAgent = path.join(home, ".claude", "skills", "tent-task", "SKILL.md");
     assert.equal(await exists(diskAgent), true);
   } finally {
     await svc.stop();

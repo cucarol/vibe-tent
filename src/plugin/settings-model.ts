@@ -30,7 +30,7 @@ export interface TentSettings {
 
 export const DEFAULT_RULES_TEMPLATE =
   "# {tent} - Project Rules\n\n" +
-  "> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-agent skill.\n\n" +
+  "> Local rules for this Tent; mechanism-level rules are provided by Tent and the tent-role / tent-task skills.\n\n" +
   "- Output workspace: <real code repository path>\n" +
   "- Commit / naming conventions: <fill in>\n" +
   "- Other project rules: <fill in>\n";

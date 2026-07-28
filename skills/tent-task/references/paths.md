@@ -18,7 +18,7 @@ Desktop / co-located agents use **in-workspace** layout only.
 3. CLI args (`taskPath`, most core-relative paths) stay `temp/...` relative to system root. On disk for editors/agents reading files: `.tent/temp/...`.
 4. Context Card / bootstrap may give `workspaceRoot` + `systemRoot`. Prefer those. If `tentRoot` appears, it means **system root** (`.tent`), not workspace.
 5. Do not invent missing envelope, manifest, or box bodies — open the path or fetch via `tent task get` first.
-6. Treat `manifest.yml` as a **context pointer** from dispatch: which claims and paths to load for this task. V0.2 tent-agent does **not** project or enforce permission axes from the manifest.
+6. Treat `manifest.yml` as a **context pointer** from dispatch: which claims and paths to load for this task. V0.2 `tent-task` does **not** project or enforce permission axes from the manifest.
 
 ## Common locations
 

@@ -7774,7 +7774,7 @@ async function newTent(target, vault) {
   const fallbackRules = `# ${name} - Project Rules
 
 > Local project rules for this Tent; edit freely.
-> Mechanism-level rules live in the Tent repository docs/SPEC.md; the agent operation protocol lives in the tent-agent skill.
+> Mechanism-level rules live in the Tent repository docs/SPEC.md; agent behavior contracts live in the tent-role and tent-task skills.
 
 - Output workspace: ${workspaceRoot.replaceAll("\\", "/")}
 - Commit / naming conventions: <fill in>

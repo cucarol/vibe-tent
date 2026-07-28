@@ -30,7 +30,7 @@ When done, tell me to enable Tent in Obsidian's community-plugin settings.
 **3） 手动安装** —— 构建后把 `main.js`、`manifest.json`、`styles.css` 拷入 `<vault>/.obsidian/plugins/tent/`。
 
 以上任一方式装好后，在 Obsidian 第三方插件设置中启用 Tent；
-在你的 agent 里使用统一的 `tent-agent` skill：首次创建 Tent、进入或恢复 role、接取和交付任务都走同一个入口。
+在你的 Agent 里组合使用两个 Skill：`tent-role` 负责持久 Role 的连续性与编排，`tent-task` 负责所有具体 Task 的执行与交付；Role 执行 Task 时同时加载两者。
 
 ## 架构与概念
 
@@ -58,7 +58,7 @@ core 是 Tent（帐） 的地基：一套纯文件约定，加上操作它的 `t
 
 ### skill
 
-agent 侧只有一个统一入口 **`tent-agent`**：负责创建或进入 Tent、初始化或恢复 role、绑定外部 session，以及完成 task 的 claim、A2U/U2A、deliver 生命周期。
+Agent 侧只有两个可组合行为合同：**`tent-role`** 负责创建、进入或恢复持久 Role，以及下游编排和审查；**`tent-task`** 负责任何 Agent 的 Task claim、A2U/U2A、工作区边界与 Delivery 生命周期。
 
 ### Obsidian UI
 
