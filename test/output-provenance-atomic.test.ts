@@ -380,7 +380,7 @@ test("retention pin scan fails closed: preview and purge refuse when loadTent br
   const OLD = "2026-06-01T12:00:00.000Z";
   const clock = { now: () => OLD };
   const taskPath = await writeTaskEnvelope(base, clock, {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "bx-p1", path: "prompt/表达式任务书" }],

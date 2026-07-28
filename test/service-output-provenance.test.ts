@@ -463,7 +463,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
   );
 
   const taskPath = await writeTaskEnvelope(fsa, clock, {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "cx-src", path: "inbox" }],
@@ -517,7 +517,7 @@ test("retention pins Delivery+Task referenced by Output.deliveryId (including ar
 
   // Unrelated old terminal still purges
   const otherPath = await writeTaskEnvelope(fsa, clock, {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "cx-other", path: "inbox" }],

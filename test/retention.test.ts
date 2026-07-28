@@ -49,7 +49,7 @@ async function writeTerminalTask(
 ) {
   const role = opts.role ?? "executor";
   const path = await writeTaskEnvelope(fs, clock(opts.createdAt ?? OLD), {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role,
     claims: [{ id: opts.claimId ?? "bx-p1", path: "prompt/表达式任务书" }],
@@ -98,7 +98,7 @@ test("preview: never selects active tasks or ready deliveries", async () => {
   const fs = new NodeFs(dir);
 
   const activePath = await writeTaskEnvelope(fs, clock(OLD), {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "bx-p1", path: "prompt/表达式任务书" }],
@@ -277,7 +277,7 @@ test("purge: deletes task + deliveries as a group; leaves active work", async ()
   );
 
   const activePath = await writeTaskEnvelope(fs, clock(NOW), {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "bx-p2", path: "prompt/表达式任务书/草稿" }],

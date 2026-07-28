@@ -142,7 +142,7 @@ test("bindContextCardDrag: dragstart sets text/plain and never calls clipboard",
   assert.match(el.getAttribute("title") ?? "", /拖/);
 
   const dt = mockDataTransfer();
-  el.dispatch("dragstart", { 
+  el.dispatch("dragstart", {
   parentActor: { kind: "user", id: "user" },
   reviewer: { kind: "user", id: "user" },
 dataTransfer: dt });

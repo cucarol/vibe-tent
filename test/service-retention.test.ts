@@ -60,7 +60,7 @@ async function seedOldTerminal(
   const fsa = new NodeFs(systemRoot);
   const clock = { now: () => OLD };
   const taskPath = await writeTaskEnvelope(fsa, clock, {
-    
+
     parentActor: { kind: "user", id: "user" },
     reviewer: { kind: "user", id: "user" },role: "executor",
     claims: [{ id: "bx-seed", path: "inbox" }],
@@ -221,7 +221,7 @@ test("operationalRetention.purge never deletes active task or ready delivery", a
     const clock = { now: () => OLD };
 
     const activePath = await writeTaskEnvelope(fsa, clock, {
-      
+
       parentActor: { kind: "user", id: "user" },
       reviewer: { kind: "user", id: "user" },role: "executor",
       claims: [{ id: "bx-live", path: "inbox" }],
