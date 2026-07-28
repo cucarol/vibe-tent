@@ -431,25 +431,21 @@ export function assertNotSelfAccept(actor: string, submitterRole: string): void 
 
 /**
  * Review authority for task.accept / task.reject (V0.2 parent/reviewer wire).
- * Ordinary accept/reject must equal the exact persisted Task.reviewer and never
- * the submitter. Executor never self-accepts.
+ * Ordinary accept/reject must equal the **exact** persisted Task.reviewer and
+ * never the submitter. There is no user root bypass on Role-reviewed Tasks.
  *
- * - User-reviewed (`reviewer.kind=user`): only `actor=user`.
- * - Role-reviewed (`reviewer.kind=role`): only the exact parent Role id.
- *   User must not bypass the parent Role via ordinary review.
+ * - `reviewer.kind=user` → only `actor=user`.
+ * - `reviewer.kind=role` → only `actor === reviewer.id` (exact parent Role).
+ * - Self-review (actor === submitter) always forbidden.
  * - Soft policy only — not cryptographic auth on the shared service token.
  *
- * Legacy `asSub`/`dispatchedBy` are not read here. Callers must pass the explicit
- * reviewer (from envelope or one-time migration). Missing reviewer fails loud.
+ * Callers pass the explicit envelope `reviewer` (after migration). This function
+ * never reads `asSub` or legacy `dispatchedBy`.
  */
 export function assertReviewAuthority(input: {
   actor: string;
   submitterRole: string;
   reviewer?: TaskActorRef;
-  /** @deprecated Ignored — authority uses reviewer only. */
-  asSub?: boolean;
-  /** @deprecated Ignored — use reviewer. */
-  dispatchedBy?: string;
   action?: "accept" | "reject";
 }): void {
   const actor = input.actor.trim();
@@ -475,13 +471,14 @@ export function assertReviewAuthority(input: {
     );
   }
   if (reviewer.kind === "user") {
-    if (actor === "user") return;
+    // Exact match only: kind=user requires id "user" (enforced by parseTaskActorRef).
+    if (actor === reviewer.id && actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
     );
   }
-  // Role-reviewed: exact parent Role only — user may not ordinary-bypass.
+  // Role-reviewed: exact parent Role id only — never user ordinary-bypass.
   if (actor === reviewer.id) return;
   throw new TaskLifecycleError(
     "REVIEW_FORBIDDEN",

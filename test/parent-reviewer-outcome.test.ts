@@ -225,25 +225,55 @@ test("resolveDispatchActors / writeTaskEnvelope refuse missing actors and dispat
   );
 });
 
-test("assertReviewAuthority: Role-reviewed forbids user ordinary bypass", () => {
-  assert.throws(
-    () =>
-      assertReviewAuthority({
-        actor: "user",
-        submitterRole: "helper",
-        reviewer: { kind: "role", id: "规划" },
-        action: "accept",
-      }),
-    (err: unknown) =>
-      err instanceof TaskLifecycleError &&
-      err.code === "REVIEW_FORBIDDEN" &&
-      /reviewer role \(规划\)/i.test(String((err as Error).message))
+test("assertReviewAuthority: exact reviewer only — user cannot accept/reject role:X", () => {
+  const roleReviewer = { kind: "role" as const, id: "规划" };
+  for (const action of ["accept", "reject"] as const) {
+    assert.throws(
+      () =>
+        assertReviewAuthority({
+          actor: "user",
+          submitterRole: "helper",
+          reviewer: roleReviewer,
+          action,
+        }),
+      (err: unknown) =>
+        err instanceof TaskLifecycleError &&
+        err.code === "REVIEW_FORBIDDEN" &&
+        /reviewer role \(规划\)/i.test(String((err as Error).message))
+    );
+  }
+  assert.doesNotThrow(() =>
+    assertReviewAuthority({
+      actor: "规划",
+      submitterRole: "helper",
+      reviewer: roleReviewer,
+      action: "accept",
+    })
   );
   assert.doesNotThrow(() =>
     assertReviewAuthority({
       actor: "规划",
       submitterRole: "helper",
-      reviewer: { kind: "role", id: "规划" },
+      reviewer: roleReviewer,
+      action: "reject",
+    })
+  );
+  // user-reviewed still allows only user (not a peer role).
+  assert.throws(
+    () =>
+      assertReviewAuthority({
+        actor: "规划",
+        submitterRole: "helper",
+        reviewer: { kind: "user", id: "user" },
+        action: "accept",
+      }),
+    (err: unknown) => err instanceof TaskLifecycleError && err.code === "REVIEW_FORBIDDEN"
+  );
+  assert.doesNotThrow(() =>
+    assertReviewAuthority({
+      actor: "user",
+      submitterRole: "helper",
+      reviewer: { kind: "user", id: "user" },
       action: "accept",
     })
   );
@@ -292,13 +322,16 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
         boxId,
         role: "executor",
         prompt: "legacy wire",
+        // Even with explicit actors present, dispatchedBy must be rejected.
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
         dispatchedBy: "user",
       },
       { token: svc.token }
     );
     assert.ok(legacy.error);
     assert.equal(legacy.error!.code, -32602);
-    assert.match(String(legacy.error!.message), /dispatchedBy is retired|parentActor/i);
+    assert.match(String(legacy.error!.message), /dispatchedBy is retired/i);
 
     const missing = await rpcCall(
       svc.url,
@@ -335,12 +368,21 @@ test("task.dispatch RPC rejects legacy dispatchedBy and missing parentActor/revi
     assert.equal(task.reviewer?.id, "user");
     const raw = await fs.readFile(path.join(dir, ".tent", taskPath), "utf8");
     assert.doesNotMatch(raw, /^dispatchedBy:/m);
+    // Projection must not reintroduce dispatchedBy.
+    const projected = ok.result as {
+      parentActor?: { kind: string; id: string };
+      reviewer?: { kind: string; id: string };
+      dispatchedBy?: string;
+    };
+    assert.equal(projected.dispatchedBy, undefined);
+    assert.equal(projected.parentActor?.id, "user");
+    assert.equal(projected.reviewer?.id, "user");
   } finally {
     await svc.stop();
   }
 });
 
-test("loadTaskEnvelope: in-memory migrate when disk still has legacy only", async () => {
+test("loadTaskEnvelope: refuses unmigrated legacy dispatchedBy (migrator-only read)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-parent-load-"));
   const fsa = new NodeFs(dir);
   await fsa.mkdir("temp/helper/tasks");
@@ -365,10 +407,20 @@ test("loadTaskEnvelope: in-memory migrate when disk still has legacy only", asyn
       "",
     ].join("\n")
   );
+  // Load must not dual-read dispatchedBy; only migrateParentReviewerEnvelopes may.
+  await assert.rejects(
+    () => loadTaskEnvelope(fsa, "temp/helper/tasks/task-mem.md"),
+    /legacy dispatchedBy|migrateParentReviewerEnvelopes|missing parentActor/i
+  );
+  const raw = await fsa.readFile("temp/helper/tasks/task-mem.md");
+  assert.match(raw, /dispatchedBy:\s*user/);
+  // After one-time migration, load succeeds and dispatchedBy is gone.
+  const clock = new SystemClock();
+  const report = await migrateParentReviewerEnvelopes(fsa, clock);
+  assert.equal(report.rewritten.length, 1);
   const task = await loadTaskEnvelope(fsa, "temp/helper/tasks/task-mem.md");
   assert.equal(task.parentActor?.kind, "user");
   assert.equal(task.reviewer?.id, "user");
-  // Disk still has legacy until migrate runs — no permanent dual-write on load.
-  const raw = await fsa.readFile("temp/helper/tasks/task-mem.md");
-  assert.match(raw, /dispatchedBy:\s*user/);
+  const after = await fsa.readFile("temp/helper/tasks/task-mem.md");
+  assert.doesNotMatch(after, /^dispatchedBy:/m);
 });

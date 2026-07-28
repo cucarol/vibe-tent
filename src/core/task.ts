@@ -91,14 +91,13 @@ export interface TaskEnvelope {
   /** Operational task id (tk-…). May be absent on pre-B4 envelopes. */
   id?: string;
   /**
-   * Explicit parent actor (V0.2). Present after load (migrated once from
-   * legacy asSub+dispatchedBy when missing on disk). Optional only on
-   * synthetic/partial fixtures before write.
+   * Explicit parent actor (V0.2). Required after disk migration / on new writes.
+   * Optional only on synthetic/partial fixtures before write.
    */
   parentActor?: TaskActorRef;
   /**
-   * Explicit Delivery reviewer (V0.2). Derived equal to parentActor on write;
-   * present after load.
+   * Explicit Delivery reviewer (V0.2). Required with parentActor; ordinary
+   * accept/reject authority equals this actor exactly.
    */
   reviewer?: TaskActorRef;
   /**
@@ -365,8 +364,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   const legacyStatus: TaskEnvelopeStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
 
-  // V0.2 parent/reviewer: prefer explicit wire. One-time in-memory migration from
-  // legacy asSub+dispatchedBy when missing — does not dual-read after disk rewrite.
+  // V0.2 parent/reviewer: explicit wire required after disk migration.
   const actors = resolveActorsFromDisk(data);
 
   const task: TaskEnvelope = {
@@ -409,8 +407,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
 
 /**
  * Resolve parentActor/reviewer from on-disk frontmatter.
- * Explicit fields win. Legacy asSub+dispatchedBy migrate once in memory.
- * Corrupt explicit fields fail loud (do not silently fall back).
+ * Explicit fields required. Legacy `dispatchedBy` is **not** read here — only
+ * `migrateParentReviewerEnvelopes` (one-time disk migrator) may consume it.
+ * Unmigrated envelopes fail loud so callers remount / migrate first.
  */
 function resolveActorsFromDisk(data: Record<string, unknown>): {
   parentActor: TaskActorRef;
@@ -429,13 +428,14 @@ function resolveActorsFromDisk(data: Record<string, unknown>): {
       reviewer: parseTaskActorRef(data.reviewer, "reviewer"),
     };
   }
-  // Legacy one-shot derivation (in-memory only until migrateParentReviewerEnvelopes writes).
-  const legacyDispatcher =
-    typeof data.dispatchedBy === "string" ? data.dispatchedBy : undefined;
-  return migrateParentReviewerFromLegacy({
-    asSub: data.asSub === true,
-    dispatchedBy: legacyDispatcher,
-  });
+  const hasLegacy =
+    typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+  throw new Error(
+    hasLegacy
+      ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; " +
+          "run workspace.mount migration (migrateParentReviewerEnvelopes) before load."
+      : "Invalid task envelope: missing parentActor/reviewer."
+  );
 }
 
 /**

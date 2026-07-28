@@ -1591,11 +1591,10 @@ function resolveActorsFromDisk(data) {
       reviewer: parseTaskActorRef(data.reviewer, "reviewer")
     };
   }
-  const legacyDispatcher = typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0;
-  return migrateParentReviewerFromLegacy({
-    asSub: data.asSub === true,
-    dispatchedBy: legacyDispatcher
-  });
+  const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+  throw new Error(
+    hasLegacy ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; run workspace.mount migration (migrateParentReviewerEnvelopes) before load." : "Invalid task envelope: missing parentActor/reviewer."
+  );
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {

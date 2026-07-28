@@ -700,9 +700,9 @@ export class ServiceClient {
       assigneeKind?: "role" | "agentProfile";
       prompt: string;
       /**
-       * Explicit parent actor (V0.2). Required.
+       * Explicit parent actor (V0.2). Required on every dispatch.
        * Role-dispatched Task Agent → { kind:"role", id:<role> }; user-direct → { kind:"user", id:"user" }.
-       * Legacy dispatchedBy is not accepted (migration-only on disk).
+       * Do not send legacy `dispatchedBy` (Service rejects it fail-loud).
        */
       parentActor: { kind: "user" | "role"; id: string };
       /**

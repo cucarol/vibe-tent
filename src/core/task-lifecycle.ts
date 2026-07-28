@@ -534,7 +534,7 @@ export async function taskReject(
     assertTransition(task.state, event, to);
 
     const delivery = await requireActiveReadyDelivery(env.fs, task);
-    // Self-reject-as-review forbidden; reviewer must be user or exact Task.reviewer role.
+    // Exact Task.reviewer only (no user bypass on Role-reviewed); never self.
     assertReviewAuthority({
       actor: options.actor,
       submitterRole: delivery.role,

@@ -381,7 +381,12 @@ test("taskInput list/get/ack are isolated across workspaces (no cross get/ack)",
       "state: running\n" +
       "role: executor\n" +
       "assigneeKind: role\n" +
-      "dispatchedBy: user\n" +
+      "parentActor:\n" +
+      "  kind: user\n" +
+      "  id: user\n" +
+      "reviewer:\n" +
+      "  kind: user\n" +
+      "  id: user\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +

@@ -1545,26 +1545,6 @@ function userTaskActors() {
     reviewer: { kind: "user", id: "user" }
   };
 }
-function roleTaskActors(roleName) {
-  const id = roleName.trim();
-  if (!id || id === "user") {
-    throw new TaskLifecycleError(
-      "INVALID_ACTOR",
-      "Role parent/reviewer requires a durable role name (not user)."
-    );
-  }
-  return {
-    parentActor: { kind: "role", id },
-    reviewer: { kind: "role", id }
-  };
-}
-function migrateParentReviewerFromLegacy(input) {
-  const dispatcher = (input.dispatchedBy || "").trim();
-  if (dispatcher && dispatcher !== "user") {
-    return roleTaskActors(dispatcher);
-  }
-  return userTaskActors();
-}
 function mayElevateDeliveryPolicy(input) {
   const parent = input.parentActor;
   if (!parent || parent.kind !== "user") return false;
@@ -1664,7 +1644,7 @@ function assertReviewAuthority(input) {
     );
   }
   if (reviewer.kind === "user") {
-    if (actor === "user") return;
+    if (actor === reviewer.id && actor === "user") return;
     throw new TaskLifecycleError(
       "REVIEW_FORBIDDEN",
       `task.${action} on user-reviewed task requires actor user; got ${actor}.`
@@ -1924,11 +1904,10 @@ function resolveActorsFromDisk(data) {
       reviewer: parseTaskActorRef(data.reviewer, "reviewer")
     };
   }
-  const legacyDispatcher = typeof data.dispatchedBy === "string" ? data.dispatchedBy : void 0;
-  return migrateParentReviewerFromLegacy({
-    asSub: data.asSub === true,
-    dispatchedBy: legacyDispatcher
-  });
+  const hasLegacy = typeof data.dispatchedBy === "string" && data.dispatchedBy.trim() !== "";
+  throw new Error(
+    hasLegacy ? "Invalid task envelope: legacy dispatchedBy present without parentActor/reviewer; run workspace.mount migration (migrateParentReviewerEnvelopes) before load." : "Invalid task envelope: missing parentActor/reviewer."
+  );
 }
 function resolveTaskPromptRoots(roots) {
   if (typeof roots !== "string") {

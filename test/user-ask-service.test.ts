@@ -433,7 +433,12 @@ test("two workspaces sharing relative taskPath keep independent UserAsk pending"
       "state: running\n" +
       "role: executor\n" +
       "assigneeKind: role\n" +
-      "dispatchedBy: user\n" +
+      "parentActor:\n" +
+      "  kind: user\n" +
+      "  id: user\n" +
+      "reviewer:\n" +
+      "  kind: user\n" +
+      "  id: user\n" +
       `claims: [${boxId}]\n` +
       "manifest: temp/executor/manifest.yml\n" +
       "deliveryPolicy: review\n" +
