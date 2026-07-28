@@ -1017,6 +1017,12 @@ export const CLIENT_METHODS = [
   "operationalRetention.preview",
   "operationalRetention.purge",
   /**
+   * Read-only diagnostic for one terminal Task's temporary Git worktree reclaim.
+   * Params: workspaceId + taskPath. Does not mass-scan inventory; auto-reclaim still
+   * runs without this RPC after terminal transitions / mount recovery.
+   */
+  "task.worktreeReclaim.preview",
+  /**
    * Node Markdown underline annotations (划线注释) — first-class workspace records.
    * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.
    * Events are invalidation only (annotation.changed); never auto-inject Agent / TaskInput.

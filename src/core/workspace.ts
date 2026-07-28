@@ -179,6 +179,39 @@ export interface EnsureTaskWorkspaceOptions {
   targetBranch?: string;
 }
 
+/**
+ * Canonical local branch name for a one-shot code Task lane (`tent-task/<slug>`).
+ * Shared by ensure + reclaim so ownership checks never invent a second naming scheme.
+ */
+export function taskWorktreeBranchName(taskId: string): string {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `tent-task/${safeComponent(id)}`;
+}
+
+/**
+ * Sibling directory name under `<workspaceBasename>-worktrees/` for a Task lane.
+ * Always `task-<slug>` — never a durable role slug.
+ */
+export function taskWorktreeDirectoryName(taskId: string): string {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `task-${safeComponent(id)}`;
+}
+
+/**
+ * Expected absolute Task worktree path for `taskId` under a Git workspace root.
+ * Does not create or inspect Git state — pure layout contract used by reclaim.
+ */
+export function expectedTaskWorktreePath(workspaceRoot: string, taskId: string): string {
+  const root = nodePath.resolve(workspaceRoot);
+  return nodePath.join(
+    nodePath.dirname(root),
+    `${nodePath.basename(root)}-worktrees`,
+    taskWorktreeDirectoryName(taskId)
+  );
+}
+
 export async function ensureTaskWorkspace(
   workspace: string,
   taskId: string,
@@ -196,13 +229,8 @@ export async function ensureTaskWorkspace(
   ) {
     throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
   }
-  const taskSlug = safeComponent(id);
-  const branch = `tent-task/${taskSlug}`;
-  const worktree = nodePath.join(
-    nodePath.dirname(root),
-    `${nodePath.basename(root)}-worktrees`,
-    `task-${taskSlug}`
-  );
+  const branch = taskWorktreeBranchName(id);
+  const worktree = expectedTaskWorktreePath(root, id);
 
   const existing = await worktreeForBranch(root, branch);
   if (existing) {

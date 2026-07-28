@@ -30,6 +30,8 @@ export * from "./task.js";
 export * from "./delivery.js";
 export * from "./task-lifecycle.js";
 export * from "./retention.js";
+export * from "./task-worktree-reclaim.js";
+export * from "./task-worktree-reclaim-queue.js";
 export * from "./workspace-settings.js";
 export * from "./annotation.js";
 export * from "./context-card.js";

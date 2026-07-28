@@ -399,8 +399,8 @@ var SYSTEM_REGISTRY_FILES = /* @__PURE__ */ new Set([
 ]);
 function systemRootFromWorkspace(workspaceRoot) {
   const root = workspaceRoot.replace(/[\\/]+$/, "");
-  const sep3 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
-  return `${root}${sep3}${TENT_SYSTEM_DIR}`;
+  const sep4 = root.includes("\\") && !root.includes("/") ? "\\" : "/";
+  return `${root}${sep4}${TENT_SYSTEM_DIR}`;
 }
 function isOperationalPath(relativePath4) {
   const path24 = relativePath4.replace(/\\/g, "/").replace(/^\.\/+/, "");
@@ -2565,7 +2565,7 @@ function projectAssigneeFromTask(task) {
   }
   return { kind: "role", id: task.role };
 }
-function assertRefsResolved(card, resolve14) {
+function assertRefsResolved(card, resolve15) {
   const buckets = [
     "nodes",
     "tasks",
@@ -2574,7 +2574,7 @@ function assertRefsResolved(card, resolve14) {
   ];
   for (const bucket of buckets) {
     for (const ref of card.refs[bucket]) {
-      if (!resolve14(bucket, ref)) {
+      if (!resolve15(bucket, ref)) {
         throw new TaskContextCardError(
           "UNRESOLVED_REF",
           `Context Card refs.${bucket} id=${ref.id} could not be resolved (fail-loud to parent).`,
@@ -5785,7 +5785,7 @@ function attachmentResult(relativePath4, label, sourceNotePath) {
 import * as nodePath2 from "node:path";
 import { pathToFileURL } from "node:url";
 
-// node_modules/mdast-util-to-string/lib/index.js
+// ../../Tent/node_modules/mdast-util-to-string/lib/index.js
 var emptyOptions = {};
 function toString(value, options) {
   const settings = options || emptyOptions;
@@ -5822,7 +5822,7 @@ function node(value) {
   return Boolean(value && typeof value === "object");
 }
 
-// node_modules/character-entities/index.js
+// ../../Tent/node_modules/character-entities/index.js
 var characterEntities = {
   AElig: "\xC6",
   AMP: "&",
@@ -7951,13 +7951,13 @@ var characterEntities = {
   zwnj: "\u200C"
 };
 
-// node_modules/decode-named-character-reference/index.js
+// ../../Tent/node_modules/decode-named-character-reference/index.js
 var own = {}.hasOwnProperty;
 function decodeNamedCharacterReference(value) {
   return own.call(characterEntities, value) ? characterEntities[value] : false;
 }
 
-// node_modules/micromark-util-chunked/index.js
+// ../../Tent/node_modules/micromark-util-chunked/index.js
 function splice(list2, start, remove, items) {
   const end = list2.length;
   let chunkStart = 0;
@@ -7991,7 +7991,7 @@ function push(list2, items) {
   return items;
 }
 
-// node_modules/micromark-util-combine-extensions/index.js
+// ../../Tent/node_modules/micromark-util-combine-extensions/index.js
 var hasOwnProperty = {}.hasOwnProperty;
 function combineExtensions(extensions) {
   const all2 = {};
@@ -8031,7 +8031,7 @@ function constructs(existing, list2) {
   splice(existing, 0, 0, before);
 }
 
-// node_modules/micromark-util-decode-numeric-character-reference/index.js
+// ../../Tent/node_modules/micromark-util-decode-numeric-character-reference/index.js
 function decodeNumericCharacterReference(value, base) {
   const code = Number.parseInt(value, base);
   if (
@@ -8049,12 +8049,12 @@ function decodeNumericCharacterReference(value, base) {
   return String.fromCodePoint(code);
 }
 
-// node_modules/micromark-util-normalize-identifier/index.js
+// ../../Tent/node_modules/micromark-util-normalize-identifier/index.js
 function normalizeIdentifier(value) {
   return value.replace(/[\t\n\r ]+/g, " ").replace(/^ | $/g, "").toLowerCase().toUpperCase();
 }
 
-// node_modules/micromark-util-character/index.js
+// ../../Tent/node_modules/micromark-util-character/index.js
 var asciiAlpha = regexCheck(/[A-Za-z]/);
 var asciiAlphanumeric = regexCheck(/[\dA-Za-z]/);
 var asciiAtext = regexCheck(/[#-'*+\--9=?A-Z^-~]/);
@@ -8086,7 +8086,7 @@ function regexCheck(regex) {
   }
 }
 
-// node_modules/micromark-factory-space/index.js
+// ../../Tent/node_modules/micromark-factory-space/index.js
 function factorySpace(effects, ok, type, max) {
   const limit = max ? max - 1 : Number.POSITIVE_INFINITY;
   let size = 0;
@@ -8108,7 +8108,7 @@ function factorySpace(effects, ok, type, max) {
   }
 }
 
-// node_modules/micromark/lib/initialize/content.js
+// ../../Tent/node_modules/micromark/lib/initialize/content.js
 var content = {
   tokenize: initializeContent
 };
@@ -8158,7 +8158,7 @@ function initializeContent(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/document.js
+// ../../Tent/node_modules/micromark/lib/initialize/document.js
 var document = {
   tokenize: initializeDocument
 };
@@ -8340,7 +8340,7 @@ function tokenizeContainer(effects, ok, nok) {
   return factorySpace(effects, effects.attempt(this.parser.constructs.document, ok, nok), "linePrefix", this.parser.constructs.disable.null.includes("codeIndented") ? void 0 : 4);
 }
 
-// node_modules/micromark-util-classify-character/index.js
+// ../../Tent/node_modules/micromark-util-classify-character/index.js
 function classifyCharacter(code) {
   if (code === null || markdownLineEndingOrSpace(code) || unicodeWhitespace(code)) {
     return 1;
@@ -8350,21 +8350,21 @@ function classifyCharacter(code) {
   }
 }
 
-// node_modules/micromark-util-resolve-all/index.js
+// ../../Tent/node_modules/micromark-util-resolve-all/index.js
 function resolveAll(constructs2, events, context) {
   const called = [];
   let index2 = -1;
   while (++index2 < constructs2.length) {
-    const resolve14 = constructs2[index2].resolveAll;
-    if (resolve14 && !called.includes(resolve14)) {
-      events = resolve14(events, context);
-      called.push(resolve14);
+    const resolve15 = constructs2[index2].resolveAll;
+    if (resolve15 && !called.includes(resolve15)) {
+      events = resolve15(events, context);
+      called.push(resolve15);
     }
   }
   return events;
 }
 
-// node_modules/micromark-core-commonmark/lib/attention.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/attention.js
 var attention = {
   name: "attention",
   resolveAll: resolveAllAttention,
@@ -8495,7 +8495,7 @@ function movePoint(point3, offset) {
   point3._bufferIndex += offset;
 }
 
-// node_modules/micromark-core-commonmark/lib/autolink.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/autolink.js
 var autolink = {
   name: "autolink",
   tokenize: tokenizeAutolink
@@ -8596,7 +8596,7 @@ function tokenizeAutolink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/blank-line.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/blank-line.js
 var blankLine = {
   partial: true,
   tokenize: tokenizeBlankLine
@@ -8611,7 +8611,7 @@ function tokenizeBlankLine(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/block-quote.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/block-quote.js
 var blockQuote = {
   continuation: {
     tokenize: tokenizeBlockQuoteContinuation
@@ -8669,7 +8669,7 @@ function exit(effects) {
   effects.exit("blockQuote");
 }
 
-// node_modules/micromark-core-commonmark/lib/character-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-escape.js
 var characterEscape = {
   name: "characterEscape",
   tokenize: tokenizeCharacterEscape
@@ -8695,7 +8695,7 @@ function tokenizeCharacterEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/character-reference.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/character-reference.js
 var characterReference = {
   name: "characterReference",
   tokenize: tokenizeCharacterReference
@@ -8760,7 +8760,7 @@ function tokenizeCharacterReference(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-fenced.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-fenced.js
 var nonLazyContinuation = {
   partial: true,
   tokenize: tokenizeNonLazyContinuation
@@ -8943,7 +8943,7 @@ function tokenizeNonLazyContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-indented.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-indented.js
 var codeIndented = {
   name: "codeIndented",
   tokenize: tokenizeCodeIndented
@@ -9007,7 +9007,7 @@ function tokenizeFurtherStart(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/code-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/code-text.js
 var codeText = {
   name: "codeText",
   previous,
@@ -9122,7 +9122,7 @@ function tokenizeCodeText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/lib/splice-buffer.js
+// ../../Tent/node_modules/micromark-util-subtokenize/lib/splice-buffer.js
 var SpliceBuffer = class {
   /**
    * @param {ReadonlyArray<T> | null | undefined} [initial]
@@ -9315,7 +9315,7 @@ function chunkedPush(list2, right) {
   }
 }
 
-// node_modules/micromark-util-subtokenize/index.js
+// ../../Tent/node_modules/micromark-util-subtokenize/index.js
 function subtokenize(eventsArray) {
   const jumps = {};
   let index2 = -1;
@@ -9468,7 +9468,7 @@ function subcontent(events, eventIndex) {
   return gaps;
 }
 
-// node_modules/micromark-core-commonmark/lib/content.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/content.js
 var content2 = {
   resolve: resolveContent,
   tokenize: tokenizeContent
@@ -9539,7 +9539,7 @@ function tokenizeContinuation(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-factory-destination/index.js
+// ../../Tent/node_modules/micromark-factory-destination/index.js
 function factoryDestination(effects, ok, nok, type, literalType, literalMarkerType, rawType, stringType, max) {
   const limit = max || Number.POSITIVE_INFINITY;
   let balance = 0;
@@ -9631,7 +9631,7 @@ function factoryDestination(effects, ok, nok, type, literalType, literalMarkerTy
   }
 }
 
-// node_modules/micromark-factory-label/index.js
+// ../../Tent/node_modules/micromark-factory-label/index.js
 function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   const self = this;
   let size = 0;
@@ -9692,7 +9692,7 @@ function factoryLabel(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-title/index.js
+// ../../Tent/node_modules/micromark-factory-title/index.js
 function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   let marker;
   return start;
@@ -9754,7 +9754,7 @@ function factoryTitle(effects, ok, nok, type, markerType, stringType) {
   }
 }
 
-// node_modules/micromark-factory-whitespace/index.js
+// ../../Tent/node_modules/micromark-factory-whitespace/index.js
 function factoryWhitespace(effects, ok) {
   let seen;
   return start;
@@ -9773,7 +9773,7 @@ function factoryWhitespace(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/definition.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/definition.js
 var definition = {
   name: "definition",
   tokenize: tokenizeDefinition
@@ -9859,7 +9859,7 @@ function tokenizeTitleBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/hard-break-escape.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/hard-break-escape.js
 var hardBreakEscape = {
   name: "hardBreakEscape",
   tokenize: tokenizeHardBreakEscape
@@ -9880,7 +9880,7 @@ function tokenizeHardBreakEscape(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/heading-atx.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/heading-atx.js
 var headingAtx = {
   name: "headingAtx",
   resolve: resolveHeadingAtx,
@@ -9971,7 +9971,7 @@ function tokenizeHeadingAtx(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-util-html-tag-name/index.js
+// ../../Tent/node_modules/micromark-util-html-tag-name/index.js
 var htmlBlockNames = [
   "address",
   "article",
@@ -10038,7 +10038,7 @@ var htmlBlockNames = [
 ];
 var htmlRawNames = ["pre", "script", "style", "textarea"];
 
-// node_modules/micromark-core-commonmark/lib/html-flow.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-flow.js
 var htmlFlow = {
   concrete: true,
   name: "htmlFlow",
@@ -10417,7 +10417,7 @@ function tokenizeBlankLineBefore(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/html-text.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/html-text.js
 var htmlText = {
   name: "htmlText",
   tokenize: tokenizeHtmlText
@@ -10723,7 +10723,7 @@ function tokenizeHtmlText(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-end.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-end.js
 var labelEnd = {
   name: "labelEnd",
   resolveAll: resolveAllLabelEnd,
@@ -10949,7 +10949,7 @@ function tokenizeReferenceCollapsed(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-image.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-image.js
 var labelStartImage = {
   name: "labelStartImage",
   resolveAll: labelEnd.resolveAll,
@@ -10980,7 +10980,7 @@ function tokenizeLabelStartImage(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/label-start-link.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/label-start-link.js
 var labelStartLink = {
   name: "labelStartLink",
   resolveAll: labelEnd.resolveAll,
@@ -11002,7 +11002,7 @@ function tokenizeLabelStartLink(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/line-ending.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/line-ending.js
 var lineEnding = {
   name: "lineEnding",
   tokenize: tokenizeLineEnding
@@ -11017,7 +11017,7 @@ function tokenizeLineEnding(effects, ok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/thematic-break.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/thematic-break.js
 var thematicBreak = {
   name: "thematicBreak",
   tokenize: tokenizeThematicBreak
@@ -11056,7 +11056,7 @@ function tokenizeThematicBreak(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/list.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/list.js
 var list = {
   continuation: {
     tokenize: tokenizeListContinuation
@@ -11186,7 +11186,7 @@ function tokenizeListItemPrefixWhitespace(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark-core-commonmark/lib/setext-underline.js
+// ../../Tent/node_modules/micromark-core-commonmark/lib/setext-underline.js
 var setextUnderline = {
   name: "setextUnderline",
   resolveTo: resolveToSetextUnderline,
@@ -11278,7 +11278,7 @@ function tokenizeSetextUnderline(effects, ok, nok) {
   }
 }
 
-// node_modules/micromark/lib/initialize/flow.js
+// ../../Tent/node_modules/micromark/lib/initialize/flow.js
 var flow = {
   tokenize: initializeFlow
 };
@@ -11316,7 +11316,7 @@ function initializeFlow(effects) {
   }
 }
 
-// node_modules/micromark/lib/initialize/text.js
+// ../../Tent/node_modules/micromark/lib/initialize/text.js
 var resolver = {
   resolveAll: createResolver()
 };
@@ -11455,7 +11455,7 @@ function resolveAllLineSuffixes(events, context) {
   return events;
 }
 
-// node_modules/micromark/lib/constructs.js
+// ../../Tent/node_modules/micromark/lib/constructs.js
 var constructs_exports = {};
 __export(constructs_exports, {
   attentionMarkers: () => attentionMarkers,
@@ -11530,7 +11530,7 @@ var disable = {
   null: []
 };
 
-// node_modules/micromark/lib/create-tokenizer.js
+// ../../Tent/node_modules/micromark/lib/create-tokenizer.js
 function createTokenizer(parser, initialize, from) {
   let point3 = {
     _bufferIndex: -1,
@@ -11853,7 +11853,7 @@ function serializeChunks(chunks, expandTabs) {
   return result.join("");
 }
 
-// node_modules/micromark/lib/parse.js
+// ../../Tent/node_modules/micromark/lib/parse.js
 function parse(options) {
   const settings = options || {};
   const constructs2 = (
@@ -11879,14 +11879,14 @@ function parse(options) {
   }
 }
 
-// node_modules/micromark/lib/postprocess.js
+// ../../Tent/node_modules/micromark/lib/postprocess.js
 function postprocess(events) {
   while (!subtokenize(events)) {
   }
   return events;
 }
 
-// node_modules/micromark/lib/preprocess.js
+// ../../Tent/node_modules/micromark/lib/preprocess.js
 var search = /[\0\t\n\r]/g;
 function preprocess() {
   let column = 1;
@@ -11965,7 +11965,7 @@ function preprocess() {
   }
 }
 
-// node_modules/micromark-util-decode-string/index.js
+// ../../Tent/node_modules/micromark-util-decode-string/index.js
 var characterEscapeOrReference = /\\([!-/:-@[-`{-~])|&(#(?:\d{1,7}|x[\da-f]{1,6})|[\da-z]{1,31});/gi;
 function decodeString(value) {
   return value.replace(characterEscapeOrReference, decode);
@@ -11983,7 +11983,7 @@ function decode($0, $1, $2) {
   return decodeNamedCharacterReference($2) || $0;
 }
 
-// node_modules/unist-util-stringify-position/lib/index.js
+// ../../Tent/node_modules/unist-util-stringify-position/lib/index.js
 function stringifyPosition(value) {
   if (!value || typeof value !== "object") {
     return "";
@@ -12009,7 +12009,7 @@ function index(value) {
   return value && typeof value === "number" ? value : 1;
 }
 
-// node_modules/mdast-util-from-markdown/lib/index.js
+// ../../Tent/node_modules/mdast-util-from-markdown/lib/index.js
 var own2 = {}.hasOwnProperty;
 function fromMarkdown(value, encoding, options) {
   if (encoding && typeof encoding === "object") {
@@ -13395,7 +13395,7 @@ function createWindowsDpapiProtector() {
   };
 }
 function runPowerShellStdin(command, stdinData, op) {
-  return new Promise((resolve14, reject) => {
+  return new Promise((resolve15, reject) => {
     const child = spawn(
       "powershell.exe",
       ["-NoProfile", "-NonInteractive", "-ExecutionPolicy", "Bypass", "-Command", command],
@@ -13422,7 +13422,7 @@ function runPowerShellStdin(command, stdinData, op) {
         reject(new Error(`DPAPI PowerShell ${op} failed (exit=${code ?? "null"})`));
         return;
       }
-      resolve14(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
+      resolve15(stdout.replace(/^\uFEFF/, "").replace(/\r?\n$/, ""));
     });
     child.stdin?.on("error", (err) => {
       reject(
@@ -14084,8 +14084,8 @@ var MutationBus = class {
   async run(workspaceId, action) {
     const prev = this.tails.get(workspaceId) ?? Promise.resolve();
     let release;
-    const gate = new Promise((resolve14) => {
-      release = resolve14;
+    const gate = new Promise((resolve15) => {
+      release = resolve15;
     });
     const chain = prev.catch(() => void 0).then(() => gate);
     this.tails.set(workspaceId, chain);
@@ -14540,6 +14540,1522 @@ function ageDaysFrom(activityMs, nowMs) {
   return Math.floor(delta / MS_PER_DAY);
 }
 
+// src/core/workspace.ts
+import * as nodePath3 from "node:path";
+import * as nodeFs from "node:fs/promises";
+import { spawn as spawn2 } from "node:child_process";
+async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const full = await fullRef(root, sourceRef);
+  const ancestor = await findAncestorIntegration(root, full, targetBranch);
+  if (ancestor) return { integratedRef: full, reason: "ancestor" };
+  const prior = await findCherryPick(root, full, targetBranch);
+  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
+  return void 0;
+}
+async function readRoleBranchTip(workspace, branch) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const name = branch.trim();
+  if (!name) throw new Error("Role branch name is required.");
+  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
+  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
+  return ref;
+}
+async function isGitWorkspace(workspace) {
+  try {
+    await assertGitWorkspace(nodePath3.resolve(workspace));
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function ensureRoleWorkspaceIfGit(workspace, role) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureRoleWorkspace(workspace, role);
+}
+async function ensureRoleWorkspace(workspace, role) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const targetBranch = await resolveTargetBranch(root);
+  const roleSlug = safeComponent(role);
+  const branch = `tent-role/${roleSlug}`;
+  const worktree = nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
+    roleSlug
+  );
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return { workspace: root, worktree: await nodeFs.realpath(nodePath3.resolve(existing)), branch, targetBranch };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
+}
+async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
+  if (!await isGitWorkspace(workspace)) return void 0;
+  return ensureTaskWorkspace(workspace, taskId, options);
+}
+function taskWorktreeBranchName(taskId) {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `tent-task/${safeComponent(id)}`;
+}
+function taskWorktreeDirectoryName(taskId) {
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  return `task-${safeComponent(id)}`;
+}
+function expectedTaskWorktreePath(workspaceRoot, taskId) {
+  const root = nodePath3.resolve(workspaceRoot);
+  return nodePath3.join(
+    nodePath3.dirname(root),
+    `${nodePath3.basename(root)}-worktrees`,
+    taskWorktreeDirectoryName(taskId)
+  );
+}
+async function ensureTaskWorkspace(workspace, taskId, options = {}) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const id = taskId.trim();
+  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
+  const requestedTarget = options.targetBranch?.trim();
+  const targetBranch = requestedTarget || await resolveTargetBranch(root);
+  if (requestedTarget && !await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`])) {
+    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
+  }
+  const branch = taskWorktreeBranchName(id);
+  const worktree = expectedTaskWorktreePath(root, id);
+  const existing = await worktreeForBranch(root, branch);
+  if (existing) {
+    return {
+      workspace: root,
+      worktree: await nodeFs.realpath(nodePath3.resolve(existing)),
+      branch,
+      targetBranch
+    };
+  }
+  if (await pathExists(worktree)) {
+    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
+  }
+  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
+  if (branchExists) {
+    await git(root, ["worktree", "add", worktree, branch]);
+  } else {
+    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
+  }
+  return {
+    workspace: root,
+    worktree: await nodeFs.realpath(worktree),
+    branch,
+    targetBranch
+  };
+}
+async function inspectWorktreeDirtiness(worktree) {
+  const cwd = nodePath3.resolve(worktree);
+  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
+  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
+  let trackedDirty = false;
+  let untrackedDirty = false;
+  for (const line of lines) {
+    if (line.startsWith("??") || line.startsWith("!")) {
+      untrackedDirty = true;
+    } else {
+      trackedDirty = true;
+    }
+  }
+  const sampleLines = lines.slice(0, 8);
+  const sample = sampleLines.join("\n") + (lines.length > sampleLines.length ? `
+\u2026(+${lines.length - sampleLines.length} more)` : "");
+  return {
+    dirty: lines.length > 0,
+    worktree: cwd,
+    trackedDirty,
+    untrackedDirty,
+    sample,
+    changeCount: lines.length
+  };
+}
+async function integrateWorkspaceCommits(contract, refs) {
+  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
+  if (commits.length === 0) return [];
+  const root = contract.workspace;
+  const target = contract.targetBranch;
+  const integrationCwd = await resolveIntegrationCwd(root, target);
+  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
+  if (current !== target) {
+    throw new Error(
+      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
+    );
+  }
+  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
+  if (dirty) {
+    throw new Error(
+      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
+    );
+  }
+  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
+  const resolved = [];
+  for (const sourceRef of commits) {
+    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
+    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
+  }
+  const fastForwardRef = await completeFastForwardRef(
+    root,
+    originalRef,
+    resolved.map((item) => item.fullRef),
+    contract.branch
+  );
+  if (fastForwardRef) {
+    try {
+      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
+      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
+        sourceRef,
+        integratedRef,
+        alreadyIntegrated: false
+      }));
+    } catch (error) {
+      await rollbackIntegration(integrationCwd, originalRef, error);
+    }
+  }
+  const results = [];
+  try {
+    for (const { sourceRef } of resolved) {
+      const ancestor = await findAncestorIntegration(root, sourceRef, target);
+      if (ancestor) {
+        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
+        continue;
+      }
+      const prior = await findCherryPick(root, sourceRef, target);
+      if (prior) {
+        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
+        continue;
+      }
+      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
+      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
+      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
+    }
+  } catch (error) {
+    await rollbackIntegration(integrationCwd, originalRef, error);
+  }
+  return results;
+}
+async function resolveIntegrationCwd(root, targetBranch) {
+  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
+  if (mainCurrent === targetBranch) {
+    return root;
+  }
+  const existing = await worktreeForBranch(root, targetBranch);
+  if (existing) {
+    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
+    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
+    if (wtCurrent === targetBranch) return wt;
+    throw new Error(
+      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
+    );
+  }
+  throw new Error(
+    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
+  );
+}
+async function listRoleCommitsSince(contract, base) {
+  const since = base.trim();
+  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
+  const branchRef = `refs/heads/${contract.branch}`;
+  const fullBase = await fullRef(contract.workspace, since);
+  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+    throw new Error(
+      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
+    );
+  }
+  const output = await git(contract.workspace, [
+    "log",
+    `${fullBase}..${branchRef}`,
+    "--format=%H%x09%h%x09%s"
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
+    return { ref, shortRef, subject: subjectParts.join("	") };
+  }).filter((item) => item.ref && item.shortRef);
+}
+async function listPendingRoleCommits(contract, base) {
+  const candidates = await listRoleCommitsSince(contract, base);
+  const pending = [];
+  for (const item of candidates) {
+    const integrated = await findIntegratedCommit(
+      contract.workspace,
+      item.ref,
+      contract.targetBranch
+    );
+    if (!integrated) pending.push(item);
+  }
+  return pending.reverse();
+}
+async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipCommit) {
+  const root = nodePath3.resolve(workspace);
+  await assertGitWorkspace(root);
+  const base = (await fullRef(root, baseCommit.trim())).trim();
+  const tip = (await fullRef(root, tipCommit.trim())).trim();
+  if (base === tip) return [];
+  const output = await git(root, [
+    "rev-list",
+    "--parents",
+    "--reverse",
+    `${base}..${tip}`
+  ]);
+  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
+    const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
+    const sha = parts[0] || "";
+    const parents = parts.slice(1);
+    return { sha, parents };
+  }).filter((c) => c.sha);
+}
+async function assertOrdinaryExecutorLaneHistoryInGit(input) {
+  const root = nodePath3.resolve(input.workspace);
+  await assertGitWorkspace(root);
+  const base = input.baseCommit?.trim();
+  if (!base) {
+    throw new ExecutorLaneHistoryError(
+      "MISSING_BASE",
+      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
+    );
+  }
+  let tip = input.tipCommit?.trim() || "";
+  if (!tip) {
+    const branch = input.branch?.trim();
+    if (!branch) {
+      throw new ExecutorLaneHistoryError(
+        "MISSING_TIP",
+        "Executor lane history gate requires tip commit or branch."
+      );
+    }
+    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
+  }
+  const fullBase = await fullRef(root, base);
+  const fullTip = await fullRef(root, tip);
+  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
+  assertOrdinaryExecutorLaneHistory({
+    baseCommit: fullBase,
+    tipCommit: fullTip,
+    commits
+  });
+}
+async function assertGitWorkspace(root) {
+  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
+  const [realTop, realRoot] = await Promise.all([
+    nodeFs.realpath(nodePath3.resolve(top)),
+    nodeFs.realpath(root)
+  ]);
+  if (!isSameWorkspaceRoot(realTop, realRoot)) {
+    throw new Error(`Workspace must be a Git root: ${root}.`);
+  }
+}
+function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
+  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
+  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
+  return top === root;
+}
+async function resolveTargetBranch(root) {
+  for (const name of ["main", "master"]) {
+    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
+  }
+  const current = (await git(root, ["branch", "--show-current"])).trim();
+  if (!current) throw new Error("Cannot identify the workspace main branch.");
+  return current;
+}
+async function worktreeForBranch(root, branch) {
+  const output = await git(root, ["worktree", "list", "--porcelain"]);
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function findCherryPick(root, sourceRef, targetBranch) {
+  const full = await fullRef(root, sourceRef);
+  const needle = `(cherry picked from commit ${full})`;
+  const targetRef = `refs/heads/${targetBranch}`;
+  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
+  const parts = output.split("\0");
+  for (let i = 0; i + 1 < parts.length; i += 2) {
+    const body = parts[i + 1] ?? "";
+    if (body.includes(needle)) return parts[i].trim();
+  }
+  return void 0;
+}
+async function findAncestorIntegration(root, sourceRef, targetBranch) {
+  const targetRef = `refs/heads/${targetBranch}`;
+  const full = await fullRef(root, sourceRef);
+  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
+    return full;
+  }
+  return void 0;
+}
+async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
+  const lastRef = commits.at(-1);
+  if (!lastRef || lastRef === targetRef) return void 0;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
+  const sourceRef = `refs/heads/${sourceBranch}`;
+  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
+    return void 0;
+  }
+  if (commits.length === 1) {
+    return lastRef;
+  }
+  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
+  if (range.length !== commits.length) return void 0;
+  const supplied = new Set(commits);
+  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
+}
+async function rollbackIntegration(root, originalRef, cause) {
+  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
+  try {
+    await git(root, ["reset", "--hard", originalRef]);
+  } catch (rollbackError) {
+    throw new Error(
+      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
+    );
+  }
+  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
+}
+function errorMessage(error) {
+  return error instanceof Error ? error.message : String(error);
+}
+async function fullRef(root, ref) {
+  return (await git(root, ["rev-parse", ref])).trim();
+}
+function safeComponent(value) {
+  const source = value.trim();
+  const normalized = source.normalize("NFKC");
+  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
+  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
+  if (reserved) clean = `role-${clean}`;
+  if (!clean) return `role-${shortHash(source)}`;
+  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
+}
+function shortHash(value) {
+  let hash = 2166136261;
+  for (const char of value) {
+    hash ^= char.codePointAt(0) || 0;
+    hash = Math.imul(hash, 16777619);
+  }
+  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
+}
+async function pathExists(path24) {
+  try {
+    await nodeFs.access(path24);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk(cwd, args) {
+  try {
+    await git(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git(cwd, args) {
+  return new Promise((resolve15, reject) => {
+    const child = spawn2("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve15(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
+
+// src/core/task-worktree-reclaim.ts
+import * as nodeFs2 from "node:fs/promises";
+import * as nodePath4 from "node:path";
+import { spawn as spawn3 } from "node:child_process";
+function isTaskWorktreeReclaimTerminalState(state) {
+  return TERMINAL_TASK_STATES.has(state) && !isActiveTaskState(state);
+}
+function isTaskScopedWorktreeLane(task) {
+  return taskAssigneeKind(task) === "agentProfile";
+}
+async function evaluateTaskWorktreeReclaim(input) {
+  const task = input.task;
+  const base = {
+    taskId: task.id,
+    taskPath: task.path,
+    taskState: task.state,
+    workspace: task.workspace,
+    worktree: task.worktree,
+    branch: task.branch,
+    targetBranch: task.targetBranch
+  };
+  if (!isTaskScopedWorktreeLane(task)) {
+    return {
+      ...base,
+      eligible: false,
+      code: "NOT_APPLICABLE",
+      reason: "Role worktrees are durable integration lanes; Task worktree reclaim applies only to agentProfile code Task lanes."
+    };
+  }
+  const hasLane = Boolean(
+    task.worktree?.trim() || task.branch?.trim() || task.workspace?.trim()
+  );
+  if (!hasLane) {
+    return {
+      ...base,
+      eligible: false,
+      code: "NOT_APPLICABLE",
+      reason: "Task has no recorded Git workspace lane (pure Tent / docs task)."
+    };
+  }
+  if (!isTaskWorktreeReclaimTerminalState(task.state)) {
+    return {
+      ...base,
+      eligible: false,
+      code: "NOT_TERMINAL",
+      reason: `Task state=${task.state} is not terminal for worktree reclaim (need accepted|rejected|interrupted|failed).`
+    };
+  }
+  const taskId = (task.id || "").trim();
+  if (!taskId) {
+    return {
+      ...base,
+      eligible: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: "Task envelope is missing a stable task id; refusing worktree reclaim."
+    };
+  }
+  const workspaceRoot = nodePath4.resolve(input.workspaceRoot);
+  if (!await isGitWorkspace(workspaceRoot)) {
+    return {
+      ...base,
+      eligible: false,
+      code: "NOT_APPLICABLE",
+      reason: "Mounted workspace is not a Git root; no Task worktree to reclaim."
+    };
+  }
+  if (task.workspace?.trim()) {
+    const claimed = nodePath4.resolve(task.workspace);
+    if (!isSameWorkspaceRoot(claimed, workspaceRoot)) {
+      return {
+        ...base,
+        eligible: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`,
+        details: { claimedWorkspace: claimed, mountedWorkspace: workspaceRoot }
+      };
+    }
+  }
+  const expectedBranch = taskWorktreeBranchName(taskId);
+  const expectedPath = expectedTaskWorktreePath(workspaceRoot, taskId);
+  if (task.branch?.trim() && task.branch.trim() !== expectedBranch) {
+    return {
+      ...base,
+      eligible: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Task branch ${task.branch} is not the expected Task lane ${expectedBranch}.`,
+      details: { expectedBranch }
+    };
+  }
+  if (task.branch?.trim().startsWith("tent-role/")) {
+    return {
+      ...base,
+      eligible: false,
+      code: "NOT_APPLICABLE",
+      reason: "Envelope branch is a durable tent-role/* lane; refusing Task worktree reclaim."
+    };
+  }
+  let resolvedWorktree;
+  if (task.worktree?.trim()) {
+    resolvedWorktree = nodePath4.resolve(task.worktree.trim());
+    const expectedResolved = nodePath4.resolve(expectedPath);
+    let same = isSameWorkspaceRoot(resolvedWorktree, expectedResolved);
+    if (!same) {
+      try {
+        const [realClaimed, realExpected] = await Promise.all([
+          nodeFs2.realpath(resolvedWorktree).catch(() => resolvedWorktree),
+          nodeFs2.realpath(expectedResolved).catch(() => expectedResolved)
+        ]);
+        same = isSameWorkspaceRoot(realClaimed, realExpected);
+      } catch {
+        same = false;
+      }
+    }
+    if (!same) {
+      return {
+        ...base,
+        eligible: false,
+        code: "EXTERNAL_OR_UNEXPECTED_PATH",
+        reason: `Task worktree path is not the exact expected Task lane directory.`,
+        details: {
+          envelopeWorktree: resolvedWorktree,
+          expectedWorktree: expectedResolved
+        }
+      };
+    }
+  } else {
+    resolvedWorktree = nodePath4.resolve(expectedPath);
+  }
+  if (isSameWorkspaceRoot(resolvedWorktree, workspaceRoot)) {
+    return {
+      ...base,
+      eligible: false,
+      code: "EXTERNAL_OR_UNEXPECTED_PATH",
+      reason: "Refusing to reclaim the main workspace root as a Task worktree.",
+      worktree: resolvedWorktree
+    };
+  }
+  const worktreesRoot = nodePath4.resolve(
+    nodePath4.dirname(workspaceRoot),
+    `${nodePath4.basename(workspaceRoot)}-worktrees`
+  );
+  const rel = nodePath4.relative(worktreesRoot, resolvedWorktree);
+  if (!rel || rel.startsWith("..") || nodePath4.isAbsolute(rel) || rel.split(nodePath4.sep).length !== 1 || !rel.startsWith("task-")) {
+    return {
+      ...base,
+      eligible: false,
+      code: "EXTERNAL_OR_UNEXPECTED_PATH",
+      reason: `Worktree path is outside the Task worktrees root or is not a task-* directory: ${resolvedWorktree}`,
+      worktree: resolvedWorktree,
+      details: { worktreesRoot }
+    };
+  }
+  const registration = await inspectWorktreeRegistration(workspaceRoot, resolvedWorktree);
+  const branchRegistration = await worktreePathForBranch(workspaceRoot, expectedBranch);
+  const pathExistsOnDisk = await pathExists2(resolvedWorktree);
+  const registeredHere = registration.registered && registration.branch === expectedBranch;
+  if (!pathExistsOnDisk && !registration.registered && !branchRegistration) {
+    return {
+      ...base,
+      eligible: true,
+      code: "ALREADY_GONE",
+      reason: "Task worktree directory and Git registration are already absent (idempotent no-op).",
+      worktree: resolvedWorktree,
+      branch: expectedBranch
+    };
+  }
+  if (branchRegistration) {
+    const branchPath = nodePath4.resolve(branchRegistration);
+    if (!isSameWorkspaceRoot(branchPath, resolvedWorktree)) {
+      let same = false;
+      try {
+        const [a, b] = await Promise.all([
+          nodeFs2.realpath(branchPath).catch(() => branchPath),
+          nodeFs2.realpath(resolvedWorktree).catch(() => resolvedWorktree)
+        ]);
+        same = isSameWorkspaceRoot(a, b);
+      } catch {
+        same = false;
+      }
+      if (!same) {
+        return {
+          ...base,
+          eligible: false,
+          code: "CONFLICTED_REGISTRATION",
+          reason: `Branch ${expectedBranch} is registered at a different worktree path.`,
+          worktree: resolvedWorktree,
+          branch: expectedBranch,
+          details: { registeredPath: branchPath }
+        };
+      }
+    }
+  }
+  if (registration.registered) {
+    if (registration.branch && registration.branch !== expectedBranch) {
+      return {
+        ...base,
+        eligible: false,
+        code: "CONFLICTED_REGISTRATION",
+        reason: `Worktree at ${resolvedWorktree} is registered to ${registration.branch}, expected ${expectedBranch}.`,
+        worktree: resolvedWorktree,
+        branch: expectedBranch,
+        details: { registeredBranch: registration.branch }
+      };
+    }
+    if (!registration.branch) {
+      return {
+        ...base,
+        eligible: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `Worktree at ${resolvedWorktree} is registered without a branch (detached/ambiguous); refusing reclaim.`,
+        worktree: resolvedWorktree
+      };
+    }
+  } else if (pathExistsOnDisk) {
+    return {
+      ...base,
+      eligible: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Path ${resolvedWorktree} exists on disk but is not a registered Git worktree for ${expectedBranch}.`,
+      worktree: resolvedWorktree,
+      branch: expectedBranch
+    };
+  }
+  if (pathExistsOnDisk) {
+    try {
+      const dirty = await inspectWorktreeDirtiness(resolvedWorktree);
+      if (dirty.dirty) {
+        return {
+          ...base,
+          eligible: false,
+          code: "DIRTY",
+          reason: `Task worktree has uncommitted changes (${dirty.changeCount}); refusing reclaim.`,
+          worktree: resolvedWorktree,
+          branch: expectedBranch,
+          details: {
+            trackedDirty: dirty.trackedDirty,
+            untrackedDirty: dirty.untrackedDirty,
+            changeCount: dirty.changeCount,
+            dirtySample: dirty.sample
+          }
+        };
+      }
+    } catch (err) {
+      return {
+        ...base,
+        eligible: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `Failed to inspect worktree dirtiness: ${err instanceof Error ? err.message : String(err)}`,
+        worktree: resolvedWorktree,
+        branch: expectedBranch
+      };
+    }
+  }
+  if (task.state === "accepted") {
+    const targetBranch = (task.targetBranch || "").trim();
+    const deliveries = input.deliveries ?? [];
+    const settle = await evaluateAcceptedSettle({
+      workspaceRoot,
+      targetBranch,
+      taskId,
+      taskBranch: expectedBranch,
+      roleBranchBase: task.roleBranchBase,
+      deliveries
+    });
+    if (!settle.ok) {
+      return {
+        ...base,
+        eligible: false,
+        code: settle.code,
+        reason: settle.reason,
+        worktree: resolvedWorktree,
+        branch: expectedBranch,
+        targetBranch: targetBranch || void 0,
+        details: settle.details
+      };
+    }
+  }
+  const ready = (input.deliveries ?? []).filter((d) => d.status === "ready" || d.status === "draft");
+  if (ready.length > 0) {
+    return {
+      ...base,
+      eligible: false,
+      code: "UNINTEGRATED",
+      reason: `Task still has ${ready.length} non-terminal delivery record(s); refusing worktree reclaim.`,
+      worktree: resolvedWorktree,
+      branch: expectedBranch,
+      details: { deliveryIds: ready.map((d) => d.id) }
+    };
+  }
+  return {
+    ...base,
+    eligible: true,
+    code: "RECLAIMABLE",
+    reason: registeredHere || pathExistsOnDisk ? "Terminal Task lane is clean, settled, and unambiguously owned; safe to remove worktree registration and directory." : "Task lane registration is residual-only; safe idempotent cleanup.",
+    worktree: resolvedWorktree,
+    branch: expectedBranch,
+    targetBranch: task.targetBranch,
+    details: {
+      pathExistsOnDisk,
+      registered: registration.registered,
+      expectedPath
+    }
+  };
+}
+async function reclaimTaskWorktree(input) {
+  const diagnostic = await evaluateTaskWorktreeReclaim(input);
+  if (input.preview) {
+    return {
+      ...diagnostic,
+      reclaimed: false,
+      alreadyGone: diagnostic.code === "ALREADY_GONE"
+    };
+  }
+  if (!diagnostic.eligible) {
+    return { ...diagnostic, reclaimed: false, alreadyGone: false };
+  }
+  if (diagnostic.code === "ALREADY_GONE") {
+    return {
+      ...diagnostic,
+      code: "ALREADY_GONE",
+      reclaimed: true,
+      alreadyGone: true
+    };
+  }
+  const workspaceRoot = nodePath4.resolve(input.workspaceRoot);
+  const worktree = diagnostic.worktree;
+  const expectedBranch = diagnostic.branch?.trim();
+  if (!worktree) {
+    return {
+      ...diagnostic,
+      eligible: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: "Reclaim eligible but worktree path missing from diagnostic.",
+      reclaimed: false,
+      alreadyGone: false
+    };
+  }
+  if (!expectedBranch) {
+    return {
+      ...diagnostic,
+      eligible: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: "Reclaim eligible but expected Task branch missing from diagnostic.",
+      reclaimed: false,
+      alreadyGone: false
+    };
+  }
+  try {
+    if (input.beforeRemoveForTests) {
+      await input.beforeRemoveForTests();
+    }
+    const stillExists = await pathExists2(worktree);
+    const registration = await inspectWorktreeRegistration(workspaceRoot, worktree);
+    if (!stillExists && !registration.registered) {
+      return {
+        ...diagnostic,
+        code: "ALREADY_GONE",
+        reason: "Task worktree already removed before git worktree remove (idempotent).",
+        reclaimed: true,
+        alreadyGone: true
+      };
+    }
+    const regCompare = compareRegistrationToExpected({
+      registration,
+      expectedPath: worktree,
+      expectedBranch,
+      requireRegistered: stillExists || registration.registered
+    });
+    if (!regCompare.ok) {
+      return {
+        ...diagnostic,
+        eligible: false,
+        code: regCompare.code,
+        reason: regCompare.reason,
+        reclaimed: false,
+        alreadyGone: false,
+        details: {
+          ...diagnostic.details ?? {},
+          ...regCompare.details ?? {}
+        }
+      };
+    }
+    const ownership = await revalidateExactWorktreeOwnership({
+      workspaceRoot,
+      expectedPath: worktree,
+      expectedBranch,
+      /** When dir is absent, skip cwd HEAD check; still require branch tip + registration. */
+      requireOnDiskHead: stillExists
+    });
+    if (!ownership.ok) {
+      return {
+        ...diagnostic,
+        eligible: false,
+        code: ownership.code,
+        reason: ownership.reason,
+        reclaimed: false,
+        alreadyGone: false,
+        details: {
+          ...diagnostic.details ?? {},
+          ...ownership.details ?? {}
+        }
+      };
+    }
+    if (stillExists) {
+      let dirty;
+      try {
+        dirty = await inspectWorktreeDirtiness(worktree);
+      } catch (err) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Refusing remove: dirtiness re-check failed (${err instanceof Error ? err.message : String(err)}); retry later.`,
+          reclaimed: false,
+          alreadyGone: false
+        };
+      }
+      if (dirty.dirty) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "DIRTY",
+          reason: `Refusing remove: worktree became dirty before git worktree remove (${dirty.changeCount} change(s)).`,
+          reclaimed: false,
+          alreadyGone: false,
+          details: {
+            ...diagnostic.details ?? {},
+            trackedDirty: dirty.trackedDirty,
+            untrackedDirty: dirty.untrackedDirty,
+            changeCount: dirty.changeCount,
+            dirtySample: dirty.sample
+          }
+        };
+      }
+      const preReg = await inspectWorktreeRegistration(workspaceRoot, worktree);
+      const preRegCompare = compareRegistrationToExpected({
+        registration: preReg,
+        expectedPath: worktree,
+        expectedBranch,
+        requireRegistered: true
+      });
+      if (!preRegCompare.ok) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: preRegCompare.code,
+          reason: `Refusing remove: registration mismatch immediately before git worktree remove \u2014 ${preRegCompare.reason}`,
+          reclaimed: false,
+          alreadyGone: false,
+          details: {
+            ...diagnostic.details ?? {},
+            ...preRegCompare.details ?? {}
+          }
+        };
+      }
+      const preRemove = await revalidateExactWorktreeOwnership({
+        workspaceRoot,
+        expectedPath: worktree,
+        expectedBranch,
+        requireOnDiskHead: true
+      });
+      if (!preRemove.ok) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: preRemove.code,
+          reason: `Refusing remove: ownership revalidation failed immediately before git worktree remove \u2014 ${preRemove.reason}`,
+          reclaimed: false,
+          alreadyGone: false,
+          details: {
+            ...diagnostic.details ?? {},
+            ...preRemove.details ?? {}
+          }
+        };
+      }
+      const preRemoveSession = await probeSessionSettledBeforeRemove(
+        input,
+        diagnostic
+      );
+      if (preRemoveSession) return preRemoveSession;
+      try {
+        await git2(workspaceRoot, ["worktree", "remove", worktree]);
+      } catch (err) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `git worktree remove failed without force (directory still present): ${err instanceof Error ? err.message : String(err)}; retry later.`,
+          reclaimed: false,
+          alreadyGone: false
+        };
+      }
+    } else if (registration.registered) {
+      if (await pathExists2(worktree)) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Refusing metadata force cleanup: directory reappeared at ${worktree}; retry with non-force path.`,
+          reclaimed: false,
+          alreadyGone: false
+        };
+      }
+      const preForce = await revalidateExactWorktreeOwnership({
+        workspaceRoot,
+        expectedPath: worktree,
+        expectedBranch,
+        requireOnDiskHead: false
+      });
+      if (!preForce.ok) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: preForce.code,
+          reason: `Refusing exact-path force metadata drop \u2014 ${preForce.reason}`,
+          reclaimed: false,
+          alreadyGone: false,
+          details: {
+            ...diagnostic.details ?? {},
+            ...preForce.details ?? {}
+          }
+        };
+      }
+      const preForceSession = await probeSessionSettledBeforeRemove(
+        input,
+        diagnostic
+      );
+      if (preForceSession) return preForceSession;
+      try {
+        await git2(workspaceRoot, ["worktree", "remove", "--force", worktree]);
+      } catch (err) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Failed to drop exact stale registration at ${worktree} (dir already absent): ${err instanceof Error ? err.message : String(err)}`,
+          reclaimed: false,
+          alreadyGone: false
+        };
+      }
+      const afterMeta = await inspectWorktreeRegistration(workspaceRoot, worktree);
+      if (afterMeta.registered || await pathExists2(worktree)) {
+        return {
+          ...diagnostic,
+          eligible: false,
+          code: "REMOVE_FAILED",
+          reason: `Exact stale registration for ${worktree} remained after targeted metadata remove; refusing broader cleanup.`,
+          reclaimed: false,
+          alreadyGone: false
+        };
+      }
+    }
+    const afterExists = await pathExists2(worktree);
+    const afterReg = await inspectWorktreeRegistration(workspaceRoot, worktree);
+    if (afterExists || afterReg.registered) {
+      return {
+        ...diagnostic,
+        eligible: false,
+        code: "REMOVE_FAILED",
+        reason: `git worktree remove did not fully clear path/registration at ${worktree}`,
+        reclaimed: false,
+        alreadyGone: false,
+        details: {
+          ...diagnostic.details ?? {},
+          afterExists,
+          afterRegistered: afterReg.registered
+        }
+      };
+    }
+    return {
+      ...diagnostic,
+      code: "RECLAIMED",
+      reason: `Removed Task worktree directory and Git registration at ${worktree}; branch and commits preserved.`,
+      reclaimed: true,
+      alreadyGone: false
+    };
+  } catch (err) {
+    return {
+      ...diagnostic,
+      eligible: false,
+      code: "REMOVE_FAILED",
+      reason: `Failed to remove Task worktree: ${err instanceof Error ? err.message : String(err)}`,
+      reclaimed: false,
+      alreadyGone: false
+    };
+  }
+}
+async function reclaimTaskWorktreeForEnvelope(fs23, workspaceRoot, task, options = {}) {
+  const taskId = task.id?.trim();
+  const deliveries = taskId ? await loadDeliveries(fs23, { taskId }) : [];
+  return reclaimTaskWorktree({
+    workspaceRoot,
+    task,
+    deliveries,
+    preview: options.preview,
+    beforeRemoveForTests: options.beforeRemoveForTests,
+    assertSessionSettledBeforeRemove: options.assertSessionSettledBeforeRemove
+  });
+}
+async function probeSessionSettledBeforeRemove(input, diagnostic) {
+  if (!input.assertSessionSettledBeforeRemove) return void 0;
+  const settled = await input.assertSessionSettledBeforeRemove();
+  if (settled.ok) return void 0;
+  return {
+    ...diagnostic,
+    eligible: false,
+    code: "SESSION_ACTIVE",
+    reason: settled.reason,
+    reclaimed: false,
+    alreadyGone: false,
+    details: {
+      ...diagnostic.details ?? {},
+      ...settled.details ?? {},
+      settleProbe: "pre-remove"
+    }
+  };
+}
+async function evaluateTaskWorktreeReclaimForEnvelope(fs23, workspaceRoot, task) {
+  const taskId = task.id?.trim();
+  const deliveries = taskId ? await loadDeliveries(fs23, { taskId }) : [];
+  return evaluateTaskWorktreeReclaim({ workspaceRoot, task, deliveries });
+}
+async function evaluateAcceptedSettle(input) {
+  const target = input.targetBranch.trim();
+  if (!target) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: "Accepted Task is missing targetBranch; cannot verify integrate/settle."
+    };
+  }
+  const related = input.deliveries.filter((d) => d.taskId === input.taskId);
+  const open2 = related.filter((d) => d.status === "ready" || d.status === "draft");
+  if (open2.length > 0) {
+    return {
+      ok: false,
+      code: "UNINTEGRATED",
+      reason: `Accepted Task still has ${open2.length} open delivery(ies); refuse reclaim.`,
+      details: { deliveryIds: open2.map((d) => d.id) }
+    };
+  }
+  const accepted = related.filter((d) => d.status === "accepted");
+  const missingFromDelivery = [];
+  for (const d of accepted) {
+    for (const ref of d.commits) {
+      const sha = ref.trim();
+      if (!sha) continue;
+      const integrated = await findIntegratedCommit(input.workspaceRoot, sha, target);
+      if (!integrated) missingFromDelivery.push(sha);
+    }
+  }
+  if (missingFromDelivery.length > 0) {
+    return {
+      ok: false,
+      code: "UNINTEGRATED",
+      reason: `Accepted Delivery commit(s) are not integrated into ${target}; refusing reclaim.`,
+      details: {
+        missingCommits: missingFromDelivery.slice(0, 12),
+        missingCount: missingFromDelivery.length,
+        targetBranch: target,
+        source: "delivery"
+      }
+    };
+  }
+  const branchMissing = await listUnintegratedTaskBranchCommits({
+    workspaceRoot: input.workspaceRoot,
+    taskBranch: input.taskBranch,
+    targetBranch: target,
+    roleBranchBase: input.roleBranchBase
+  });
+  if (branchMissing.length > 0) {
+    return {
+      ok: false,
+      code: "UNINTEGRATED",
+      reason: `Task branch ${input.taskBranch} still has ${branchMissing.length} commit(s) not integrated into ${target} (including Delivery-omitted tips); refusing reclaim.`,
+      details: {
+        missingCommits: branchMissing.slice(0, 12),
+        missingCount: branchMissing.length,
+        targetBranch: target,
+        source: "task-branch"
+      }
+    };
+  }
+  return { ok: true };
+}
+async function listUnintegratedTaskBranchCommits(input) {
+  const root = nodePath4.resolve(input.workspaceRoot);
+  const branchRef = `refs/heads/${input.taskBranch}`;
+  const branchExists = await gitOk2(root, ["show-ref", "--verify", "--quiet", branchRef]);
+  if (!branchExists) {
+    return [];
+  }
+  let range = `${input.targetBranch}..${branchRef}`;
+  const base = input.roleBranchBase?.trim();
+  if (base) {
+    try {
+      const fullBase = (await git2(root, ["rev-parse", base])).trim();
+      if (fullBase && await gitOk2(root, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
+        range = `${fullBase}..${branchRef}`;
+      }
+    } catch {
+    }
+  }
+  let output = "";
+  try {
+    output = await git2(root, ["log", range, "--format=%H"]);
+  } catch {
+    try {
+      const tip = (await git2(root, ["rev-parse", branchRef])).trim();
+      if (!tip) return [];
+      const integrated = await findIntegratedCommit(root, tip, input.targetBranch);
+      return integrated ? [] : [tip];
+    } catch {
+      return ["<unreadable-task-branch>"];
+    }
+  }
+  const shas = output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean);
+  const missing = [];
+  for (const sha of shas) {
+    const integrated = await findIntegratedCommit(root, sha, input.targetBranch);
+    if (!integrated) missing.push(sha);
+  }
+  return missing;
+}
+function compareRegistrationToExpected(input) {
+  const expectedPath = nodePath4.resolve(input.expectedPath);
+  const expectedBranch = input.expectedBranch.trim();
+  const reg = input.registration;
+  if (!reg.registered) {
+    if (!input.requireRegistered) return { ok: true };
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Expected Git worktree registration missing at exact path ${expectedPath}; refusing remove.`,
+      details: { expectedPath, expectedBranch }
+    };
+  }
+  if (!reg.branch) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Worktree at ${expectedPath} is registered without a branch (detached/ambiguous); refusing remove.`,
+      details: { expectedPath }
+    };
+  }
+  if (reg.branch !== expectedBranch) {
+    return {
+      ok: false,
+      code: "CONFLICTED_REGISTRATION",
+      reason: `Fresh registration at ${expectedPath} is branch ${reg.branch}, expected diagnostic branch ${expectedBranch}.`,
+      details: {
+        registeredBranch: reg.branch,
+        expectedBranch,
+        registeredPath: reg.path,
+        expectedPath
+      }
+    };
+  }
+  if (reg.path) {
+    const regPath = nodePath4.resolve(reg.path);
+    if (!isSameWorkspaceRoot(regPath, expectedPath)) {
+      return {
+        ok: false,
+        code: "CONFLICTED_REGISTRATION",
+        reason: `Fresh registration path ${regPath} does not match expected exact path ${expectedPath}.`,
+        details: { registeredPath: regPath, expectedPath, expectedBranch }
+      };
+    }
+  }
+  return { ok: true };
+}
+async function revalidateExactWorktreeOwnership(input) {
+  const root = nodePath4.resolve(input.workspaceRoot);
+  const expectedPath = nodePath4.resolve(input.expectedPath);
+  const expectedBranch = input.expectedBranch.trim();
+  if (!expectedBranch.startsWith("tent-task/")) {
+    return {
+      ok: false,
+      code: "NOT_APPLICABLE",
+      reason: `Expected branch ${expectedBranch} is not a tent-task/* lane; refusing auto-GC ownership proof.`
+    };
+  }
+  const registration = await inspectWorktreeRegistration(root, expectedPath);
+  if (!registration.registered) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `No Git worktree registration at exact path ${expectedPath}; refusing remove.`,
+      details: { expectedPath, expectedBranch }
+    };
+  }
+  if (!registration.branch) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Worktree at ${expectedPath} is detached/unbranched; refusing remove.`,
+      details: { expectedPath }
+    };
+  }
+  if (registration.branch !== expectedBranch) {
+    return {
+      ok: false,
+      code: "CONFLICTED_REGISTRATION",
+      reason: `Registration at ${expectedPath} is branch ${registration.branch}, expected ${expectedBranch}.`,
+      details: { registeredBranch: registration.branch, expectedBranch }
+    };
+  }
+  const pathForBranch = await worktreePathForBranch(root, expectedBranch);
+  if (!pathForBranch) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Branch ${expectedBranch} has no worktree registration; refusing remove.`,
+      details: { expectedBranch }
+    };
+  }
+  const branchPath = nodePath4.resolve(pathForBranch);
+  let samePath = isSameWorkspaceRoot(branchPath, expectedPath);
+  if (!samePath) {
+    try {
+      const [a, b] = await Promise.all([
+        nodeFs2.realpath(branchPath).catch(() => branchPath),
+        nodeFs2.realpath(expectedPath).catch(() => expectedPath)
+      ]);
+      samePath = isSameWorkspaceRoot(a, b);
+    } catch {
+      samePath = false;
+    }
+  }
+  if (!samePath) {
+    return {
+      ok: false,
+      code: "CONFLICTED_REGISTRATION",
+      reason: `Branch ${expectedBranch} is registered at ${branchPath}, not exact path ${expectedPath}.`,
+      details: { registeredPath: branchPath, expectedPath }
+    };
+  }
+  let branchTip;
+  try {
+    branchTip = (await git2(root, ["rev-parse", `refs/heads/${expectedBranch}`])).trim();
+  } catch (err) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Cannot resolve tip of ${expectedBranch}: ${err instanceof Error ? err.message : String(err)}`,
+      details: { expectedBranch }
+    };
+  }
+  if (!branchTip) {
+    return {
+      ok: false,
+      code: "AMBIGUOUS_OWNERSHIP",
+      reason: `Empty tip for ${expectedBranch}; refusing remove.`
+    };
+  }
+  if (input.requireOnDiskHead) {
+    if (!await pathExists2(expectedPath)) {
+      return {
+        ok: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `Expected on-disk worktree missing at ${expectedPath} during ownership proof.`
+      };
+    }
+    let headTip;
+    let currentBranch;
+    try {
+      headTip = (await git2(expectedPath, ["rev-parse", "HEAD"])).trim();
+      currentBranch = (await git2(expectedPath, ["branch", "--show-current"])).trim();
+    } catch (err) {
+      return {
+        ok: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `Cannot read HEAD/branch inside ${expectedPath}: ${err instanceof Error ? err.message : String(err)}`
+      };
+    }
+    if (currentBranch !== expectedBranch) {
+      return {
+        ok: false,
+        code: "CONFLICTED_REGISTRATION",
+        reason: `On-disk worktree is on ${currentBranch || "(detached)"}, expected ${expectedBranch}.`,
+        details: { currentBranch, expectedBranch, headTip, branchTip }
+      };
+    }
+    if (headTip !== branchTip) {
+      return {
+        ok: false,
+        code: "AMBIGUOUS_OWNERSHIP",
+        reason: `On-disk HEAD ${headTip} does not match refs/heads/${expectedBranch} tip ${branchTip}.`,
+        details: { headTip, branchTip, expectedBranch }
+      };
+    }
+  }
+  return {
+    ok: true,
+    registration: { ...registration, branchTip },
+    branchTip
+  };
+}
+async function inspectWorktreeRegistration(workspaceRoot, worktreePath) {
+  const root = nodePath4.resolve(workspaceRoot);
+  const target = nodePath4.resolve(worktreePath);
+  const output = await git2(root, ["worktree", "list", "--porcelain"]).catch(() => "");
+  let currentPath = "";
+  let currentBranch;
+  const entries = [];
+  const flush = () => {
+    if (!currentPath) return;
+    entries.push({
+      registered: true,
+      path: currentPath,
+      branch: currentBranch
+    });
+    currentPath = "";
+    currentBranch = void 0;
+  };
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) {
+      flush();
+      currentPath = line.slice("worktree ".length);
+      continue;
+    }
+    if (line.startsWith("branch refs/heads/")) {
+      currentBranch = line.slice("branch refs/heads/".length);
+    }
+    if (line === "detached") {
+      currentBranch = void 0;
+    }
+  }
+  flush();
+  for (const entry of entries) {
+    if (!entry.path) continue;
+    const candidate = nodePath4.resolve(entry.path);
+    if (isSameWorkspaceRoot(candidate, target)) {
+      return { registered: true, branch: entry.branch, path: candidate };
+    }
+    try {
+      const [realCandidate, realTarget] = await Promise.all([
+        nodeFs2.realpath(candidate).catch(() => candidate),
+        nodeFs2.realpath(target).catch(() => target)
+      ]);
+      if (isSameWorkspaceRoot(realCandidate, realTarget)) {
+        return { registered: true, branch: entry.branch, path: realCandidate };
+      }
+    } catch {
+    }
+  }
+  return { registered: false };
+}
+async function worktreePathForBranch(workspaceRoot, branch) {
+  const output = await git2(nodePath4.resolve(workspaceRoot), [
+    "worktree",
+    "list",
+    "--porcelain"
+  ]).catch(() => "");
+  let currentPath = "";
+  for (const line of output.split(/\r?\n/)) {
+    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
+    if (line === `branch refs/heads/${branch}`) return currentPath;
+  }
+  return void 0;
+}
+async function pathExists2(path24) {
+  try {
+    await nodeFs2.access(path24);
+    return true;
+  } catch {
+    return false;
+  }
+}
+async function gitOk2(cwd, args) {
+  try {
+    await git2(cwd, args);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function git2(cwd, args) {
+  return new Promise((resolve15, reject) => {
+    const child = spawn3("git", args, { cwd, windowsHide: true });
+    let out = "";
+    let err = "";
+    child.stdout.on("data", (data) => out += data);
+    child.stderr.on("data", (data) => err += data);
+    child.on("close", (code) => {
+      if (code === 0) resolve15(out);
+      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
+    });
+    child.on("error", reject);
+  });
+}
+
+// src/core/task-worktree-reclaim-queue.ts
+var TASK_WORKTREE_RECLAIM_PENDING_PATH = join(
+  TEMP_DIR,
+  "task-worktree-reclaim-pending.json"
+);
+function emptyFile() {
+  return { version: 1, entries: [] };
+}
+async function readPending(fs23) {
+  if (!await fs23.exists(TASK_WORKTREE_RECLAIM_PENDING_PATH)) {
+    return emptyFile();
+  }
+  try {
+    const raw = await fs23.readFile(TASK_WORKTREE_RECLAIM_PENDING_PATH);
+    const parsed = JSON.parse(raw);
+    if (!parsed || parsed.version !== 1 || !Array.isArray(parsed.entries)) {
+      return emptyFile();
+    }
+    const entries = [];
+    for (const e of parsed.entries) {
+      if (e && typeof e.taskId === "string" && e.taskId.trim() && typeof e.taskPath === "string" && e.taskPath.trim() && typeof e.workspaceRoot === "string" && e.workspaceRoot.trim() && typeof e.enqueuedAt === "string") {
+        entries.push({
+          taskId: e.taskId.trim(),
+          taskPath: e.taskPath.trim(),
+          workspaceRoot: e.workspaceRoot.trim(),
+          enqueuedAt: e.enqueuedAt,
+          ...typeof e.trigger === "string" && e.trigger.trim() ? { trigger: e.trigger.trim() } : {}
+        });
+      }
+    }
+    return { version: 1, entries };
+  } catch {
+    return emptyFile();
+  }
+}
+async function writePending(fs23, file) {
+  const body = JSON.stringify({ version: 1, entries: file.entries }, null, 2) + "\n";
+  if (!await fs23.exists(TEMP_DIR)) {
+    await fs23.writeFile(join(TEMP_DIR, ".keep"), "");
+  }
+  await fs23.writeFile(TASK_WORKTREE_RECLAIM_PENDING_PATH, body);
+}
+async function enqueueTaskWorktreeReclaimPending(fs23, entry) {
+  const taskId = entry.taskId.trim();
+  const taskPath = entry.taskPath.trim();
+  const workspaceRoot = entry.workspaceRoot.trim();
+  if (!taskId || !taskPath || !workspaceRoot) {
+    throw new Error("enqueueTaskWorktreeReclaimPending requires taskId, taskPath, workspaceRoot");
+  }
+  const file = await readPending(fs23);
+  const next = {
+    taskId,
+    taskPath,
+    workspaceRoot,
+    enqueuedAt: entry.enqueuedAt ?? (/* @__PURE__ */ new Date()).toISOString(),
+    ...entry.trigger?.trim() ? { trigger: entry.trigger.trim() } : {}
+  };
+  const without = file.entries.filter((e) => e.taskId !== taskId);
+  without.push(next);
+  without.sort((a, b) => a.taskId.localeCompare(b.taskId));
+  await writePending(fs23, { version: 1, entries: without });
+  return next;
+}
+async function dequeueTaskWorktreeReclaimPending(fs23, taskId) {
+  const id = taskId.trim();
+  if (!id) return false;
+  const file = await readPending(fs23);
+  const next = file.entries.filter((e) => e.taskId !== id);
+  if (next.length === file.entries.length) return false;
+  await writePending(fs23, { version: 1, entries: next });
+  return true;
+}
+async function listTaskWorktreeReclaimPending(fs23) {
+  const file = await readPending(fs23);
+  return [...file.entries];
+}
+async function listTaskWorktreeReclaimPendingForWorkspace(fs23, workspaceRoot, sameRoot) {
+  const root = workspaceRoot.trim();
+  const all2 = await listTaskWorktreeReclaimPending(fs23);
+  return all2.filter((e) => sameRoot(e.workspaceRoot, root));
+}
+
 // src/core/workspace-settings.ts
 var DEFAULT_SETTINGS = {
   defaultDeliveryPolicy: DEFAULT_DELIVERY_POLICY
@@ -14947,7 +16463,7 @@ function parseAnnotationFile(value) {
   }
   return { annotations };
 }
-function emptyFile() {
+function emptyFile2() {
   return { annotations: [] };
 }
 async function writeFileUnlocked(fs23, file) {
@@ -14974,7 +16490,7 @@ async function writeFileUnlocked(fs23, file) {
 }
 async function loadAnnotations(fs23) {
   if (!await fs23.exists(ANNOTATIONS_PATH)) {
-    return emptyFile();
+    return emptyFile2();
   }
   try {
     const parsed = JSON.parse(await fs23.readFile(ANNOTATIONS_PATH));
@@ -14987,7 +16503,7 @@ async function loadAnnotations(fs23) {
     };
   } catch {
     const backupPath = await backupCorruptRegistry(fs23, ANNOTATIONS_PATH);
-    const reset = emptyFile();
+    const reset = emptyFile2();
     await writeFileUnlocked(fs23, reset);
     warnRegistryRecovered(
       ANNOTATIONS_PATH,
@@ -15121,435 +16637,6 @@ async function deleteAnnotation(fs23, id) {
     const [removed] = file.annotations.splice(idx, 1);
     await writeFileUnlocked(fs23, file);
     return removed ? cloneRecord(removed) : null;
-  });
-}
-
-// src/core/workspace.ts
-import * as nodePath3 from "node:path";
-import * as nodeFs from "node:fs/promises";
-import { spawn as spawn2 } from "node:child_process";
-async function findIntegratedCommit(workspace, sourceRef, targetBranch) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const full = await fullRef(root, sourceRef);
-  const ancestor = await findAncestorIntegration(root, full, targetBranch);
-  if (ancestor) return { integratedRef: full, reason: "ancestor" };
-  const prior = await findCherryPick(root, full, targetBranch);
-  if (prior) return { integratedRef: prior, reason: "cherry-pick" };
-  return void 0;
-}
-async function readRoleBranchTip(workspace, branch) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const name = branch.trim();
-  if (!name) throw new Error("Role branch name is required.");
-  const ref = (await git(root, ["rev-parse", `refs/heads/${name}`])).trim();
-  if (!ref) throw new Error(`Cannot read role branch tip: ${name}.`);
-  return ref;
-}
-async function isGitWorkspace(workspace) {
-  try {
-    await assertGitWorkspace(nodePath3.resolve(workspace));
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function ensureRoleWorkspaceIfGit(workspace, role) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureRoleWorkspace(workspace, role);
-}
-async function ensureRoleWorkspace(workspace, role) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const targetBranch = await resolveTargetBranch(root);
-  const roleSlug = safeComponent(role);
-  const branch = `tent-role/${roleSlug}`;
-  const worktree = nodePath3.join(
-    nodePath3.dirname(root),
-    `${nodePath3.basename(root)}-worktrees`,
-    roleSlug
-  );
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    return { workspace: root, worktree: await nodeFs.realpath(nodePath3.resolve(existing)), branch, targetBranch };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Role worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  return { workspace: root, worktree: await nodeFs.realpath(worktree), branch, targetBranch };
-}
-async function ensureTaskWorkspaceIfGit(workspace, taskId, options = {}) {
-  if (!await isGitWorkspace(workspace)) return void 0;
-  return ensureTaskWorkspace(workspace, taskId, options);
-}
-async function ensureTaskWorkspace(workspace, taskId, options = {}) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const id = taskId.trim();
-  if (!id) throw new Error("Task id is required for task-scoped workspace lane.");
-  const requestedTarget = options.targetBranch?.trim();
-  const targetBranch = requestedTarget || await resolveTargetBranch(root);
-  if (requestedTarget && !await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${targetBranch}`])) {
-    throw new Error(`Task workspace target branch does not exist: ${targetBranch}.`);
-  }
-  const taskSlug = safeComponent(id);
-  const branch = `tent-task/${taskSlug}`;
-  const worktree = nodePath3.join(
-    nodePath3.dirname(root),
-    `${nodePath3.basename(root)}-worktrees`,
-    `task-${taskSlug}`
-  );
-  const existing = await worktreeForBranch(root, branch);
-  if (existing) {
-    return {
-      workspace: root,
-      worktree: await nodeFs.realpath(nodePath3.resolve(existing)),
-      branch,
-      targetBranch
-    };
-  }
-  if (await pathExists(worktree)) {
-    throw new Error(`Task worktree path exists but is not registered to ${branch}: ${worktree}.`);
-  }
-  const branchExists = await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${branch}`]);
-  if (branchExists) {
-    await git(root, ["worktree", "add", worktree, branch]);
-  } else {
-    await git(root, ["worktree", "add", "-b", branch, worktree, targetBranch]);
-  }
-  return {
-    workspace: root,
-    worktree: await nodeFs.realpath(worktree),
-    branch,
-    targetBranch
-  };
-}
-async function inspectWorktreeDirtiness(worktree) {
-  const cwd = nodePath3.resolve(worktree);
-  const raw = (await git(cwd, ["status", "--porcelain"])).replace(/\r\n/g, "\n").trim();
-  const lines = raw ? raw.split("\n").map((line) => line.trimEnd()).filter(Boolean) : [];
-  let trackedDirty = false;
-  let untrackedDirty = false;
-  for (const line of lines) {
-    if (line.startsWith("??") || line.startsWith("!")) {
-      untrackedDirty = true;
-    } else {
-      trackedDirty = true;
-    }
-  }
-  const sampleLines = lines.slice(0, 8);
-  const sample = sampleLines.join("\n") + (lines.length > sampleLines.length ? `
-\u2026(+${lines.length - sampleLines.length} more)` : "");
-  return {
-    dirty: lines.length > 0,
-    worktree: cwd,
-    trackedDirty,
-    untrackedDirty,
-    sample,
-    changeCount: lines.length
-  };
-}
-async function integrateWorkspaceCommits(contract, refs) {
-  const commits = [...new Set(refs.map((ref) => ref.trim()).filter(Boolean))];
-  if (commits.length === 0) return [];
-  const root = contract.workspace;
-  const target = contract.targetBranch;
-  const integrationCwd = await resolveIntegrationCwd(root, target);
-  const current = (await git(integrationCwd, ["branch", "--show-current"])).trim();
-  if (current !== target) {
-    throw new Error(
-      `No worktree has ${target} checked out for integration; found current branch ${current || "(detached)"} at ${integrationCwd}. Never auto-switch branches \u2014 ensure the target lane worktree exists and stays on ${target}.`
-    );
-  }
-  const dirty = (await git(integrationCwd, ["status", "--porcelain"])).trim();
-  if (dirty) {
-    throw new Error(
-      `Integration worktree has uncommitted changes; cannot integrate commits (${integrationCwd}).`
-    );
-  }
-  const originalRef = (await git(root, ["rev-parse", `refs/heads/${target}`])).trim();
-  const resolved = [];
-  for (const sourceRef of commits) {
-    await git(root, ["cat-file", "-e", `${sourceRef}^{commit}`]);
-    resolved.push({ sourceRef, fullRef: await fullRef(root, sourceRef) });
-  }
-  const fastForwardRef = await completeFastForwardRef(
-    root,
-    originalRef,
-    resolved.map((item) => item.fullRef),
-    contract.branch
-  );
-  if (fastForwardRef) {
-    try {
-      await git(integrationCwd, ["merge", "--ff-only", fastForwardRef]);
-      return resolved.map(({ sourceRef, fullRef: integratedRef }) => ({
-        sourceRef,
-        integratedRef,
-        alreadyIntegrated: false
-      }));
-    } catch (error) {
-      await rollbackIntegration(integrationCwd, originalRef, error);
-    }
-  }
-  const results = [];
-  try {
-    for (const { sourceRef } of resolved) {
-      const ancestor = await findAncestorIntegration(root, sourceRef, target);
-      if (ancestor) {
-        results.push({ sourceRef, integratedRef: ancestor, alreadyIntegrated: true });
-        continue;
-      }
-      const prior = await findCherryPick(root, sourceRef, target);
-      if (prior) {
-        results.push({ sourceRef, integratedRef: prior, alreadyIntegrated: true });
-        continue;
-      }
-      await git(integrationCwd, ["cherry-pick", "-x", sourceRef]);
-      const integratedRef = (await git(integrationCwd, ["rev-parse", "HEAD"])).trim();
-      results.push({ sourceRef, integratedRef, alreadyIntegrated: false });
-    }
-  } catch (error) {
-    await rollbackIntegration(integrationCwd, originalRef, error);
-  }
-  return results;
-}
-async function resolveIntegrationCwd(root, targetBranch) {
-  const mainCurrent = (await git(root, ["branch", "--show-current"])).trim();
-  if (mainCurrent === targetBranch) {
-    return root;
-  }
-  const existing = await worktreeForBranch(root, targetBranch);
-  if (existing) {
-    const wt = await nodeFs.realpath(nodePath3.resolve(existing));
-    const wtCurrent = (await git(wt, ["branch", "--show-current"])).trim();
-    if (wtCurrent === targetBranch) return wt;
-    throw new Error(
-      `Worktree for ${targetBranch} exists at ${wt} but current branch is ${wtCurrent || "(detached)"}; never auto-switch.`
-    );
-  }
-  throw new Error(
-    `No worktree has ${targetBranch} checked out. Main workspace is on ${mainCurrent || "(detached)"}. For sub tasks ensure the dispatcher role lane (tent-role/<dispatcher>) exists.`
-  );
-}
-async function listRoleCommitsSince(contract, base) {
-  const since = base.trim();
-  if (!since) throw new Error("listRoleCommitsSince requires a non-empty base SHA.");
-  const branchRef = `refs/heads/${contract.branch}`;
-  const fullBase = await fullRef(contract.workspace, since);
-  if (!await gitOk(contract.workspace, ["merge-base", "--is-ancestor", fullBase, branchRef])) {
-    throw new Error(
-      `Role branch ${contract.branch} no longer descends from task baseline ${fullBase}.`
-    );
-  }
-  const output = await git(contract.workspace, [
-    "log",
-    `${fullBase}..${branchRef}`,
-    "--format=%H%x09%h%x09%s"
-  ]);
-  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const [ref = "", shortRef = "", ...subjectParts] = line.split("	");
-    return { ref, shortRef, subject: subjectParts.join("	") };
-  }).filter((item) => item.ref && item.shortRef);
-}
-async function listPendingRoleCommits(contract, base) {
-  const candidates = await listRoleCommitsSince(contract, base);
-  const pending = [];
-  for (const item of candidates) {
-    const integrated = await findIntegratedCommit(
-      contract.workspace,
-      item.ref,
-      contract.targetBranch
-    );
-    if (!integrated) pending.push(item);
-  }
-  return pending.reverse();
-}
-async function listExecutorLaneCommitsWithParents(workspace, baseCommit, tipCommit) {
-  const root = nodePath3.resolve(workspace);
-  await assertGitWorkspace(root);
-  const base = (await fullRef(root, baseCommit.trim())).trim();
-  const tip = (await fullRef(root, tipCommit.trim())).trim();
-  if (base === tip) return [];
-  const output = await git(root, [
-    "rev-list",
-    "--parents",
-    "--reverse",
-    `${base}..${tip}`
-  ]);
-  return output.split(/\r?\n/).map((line) => line.trim()).filter(Boolean).map((line) => {
-    const parts = line.split(/\s+/).map((p) => p.trim()).filter(Boolean);
-    const sha = parts[0] || "";
-    const parents = parts.slice(1);
-    return { sha, parents };
-  }).filter((c) => c.sha);
-}
-async function assertOrdinaryExecutorLaneHistoryInGit(input) {
-  const root = nodePath3.resolve(input.workspace);
-  await assertGitWorkspace(root);
-  const base = input.baseCommit?.trim();
-  if (!base) {
-    throw new ExecutorLaneHistoryError(
-      "MISSING_BASE",
-      "Executor lane history gate requires recorded baseCommit (fail-loud; no ready Delivery)."
-    );
-  }
-  let tip = input.tipCommit?.trim() || "";
-  if (!tip) {
-    const branch = input.branch?.trim();
-    if (!branch) {
-      throw new ExecutorLaneHistoryError(
-        "MISSING_TIP",
-        "Executor lane history gate requires tip commit or branch."
-      );
-    }
-    tip = (await git(root, ["rev-parse", `refs/heads/${branch}`])).trim();
-  }
-  const fullBase = await fullRef(root, base);
-  const fullTip = await fullRef(root, tip);
-  const commits = await listExecutorLaneCommitsWithParents(root, fullBase, fullTip);
-  assertOrdinaryExecutorLaneHistory({
-    baseCommit: fullBase,
-    tipCommit: fullTip,
-    commits
-  });
-}
-async function assertGitWorkspace(root) {
-  const top = (await git(root, ["rev-parse", "--show-toplevel"])).trim();
-  const [realTop, realRoot] = await Promise.all([
-    nodeFs.realpath(nodePath3.resolve(top)),
-    nodeFs.realpath(root)
-  ]);
-  if (!isSameWorkspaceRoot(realTop, realRoot)) {
-    throw new Error(`Workspace must be a Git root: ${root}.`);
-  }
-}
-function isSameWorkspaceRoot(realTop, realRoot, platform = process.platform) {
-  const top = platform === "win32" ? realTop.toLowerCase() : realTop;
-  const root = platform === "win32" ? realRoot.toLowerCase() : realRoot;
-  return top === root;
-}
-async function resolveTargetBranch(root) {
-  for (const name of ["main", "master"]) {
-    if (await gitOk(root, ["show-ref", "--verify", "--quiet", `refs/heads/${name}`])) return name;
-  }
-  const current = (await git(root, ["branch", "--show-current"])).trim();
-  if (!current) throw new Error("Cannot identify the workspace main branch.");
-  return current;
-}
-async function worktreeForBranch(root, branch) {
-  const output = await git(root, ["worktree", "list", "--porcelain"]);
-  let currentPath = "";
-  for (const line of output.split(/\r?\n/)) {
-    if (line.startsWith("worktree ")) currentPath = line.slice("worktree ".length);
-    if (line === `branch refs/heads/${branch}`) return currentPath;
-  }
-  return void 0;
-}
-async function findCherryPick(root, sourceRef, targetBranch) {
-  const full = await fullRef(root, sourceRef);
-  const needle = `(cherry picked from commit ${full})`;
-  const targetRef = `refs/heads/${targetBranch}`;
-  const output = await git(root, ["log", targetRef, "--format=%H%x00%B%x00", "-n", "5000"]);
-  const parts = output.split("\0");
-  for (let i = 0; i + 1 < parts.length; i += 2) {
-    const body = parts[i + 1] ?? "";
-    if (body.includes(needle)) return parts[i].trim();
-  }
-  return void 0;
-}
-async function findAncestorIntegration(root, sourceRef, targetBranch) {
-  const targetRef = `refs/heads/${targetBranch}`;
-  const full = await fullRef(root, sourceRef);
-  if (await gitOk(root, ["merge-base", "--is-ancestor", full, targetRef])) {
-    return full;
-  }
-  return void 0;
-}
-async function completeFastForwardRef(root, targetRef, commits, sourceBranch) {
-  const lastRef = commits.at(-1);
-  if (!lastRef || lastRef === targetRef) return void 0;
-  if (!await gitOk(root, ["merge-base", "--is-ancestor", targetRef, lastRef])) return void 0;
-  const sourceRef = `refs/heads/${sourceBranch}`;
-  if (!await gitOk(root, ["merge-base", "--is-ancestor", lastRef, sourceRef])) {
-    return void 0;
-  }
-  if (commits.length === 1) {
-    return lastRef;
-  }
-  const range = (await git(root, ["rev-list", "--reverse", `${targetRef}..${lastRef}`])).split(/\r?\n/).map((ref) => ref.trim()).filter(Boolean);
-  if (range.length !== commits.length) return void 0;
-  const supplied = new Set(commits);
-  return range.every((ref) => supplied.has(ref)) ? lastRef : void 0;
-}
-async function rollbackIntegration(root, originalRef, cause) {
-  await git(root, ["cherry-pick", "--abort"]).catch(() => "");
-  try {
-    await git(root, ["reset", "--hard", originalRef]);
-  } catch (rollbackError) {
-    throw new Error(
-      `Workspace integration failed and rollback also failed: ${errorMessage(cause)}; rollback: ${errorMessage(rollbackError)}`
-    );
-  }
-  throw new Error(`Workspace integration conflicted and was rolled back: ${errorMessage(cause)}`);
-}
-function errorMessage(error) {
-  return error instanceof Error ? error.message : String(error);
-}
-async function fullRef(root, ref) {
-  return (await git(root, ["rev-parse", ref])).trim();
-}
-function safeComponent(value) {
-  const source = value.trim();
-  const normalized = source.normalize("NFKC");
-  let clean = normalized.replace(/[<>:"/\\|?*\x00-\x1f~^:[\]@{}]+/g, "-").replace(/\s+/g, "-").replace(/-+/g, "-").replace(/^[.-]+|[.-]+$/g, "").slice(0, 40);
-  const reserved = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])$/i.test(clean);
-  if (reserved) clean = `role-${clean}`;
-  if (!clean) return `role-${shortHash(source)}`;
-  return clean !== normalized || normalized !== source || reserved ? `${clean}-${shortHash(source)}` : clean;
-}
-function shortHash(value) {
-  let hash = 2166136261;
-  for (const char of value) {
-    hash ^= char.codePointAt(0) || 0;
-    hash = Math.imul(hash, 16777619);
-  }
-  return (hash >>> 0).toString(36).padStart(6, "0").slice(0, 6);
-}
-async function pathExists(path24) {
-  try {
-    await nodeFs.access(path24);
-    return true;
-  } catch {
-    return false;
-  }
-}
-async function gitOk(cwd, args) {
-  try {
-    await git(cwd, args);
-    return true;
-  } catch {
-    return false;
-  }
-}
-function git(cwd, args) {
-  return new Promise((resolve14, reject) => {
-    const child = spawn2("git", args, { cwd, windowsHide: true });
-    let out = "";
-    let err = "";
-    child.stdout.on("data", (data) => out += data);
-    child.stderr.on("data", (data) => err += data);
-    child.on("close", (code) => {
-      if (code === 0) resolve14(out);
-      else reject(new Error(err.trim() || `git ${args.join(" ")} exit ${code}`));
-    });
-    child.on("error", reject);
   });
 }
 
@@ -15813,8 +16900,8 @@ var SessionRegistry = class _SessionRegistry {
 };
 
 // src/service/handlers.ts
-import * as nodeFs2 from "node:fs/promises";
-import * as nodePath5 from "node:path";
+import * as nodeFs3 from "node:fs/promises";
+import * as nodePath6 from "node:path";
 
 // src/markdown/links.ts
 var EXTERNAL_SCHEME_RE = /^[a-z][a-z0-9+.-]*:/i;
@@ -17645,6 +18732,12 @@ var CLIENT_METHODS = [
   "operationalRetention.preview",
   "operationalRetention.purge",
   /**
+   * Read-only diagnostic for one terminal Task's temporary Git worktree reclaim.
+   * Params: workspaceId + taskPath. Does not mass-scan inventory; auto-reclaim still
+   * runs without this RPC after terminal transitions / mount recovery.
+   */
+  "task.worktreeReclaim.preview",
+  /**
    * Node Markdown underline annotations (划线注释) — first-class workspace records.
    * Independent of body markers, Node attributes, and Task. User-only mutations via MutationBus.
    * Events are invalidation only (annotation.changed); never auto-inject Agent / TaskInput.
@@ -18345,7 +19438,7 @@ import * as os3 from "node:os";
 import * as path13 from "node:path";
 
 // src/adapters/acp/client.ts
-import { spawn as spawn3 } from "node:child_process";
+import { spawn as spawn4 } from "node:child_process";
 import * as readline from "node:readline";
 
 // src/adapters/acp/types.ts
@@ -18784,7 +19877,7 @@ var AcpClient = class {
     });
   }
   spawnProcess() {
-    const child = spawn3(this.options.command, this.options.args, {
+    const child = spawn4(this.options.command, this.options.args, {
       cwd: this.options.cwd,
       env: {
         ...process.env,
@@ -19018,13 +20111,13 @@ var AcpClient = class {
     }
   }
   waitForPermissionDecision(askInfo) {
-    return new Promise((resolve14) => {
+    return new Promise((resolve15) => {
       let settled = false;
       const finish = (decision) => {
         if (settled) return;
         settled = true;
         this.permissionWaitCancels.delete(cancel);
-        resolve14(decision);
+        resolve15(decision);
       };
       const cancel = () => finish("deny");
       this.permissionWaitCancels.add(cancel);
@@ -19044,12 +20137,12 @@ var AcpClient = class {
       );
     }
     const id = this.nextId++;
-    return new Promise((resolve14, reject) => {
+    return new Promise((resolve15, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new Error(`${this.label} ${method} \u8D85\u65F6\uFF08${timeoutMs}ms\uFF09`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve14, reject, timer });
+      this.pending.set(id, { resolve: resolve15, reject, timer });
       this.write({ jsonrpc: "2.0", id, method, params }, (err) => {
         this.failPendingWrite(id, method, err);
       });
@@ -19095,16 +20188,16 @@ var AcpClient = class {
     if (!proc || this.exitCode !== null || this.exitSignal !== null || proc.exitCode !== null || proc.signalCode !== null) {
       return Promise.resolve();
     }
-    return new Promise((resolve14) => {
-      this.exitWaiters.push(resolve14);
+    return new Promise((resolve15) => {
+      this.exitWaiters.push(resolve15);
     });
   }
   async waitForExitOrForceKill(timeoutMs) {
     let timer;
     const outcome = await Promise.race([
       this.waitExit().then(() => "exit"),
-      new Promise((resolve14) => {
-        timer = setTimeout(() => resolve14("timeout"), timeoutMs);
+      new Promise((resolve15) => {
+        timer = setTimeout(() => resolve15("timeout"), timeoutMs);
       })
     ]);
     if (timer) clearTimeout(timer);
@@ -19115,16 +20208,16 @@ var AcpClient = class {
     const pid = proc?.pid;
     if (!proc || pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve14) => {
+      await new Promise((resolve15) => {
         let settled = false;
         let timer;
         const finish = () => {
           if (settled) return;
           settled = true;
           if (timer) clearTimeout(timer);
-          resolve14();
+          resolve15();
         };
-        const killer = spawn3("taskkill", ["/pid", String(pid), "/T", "/F"], {
+        const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
@@ -19155,7 +20248,7 @@ function selectAllowOnce(options) {
   return { outcome: "cancelled" };
 }
 function sleep(ms) {
-  return new Promise((resolve14) => setTimeout(resolve14, ms));
+  return new Promise((resolve15) => setTimeout(resolve15, ms));
 }
 
 // src/adapters/acp/managed-session.ts
@@ -19374,7 +20467,7 @@ function mainstreamAcpCapabilities() {
 
 // src/fs/node-fs.ts
 import * as fs13 from "node:fs/promises";
-import * as nodePath4 from "node:path";
+import * as nodePath5 from "node:path";
 
 // src/fs/mutation-lock.ts
 import { randomUUID } from "node:crypto";
@@ -19511,13 +20604,13 @@ function hasCode(error, code) {
 // src/fs/node-fs.ts
 var NodeFs = class {
   constructor(root) {
-    this.root = nodePath4.resolve(root);
+    this.root = nodePath5.resolve(root);
   }
   abs(p) {
-    const resolved = nodePath4.resolve(this.root, p);
+    const resolved = nodePath5.resolve(this.root, p);
     const root = process.platform === "win32" ? this.root.toLowerCase() : this.root;
     const candidate = process.platform === "win32" ? resolved.toLowerCase() : resolved;
-    if (candidate !== root && !candidate.startsWith(root + nodePath4.sep)) {
+    if (candidate !== root && !candidate.startsWith(root + nodePath5.sep)) {
       throw new Error(`Path escapes Tent root: ${p}`);
     }
     return resolved;
@@ -19531,7 +20624,7 @@ var NodeFs = class {
   }
   async writeFile(path24, content3) {
     const abs = this.abs(path24);
-    await fs13.mkdir(nodePath4.dirname(abs), { recursive: true });
+    await fs13.mkdir(nodePath5.dirname(abs), { recursive: true });
     await this.atomicReplace(abs, content3, "utf8");
   }
   async readBinary(path24) {
@@ -19540,7 +20633,7 @@ var NodeFs = class {
   }
   async writeBinary(path24, data) {
     const abs = this.abs(path24);
-    await fs13.mkdir(nodePath4.dirname(abs), { recursive: true });
+    await fs13.mkdir(nodePath5.dirname(abs), { recursive: true });
     const payload = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     await this.atomicReplace(abs, payload);
   }
@@ -19565,7 +20658,7 @@ var NodeFs = class {
         const transient = code === "EPERM" || code === "EACCES" || code === "EBUSY";
         if (!transient || attempt === attempts - 1) throw err;
         const delayMs = Math.min(10 * 2 ** attempt, 100);
-        await new Promise((resolve14) => setTimeout(resolve14, delayMs));
+        await new Promise((resolve15) => setTimeout(resolve15, delayMs));
       }
     }
   }
@@ -19581,7 +20674,7 @@ var NodeFs = class {
     await fs13.mkdir(this.abs(path24), { recursive: true });
   }
   async move(from, to) {
-    await fs13.mkdir(nodePath4.dirname(this.abs(to)), { recursive: true });
+    await fs13.mkdir(nodePath5.dirname(this.abs(to)), { recursive: true });
     await fs13.rename(this.abs(from), this.abs(to));
   }
   async remove(path24) {
@@ -19627,8 +20720,8 @@ function readBootstrapImageClientOptions(plan) {
   };
   if (systemRoot) {
     out.bootstrapImageSystemRoot = systemRoot;
-    const nodeFs3 = new NodeFs(systemRoot);
-    out.readBootstrapImageBinary = (relativePath4) => nodeFs3.readBinary(relativePath4);
+    const nodeFs4 = new NodeFs(systemRoot);
+    out.readBootstrapImageBinary = (relativePath4) => nodeFs4.readBinary(relativePath4);
   }
   return out;
 }
@@ -19649,8 +20742,8 @@ function normalizeSharedAcpOpts(raw) {
     permissionTimeoutMs: typeof o.permissionTimeoutMs === "number" && o.permissionTimeoutMs > 0 ? o.permissionTimeoutMs : DEFAULT_PERMISSION_TIMEOUT_MS
   };
 }
-function resolvePlanOrProcessEnv(envKey, planEnv, resolve14) {
-  if (resolve14) return resolve14(envKey, planEnv);
+function resolvePlanOrProcessEnv(envKey, planEnv, resolve15) {
+  if (resolve15) return resolve15(envKey, planEnv);
   const fromPlan = planEnv[envKey];
   if (typeof fromPlan === "string" && fromPlan.trim()) return fromPlan;
   const fromProc = process.env[envKey];
@@ -21619,6 +22712,8 @@ async function dispatchMethod(ctx, method, params) {
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
         return operationalRetentionPurgeRpc(ctx, p);
+      case "task.worktreeReclaim.preview":
+        return taskWorktreeReclaimPreviewRpc(ctx, p);
       case "annotation.list":
         return annotationListRpc(ctx, p);
       case "annotation.create":
@@ -21670,6 +22765,7 @@ async function workspaceMount(ctx, p) {
   await migrateSessionWorkspaceIdsOnMount(ctx, info.workspaceId);
   await migrateParentReviewerOnMount(ctx, info.workspaceId);
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
+  await recoverTerminalTaskWorktreesOnMount(ctx, info.workspaceId);
   return info;
 }
 async function migrateParentReviewerOnMount(ctx, workspaceId) {
@@ -21690,10 +22786,10 @@ async function migrateSessionWorkspaceIdsOnMount(ctx, workspaceId) {
   const mount = ctx.host.require(workspaceId);
   const canonicalPaths = /* @__PURE__ */ new Map();
   const canonicalize = (value) => {
-    const resolved = nodePath5.resolve(value);
+    const resolved = nodePath6.resolve(value);
     let pending = canonicalPaths.get(resolved);
     if (!pending) {
-      pending = nodeFs2.realpath(resolved).catch(() => resolved);
+      pending = nodeFs3.realpath(resolved).catch(() => resolved);
       canonicalPaths.set(resolved, pending);
     }
     return pending;
@@ -24485,8 +25581,8 @@ async function drainManagedTaskInputBackgroundForShutdown(timeoutMs = 5e3) {
   try {
     await Promise.race([
       Promise.allSettled(pending),
-      new Promise((resolve14) => {
-        timer = setTimeout(resolve14, bound);
+      new Promise((resolve15) => {
+        timer = setTimeout(resolve15, bound);
       })
     ]);
   } finally {
@@ -24767,11 +25863,11 @@ async function resolveTaskWorktreeForDirtyCheck(workspaceRoot, task) {
   const envelopeWt = task.worktree?.trim();
   if (envelopeWt) {
     return {
-      worktree: nodePath5.resolve(envelopeWt),
+      worktree: nodePath6.resolve(envelopeWt),
       branch: task.branch
     };
   }
-  const mountedRoot = nodePath5.resolve(workspaceRoot);
+  const mountedRoot = nodePath6.resolve(workspaceRoot);
   const isProfile = taskAssigneeKind(task) === "agentProfile";
   let targetBranch = task.targetBranch?.trim();
   if (isProfile && taskAsSub(task)) {
@@ -24935,6 +26031,9 @@ async function taskDeliverRpc(ctx, p) {
     },
     "self"
   );
+  if (result.task.state === "accepted") {
+    await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.deliver");
+  }
   return {
     workspaceId,
     taskPath,
@@ -25019,6 +26118,7 @@ async function taskAcceptRpc(ctx, p) {
       "self"
     );
   }
+  await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.accept");
   return {
     workspaceId,
     taskPath,
@@ -25105,6 +26205,7 @@ async function taskRejectRpc(ctx, p) {
     return rejected;
   }));
   if (!resume) {
+    await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.reject");
     return {
       workspaceId,
       taskPath,
@@ -25229,7 +26330,7 @@ async function taskInterruptRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  return runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
+  const result = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
     ctx.host.markSelfWrite(workspaceId);
@@ -25260,14 +26361,36 @@ async function taskInterruptRpc(ctx, p) {
       } catch {
       }
     }
-    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(task),
+      state: task.state,
+      /** Pre-interrupt envelope for worktree reclaim when file was deleted (queued). */
+      reclaimSource: before ?? task
+    };
   }));
+  if (result.reclaimSource) {
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      { ...result.reclaimSource, state: "interrupted" },
+      "task.interrupt"
+    );
+  }
+  return {
+    workspaceId: result.workspaceId,
+    taskPath: result.taskPath,
+    task: result.task,
+    state: result.state
+  };
 }
 async function taskCancelRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
-  return runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
+  const result = await runTaskLifecycle(workspaceId, taskPath, () => ctx.mutations.run(workspaceId, async () => {
+    const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
     ctx.events.emit(
@@ -25276,8 +26399,28 @@ async function taskCancelRpc(ctx, p) {
       { path: taskPath, state: "interrupted", reason: "task.cancel" },
       "self"
     );
-    return { workspaceId, taskPath, state: "interrupted", cancelled: true };
+    return {
+      workspaceId,
+      taskPath,
+      state: "interrupted",
+      cancelled: true,
+      before
+    };
   }));
+  if (result.before) {
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      { ...result.before, state: "interrupted" },
+      "task.cancel"
+    );
+  }
+  return {
+    workspaceId: result.workspaceId,
+    taskPath: result.taskPath,
+    state: result.state,
+    cancelled: result.cancelled
+  };
 }
 async function taskStartSessionRpc(ctx, p) {
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -25557,7 +26700,7 @@ async function launchAndBindTaskStartSession(ctx, prepared) {
       if (probe.resumeCapable && !probe.alive) {
         const prior = await ctx.runtime.registry.read(priorSessionId);
         const recordedCwd = prior?.runtimeWorkspace?.cwd?.trim() || "";
-        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath5.resolve(recordedCwd), nodePath5.resolve(cwd));
+        const cwdMatches = !!recordedCwd && isSameWorkspaceRoot(nodePath6.resolve(recordedCwd), nodePath6.resolve(cwd));
         const profileMatches = !prior?.profileId || prior.profileId === profileId;
         const workspaceMatches = prior?.workspace === workspaceId;
         const roleMatches = prior?.roleName === task.role;
@@ -26639,6 +27782,18 @@ async function sessionLeave(ctx, p) {
   } else {
     state = rec.state === "failed" ? "failed" : "stopped";
   }
+  const leaveWorkspaceId = rec.workspace || workspaceId;
+  if (leaveWorkspaceId) {
+    await retryPendingWorktreeReclaimAfterSessionSettle(
+      ctx,
+      leaveWorkspaceId,
+      {
+        sessionId,
+        lastTaskId: rec.lastTaskId,
+        trigger: "session.leave"
+      }
+    );
+  }
   return {
     sessionId,
     externalKey: recordExternalKey(rec) ?? externalKey,
@@ -27398,6 +28553,391 @@ async function operationalRetentionPreviewRpc(ctx, p) {
   });
   return { workspaceId, ...preview };
 }
+async function taskWorktreeReclaimPreviewRpc(ctx, p) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const diagnostic = await evaluateTaskWorktreeReclaimForEnvelope(
+    mount.env.fs,
+    mount.workspaceRoot,
+    task
+  );
+  return {
+    workspaceId,
+    taskPath,
+    ...diagnostic
+  };
+}
+async function assertTaskExecutionSettledForWorktreeReclaim(ctx, workspaceId, task) {
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) {
+    return assertNoLiveRegistryExecutionForTask(ctx, workspaceId, task);
+  }
+  try {
+    const rec = await ctx.runtime.registry.read(sessionId);
+    if (rec) {
+      if (rec.state === "external" || SessionRegistry.isOpen(rec.state)) {
+        return {
+          ok: false,
+          reason: `Bound session ${sessionId} is still open (state=${rec.state}); stop or session.leave before reclaim.`,
+          details: { sessionId, state: rec.state, lastTaskId: rec.lastTaskId }
+        };
+      }
+      if (SessionRegistry.isNonTerminal(rec.state)) {
+        return {
+          ok: false,
+          reason: `Bound session ${sessionId} is still non-terminal (state=${rec.state}); stop before reclaim.`,
+          details: { sessionId, state: rec.state }
+        };
+      }
+    }
+    const probe = await ctx.runtime.probe(sessionId);
+    if (probe.turnBusy === true) {
+      return {
+        ok: false,
+        reason: `Bound session ${sessionId} still has turnBusy=true; refuse worktree reclaim until the turn settles.`,
+        details: { sessionId, turnBusy: true, state: probe.state }
+      };
+    }
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state) || probe.state === "external") {
+      return {
+        ok: false,
+        reason: `Bound session ${sessionId} is still live/open (state=${probe.state}, alive=${probe.alive}); stop or leave before reclaim.`,
+        details: { sessionId, state: probe.state, alive: probe.alive }
+      };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Failed to probe bound session ${sessionId} for reclaim settle: ${err instanceof Error ? err.message : String(err)}`,
+      details: { sessionId }
+    };
+  }
+  return assertNoLiveRegistryExecutionForTask(ctx, workspaceId, task);
+}
+async function assertNoLiveRegistryExecutionForTask(ctx, workspaceId, task) {
+  const taskId = task.id?.trim();
+  const taskPath = task.path;
+  try {
+    const all2 = await ctx.runtime.registry.list();
+    for (const rec of all2) {
+      if (rec.workspace && rec.workspace !== workspaceId) continue;
+      const boundById = taskId && rec.lastTaskId === taskId;
+      const boundByPath = typeof rec.lastTaskPath === "string" && rec.lastTaskPath === taskPath;
+      const boundBySession = task.sessionId?.trim() && rec.id === task.sessionId.trim();
+      if (!boundById && !boundByPath && !boundBySession) continue;
+      if (!SessionRegistry.isOpen(rec.state) && !SessionRegistry.isNonTerminal(rec.state)) {
+        continue;
+      }
+      if (rec.state === "external" || SessionRegistry.isOpen(rec.state)) {
+        return {
+          ok: false,
+          reason: `Registry session ${rec.id} still open for task (state=${rec.state}); refuse worktree reclaim until leave/stop.`,
+          details: {
+            sessionId: rec.id,
+            state: rec.state,
+            lastTaskId: rec.lastTaskId
+          }
+        };
+      }
+      if (SessionRegistry.isNonTerminal(rec.state)) {
+        try {
+          const probe = await ctx.runtime.probe(rec.id);
+          if (probe.turnBusy === true || probe.alive || SessionRegistry.isNonTerminal(probe.state)) {
+            return {
+              ok: false,
+              reason: `Registry session ${rec.id} still active for task (state=${rec.state}, turnBusy=${probe.turnBusy === true}); refuse worktree reclaim.`,
+              details: {
+                sessionId: rec.id,
+                state: rec.state,
+                turnBusy: probe.turnBusy === true,
+                lastTaskId: rec.lastTaskId
+              }
+            };
+          }
+        } catch {
+          return {
+            ok: false,
+            reason: `Registry session ${rec.id} could not be probed while non-terminal; refuse worktree reclaim.`,
+            details: { sessionId: rec.id, state: rec.state }
+          };
+        }
+      }
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Failed to scan session registry for task settle: ${err instanceof Error ? err.message : String(err)}`
+    };
+  }
+  return { ok: true };
+}
+async function retryPendingWorktreeReclaimAfterSessionSettle(ctx, workspaceId, input) {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return;
+  try {
+    const pending = await listTaskWorktreeReclaimPendingForWorkspace(
+      mount.env.fs,
+      mount.workspaceRoot,
+      (a, b) => isSameWorkspaceRoot(nodePath6.resolve(a), nodePath6.resolve(b))
+    );
+    if (pending.length === 0) return;
+    const needle = (input.lastTaskId || "").trim();
+    let task = input.task;
+    if (!task) {
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      task = tasks.find(
+        (t) => needle && (t.id === needle || t.path === needle) || t.sessionId === input.sessionId
+      ) ?? void 0;
+    }
+    if (!task) {
+      if (!needle) return;
+      const entry = pending.find(
+        (e) => e.taskId === needle || e.taskPath === needle
+      );
+      if (!entry) return;
+      try {
+        task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
+      } catch {
+        return;
+      }
+    }
+    if (!isTaskWorktreeReclaimTerminalState(task.state)) return;
+    if (!isTaskScopedWorktreeLane(task)) return;
+    const taskId = task.id?.trim();
+    if (!taskId) return;
+    const exactPending = pending.find(
+      (e) => e.taskId === taskId || e.taskPath === task.path || needle && (e.taskId === needle || e.taskPath === needle)
+    );
+    if (!exactPending) return;
+    if (exactPending.taskId !== taskId && task.id && exactPending.taskId !== task.id) {
+      return;
+    }
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      task,
+      `session.settle:${input.trigger}`
+    );
+  } catch {
+  }
+}
+var beforeTaskWorktreeReclaimRemoveForTests;
+async function maybeAutoReclaimTaskWorktree(ctx, workspaceId, task, reason) {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return void 0;
+  if (!isTaskScopedWorktreeLane(task)) return void 0;
+  if (!isTaskWorktreeReclaimTerminalState(task.state)) return void 0;
+  if (!task.worktree && !task.branch) return void 0;
+  const taskId = task.id?.trim();
+  if (!taskId) return void 0;
+  const taskPath = task.path;
+  try {
+    await enqueueTaskWorktreeReclaimPending(mount.env.fs, {
+      taskId,
+      taskPath,
+      workspaceRoot: mount.workspaceRoot,
+      enqueuedAt: mount.env.clock.now(),
+      trigger: reason
+    });
+  } catch {
+  }
+  try {
+    return await runTaskLifecycle(workspaceId, taskPath, async () => {
+      let liveTask = task;
+      try {
+        liveTask = await loadTaskEnvelope(mount.env.fs, taskPath);
+      } catch {
+        liveTask = task;
+      }
+      if (!isTaskWorktreeReclaimTerminalState(liveTask.state)) {
+        const blocked = {
+          eligible: false,
+          code: "NOT_TERMINAL",
+          reason: `Task state=${liveTask.state} is no longer terminal under reclaim critical section; refuse remove.`,
+          taskId,
+          taskPath,
+          taskState: liveTask.state,
+          workspace: liveTask.workspace,
+          worktree: liveTask.worktree,
+          branch: liveTask.branch,
+          targetBranch: liveTask.targetBranch,
+          reclaimed: false,
+          alreadyGone: false
+        };
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath,
+            taskState: liveTask.state,
+            code: blocked.code,
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: liveTask.worktree,
+            branch: liveTask.branch,
+            trigger: reason
+          },
+          "self"
+        );
+        return blocked;
+      }
+      const settled = await assertTaskExecutionSettledForWorktreeReclaim(
+        ctx,
+        workspaceId,
+        liveTask
+      );
+      if (!settled.ok) {
+        const blocked = {
+          eligible: false,
+          code: "SESSION_ACTIVE",
+          reason: settled.reason,
+          taskId,
+          taskPath: liveTask.path,
+          taskState: liveTask.state,
+          workspace: liveTask.workspace,
+          worktree: liveTask.worktree,
+          branch: liveTask.branch,
+          targetBranch: liveTask.targetBranch,
+          details: settled.details,
+          reclaimed: false,
+          alreadyGone: false
+        };
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath: liveTask.path,
+            taskState: liveTask.state,
+            code: blocked.code,
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: liveTask.worktree,
+            branch: liveTask.branch,
+            trigger: reason,
+            ...blocked.details ? { details: blocked.details } : {}
+          },
+          "self"
+        );
+        return blocked;
+      }
+      const result = await reclaimTaskWorktreeForEnvelope(
+        mount.env.fs,
+        mount.workspaceRoot,
+        liveTask,
+        {
+          // Re-probe bound Session immediately before exact remove (inside same lock).
+          assertSessionSettledBeforeRemove: () => assertTaskExecutionSettledForWorktreeReclaim(
+            ctx,
+            workspaceId,
+            liveTask
+          ),
+          beforeRemoveForTests: beforeTaskWorktreeReclaimRemoveForTests
+        }
+      );
+      if (result.reclaimed || result.code === "ALREADY_GONE") {
+        try {
+          await dequeueTaskWorktreeReclaimPending(mount.env.fs, taskId);
+        } catch {
+        }
+      } else if (result.code === "NOT_APPLICABLE") {
+        try {
+          await dequeueTaskWorktreeReclaimPending(mount.env.fs, taskId);
+        } catch {
+        }
+      }
+      if (result.reclaimed || !result.eligible) {
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId: result.taskId ?? liveTask.id,
+            taskPath: result.taskPath ?? liveTask.path,
+            taskState: result.taskState ?? liveTask.state,
+            code: result.code,
+            eligible: result.eligible,
+            reclaimed: result.reclaimed,
+            alreadyGone: result.alreadyGone,
+            reason: result.reason,
+            worktree: result.worktree,
+            branch: result.branch,
+            trigger: reason,
+            ...result.details ? { details: result.details } : {}
+          },
+          "self"
+        );
+      }
+      return result;
+    });
+  } catch (err) {
+    ctx.events.emit(
+      "task.worktreeReclaim",
+      workspaceId,
+      {
+        taskId: task.id,
+        taskPath: task.path,
+        taskState: task.state,
+        code: "REMOVE_FAILED",
+        eligible: false,
+        reclaimed: false,
+        alreadyGone: false,
+        reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+        trigger: reason
+      },
+      "self"
+    );
+    return void 0;
+  }
+}
+async function recoverTerminalTaskWorktreesOnMount(ctx, workspaceId) {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return { attempted: 0, reclaimed: 0, refused: 0 };
+  if (!await isGitWorkspace(mount.workspaceRoot)) {
+    return { attempted: 0, reclaimed: 0, refused: 0 };
+  }
+  let attempted = 0;
+  let reclaimed = 0;
+  let refused = 0;
+  const pending = await listTaskWorktreeReclaimPendingForWorkspace(
+    mount.env.fs,
+    mount.workspaceRoot,
+    (a, b) => isSameWorkspaceRoot(nodePath6.resolve(a), nodePath6.resolve(b))
+  );
+  for (const entry of pending) {
+    attempted += 1;
+    let task;
+    try {
+      task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
+    } catch {
+      try {
+        await dequeueTaskWorktreeReclaimPending(mount.env.fs, entry.taskId);
+      } catch {
+      }
+      refused += 1;
+      continue;
+    }
+    if (task.id && task.id !== entry.taskId) {
+      refused += 1;
+      continue;
+    }
+    const result = await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      task,
+      entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
+    );
+    if (result?.reclaimed) reclaimed += 1;
+    else if (result && !result.eligible) refused += 1;
+  }
+  return { attempted, reclaimed, refused };
+}
 async function operationalRetentionPurgeRpc(ctx, p) {
   requireUserActor(p, "operationalRetention.purge");
   const workspaceId = requireWorkspaceId(ctx, p);
@@ -27686,8 +29226,8 @@ async function runManagedSessionFlight(workspaceId, taskPath, profileId, operati
   if (existing) return joinOrConflictManagedSessionFlight(existing, profileId, operation, taskPath);
   let settle;
   let rejectFlight;
-  const flightPromise = new Promise((resolve14, reject) => {
-    settle = resolve14;
+  const flightPromise = new Promise((resolve15, reject) => {
+    settle = resolve15;
     rejectFlight = reject;
   });
   flightPromise.catch(() => void 0);
@@ -27724,7 +29264,7 @@ function projectionRetryDelayMs() {
   return runtimeProjectionTestHooks?.retryDelayMs ?? PROJECTION_RETRY_DELAY_MS;
 }
 function sleepMs(ms) {
-  return new Promise((resolve14) => setTimeout(resolve14, ms));
+  return new Promise((resolve15) => setTimeout(resolve15, ms));
 }
 function classifyProjectionError(err) {
   if (err instanceof TaskLifecycleError) {
@@ -27863,6 +29403,14 @@ async function projectRuntimeEventOnce(ctx, ev, attempt) {
         ev.type === "session.failed" ? "session.failed" : "session.exited"
       );
     }
+    if (boundTaskForTerminal && isTaskCollaborationTerminal(boundTaskForTerminal)) {
+      await retryPendingWorktreeReclaimAfterSessionSettle(ctx, workspaceId, {
+        sessionId: ev.sessionId,
+        lastTaskId: boundTaskForTerminal.id || boundTaskForTerminal.path,
+        task: boundTaskForTerminal,
+        trigger: ev.type
+      });
+    }
   }
   if (rec?.lastTaskId) {
     const mountInfos = ctx.host.list();
@@ -27943,6 +29491,7 @@ async function failTaskFromRuntime(ctx, input) {
   const mount = ctx.host.get(input.workspaceId);
   if (!mount) return;
   let appliedFailure = false;
+  let failedTask;
   await ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
     const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -27976,7 +29525,11 @@ async function failTaskFromRuntime(ctx, input) {
     });
     emitTaskState(ctx, input.workspaceId, failed, input.reason);
     appliedFailure = true;
+    failedTask = failed;
   });
+  if (appliedFailure && failedTask) {
+    await maybeAutoReclaimTaskWorktree(ctx, input.workspaceId, failedTask, input.reason);
+  }
   if (!appliedFailure || !input.sessionId) return;
   try {
     await ctx.toolApprovals.cancelSession(input.sessionId, "denied");
@@ -28248,6 +29801,23 @@ async function tryManagedAutoDeliver(ctx, input) {
       sessionId,
       taskPath: input.taskPath
     });
+    if (published) {
+      try {
+        const mountAfter = ctx.host.get(input.workspaceId);
+        if (mountAfter) {
+          const terminalTask = await loadTaskEnvelope(mountAfter.env.fs, input.taskPath);
+          if (terminalTask.state === "accepted") {
+            await maybeAutoReclaimTaskWorktree(
+              ctx,
+              input.workspaceId,
+              terminalTask,
+              "session.prompt_complete"
+            );
+          }
+        }
+      } catch {
+      }
+    }
   } catch (err) {
     const message2 = err instanceof Error ? err.message : String(err);
     const errorCode = err instanceof RpcError && err.data && typeof err.data === "object" && typeof err.data.code === "string" ? err.data.code : err instanceof TaskLifecycleError ? err.code : void 0;
@@ -29204,9 +30774,9 @@ async function loadReadyDeliveryTargetHead(fs23, task) {
   return ready?.targetHead?.trim() || void 0;
 }
 async function resolveIntegrationContract(workspaceRoot, task) {
-  const mountedRoot = nodePath5.resolve(workspaceRoot);
+  const mountedRoot = nodePath6.resolve(workspaceRoot);
   if (task.workspace) {
-    const claimed = nodePath5.resolve(task.workspace);
+    const claimed = nodePath6.resolve(task.workspace);
     if (!isSameWorkspaceRoot(claimed, mountedRoot)) {
       throw new Error(
         `Task envelope workspace mismatch: envelope=${task.workspace} mounted=${workspaceRoot}`
@@ -29240,8 +30810,8 @@ async function resolveIntegrationContract(workspaceRoot, task) {
     );
   }
   if (task.worktree) {
-    const claimedWt = nodePath5.resolve(task.worktree);
-    const realWt = nodePath5.resolve(real.worktree);
+    const claimedWt = nodePath6.resolve(task.worktree);
+    const realWt = nodePath6.resolve(real.worktree);
     if (!isSameWorkspaceRoot(claimedWt, realWt)) {
       throw new Error(
         `Task envelope worktree mismatch for ${label}: envelope=${task.worktree} expected=${real.worktree}`
@@ -29358,8 +30928,8 @@ async function findResumableManagedSessionForRole(ctx, workspaceId, roleName, pr
   if (!roleName) return void 0;
   const candidates = (await ctx.runtime.registry.list()).filter(
     (rec) => rec.workspace === workspaceId && rec.roleName === roleName && (rec.assigneeKind ?? "role") !== "agentProfile" && rec.profileId === profileId && rec.state === "stopped" && !!rec.resumeToken && !!rec.runtimeWorkspace?.cwd && isSameWorkspaceRoot(
-      nodePath5.resolve(rec.runtimeWorkspace.cwd),
-      nodePath5.resolve(cwd)
+      nodePath6.resolve(rec.runtimeWorkspace.cwd),
+      nodePath6.resolve(cwd)
     )
   ).sort((a, b) => b.updatedAt.localeCompare(a.updatedAt));
   for (const candidate of candidates) {
@@ -29980,14 +31550,14 @@ async function createServiceHttpServer(options) {
   };
 }
 function listen(server, port, host) {
-  return new Promise((resolve14, reject) => {
+  return new Promise((resolve15, reject) => {
     const onError = (error) => {
       server.off("listening", onListening);
       reject(error);
     };
     const onListening = () => {
       server.off("error", onError);
-      resolve14();
+      resolve15();
     };
     server.once("error", onError);
     server.once("listening", onListening);
@@ -29995,8 +31565,8 @@ function listen(server, port, host) {
   });
 }
 function closeServer(server) {
-  return new Promise((resolve14, reject) => {
-    server.close((err) => err ? reject(err) : resolve14());
+  return new Promise((resolve15, reject) => {
+    server.close((err) => err ? reject(err) : resolve15());
   });
 }
 async function handleRequest(req, res, options, closeSseConnections) {
@@ -30215,7 +31785,7 @@ function writeJson2(res, status, body) {
   res.end(payload);
 }
 function readBody(req, maxBytes) {
-  return new Promise((resolve14, reject) => {
+  return new Promise((resolve15, reject) => {
     const declaredLength = Number(req.headers["content-length"] ?? 0);
     if (Number.isFinite(declaredLength) && declaredLength > maxBytes) {
       req.resume();
@@ -30244,7 +31814,7 @@ function readBody(req, maxBytes) {
       }
       chunks.push(buffer);
     };
-    const onEnd = () => finish(() => resolve14(Buffer.concat(chunks, total).toString("utf8")));
+    const onEnd = () => finish(() => resolve15(Buffer.concat(chunks, total).toString("utf8")));
     const onError = (error) => finish(() => reject(error));
     const onAborted = () => finish(() => reject(new Error("request aborted")));
     req.on("data", onData);
@@ -30765,7 +32335,7 @@ var ToolApprovalStore = class {
    */
   waitForDecision(id, timeoutMs) {
     if (this.closed) return Promise.resolve("denied");
-    return new Promise((resolve14) => {
+    return new Promise((resolve15) => {
       let settled = false;
       let timer;
       const finish = (status) => {
@@ -30780,7 +32350,7 @@ var ToolApprovalStore = class {
           );
           if ((this.waiters.get(id) ?? []).length === 0) this.waiters.delete(id);
         }
-        resolve14(status);
+        resolve15(status);
       };
       const list2 = this.waiters.get(id) ?? [];
       list2.push({ resolve: finish });
@@ -31611,7 +33181,7 @@ var AgentProfileCatalog = class {
 import * as path20 from "node:path";
 
 // src/runtime/process-supervisor.ts
-import { spawn as spawn4 } from "node:child_process";
+import { spawn as spawn5 } from "node:child_process";
 var ProcessSupervisor = class {
   constructor(options = {}) {
     this.children = /* @__PURE__ */ new Map();
@@ -31660,7 +33230,7 @@ var ProcessSupervisor = class {
         delete env[key2];
       }
     }
-    const child = spawn4(launch.command, launch.args, {
+    const child = spawn5(launch.command, launch.args, {
       cwd: launch.cwd,
       env,
       stdio: ["ignore", "pipe", "pipe"],
@@ -31720,11 +33290,11 @@ var ProcessSupervisor = class {
       notifyExit();
     });
     try {
-      await new Promise((resolve14, reject) => {
+      await new Promise((resolve15, reject) => {
         const onSpawn = () => {
           child.off("error", onStartError);
           spawned = true;
-          resolve14();
+          resolve15();
         };
         const onStartError = (error) => {
           child.off("spawn", onSpawn);
@@ -31771,13 +33341,13 @@ var ProcessSupervisor = class {
       this.children.delete(sessionId);
       return;
     }
-    await new Promise((resolve14) => {
+    await new Promise((resolve15) => {
       const done = () => {
         if (live.killTimer) {
           clearTimeout(live.killTimer);
           live.killTimer = void 0;
         }
-        resolve14();
+        resolve15();
       };
       if (live.exited) {
         done();
@@ -31806,14 +33376,14 @@ var ProcessSupervisor = class {
     const pid = live.child.pid;
     if (pid == null) return;
     if (process.platform === "win32") {
-      await new Promise((resolve14) => {
-        const killer = spawn4("taskkill", ["/pid", String(pid), "/T", "/F"], {
+      await new Promise((resolve15) => {
+        const killer = spawn5("taskkill", ["/pid", String(pid), "/T", "/F"], {
           windowsHide: true,
           stdio: "ignore"
         });
-        killer.on("exit", () => resolve14());
-        killer.on("error", () => resolve14());
-        setTimeout(resolve14, 1500);
+        killer.on("exit", () => resolve15());
+        killer.on("error", () => resolve15());
+        setTimeout(resolve15, 1500);
       });
     } else {
       try {
@@ -31822,11 +33392,11 @@ var ProcessSupervisor = class {
       }
     }
     if (!live.exited) {
-      await new Promise((resolve14) => {
-        const t = setTimeout(resolve14, 500);
+      await new Promise((resolve15) => {
+        const t = setTimeout(resolve15, 500);
         live.child.once("exit", () => {
           clearTimeout(t);
-          resolve14();
+          resolve15();
         });
       });
     }
@@ -33037,7 +34607,7 @@ function hasCode2(error, code) {
 }
 
 // src/markdown/attachment-refs.ts
-import * as nodePath6 from "node:path";
+import * as nodePath7 from "node:path";
 function resolveAttachmentPath(raw, sourcePath) {
   let target = raw.trim();
   if (target.startsWith("<") && target.endsWith(">")) target = target.slice(1, -1).trim();
@@ -33055,10 +34625,10 @@ function resolveAttachmentPath(raw, sourcePath) {
   if (target.startsWith(`/${ATTACHMENTS_DIR}/`)) target = target.slice(1);
   let normalized;
   if (target === ATTACHMENTS_DIR || target.startsWith(`${ATTACHMENTS_DIR}/`)) {
-    normalized = nodePath6.posix.normalize(target);
+    normalized = nodePath7.posix.normalize(target);
   } else if ((target.startsWith("./") || target.startsWith("../")) && sourcePath) {
-    normalized = nodePath6.posix.normalize(
-      nodePath6.posix.join(nodePath6.posix.dirname(sourcePath.replace(/\\/g, "/")), target)
+    normalized = nodePath7.posix.normalize(
+      nodePath7.posix.join(nodePath7.posix.dirname(sourcePath.replace(/\\/g, "/")), target)
     );
   } else {
     return void 0;

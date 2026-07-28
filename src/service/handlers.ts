@@ -155,6 +155,18 @@ import {
   type RetentionPurgeResult,
 } from "../core/retention.js";
 import {
+  evaluateTaskWorktreeReclaimForEnvelope,
+  isTaskScopedWorktreeLane,
+  isTaskWorktreeReclaimTerminalState,
+  reclaimTaskWorktreeForEnvelope,
+  type TaskWorktreeReclaimResult,
+} from "../core/task-worktree-reclaim.js";
+import {
+  dequeueTaskWorktreeReclaimPending,
+  enqueueTaskWorktreeReclaimPending,
+  listTaskWorktreeReclaimPendingForWorkspace,
+} from "../core/task-worktree-reclaim-queue.js";
+import {
   loadWorkspaceSettings,
   updateWorkspaceSettings,
   WorkspaceSettingsError,
@@ -611,6 +623,8 @@ export async function dispatchMethod(
         return operationalRetentionPreviewRpc(ctx, p);
       case "operationalRetention.purge":
         return operationalRetentionPurgeRpc(ctx, p);
+      case "task.worktreeReclaim.preview":
+        return taskWorktreeReclaimPreviewRpc(ctx, p);
       case "annotation.list":
         return annotationListRpc(ctx, p);
       case "annotation.create":
@@ -682,6 +696,9 @@ async function workspaceMount(ctx: HandlerContext, p: Record<string, unknown>) {
   await migrateParentReviewerOnMount(ctx, info.workspaceId);
   // After SessionRegistry boot reconcile, each mount must re-bind tasks to live sessions.
   await reconcileTaskSessionsOnMount(ctx, info.workspaceId);
+  // Restart-safe: retry terminal Task worktree reclaim for clean, settled lanes only.
+  // Fail-closed diagnostics are emitted; never mass-cleans historical inventory.
+  await recoverTerminalTaskWorktreesOnMount(ctx, info.workspaceId);
   return info;
 }
 
@@ -4964,6 +4981,10 @@ async function taskDeliverRpc(ctx: HandlerContext, p: Record<string, unknown>) {
     },
     "self"
   );
+  // Auto-integrate policies land in accepted; reclaim only after session settle.
+  if (result.task.state === "accepted") {
+    await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.deliver");
+  }
   return {
     workspaceId,
     taskPath,
@@ -5059,6 +5080,8 @@ async function taskAcceptRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       "self"
     );
   }
+  // Terminal accepted + integrate complete → best-effort Task worktree reclaim.
+  await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.accept");
   return {
     workspaceId,
     taskPath,
@@ -5190,6 +5213,7 @@ async function taskRejectRpc(ctx: HandlerContext, p: Record<string, unknown>) {
 
   // Terminal reject: collaboration only; no session restore / no review U2A.
   if (!resume) {
+    await maybeAutoReclaimTaskWorktree(ctx, workspaceId, result.task, "task.reject");
     return {
       workspaceId,
       taskPath,
@@ -5361,7 +5385,7 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  return runTaskLifecycle(workspaceId, taskPath, () =>
+  const result = await runTaskLifecycle(workspaceId, taskPath, () =>
   ctx.mutations.run(workspaceId, async () => {
     const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     const sessionId = before?.sessionId;
@@ -5397,8 +5421,30 @@ async function taskInterruptRpc(ctx: HandlerContext, p: Record<string, unknown>)
         // session may already be dead
       }
     }
-    return { workspaceId, taskPath, task: projectTask(task), state: task.state };
+    return {
+      workspaceId,
+      taskPath,
+      task: projectTask(task),
+      state: task.state,
+      /** Pre-interrupt envelope for worktree reclaim when file was deleted (queued). */
+      reclaimSource: before ?? task,
+    };
   }));
+  // interrupted is terminal: reclaim temporary Task lanes when clean/unambiguous.
+  if (result.reclaimSource) {
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      { ...result.reclaimSource, state: "interrupted" },
+      "task.interrupt"
+    );
+  }
+  return {
+    workspaceId: result.workspaceId,
+    taskPath: result.taskPath,
+    task: result.task,
+    state: result.state,
+  };
 }
 
 async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
@@ -5406,8 +5452,9 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
   const mount = ctx.host.require(workspaceId);
   const taskPath = requireString(p, "taskPath");
 
-  return runTaskLifecycle(workspaceId, taskPath, () =>
+  const result = await runTaskLifecycle(workspaceId, taskPath, () =>
   ctx.mutations.run(workspaceId, async () => {
+    const before = await loadTaskEnvelope(mount.env.fs, taskPath).catch(() => null);
     ctx.host.markSelfWrite(workspaceId);
     await taskCancel(mount.env, taskPath);
     ctx.events.emit(
@@ -5416,8 +5463,28 @@ async function taskCancelRpc(ctx: HandlerContext, p: Record<string, unknown>) {
       { path: taskPath, state: "interrupted", reason: "task.cancel" },
       "self"
     );
-    return { workspaceId, taskPath, state: "interrupted", cancelled: true };
+    return {
+      workspaceId,
+      taskPath,
+      state: "interrupted" as const,
+      cancelled: true as const,
+      before,
+    };
   }));
+  if (result.before) {
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      { ...result.before, state: "interrupted" },
+      "task.cancel"
+    );
+  }
+  return {
+    workspaceId: result.workspaceId,
+    taskPath: result.taskPath,
+    state: result.state,
+    cancelled: result.cancelled,
+  };
 }
 
 /**
@@ -7208,6 +7275,21 @@ async function sessionLeave(ctx: HandlerContext, p: Record<string, unknown>) {
     state = rec.state === "failed" ? "failed" : "stopped";
   }
 
+  // External leave is a supported settle trigger: retry pending Task worktree reclaim
+  // for collaboration-terminal tasks that were blocked on SESSION_ACTIVE.
+  const leaveWorkspaceId = rec.workspace || workspaceId;
+  if (leaveWorkspaceId) {
+    await retryPendingWorktreeReclaimAfterSessionSettle(
+      ctx,
+      leaveWorkspaceId,
+      {
+        sessionId,
+        lastTaskId: rec.lastTaskId,
+        trigger: "session.leave",
+      }
+    );
+  }
+
   return {
     sessionId,
     externalKey: recordExternalKey(rec) ?? externalKey,
@@ -8234,6 +8316,523 @@ async function operationalRetentionPreviewRpc(
 }
 
 /**
+ * Read-only diagnostic for one Task's temporary Git worktree reclaim eligibility.
+ * Does not mass-scan historical inventory; requires taskPath (or taskId via get).
+ * Safe auto-reclaim still runs without this RPC — preview is for operators/tests.
+ */
+async function taskWorktreeReclaimPreviewRpc(
+  ctx: HandlerContext,
+  p: Record<string, unknown>
+) {
+  const workspaceId = requireWorkspaceId(ctx, p);
+  const mount = ctx.host.require(workspaceId);
+  const taskPath = requireString(p, "taskPath");
+  const task = await loadTaskEnvelope(mount.env.fs, taskPath);
+  const diagnostic = await evaluateTaskWorktreeReclaimForEnvelope(
+    mount.env.fs,
+    mount.workspaceRoot,
+    task
+  );
+  return {
+    workspaceId,
+    taskPath,
+    ...diagnostic,
+  };
+}
+
+/**
+ * Authoritative Service gate: no live/busy/external execution still bound to this Task
+ * may hold the Task worktree as cwd. Fail-closed → SESSION_ACTIVE (enqueue + retry later).
+ */
+async function assertTaskExecutionSettledForWorktreeReclaim(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: TaskEnvelope
+): Promise<{ ok: true } | { ok: false; reason: string; details?: Record<string, unknown> }> {
+  const sessionId = task.sessionId?.trim();
+  if (!sessionId) {
+    // No bound session on the envelope — still scan registry for lastTaskId matches
+    // that remain non-terminal (external leave may not have cleared envelope yet).
+    return assertNoLiveRegistryExecutionForTask(ctx, workspaceId, task);
+  }
+  try {
+    // Registry row is authoritative for pull-host external (may report alive=false
+    // while state is still `external` / open). Do not trust probe.alive alone.
+    const rec = await ctx.runtime.registry.read(sessionId);
+    if (rec) {
+      if (rec.state === "external" || SessionRegistry.isOpen(rec.state)) {
+        return {
+          ok: false,
+          reason: `Bound session ${sessionId} is still open (state=${rec.state}); stop or session.leave before reclaim.`,
+          details: { sessionId, state: rec.state, lastTaskId: rec.lastTaskId },
+        };
+      }
+      if (SessionRegistry.isNonTerminal(rec.state)) {
+        return {
+          ok: false,
+          reason: `Bound session ${sessionId} is still non-terminal (state=${rec.state}); stop before reclaim.`,
+          details: { sessionId, state: rec.state },
+        };
+      }
+    }
+    const probe = await ctx.runtime.probe(sessionId);
+    if (probe.turnBusy === true) {
+      return {
+        ok: false,
+        reason: `Bound session ${sessionId} still has turnBusy=true; refuse worktree reclaim until the turn settles.`,
+        details: { sessionId, turnBusy: true, state: probe.state },
+      };
+    }
+    if (probe.alive || SessionRegistry.isNonTerminal(probe.state) || probe.state === "external") {
+      return {
+        ok: false,
+        reason: `Bound session ${sessionId} is still live/open (state=${probe.state}, alive=${probe.alive}); stop or leave before reclaim.`,
+        details: { sessionId, state: probe.state, alive: probe.alive },
+      };
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Failed to probe bound session ${sessionId} for reclaim settle: ${err instanceof Error ? err.message : String(err)}`,
+      details: { sessionId },
+    };
+  }
+  return assertNoLiveRegistryExecutionForTask(ctx, workspaceId, task);
+}
+
+async function assertNoLiveRegistryExecutionForTask(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: TaskEnvelope
+): Promise<{ ok: true } | { ok: false; reason: string; details?: Record<string, unknown> }> {
+  const taskId = task.id?.trim();
+  const taskPath = task.path;
+  try {
+    const all = await ctx.runtime.registry.list();
+    for (const rec of all) {
+      if (rec.workspace && rec.workspace !== workspaceId) continue;
+      const boundById = taskId && rec.lastTaskId === taskId;
+      const boundByPath =
+        typeof (rec as { lastTaskPath?: string }).lastTaskPath === "string" &&
+        (rec as { lastTaskPath?: string }).lastTaskPath === taskPath;
+      // Prefer explicit task binding; also treat envelope sessionId match.
+      const boundBySession =
+        task.sessionId?.trim() && rec.id === task.sessionId.trim();
+      if (!boundById && !boundByPath && !boundBySession) continue;
+      // Open collaboration: managed non-terminal OR pull-host external.
+      if (!SessionRegistry.isOpen(rec.state) && !SessionRegistry.isNonTerminal(rec.state)) {
+        continue;
+      }
+      if (rec.state === "external" || SessionRegistry.isOpen(rec.state)) {
+        return {
+          ok: false,
+          reason: `Registry session ${rec.id} still open for task (state=${rec.state}); refuse worktree reclaim until leave/stop.`,
+          details: {
+            sessionId: rec.id,
+            state: rec.state,
+            lastTaskId: rec.lastTaskId,
+          },
+        };
+      }
+      if (SessionRegistry.isNonTerminal(rec.state)) {
+        try {
+          const probe = await ctx.runtime.probe(rec.id);
+          if (
+            probe.turnBusy === true ||
+            probe.alive ||
+            SessionRegistry.isNonTerminal(probe.state)
+          ) {
+            return {
+              ok: false,
+              reason: `Registry session ${rec.id} still active for task (state=${rec.state}, turnBusy=${probe.turnBusy === true}); refuse worktree reclaim.`,
+              details: {
+                sessionId: rec.id,
+                state: rec.state,
+                turnBusy: probe.turnBusy === true,
+                lastTaskId: rec.lastTaskId,
+              },
+            };
+          }
+        } catch {
+          return {
+            ok: false,
+            reason: `Registry session ${rec.id} could not be probed while non-terminal; refuse worktree reclaim.`,
+            details: { sessionId: rec.id, state: rec.state },
+          };
+        }
+      }
+    }
+  } catch (err) {
+    return {
+      ok: false,
+      reason: `Failed to scan session registry for task settle: ${err instanceof Error ? err.message : String(err)}`,
+    };
+  }
+  return { ok: true };
+}
+
+/**
+ * After session leave / exit / fail: retry reclaim for ONLY the exact pending
+ * entry tied to this session's lastTaskId / bound Task. Unrelated pending
+ * queue rows stay untouched. Does not scan historical terminal inventory.
+ * leave/exit never deliver or accept.
+ */
+async function retryPendingWorktreeReclaimAfterSessionSettle(
+  ctx: HandlerContext,
+  workspaceId: string,
+  input: {
+    sessionId: string;
+    lastTaskId?: string;
+    task?: TaskEnvelope;
+    trigger: string;
+  }
+): Promise<void> {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return;
+  try {
+    const pending = await listTaskWorktreeReclaimPendingForWorkspace(
+      mount.env.fs,
+      mount.workspaceRoot,
+      (a, b) => isSameWorkspaceRoot(nodePath.resolve(a), nodePath.resolve(b))
+    );
+    if (pending.length === 0) return;
+
+    const needle = (input.lastTaskId || "").trim();
+    let task = input.task;
+    if (!task) {
+      const tasks = await loadTaskEnvelopes(mount.env.fs);
+      // Prefer exact lastTaskId / id / path; fall back to envelope sessionId bind.
+      task =
+        tasks.find(
+          (t) =>
+            (needle && (t.id === needle || t.path === needle)) ||
+            t.sessionId === input.sessionId
+        ) ?? undefined;
+    }
+    if (!task) {
+      // Pending may key by taskId equal to lastTaskId even if envelope load path differs.
+      if (!needle) return;
+      const entry = pending.find(
+        (e) => e.taskId === needle || e.taskPath === needle
+      );
+      if (!entry) return;
+      try {
+        task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
+      } catch {
+        return;
+      }
+    }
+    if (!isTaskWorktreeReclaimTerminalState(task.state)) return;
+    if (!isTaskScopedWorktreeLane(task)) return;
+    const taskId = task.id?.trim();
+    if (!taskId) return;
+
+    // Exact queue row only — never reclaim sibling pending tasks on this leave.
+    const exactPending = pending.find(
+      (e) =>
+        e.taskId === taskId ||
+        e.taskPath === task!.path ||
+        (needle && (e.taskId === needle || e.taskPath === needle))
+    );
+    if (!exactPending) return;
+    if (exactPending.taskId !== taskId && task.id && exactPending.taskId !== task.id) {
+      // Path matched a different id — refuse cross-task reclaim.
+      return;
+    }
+
+    await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      task,
+      `session.settle:${input.trigger}`
+    );
+  } catch {
+    // Best-effort settle retry; mount recovery remains the durable backstop.
+  }
+}
+
+/**
+ * Test-only TOCTOU hook for Service auto-reclaim: runs after evaluate eligibility
+ * succeeds and before pre-remove Session re-probe / git worktree remove.
+ * Production never sets this.
+ */
+let beforeTaskWorktreeReclaimRemoveForTests:
+  | (() => void | Promise<void>)
+  | undefined;
+
+/** Install/clear the Service reclaim pre-remove TOCTOU hook (tests only). */
+export function setBeforeTaskWorktreeReclaimRemoveForTests(
+  hook: (() => void | Promise<void>) | undefined
+): void {
+  beforeTaskWorktreeReclaimRemoveForTests = hook;
+}
+
+/**
+ * Best-effort auto-reclaim of a terminal agentProfile Task worktree.
+ * Never throws into the lifecycle RPC: fail-closed diagnostics are events only.
+ * Does not touch Role worktrees, commits, branches, or operational records.
+ *
+ * On terminal transitions observed by this feature, enqueues a narrow pending
+ * marker so restart recovery retries only those entries (no historical mass-clean).
+ *
+ * Critical section (P0): final Session settle re-probe + clean/ownership
+ * revalidation + exact remove run under the same per-Task lifecycle lock as
+ * accept/reject/interrupt/rebind, so restart/rebind cannot race the remove.
+ * Bound Session is re-probed immediately before git worktree remove; terminal
+ * + turnBusy/alive or a late dirty write fails closed (SESSION_ACTIVE/DIRTY)
+ * and retries after session settle / mount recovery.
+ */
+async function maybeAutoReclaimTaskWorktree(
+  ctx: HandlerContext,
+  workspaceId: string,
+  task: TaskEnvelope,
+  reason: string
+): Promise<TaskWorktreeReclaimResult | undefined> {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return undefined;
+
+  // Only agentProfile lanes with a recorded Git path participate.
+  if (!isTaskScopedWorktreeLane(task)) return undefined;
+  if (!isTaskWorktreeReclaimTerminalState(task.state)) return undefined;
+  if (!task.worktree && !task.branch) return undefined;
+  const taskId = task.id?.trim();
+  if (!taskId) return undefined;
+  const taskPath = task.path;
+
+  // Always record pending for this feature's terminal observation (restart-safe).
+  // Enqueue is outside the lifecycle critical section so concurrent lifecycle
+  // ops still leave a durable retry marker.
+  try {
+    await enqueueTaskWorktreeReclaimPending(mount.env.fs, {
+      taskId,
+      taskPath,
+      workspaceRoot: mount.workspaceRoot,
+      enqueuedAt: mount.env.clock.now(),
+      trigger: reason,
+    });
+  } catch {
+    // Queue write failure must not block diagnostics; mount may still miss retry.
+  }
+
+  try {
+    // Serialize final settle check + ownership/clean revalidation + exact remove
+    // against Task lifecycle / restart / rebind for this taskPath.
+    return await runTaskLifecycle(workspaceId, taskPath, async () => {
+      // Fresh envelope under the lock (rebind / resume may have mutated sessionId).
+      let liveTask = task;
+      try {
+        liveTask = await loadTaskEnvelope(mount.env.fs, taskPath);
+      } catch {
+        liveTask = task;
+      }
+      if (!isTaskWorktreeReclaimTerminalState(liveTask.state)) {
+        const blocked: TaskWorktreeReclaimResult = {
+          eligible: false,
+          code: "NOT_TERMINAL",
+          reason: `Task state=${liveTask.state} is no longer terminal under reclaim critical section; refuse remove.`,
+          taskId,
+          taskPath,
+          taskState: liveTask.state,
+          workspace: liveTask.workspace,
+          worktree: liveTask.worktree,
+          branch: liveTask.branch,
+          targetBranch: liveTask.targetBranch,
+          reclaimed: false,
+          alreadyGone: false,
+        };
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath,
+            taskState: liveTask.state,
+            code: blocked.code,
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: liveTask.worktree,
+            branch: liveTask.branch,
+            trigger: reason,
+          },
+          "self"
+        );
+        return blocked;
+      }
+
+      const settled = await assertTaskExecutionSettledForWorktreeReclaim(
+        ctx,
+        workspaceId,
+        liveTask
+      );
+      if (!settled.ok) {
+        const blocked: TaskWorktreeReclaimResult = {
+          eligible: false,
+          code: "SESSION_ACTIVE",
+          reason: settled.reason,
+          taskId,
+          taskPath: liveTask.path,
+          taskState: liveTask.state,
+          workspace: liveTask.workspace,
+          worktree: liveTask.worktree,
+          branch: liveTask.branch,
+          targetBranch: liveTask.targetBranch,
+          details: settled.details,
+          reclaimed: false,
+          alreadyGone: false,
+        };
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId,
+            taskPath: liveTask.path,
+            taskState: liveTask.state,
+            code: blocked.code,
+            eligible: false,
+            reclaimed: false,
+            alreadyGone: false,
+            reason: blocked.reason,
+            worktree: liveTask.worktree,
+            branch: liveTask.branch,
+            trigger: reason,
+            ...(blocked.details ? { details: blocked.details } : {}),
+          },
+          "self"
+        );
+        return blocked;
+      }
+
+      const result = await reclaimTaskWorktreeForEnvelope(
+        mount.env.fs,
+        mount.workspaceRoot,
+        liveTask,
+        {
+          // Re-probe bound Session immediately before exact remove (inside same lock).
+          assertSessionSettledBeforeRemove: () =>
+            assertTaskExecutionSettledForWorktreeReclaim(
+              ctx,
+              workspaceId,
+              liveTask
+            ),
+          beforeRemoveForTests: beforeTaskWorktreeReclaimRemoveForTests,
+        }
+      );
+      if (result.reclaimed || result.code === "ALREADY_GONE") {
+        try {
+          await dequeueTaskWorktreeReclaimPending(mount.env.fs, taskId);
+        } catch {
+          // Idempotent retry will clear later.
+        }
+      } else if (result.code === "NOT_APPLICABLE") {
+        // Permanent non-candidate — drop pending so mount does not spin.
+        try {
+          await dequeueTaskWorktreeReclaimPending(mount.env.fs, taskId);
+        } catch {
+          // ignore
+        }
+      }
+      if (result.reclaimed || !result.eligible) {
+        ctx.events.emit(
+          "task.worktreeReclaim",
+          workspaceId,
+          {
+            taskId: result.taskId ?? liveTask.id,
+            taskPath: result.taskPath ?? liveTask.path,
+            taskState: result.taskState ?? liveTask.state,
+            code: result.code,
+            eligible: result.eligible,
+            reclaimed: result.reclaimed,
+            alreadyGone: result.alreadyGone,
+            reason: result.reason,
+            worktree: result.worktree,
+            branch: result.branch,
+            trigger: reason,
+            ...(result.details ? { details: result.details } : {}),
+          },
+          "self"
+        );
+      }
+      return result;
+    });
+  } catch (err) {
+    ctx.events.emit(
+      "task.worktreeReclaim",
+      workspaceId,
+      {
+        taskId: task.id,
+        taskPath: task.path,
+        taskState: task.state,
+        code: "REMOVE_FAILED",
+        eligible: false,
+        reclaimed: false,
+        alreadyGone: false,
+        reason: `Auto-reclaim threw: ${err instanceof Error ? err.message : String(err)}`,
+        trigger: reason,
+      },
+      "self"
+    );
+    return undefined;
+  }
+}
+
+/**
+ * On workspace mount / Service restart: retry reclaim ONLY for pending entries
+ * enqueued by this feature's terminal transitions. Never scans historical
+ * terminal Task envelopes as an opt-in inventory.
+ */
+export async function recoverTerminalTaskWorktreesOnMount(
+  ctx: HandlerContext,
+  workspaceId: string
+): Promise<{ attempted: number; reclaimed: number; refused: number }> {
+  const mount = ctx.host.get(workspaceId);
+  if (!mount) return { attempted: 0, reclaimed: 0, refused: 0 };
+  if (!(await isGitWorkspace(mount.workspaceRoot))) {
+    return { attempted: 0, reclaimed: 0, refused: 0 };
+  }
+
+  let attempted = 0;
+  let reclaimed = 0;
+  let refused = 0;
+  const pending = await listTaskWorktreeReclaimPendingForWorkspace(
+    mount.env.fs,
+    mount.workspaceRoot,
+    (a, b) => isSameWorkspaceRoot(nodePath.resolve(a), nodePath.resolve(b))
+  );
+  for (const entry of pending) {
+    attempted += 1;
+    let task: TaskEnvelope;
+    try {
+      task = await loadTaskEnvelope(mount.env.fs, entry.taskPath);
+    } catch {
+      // Envelope gone — drop stale pending (nothing left to reclaim by Task identity).
+      try {
+        await dequeueTaskWorktreeReclaimPending(mount.env.fs, entry.taskId);
+      } catch {
+        // ignore
+      }
+      refused += 1;
+      continue;
+    }
+    // Identity drift: pending taskId must still match envelope.
+    if (task.id && task.id !== entry.taskId) {
+      refused += 1;
+      continue;
+    }
+    const result = await maybeAutoReclaimTaskWorktree(
+      ctx,
+      workspaceId,
+      task,
+      entry.trigger ? `workspace.mount:${entry.trigger}` : "workspace.mount"
+    );
+    if (result?.reclaimed) reclaimed += 1;
+    else if (result && !result.eligible) refused += 1;
+  }
+  return { attempted, reclaimed, refused };
+}
+
+/**
  * User-only purge of terminal tasks / non-ready deliveries past retention.
  * Serialized on MutationBus. Emits exactly one retention.purged when files are deleted.
  */
@@ -8924,6 +9523,17 @@ async function projectRuntimeEventOnce(
         ev.type === "session.failed" ? "session.failed" : "session.exited"
       );
     }
+
+    // Session terminal is a supported settle trigger for pending Task worktree reclaim
+    // (SESSION_ACTIVE may have deferred cleanup while cwd was still owned).
+    if (boundTaskForTerminal && isTaskCollaborationTerminal(boundTaskForTerminal)) {
+      await retryPendingWorktreeReclaimAfterSessionSettle(ctx, workspaceId, {
+        sessionId: ev.sessionId,
+        lastTaskId: boundTaskForTerminal.id || boundTaskForTerminal.path,
+        task: boundTaskForTerminal,
+        trigger: ev.type,
+      });
+    }
   }
 
   // Map waiting_user / failed / prompt_complete onto bound task when lastTaskId known.
@@ -9056,6 +9666,7 @@ async function failTaskFromRuntime(
   if (!mount) return;
 
   let appliedFailure = false;
+  let failedTask: TaskEnvelope | undefined;
   await ctx.mutations.run(input.workspaceId, async () => {
     ctx.host.markSelfWrite(input.workspaceId);
     const current = await loadTaskEnvelope(mount.env.fs, input.taskPath);
@@ -9093,7 +9704,13 @@ async function failTaskFromRuntime(
     });
     emitTaskState(ctx, input.workspaceId, failed, input.reason);
     appliedFailure = true;
+    failedTask = failed;
   });
+
+  // Git worktree remove must stay outside MutationBus (same rule as integrate).
+  if (appliedFailure && failedTask) {
+    await maybeAutoReclaimTaskWorktree(ctx, input.workspaceId, failedTask, input.reason);
+  }
 
   if (!appliedFailure || !input.sessionId) return;
   try {
@@ -9551,6 +10168,26 @@ async function tryManagedAutoDeliver(
       sessionId,
       taskPath: input.taskPath,
     });
+
+    // Reclaim only AFTER managed session stop — cwd must not still own the worktree.
+    if (published) {
+      try {
+        const mountAfter = ctx.host.get(input.workspaceId);
+        if (mountAfter) {
+          const terminalTask = await loadTaskEnvelope(mountAfter.env.fs, input.taskPath);
+          if (terminalTask.state === "accepted") {
+            await maybeAutoReclaimTaskWorktree(
+              ctx,
+              input.workspaceId,
+              terminalTask,
+              "session.prompt_complete"
+            );
+          }
+        }
+      } catch {
+        // Best-effort; pending queue + mount recovery retry.
+      }
+    }
   } catch (err) {
     // Deliver / integrate / collection / seal / dirty-worktree failure must NOT
     // terminal-fail the task. Keep running/occupation so the user can retry;

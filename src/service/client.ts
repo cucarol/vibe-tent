@@ -1194,6 +1194,17 @@ export class ServiceClient {
   }
 
   /**
+   * Read-only Task worktree reclaim diagnostic (task-api WorkspaceLane GC).
+   * Does not remove anything; auto-reclaim still runs on terminal transitions.
+   */
+  taskWorktreeReclaimPreview(workspaceId: string, taskPath: string) {
+    return this.call("task.worktreeReclaim.preview", {
+      workspaceId,
+      taskPath,
+    });
+  }
+
+  /**
    * List Node Markdown underline annotations for a node (cx- identity).
    * Projection includes live relocate state; does not rewrite stored anchors.
    */
