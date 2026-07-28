@@ -90,15 +90,33 @@ import { loadTypeRegistry } from "../core/typeRegistry.js";
 import {
   createRole,
   deleteRole,
+  ensureRolesRosterMigrated,
   loadRolesRegistry,
-  normalizeAllowedProfiles,
+  normalizeAgentIdList,
   normalizeRoleDefinition,
   resolveRole,
   roleA2APolicy,
-  roleAllowsProfile,
+  roleAllowsAgent,
+  roleRoster,
   updateRole,
   type RoleDefinition,
 } from "../core/skillRoleRegistry.js";
+import {
+  assembleManagedSessionBootstrap,
+  composeManagedSkillBootstrapPrefix,
+} from "../core/managed-skill-compose.js";
+import {
+  ensureAgentDefinitionsForProfileIds,
+  findAgentDefinition,
+  loadAgentDefinitions,
+  normalizeAgentDefinition,
+  parseAgentDefinitionParams,
+  projectAgentDefinition,
+  resolveAgentIdForProfileOnRoster,
+  resolveProfileIdForAgent,
+  saveAgentDefinitions,
+  type AgentDefinition,
+} from "./agent-definitions.js";
 import {
   boxProjectionOf,
   findActiveTaskForBox,
@@ -447,6 +465,16 @@ export async function dispatchMethod(
         return registryRoleUpdate(ctx, p);
       case "registry.role.delete":
         return registryRoleDelete(ctx, p);
+      case "agent.list":
+        return agentList(ctx);
+      case "agent.get":
+        return agentGet(ctx, p);
+      case "agent.create":
+        return agentCreate(ctx, p);
+      case "agent.update":
+        return agentUpdate(ctx, p);
+      case "agent.delete":
+        return agentDelete(ctx, p);
       case "profile.list":
         return profileList(ctx, p);
       case "profile.get":
@@ -2206,7 +2234,13 @@ function mapDocsSemanticError(err: unknown, surface: string): RpcError {
 async function registryRoles(ctx: HandlerContext, p: Record<string, unknown>) {
   const workspaceId = requireWorkspaceId(ctx, p);
   const mount = ctx.host.require(workspaceId);
-  const registry = await loadRolesRegistry(mount.env.fs);
+  // One-time allowedProfiles → roster write-forward (idempotent; no dual-write).
+  const { registry } = await ensureRolesRosterMigrated(mount.env.fs);
+  // Auto-create AgentDefinitions for roster agentIds (agentId defaults to former profileId).
+  const allAgentIds = registry.roles.flatMap((r) => roleRoster(r));
+  if (allAgentIds.length > 0) {
+    await ensureAgentDefsForRosterIds(ctx, allAgentIds);
+  }
   const roles: RoleRegistryEntryProjection[] = registry.roles
     .map((role) => projectRoleRegistryEntry(role))
     .sort((a, b) => a.name.localeCompare(b.name));
@@ -2223,8 +2257,9 @@ function projectRoleRegistryEntry(role: RoleDefinition): RoleRegistryEntryProjec
     prompt: role.prompt,
     a2aPolicy: roleA2APolicy(role),
   };
-  if (role.allowedProfiles && role.allowedProfiles.length > 0) {
-    proj.allowedProfiles = [...role.allowedProfiles];
+  const roster = roleRoster(role);
+  if (roster.length > 0) {
+    proj.roster = roster;
   }
   return proj;
 }
@@ -2317,9 +2352,9 @@ async function registryRoleUpdate(ctx: HandlerContext, p: Record<string, unknown
   if ("a2aPolicy" in p && (p.a2aPolicy === null || p.a2aPolicy === "")) {
     updatePatch.a2aPolicy = undefined;
   }
-  if ("allowedProfiles" in p) {
-    updatePatch.allowedProfiles = normalizeAllowedProfiles(
-      Array.isArray(p.allowedProfiles) ? p.allowedProfiles : []
+  if ("roster" in p) {
+    updatePatch.roster = normalizeAgentIdList(
+      Array.isArray(p.roster) ? p.roster : []
     );
   }
   if ("cli" in p && p.cli === null) {
@@ -2536,18 +2571,23 @@ function parseRoleDefinitionParams(
     }
   }
   if ("allowedProfiles" in p) {
-    if (p.allowedProfiles === null) {
-      raw.allowedProfiles = [];
-    } else if (!Array.isArray(p.allowedProfiles)) {
-      throw new RpcError(-32602, "allowedProfiles must be an array of profile id strings");
+    throw new RpcError(
+      -32602,
+      "registry.role.* no longer accepts allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
+    );
+  }
+  if ("roster" in p) {
+    if (p.roster === null) {
+      raw.roster = [];
+    } else if (!Array.isArray(p.roster)) {
+      throw new RpcError(-32602, "roster must be an array of agentId strings");
     } else {
-      for (const item of p.allowedProfiles) {
+      for (const item of p.roster) {
         if (typeof item !== "string") {
-          throw new RpcError(-32602, "allowedProfiles must be an array of profile id strings");
+          throw new RpcError(-32602, "roster must be an array of agentId strings");
         }
       }
-      // Normalize here so invalid empties become [] (clear) rather than silent ignore.
-      raw.allowedProfiles = normalizeAllowedProfiles(p.allowedProfiles) ?? [];
+      raw.roster = normalizeAgentIdList(p.roster) ?? [];
     }
   }
   if ("cli" in p) {
@@ -2565,14 +2605,12 @@ function parseRoleDefinitionParams(
     if (opts.requireName && !role.name) {
       throw new RpcError(-32602, "Role name cannot be empty.");
     }
-    // For update with allowedProfiles: [] we need to pass empty to clear — core
-    // normalize drops empty, so re-attach when caller explicitly set the field.
-    if ("allowedProfiles" in p) {
-      const normalized = normalizeAllowedProfiles(
-        Array.isArray(p.allowedProfiles) ? p.allowedProfiles : []
-      );
-      if (normalized) role.allowedProfiles = normalized;
-      else delete role.allowedProfiles;
+    // For update with roster: [] we need to pass empty to clear — core normalize
+    // drops empty, so re-attach when caller explicitly set the field.
+    if ("roster" in p) {
+      const normalized = normalizeAgentIdList(Array.isArray(p.roster) ? p.roster : []);
+      if (normalized) role.roster = normalized;
+      else delete role.roster;
     }
     return role;
   } catch (err) {
@@ -2586,7 +2624,7 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
   if (err instanceof RpcError) return err;
   const message = err instanceof Error ? err.message : `${surface} failed`;
   if (
-    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed/i.test(
+    /already exists|does not exist|Confirmation mismatch|cannot be empty|cli\.|immutable|cannot be renamed|no longer accept|allowedProfiles/i.test(
       message
     )
   ) {
@@ -2596,6 +2634,164 @@ function mapRoleRegistryError(err: unknown, surface: string): RpcError {
     return new RpcError(-32602, message);
   }
   return new RpcError(-32000, message);
+}
+
+// ---- agent.* (machine-local AgentDefinition catalog) ----
+
+async function agentList(ctx: HandlerContext) {
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  const profiles = new Set(ctx.profileCatalog.list().map((p) => p.id));
+  return {
+    agents: agents
+      .map((a) =>
+        projectAgentDefinition(a, { profileExists: profiles.has(a.profileId) })
+      )
+      .sort((a, b) => a.id.localeCompare(b.id)),
+  };
+}
+
+async function agentGet(ctx: HandlerContext, p: Record<string, unknown>) {
+  const id = requireString(p, "id");
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  const agent = findAgentDefinition(agents, id);
+  if (!agent) {
+    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
+  }
+  const profileExists = !!ctx.profileCatalog.get(agent.profileId);
+  return { agent: projectAgentDefinition(agent, { profileExists }) };
+}
+
+async function agentCreate(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "agent.create");
+  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
+    throw new RpcError(
+      -32602,
+      "agent.create does not accept nested agent; pass fields at the top level"
+    );
+  }
+  let parsed: ReturnType<typeof parseAgentDefinitionParams>;
+  try {
+    parsed = parseAgentDefinitionParams(p, { requireId: true });
+  } catch (err) {
+    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
+  }
+  if (!parsed.id || !parsed.profileId) {
+    throw new RpcError(-32602, "agent.create requires id and profileId");
+  }
+  if (!ctx.profileCatalog.get(parsed.profileId)) {
+    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
+  }
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  if (findAgentDefinition(agents, parsed.id)) {
+    throw new RpcError(-32602, `AgentDefinition already exists: ${parsed.id}`);
+  }
+  const created = normalizeAgentDefinition({
+    id: parsed.id,
+    profileId: parsed.profileId,
+    displayName: parsed.displayName,
+    description: parsed.description,
+  });
+  const next = [...agents, created].sort((a, b) => a.id.localeCompare(b.id));
+  await saveAgentDefinitions(ctx.dataDir, next);
+  const projection = projectAgentDefinition(created, { profileExists: true });
+  ctx.events.emit(
+    "agent.changed",
+    "",
+    { action: "create", id: created.id, agent: projection },
+    "self"
+  );
+  return { agent: projection };
+}
+
+async function agentUpdate(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "agent.update");
+  if ("agent" in p && typeof p.agent === "object" && p.agent !== null) {
+    throw new RpcError(
+      -32602,
+      "agent.update does not accept nested agent; pass { id, ...patch }"
+    );
+  }
+  const id = requireString(p, "id");
+  let parsed: ReturnType<typeof parseAgentDefinitionParams>;
+  try {
+    parsed = parseAgentDefinitionParams({ ...p, id }, { forUpdate: true });
+  } catch (err) {
+    throw new RpcError(-32602, err instanceof Error ? err.message : "Invalid agent definition");
+  }
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  const index = agents.findIndex((a) => a.id === id);
+  if (index === -1) {
+    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
+  }
+  const current = agents[index]!;
+  if (parsed.profileId && !ctx.profileCatalog.get(parsed.profileId)) {
+    throw new RpcError(-32004, `Profile not found: ${parsed.profileId}`);
+  }
+  const nextRow: AgentDefinition = normalizeAgentDefinition({
+    id: current.id,
+    profileId: parsed.profileId ?? current.profileId,
+    displayName:
+      "displayName" in p
+        ? parsed.displayName
+        : current.displayName,
+    description:
+      "description" in p
+        ? parsed.description
+        : current.description,
+  });
+  // Explicit clear of optional text fields.
+  if ("displayName" in p && (p.displayName === null || p.displayName === "")) {
+    delete nextRow.displayName;
+  }
+  if ("description" in p && (p.description === null || p.description === "")) {
+    delete nextRow.description;
+  }
+  const next = [...agents];
+  next[index] = nextRow;
+  await saveAgentDefinitions(ctx.dataDir, next);
+  const profileExists = !!ctx.profileCatalog.get(nextRow.profileId);
+  const projection = projectAgentDefinition(nextRow, { profileExists });
+  ctx.events.emit(
+    "agent.changed",
+    "",
+    { action: "update", id: nextRow.id, agent: projection },
+    "self"
+  );
+  return { agent: projection };
+}
+
+async function agentDelete(ctx: HandlerContext, p: Record<string, unknown>) {
+  requireUserActor(p, "agent.delete");
+  const id = requireString(p, "id");
+  const confirmation = requireString(p, "confirmation");
+  if (confirmation !== id) {
+    throw new RpcError(-32602, `Confirmation mismatch; enter the agent id ${id}.`);
+  }
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  const index = agents.findIndex((a) => a.id === id);
+  if (index === -1) {
+    throw new RpcError(-32004, `AgentDefinition not found: ${id}`);
+  }
+  const next = agents.filter((a) => a.id !== id);
+  await saveAgentDefinitions(ctx.dataDir, next);
+  ctx.events.emit("agent.changed", "", { action: "delete", id }, "self");
+  return { id, deleted: true };
+}
+
+/**
+ * Ensure AgentDefinitions exist for every roster agentId (and legacy profile ids).
+ * Deterministic agentId === former profileId when auto-creating.
+ */
+async function ensureAgentDefsForRosterIds(
+  ctx: HandlerContext,
+  agentIds: readonly string[]
+): Promise<AgentDefinition[]> {
+  const { agents } = await loadAgentDefinitions(ctx.dataDir);
+  const { agents: next, added } = ensureAgentDefinitionsForProfileIds(agents, agentIds);
+  if (added) {
+    await saveAgentDefinitions(ctx.dataDir, next);
+  }
+  return next;
 }
 
 /**
@@ -3229,7 +3425,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
           throw new RpcError(-32602, `Invalid assigneeKind: ${assigneeKindRaw}`);
         })();
   const role = optionalString(p, "role");
-  const profileId = optionalString(p, "profileId");
+  const agentIdParam = optionalString(p, "agentId");
+  let profileId = optionalString(p, "profileId");
   const prompt = requireString(p, "prompt");
   const asSub = p.asSub === true;
   // Legacy dispatchedBy is migration-only; refuse permanent new-write support.
@@ -3258,8 +3455,50 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   if (assigneeKind === "role" && !role) {
     throw new RpcError(-32602, "task.dispatch with assigneeKind=role requires role");
   }
+  // Role-authorized agentId path: resolve logical worker → machine-local profileId.
+  // Roster membership is standing authorization (no per-call a2a ask/deny).
+  // User-direct --profile / profileId one-shot remains separate (no agentId required).
+  let resolvedAgentId: string | undefined;
+  if (agentIdParam) {
+    if (assigneeKind !== "agentProfile") {
+      throw new RpcError(
+        -32602,
+        "task.dispatch with agentId requires assigneeKind=agentProfile (logical agent → profile launch)"
+      );
+    }
+    const { agents } = await loadAgentDefinitions(ctx.dataDir);
+    try {
+      const resolved = resolveProfileIdForAgent(agents, agentIdParam);
+      if (profileId && profileId !== resolved) {
+        throw new RpcError(
+          -32602,
+          `task.dispatch agentId ${agentIdParam} binds profileId ${resolved}; got conflicting profileId ${profileId}`
+        );
+      }
+      profileId = resolved;
+      resolvedAgentId = agentIdParam.trim();
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      if (/not found/i.test(message)) {
+        throw new RpcError(-32004, message);
+      }
+      throw new RpcError(-32602, message);
+    }
+    // Standing roster gate for Role-agent dispatch (parent Role owns the roster).
+    await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
+      dispatcher:
+        resolvedActors.parentActor.kind === "role"
+          ? resolvedActors.parentActor.id
+          : undefined,
+      agentId: resolvedAgentId,
+      profileId,
+    });
+  }
   if (assigneeKind === "agentProfile" && !profileId) {
-    throw new RpcError(-32602, "task.dispatch with assigneeKind=agentProfile requires profileId");
+    throw new RpcError(
+      -32602,
+      "task.dispatch with assigneeKind=agentProfile requires profileId or agentId"
+    );
   }
   if (assigneeKind === "agentProfile" && role && role !== profileId) {
     throw new RpcError(
@@ -3273,7 +3512,7 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
   if (startSession && !profileId) {
     throw new RpcError(
       -32602,
-      "task.dispatch with startSession requires explicit profileId (no fake-default fallback)"
+      "task.dispatch with startSession requires explicit profileId or agentId (no fake-default fallback)"
     );
   }
 
@@ -3361,6 +3600,8 @@ async function taskDispatch(ctx: HandlerContext, p: Record<string, unknown>) {
       workspace: workspaceLane,
       assigneeKind,
       profileId: assigneeKind === "agentProfile" ? profileId : undefined,
+      // Persist logical agentId only for Role-agent dispatch (not user-direct profile).
+      agentId: resolvedAgentId,
       ...(preallocatedTaskId ? { taskId: preallocatedTaskId } : {}),
     });
     ctx.events.emit(
@@ -5138,7 +5379,8 @@ async function prepareAuthorizedTaskStartSession(
   const verbLabel = operation === "replaceSession" ? "replaceSession" : "startSession";
 
   // Resolve prior ask approval.
-  // User approval may override the role profile whitelist (task-api §4).
+  // User approval may override ordinary a2aPolicy gates (task-api §4).
+  // Role-agent standing roster paths never enter this approval branch.
   if (approvalId) {
     const approval = await ctx.a2a.get(approvalId);
     if (!approval || approval.status !== "approved") {
@@ -5162,93 +5404,112 @@ async function prepareAuthorizedTaskStartSession(
     }
   } else {
     const taskForPolicy = await loadTaskEnvelope(mount.env.fs, taskPath);
-    // A2A authority: user is root. Role callers use parent Role for sub tasks
-    // (role or profile assignee) and for peer agentProfile tasks; peer role tasks
-    // use task.role.
-    const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
-    const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
-      callerKind,
-      taskRole: authorityRole,
-      requireRegisteredRole:
-        callerKind === "role" &&
-        (taskParentIsRole(taskForPolicy) ||
-          taskAsSub(taskForPolicy) ||
-          taskAssigneeKind(taskForPolicy) === "agentProfile"),
-    });
-    // User root bypasses policy + profile whitelist.
-    // Role caller + registry allow: profileId must be in role.allowedProfiles.
-    // Role caller + ask: enter user approval without checking whitelist (user grant may override).
-    // Role caller + deny: A2A_DENIED (unchanged).
-    // Profile assignee is never the authority role — authorityRole is dispatcher/durable role.
-    const profileAllowed =
-      callerKind === "user"
-        ? true
-        : await resolveRoleProfileAllowed(mount.env.fs, {
-            taskRole: authorityRole,
-            profileId,
-            policy: a2aPolicy,
-          });
-    const decision = evaluateA2A({
-      callerKind,
-      policy: a2aPolicy,
-      profileAllowed,
-    });
-    if (decision === "deny") {
-      throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
-        policy: a2aPolicy,
-        callerKind,
-        role: authorityRole,
+    const taskAgentId =
+      typeof taskForPolicy.agentId === "string" ? taskForPolicy.agentId.trim() : "";
+    // Role-agent Tasks (persisted agentId): roster membership is standing authorization.
+    // Out-of-roster fails loud; in-roster proceeds. Never create A2A ask approvals.
+    // Do not re-infer Role authorization from profileId history.
+    if (callerKind === "role" && taskAgentId) {
+      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
+      await assertRoleRosterStandingAuth(ctx, mount.env.fs, {
+        dispatcher: authorityRole,
+        agentId: taskAgentId,
         profileId,
+        requireBoundProfileMatch: true,
+      });
+      // Standing auth satisfied — skip a2aPolicy ask/deny for this path.
+    } else {
+      // A2A authority: user is root. Role callers without Task.agentId use parent Role
+      // for sub tasks (role or profile assignee) and for peer agentProfile tasks;
+      // peer role tasks use task.role. Durable Role self-launch and user-direct
+      // profile one-shots still consult a2aPolicy.
+      const authorityRole = resolveA2AAuthorityRole(taskForPolicy, callerKind);
+      const a2aPolicy = await resolveStartSessionA2APolicy(mount.env.fs, {
+        callerKind,
+        taskRole: authorityRole,
+        requireRegisteredRole:
+          callerKind === "role" &&
+          (taskParentIsRole(taskForPolicy) ||
+            taskAsSub(taskForPolicy) ||
+            taskAssigneeKind(taskForPolicy) === "agentProfile"),
+      });
+      // User root bypasses policy + roster.
+      // Role + allow: explicit agentId param or unique roster binding for profileId.
+      // Role + ask: park for user approval (no roster check).
+      // Role + deny: A2A_DENIED.
+      const profileAllowed =
+        callerKind === "user"
+          ? true
+          : await resolveRoleLaunchAllowed(ctx, mount.env.fs, {
+              taskRole: authorityRole,
+              profileId,
+              agentId: optionalString(p, "agentId"),
+              policy: a2aPolicy,
+            });
+      const decision = evaluateA2A({
+        callerKind,
+        policy: a2aPolicy,
         profileAllowed,
       });
-    }
-    if (decision === "ask") {
-      const task = taskForPolicy;
-      const item = await ctx.a2a.add({
-        id: makeApprovalId(),
-        workspaceId,
-        taskPath,
-        taskId: task.id,
-        role: authorityRole || task.role,
-        profileId,
-        policy: "ask",
-        callerKind,
-        bootstrapPrompt,
-        status: "pending",
-        createdAt: new Date().toISOString(),
-      });
-      ctx.events.emit(
-        "a2a.ask",
-        workspaceId,
-        {
-          approvalId: item.id,
-          taskPath,
-          role: authorityRole || task.role,
+      if (decision === "deny") {
+        throw new RpcError(RPC_A2A_DENIED, "A2A policy denies starting a new runtime session", {
+          policy: a2aPolicy,
+          callerKind,
+          role: authorityRole,
           profileId,
-          summary: `Role ${authorityRole || task.role} requests ${verbLabel} on profile ${profileId}`,
-        },
-        "service"
-      );
-      // Park task in waiting(a2a-approval) if running
-      if (task.state === "running") {
-        await ctx.mutations.run(workspaceId, async () => {
-          ctx.host.markSelfWrite(workspaceId);
-          const waited = await taskWait(mount.env, taskPath, {
-            reason: "a2a-approval",
-            summary: `Awaiting user A2A approval ${item.id}`,
-          });
-          emitTaskState(ctx, workspaceId, waited, "a2a.ask");
+          agentId: optionalString(p, "agentId") || taskForPolicy.agentId,
+          profileAllowed,
+          reason: profileAllowed ? "a2a_policy" : "out_of_roster",
         });
       }
-      throw new RpcError(
-        RPC_A2A_ASK,
-        `A2A policy requires user approval before ${verbLabel}`,
-        {
-          approvalId: item.id,
+      if (decision === "ask") {
+        const task = taskForPolicy;
+        const item = await ctx.a2a.add({
+          id: makeApprovalId(),
+          workspaceId,
+          taskPath,
+          taskId: task.id,
+          role: authorityRole || task.role,
+          profileId,
           policy: "ask",
+          callerKind,
+          bootstrapPrompt,
+          status: "pending",
+          createdAt: new Date().toISOString(),
+        });
+        ctx.events.emit(
+          "a2a.ask",
+          workspaceId,
+          {
+            approvalId: item.id,
+            taskPath,
+            role: authorityRole || task.role,
+            profileId,
+            summary: `Role ${authorityRole || task.role} requests ${verbLabel} on profile ${profileId}`,
+          },
+          "service"
+        );
+        // Park task in waiting(a2a-approval) if running
+        if (task.state === "running") {
+          await ctx.mutations.run(workspaceId, async () => {
+            ctx.host.markSelfWrite(workspaceId);
+            const waited = await taskWait(mount.env, taskPath, {
+              reason: "a2a-approval",
+              summary: `Awaiting user A2A approval ${item.id}`,
+            });
+            emitTaskState(ctx, workspaceId, waited, "a2a.ask");
+          });
         }
-      );
-    }
+        throw new RpcError(
+          RPC_A2A_ASK,
+          `A2A policy requires user approval before ${verbLabel}`,
+          {
+            approvalId: item.id,
+            policy: "ask",
+          }
+        );
+      }
+    } // end non-Role-agent A2A path
   }
 
   let task = await loadTaskEnvelope(mount.env.fs, taskPath);
@@ -5386,15 +5647,20 @@ async function launchAndBindTaskStartSession(
         }
       : undefined;
 
-  // Managed ACP bootstrap: stable Context Card pointer + near-field user prompt.
+  // Managed ACP bootstrap: stable skill/role prefix first, then Context Card + Task tail.
   // Does not copy box/manifest bodies. Does not instruct claim/get/deliver CLI —
   // Local Service auto-delivers the final assistant response. External relay is separate.
   const sessionBootstrap =
     prepared.bootstrapPrompt?.trim() ||
-    buildSessionBootstrapPrompt(task, {
-      workspaceRoot: mount.workspaceRoot,
-      systemRoot: mount.systemRoot,
-    });
+    (await buildSessionBootstrapPrompt(
+      ctx,
+      task,
+      {
+        workspaceRoot: mount.workspaceRoot,
+        systemRoot: mount.systemRoot,
+      },
+      mount.env.fs
+    ));
 
   // Ephemeral image path refs from task user prompt + claimed node bodies only.
   // Paths only — never base64; never written to task/session/profile disk.
@@ -5718,10 +5984,11 @@ async function executeTaskReplaceSession(
       workspaceLane,
       runtimeWorkspace: { cwd },
       cwd,
-      bootstrapPrompt: buildFreshReplaceSessionBootstrap(task, {
+      bootstrapPrompt: await buildFreshReplaceSessionBootstrap(ctx, task, {
         workspaceRoot: mount.workspaceRoot,
         systemRoot: mount.systemRoot,
         priorSessionId,
+        roleFs: mount.env.fs,
       }),
       ...(bootstrapImageRefs.length > 0
         ? { bootstrapImageRefs, bootstrapImageSystemRoot: mount.systemRoot }
@@ -5858,14 +6125,25 @@ async function executeTaskReplaceSession(
   }
 }
 
-function buildFreshReplaceSessionBootstrap(
+async function buildFreshReplaceSessionBootstrap(
+  ctx: HandlerContext,
   task: TaskEnvelope,
-  roots: { workspaceRoot: string; systemRoot: string; priorSessionId: string }
-): string {
-  const base = buildSessionBootstrapPrompt(task, {
-    workspaceRoot: roots.workspaceRoot,
-    systemRoot: roots.systemRoot,
-  });
+  roots: {
+    workspaceRoot: string;
+    systemRoot: string;
+    priorSessionId: string;
+    roleFs?: import("../core/adapter.js").FsAdapter;
+  }
+): Promise<string> {
+  const base = await buildSessionBootstrapPrompt(
+    ctx,
+    task,
+    {
+      workspaceRoot: roots.workspaceRoot,
+      systemRoot: roots.systemRoot,
+    },
+    roots.roleFs
+  );
   const tail = [
     "--- Tent replace-session recovery ---",
     "contextRestored: false",
@@ -9601,9 +9879,14 @@ type RejectResumeRestoredSession = {
  * Built from durable Task / Delivery / session facts only.
  * Review note is NEVER included here — it appears solely under ## Review Feedback.
  */
-function buildRejectResumeRecoveryOrientation(
+async function buildRejectResumeRecoveryOrientation(
+  ctx: HandlerContext,
   task: TaskEnvelope,
-  roots: { workspaceRoot: string; systemRoot: string },
+  roots: {
+    workspaceRoot: string;
+    systemRoot: string;
+    roleFs?: import("../core/adapter.js").FsAdapter;
+  },
   opts: {
     priorSessionId?: string;
     nativeResumeFailed: boolean;
@@ -9616,8 +9899,8 @@ function buildRejectResumeRecoveryOrientation(
       targetBranch?: string;
     };
   }
-): string {
-  const base = buildSessionBootstrapPrompt(task, roots);
+): Promise<string> {
+  const base = await buildSessionBootstrapPrompt(ctx, task, roots, roots.roleFs);
   const lines: string[] = [
     "--- Tent reject-resume recovery ---",
     "contextRestored: false",
@@ -9757,11 +10040,13 @@ async function rebuildRejectResumeRecoveryOrientation(
       lastError
     : undefined;
 
-  const orientation = buildRejectResumeRecoveryOrientation(
+  const orientation = await buildRejectResumeRecoveryOrientation(
+    ctx,
     task,
     {
       workspaceRoot: mount.workspaceRoot,
       systemRoot: mount.systemRoot,
+      roleFs: mount.env.fs,
     },
     {
       // No durable priorSessionId field — omit rather than invent.
@@ -10315,22 +10600,117 @@ async function resolveStartSessionA2APolicy(
 }
 
 /**
- * Profile whitelist for ordinary role-caller startSession when effective policy is allow.
- * - policy ask/deny: whitelist not applied here (ask parks; deny already denied)
- * - policy allow: profileId must be in role.allowedProfiles
+ * a2aPolicy=allow gate for role callers that are NOT on the Role-agent standing path
+ * (no Task.agentId). Uses roster agentIds; may resolve unique profileId→agentId binding
+ * for durable Role self-launch. Never treats bare profileId as authorization history.
  */
-async function resolveRoleProfileAllowed(
+async function resolveRoleLaunchAllowed(
+  ctx: HandlerContext,
   fs: import("../core/adapter.js").FsAdapter,
   input: {
     taskRole: string;
     profileId: string;
+    agentId?: string;
     policy: A2APolicy;
   }
 ): Promise<boolean> {
   if (input.policy !== "allow") return true;
+  await ensureRolesRosterMigrated(fs);
   const registry = await loadRolesRegistry(fs);
   const role = resolveRole(registry.roles, input.taskRole);
-  return roleAllowsProfile(role, input.profileId);
+  const roster = roleRoster(role);
+  if (roster.length === 0) return false;
+  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
+  const explicit = input.agentId?.trim() || "";
+  if (explicit) {
+    if (!roleAllowsAgent(role, explicit)) return false;
+    const def = findAgentDefinition(agents, explicit);
+    if (def && def.profileId !== input.profileId) return false;
+    return true;
+  }
+  try {
+    const resolved = resolveAgentIdForProfileOnRoster(agents, roster, input.profileId);
+    return roleAllowsAgent(role, resolved);
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Standing roster authorization for Role-agent dispatch / startSession.
+ * - Requires durable dispatcher role and explicit agentId (never inferred from profileId).
+ * - Out-of-roster → A2A_DENIED (fail loud).
+ * - In-roster → proceed (does not consult a2aPolicy ask/deny; does not create approvals).
+ * - Optionally verifies AgentDefinition.profileId matches the launch profileId.
+ */
+async function assertRoleRosterStandingAuth(
+  ctx: HandlerContext,
+  fs: import("../core/adapter.js").FsAdapter,
+  input: {
+    dispatcher?: string;
+    agentId: string;
+    profileId: string;
+    requireBoundProfileMatch?: boolean;
+  }
+): Promise<void> {
+  const authorityRef = input.dispatcher?.trim();
+  if (!authorityRef || authorityRef === "user") {
+    throw new RpcError(
+      -32602,
+      "Role-agent dispatch requires parentActor kind=role naming a durable role (roster authority)",
+      { parentActor: authorityRef || null }
+    );
+  }
+  const agentId = input.agentId.trim();
+  if (!agentId) {
+    throw new RpcError(-32602, "Role-agent path requires non-empty agentId");
+  }
+  // Ensure disk migration ran so roster is current.
+  await ensureRolesRosterMigrated(fs);
+  const registry = await loadRolesRegistry(fs);
+  const role = resolveRole(registry.roles, authorityRef);
+  if (!role) {
+    throw new RpcError(-32602, `A2A authority role not found in registry: ${authorityRef}`, {
+      role: authorityRef,
+    });
+  }
+  const roster = roleRoster(role);
+  const agents = await ensureAgentDefsForRosterIds(ctx, roster);
+  if (!roleAllowsAgent(role, agentId)) {
+    throw new RpcError(
+      RPC_A2A_DENIED,
+      `Agent ${agentId} is not on role ${role.name} roster (standing authorization)`,
+      {
+        role: role.name,
+        agentId,
+        profileId: input.profileId,
+        roster,
+        reason: "out_of_roster",
+      }
+    );
+  }
+  if (input.requireBoundProfileMatch !== false) {
+    const def = findAgentDefinition(agents, agentId);
+    if (!def) {
+      // ensureAgentDefsForRosterIds only seeds missing ids; explicit create may lag.
+      const { agents: all } = await loadAgentDefinitions(ctx.dataDir);
+      const found = findAgentDefinition(all, agentId);
+      if (!found) {
+        throw new RpcError(-32004, `AgentDefinition not found: ${agentId}`);
+      }
+      if (found.profileId !== input.profileId) {
+        throw new RpcError(
+          -32602,
+          `Agent ${agentId} binds profileId ${found.profileId}; got ${input.profileId}`
+        );
+      }
+    } else if (def.profileId !== input.profileId) {
+      throw new RpcError(
+        -32602,
+        `Agent ${agentId} binds profileId ${def.profileId}; got ${input.profileId}`
+      );
+    }
+  }
 }
 
 function parseCallerKind(raw: string): "user" | "role" {
@@ -10767,7 +11147,8 @@ async function findResumableManagedSessionForRole(
 }
 
 /**
- * Resolve the durable role whose a2aPolicy/allowedProfiles govern startSession.
+ * Resolve the durable role whose a2aPolicy / roster (agentIds) govern startSession.
+ * Role-agent Tasks with Task.agentId use standing roster membership (no a2a ask).
  * - user caller: unused (root authority)
  * - parent Role task (sub or agentProfile under Role) + role caller: authority = parent Role
  * - peer role task (parent=user): authority = task.role
@@ -10836,18 +11217,45 @@ function projectStartSessionResult(
 }
 
 /**
- * Build managed ACP bootstrap: Context Card pointer + near-field user prompt.
- * Path tutorial appears once on the Context Card. Dynamic task fields live in
- * sessionBootstrapPromptForTask only (no aux-block re-list of claims/manifest).
+ * Build managed ACP bootstrap with frozen stable-first order (prompt-cache friendly):
+ * 1. Short invariant banner
+ * 2. tent-role body + Role prompt/roster (when durable Role)
+ * 3. tent-task body + stable end marker
+ * 4. Dynamic tail: Context Card (taskId/path) + Task pointer / user prompt / delta
+ *
  * Never copies box/manifest bodies. Never instructs tent task claim/get/deliver.
  * Distinct from relayPromptForTask (external manual path still claim+deliver).
+ * Does not claim reusable cross-Task Session support — composition only.
  */
-function buildSessionBootstrapPrompt(
+async function buildSessionBootstrapPrompt(
+  ctx: HandlerContext,
   task: TaskEnvelope,
-  roots: { workspaceRoot: string; systemRoot: string }
-): string {
+  roots: { workspaceRoot: string; systemRoot: string },
+  roleFs?: import("../core/adapter.js").FsAdapter
+): Promise<string> {
   const systemRoot = roots.systemRoot || systemRootFromWorkspace(roots.workspaceRoot);
   const kind = taskAssigneeKind(task);
+
+  // Load Role definition for durable Role tasks (prompt + roster digest).
+  // agentProfile one-shot: tent-task only, no Role prompt/roster.
+  let roleDef: RoleDefinition | undefined;
+  if (kind === "role" && task.role && roleFs) {
+    try {
+      const registry = await loadRolesRegistry(roleFs);
+      roleDef = resolveRole(registry.roles, task.role);
+    } catch {
+      roleDef = undefined;
+    }
+  }
+
+  // Stable block first (byte-identical across Tasks that share Role + skill bodies).
+  const skillPrefix = composeManagedSkillBootstrapPrefix({
+    packageRoot: ctx.packageRoot,
+    assigneeKind: kind,
+    role: roleDef,
+  });
+
+  // Dynamic tail only: Context Card + session steps (taskId, path, user prompt, …).
   const card = taskContextCard(task.id || task.path, {
     path: task.path,
     workspaceRoot: roots.workspaceRoot,
@@ -10858,11 +11266,12 @@ function buildSessionBootstrapPrompt(
     workspaceRoot: roots.workspaceRoot,
     systemRoot,
   });
-  return (
-    `${card.prompt}\n\n` +
-    `--- Tent managed session bootstrap ---\n` +
-    `${sessionSteps}\n`
-  );
+
+  return assembleManagedSessionBootstrap({
+    stableSkillPrefix: skillPrefix,
+    contextCardPrompt: card.prompt,
+    dynamicTaskTail: sessionSteps,
+  });
 }
 
 /**
@@ -10903,7 +11312,7 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
           targetBranch: task.targetBranch,
         }
       : undefined;
-  return {
+  const proj: TaskProjection = {
     path: task.path,
     id: task.id,
     role: task.role,
@@ -10927,6 +11336,10 @@ function projectTask(task: import("../core/task.js").TaskEnvelope): TaskProjecti
     updatedAt: task.updatedAt,
     prompt: task.prompt,
   };
+  if (typeof task.agentId === "string" && task.agentId.trim()) {
+    proj.agentId = task.agentId.trim();
+  }
+  return proj;
 }
 
 function projectDelivery(d: import("../core/delivery.js").DeliveryRecord): DeliveryProjection {

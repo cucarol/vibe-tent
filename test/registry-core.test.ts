@@ -15,11 +15,11 @@ import {
   createRole,
   deleteRole,
   loadRolesRegistry,
-  normalizeAllowedProfiles,
+  normalizeAgentIdList,
   normalizeRoleDefinition,
   resolveRole,
   roleA2APolicy,
-  roleAllowsProfile,
+  roleAllowsAgent,
   updateRole,
 } from "../src/core/skillRoleRegistry.js";
 import {
@@ -370,15 +370,15 @@ test("role 注册表: a2aPolicy allow|ask|deny 默认为 deny，不存 secret", 
   assert.equal(roleA2APolicy(bad.roles[0]), "deny");
 });
 
-test("role 注册表: allowedProfiles trim 去重，只存 id，不存凭据", async () => {
+test("role 注册表: roster trim 去重，只存 agentId；disk allowedProfiles 只作迁移输入", async () => {
   assert.deepEqual(
-    normalizeAllowedProfiles(["  grok-acp-default ", "fake-default", "fake-default", "", "  "]),
+    normalizeAgentIdList(["  grok-acp-default ", "fake-default", "fake-default", "", "  "]),
     ["grok-acp-default", "fake-default"]
   );
-  assert.equal(normalizeAllowedProfiles([]), undefined);
-  assert.equal(normalizeAllowedProfiles(undefined), undefined);
-  assert.equal(normalizeAllowedProfiles("not-array"), undefined);
-  assert.deepEqual(normalizeAllowedProfiles(["ok", 1, null, "ok"]), ["ok"]);
+  assert.equal(normalizeAgentIdList([]), undefined);
+  assert.equal(normalizeAgentIdList(undefined), undefined);
+  assert.equal(normalizeAgentIdList("not-array"), undefined);
+  assert.deepEqual(normalizeAgentIdList(["ok", 1, null, "ok"]), ["ok"]);
 
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-role-profiles-"));
   const fsa = new NodeFs(dir);
@@ -390,43 +390,52 @@ test("role 注册表: allowedProfiles trim 去重，只存 id，不存凭据", a
         {
           name: "orch",
           a2aPolicy: "allow",
+          // Legacy disk key — normalize projects to roster only.
           allowedProfiles: ["  grok-acp-default ", "fake-default", "fake-default", ""],
-          // credentials-shaped fields must never be part of RoleDefinition persistence
-        },
+        } as { name: string; a2aPolicy: "allow"; allowedProfiles: string[] },
       ],
     },
   });
 
   const loaded = await loadRolesRegistry(fsa);
   const orch = loaded.roles.find((r) => r.name === "orch");
-  assert.deepEqual(orch?.allowedProfiles, ["grok-acp-default", "fake-default"]);
-  assert.equal(roleAllowsProfile(orch, "fake-default"), true);
-  assert.equal(roleAllowsProfile(orch, "  fake-default  "), true);
-  assert.equal(roleAllowsProfile(orch, "other"), false);
-  assert.equal(roleAllowsProfile(undefined, "fake-default"), false);
+  assert.deepEqual(orch?.roster, ["grok-acp-default", "fake-default"]);
+  assert.equal(Object.prototype.hasOwnProperty.call(orch ?? {}, "allowedProfiles"), false);
+  assert.equal(roleAllowsAgent(orch, "fake-default"), true);
+  assert.equal(roleAllowsAgent(orch, "  fake-default  "), true);
+  assert.equal(roleAllowsAgent(orch, "other"), false);
+  assert.equal(roleAllowsAgent(undefined, "fake-default"), false);
 
   await createRole(fsa, {
     name: "worker",
     a2aPolicy: "allow",
-    allowedProfiles: [" codex-acp ", "codex-acp", " "],
+    roster: [" codex-acp ", "codex-acp", " "],
   });
   const worker = (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker");
-  assert.deepEqual(worker?.allowedProfiles, ["codex-acp"]);
+  assert.deepEqual(worker?.roster, ["codex-acp"]);
 
-  await updateRole(fsa, "worker", { allowedProfiles: ["a", " b ", "a"] });
+  await updateRole(fsa, "worker", { roster: ["a", " b ", "a"] });
   assert.deepEqual(
-    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.allowedProfiles,
+    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.roster,
     ["a", "b"]
   );
 
-  // Explicit clear
-  await updateRole(fsa, "worker", { allowedProfiles: [] });
+  await updateRole(fsa, "worker", { roster: [] });
   assert.equal(
-    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.allowedProfiles,
+    (await loadRolesRegistry(fsa)).roles.find((r) => r.name === "worker")?.roster,
     undefined
   );
 
-  // Disk: only ids, no secret-looking keys from normalize
+  // Mutations reject allowedProfiles fail-loud.
+  await assert.rejects(
+    () => createRole(fsa, { name: "bad", allowedProfiles: ["x"] } as never),
+    /no longer accept allowedProfiles|use roster/i
+  );
+  await assert.rejects(
+    () => updateRole(fsa, "worker", { allowedProfiles: ["x"] } as never),
+    /no longer accept allowedProfiles|use roster/i
+  );
+
   const disk = JSON.parse(await fsa.readFile("roles.json")) as {
     roles: Array<Record<string, unknown>>;
   };
@@ -435,17 +444,20 @@ test("role 注册表: allowedProfiles trim 去重，只存 id，不存凭据", a
     assert.equal("token" in role, false);
     assert.equal("apiKey" in role, false);
     assert.equal("env" in role, false);
-    if (role.allowedProfiles !== undefined) {
-      assert.ok(Array.isArray(role.allowedProfiles));
-      for (const id of role.allowedProfiles as unknown[]) {
+    assert.equal("allowedProfiles" in role, false);
+    if (role.roster !== undefined) {
+      assert.ok(Array.isArray(role.roster));
+      for (const id of role.roster as unknown[]) {
         assert.equal(typeof id, "string");
       }
     }
   }
 
-  // normalizeRoleDefinition drops empty allowedProfiles
-  const empty = normalizeRoleDefinition({ name: "x", allowedProfiles: ["", "  "] });
-  assert.equal(empty.allowedProfiles, undefined);
+  const empty = normalizeRoleDefinition({
+    name: "x",
+    allowedProfiles: ["", "  "],
+  } as never);
+  assert.equal(empty.roster, undefined);
 });
 
 test("role 注册表: updateRole 可明确清除全部可选字段", async () => {
@@ -457,7 +469,7 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     description: "description",
     color: "red",
     a2aPolicy: "allow",
-    allowedProfiles: ["fake-default"],
+    roster: ["fake-default"],
     cli: { command: "codex" },
   });
 
@@ -470,7 +482,7 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
     description: undefined,
     color: undefined,
     a2aPolicy: undefined,
-    allowedProfiles: [],
+    roster: [],
     cli: undefined,
   });
 
@@ -481,6 +493,7 @@ test("role 注册表: updateRole 可明确清除全部可选字段", async () =>
   assert.equal(cleared[0]!.displayName, "clearable");
   assert.equal(cleared[0]!.prompt, undefined);
   assert.equal(cleared[0]!.cli, undefined);
+  assert.equal(cleared[0]!.roster, undefined);
 });
 
 test("role 注册表: 旧数据无 id 时内存确定性补齐；load 不写盘；displayName 可改；id/name 不可改", async () => {

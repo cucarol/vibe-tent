@@ -8776,13 +8776,12 @@ function validateRoleUpdate(draft) {
   const color = (draft.color ?? "").trim();
   payload.color = color || null;
   if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
-  if (draft.allowedProfilesText !== void 0) {
-    const ids = parseAllowedProfilesText(draft.allowedProfilesText);
-    payload.allowedProfiles = ids;
+  if (draft.rosterText !== void 0) {
+    payload.roster = parseRosterText(draft.rosterText);
   }
   return { ok: true, payload };
 }
-function parseAllowedProfilesText(text3) {
+function parseRosterText(text3) {
   const raw = (text3 || "").trim();
   if (!raw) return [];
   const seen = /* @__PURE__ */ new Set();
@@ -8795,7 +8794,7 @@ function parseAllowedProfilesText(text3) {
   }
   return out;
 }
-function formatAllowedProfilesText(ids) {
+function formatRosterText(ids) {
   return (ids || []).join(", ");
 }
 function validateProfileCreate(draft) {
@@ -9340,12 +9339,12 @@ function renderRoles() {
   const list2 = fullRoles.length === 0 ? `<p class="muted">\u6682\u65E0\u89D2\u8272</p>` : `<ul class="settings-list">${fullRoles.map((r) => {
     const label = r.displayName && r.displayName !== r.name ? `${r.displayName} \xB7 ${r.name}` : r.name;
     const pol = r.a2aPolicy || "deny";
-    const profilesBit = r.allowedProfiles && r.allowedProfiles.length ? ` \xB7 profiles ${r.allowedProfiles.length}` : "";
+    const rosterBit = r.roster && r.roster.length ? ` \xB7 roster ${r.roster.length}` : "";
     const editing2 = roleEditName === r.name;
     return `<li class="settings-list-item${editing2 ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(profilesBit)}</span>
+                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(rosterBit)}</span>
                 ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
                 ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
@@ -9382,7 +9381,7 @@ function renderRoles() {
 }
 function renderRoleEditor(role) {
   const pol = role.a2aPolicy || "deny";
-  const profilesText = formatAllowedProfilesText(role.allowedProfiles);
+  const rosterText = formatRosterText(role.roster);
   return `
     <div class="settings-block">
       <div class="surface-section-head">\u7F16\u8F91\u89D2\u8272 \xB7 ${escapeHtml(role.name)}
@@ -9404,8 +9403,8 @@ function renderRoleEditor(role) {
           <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
           <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
         </select>
-        <label class="settings-label" for="role-edit-profiles">allowedProfiles\uFF08\u9017\u53F7\u5206\u9694 profile id\uFF1B\u7A7A=\u6E05\u7A7A\uFF09</label>
-        <input id="role-edit-profiles" class="field" value="${escapeHtml(profilesText)}" placeholder="\u4F8B\u5982 grok-acp-default" />
+        <label class="settings-label" for="role-edit-roster">roster\uFF08\u9017\u53F7\u5206\u9694 agentId\uFF1B\u7A7A=\u6E05\u7A7A\uFF09</label>
+        <input id="role-edit-roster" class="field" value="${escapeHtml(rosterText)}" placeholder="\u4F8B\u5982 core-worker" />
         <div class="settings-row">
           <button type="button" id="btn-role-save" class="btn btn-primary">\u4FDD\u5B58</button>
         </div>
@@ -9850,7 +9849,7 @@ async function onRoleSave() {
   const prompt = document.getElementById("role-edit-prompt")?.value || "";
   const color = document.getElementById("role-edit-color")?.value || "";
   const a2aPolicy = document.getElementById("role-edit-a2a")?.value;
-  const allowedProfilesText = document.getElementById("role-edit-profiles")?.value || "";
+  const rosterText = document.getElementById("role-edit-roster")?.value || "";
   const built = validateRoleUpdate({
     name: roleEditName,
     roleId: role?.roleId,
@@ -9859,7 +9858,7 @@ async function onRoleSave() {
     prompt,
     color,
     a2aPolicy,
-    allowedProfilesText
+    rosterText
   });
   if (!built.ok) {
     el.status.textContent = built.reason;

@@ -99,6 +99,11 @@ export interface DispatchOptions {
   /** Required when assigneeKind=agentProfile; stable assignee / delivery label. */
   profileId?: string;
   /**
+   * Logical AgentDefinition id for Role-agent dispatch.
+   * Persisted on the Task envelope; omitted for user-direct profile one-shots.
+   */
+  agentId?: string;
+  /**
    * Optional preallocated task id (tk-…). Used by asSub profile dispatch so the
    * tent-task/<taskId> lane can be created before the envelope is written.
    */
@@ -242,6 +247,7 @@ async function dispatchUnlocked(
     const taskClaims = claim.root
       ? [{ id: "root", path: "./" }]
       : [{ id: claim.box.id, path: claim.box.path }];
+    const agentId = options.agentId?.trim() || undefined;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
       claims: taskClaims,
@@ -253,6 +259,7 @@ async function dispatchUnlocked(
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
+      agentId,
       id: taskId,
       tasksDir:
         assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : undefined,
@@ -271,6 +278,7 @@ async function dispatchUnlocked(
         status: "pending" as const,
         state: "queued" as const,
         assigneeKind,
+        ...(agentId ? { agentId } : {}),
         id: taskId,
         parentActor,
         reviewer,

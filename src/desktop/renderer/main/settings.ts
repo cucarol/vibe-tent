@@ -16,7 +16,7 @@ import {
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
   DELIVERY_POLICY_OPTIONS,
-  formatAllowedProfilesText,
+  formatRosterText,
   mapProviderCatalogRows,
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
@@ -349,15 +349,13 @@ function renderRoles(): string {
           .map((r) => {
             const label = r.displayName && r.displayName !== r.name ? `${r.displayName} · ${r.name}` : r.name;
             const pol = r.a2aPolicy || "deny";
-            const profilesBit =
-              r.allowedProfiles && r.allowedProfiles.length
-                ? ` · profiles ${r.allowedProfiles.length}`
-                : "";
+            const rosterBit =
+              r.roster && r.roster.length ? ` · roster ${r.roster.length}` : "";
             const editing = roleEditName === r.name;
             return `<li class="settings-list-item${editing ? " is-editing" : ""}">
               <div class="settings-list-main">
                 <strong>${escapeHtml(label)}</strong>
-                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(profilesBit)}</span>
+                <span class="muted">a2a ${escapeHtml(pol)}${escapeHtml(rosterBit)}</span>
                 ${r.roleId ? `<span class="faint"><code>${escapeHtml(r.roleId)}</code></span>` : ""}
                 ${r.description ? `<span class="muted">${escapeHtml(r.description)}</span>` : ""}
               </div>
@@ -400,7 +398,7 @@ function renderRoles(): string {
 
 function renderRoleEditor(role: RoleRegistryEntryProjection): string {
   const pol = role.a2aPolicy || "deny";
-  const profilesText = formatAllowedProfilesText(role.allowedProfiles);
+  const rosterText = formatRosterText(role.roster);
   return `
     <div class="settings-block">
       <div class="surface-section-head">编辑角色 · ${escapeHtml(role.name)}
@@ -422,8 +420,8 @@ function renderRoleEditor(role: RoleRegistryEntryProjection): string {
           <option value="ask"${pol === "ask" ? " selected" : ""}>ask</option>
           <option value="allow"${pol === "allow" ? " selected" : ""}>allow</option>
         </select>
-        <label class="settings-label" for="role-edit-profiles">allowedProfiles（逗号分隔 profile id；空=清空）</label>
-        <input id="role-edit-profiles" class="field" value="${escapeHtml(profilesText)}" placeholder="例如 grok-acp-default" />
+        <label class="settings-label" for="role-edit-roster">roster（逗号分隔 agentId；空=清空）</label>
+        <input id="role-edit-roster" class="field" value="${escapeHtml(rosterText)}" placeholder="例如 core-worker" />
         <div class="settings-row">
           <button type="button" id="btn-role-save" class="btn btn-primary">保存</button>
         </div>
@@ -964,8 +962,8 @@ async function onRoleSave(): Promise<void> {
   const color = (document.getElementById("role-edit-color") as HTMLInputElement | null)?.value || "";
   const a2aPolicy = (document.getElementById("role-edit-a2a") as HTMLSelectElement | null)
     ?.value as "allow" | "ask" | "deny" | undefined;
-  const allowedProfilesText =
-    (document.getElementById("role-edit-profiles") as HTMLInputElement | null)?.value || "";
+  const rosterText =
+    (document.getElementById("role-edit-roster") as HTMLInputElement | null)?.value || "";
   const built = validateRoleUpdate({
     name: roleEditName,
     roleId: role?.roleId,
@@ -974,7 +972,7 @@ async function onRoleSave(): Promise<void> {
     prompt,
     color,
     a2aPolicy,
-    allowedProfilesText,
+    rosterText,
   });
   if (!built.ok) {
     el.status.textContent = built.reason;

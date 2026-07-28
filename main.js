@@ -1247,13 +1247,18 @@ async function loadRolesRegistryForMutation(fs2) {
 }
 async function readRolesRegistryState(fs2) {
   if (!await fs2.exists(ROLES_REGISTRY_PATH)) {
-    return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
+    return {
+      registry: cloneDefaultRoles(),
+      migrated: false,
+      rosterMigrated: false,
+      recovered: false
+    };
   }
   try {
     const rawText = await fs2.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
-    const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, recovered: false };
+    const { registry, migrated, rosterMigrated } = normalizeRolesRegistryWithMigration(parsed);
+    return { registry, migrated, rosterMigrated, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs2, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
@@ -1264,10 +1269,20 @@ async function readRolesRegistryState(fs2) {
       "reset",
       "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
     );
-    return { registry: reset, migrated: false, recovered: true };
+    return {
+      registry: reset,
+      migrated: false,
+      rosterMigrated: false,
+      recovered: true
+    };
   }
 }
 async function createRole(fs2, definition, rand = Math.random) {
+  if (Object.prototype.hasOwnProperty.call(definition, "allowedProfiles")) {
+    throw new Error(
+      "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
+    );
+  }
   await withTentMutation(fs2, async () => {
     const registry = await loadRolesRegistryForMutation(fs2);
     const usedIds = roleIdSet(registry.roles);
@@ -1316,10 +1331,15 @@ async function updateRole(fs2, ref, patch) {
       },
       { usedIds: roleIdSet(registry.roles, current.id), assignMissingId: "keep" }
     );
+    if (Object.prototype.hasOwnProperty.call(patch, "roster")) {
+      const normalized = normalizeAgentIdList(patch.roster);
+      if (normalized) next.roster = normalized;
+      else delete next.roster;
+    }
     if (Object.prototype.hasOwnProperty.call(patch, "allowedProfiles")) {
-      const normalized = normalizeAllowedProfiles(patch.allowedProfiles);
-      if (normalized) next.allowedProfiles = normalized;
-      else delete next.allowedProfiles;
+      throw new Error(
+        "Role mutations no longer accept allowedProfiles; use roster (agentIds). Legacy allowedProfiles is migrated once from disk only."
+      );
     }
     if (Object.prototype.hasOwnProperty.call(patch, "displayName")) {
       const dn = typeof patch.displayName === "string" ? patch.displayName.trim() : "";
@@ -1355,24 +1375,33 @@ function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord4(value) ? value : {};
   const roles = [];
   let migrated = false;
+  let rosterMigrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord4(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
+      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
+        item,
+        "allowedProfiles"
+      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic"
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
+      if (hadLegacyAllowedKey) {
+        migrated = true;
+        rosterMigrated = true;
+      }
       if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { registry: { roles }, migrated };
+  return { registry: { roles }, migrated, rosterMigrated };
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -1404,13 +1433,16 @@ function normalizeRoleDefinition(value, opts = {}) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
-  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
-  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
+  const rosterFromField = normalizeAgentIdList(value.roster);
+  const rawLegacy = value.allowedProfiles;
+  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
+  const roster = rosterFromField ?? rosterFromLegacy;
+  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
 }
-function normalizeAllowedProfiles(value) {
+function normalizeAgentIdList(value) {
   if (value === void 0 || value === null) return void 0;
   if (!Array.isArray(value)) {
     return void 0;
@@ -1465,8 +1497,8 @@ function serializeRolesRegistry(registry) {
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
       if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.allowedProfiles && role.allowedProfiles.length > 0) {
-        row.allowedProfiles = [...role.allowedProfiles];
+      if (role.roster && role.roster.length > 0) {
+        row.roster = [...role.roster];
       }
       if (role.cli) row.cli = { ...role.cli };
       return row;
@@ -1887,6 +1919,9 @@ async function loadTaskEnvelope(fs2, path) {
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
+  if (typeof data.agentId === "string" && data.agentId.trim()) {
+    task.agentId = data.agentId.trim();
+  }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
@@ -2048,6 +2083,7 @@ async function writeTaskEnvelope(fs2, clock, input) {
     updatedAt: now
   };
   if (input.asSub === true) data.asSub = true;
+  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
@@ -3932,6 +3968,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
     const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const agentId = options.agentId?.trim() || void 0;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
       claims: taskClaims,
@@ -3943,6 +3980,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
+      agentId,
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
@@ -3958,6 +3996,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         status: "pending",
         state: "queued",
         assigneeKind,
+        ...agentId ? { agentId } : {},
         id: taskId,
         parentActor,
         reviewer,

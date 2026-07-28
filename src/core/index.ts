@@ -4,6 +4,7 @@ export * from "./paths.js";
 export * from "./typeRegistry.js";
 export * from "./typeManagement.js";
 export * from "./skillRoleRegistry.js";
+export * from "./managed-skill-compose.js";
 export * from "./tags.js";
 export * from "./relations.js";
 export * from "./scaffold.js";

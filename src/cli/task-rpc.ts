@@ -137,14 +137,18 @@ export async function runTaskCommand(
       }
       case "dispatch": {
         // Optional RPC mapping of dispatch (no second lifecycle in CLI).
-        // Two user-facing forms (do not infer profile from a bare role-like string):
+        // User-facing forms (do not infer profile from a bare role-like string):
         //   tent task dispatch <boxId> <role> [localPrompt...]
         //   tent task dispatch <boxId> --profile <profileId> [localPrompt...]
+        //   tent task dispatch <boxId> --agent <agentId> [localPrompt...]  (Role roster path)
         const usageRole =
           "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
         const usageProfile =
           "Usage: tent task dispatch <boxId> --profile <profileId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
-        const usageBoth = `${usageRole}\n   or: ${usageProfile.replace(/^Usage: /, "")}`;
+        const usageAgent =
+          "Usage: tent task dispatch <boxId> --agent <agentId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
+        const usageBoth =
+          `${usageRole}\n   or: ${usageProfile.replace(/^Usage: /, "")}\n   or: ${usageAgent.replace(/^Usage: /, "")}`;
 
         // Low-level Service fields are not the primary CLI UX.
         if (
@@ -152,13 +156,13 @@ export async function runTaskCommand(
           Object.prototype.hasOwnProperty.call(flags, "assigneeKind")
         ) {
           return failUsage(
-            "Do not pass --assignee-kind; use <role> for durable role dispatch or --profile <profileId> for managed one-shot agentProfile dispatch"
+            "Do not pass --assignee-kind; use <role> for durable role dispatch, --profile <profileId> for user one-shot, or --agent <agentId> for Role roster dispatch"
           );
         }
         if (Object.prototype.hasOwnProperty.call(flags, "start-session") ||
             Object.prototype.hasOwnProperty.call(flags, "startSession")) {
           return failUsage(
-            "Do not pass --start-session; managed --profile dispatch always starts a session"
+            "Do not pass --start-session; managed --profile / --agent dispatch always starts a session"
           );
         }
 
@@ -168,16 +172,26 @@ export async function runTaskCommand(
         }
 
         const hasProfileFlag = Object.prototype.hasOwnProperty.call(flags, "profile");
+        const hasAgentFlag = Object.prototype.hasOwnProperty.call(flags, "agent");
         const profileIdRaw = hasProfileFlag ? String(flags.profile ?? "").trim() : "";
+        const agentIdRaw = hasAgentFlag ? String(flags.agent ?? "").trim() : "";
         if (hasProfileFlag && !profileIdRaw) {
           return failUsage(`--profile requires <profileId>\n${usageProfile}`);
         }
-        const isProfileForm = hasProfileFlag;
+        if (hasAgentFlag && !agentIdRaw) {
+          return failUsage(`--agent requires <agentId>\n${usageAgent}`);
+        }
+        if (hasProfileFlag && hasAgentFlag) {
+          return failUsage(
+            "Pass either --profile <profileId> or --agent <agentId>, not both\n" + usageBoth
+          );
+        }
+        const isManagedOneShotForm = hasProfileFlag || hasAgentFlag;
 
-        // Role form needs <role>; profile form treats every positional after boxId as prompt.
-        const role = isProfileForm ? undefined : positionals[1];
-        const promptParts = isProfileForm ? positionals.slice(1) : positionals.slice(2);
-        if (!isProfileForm && !role) {
+        // Role form needs <role>; managed forms treat every positional after boxId as prompt.
+        const role = isManagedOneShotForm ? undefined : positionals[1];
+        const promptParts = isManagedOneShotForm ? positionals.slice(1) : positionals.slice(2);
+        if (!isManagedOneShotForm && !role) {
           return failUsage(usageBoth);
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
@@ -202,7 +216,7 @@ export async function runTaskCommand(
         if (asSub && !parentRole) {
           return failUsage("--as-sub requires --by <parent-role> or TENT_ROLE");
         }
-        // Profile form always starts managed ACP; role form never auto-starts.
+        // Profile/agent forms always start managed ACP; role form never auto-starts.
         // A2A attribution: any dispatch attributed to a role (explicit --by/--from/
         // --dispatched-by, implicit TENT_ROLE, or --as-sub) must send callerKind=role.
         // Plain user-originated dispatch (no role attribution) sends callerKind=user.
@@ -218,11 +232,11 @@ export async function runTaskCommand(
 
         const result = await client.taskDispatch(
           workspaceId,
-          isProfileForm
+          isManagedOneShotForm
             ? {
                 boxId,
                 assigneeKind: "agentProfile",
-                profileId: profileIdRaw,
+                ...(hasAgentFlag ? { agentId: agentIdRaw } : { profileId: profileIdRaw }),
                 prompt,
                 parentActor,
                 reviewer: parentActor,
@@ -885,6 +899,9 @@ Commands:
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
   tent task dispatch <boxId> --profile <profileId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+  tent task dispatch <boxId> --agent <agentId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+      # --profile: user-direct one-shot agentProfile + startSession (does not register a role)
+      # --agent: Role roster logical agentId → resolves machine-local profileId + startSession
       # role form: durable role assignee (queued; no auto session)
       # --profile form: one-shot agentProfile + startSession (prints sessionId/sessionState); does not register a role
       # Do not pass --assignee-kind; a bare role-like string is never inferred as a profile

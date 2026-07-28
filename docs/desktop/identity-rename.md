@@ -27,7 +27,8 @@ type RoleDefinition = {
   description?: string;
   color?: string;
   a2aPolicy?: "allow" | "ask" | "deny";
-  allowedProfiles?: string[];
+  /** Authorized AgentDefinition ids (standing roster). */
+  roster?: string[];
   cli?: { command: string; resume?: string };
 };
 ```
@@ -57,7 +58,7 @@ type RoleRegistryEntryProjection = {
   roleId: string;
   name: string;
   displayName: string;
-  // …metadata, a2aPolicy, allowedProfiles
+  // …metadata, a2aPolicy, roster (public roster-only; no allowedProfiles dual-read)
 };
 ```
 

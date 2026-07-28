@@ -1587,6 +1587,9 @@ async function loadTaskEnvelope(fs10, path9) {
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
+  if (typeof data.agentId === "string" && data.agentId.trim()) {
+    task.agentId = data.agentId.trim();
+  }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
@@ -1775,6 +1778,7 @@ async function writeTaskEnvelope(fs10, clock, input) {
     updatedAt: now
   };
   if (input.asSub === true) data.asSub = true;
+  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;
@@ -3166,13 +3170,18 @@ async function loadRolesRegistry(fs10) {
 }
 async function readRolesRegistryState(fs10) {
   if (!await fs10.exists(ROLES_REGISTRY_PATH)) {
-    return { registry: cloneDefaultRoles(), migrated: false, recovered: false };
+    return {
+      registry: cloneDefaultRoles(),
+      migrated: false,
+      rosterMigrated: false,
+      recovered: false
+    };
   }
   try {
     const rawText = await fs10.readFile(ROLES_REGISTRY_PATH);
     const parsed = JSON.parse(rawText);
-    const { registry, migrated } = normalizeRolesRegistryWithMigration(parsed);
-    return { registry, migrated, recovered: false };
+    const { registry, migrated, rosterMigrated } = normalizeRolesRegistryWithMigration(parsed);
+    return { registry, migrated, rosterMigrated, recovered: false };
   } catch {
     const backupPath = await backupCorruptRegistry(fs10, ROLES_REGISTRY_PATH);
     const reset = cloneDefaultRoles();
@@ -3183,7 +3192,12 @@ async function readRolesRegistryState(fs10) {
       "reset",
       "IMPORTANT: role definitions cannot be inferred; restore needed roles from the backup."
     );
-    return { registry: reset, migrated: false, recovered: true };
+    return {
+      registry: reset,
+      migrated: false,
+      rosterMigrated: false,
+      recovered: true
+    };
   }
 }
 function assertRoleNameAvailable(name) {
@@ -3195,24 +3209,33 @@ function normalizeRolesRegistryWithMigration(value) {
   const root = isRecord4(value) ? value : {};
   const roles = [];
   let migrated = false;
+  let rosterMigrated = false;
   const usedIds = /* @__PURE__ */ new Set();
   if (Array.isArray(root.roles)) {
     for (const item of root.roles) {
       if (!isRecord4(item)) continue;
       const hadId = typeof item.id === "string" && isRoleId(item.id.trim());
       const hadDisplayName = typeof item.displayName === "string" && item.displayName.trim().length > 0;
+      const hadLegacyAllowedKey = Object.prototype.hasOwnProperty.call(
+        item,
+        "allowedProfiles"
+      );
       const role = normalizeRoleDefinition(item, {
         usedIds,
         assignMissingId: "deterministic"
       });
       if (!role.name || roles.some((existing) => existing.name === role.name)) continue;
       if (roles.some((existing) => existing.id === role.id)) continue;
+      if (hadLegacyAllowedKey) {
+        migrated = true;
+        rosterMigrated = true;
+      }
       if (!hadId || !hadDisplayName) migrated = true;
       usedIds.add(role.id);
       roles.push(role);
     }
   }
-  return { registry: { roles }, migrated };
+  return { registry: { roles }, migrated, rosterMigrated };
 }
 function normalizeRoleDefinition(value, opts = {}) {
   const name = typeof value.name === "string" ? value.name.trim() : "";
@@ -3244,13 +3267,16 @@ function normalizeRoleDefinition(value, opts = {}) {
   if (typeof value.color === "string" && value.color.trim()) role.color = value.color.trim();
   const a2a = normalizeA2APolicy(value.a2aPolicy);
   if (a2a) role.a2aPolicy = a2a;
-  const allowedProfiles = normalizeAllowedProfiles(value.allowedProfiles);
-  if (allowedProfiles) role.allowedProfiles = allowedProfiles;
+  const rosterFromField = normalizeAgentIdList(value.roster);
+  const rawLegacy = value.allowedProfiles;
+  const rosterFromLegacy = normalizeAgentIdList(rawLegacy);
+  const roster = rosterFromField ?? rosterFromLegacy;
+  if (roster) role.roster = roster;
   const cli = normalizeCliConfig(value.cli);
   if (cli) role.cli = cli;
   return role;
 }
-function normalizeAllowedProfiles(value) {
+function normalizeAgentIdList(value) {
   if (value === void 0 || value === null) return void 0;
   if (!Array.isArray(value)) {
     return void 0;
@@ -3296,8 +3322,8 @@ function serializeRolesRegistry(registry) {
       if (role.description) row.description = role.description;
       if (role.color) row.color = role.color;
       if (role.a2aPolicy) row.a2aPolicy = role.a2aPolicy;
-      if (role.allowedProfiles && role.allowedProfiles.length > 0) {
-        row.allowedProfiles = [...role.allowedProfiles];
+      if (role.roster && role.roster.length > 0) {
+        row.roster = [...role.roster];
       }
       if (role.cli) row.cli = { ...role.cli };
       return row;
@@ -4036,6 +4062,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       initPath = await ensureRoleInit(env.fs, roleDefinition, env.tentName);
     }
     const taskClaims = claim.root ? [{ id: "root", path: "./" }] : [{ id: claim.box.id, path: claim.box.path }];
+    const agentId = options.agentId?.trim() || void 0;
     const taskPath = await writeTaskEnvelope(env.fs, env.clock, {
       role: assigneeLabel,
       claims: taskClaims,
@@ -4047,6 +4074,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
       asSub: options.asSub === true,
       deliveryPolicy: options.deliveryPolicy,
       assigneeKind,
+      agentId,
       id: taskId,
       tasksDir: assigneeKind === "agentProfile" ? agentProfileTasksDir(assigneeLabel) : void 0
     });
@@ -4062,6 +4090,7 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
         status: "pending",
         state: "queued",
         assigneeKind,
+        ...agentId ? { agentId } : {},
         id: taskId,
         parentActor,
         reviewer,
@@ -5637,6 +5666,22 @@ var ServiceClient = class {
   registryRoleUpdate(workspaceId, name, patch) {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
   }
+  // ---- convenience: machine-local AgentDefinition (logical worker identity) ----
+  agentList() {
+    return this.call("agent.list", {});
+  }
+  agentGet(id) {
+    return this.call("agent.get", { id });
+  }
+  agentCreate(agent) {
+    return this.call("agent.create", { ...agent, actor: agent.actor ?? "user" });
+  }
+  agentUpdate(id, patch) {
+    return this.call("agent.update", { ...patch, id, actor: patch.actor ?? "user" });
+  }
+  agentDelete(id, confirmation, actor = "user") {
+    return this.call("agent.delete", { id, confirmation, actor });
+  }
   /**
    * User-only role delete. confirmation must equal operational name or roleId.
    * Refuses when the role has an active task or live managed session.
@@ -6320,16 +6365,18 @@ state: ${row.state ?? "delivered"}
       case "dispatch": {
         const usageRole = "Usage: tent task dispatch <boxId> <role> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
         const usageProfile = "Usage: tent task dispatch <boxId> --profile <profileId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
+        const usageAgent = "Usage: tent task dispatch <boxId> --agent <agentId> [localPrompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]";
         const usageBoth = `${usageRole}
-   or: ${usageProfile.replace(/^Usage: /, "")}`;
+   or: ${usageProfile.replace(/^Usage: /, "")}
+   or: ${usageAgent.replace(/^Usage: /, "")}`;
         if (Object.prototype.hasOwnProperty.call(flags, "assignee-kind") || Object.prototype.hasOwnProperty.call(flags, "assigneeKind")) {
           return failUsage(
-            "Do not pass --assignee-kind; use <role> for durable role dispatch or --profile <profileId> for managed one-shot agentProfile dispatch"
+            "Do not pass --assignee-kind; use <role> for durable role dispatch, --profile <profileId> for user one-shot, or --agent <agentId> for Role roster dispatch"
           );
         }
         if (Object.prototype.hasOwnProperty.call(flags, "start-session") || Object.prototype.hasOwnProperty.call(flags, "startSession")) {
           return failUsage(
-            "Do not pass --start-session; managed --profile dispatch always starts a session"
+            "Do not pass --start-session; managed --profile / --agent dispatch always starts a session"
           );
         }
         const boxId = positionals[0];
@@ -6337,15 +6384,26 @@ state: ${row.state ?? "delivered"}
           return failUsage(usageBoth);
         }
         const hasProfileFlag = Object.prototype.hasOwnProperty.call(flags, "profile");
+        const hasAgentFlag = Object.prototype.hasOwnProperty.call(flags, "agent");
         const profileIdRaw = hasProfileFlag ? String(flags.profile ?? "").trim() : "";
+        const agentIdRaw = hasAgentFlag ? String(flags.agent ?? "").trim() : "";
         if (hasProfileFlag && !profileIdRaw) {
           return failUsage(`--profile requires <profileId>
 ${usageProfile}`);
         }
-        const isProfileForm = hasProfileFlag;
-        const role = isProfileForm ? void 0 : positionals[1];
-        const promptParts = isProfileForm ? positionals.slice(1) : positionals.slice(2);
-        if (!isProfileForm && !role) {
+        if (hasAgentFlag && !agentIdRaw) {
+          return failUsage(`--agent requires <agentId>
+${usageAgent}`);
+        }
+        if (hasProfileFlag && hasAgentFlag) {
+          return failUsage(
+            "Pass either --profile <profileId> or --agent <agentId>, not both\n" + usageBoth
+          );
+        }
+        const isManagedOneShotForm = hasProfileFlag || hasAgentFlag;
+        const role = isManagedOneShotForm ? void 0 : positionals[1];
+        const promptParts = isManagedOneShotForm ? positionals.slice(1) : positionals.slice(2);
+        if (!isManagedOneShotForm && !role) {
           return failUsage(usageBoth);
         }
         if (Object.prototype.hasOwnProperty.call(flags, "prompt") && promptParts.length > 0) {
@@ -6372,10 +6430,10 @@ ${usageProfile}`);
         const parentActor = parentRole ? { kind: "role", id: parentRole } : { kind: "user", id: "user" };
         const result = await client.taskDispatch(
           workspaceId,
-          isProfileForm ? {
+          isManagedOneShotForm ? {
             boxId,
             assigneeKind: "agentProfile",
-            profileId: profileIdRaw,
+            ...hasAgentFlag ? { agentId: agentIdRaw } : { profileId: profileIdRaw },
             prompt,
             parentActor,
             reviewer: parentActor,
@@ -6876,6 +6934,9 @@ Commands:
   tent task deliver <taskPath> --summary <text>|- [--commits sha,sha] [--workspace <path>] [--json]
   tent task dispatch <boxId> <role> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
   tent task dispatch <boxId> --profile <profileId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+  tent task dispatch <boxId> --agent <agentId> [prompt...] [--prompt <text>|-] [--delivery-policy review|bypass|agent-decide] [--as-sub --by <role>] [--workspace <path>] [--json]
+      # --profile: user-direct one-shot agentProfile + startSession (does not register a role)
+      # --agent: Role roster logical agentId \u2192 resolves machine-local profileId + startSession
       # role form: durable role assignee (queued; no auto session)
       # --profile form: one-shot agentProfile + startSession (prints sessionId/sessionState); does not register a role
       # Do not pass --assignee-kind; a bare role-like string is never inferred as a profile

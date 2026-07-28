@@ -1,5 +1,5 @@
 /**
- * Role authority MVP: registry.role.create/update/delete + allowedProfiles projection.
+ * Role authority MVP: registry.role.create/update/delete + roster projection.
  * Layer: CLIENT_METHODS + user-only MutationBus + registry.roles.updated + startSession whitelist.
  */
 import assert from "node:assert/strict";
@@ -34,7 +34,7 @@ async function makeWorkspace(name = "role-auth"): Promise<string> {
       {
         roles: [
           { name: "executor", prompt: "do work" },
-          { name: "orchestrator", prompt: "dispatch", a2aPolicy: "allow", allowedProfiles: ["fake-default"] },
+          { name: "orchestrator", prompt: "dispatch", a2aPolicy: "allow", roster: ["fake-default"] },
         ],
       },
       null,
@@ -78,7 +78,7 @@ test("CLIENT_METHODS includes registry.role.create/update/delete", () => {
   assert.ok(CLIENT_METHODS.includes("registry.roles"));
 });
 
-test("registry.roles projection returns allowedProfiles + roleId/displayName", async () => {
+test("registry.roles projection returns roster only + roleId/displayName", async () => {
   const ws = await makeWorkspace();
   await withService(async (svc) => {
     const workspaceId = await mount(svc, ws);
@@ -90,7 +90,7 @@ test("registry.roles projection returns allowedProfiles + roleId/displayName", a
         name: string;
         displayName: string;
         a2aPolicy?: string;
-        allowedProfiles?: string[];
+        roster?: string[];
       }>;
     }).roles;
     const orch = roles.find((r) => r.name === "orchestrator");
@@ -98,21 +98,27 @@ test("registry.roles projection returns allowedProfiles + roleId/displayName", a
     assert.ok(orch!.roleId.startsWith("rl-"));
     assert.equal(orch!.displayName, "orchestrator");
     assert.equal(orch!.a2aPolicy, "allow");
-    assert.deepEqual(orch!.allowedProfiles, ["fake-default"]);
+    assert.deepEqual(orch!.roster, ["fake-default"]);
+    assert.equal(
+      Object.prototype.hasOwnProperty.call(orch!, "allowedProfiles"),
+      false,
+      "public projection is roster-only"
+    );
     const exec = roles.find((r) => r.name === "executor");
     assert.ok(exec);
     assert.ok(exec!.roleId.startsWith("rl-"));
     assert.equal(exec!.displayName, "executor");
-    assert.equal(exec!.allowedProfiles, undefined);
+    assert.equal(exec!.roster, undefined);
 
-    // Legacy roles.json without id stays legacy on disk after plain projection read
     const disk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
-    ) as { roles: Array<{ id?: string; name: string; displayName?: string }> };
+    ) as {
+      roles: Array<Record<string, unknown>>;
+    };
     const diskOrch = disk.roles.find((r) => r.name === "orchestrator");
     assert.ok(diskOrch);
-    assert.equal(diskOrch!.id, undefined, "projection/list must not persist backfill");
-    assert.equal(diskOrch!.displayName, undefined);
+    assert.deepEqual(diskOrch!.roster, ["fake-default"]);
+    assert.equal("allowedProfiles" in diskOrch!, false);
   });
 });
 
@@ -148,13 +154,23 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(events.length, 0);
 
     const client = createServiceClient({ baseUrl: svc.url, token: svc.token });
+
+    const rejectLegacy = await rpc(svc, "registry.role.create", {
+      workspaceId,
+      name: "legacy-reject",
+      allowedProfiles: ["fake-default"],
+    });
+    assert.ok(rejectLegacy.error);
+    assert.equal(rejectLegacy.error!.code, -32602);
+    assert.match(String(rejectLegacy.error!.message), /no longer accepts allowedProfiles|use roster/i);
+
     const created = (await client.registryRoleCreate(workspaceId, {
       name: "critic",
       displayName: "评审",
       prompt: "挑问题",
       description: "reviewer",
       a2aPolicy: "allow",
-      allowedProfiles: ["  fake-default ", "fake-default", ""],
+      roster: ["  fake-default ", "fake-default", ""],
     })) as {
       role: {
         roleId: string;
@@ -162,14 +178,15 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
         displayName: string;
         prompt?: string;
         a2aPolicy?: string;
-        allowedProfiles?: string[];
+        roster?: string[];
       };
     };
     assert.equal(created.role.name, "critic");
     assert.equal(created.role.displayName, "评审");
     assert.ok(created.role.roleId.startsWith("rl-"));
     assert.equal(created.role.a2aPolicy, "allow");
-    assert.deepEqual(created.role.allowedProfiles, ["fake-default"]);
+    assert.deepEqual(created.role.roster, ["fake-default"]);
+    assert.equal(Object.prototype.hasOwnProperty.call(created.role, "allowedProfiles"), false);
     assert.equal(events.length, 1);
     assert.equal(events[0]!.action, "create");
     assert.equal(events[0]!.name, "critic");
@@ -206,14 +223,29 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     );
     assert.equal(events.length, 2);
 
+    const rejectUpdateLegacy = await rpc(svc, "registry.role.update", {
+      workspaceId,
+      name: "critic",
+      allowedProfiles: ["codex-acp"],
+    });
+    assert.ok(rejectUpdateLegacy.error);
+    assert.equal(rejectUpdateLegacy.error!.code, -32602);
+    assert.match(String(rejectUpdateLegacy.error!.message), /no longer accepts allowedProfiles|use roster/i);
+    assert.equal(events.length, 2);
+
     const updated = (await client.registryRoleUpdate(workspaceId, "critic", {
       prompt: "挑关键问题",
-      allowedProfiles: ["codex-acp", " fake-default "],
+      roster: ["codex-acp", " fake-default "],
     })) as {
-      role: { prompt?: string; allowedProfiles?: string[]; roleId: string };
+      role: {
+        prompt?: string;
+        roster?: string[];
+        roleId: string;
+      };
     };
     assert.equal(updated.role.prompt, "挑关键问题");
-    assert.deepEqual(updated.role.allowedProfiles, ["codex-acp", "fake-default"]);
+    assert.deepEqual(updated.role.roster, ["codex-acp", "fake-default"]);
+    assert.equal(Object.prototype.hasOwnProperty.call(updated.role, "allowedProfiles"), false);
     assert.equal(updated.role.roleId, created.role.roleId);
     assert.equal(events.length, 3);
     assert.equal(events[2]!.action, "update");
@@ -224,7 +256,7 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
       description: "",
       color: null,
       a2aPolicy: null,
-      allowedProfiles: [],
+      roster: [],
       cli: null,
     })) as {
       role: {
@@ -232,7 +264,7 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
         description?: string;
         color?: string;
         a2aPolicy?: string;
-        allowedProfiles?: string[];
+        roster?: string[];
         roleId: string;
       };
     };
@@ -240,11 +272,12 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(cleared.role.description, undefined);
     assert.equal(cleared.role.color, undefined);
     assert.equal(cleared.role.a2aPolicy, "deny");
-    assert.equal(cleared.role.allowedProfiles, undefined);
+    assert.equal(cleared.role.roster, undefined);
+    assert.equal(Object.prototype.hasOwnProperty.call(cleared.role, "allowedProfiles"), false);
     assert.equal(cleared.role.roleId, created.role.roleId);
     assert.equal(events.length, 4);
 
-    // disk: role id present; no secrets
+    // disk: role id present; roster cleared; no secrets / no dual allowedProfiles
     const disk = JSON.parse(
       await fs.readFile(path.join(ws, ".tent", "roles.json"), "utf8")
     ) as { roles: Array<Record<string, unknown>> };
@@ -253,7 +286,8 @@ test("registry.role.create/update: user-only, MutationBus, one registry.roles.up
     assert.equal(critic!.id, created.role.roleId);
     assert.equal(critic!.displayName, "评审官");
     assert.equal("secret" in critic!, false);
-    assert.equal(critic!.allowedProfiles, undefined);
+    assert.equal("allowedProfiles" in critic!, false);
+    assert.equal(critic!.roster, undefined);
 
     // failure does not emit
     const missing = await rpc(svc, "registry.role.update", {
@@ -397,7 +431,7 @@ test("ServiceClient registry role convenience + startSession allow whitelist", a
 
     await client.registryRoleUpdate(workspaceId, "executor", {
       a2aPolicy: "allow",
-      allowedProfiles: ["fake-default"],
+      roster: ["fake-default"],
     });
 
     const note = await rpc(svc, "docs.createNote", {

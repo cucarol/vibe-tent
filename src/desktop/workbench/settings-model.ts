@@ -39,8 +39,8 @@ export type RoleUpdateDraft = {
   description?: string;
   color?: string;
   a2aPolicy?: "allow" | "ask" | "deny";
-  /** Comma/space-separated profile ids; empty clears whitelist. */
-  allowedProfilesText?: string;
+  /** Comma/space-separated agentIds (Role roster); empty clears. */
+  rosterText?: string;
 };
 
 export type ProfileFormDraft = {
@@ -159,16 +159,15 @@ export function validateRoleUpdate(draft: RoleUpdateDraft):
 
   if (draft.a2aPolicy) payload.a2aPolicy = draft.a2aPolicy;
 
-  if (draft.allowedProfilesText !== undefined) {
-    const ids = parseAllowedProfilesText(draft.allowedProfilesText);
-    payload.allowedProfiles = ids;
+  if (draft.rosterText !== undefined) {
+    payload.roster = parseRosterText(draft.rosterText);
   }
 
   return { ok: true, payload };
 }
 
-/** Split profile id whitelist from free text (comma / whitespace). */
-export function parseAllowedProfilesText(text: string): string[] {
+/** Split agentId roster from free text (comma / whitespace). */
+export function parseRosterText(text: string): string[] {
   const raw = (text || "").trim();
   if (!raw) return [];
   const seen = new Set<string>();
@@ -182,7 +181,7 @@ export function parseAllowedProfilesText(text: string): string[] {
   return out;
 }
 
-export function formatAllowedProfilesText(ids: string[] | undefined | null): string {
+export function formatRosterText(ids: string[] | undefined | null): string {
   return (ids || []).join(", ");
 }
 

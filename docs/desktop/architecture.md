@@ -240,13 +240,26 @@ type RoleDefinition = {
   name: string;
   displayName: string;
   a2aPolicy?: A2APolicy;
-  allowedProfiles?: string[];
+  /** Authorized AgentDefinition ids (standing roster). Not profile ids. */
+  roster?: string[];
   // prompt, description, color, cli — non-secret only
+};
+
+/**
+ * Stable logical worker identity (Role roster key).
+ * Machine-local binding to AgentProfile for launch only — never provider secrets.
+ */
+type AgentDefinition = {
+  id: string;            // agentId
+  displayName?: string;
+  description?: string;
+  profileId: string;     // machine-local AgentProfile id
 };
 
 /**
  * Machine-local launch profile — binary paths, argv templates, auth refs.
  * Lives only in service data area; never in workspace git / concept bodies.
+ * Not Role authorization.
  */
 type AgentProfile = {
   id: string;
@@ -255,6 +268,8 @@ type AgentProfile = {
   // binary path, default argv, authModel, capability flags — machine-local
 };
 ```
+
+**Managed skill composition (V0.2):** every managed Task executor receives bundled `tent-task`. A durable Role executor additionally receives `tent-role` + Role prompt + stable roster digest. Order: role contract (when applicable) → Role prompt/roster → task contract → current Task pointer/delta. `profile.skills` are optional extras only. No `tent-agent` alias.
 
 ### 5.3 Active-task field protection
 

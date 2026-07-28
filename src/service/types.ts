@@ -330,6 +330,11 @@ export type TaskProjection = {
   asSub?: boolean;
   deliveryPolicy?: string;
   assigneeKind?: string;
+  /**
+   * Logical AgentDefinition id when this Task was Role-agent dispatched.
+   * Authoritative for startSession roster auth; omitted on user-direct profile Tasks.
+   */
+  agentId?: string;
   sessionId?: string;
   wait?: { reason: string; summary: string; code?: string };
   activeDeliveryId?: string;
@@ -536,10 +541,26 @@ export type RoleRegistryEntryProjection = {
   /** Spawn authority; omitted means deny. Never includes secrets. */
   a2aPolicy?: "allow" | "ask" | "deny";
   /**
-   * Profile ids authorized for role-caller startSession when a2aPolicy=allow.
-   * Ids only — never credentials. Omitted / empty = none for autonomous allow.
+   * Authorized AgentDefinition ids (logical workers). Roster membership is
+   * standing Role authorization for agentId dispatch (not per-call a2a ask/deny).
+   * Ids only — never credentials. Omitted / empty = none authorized.
+   * Public surface is roster-only; legacy allowedProfiles is disk-migrated once.
    */
-  allowedProfiles?: string[];
+  roster?: string[];
+};
+
+/**
+ * Machine-local AgentDefinition projection (logical worker identity).
+ * Never includes provider/model/credential secrets — only profileId binding.
+ */
+export type AgentDefinitionProjection = {
+  id: string;
+  displayName: string;
+  description?: string;
+  /** Machine-local AgentProfile id for launch resolution. */
+  profileId: string;
+  /** true when bound profile exists in the local catalog. */
+  profileExists?: boolean;
 };
 
 /**
@@ -783,14 +804,25 @@ export const CLIENT_METHODS = [
   "registry.roles",
   /**
    * User-only role registry mutations (MutationBus).
-   * Persist id/name/displayName/prompt/description/color/a2aPolicy/allowedProfiles/cli —
+   * Persist id/name/displayName/prompt/description/color/a2aPolicy/roster/cli —
    * never provider secrets. id is server-assigned and immutable; displayName is
    * mutable; operational name is not renamed in identity batch 1.
+   * Public mutations accept `roster` only (allowedProfiles rejected fail-loud).
    * Success emits exactly one registry.roles.updated.
    */
   "registry.role.create",
   "registry.role.update",
   "registry.role.delete",
+  /**
+   * Machine-local AgentDefinition catalog (logical worker identity).
+   * Binds agentId → profileId only; never provider/model/credential secrets.
+   * Distinct from profile.* (launch config) and registry.roles (roster auth).
+   */
+  "agent.list",
+  "agent.get",
+  "agent.create",
+  "agent.update",
+  "agent.delete",
   "profile.list",
   "profile.get",
   "profile.create",

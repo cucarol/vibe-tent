@@ -1,7 +1,7 @@
 # Desktop Contract · Task API & Delivery Protocol
 
-Status: **B0 frozen contract** (implementation follows in B8a–B8f)  
-Scope: task / delivery entities, state machine, Task API, A2A hard authority, delivery policies, operational retention  
+Status: **B0 frozen contract** (implementation follows in B8a–B8f)
+Scope: task / delivery entities, state machine, Task API, A2A hard authority, delivery policies, operational retention
 Non-goals: AgentRuntime adapter details (`docs/desktop/agent-runtime.md`), OKF concept model (`docs/desktop/concept-model.md`), service process topology (`docs/desktop/architecture.md`)
 
 This document freezes the collaboration semantics for the independent desktop Tent. CLI, MCP/tool, and GUI are transport clients only. ACP/CLI adapters connect processes; they do not define box/task lifecycle.
@@ -261,7 +261,7 @@ Rules:
 
 All mutations go through Local Tent Service → core. Logical verbs below; transport (HTTP / named pipe / in-proc) is an architecture concern.
 
-**Canonical external command groups** for clients: **`task.*`** and **`docs.*`**.  
+**Canonical external command groups** for clients: **`task.*`** and **`docs.*`**.
 `AgentRuntimePort.*` is **service-internal only** (architecture §5). Clients never call the runtime port directly.
 
 ### 3.1 Commands
@@ -407,29 +407,36 @@ the service MUST:
 ```text
 1. Authenticate caller (user token | role session token)
 2. Require explicit profileId (no fake-default / product-profile silent fallback)
-3. user caller → allow (user is root authority; profile whitelist bypass)
-4. role caller → load role.a2aPolicy from .tent/roles.json (default deny);
-   ignore client-supplied a2aPolicy and reject a2aPolicyOverride over RPC
-5. allow → profileId must be ∈ role.allowedProfiles (ids only) → internal AgentRuntimePort.startSession
-6. ask  → enqueue a2a.ask; task.wait; do not spawn (user approve may override profile whitelist)
-7. deny → return A2A_DENIED; leave no half-started process state
+3. user caller → allow (user is root; user-direct one-shot profile path stays separate)
+4. Role-agent path (Task.agentId present): roster membership is standing authorization —
+   out-of-roster fails loud; in-roster proceeds without a2aPolicy ask/deny and without
+   creating A2A approvals. Launch uses AgentDefinition→profileId only.
+5. Other role callers (no Task.agentId): load role.a2aPolicy (default deny);
+   ignore client-supplied a2aPolicy; reject a2aPolicyOverride over RPC
+6. allow (non-standing) → may require roster-resolvable launch target → startSession
+7. ask  → enqueue a2a.ask; task.wait; do not spawn (not used for standing Role-agent path)
+8. deny → return A2A_DENIED; leave no half-started process state
 ```
 
-An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it cannot be replayed for another launch target. `a2a.resolve` is user-only.
+An approval is bound to its exact `workspaceId`, `taskPath`, and `profileId`; it cannot be replayed for another launch target. `a2a.resolve` is user-only. Role-agent standing roster paths never enqueue approvals.
 
-**Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority.
-**Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.  
+**Prohibited:** using skill text, RULES.md, or honor manifest alone as spawn authorization; trusting ordinary RPC `a2aPolicy` to raise authority; re-inferring Role authorization from profileId history when Task.agentId is present.
+**Orthogonal:** manifest readable/writable remains an honor contract for file edits after claim; it does not authorize process start.
 **Clients** call `task.startSession` (or dispatch with `startSession: true`); they never call `AgentRuntimePort` directly.
-**Roles** may store `a2aPolicy` and `allowedProfiles` (profile **ids** only) — never provider secrets or tokens.
+**Roles** may store `a2aPolicy` and `roster` (**agentIds** only) — never provider secrets, model, or tokens.
+**AgentDefinition** (machine-local `agent-definitions.json`) binds `agentId` → `profileId` for launch resolution only; it is not Role authorization.
+**Task.agentId** is persisted on Role-agent dispatch and projected on task reads/startSession; user-direct profile Tasks omit it.
+**Legacy:** on-disk `allowedProfiles` is migrated one-time to `roster` (agentId defaults to former profileId). Public Service/client mutations reject `allowedProfiles` fail-loud.
 
 ### 4.3.1 Role registry mutations (user-only)
 
 | Method | Notes |
 | --- | --- |
-| `registry.roles` | Read projection: name, description, color, prompt, effective `a2aPolicy`, `allowedProfiles` |
-| `registry.role.create` | User actor only; MutationBus; name immutable after create |
-| `registry.role.update` | User actor only; cannot rename; `null`/empty clears optional text, policy, CLI, or profile whitelist fields |
+| `registry.roles` | Read projection: name, description, color, prompt, effective `a2aPolicy`, `roster` only (no `allowedProfiles` dual-read) |
+| `registry.role.create` | User actor only; MutationBus; name immutable after create; accept `roster` only — `allowedProfiles` rejected fail-loud |
+| `registry.role.update` | User actor only; cannot rename; `null`/empty clears optional text, policy, CLI, or roster; `allowedProfiles` rejected fail-loud |
 | `registry.role.delete` | User actor only; `confirmation` must equal `name`; refuses **durable role** active task or live/starting/waiting-user managed session (`assigneeKind=role`). One-shot agentProfile sessions (even if `roleName` equals the role name) do **not** block delete. |
+| `agent.list/get/create/update/delete` | Machine-local AgentDefinition CRUD (agentId ↔ profileId); never secrets |
 
 Successful create/update/delete emits **exactly one** `registry.roles.updated` (`action`, `name`). Failures emit nothing.
 

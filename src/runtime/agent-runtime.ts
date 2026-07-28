@@ -33,6 +33,7 @@ import {
   resolveAcpMcpServersWire,
   resolveAcpSkillMeta,
 } from "../adapters/acp/mcp-skills.js";
+import { composeManagedSkillRefs } from "../core/managed-skill-compose.js";
 import { cloneAgentProfileConfig } from "./profile-config.js";
 import { ProcessSupervisor } from "./process-supervisor.js";
 import { SessionRegistry } from "./session-registry.js";
@@ -79,6 +80,12 @@ export interface AgentRuntimeOptions {
    * Process-scoped only; never persisted on SessionRecord.
    */
   resolveCredentialRef?: ResolveCredentialRef;
+  /**
+   * Package root for bundled tent-role / tent-task skill paths.
+   * When set, managed sessions automatically compose built-in skill refs
+   * (profile.skills remain optional extras).
+   */
+  packageRoot?: string;
 }
 
 function handleFrom(record: SessionRecord): SessionHandle {
@@ -118,6 +125,7 @@ export class AgentRuntime implements AgentRuntimePort {
   private readonly globalSinks = new Set<(ev: RuntimeEvent) => void>();
   private readonly resolveProfileEnv?: ResolveProfileEnv;
   private readonly resolveCredentialRef?: ResolveCredentialRef;
+  private readonly packageRoot?: string;
   /** Test-only: every sendFollowUpPrompt attempt (including not-alive / unsupported). */
   private readonly followUpAttemptsForTests: Array<{ sessionId: string }> = [];
   private shutdownPromise?: Promise<void>;
@@ -128,6 +136,7 @@ export class AgentRuntime implements AgentRuntimePort {
     this.registry = new SessionRegistry(options.dataDir);
     this.resolveProfileEnv = options.resolveProfileEnv;
     this.resolveCredentialRef = options.resolveCredentialRef;
+    this.packageRoot = options.packageRoot;
 
     for (const p of options.profiles ?? []) {
       this.profiles.set(p.id, cloneProfileConfig(p));
@@ -472,7 +481,7 @@ export class AgentRuntime implements AgentRuntimePort {
           fake: profile.fake,
           acp: profile.acp,
           // Snapshot-time ACP projection (skills + mcp). Running sessions do not hot-reload.
-          ...(await this.buildAcpLaunchExtras(profile, planEnv)),
+          ...(await this.buildAcpLaunchExtras(profile, planEnv, req.assigneeKind)),
           // System root for safe image byte reads at prompt time (ephemeral; not SessionRecord).
           ...(req.bootstrapImageRefs &&
           req.bootstrapImageRefs.length > 0 &&
@@ -732,7 +741,7 @@ export class AgentRuntime implements AgentRuntimePort {
           fake: profile.fake,
           acp: profile.acp,
           // Resume uses profileSnapshot (not live catalog edits).
-          ...(await this.buildAcpLaunchExtras(profile, planEnv)),
+          ...(await this.buildAcpLaunchExtras(profile, planEnv, record.assigneeKind)),
           ...(req.bootstrapImageRefs &&
           req.bootstrapImageRefs.length > 0 &&
           typeof req.bootstrapImageSystemRoot === "string" &&
@@ -1285,15 +1294,26 @@ export class AgentRuntime implements AgentRuntimePort {
    * Resolve skill meta + MCP wire from profile snapshot for LaunchPlan.extras.
    * Secret values only live on the plan (in-process) for session/new|load — never SessionRecord.
    * Enabled skill path refs fail loud when missing; credential resolver errors are not swallowed.
+   *
+   * Built-in tent-role / tent-task contracts are injected only into the managed bootstrap
+   * prompt prefix (cross-provider). ACP `_meta.tent.skills` carries optional profile.skills
+   * extras only — never re-advertise built-ins as activatable skill refs.
    */
   private async buildAcpLaunchExtras(
     profile: AgentProfileConfig,
-    planEnv: Record<string, string>
+    planEnv: Record<string, string>,
+    assigneeKind?: "role" | "agentProfile"
   ): Promise<{
     acpSkills?: ReturnType<typeof resolveAcpSkillMeta>;
     acpMcpServers?: ReturnType<typeof resolveAcpMcpServersWire>;
   }> {
-    const hasSkills = Array.isArray(profile.skills) && profile.skills.length > 0;
+    // Strip built-in names even without packageRoot so profile cannot double-load contracts.
+    const composedSkills = composeManagedSkillRefs({
+      packageRoot: this.packageRoot ?? "",
+      assigneeKind: assigneeKind ?? "role",
+      profileSkills: profile.skills,
+    });
+    const hasSkills = Array.isArray(composedSkills) && composedSkills.length > 0;
     const hasMcp = Array.isArray(profile.mcpServers) && profile.mcpServers.length > 0;
     if (!hasSkills && !hasMcp) return {};
 
@@ -1328,9 +1348,9 @@ export class AgentRuntime implements AgentRuntimePort {
       }
     }
 
-    // Enabled path refs must exist at start/resume; name-only refs remain allowed.
+    // Profile extras only: enabled path refs must exist; name-only refs remain allowed.
     const acpSkills = hasSkills
-      ? resolveAcpSkillMeta(profile.skills, { requirePathExists: true })
+      ? resolveAcpSkillMeta(composedSkills, { requirePathExists: true })
       : undefined;
     const acpMcpServers = hasMcp
       ? resolveAcpMcpServersWire(profile.mcpServers, {

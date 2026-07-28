@@ -276,9 +276,11 @@ async function startOwnedLocalTentService(
     },
   };
 
+  const packageRootEarly = options.packageRoot ?? defaultPackageRoot();
   const runtime = createAgentRuntime({
     dataDir,
     profiles,
+    packageRoot: packageRootEarly,
     adapters: [
       createFakeAdapter(),
       createGrokAcpAdapter(acpPermissionHooks),
@@ -337,7 +339,7 @@ async function startOwnedLocalTentService(
   // Reconcile orphan sessions after crash / restart.
   await runtime.reconcileOnBoot();
 
-  const packageRoot = options.packageRoot ?? defaultPackageRoot();
+  const packageRoot = packageRootEarly;
   const home = options.home ?? os.homedir();
 
   const ctx: HandlerContext = {

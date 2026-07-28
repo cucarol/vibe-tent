@@ -182,16 +182,18 @@ Optional machine-readable spawn authority on the role (default **deny**):
   "name": "orchestrator",
   "prompt": "…",
   "a2aPolicy": "allow",
-  "allowedProfiles": ["grok-acp-default"]
+  "roster": ["grok-acp-default"]
 }
 ```
 
 | Field | Role caller `task.startSession` |
 | --- | --- |
-| `a2aPolicy: allow` | May start only when `profileId` ∈ `allowedProfiles` |
-| `a2aPolicy: ask` | Enters user confirmation (`a2a.ask`); user approve may override whitelist |
+| `a2aPolicy: allow` | May start only when resolved `agentId` ∈ `roster` |
+| `a2aPolicy: ask` | Enters user confirmation (`a2a.ask`); user approve may override roster |
 | `a2aPolicy: deny` (default / omitted) | Hard deny |
-| `allowedProfiles` | Profile **ids** only (trim + de-dupe); never credentials |
+| `roster` | **agentIds** only (trim + de-dupe); AgentDefinition binds agentId→profileId; never credentials |
+
+Legacy on-disk `allowedProfiles` migrates one-time to `roster` (agentId defaults to former profileId).
 
 User callers always allow (root authority; whitelist bypass). Ordinary RPC clients **cannot** elevate policy via an `a2aPolicy` param, and `a2aPolicyOverride` is rejected over RPC; service loads policy from the role registry. Mutate roles via user-only `registry.role.create|update|delete` (not by writing secrets into `roles.json`).
 

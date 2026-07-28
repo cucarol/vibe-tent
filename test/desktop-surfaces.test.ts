@@ -28,12 +28,12 @@ import {
   buildSkillsPayload,
   credentialListRow,
   CREDENTIAL_VAULT_TYPE,
-  formatAllowedProfilesText,
+  formatRosterText,
   mapProviderCatalogRows,
   mcpCredentialStatusLine,
   mcpDraftsFromProjection,
   mcpSourceLine,
-  parseAllowedProfilesText,
+  parseRosterText,
   PROFILE_NEXT_SESSION_TIP,
   profileDisplayLabel,
   retentionSummaryLine,
@@ -185,7 +185,7 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     prompt: "",
     description: "d",
     a2aPolicy: "allow",
-    allowedProfilesText: "grok-acp-default, other",
+    rosterText: "grok-acp-default, other",
   });
   assert.equal(roleUp.ok, true);
   if (roleUp.ok) {
@@ -194,11 +194,11 @@ test("settings form validators reject bad ids and accept clean payloads", () => 
     assert.equal(roleUp.payload.displayName, "执行者");
     assert.equal(roleUp.payload.prompt, null);
     assert.equal(roleUp.payload.a2aPolicy, "allow");
-    assert.deepEqual(roleUp.payload.allowedProfiles, ["grok-acp-default", "other"]);
+    assert.deepEqual(roleUp.payload.roster, ["grok-acp-default", "other"]);
     assert.equal(roleUp.payload.actor, "user");
   }
-  assert.deepEqual(parseAllowedProfilesText(" a, b  b "), ["a", "b"]);
-  assert.equal(formatAllowedProfilesText(["x", "y"]), "x, y");
+  assert.deepEqual(parseRosterText(" a, b  b "), ["a", "b"]);
+  assert.equal(formatRosterText(["x", "y"]), "x, y");
 
   assert.equal(validateProfileCreate({ id: "Bad", adapterId: "grok-acp" }).ok, false);
   const prof = validateProfileCreate({

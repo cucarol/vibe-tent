@@ -567,7 +567,8 @@ export class ServiceClient {
       description?: string;
       color?: string;
       a2aPolicy?: "allow" | "ask" | "deny";
-      allowedProfiles?: string[];
+      /** Authorized AgentDefinition ids (standing roster). */
+      roster?: string[];
       cli?: { command: string; resume?: string };
       actor?: string;
     }
@@ -595,14 +596,45 @@ export class ServiceClient {
       color?: string | null;
       /** null or an empty string clears the field (effective deny). */
       a2aPolicy?: "allow" | "ask" | "deny" | null;
-      /** null or an empty array clears the whitelist. */
-      allowedProfiles?: string[] | null;
+      /** Authorized AgentDefinition ids; null or [] clears. */
+      roster?: string[] | null;
       /** null clears the host CLI hint. */
       cli?: { command: string; resume?: string } | null;
       actor?: string;
     }
   ) {
     return this.call("registry.role.update", { workspaceId, name, ...patch });
+  }
+
+  // ---- convenience: machine-local AgentDefinition (logical worker identity) ----
+  agentList() {
+    return this.call("agent.list", {});
+  }
+  agentGet(id: string) {
+    return this.call("agent.get", { id });
+  }
+  agentCreate(agent: {
+    id: string;
+    profileId: string;
+    displayName?: string;
+    description?: string;
+    actor?: string;
+  }) {
+    return this.call("agent.create", { ...agent, actor: agent.actor ?? "user" });
+  }
+  agentUpdate(
+    id: string,
+    patch: {
+      profileId?: string;
+      displayName?: string | null;
+      description?: string | null;
+      actor?: string;
+    }
+  ) {
+    return this.call("agent.update", { ...patch, id, actor: patch.actor ?? "user" });
+  }
+  agentDelete(id: string, confirmation: string, actor = "user") {
+    return this.call("agent.delete", { id, confirmation, actor });
   }
   /**
    * User-only role delete. confirmation must equal operational name or roleId.
@@ -696,7 +728,7 @@ export class ServiceClient {
        * when equal to profileId; must not differ from profileId.
        */
       role?: string;
-      /** Defaults to role. agentProfile requires profileId and does not register a role. */
+      /** Defaults to role. agentProfile requires profileId or agentId and does not register a role. */
       assigneeKind?: "role" | "agentProfile";
       prompt: string;
       /**
@@ -719,10 +751,16 @@ export class ServiceClient {
       deliveryPolicy?: string;
       startSession?: boolean;
       /**
-       * Required for assigneeKind=agentProfile and whenever startSession is true.
+       * Required for assigneeKind=agentProfile and whenever startSession is true
+       * (unless agentId is provided and resolves a profile binding).
        * For profile tasks this is also the stable assignee / delivery label.
        */
       profileId?: string;
+      /**
+       * Logical AgentDefinition id. Role-authorized dispatch uses roster membership
+       * on this id; Service resolves machine-local profileId for launch.
+       */
+      agentId?: string;
       callerKind?: "user" | "role";
     }
   ) {

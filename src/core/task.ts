@@ -67,6 +67,11 @@ export interface TaskEnvelopeInput {
   id?: string;
   deliveryPolicy?: DeliveryPolicy;
   assigneeKind?: AssigneeKind;
+  /**
+   * Logical AgentDefinition id for Role-agent dispatch (persisted on envelope).
+   * User-direct profile Tasks omit this.
+   */
+  agentId?: string;
   sessionId?: string;
   /**
    * Override task directory (relative system root).
@@ -119,6 +124,12 @@ export interface TaskEnvelope {
   roleBranchBase?: string;
   deliveryPolicy?: DeliveryPolicy;
   assigneeKind?: AssigneeKind;
+  /**
+   * Logical AgentDefinition id chosen at Role-agent dispatch.
+   * Authoritative for startSession / bootstrap roster auth — not re-inferred from profileId.
+   * Omitted on user-direct one-shot profile Tasks.
+   */
+  agentId?: string;
   sessionId?: string;
   wait?: TaskWait;
   activeDeliveryId?: string;
@@ -412,6 +423,9 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (data.assigneeKind === "role" || data.assigneeKind === "agentProfile") {
     task.assigneeKind = data.assigneeKind;
   }
+  if (typeof data.agentId === "string" && data.agentId.trim()) {
+    task.agentId = data.agentId.trim();
+  }
   if (typeof data.sessionId === "string") task.sessionId = data.sessionId;
   if (typeof data.activeDeliveryId === "string") task.activeDeliveryId = data.activeDeliveryId;
   if (data.lastOutcome === "delivered" || data.lastOutcome === "blocked" || data.lastOutcome === "needs-input") {
@@ -695,6 +709,7 @@ export async function writeTaskEnvelope(
   };
   // Persist only when true; missing means peer (false). Git-lane sub marker only.
   if (input.asSub === true) data.asSub = true;
+  if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
   if (input.workspace) {
     data.workspace = input.workspace.workspace;

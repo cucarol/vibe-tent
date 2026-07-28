@@ -520,7 +520,7 @@ test("A2A: dispatcher role policy governs agentProfile launch; user path works",
       workspaceId,
       name: "orchestrator",
       a2aPolicy: "allow",
-      allowedProfiles: [],
+      roster: [],
     });
     const box3b = await rpc(svc, "docs.createNote", {
       workspaceId,
