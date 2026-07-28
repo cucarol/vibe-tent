@@ -38,12 +38,12 @@ import {
   projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
   type IntegrationAuthority,
+  type TaskContextCardRef,
   type TaskContextCardV1,
 } from "./task-context-card.js";
 import {
-  normalizeTaskNodeRef,
+  normalizeContextCardNodeRef,
   taskReferencedNodeIds,
-  type TaskNodeRef,
 } from "./task-node-refs.js";
 
 export interface RoleWorkspaceContract {
@@ -64,7 +64,7 @@ export interface TaskEnvelopeInput {
    * Persisted only as Task.contextCard.refs.nodes[] — never as claims[].
    * Pass `[{ id: "root", path: "./" }]` (or claimRoot via ops) for workspace-only
    * context: "root" is discarded and yields empty refs.nodes (stable workspace
-   * context), never a fake Node or workspaceContext source flag.
+   * context already present; no second source flag).
    */
   claims: { id: string; path: string }[];
   manifestPath: string;
@@ -632,11 +632,13 @@ function formatTaskPointers(task: TaskEnvelope): string {
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
   ];
-  const nodeIds = taskReferencedNodeIds(task);
-  if (nodeIds.length) {
-    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
-  } else {
-    lines.push(`workspace context: true (no direct Node refs)`);
+  if (task.contextCard) {
+    const nodeIds = taskReferencedNodeIds(task);
+    if (nodeIds.length) {
+      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+    } else {
+      lines.push(`workspace context: true (no direct Node refs)`);
+    }
   }
   if (task.parentActor) {
     lines.push(
@@ -791,13 +793,13 @@ export async function writeTaskEnvelope(
   await ensureDir(fs, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
 
-  // Split workspace/root context from Node refs — never persist fake "root" Node
-  // and never a workspaceContext source flag. Empty nodes = stable workspace context.
+  // Split workspace/root context from Node refs — never persist fake "root" Node.
+  // Empty nodes = stable workspace context (no second source flag).
   const isRootToken = (id: string) => id.trim() === "root";
   const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
-  const nodeRefs: TaskNodeRef[] = input.claims
+  const nodeRefs: TaskContextCardRef[] = input.claims
     .filter((c) => !isRootToken(c.id))
-    .map((c) => normalizeTaskNodeRef({ id: c.id, path: c.path }));
+    .map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
   const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
   const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs, dir, stem);
@@ -1154,6 +1156,7 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
 }
 
 export function primaryBoxId(task: TaskEnvelope): string | undefined {
+  if (task.contextCard == null) return undefined;
   return taskReferencedNodeIds(task)[0];
 }
 

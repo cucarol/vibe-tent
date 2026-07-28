@@ -224,8 +224,8 @@ Rules:
 | Source | Role |
 | --- | --- |
 | `Task.contextCard.refs.nodes[]` (+ lifecycle `state`) | **Node context refs + collaboration facts** (sole product truth for Node linkage) |
-| Legacy `claims[]` | **One-shot migrate → nodes**; new writes never persist `claims` |
-| Workspace context (`workspaceContext` / legacy `root`) | Stable workspace context — **not** a fake Node ref and **not** a Tent-wide lock |
+| Legacy `claims[]` | **One-shot `migrateLegacyTaskNodeRefs` → full Context Card**; new writes never persist `claims` |
+| Empty `refs.nodes` (legacy `root` discarded on migrate) | Stable workspace context — **not** a fake Node ref and **not** a Tent-wide lock |
 | Node frontmatter `owner` / `status` | **Retired** — stripped on migrate; never dual-written by claim/accept |
 
 **Structural gates only for new dispatch:** `archived` / `invalid` still deny. Archive/purge fail **only** when the **exact** Node is **directly** referenced by an active Task; ancestor/descendant refs do not block. Rename/move with stable `nodeId` remain legal; Context re-resolves by id.
@@ -243,7 +243,7 @@ Rules:
 
 Rules:
 
-- Match is **direct** `contextCard.refs.nodes` id (legacy migrate bridge: residual `claims`) only — never ancestor/descendant-derived paint.
+- Match is **direct** `contextCard.refs.nodes` id only — never ancestor/descendant-derived paint; residual `claims` are migrator-only.
 - **Multiple** directly-referencing active Tasks on one Node are **legal** and all projected (deterministic order). No singular `task` / `session` / `delivery` or `activeTaskId` compatibility alias on the final wire.
 - Project **raw Task.state** per entry (no Node-level todo/doing/done).
 - Attach Session / Delivery **only** through explicit Task ids — never path/name/time inference. Stale ids → `session`/`delivery` null while keeping the Task pointer.

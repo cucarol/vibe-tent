@@ -117,6 +117,11 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     assertTransition(task.state, "claim", "running");
 
     const tent = await loadTent(env.fs);
+    if (task.contextCard == null) {
+      throw new Error(
+        `Cannot claim task: missing Task.contextCard (run migrateLegacyTaskNodeRefs for legacy claims).`
+      );
+    }
     const claimedBoxes = taskReferencedNodeIds(task).map((claimId) =>
       requireBoxById(tent, claimId)
     );

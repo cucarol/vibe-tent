@@ -11,7 +11,7 @@ import { LoadedTent } from "./tree.js";
 import {
   listDirectActiveTasksForNode,
   taskDirectlyReferencesNode,
-  taskHasWorkspaceContext,
+  taskHasWorkspaceOnlyContext,
   taskReferencedNodeIds,
 } from "./task-node-refs.js";
 
@@ -94,6 +94,7 @@ export function findActiveOccupation(
   void _options;
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     if (taskDirectlyReferencesNode(task, box.id)) {
       return {
         blocker: box,
@@ -121,12 +122,16 @@ export function boxHasDirectActiveTask(
 /**
  * Active tasks with no direct Node refs (stable workspace context only).
  * Not a Tent-wide lock — multiple concurrent workspace-context Tasks are legal.
- * Derived from empty contextCard.refs.nodes; no persisted workspaceContext flag.
+ * Derived from empty contextCard.refs.nodes (no second source flag).
  */
 export function findActiveRootTask(
   tasks: readonly TaskEnvelope[]
 ): TaskEnvelope | undefined {
-  return tasks.find((t) => envelopeIsActiveOccupation(t) && taskHasWorkspaceContext(t));
+  return tasks.find((t) => {
+    if (!envelopeIsActiveOccupation(t)) return false;
+    if (t.contextCard == null) return false;
+    return taskHasWorkspaceOnlyContext(t);
+  });
 }
 
 /**
@@ -143,6 +148,7 @@ export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnv
   const out = new Map<string, Box>();
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue; // unmigrated: not in occupation set
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
       if (box) out.set(box.id, box);

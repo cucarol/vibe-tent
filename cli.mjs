@@ -1532,11 +1532,13 @@ function formatTaskPointers(task) {
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`
   ];
-  const nodeIds = taskReferencedNodeIds(task);
-  if (nodeIds.length) {
-    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
-  } else {
-    lines.push(`workspace context: true (no direct Node refs)`);
+  if (task.contextCard) {
+    const nodeIds = taskReferencedNodeIds(task);
+    if (nodeIds.length) {
+      lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+    } else {
+      lines.push(`workspace context: true (no direct Node refs)`);
+    }
   }
   if (task.parentActor) {
     lines.push(
@@ -1644,7 +1646,7 @@ async function writeTaskEnvelope(fs10, clock, input) {
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
   const isRootToken = (id2) => id2.trim() === "root";
   const workspaceOnly = input.claims.length > 0 && input.claims.every((c) => isRootToken(c.id));
-  const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeTaskNodeRef({ id: c.id, path: c.path }));
+  const nodeRefs = input.claims.filter((c) => !isRootToken(c.id)).map((c) => normalizeContextCardNodeRef({ id: c.id, path: c.path }));
   const primaryRef = nodeRefs[0]?.id || (workspaceOnly ? "root" : "node");
   const stem = taskStem(clock.now(), primaryRef);
   const path9 = await uniqueMarkdownPath(fs10, dir, stem);
@@ -1887,6 +1889,7 @@ function workspaceLaneOf(task) {
   };
 }
 function primaryBoxId(task) {
+  if (task.contextCard == null) return void 0;
   return taskReferencedNodeIds(task)[0];
 }
 function parseTaskState(value, legacy) {
@@ -2311,13 +2314,10 @@ var init_task_context_card = __esm({
 });
 
 // src/core/task-node-refs.ts
-function isWorkspaceRootClaim(id) {
-  return id.trim() === WORKSPACE_ROOT_CLAIM;
-}
-function normalizeTaskNodeRef(raw) {
+function normalizeContextCardNodeRef(raw) {
   const id = raw.id.trim();
   if (!id) throw new Error("Task node ref id cannot be empty.");
-  if (isWorkspaceRootClaim(id)) {
+  if (id === "root") {
     throw new Error(
       'Task.contextCard.refs.nodes must not include fake "root" Node ref; workspace context is separate.'
     );
@@ -2332,16 +2332,25 @@ function normalizeTaskNodeRef(raw) {
   return out;
 }
 function taskReferencedNodeIds(task) {
-  const nodes = task.contextCard?.refs?.nodes;
-  if (!nodes || nodes.length === 0) return [];
-  return nodes.map((n) => n.id).filter((id) => id && !isWorkspaceRootClaim(id));
+  if (task.contextCard == null) {
+    throw new Error(
+      `Task ${task.id || task.path || "(unknown)"} lacks contextCard; Node refs require Task.contextCard.refs.nodes (run migrateLegacyTaskNodeRefs for legacy claims).`
+    );
+  }
+  const nodes = task.contextCard.refs?.nodes;
+  if (!nodes) {
+    throw new Error(
+      `Task ${task.id || task.path || "(unknown)"} contextCard.refs.nodes is missing; Node refs require Task.contextCard.refs.nodes.`
+    );
+  }
+  return nodes.map((n) => n.id).filter((id) => id && id !== "root");
 }
-function taskHasWorkspaceContext(task) {
+function taskHasWorkspaceOnlyContext(task) {
   return taskReferencedNodeIds(task).length === 0;
 }
 function taskDirectlyReferencesNode(task, nodeId) {
   const id = nodeId.trim();
-  if (!id || isWorkspaceRootClaim(id)) return false;
+  if (!id || id === "root") return false;
   return taskReferencedNodeIds(task).includes(id);
 }
 function taskIsActiveOccupation(task) {
@@ -2350,9 +2359,11 @@ function taskIsActiveOccupation(task) {
 }
 function listDirectActiveTasksForNode(nodeId, tasks) {
   const id = nodeId.trim();
-  const matches = tasks.filter(
-    (t) => taskIsActiveOccupation(t) && taskDirectlyReferencesNode(t, id)
-  );
+  const matches = tasks.filter((t) => {
+    if (!taskIsActiveOccupation(t)) return false;
+    if (t.contextCard == null) return false;
+    return taskDirectlyReferencesNode(t, id);
+  });
   return sortTasksDeterministically(matches);
 }
 function sortTasksDeterministically(tasks) {
@@ -2366,7 +2377,6 @@ function sortTasksDeterministically(tasks) {
     return (a.path || "").localeCompare(b.path || "");
   });
 }
-var WORKSPACE_ROOT_CLAIM;
 var init_task_node_refs = __esm({
   "src/core/task-node-refs.ts"() {
     "use strict";
@@ -2375,7 +2385,6 @@ var init_task_node_refs = __esm({
     init_tree();
     init_task_model();
     init_task_context_card();
-    WORKSPACE_ROOT_CLAIM = "root";
   }
 });
 
@@ -2413,6 +2422,7 @@ function findActiveOccupation(tent, box, tasks, _options) {
   void _options;
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     if (taskDirectlyReferencesNode(task, box.id)) {
       return {
         blocker: box,
@@ -2428,7 +2438,11 @@ function boxHasDirectActiveTask(boxId, tasks) {
   return listDirectActiveTasksForNode(boxId, tasks).length > 0;
 }
 function findActiveRootTask(tasks) {
-  return tasks.find((t) => envelopeIsActiveOccupation(t) && taskHasWorkspaceContext(t));
+  return tasks.find((t) => {
+    if (!envelopeIsActiveOccupation(t)) return false;
+    if (t.contextCard == null) return false;
+    return taskHasWorkspaceOnlyContext(t);
+  });
 }
 function findAnyActiveTask(tasks) {
   return tasks.find((t) => envelopeIsActiveOccupation(t));
@@ -2437,6 +2451,7 @@ function occupiedBoxesFromTasks(tent, tasks) {
   const out = /* @__PURE__ */ new Map();
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
       if (box) out.set(box.id, box);
@@ -4170,6 +4185,11 @@ async function taskClaim(env, taskPath, options = {}) {
     }
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
+    if (task.contextCard == null) {
+      throw new Error(
+        `Cannot claim task: missing Task.contextCard (run migrateLegacyTaskNodeRefs for legacy claims).`
+      );
+    }
     const claimedBoxes = taskReferencedNodeIds(task).map(
       (claimId) => requireBoxById(tent, claimId)
     );
@@ -4763,6 +4783,7 @@ function roleManifestClaims(tent, role, current, tasks) {
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
       if (box) claims.set(box.id, box);

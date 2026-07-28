@@ -21,11 +21,11 @@ import {
 } from "../src/core/claim.js";
 import {
   listDirectActiveTasksForNode,
-  migrateAllTaskClaimsToContextCardRefs,
-  migrateTaskClaimsToContextCardRefs,
-  normalizeTaskNodeRef,
+  migrateAllLegacyTaskNodeRefs,
+  migrateLegacyTaskNodeRefs,
+  normalizeContextCardNodeRef,
   taskDirectlyReferencesNode,
-  taskHasWorkspaceContext,
+  taskHasWorkspaceOnlyContext,
   taskReferencedNodeIds,
 } from "../src/core/task-node-refs.js";
 import { buildTaskContextCard, computeContextGeneration } from "../src/core/task-context-card.js";
@@ -124,7 +124,7 @@ test("dispatch: concurrent same Node + ancestor + workspace context allowed", as
     parentActor: { kind: "user", id: "user" },
   });
   const tasks = await loadTaskEnvelopes(fsa);
-  const wsTasks = tasks.filter((t) => taskHasWorkspaceContext(t));
+  const wsTasks = tasks.filter((t) => taskHasWorkspaceOnlyContext(t));
   assert.ok(wsTasks.length >= 2, `expected concurrent workspace tasks, got ${wsTasks.length}`);
   assert.ok(findAnyActiveTask(tasks));
 
@@ -172,7 +172,7 @@ test("migration: claims → contextCard.refs.nodes is idempotent; root discarded
     ].join("\n")
   );
 
-  const once = await migrateTaskClaimsToContextCardRefs(fsa, taskPath);
+  const once = await migrateLegacyTaskNodeRefs(fsa, taskPath);
   assert.equal(once.migrated, true);
   assert.deepEqual(once.nodeIds, ["bx-p1"]);
   assert.equal(once.discardedRootClaim, true);
@@ -207,14 +207,14 @@ test("migration: claims → contextCard.refs.nodes is idempotent; root discarded
   // No fake root node ref.
   assert.ok(!card.refs.nodes.some((n) => n.id === "root"));
 
-  const twice = await migrateTaskClaimsToContextCardRefs(fsa, taskPath);
+  const twice = await migrateLegacyTaskNodeRefs(fsa, taskPath);
   assert.equal(twice.skipped, true);
   assert.equal(twice.migrated, false);
 
   const loaded = await loadTaskEnvelope(fsa, taskPath);
   assert.deepEqual(taskReferencedNodeIds(loaded), ["bx-p1"]);
   // Has direct Node ref → not workspace-only context.
-  assert.equal(taskHasWorkspaceContext(loaded), false);
+  assert.equal(taskHasWorkspaceOnlyContext(loaded), false);
   assert.equal(taskDirectlyReferencesNode(loaded, "bx-p1"), true);
 });
 
@@ -247,7 +247,7 @@ test("migration: active Task with empty objective fails loud", async () => {
   );
 
   await assert.rejects(
-    () => migrateTaskClaimsToContextCardRefs(fsa, taskPath),
+    () => migrateLegacyTaskNodeRefs(fsa, taskPath),
     /empty\/missing objective|missing objective/i
   );
 });
@@ -360,9 +360,9 @@ test("listDirectActiveTasksForNode: deterministic createdAt/id/path order", asyn
   assert.equal(listed[1]!.id, "tk-later");
 });
 
-test("normalizeTaskNodeRef + buildTaskContextCard: full card; reject fake root", () => {
+test("normalizeContextCardNodeRef + buildTaskContextCard: full card; reject fake root", () => {
   assert.throws(
-    () => normalizeTaskNodeRef({ id: "root" }),
+    () => normalizeContextCardNodeRef({ id: "root" }),
     /fake "root"/
   );
   const gen = computeContextGeneration({
@@ -390,7 +390,7 @@ test("normalizeTaskNodeRef + buildTaskContextCard: full card; reject fake root",
     reviewer: { kind: "user", id: "user" },
     assignee: { kind: "role", id: "r" },
     contextGeneration: gen,
-    refs: { nodes: [normalizeTaskNodeRef({ id: "cx-1", path: "a/b" })] },
+    refs: { nodes: [normalizeContextCardNodeRef({ id: "cx-1", path: "a/b" })] },
   });
   assert.deepEqual(card.acceptance, ["do it"]);
   assert.equal(card.refs.nodes[0]!.path, "a/b");
@@ -398,7 +398,7 @@ test("normalizeTaskNodeRef + buildTaskContextCard: full card; reject fake root",
   assert.ok(card.taskDeltaDigest);
 });
 
-test("migrateAllTaskClaimsToContextCardRefs scans role and profile lanes", async () => {
+test("migrateAllLegacyTaskNodeRefs scans role and profile lanes", async () => {
   const dir = await makeTent();
   const fsa = new NodeFs(dir);
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
@@ -452,9 +452,9 @@ test("migrateAllTaskClaimsToContextCardRefs scans role and profile lanes", async
     ].join("\n")
   );
 
-  const results = await migrateAllTaskClaimsToContextCardRefs(fsa);
+  const results = await migrateAllLegacyTaskNodeRefs(fsa);
   assert.ok(results.some((r) => r.migrated && r.nodeIds.includes("bx-p1")));
   assert.ok(results.some((r) => r.migrated && r.nodeIds.includes("bx-o1")));
-  const again = await migrateAllTaskClaimsToContextCardRefs(fsa);
+  const again = await migrateAllLegacyTaskNodeRefs(fsa);
   assert.ok(again.every((r) => r.skipped || r.reason));
 });

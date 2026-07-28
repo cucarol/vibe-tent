@@ -106,6 +106,7 @@ export async function inspectTypeDeletion(
 
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     // Direct Node refs only (cx-tsw53f). Workspace context is not a Tent-wide type lock.
     for (const nodeId of taskReferencedNodeIds(task)) {
       if (!relatedIds.has(nodeId)) continue;

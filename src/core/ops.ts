@@ -822,6 +822,7 @@ function hasActiveTaskInSubtree(
   const ids = collectSubtreeIds(box);
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       if (ids.has(nodeId)) return true;
     }
@@ -850,8 +851,9 @@ function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks:
     // Only durable role tasks share multi-claim aggregation; profile tasks are one-shot.
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
-    // Active tasks only — aggregate direct Node refs (contextCard.refs.nodes / legacy claims).
+    // Active tasks only — aggregate direct Node refs (contextCard.refs.nodes).
     if (!envelopeIsActiveOccupation(task)) continue;
+    if (task.contextCard == null) continue;
     for (const nodeId of taskReferencedNodeIds(task)) {
       const box = tent.byId.get(nodeId);
       if (box) claims.set(box.id, box);
