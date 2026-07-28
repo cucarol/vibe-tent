@@ -12,6 +12,9 @@ import { fileURLToPath } from "node:url";
 import { scaffoldInWorkspace } from "../src/core/scaffold.js";
 import { NodeFs } from "../src/fs/node-fs.js";
 import {
+  ROLE_CHECKPOINT_MAX_POINTER_CHARS,
+  ROLE_CHECKPOINT_MAX_POINTERS,
+  ROLE_CHECKPOINT_MAX_TAIL_CHARS,
   ROLE_CHECKPOINT_MAX_TEXT_CHARS,
   ROLE_CHECKPOINT_TYPE,
   assertRoleCheckpointRoleName,
@@ -21,6 +24,7 @@ import {
   roleCheckpointPath,
   writeRoleCheckpoint,
 } from "../src/core/role-checkpoint.js";
+import { serializeFrontmatter } from "../src/core/frontmatter.js";
 import { CLIENT_METHODS } from "../src/service/types.js";
 import { startLocalTentService } from "../src/service/service.js";
 import { rpcCall } from "../src/service/http-server.js";
@@ -183,6 +187,78 @@ test("core: rejects empty text, oversized text, bad role, reserved agent-profile
         updatedAt: "t",
       }),
     /reserved/
+  );
+});
+
+test("core: bounds checkpoint pointers and complete rendered tail", async () => {
+  const ws = await makeWorkspace();
+  const fsa = new NodeFs(path.join(ws, ".tent"));
+
+  await assert.rejects(
+    () =>
+      writeRoleCheckpoint(fsa, {
+        role: "planner",
+        text: "continue",
+        updatedAt: "t",
+        pointers: {
+          nodes: Array.from({ length: ROLE_CHECKPOINT_MAX_POINTERS + 1 }, (_, i) => `cx-${i}`),
+        },
+      }),
+    new RegExp(`more than ${ROLE_CHECKPOINT_MAX_POINTERS} pointers`)
+  );
+  await assert.rejects(
+    () =>
+      writeRoleCheckpoint(fsa, {
+        role: "planner",
+        text: "continue",
+        updatedAt: "t",
+        pointers: { git: ["g".repeat(ROLE_CHECKPOINT_MAX_POINTER_CHARS + 1)] },
+      }),
+    new RegExp(`${ROLE_CHECKPOINT_MAX_POINTER_CHARS} characters`)
+  );
+
+  assert.throws(
+    () =>
+      formatRoleCheckpointTail({
+        role: "planner",
+        text: "x".repeat(ROLE_CHECKPOINT_MAX_TEXT_CHARS),
+        updatedAt: "2026-07-28T12:00:00.000Z",
+        pointers: {
+          nodes: Array.from(
+            { length: ROLE_CHECKPOINT_MAX_POINTERS },
+            (_, i) => `${i}-`.padEnd(ROLE_CHECKPOINT_MAX_POINTER_CHARS, "n")
+          ),
+        },
+        path: roleCheckpointPath("planner"),
+      }),
+    new RegExp(`${ROLE_CHECKPOINT_MAX_TAIL_CHARS} characters`)
+  );
+});
+
+test("core: read rejects a persisted checkpoint whose rendered tail is oversized", async () => {
+  const ws = await makeWorkspace();
+  const fsa = new NodeFs(path.join(ws, ".tent"));
+  const checkpointPath = roleCheckpointPath("planner");
+  const pointers = Array.from(
+    { length: ROLE_CHECKPOINT_MAX_POINTERS },
+    (_, i) => `${i}-`.padEnd(128, "p")
+  );
+  await fsa.writeFile(
+    checkpointPath,
+    serializeFrontmatter(
+      {
+        type: ROLE_CHECKPOINT_TYPE,
+        role: "planner",
+        updatedAt: "2026-07-28T12:00:00.000Z",
+        nodes: pointers,
+      },
+      `# Role Checkpoint\n\n## Continuation\n\n${"x".repeat(ROLE_CHECKPOINT_MAX_TEXT_CHARS)}\n`
+    )
+  );
+
+  await assert.rejects(
+    () => readRoleCheckpoint(fsa, "planner"),
+    new RegExp(`${ROLE_CHECKPOINT_MAX_TAIL_CHARS} characters`)
   );
 });
 
@@ -591,6 +667,73 @@ test("managed bootstrap appends Role Checkpoint as dynamic tail for durable role
         await rpc(svc, "task.interrupt", { workspaceId, taskPath }).catch(() => undefined);
         await rpc(svc, "task.cancel", { workspaceId, taskPath }).catch(() => undefined);
       }
+    },
+    {
+      profiles: [
+        {
+          id: "fake-default",
+          adapterId: FAKE_ADAPTER_ID,
+          fake: { waitForSignal: true, sleepMs: 60_000 },
+        },
+      ],
+    }
+  );
+});
+
+test("managed bootstrap fails open when Role Checkpoint pointers are invalid", async () => {
+  const ws = await makeWorkspace();
+  const systemFs = new NodeFs(path.join(ws, ".tent"));
+  await systemFs.writeFile(
+    roleCheckpointPath("executor"),
+    serializeFrontmatter(
+      {
+        type: ROLE_CHECKPOINT_TYPE,
+        role: "executor",
+        updatedAt: "2026-07-28T12:00:00.000Z",
+        nodes: Array.from(
+          { length: ROLE_CHECKPOINT_MAX_POINTERS + 1 },
+          (_, i) => `cx-${i}`
+        ),
+      },
+      "# Role Checkpoint\n\n## Continuation\n\nThis invalid note must be omitted.\n"
+    )
+  );
+
+  await withService(
+    async (svc) => {
+      const mounted = await rpc(svc, "workspace.mount", { workspaceRoot: ws });
+      assert.ok(!mounted.error, JSON.stringify(mounted.error));
+      const workspaceId = (mounted.result as { workspaceId: string }).workspaceId;
+      const created = await rpc(svc, "docs.createNote", {
+        workspaceId,
+        name: "cp-invalid-bootstrap",
+        type: "prompt",
+      });
+      assert.ok(!created.error, JSON.stringify(created.error));
+      const boxId = (created.result as { id: string }).id;
+      const dispatched = await rpc(svc, "task.dispatch", {
+        workspaceId,
+        boxId,
+        role: "executor",
+        prompt: "bootstrap despite invalid checkpoint",
+        deliveryPolicy: "review",
+        parentActor: { kind: "user", id: "user" },
+        reviewer: { kind: "user", id: "user" },
+      });
+      assert.ok(!dispatched.error, JSON.stringify(dispatched.error));
+      const taskPath = (dispatched.result as { taskPath: string }).taskPath;
+      if ((dispatched.result as { state?: string }).state === "queued") {
+        const claimed = await rpc(svc, "task.claim", { workspaceId, taskPath });
+        assert.ok(!claimed.error, JSON.stringify(claimed.error));
+      }
+
+      const started = await rpc(svc, "task.startSession", {
+        workspaceId,
+        taskPath,
+        callerKind: "user",
+        profileId: "fake-default",
+      });
+      assert.ok(!started.error, JSON.stringify(started.error));
     },
     {
       profiles: [

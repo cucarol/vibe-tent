@@ -21,6 +21,11 @@ export const ROLE_CHECKPOINT_TYPE = "role-checkpoint" as const;
 /** Soft cap so notes stay short (pointers + judgment, not Delivery bodies). */
 export const ROLE_CHECKPOINT_MAX_TEXT_CHARS = 4_000;
 
+/** Hard bounds for pointer metadata and the complete dynamic tail. */
+export const ROLE_CHECKPOINT_MAX_POINTERS = 32;
+export const ROLE_CHECKPOINT_MAX_POINTER_CHARS = 256;
+export const ROLE_CHECKPOINT_MAX_TAIL_CHARS = 8_192;
+
 /** Filename under temp/<role>/ (system-root relative). */
 export const ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
 
@@ -127,7 +132,13 @@ function normalizePointerList(raw: unknown, label: string): string[] | undefined
     if (typeof item !== "string" || !item.trim()) {
       throw new Error(`Role Checkpoint pointers.${label} entries must be non-empty strings.`);
     }
-    out.push(item.trim());
+    const normalized = item.trim();
+    if (normalized.length > ROLE_CHECKPOINT_MAX_POINTER_CHARS) {
+      throw new Error(
+        `Role Checkpoint pointers.${label} entries cannot exceed ${ROLE_CHECKPOINT_MAX_POINTER_CHARS} characters.`
+      );
+    }
+    out.push(normalized);
   }
   return out.length > 0 ? out : undefined;
 }
@@ -139,6 +150,16 @@ function normalizePointers(raw?: RoleCheckpointPointers | Record<string, unknown
   const deliveries = normalizePointerList((raw as RoleCheckpointPointers).deliveries, "deliveries");
   const git = normalizePointerList((raw as RoleCheckpointPointers).git, "git");
   if (!nodes && !tasks && !deliveries && !git) return undefined;
+  const total =
+    (nodes?.length ?? 0) +
+    (tasks?.length ?? 0) +
+    (deliveries?.length ?? 0) +
+    (git?.length ?? 0);
+  if (total > ROLE_CHECKPOINT_MAX_POINTERS) {
+    throw new Error(
+      `Role Checkpoint cannot contain more than ${ROLE_CHECKPOINT_MAX_POINTERS} pointers across all buckets.`
+    );
+  }
   return {
     ...(nodes ? { nodes } : {}),
     ...(tasks ? { tasks } : {}),
@@ -174,6 +195,17 @@ export async function writeRoleCheckpoint(
   const sourceSessionId = input.sourceSessionId?.trim() || undefined;
   const path = roleCheckpointPath(role);
 
+  const record: RoleCheckpointRecord = {
+    role,
+    text,
+    updatedAt,
+    ...(sourceSessionId ? { sourceSessionId } : {}),
+    ...(pointers ? { pointers } : {}),
+    path,
+  };
+  // Validate the complete dynamic tail before persisting the checkpoint.
+  formatRoleCheckpointTail(record);
+
   const data: Record<string, unknown> = {
     type: ROLE_CHECKPOINT_TYPE,
     role,
@@ -193,14 +225,7 @@ export async function writeRoleCheckpoint(
     `${text}\n`;
 
   await fs.writeFile(path, serializeFrontmatter(data, body));
-  return {
-    role,
-    text,
-    updatedAt,
-    ...(sourceSessionId ? { sourceSessionId } : {}),
-    ...(pointers ? { pointers } : {}),
-    path,
-  };
+  return record;
 }
 
 /**
@@ -257,23 +282,17 @@ export async function readRoleCheckpoint(
       )
       .trim();
   }
-  if (!text) {
-    throw new Error(`Role Checkpoint at ${path} has empty continuation text.`);
-  }
-  if (text.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
-    throw new Error(
-      `Role Checkpoint at ${path} exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters.`
-    );
-  }
-
-  return {
+  const record: RoleCheckpointRecord = {
     role: name,
-    text,
+    text: normalizeText(text),
     updatedAt,
     ...(sourceSessionId ? { sourceSessionId } : {}),
     ...(pointers ? { pointers } : {}),
     path,
   };
+  // Defend the read boundary against hand-edited or stale oversized files.
+  formatRoleCheckpointTail(record);
+  return record;
 }
 
 /** Remove the current note. Idempotent when absent. */
@@ -293,19 +312,22 @@ export function formatRoleCheckpointTail(
   record: RoleCheckpointRecord | null | undefined
 ): string {
   if (!record) return "";
+  const role = assertRoleCheckpointRoleName(record.role);
+  const text = normalizeText(record.text);
+  const pointers = normalizePointers(record.pointers);
   const lines = [
     "--- Tent Role Checkpoint (dynamic tail; optional) ---",
     "This is cooperative continuation only. It is not Delivery, Task state, or stable Role init.",
     "Abnormal recovery must re-query persisted Tent Nodes, Tasks, Deliveries, and Git — never invent from this note alone.",
-    `role: ${record.role}`,
+    `role: ${role}`,
     `updatedAt: ${record.updatedAt}`,
     `checkpointPath: ${record.path}`,
-    `fileRead: ${roleCheckpointFileReadPath(record.role)}`,
+    `fileRead: ${roleCheckpointFileReadPath(role)}`,
   ];
   if (record.sourceSessionId) {
     lines.push(`sourceSessionId: ${record.sourceSessionId}`);
   }
-  const p = record.pointers;
+  const p = pointers;
   if (p?.nodes?.length) lines.push(`nodes: ${p.nodes.join(", ")}`);
   if (p?.tasks?.length) lines.push(`tasks: ${p.tasks.join(", ")}`);
   if (p?.deliveries?.length) lines.push(`deliveries: ${p.deliveries.join(", ")}`);
@@ -313,8 +335,14 @@ export function formatRoleCheckpointTail(
   lines.push("");
   lines.push("## Continuation");
   lines.push("");
-  lines.push(record.text);
-  return lines.join("\n");
+  lines.push(text);
+  const tail = lines.join("\n");
+  if (tail.length > ROLE_CHECKPOINT_MAX_TAIL_CHARS) {
+    throw new Error(
+      `Role Checkpoint dynamic tail exceeds ${ROLE_CHECKPOINT_MAX_TAIL_CHARS} characters.`
+    );
+  }
+  return tail;
 }
 
 /**
