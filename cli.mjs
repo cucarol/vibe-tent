@@ -7992,6 +7992,9 @@ init_paths();
 init_tree();
 var ROLE_CHECKPOINT_TYPE = "role-checkpoint";
 var ROLE_CHECKPOINT_MAX_TEXT_CHARS = 4e3;
+var ROLE_CHECKPOINT_MAX_POINTERS = 32;
+var ROLE_CHECKPOINT_MAX_POINTER_CHARS = 256;
+var ROLE_CHECKPOINT_MAX_TAIL_CHARS = 8192;
 var ROLE_CHECKPOINT_FILENAME = "checkpoint.md";
 var WINDOWS_RESERVED_DEVICE = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$/i;
 function assertRoleCheckpointRoleName(role) {
@@ -8041,7 +8044,13 @@ function normalizePointerList(raw, label) {
     if (typeof item !== "string" || !item.trim()) {
       throw new Error(`Role Checkpoint pointers.${label} entries must be non-empty strings.`);
     }
-    out.push(item.trim());
+    const normalized = item.trim();
+    if (normalized.length > ROLE_CHECKPOINT_MAX_POINTER_CHARS) {
+      throw new Error(
+        `Role Checkpoint pointers.${label} entries cannot exceed ${ROLE_CHECKPOINT_MAX_POINTER_CHARS} characters.`
+      );
+    }
+    out.push(normalized);
   }
   return out.length > 0 ? out : void 0;
 }
@@ -8052,12 +8061,28 @@ function normalizePointers(raw) {
   const deliveries = normalizePointerList(raw.deliveries, "deliveries");
   const git2 = normalizePointerList(raw.git, "git");
   if (!nodes && !tasks && !deliveries && !git2) return void 0;
+  const total = (nodes?.length ?? 0) + (tasks?.length ?? 0) + (deliveries?.length ?? 0) + (git2?.length ?? 0);
+  if (total > ROLE_CHECKPOINT_MAX_POINTERS) {
+    throw new Error(
+      `Role Checkpoint cannot contain more than ${ROLE_CHECKPOINT_MAX_POINTERS} pointers across all buckets.`
+    );
+  }
   return {
     ...nodes ? { nodes } : {},
     ...tasks ? { tasks } : {},
     ...deliveries ? { deliveries } : {},
     ...git2 ? { git: git2 } : {}
   };
+}
+function normalizeText(text) {
+  const trimmed = text.replace(/\r\n/g, "\n").trim();
+  if (!trimmed) throw new Error("Role Checkpoint text cannot be empty.");
+  if (trimmed.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
+    throw new Error(
+      `Role Checkpoint text exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters; keep a short continuation note with pointers only.`
+    );
+  }
+  return trimmed;
 }
 async function readRoleCheckpoint(fs10, role) {
   const name = assertRoleSegment(role);
@@ -8097,38 +8122,35 @@ async function readRoleCheckpoint(fs10, role) {
       ""
     ).trim();
   }
-  if (!text) {
-    throw new Error(`Role Checkpoint at ${path10} has empty continuation text.`);
-  }
-  if (text.length > ROLE_CHECKPOINT_MAX_TEXT_CHARS) {
-    throw new Error(
-      `Role Checkpoint at ${path10} exceeds ${ROLE_CHECKPOINT_MAX_TEXT_CHARS} characters.`
-    );
-  }
-  return {
+  const record = {
     role: name,
-    text,
+    text: normalizeText(text),
     updatedAt,
     ...sourceSessionId ? { sourceSessionId } : {},
     ...pointers ? { pointers } : {},
     path: path10
   };
+  formatRoleCheckpointTail(record);
+  return record;
 }
 function formatRoleCheckpointTail(record) {
   if (!record) return "";
+  const role = assertRoleCheckpointRoleName(record.role);
+  const text = normalizeText(record.text);
+  const pointers = normalizePointers(record.pointers);
   const lines = [
     "--- Tent Role Checkpoint (dynamic tail; optional) ---",
     "This is cooperative continuation only. It is not Delivery, Task state, or stable Role init.",
     "Abnormal recovery must re-query persisted Tent Nodes, Tasks, Deliveries, and Git \u2014 never invent from this note alone.",
-    `role: ${record.role}`,
+    `role: ${role}`,
     `updatedAt: ${record.updatedAt}`,
     `checkpointPath: ${record.path}`,
-    `fileRead: ${roleCheckpointFileReadPath(record.role)}`
+    `fileRead: ${roleCheckpointFileReadPath(role)}`
   ];
   if (record.sourceSessionId) {
     lines.push(`sourceSessionId: ${record.sourceSessionId}`);
   }
-  const p = record.pointers;
+  const p = pointers;
   if (p?.nodes?.length) lines.push(`nodes: ${p.nodes.join(", ")}`);
   if (p?.tasks?.length) lines.push(`tasks: ${p.tasks.join(", ")}`);
   if (p?.deliveries?.length) lines.push(`deliveries: ${p.deliveries.join(", ")}`);
@@ -8136,8 +8158,14 @@ function formatRoleCheckpointTail(record) {
   lines.push("");
   lines.push("## Continuation");
   lines.push("");
-  lines.push(record.text);
-  return lines.join("\n");
+  lines.push(text);
+  const tail = lines.join("\n");
+  if (tail.length > ROLE_CHECKPOINT_MAX_TAIL_CHARS) {
+    throw new Error(
+      `Role Checkpoint dynamic tail exceeds ${ROLE_CHECKPOINT_MAX_TAIL_CHARS} characters.`
+    );
+  }
+  return tail;
 }
 
 // src/cli/role-checkpoint-rpc.ts
