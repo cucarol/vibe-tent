@@ -2266,20 +2266,12 @@ async function loadTaskEnvelope(fs2, path) {
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
-  if (task.parentActor && task.reviewer) {
-    const derived = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer
-    });
-    if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null) {
-      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
-        data.integrationAuthority,
-        task.parentActor,
-        task.reviewer
-      );
-    } else {
-      task.integrationAuthority = derived;
-    }
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
+    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+      data.integrationAuthority,
+      task.parentActor,
+      task.reviewer
+    );
   }
   const contextCard = loadTaskContextCardFromFrontmatter(data);
   if (contextCard) {

@@ -455,22 +455,22 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
-  // integrationAuthority is always re-derived from persisted parent/reviewer + service.
-  // On-disk bags are validated against that derivation (reject mismatches); never trusted alone.
-  if (task.parentActor && task.reviewer) {
-    const derived = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer,
-    });
-    if (data.integrationAuthority !== undefined && data.integrationAuthority !== null) {
-      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
-        data.integrationAuthority,
-        task.parentActor,
-        task.reviewer
-      );
-    } else {
-      task.integrationAuthority = derived;
-    }
+  // Recorded lane truth: only set TaskEnvelope.integrationAuthority when the on-disk
+  // bag exists and validates against parent/reviewer + service mutator.
+  // Absence stays absent so ensureTaskWorkspaceLane can detect and persist the
+  // canonical derived bag (no in-memory phantom that skips the write).
+  // Context / workspaceLane projections derive separately via deriveIntegrationAuthority.
+  if (
+    data.integrationAuthority !== undefined &&
+    data.integrationAuthority !== null &&
+    task.parentActor &&
+    task.reviewer
+  ) {
+    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+      data.integrationAuthority,
+      task.parentActor,
+      task.reviewer
+    );
   }
   // Context Card v1: nested `contextCard` or flat fields. Partial → fail loud.
   const contextCard = loadTaskContextCardFromFrontmatter(data);
@@ -1021,13 +1021,16 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
     return undefined;
   }
   // baseCommit is exact only — never substitute roleBranchBase in the projection.
-  const integrationAuthority =
-    task.parentActor && task.reviewer
+  // integrationAuthority on the lane projection: prefer recorded envelope field;
+  // otherwise derive for Context projection only (does not invent envelope truth).
+  const integrationAuthority = task.integrationAuthority
+    ? task.integrationAuthority
+    : task.parentActor && task.reviewer
       ? deriveIntegrationAuthority({
           parentActor: task.parentActor,
           reviewer: task.reviewer,
         })
-      : task.integrationAuthority;
+      : undefined;
   return {
     workspace: task.workspace,
     worktree: task.worktree,

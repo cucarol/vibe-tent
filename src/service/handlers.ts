@@ -11144,7 +11144,9 @@ async function resolveIntegrationContract(
  * - agentProfile: create unique tent-task/<taskId> worktree (never tent-role/<profile>).
  * Persists exact workspaceLane.baseCommit at Task worktree creation (capture-once).
  * Also backfills roleBranchBase for managed collection once when missing (separate field).
- * integrationAuthority derived from parent/reviewer + service mutator only.
+ * integrationAuthority: only the on-disk bag counts as recorded truth.
+ * loadTaskEnvelope does not invent a phantom; absence here triggers explicit
+ * persist of the canonical derived bag (parent/reviewer + service mutator).
  * Non-Git / pure docs → leave unset (cwd falls back to workspace root).
  */
 async function ensureTaskWorkspaceLane(
@@ -11153,6 +11155,7 @@ async function ensureTaskWorkspaceLane(
   task: TaskEnvelope
 ): Promise<TaskEnvelope> {
   const hasBase = Boolean(task.baseCommit?.trim());
+  // Recorded on-disk field only — never treat a projection-derived bag as present.
   const hasAuthority = Boolean(task.integrationAuthority);
   const laneComplete = Boolean(
     task.worktree && task.branch && task.workspace && task.targetBranch

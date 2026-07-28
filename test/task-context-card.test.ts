@@ -41,7 +41,9 @@ import {
   loadTaskEnvelope,
   patchTaskEnvelope,
   writeTaskEnvelope,
+  workspaceLaneOf,
 } from "../src/core/task.js";
+import { parseFrontmatter } from "../src/core/frontmatter.js";
 import { assertOrdinaryExecutorLaneHistoryInGit } from "../src/core/workspace.js";
 import { spawnSync } from "node:child_process";
 
@@ -504,6 +506,161 @@ test("partial context card body on disk fails loud at load", async () => {
       () => loadTaskEnvelope(nfs, taskPath),
       (err: unknown) => err instanceof TaskContextCardError
     );
+  } finally {
+    await fs.rm(dir, { recursive: true, force: true });
+  }
+});
+
+/**
+ * P0 persistence: recorded lane truth for baseCommit + integrationAuthority.
+ * - Missing on-disk authority must NOT invent an in-memory phantom on load
+ *   (so ensureTaskWorkspaceLane can detect absence and persist).
+ * - Explicit backfill writes canonical bag; reload retains/validates.
+ * - Tampered actor/mutator fails loud.
+ * - Context projection may still derive without inventing envelope truth.
+ */
+test("lane authority: no phantom on load; persist/reload/tamper/backfill", async () => {
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-lane-auth-"));
+  try {
+    const nfs = new NodeFs(dir);
+    await nfs.mkdir("temp/agent-profiles/grok-core-worker/tasks");
+    const parent = { kind: "role" as const, id: "规划" };
+    const taskPath = await writeTaskEnvelope(nfs, new SystemClock(), {
+      role: "grok-core-worker",
+      assigneeKind: "agentProfile",
+      claims: [{ id: "cx-5q6za6", path: "n" }],
+      manifestPath: "temp/agent-profiles/grok-core-worker/manifests/tk-x.yml",
+      userPrompt: "lane authority",
+      parentActor: parent,
+      reviewer: parent,
+    });
+
+    // Fresh write has parent/reviewer but no recorded baseCommit / integrationAuthority.
+    const raw0 = await nfs.readFile(taskPath);
+    const fm0 = parseFrontmatter(raw0);
+    assert.equal(fm0.data.integrationAuthority, undefined);
+    assert.equal(fm0.data.baseCommit, undefined);
+
+    const loaded0 = await loadTaskEnvelope(nfs, taskPath);
+    // No in-memory phantom — absence must stay absent for backfill detection.
+    assert.equal(loaded0.integrationAuthority, undefined);
+    assert.equal(loaded0.baseCommit, undefined);
+    // Context / workspaceLane projection may derive without inventing envelope field.
+    const projected = workspaceLaneOf({
+      ...loaded0,
+      workspace: "C:/ws",
+      worktree: "C:/wt",
+      branch: "tent-task/tk-x",
+      targetBranch: "tent-role/规划",
+    });
+    assert.equal(projected?.integrationAuthority?.mutator, "service");
+    assert.equal(projected?.integrationAuthority?.actor.id, "规划");
+    // Envelope field still unset after projection helper.
+    assert.equal(loaded0.integrationAuthority, undefined);
+
+    // Explicit managed-lane backfill (same writes ensureTaskWorkspaceLane performs).
+    const baseSha = "a".repeat(40);
+    const authority = deriveIntegrationAuthority({
+      parentActor: parent,
+      reviewer: parent,
+    });
+    const afterBind = await patchTaskEnvelope(nfs, taskPath, {
+      workspace: "C:/ws",
+      worktree: "C:/wt",
+      branch: "tent-task/tk-x",
+      targetBranch: "tent-role/规划",
+      baseCommit: baseSha,
+      integrationAuthority: authority,
+    });
+    assert.equal(afterBind.baseCommit, baseSha);
+    assert.ok(afterBind.integrationAuthority);
+    assert.equal(afterBind.integrationAuthority?.mutator, "service");
+    assert.equal(afterBind.integrationAuthority?.actor.id, "规划");
+
+    // Raw frontmatter must record both fields (restart audit truth).
+    const raw1 = await nfs.readFile(taskPath);
+    const fm1 = parseFrontmatter(raw1);
+    assert.equal(fm1.data.baseCommit, baseSha);
+    assert.ok(fm1.data.integrationAuthority);
+    const bag = fm1.data.integrationAuthority as {
+      actor: { kind: string; id: string };
+      mutator: string;
+    };
+    assert.equal(bag.mutator, "service");
+    assert.equal(bag.actor.id, "规划");
+
+    // Reload retains and validates recorded bag.
+    const reloaded = await loadTaskEnvelope(nfs, taskPath);
+    assert.equal(reloaded.baseCommit, baseSha);
+    assert.equal(reloaded.integrationAuthority?.mutator, "service");
+    assert.equal(reloaded.integrationAuthority?.actor.kind, "role");
+    assert.equal(reloaded.integrationAuthority?.actor.id, "规划");
+
+    const { serializeFrontmatter } = await import("../src/core/frontmatter.js");
+
+    // Tampered actor on disk fails loud at load.
+    const fmTamper = parseFrontmatter(raw1);
+    fmTamper.data.integrationAuthority = {
+      actor: { kind: "role", id: "forged-actor" },
+      mutator: "service",
+    };
+    await nfs.writeFile(
+      taskPath,
+      serializeFrontmatter(fmTamper.data, fmTamper.body, fmTamper.keyOrder)
+    );
+    await assert.rejects(
+      () => loadTaskEnvelope(nfs, taskPath),
+      (err: unknown) =>
+        err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
+    );
+
+    // Tampered mutator fails loud.
+    fmTamper.data.integrationAuthority = {
+      actor: { kind: "role", id: "规划" },
+      mutator: "executor",
+    };
+    await nfs.writeFile(
+      taskPath,
+      serializeFrontmatter(fmTamper.data, fmTamper.body, fmTamper.keyOrder)
+    );
+    await assert.rejects(
+      () => loadTaskEnvelope(nfs, taskPath),
+      (err: unknown) =>
+        err instanceof TaskContextCardError && err.code === "INVALID_ACTOR"
+    );
+
+    // Missing legacy authority: strip bag → load stays absent (explicit backfill path).
+    const withoutAuth = Object.fromEntries(
+      Object.entries(fmTamper.data).filter(([k]) => k !== "integrationAuthority")
+    );
+    await nfs.writeFile(
+      taskPath,
+      serializeFrontmatter(
+        withoutAuth,
+        fmTamper.body,
+        fmTamper.keyOrder.filter((k) => k !== "integrationAuthority")
+      )
+    );
+    const legacy = await loadTaskEnvelope(nfs, taskPath);
+    assert.equal(
+      legacy.integrationAuthority,
+      undefined,
+      "legacy missing authority stays absent (no phantom)"
+    );
+    assert.equal(legacy.baseCommit, baseSha);
+    // Explicit backfill (same as ensureTaskWorkspaceLane) persists canonical bag.
+    const backfilled = await patchTaskEnvelope(nfs, taskPath, {
+      integrationAuthority: deriveIntegrationAuthority({
+        parentActor: legacy.parentActor!,
+        reviewer: legacy.reviewer!,
+      }),
+    });
+    assert.equal(backfilled.integrationAuthority?.mutator, "service");
+    const rawBack = await nfs.readFile(taskPath);
+    assert.match(rawBack, /integrationAuthority:/);
+    assert.match(rawBack, /mutator: service/);
+    const finalLoad = await loadTaskEnvelope(nfs, taskPath);
+    assert.equal(finalLoad.integrationAuthority?.actor.id, "规划");
   } finally {
     await fs.rm(dir, { recursive: true, force: true });
   }

@@ -1934,20 +1934,12 @@ async function loadTaskEnvelope(fs10, path9) {
   if (typeof data.baseCommit === "string" && data.baseCommit.trim()) {
     task.baseCommit = data.baseCommit.trim();
   }
-  if (task.parentActor && task.reviewer) {
-    const derived = deriveIntegrationAuthority({
-      parentActor: task.parentActor,
-      reviewer: task.reviewer
-    });
-    if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null) {
-      task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
-        data.integrationAuthority,
-        task.parentActor,
-        task.reviewer
-      );
-    } else {
-      task.integrationAuthority = derived;
-    }
+  if (data.integrationAuthority !== void 0 && data.integrationAuthority !== null && task.parentActor && task.reviewer) {
+    task.integrationAuthority = assertIntegrationAuthorityMatchesParent(
+      data.integrationAuthority,
+      task.parentActor,
+      task.reviewer
+    );
   }
   const contextCard = loadTaskContextCardFromFrontmatter(data);
   if (contextCard) {
@@ -2309,10 +2301,10 @@ function workspaceLaneOf(task) {
   if (!task.workspace && !task.worktree && !task.branch && !task.targetBranch && !task.baseCommit && !task.integrationAuthority) {
     return void 0;
   }
-  const integrationAuthority = task.parentActor && task.reviewer ? deriveIntegrationAuthority({
+  const integrationAuthority = task.integrationAuthority ? task.integrationAuthority : task.parentActor && task.reviewer ? deriveIntegrationAuthority({
     parentActor: task.parentActor,
     reviewer: task.reviewer
-  }) : task.integrationAuthority;
+  }) : void 0;
   return {
     workspace: task.workspace,
     worktree: task.worktree,
