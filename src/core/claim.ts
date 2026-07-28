@@ -1,38 +1,45 @@
-// 认领与占用互斥。
-// 运行时 oracle：active Task envelope（queued|running|waiting|delivered）独占 box 子树。
-// Node frontmatter 不再承载 owner/status；协作真相仅在 Task/Session/Delivery。
+// Task Node reference helpers + structural dispatch gates (V0.2 cx-tsw53f).
+// Node refs are non-exclusive: multiple active Tasks may reference the same Node,
+// ancestor, descendant, or workspace/root context. Code isolation is worktree/Git,
+// not a Node-tree mutex.
+// Archive/purge still fail only on *direct* active Node refs (see boxHasDirectActiveTask).
 
 import type { TaskEnvelope } from "./task.js";
 import { isActiveTaskState, legacyStatusToState, type TaskState } from "./task-model.js";
 import { Box } from "./types.js";
 import { LoadedTent } from "./tree.js";
+import {
+  listDirectActiveTasksForNode,
+  taskDirectlyReferencesNode,
+  taskHasWorkspaceContext,
+  taskReferencedNodeIds,
+} from "./task-node-refs.js";
 
 export interface ClaimCheck {
   ok: boolean;
-  /** 不 ok 时,挡路的那个已占用框（active task 的 claim 根）。 */
+  /** Structural blocker box when not ok. */
   blocker?: Box;
   reason?: string;
-  /** Active task that occupies the range, when known. */
+  /** Optional task context (not used for mutual exclusion). */
   task?: TaskEnvelope;
 }
 
 export interface CanClaimOptions {
   /**
-   * asSub claim under a dispatcher that already occupies an ancestor via active task:
-   * allow only when every occupied ancestor is held by this durable role (task.role).
-   * Child itself and descendants must still be free (peer mutual exclusion).
+   * @deprecated V0.2: ordinary reference concurrency is legal; asSub ancestor
+   * occupation exception is removed. Kept as a no-op for call-site compatibility.
    */
   allowAncestorClaimedBy?: string;
   /**
-   * Active-task oracle. When provided with `tent`, occupation is enforced.
-   * When omitted, only structural gates run.
+   * Active tasks (informational). Occupation mutual exclusion is retired;
+   * only structural gates run.
    */
   tasks?: readonly TaskEnvelope[];
-  /** Required together with `tasks` for ancestor/descendant occupation checks. */
+  /** Optional tent (unused for occupation; retained for call-site compatibility). */
   tent?: LoadedTent;
 }
 
-/** Envelope is active occupation (full state, with legacy status fallback). */
+/** Envelope is active (queued|running|waiting|delivered, with legacy status fallback). */
 export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
   const state: TaskState =
     task.state ||
@@ -43,31 +50,11 @@ export function envelopeIsActiveOccupation(task: TaskEnvelope): boolean {
 }
 
 /**
- * 能否把 box 认领给某角色?
- * 结构门：invalid / archived（isUsableBox）。
- * 占用门：仅 active task envelope 子树互斥。
+ * Structural gate for dispatch/claim: invalid / archived deny new work.
+ * Node reference concurrency is legal — no mutual exclusion.
  */
-export function canClaim(box: Box, options?: CanClaimOptions): ClaimCheck {
-  const structural = structuralClaimGate(box);
-  if (!structural.ok) return structural;
-
-  const tasks = options?.tasks;
-  const tent = options?.tent;
-  if (!tasks || tasks.length === 0 || !tent) {
-    return { ok: true };
-  }
-
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  const hit = findActiveOccupation(tent, box, tasks, {
-    allowAncestorClaimedBy: allowAncestorBy || undefined,
-  });
-  if (!hit) return { ok: true };
-  return {
-    ok: false,
-    blocker: hit.blocker,
-    task: hit.task,
-    reason: hit.reason,
-  };
+export function canClaim(box: Box, _options?: CanClaimOptions): ClaimCheck {
+  return structuralClaimGate(box);
 }
 
 /** Structural gates shared by claim and dispatch (no occupation). */
@@ -87,91 +74,62 @@ export interface ActiveOccupationHit {
   blocker: Box;
   task: TaskEnvelope;
   reason: string;
-  /** self | ancestor | descendant | root */
+  /** self only in V0.2 direct-ref semantics (legacy relation names retained). */
   relation: "self" | "ancestor" | "descendant" | "root";
 }
 
 /**
- * Find an active task that occupies `box` or an overlapping ancestor/descendant range.
- * asSub: ancestor occupation by `allowAncestorClaimedBy` role is skipped.
+ * @deprecated V0.2 non-exclusive refs: ancestor/descendant/root no longer block.
+ * Returns a direct-ref hit only when some active Task references `box` itself.
+ * Callers that still need archive/purge direct-ref checks should prefer
+ * `boxHasDirectActiveTask` / `listDirectActiveTasksForNode`.
  */
 export function findActiveOccupation(
   tent: LoadedTent,
   box: Box,
   tasks: readonly TaskEnvelope[],
-  options?: { allowAncestorClaimedBy?: string }
+  _options?: { allowAncestorClaimedBy?: string }
 ): ActiveOccupationHit | undefined {
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
+  void tent;
+  void _options;
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        return {
-          blocker: box,
-          task,
-          relation: "root",
-          reason: `Tent root is occupied by active task for ${task.role}.`,
-        };
-      }
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (claimed.id === box.id) {
-        return {
-          blocker: claimed,
-          task,
-          relation: "self",
-          reason: `${box.name} is already occupied by active task for ${task.role}.`,
-        };
-      }
-      if (isAncestor(claimed, box)) {
-        if (allowAncestorBy && task.role === allowAncestorBy) {
-          continue;
-        }
-        return {
-          blocker: claimed,
-          task,
-          relation: "ancestor",
-          reason: `Ancestor ${claimed.name} is occupied by active task for ${task.role}.`,
-        };
-      }
-      if (isAncestor(box, claimed)) {
-        return {
-          blocker: claimed,
-          task,
-          relation: "descendant",
-          reason: `Descendant ${claimed.name} is occupied by active task for ${task.role}.`,
-        };
-      }
+    if (taskDirectlyReferencesNode(task, box.id)) {
+      return {
+        blocker: box,
+        task,
+        relation: "self",
+        reason: `${box.name} is directly referenced by active task ${task.id || task.path} (${task.role}).`,
+      };
     }
   }
   return undefined;
 }
 
-/** True when any active task claims this box id (not ancestor/descendant fan-out). */
+/**
+ * True when any active task *directly* references this box id.
+ * Workspace/root context alone does not count as a direct Node ref.
+ * Used by archive/purge gates — ancestor/descendant refs do not block.
+ */
 export function boxHasDirectActiveTask(
   boxId: string,
   tasks: readonly TaskEnvelope[]
 ): boolean {
-  return tasks.some(
-    (t) => envelopeIsActiveOccupation(t) && (t.claims.includes(boxId) || t.claims.includes("root"))
-  );
+  return listDirectActiveTasksForNode(boxId, tasks).length > 0;
 }
 
 /**
- * Active task that claims tent root (`claims` includes `"root"`).
- * Root occupation covers the entire tent and must not be skipped by box-only scans.
+ * Active tasks that carry workspace/root context (not a Tent-wide lock).
+ * Multiple concurrent workspace-context Tasks are legal.
  */
 export function findActiveRootTask(
   tasks: readonly TaskEnvelope[]
 ): TaskEnvelope | undefined {
-  return tasks.find(
-    (t) => envelopeIsActiveOccupation(t) && t.claims.includes("root")
-  );
+  return tasks.find((t) => envelopeIsActiveOccupation(t) && taskHasWorkspaceContext(t));
 }
 
 /**
- * Any active task envelope (root or box claim). Used when dispatching tent root:
- * root occupies the whole tent, so any active task blocks a second root dispatch.
+ * Any active task envelope. Informational only — no longer blocks root dispatch.
  */
 export function findAnyActiveTask(
   tasks: readonly TaskEnvelope[]
@@ -179,15 +137,13 @@ export function findAnyActiveTask(
   return tasks.find((t) => envelopeIsActiveOccupation(t));
 }
 
-/** Boxes that currently host a direct active-task claim (for status / panels). */
+/** Boxes that currently host a direct active-task Node ref (for status / panels). */
 export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnvelope[]): Box[] {
   const out = new Map<string, Box>();
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      // Root is not a box id; callers that need tent-root occupation use findActiveRootTask.
-      if (claimId === "root") continue;
-      const box = tent.byId.get(claimId);
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      const box = tent.byId.get(nodeId);
       if (box) out.set(box.id, box);
     }
   }
@@ -196,17 +152,8 @@ export function occupiedBoxesFromTasks(tent: LoadedTent, tasks: readonly TaskEnv
 
 /**
  * Structural freeze only (invalid / archived).
- * Active-task occupation is checked via findActiveOccupation / canClaim — not Node locks.
+ * Active-task Node refs are non-exclusive — not Node locks.
  */
 export function isFrozen(box: Box): boolean {
   return box.invalid || box.archived;
-}
-
-function isAncestor(ancestor: Box, child: Box): boolean {
-  let parent = child.parent;
-  while (parent) {
-    if (parent.id === ancestor.id) return true;
-    parent = parent.parent;
-  }
-  return false;
 }

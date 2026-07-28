@@ -4,8 +4,8 @@ import type { OpsEnv } from "../core/ops-context.js";
 import { createBox, forkNode } from "../core/ops.js";
 import { parseFrontmatter, serializeFrontmatter, BOX_FRONTMATTER_KEY_ORDER } from "../core/frontmatter.js";
 import { loadTent, boxNotePath, type LoadedTent } from "../core/tree.js";
-import { envelopeIsActiveOccupation } from "../core/claim.js";
 import { loadTaskEnvelopes } from "../core/task.js";
+import { listDirectActiveTasksForNode } from "../core/task-node-refs.js";
 import type { Box } from "../core/types.js";
 import { withTentMutation } from "../core/adapter.js";
 import type { DocsClient } from "./docs-client.js";
@@ -328,20 +328,10 @@ function parseArtifactRefs(data: Record<string, unknown>): ArtifactRef[] {
 }
 
 async function hasActiveTask(env: OpsEnv, tent: LoadedTent, box: Box): Promise<boolean> {
-  // Occupation oracle = active task envelopes only (stale owner is not a write lock).
+  // Direct active Node ref only (cx-tsw53f); ancestor/descendant/workspace do not freeze writes.
+  void tent;
   const tasks = await loadTaskEnvelopes(env.fs);
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(box.id) || task.claims.includes("root")) return true;
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, box.path) || isAncestorPath(box.path, claimed.path)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  return listDirectActiveTasksForNode(box.id, tasks).length > 0;
 }
 
 function isAncestorPath(ancestor: string, child: string): boolean {

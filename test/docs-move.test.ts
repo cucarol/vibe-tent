@@ -279,7 +279,7 @@ test("moveNode: same-parent reorder is order-only (no link rewrite)", async () =
   assert.equal(await fsa.exists("gamma/gamma.md"), true);
 });
 
-test("moveNode: occupation placeBox freeze (self blocked, ancestor-of-occupied allowed)", async () => {
+test("moveNode: concurrent Task refs do not freeze move (cx-tsw53f)", async () => {
   const dir = await fs.mkdtemp(path.join(os.tmpdir(), "tent-move-occ-"));
   const fsa = new NodeFs(dir);
   await scaffoldTent(fsa, { name: "x", rules: "# r\n" });
@@ -297,6 +297,8 @@ test("moveNode: occupation placeBox freeze (self blocked, ancestor-of-occupied a
       "type: task",
       "id: tk-busy-mv",
       "role: executor",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       `claims: [${child}]`,
       "manifest: temp/executor/manifests/x.yml",
       "status: taken",
@@ -305,24 +307,23 @@ test("moveNode: occupation placeBox freeze (self blocked, ancestor-of-occupied a
       "",
       "# Task",
       "",
+      "## User Prompt",
+      "",
+      "hold",
+      "",
     ].join("\n")
   );
 
-  // Self occupation blocked.
-  await assert.rejects(
-    () => moveNode(env as any, child, free, { mode: "inside" }),
-    /active task cannot be moved|Ranges with an active task cannot be moved/i
-  );
-  // Into occupied range blocked.
-  await assert.rejects(
-    () => moveNode(env as any, free, child, { mode: "inside" }),
-    /Cannot move into a range occupied by an active task/i
-  );
-  // Ancestor of occupied child may still move (claim moves with subtree).
+  // Direct-ref self may move (stable nodeId; path is refreshable hint).
+  const selfMoved = await moveNode(env as any, child, free, { mode: "inside" });
+  assert.equal(selfMoved.path, "free/busy");
+  // Move into a directly-referenced parent is also legal.
+  await moveNode(env as any, free, park, { mode: "inside" });
+  // Ancestor move still works.
   const moved = await moveNode(env as any, root, park, { mode: "inside" });
   assert.equal(moved.path, "park/zone");
   const tent = await loadTent(fsa);
-  assert.equal(tent.byId.get(child)?.path, "park/zone/busy");
+  assert.ok(tent.byId.get(child));
 });
 
 test("moveNode: refuses cycle and archived", async () => {

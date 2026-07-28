@@ -1722,30 +1722,129 @@ var init_task_model = __esm({
   }
 });
 
+// src/core/task-node-refs.ts
+function isWorkspaceRootClaim(id) {
+  return id.trim() === WORKSPACE_ROOT_CLAIM;
+}
+function normalizeTaskNodeRef(raw) {
+  const id = raw.id.trim();
+  if (!id) throw new Error("Task node ref id cannot be empty.");
+  if (isWorkspaceRootClaim(id)) {
+    throw new Error(
+      'Task.contextCard.refs.nodes must not include fake "root" Node ref; workspace context is separate.'
+    );
+  }
+  const out = { id };
+  if (typeof raw.path === "string" && raw.path.trim()) {
+    out.path = raw.path.trim().replace(/\\/g, "/");
+  }
+  if (typeof raw.revision === "string" && raw.revision.trim()) {
+    out.revision = raw.revision.trim();
+  }
+  return out;
+}
+function parseTaskNodeRefs(value) {
+  if (value == null) return [];
+  if (!Array.isArray(value)) {
+    throw new Error("Task.contextCard.refs.nodes must be an array.");
+  }
+  const out = [];
+  const seen = /* @__PURE__ */ new Set();
+  for (let i = 0; i < value.length; i++) {
+    const item = value[i];
+    if (!item || typeof item !== "object" || Array.isArray(item)) {
+      throw new Error(`Task.contextCard.refs.nodes[${i}] must be an object with id.`);
+    }
+    const rec = item;
+    if (typeof rec.id !== "string" || !rec.id.trim()) {
+      throw new Error(`Task.contextCard.refs.nodes[${i}].id must be a non-empty string.`);
+    }
+    if (isWorkspaceRootClaim(rec.id)) {
+      continue;
+    }
+    const ref = normalizeTaskNodeRef({
+      id: rec.id,
+      path: typeof rec.path === "string" ? rec.path : void 0,
+      revision: typeof rec.revision === "string" ? rec.revision : void 0
+    });
+    if (seen.has(ref.id)) continue;
+    seen.add(ref.id);
+    out.push(ref);
+  }
+  return out;
+}
+function taskReferencedNodeIds(task) {
+  if (task.contextCard?.refs?.nodes) {
+    return task.contextCard.refs.nodes.map((n) => n.id).filter((id) => id && !isWorkspaceRootClaim(id));
+  }
+  return (task.claims ?? []).filter((id) => id && !isWorkspaceRootClaim(id));
+}
+function taskDirectlyReferencesNode(task, nodeId2) {
+  const id = nodeId2.trim();
+  if (!id || isWorkspaceRootClaim(id)) return false;
+  return taskReferencedNodeIds(task).includes(id);
+}
+function taskIsActiveOccupation(task) {
+  const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
+  return isActiveTaskState(state);
+}
+function listDirectActiveTasksForNode(nodeId2, tasks) {
+  const id = nodeId2.trim();
+  const matches = tasks.filter(
+    (t) => taskIsActiveOccupation(t) && taskDirectlyReferencesNode(t, id)
+  );
+  return sortTasksDeterministically(matches);
+}
+function sortTasksDeterministically(tasks) {
+  return [...tasks].sort((a, b) => {
+    const ca = a.createdAt || "";
+    const cb = b.createdAt || "";
+    if (ca !== cb) return ca.localeCompare(cb);
+    const ia = a.id || "";
+    const ib = b.id || "";
+    if (ia !== ib) return ia.localeCompare(ib);
+    return (a.path || "").localeCompare(b.path || "");
+  });
+}
+function loadContextCardNodeRefsFromFrontmatter(data) {
+  const raw = data.contextCard;
+  if (raw == null || typeof raw !== "object" || Array.isArray(raw)) return void 0;
+  const card = raw;
+  const refsRaw = card.refs;
+  if (refsRaw == null || typeof refsRaw !== "object" || Array.isArray(refsRaw)) {
+    return void 0;
+  }
+  const refsObj = refsRaw;
+  const nodes = parseTaskNodeRefs(refsObj.nodes ?? []);
+  const out = {
+    refs: { nodes }
+  };
+  if (card.schemaVersion === "v1") out.schemaVersion = "v1";
+  if (typeof card.objective === "string") out.objective = card.objective;
+  if (Array.isArray(card.acceptance) && card.acceptance.every((a) => typeof a === "string")) {
+    out.acceptance = card.acceptance;
+  }
+  return out;
+}
+var WORKSPACE_ROOT_CLAIM;
+var init_task_node_refs = __esm({
+  "src/core/task-node-refs.ts"() {
+    "use strict";
+    init_frontmatter();
+    init_paths();
+    init_tree();
+    init_task_model();
+    WORKSPACE_ROOT_CLAIM = "root";
+  }
+});
+
 // src/core/claim.ts
 function envelopeIsActiveOccupation(task) {
   const state = task.state || (task.status === "pending" || task.status === "taken" ? legacyStatusToState(task.status) : "failed");
   return isActiveTaskState(state);
 }
-function canClaim(box, options) {
-  const structural = structuralClaimGate(box);
-  if (!structural.ok) return structural;
-  const tasks = options?.tasks;
-  const tent = options?.tent;
-  if (!tasks || tasks.length === 0 || !tent) {
-    return { ok: true };
-  }
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  const hit = findActiveOccupation(tent, box, tasks, {
-    allowAncestorClaimedBy: allowAncestorBy || void 0
-  });
-  if (!hit) return { ok: true };
-  return {
-    ok: false,
-    blocker: hit.blocker,
-    task: hit.task,
-    reason: hit.reason
-  };
+function canClaim(box, _options) {
+  return structuralClaimGate(box);
 }
 function structuralClaimGate(box) {
   if (box.invalid) {
@@ -1756,62 +1855,15 @@ function structuralClaimGate(box) {
   }
   return { ok: true };
 }
-function findActiveOccupation(tent, box, tasks, options) {
-  const allowAncestorBy = (options?.allowAncestorClaimedBy || "").trim();
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        return {
-          blocker: box,
-          task,
-          relation: "root",
-          reason: `Tent root is occupied by active task for ${task.role}.`
-        };
-      }
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (claimed.id === box.id) {
-        return {
-          blocker: claimed,
-          task,
-          relation: "self",
-          reason: `${box.name} is already occupied by active task for ${task.role}.`
-        };
-      }
-      if (isAncestor(claimed, box)) {
-        if (allowAncestorBy && task.role === allowAncestorBy) {
-          continue;
-        }
-        return {
-          blocker: claimed,
-          task,
-          relation: "ancestor",
-          reason: `Ancestor ${claimed.name} is occupied by active task for ${task.role}.`
-        };
-      }
-      if (isAncestor(box, claimed)) {
-        return {
-          blocker: claimed,
-          task,
-          relation: "descendant",
-          reason: `Descendant ${claimed.name} is occupied by active task for ${task.role}.`
-        };
-      }
-    }
-  }
-  return void 0;
-}
-function findAnyActiveTask(tasks) {
-  return tasks.find((t) => envelopeIsActiveOccupation(t));
+function boxHasDirectActiveTask(boxId, tasks) {
+  return listDirectActiveTasksForNode(boxId, tasks).length > 0;
 }
 function occupiedBoxesFromTasks(tent, tasks) {
   const out = /* @__PURE__ */ new Map();
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") continue;
-      const box = tent.byId.get(claimId);
+    for (const nodeId2 of taskReferencedNodeIds(task)) {
+      const box = tent.byId.get(nodeId2);
       if (box) out.set(box.id, box);
     }
   }
@@ -1820,18 +1872,11 @@ function occupiedBoxesFromTasks(tent, tasks) {
 function isFrozen(box) {
   return box.invalid || box.archived;
 }
-function isAncestor(ancestor, child) {
-  let parent = child.parent;
-  while (parent) {
-    if (parent.id === ancestor.id) return true;
-    parent = parent.parent;
-  }
-  return false;
-}
 var init_claim = __esm({
   "src/core/claim.ts"() {
     "use strict";
     init_task_model();
+    init_task_node_refs();
   }
 });
 
@@ -1854,8 +1899,27 @@ function sortForCanonical(value) {
 function sha256Hex(text) {
   return (0, import_node_crypto2.createHash)("sha256").update(text, "utf8").digest("hex");
 }
+function formatContextGeneration(stableCanonicalBytes) {
+  return `cg-${CONTEXT_GENERATION_VERSION}-${sha256Hex(stableCanonicalBytes)}`;
+}
 function isContextGenerationId(value) {
   return typeof value === "string" && /^cg-v1-[a-f0-9]{64}$/.test(value);
+}
+function computeContextGeneration(inputs) {
+  const roster = [...inputs.rosterAgentIds ?? []].map((s) => s.trim()).filter(Boolean).sort((a, b) => a.localeCompare(b));
+  const payload = {
+    v: CONTEXT_GENERATION_VERSION,
+    workspaceIdentity: inputs.workspaceIdentity.trim(),
+    rulesPointerDigest: inputs.rulesPointerDigest.trim(),
+    agentsPointerDigest: inputs.agentsPointerDigest.trim(),
+    tentRoleDigest: inputs.tentRoleDigest?.trim() || "",
+    rolePrompt: inputs.rolePrompt?.trim() || "",
+    roster,
+    tentTaskDigest: inputs.tentTaskDigest?.trim() || "",
+    profileAdapterCompatibility: inputs.profileAdapterCompatibility?.trim() || "",
+    extraStable: inputs.extraStable ?? {}
+  };
+  return formatContextGeneration(canonicalJson(payload));
 }
 function computeTaskDeltaDigest(inputs) {
   const { card, taskInputDelta, checkpoint, userPrompt } = inputs;
@@ -2109,6 +2173,17 @@ function serializeTaskContextCardForFrontmatter(card) {
     taskDeltaDigest: card.taskDeltaDigest
   };
 }
+function projectAssigneeFromTask(task) {
+  const agentId = typeof task.agentId === "string" ? task.agentId.trim() : "";
+  if (agentId) {
+    return { kind: "agentId", id: agentId };
+  }
+  const kind = taskAssigneeKind(task);
+  if (kind === "agentProfile") {
+    return { kind: "agentId", id: task.role };
+  }
+  return { kind: "role", id: task.role };
+}
 function deriveIntegrationAuthority(input) {
   try {
     const pair = resolveParentReviewerPair({
@@ -2164,7 +2239,7 @@ function assertIntegrationAuthorityMatchesParent(authority, parentActor, reviewe
   }
   return derived;
 }
-var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, INTEGRATION_MUTATOR_SERVICE, TaskContextCardError;
+var import_node_crypto2, TASK_CONTEXT_CARD_SCHEMA_VERSION, CONTEXT_GENERATION_VERSION, INTEGRATION_MUTATOR_SERVICE, TaskContextCardError;
 var init_task_context_card = __esm({
   "src/core/task-context-card.ts"() {
     "use strict";
@@ -2172,6 +2247,7 @@ var init_task_context_card = __esm({
     init_task_model();
     init_task();
     TASK_CONTEXT_CARD_SCHEMA_VERSION = "v1";
+    CONTEXT_GENERATION_VERSION = "v1";
     INTEGRATION_MUTATOR_SERVICE = "service";
     TaskContextCardError = class extends Error {
       constructor(code, message, details) {
@@ -2217,9 +2293,6 @@ async function collectTaskFiles(fs2, taskDir, tasks) {
 function taskAssigneeKind(task) {
   return task.assigneeKind === "agentProfile" ? "agentProfile" : "role";
 }
-function taskAsSub(task) {
-  return task.asSub === true;
-}
 function serializeTaskActorRef(actor) {
   return { kind: actor.kind, id: actor.id };
 }
@@ -2237,16 +2310,55 @@ function resolveDispatchActors(input) {
 async function loadTaskEnvelope(fs2, path) {
   if (!await fs2.exists(path)) throw new Error(`Task envelope not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs2.readFile(path));
-  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string" || !Array.isArray(data.claims) || !data.claims.every((claim) => typeof claim === "string")) {
+  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
     throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+  const legacyClaims = Array.isArray(data.claims) ? data.claims.every((claim) => typeof claim === "string") ? data.claims : void 0 : void 0;
+  if (Array.isArray(data.claims) && legacyClaims === void 0) {
+    throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+  let contextCard;
+  let nodeIdsFromCard = [];
+  let hasNodeRefWire = false;
+  if (data.contextCard !== void 0 && data.contextCard !== null) {
+    try {
+      const loaded = loadTaskContextCardFromFrontmatter(data);
+      if (loaded) {
+        contextCard = loaded;
+        nodeIdsFromCard = loaded.refs.nodes.map((n) => n.id).filter(Boolean);
+        hasNodeRefWire = true;
+      }
+    } catch (err) {
+      const partial = loadContextCardNodeRefsFromFrontmatter(data);
+      if (!partial) throw err;
+      if (!(err instanceof TaskContextCardError)) throw err;
+      nodeIdsFromCard = partial.refs.nodes.map((n) => n.id).filter(Boolean);
+      hasNodeRefWire = true;
+    }
+  } else {
+    const loaded = loadTaskContextCardFromFrontmatter(data);
+    if (loaded) {
+      contextCard = loaded;
+      nodeIdsFromCard = loaded.refs.nodes.map((n) => n.id).filter(Boolean);
+      hasNodeRefWire = true;
+    }
+  }
+  if (!hasNodeRefWire && !legacyClaims) {
+    throw new Error(
+      `Invalid task envelope format: ${path} (missing contextCard.refs.nodes and claims).`
+    );
   }
   const legacyStatus = data.status === "taken" ? "taken" : "pending";
   const state = parseTaskState(data.state, legacyStatus);
   const actors = resolveActorsFromDisk(data);
+  const projectedClaims = hasNodeRefWire ? [
+    ...data.workspaceContext === true || (legacyClaims?.some(isWorkspaceRootClaim) ?? false) ? [WORKSPACE_ROOT_CLAIM] : [],
+    ...nodeIdsFromCard.filter((id) => !isWorkspaceRootClaim(id))
+  ] : legacyClaims ?? [];
   const task = {
     path,
     role: data.role,
-    claims: data.claims,
+    claims: projectedClaims,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
@@ -2254,6 +2366,9 @@ async function loadTaskEnvelope(fs2, path) {
     reviewer: actors.reviewer,
     prompt: body.trim() || void 0
   };
+  if (data.workspaceContext === true || projectedClaims.some(isWorkspaceRootClaim)) {
+    task.workspaceContext = true;
+  }
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
@@ -2273,7 +2388,6 @@ async function loadTaskEnvelope(fs2, path) {
       task.reviewer
     );
   }
-  const contextCard = loadTaskContextCardFromFrontmatter(data);
   if (contextCard) {
     task.contextCard = contextCard;
     task.contextGeneration = contextCard.contextGeneration;
@@ -2341,8 +2455,12 @@ function formatTaskPointers(task) {
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`
   ];
-  if (task.claims?.length) {
-    lines.push(`claims: ${task.claims.join(", ")}`);
+  const nodeIds = taskReferencedNodeIds(task);
+  if (nodeIds.length) {
+    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+  }
+  if (task.workspaceContext) {
+    lines.push(`workspaceContext: true`);
   }
   if (task.parentActor) {
     lines.push(
@@ -2421,7 +2539,10 @@ async function writeTaskEnvelope(fs2, clock, input) {
   const dir = input.tasksDir?.trim() || (assigneeKind === "agentProfile" ? agentProfileTasksDir(input.role) : join2(TEMP_DIR, input.role, "tasks"));
   await ensureDir(fs2, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
-  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
+  const workspaceContext = input.claims.some((c) => isWorkspaceRootClaim(c.id));
+  const nodeRefs = input.claims.filter((c) => !isWorkspaceRootClaim(c.id)).map((c) => ({ id: c.id, path: c.path }));
+  const primaryRef = nodeRefs[0]?.id || (workspaceContext ? "root" : "node");
+  const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs2, dir, stem);
   const now = clock.now();
   const actors = resolveDispatchActors({
@@ -2437,6 +2558,42 @@ async function writeTaskEnvelope(fs2, clock, input) {
       `deliveryPolicy=${deliveryPolicy} is only legal for a durable Role's user-facing delivery; downstream Task Agent \u2192 parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
     );
   }
+  const objective = (input.objective?.trim() || userPrompt).trim();
+  if (!objective) throw new Error("Dispatch requires a non-empty objective (user prompt).");
+  const acceptance = input.acceptance && input.acceptance.length > 0 ? input.acceptance.map((s) => s.trim()).filter(Boolean) : [objective];
+  if (acceptance.length === 0) {
+    throw new Error("Dispatch requires non-empty acceptance (or objective).");
+  }
+  const contextGeneration = input.contextGeneration?.trim() || computeContextGeneration({
+    workspaceIdentity: input.workspace?.workspace || "local-workspace",
+    rulesPointerDigest: "dispatch-default-rules",
+    agentsPointerDigest: "dispatch-default-agents",
+    extraStable: {
+      assigneeKind,
+      assignee: input.role,
+      taskId: id
+    }
+  });
+  const assignee = projectAssigneeFromTask({
+    role: input.role,
+    assigneeKind,
+    agentId: input.agentId
+  });
+  const contextCard = buildTaskContextCard({
+    objective,
+    acceptance,
+    refs: {
+      nodes: nodeRefs,
+      tasks: [],
+      deliveries: [],
+      git: []
+    },
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
+    assignee,
+    contextGeneration,
+    userPrompt
+  });
   const data = {
     type: "task",
     id,
@@ -2446,12 +2603,16 @@ async function writeTaskEnvelope(fs2, clock, input) {
     assigneeKind,
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
-    claims: input.claims.map((claim) => claim.id),
+    // Sole new persisted source wire — do not write claims[].
+    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
+    contextGeneration: contextCard.contextGeneration,
+    taskDeltaDigest: contextCard.taskDeltaDigest,
     manifest: input.manifestPath,
     deliveryPolicy,
     createdAt: now,
     updatedAt: now
   };
+  if (workspaceContext) data.workspaceContext = true;
   if (input.asSub === true) data.asSub = true;
   if (input.agentId?.trim()) data.agentId = input.agentId.trim();
   if (input.sessionId) data.sessionId = input.sessionId;
@@ -2461,12 +2622,15 @@ async function writeTaskEnvelope(fs2, clock, input) {
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
   }
-  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
+  const pointers = [
+    ...workspaceContext ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : [],
+    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`)
+  ].join("\n");
   const body = `# Task
 
 ## Context Pointers
 
-${pointers}
+${pointers || "(none)"}
 
 - Manifest: ${input.manifestPath}
 ` + (input.id || id ? `- Task id: ${id}
@@ -2639,6 +2803,7 @@ var init_task = __esm({
     init_tree();
     init_task_model();
     init_task_context_card();
+    init_task_node_refs();
   }
 });
 
@@ -3056,17 +3221,11 @@ async function taskClaim(env, taskPath, options = {}) {
     }
     assertTransition(task.state, "claim", "running");
     const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims.filter((claimId) => claimId !== "root").map((claimId) => requireBoxById(tent, claimId));
-    const parentRole = task.parentActor?.kind === "role" ? task.parentActor.id : void 0;
-    const allowAncestorClaimedBy = taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : void 0;
-    const allTasks = await loadTaskEnvelopes(env.fs);
-    const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
+    const claimedBoxes = taskReferencedNodeIds(task).map(
+      (claimId) => requireBoxById(tent, claimId)
+    );
     for (const box of claimedBoxes) {
-      const claimable = canClaim(box, {
-        tent,
-        tasks: peerTasks,
-        ...allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}
-      });
+      const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
     await ackTaskEnvelope(env.fs, taskPath);
@@ -3300,6 +3459,7 @@ var init_task_lifecycle = __esm({
     "use strict";
     init_adapter();
     init_claim();
+    init_task_node_refs();
     init_delivery();
     init_output();
     init_tree();
@@ -3835,14 +3995,7 @@ function resolveRenameTarget(tent, conceptIdOrPath) {
   if (byPath) return byPath;
   throw new Error(`Concept not found: ${conceptIdOrPath}.`);
 }
-async function assertRenameOccupationAllowed(env, tent, concept) {
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const hit = findActiveOccupation(tent, concept, tasks);
-  if (hit) {
-    throw new Error(
-      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
-    );
-  }
+async function assertRenameOccupationAllowed(_env, _tent, _concept) {
 }
 function assertNotOperationalPath(path) {
   if (isOperationalPath(path) || path === "temp" || path.startsWith("temp/")) {
@@ -4029,7 +4182,6 @@ var init_renameOps = __esm({
     init_link_target();
     init_paths();
     init_scaffold();
-    init_task();
     init_tree();
   }
 });
@@ -4053,24 +4205,11 @@ async function moveNodeUnlocked(env, conceptId, newParentId, position) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
   assertNotOperationalPath2(moved.path);
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const movedHit = findActiveOccupation(tent, moved, tasks);
-  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
-    throw new Error(
-      "Ranges with an active task cannot be moved; complete or interrupt the task first."
-    );
-  }
   const parentBox = resolveNewParent(tent, newParentId);
   if (parentBox) {
     if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
     assertContentMutable(parentBox, "used as move parent");
     assertNotOperationalPath2(parentBox.path);
-  }
-  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : void 0;
-  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
-    throw new Error(
-      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
-    );
   }
   const newParentPath = parentBox ? parentBox.path : "";
   if (newParentPath === moved.path || newParentPath.startsWith(moved.path + "/")) {
@@ -4268,13 +4407,11 @@ var init_moveOps = __esm({
   "src/core/moveOps.ts"() {
     "use strict";
     init_adapter();
-    init_claim();
     init_frontmatter();
     init_okf();
     init_order();
     init_paths();
     init_renameOps();
-    init_task();
     init_tree();
   }
 });
@@ -4336,32 +4473,20 @@ async function dispatchUnlocked(env, claimId, role, promptOrOptions) {
   const tasks = await loadTaskEnvelopes(env.fs);
   const createdRoot = assigneeKind === "agentProfile" ? agentProfileTempRoot(assigneeLabel) : join2("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
-  const asSub = options.asSub === true;
   if (!options.parentActor) {
     throw new Error(
       "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
     );
   }
-  const parentRoleId = options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
-  const subUnderDispatcher = asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
+  void options.asSub;
+  void tasks;
   if (claim.root) {
-    const blocker = findAnyActiveTask(tasks);
-    if (blocker) {
-      const claimLabel = blocker.claims.includes("root") ? "root" : blocker.claims[0] || "unknown";
-      throw new Error(
-        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
-      );
-    }
   } else {
     const structural = structuralClaimGate(claim.box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
     }
-    const claimable = canClaim(claim.box, {
-      tent,
-      tasks,
-      ...subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}
-    });
+    const claimable = canClaim(claim.box, { tent, tasks });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
     }
@@ -4586,11 +4711,6 @@ async function placeBoxUnlocked(env, fromPath, newParentPath, position) {
   if (!moved) throw new Error(`Box not found: ${fromPath}.`);
   if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
   assertContentMutable(moved, "moved");
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const movedHit = findActiveOccupation(before, moved, tasks);
-  if (movedHit && (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")) {
-    throw new Error("Ranges with an active task cannot be moved; complete or interrupt the task first.");
-  }
   if (moved.invalid || moved.archived) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
@@ -4599,10 +4719,6 @@ async function placeBoxUnlocked(env, fromPath, newParentPath, position) {
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
   if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
   if (parentBox) assertContentMutable(parentBox, "used as move parent");
-  const parentHit = parentBox ? findActiveOccupation(before, parentBox, tasks) : void 0;
-  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
-    throw new Error("Cannot move into a range occupied by an active task; complete or interrupt the task first.");
-  }
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
     throw new Error("Cannot move a box into its own subtree.");
   }
@@ -4736,11 +4852,11 @@ async function setNodeModeUnlocked(env, boxId, mode) {
     }
     return;
   }
-  if (next === "archived" || current !== "archived") {
+  if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (findActiveOccupation(tent, box, tasks)) {
+    if (boxHasDirectActiveTask(box.id, tasks)) {
       throw new Error(
-        next === "archived" ? "Ranges with an active task cannot be archived; complete or interrupt the task first." : "Ranges with an active task cannot change mode; complete or interrupt the task first."
+        "Node is directly referenced by an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }
@@ -4822,9 +4938,8 @@ function hasActiveTaskInSubtree(tent, box, tasks) {
   const ids = collectSubtreeIds(box);
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") return true;
-      if (ids.has(claimId)) return true;
+    for (const nodeId2 of taskReferencedNodeIds(task)) {
+      if (ids.has(nodeId2)) return true;
     }
   }
   void tent;
@@ -4848,8 +4963,8 @@ function roleManifestClaims(tent, role, current, tasks) {
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      const box = tent.byId.get(claimId);
+    for (const nodeId2 of taskReferencedNodeIds(task)) {
+      const box = tent.byId.get(nodeId2);
       if (box) claims.set(box.id, box);
     }
   }
@@ -4878,6 +4993,7 @@ var init_ops = __esm({
     init_frontmatter();
     init_order();
     init_claim();
+    init_task_node_refs();
     init_tree();
     init_tags();
     init_typeRegistry();
@@ -5180,6 +5296,7 @@ init_claim();
 // src/core/inbox.ts
 init_task();
 init_claim();
+init_task_node_refs();
 async function buildInbox(tent, fs2) {
   if (!fs2) {
     return [];
@@ -5190,7 +5307,7 @@ async function buildInbox(tent, fs2) {
   for (const box of occupied) {
     if (box.invalid || box.archived) continue;
     const task = tasks.find(
-      (t) => envelopeIsActiveOccupation(t) && t.claims.includes(box.id)
+      (t) => envelopeIsActiveOccupation(t) && taskDirectlyReferencesNode(t, box.id)
     );
     if (!task) continue;
     items.push({
@@ -5811,6 +5928,7 @@ init_adapter();
 init_tree();
 init_task();
 init_claim();
+init_task_node_refs();
 init_typeRegistry();
 async function createType(fs2, name, definition) {
   await withTentMutation(fs2, async () => {
@@ -5853,15 +5971,9 @@ async function inspectTypeDeletion(fs2, level, name) {
   }
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        if (referenced.length > 0) {
-          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
-        }
-        continue;
-      }
-      if (!relatedIds.has(claimId)) continue;
-      const box = tent.byId.get(claimId);
+    for (const nodeId2 of taskReferencedNodeIds(task)) {
+      if (!relatedIds.has(nodeId2)) continue;
+      const box = tent.byId.get(nodeId2);
       if (!box) continue;
       ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
     }

@@ -8,12 +8,12 @@ import { BOX_FRONTMATTER_KEY_ORDER, serializeFrontmatter, parseFrontmatter } fro
 import { loadOrder, saveOrder, ROOT_KEY } from "./order.js";
 import { Box, BoxType, NodeMode } from "./types.js";
 import {
+  boxHasDirectActiveTask,
   canClaim,
   envelopeIsActiveOccupation,
-  findActiveOccupation,
-  findAnyActiveTask,
   structuralClaimGate,
 } from "./claim.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
 import { assertContentMutable, isExplicitArchiveRoot, isUsableBox, parseNodeMode } from "./tree.js";
 import {
   addRegistryTag,
@@ -164,44 +164,28 @@ async function dispatchUnlocked(
       : join("temp", assigneeLabel);
   const createdRootExisted = await env.fs.exists(createdRoot);
 
-  // asSub Git lane: parent Role may hand a free child under its own active task.
-  // Peer dispatch forbids any active-task overlap (including ancestor claims).
-  // Stale frontmatter owner is NOT a mutex — only active Task envelopes are.
-  // Parent/reviewer authority is explicit; asSub only gates Git lane + occupation.
-  const asSub = options.asSub === true;
+  // V0.2 cx-tsw53f: Node refs are non-exclusive. Same Node / ancestor / descendant /
+  // workspace context may be referenced by multiple active Tasks. asSub ancestor
+  // occupation exception is removed — authority is parentActor/reviewer/roster only.
+  // Structural gates only: invalid / archived still deny new dispatch.
+  // asSub remains a Git-lane flag only (not an occupation mutex).
   if (!options.parentActor) {
     throw new Error(
       "Dispatch requires explicit parentActor (legacy dispatchedBy is migration-only; reviewer may be derived equal)."
     );
   }
-  const parentRoleId =
-    options.parentActor.kind === "role" ? options.parentActor.id.trim() : "";
-  const subUnderDispatcher =
-    asSub && Boolean(parentRoleId) && parentRoleId !== assigneeLabel;
+  void options.asSub;
+  void tasks;
 
   if (claim.root) {
-    // Root occupies the whole tent. Sole oracle: any active Task envelope
-    // (including claims=[root], which occupiedBoxesFromTasks intentionally skips).
-    const blocker = findAnyActiveTask(tasks);
-    if (blocker) {
-      const claimLabel = blocker.claims.includes("root")
-        ? "root"
-        : blocker.claims[0] || "unknown";
-      throw new Error(
-        `Cannot dispatch: Tent root already has an active claim ${claimLabel} (${blocker.role}).`
-      );
-    }
+    // Workspace/root context is stable context, not a Tent-wide lock.
+    // Concurrent root/workspace dispatches are legal.
   } else {
     const structural = structuralClaimGate(claim.box);
     if (!structural.ok) {
       throw new Error(`Cannot dispatch: ${structural.reason || "box cannot be claimed"}`);
     }
-    // Single occupation oracle: active task envelopes (self / ancestor / descendant).
-    const claimable = canClaim(claim.box, {
-      tent,
-      tasks,
-      ...(subUnderDispatcher ? { allowAncestorClaimedBy: parentRoleId } : {}),
-    });
+    const claimable = canClaim(claim.box, { tent, tasks });
     if (!claimable.ok) {
       throw new Error(`Cannot dispatch: ${claimable.reason || "box cannot be claimed"}`);
     }
@@ -536,18 +520,8 @@ async function placeBoxUnlocked(
   if (!moved) throw new Error(`Box not found: ${fromPath}.`);
   if (!isUsableBox(moved)) throw new Error("Invalid or archived boxes cannot be moved.");
   assertContentMutable(moved, "moved");
-  // Occupation oracle = active tasks (stale owner / locked-from-owner is not a move lock).
-  // Freeze model (matches historical isFrozen): a box is frozen when it is the claim
-  // root or sits under a claim root — not when it merely has an occupied descendant.
-  // Thus ancestors of an occupied box may still move (the claim moves with the subtree).
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const movedHit = findActiveOccupation(before, moved, tasks);
-  if (
-    movedHit &&
-    (movedHit.relation === "self" || movedHit.relation === "ancestor" || movedHit.relation === "root")
-  ) {
-    throw new Error("Ranges with an active task cannot be moved; complete or interrupt the task first.");
-  }
+  // V0.2: rename/move with stable nodeId remain legal under concurrent Task refs.
+  // Context re-resolves by id; path is a refreshable hint. No occupation freeze.
   if (moved.invalid || moved.archived) {
     throw new Error("Invalid or archived boxes cannot be moved.");
   }
@@ -557,12 +531,6 @@ async function placeBoxUnlocked(
   const parentBox = newParentPath ? before.byPath.get(newParentPath) : null;
   if (newParentPath && (!parentBox || !isUsableBox(parentBox))) throw new Error("Target parent box is invalid or archived.");
   if (parentBox) assertContentMutable(parentBox, "used as move parent");
-  // Target parent is blocked only when the parent itself (or its ancestor) is occupied —
-  // a claimed sibling/descendant under the parent does not freeze the parent slot.
-  const parentHit = parentBox ? findActiveOccupation(before, parentBox, tasks) : undefined;
-  if (parentHit && (parentHit.relation === "self" || parentHit.relation === "ancestor" || parentHit.relation === "root")) {
-    throw new Error("Cannot move into a range occupied by an active task; complete or interrupt the task first.");
-  }
   if (newParentPath === fromPath || newParentPath.startsWith(fromPath + "/")) {
     throw new Error("Cannot move a box into its own subtree.");
   }
@@ -743,15 +711,13 @@ async function setNodeModeUnlocked(env: OpsEnv, boxId: string, mode: NodeMode | 
     return;
   }
 
-  // archived root may restore to editable without occupation check (same as restoreBox today).
-  // Other mode transitions block only while an active task occupies the range.
-  if (next === "archived" || current !== "archived") {
+  // Archive fails only when this exact Node is directly referenced by an active Task.
+  // Ancestor/descendant refs do not block. Restore remains free.
+  if (next === "archived") {
     const tasks = await loadTaskEnvelopes(env.fs);
-    if (findActiveOccupation(tent, box, tasks)) {
+    if (boxHasDirectActiveTask(box.id, tasks)) {
       throw new Error(
-        next === "archived"
-          ? "Ranges with an active task cannot be archived; complete or interrupt the task first."
-          : "Ranges with an active task cannot change mode; complete or interrupt the task first."
+        "Node is directly referenced by an active task and cannot be archived; complete or interrupt the task first."
       );
     }
   }
@@ -843,7 +809,11 @@ function assertNotTempPath(path: string): void {
   }
 }
 
-/** True when any active task claims a box id in the subtree (including root of subtree). */
+/**
+ * True when any active task *directly* references a box id in the subtree.
+ * Used by purge of archived roots. Workspace context alone does not block purge.
+ * Ancestor-only refs outside the subtree do not apply; only direct id matches inside.
+ */
 function hasActiveTaskInSubtree(
   tent: LoadedTent,
   box: Box,
@@ -852,9 +822,8 @@ function hasActiveTaskInSubtree(
   const ids = collectSubtreeIds(box);
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") return true;
-      if (ids.has(claimId)) return true;
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      if (ids.has(nodeId)) return true;
     }
   }
   void tent;
@@ -881,10 +850,10 @@ function roleManifestClaims(tent: LoadedTent, role: string, current: Box, tasks:
     // Only durable role tasks share multi-claim aggregation; profile tasks are one-shot.
     if (taskAssigneeKind(task) !== "role") continue;
     if (task.role !== role) continue;
-    // Active occupation only — do not re-accumulate from stale frontmatter owner.
+    // Active tasks only — aggregate direct Node refs (contextCard.refs.nodes / legacy claims).
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      const box = tent.byId.get(claimId);
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      const box = tent.byId.get(nodeId);
       if (box) claims.set(box.id, box);
     }
   }

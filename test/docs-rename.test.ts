@@ -380,7 +380,7 @@ test("renameNode: refuses collision and occupied range", async () => {
   await createBox(env as any, { parentPath: "", name: "two", type: "prompt" });
   await assert.rejects(() => renameNode(env as any, a, "two"), /already exists|sibling/i);
 
-  // Occupation oracle = active Task envelope only (stale Node owner/status is not a lock).
+  // cx-tsw53f: active direct Task ref does not freeze rename (stable nodeId).
   const occupied = await createBox(env as any, { parentPath: "", name: "busy", type: "prompt" });
   await fsa.mkdir("temp/executor/tasks");
   await fsa.writeFile(
@@ -390,6 +390,8 @@ test("renameNode: refuses collision and occupied range", async () => {
       "type: task",
       "id: tk-busy001",
       "role: executor",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       `claims: [${occupied}]`,
       "manifest: temp/executor/manifests/x.yml",
       "status: taken",
@@ -398,12 +400,15 @@ test("renameNode: refuses collision and occupied range", async () => {
       "",
       "# Task",
       "",
+      "## User Prompt",
+      "",
+      "hold",
+      "",
     ].join("\n")
   );
-  await assert.rejects(
-    () => renameNode(env as any, occupied, "free"),
-    /active task|occupy|Cannot rename/i
-  );
+  const renamedBusy = await renameNode(env as any, occupied, "busy-free");
+  assert.equal(renamedBusy.path, "busy-free");
+  assert.equal(renamedBusy.id, occupied);
 
   // Stale Node FM alone must not block rename.
   const staleOnly = await createBox(env as any, { parentPath: "", name: "stale", type: "prompt" });

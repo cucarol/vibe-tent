@@ -43,7 +43,7 @@ import {
   writeTaskEnvelope,
   workspaceLaneOf,
 } from "../src/core/task.js";
-import { parseFrontmatter } from "../src/core/frontmatter.js";
+import { parseFrontmatter, serializeFrontmatter } from "../src/core/frontmatter.js";
 import { assertOrdinaryExecutorLaneHistoryInGit } from "../src/core/workspace.js";
 import { spawnSync } from "node:child_process";
 
@@ -495,13 +495,15 @@ test("partial context card body on disk fails loud at load", async () => {
       userPrompt: "x",
       parentActor: { kind: "user", id: "user" },
     });
-    // Corrupt: objective without full card
+    // Corrupt: strip full nested contextCard; leave only flat objective → fail loud.
+    // (New writes always persist a complete Context Card; partial body is the failure mode.)
     const raw = await nfs.readFile(taskPath);
-    const broken = raw.replace(
-      "deliveryPolicy: review",
-      "deliveryPolicy: review\nobjective: half card only"
-    );
-    await nfs.writeFile(taskPath, broken);
+    const { data, body, keyOrder } = parseFrontmatter(raw);
+    delete data.contextCard;
+    delete data.contextGeneration;
+    delete data.taskDeltaDigest;
+    data.objective = "half card only";
+    await nfs.writeFile(taskPath, serializeFrontmatter(data, body, keyOrder));
     await assert.rejects(
       () => loadTaskEnvelope(nfs, taskPath),
       (err: unknown) => err instanceof TaskContextCardError

@@ -2,14 +2,14 @@
 // On any post-move failure: restore every completed note write, then restore the tree.
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { findActiveOccupation, isFrozen } from "./claim.js";
+import { isFrozen } from "./claim.js";
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex, resolveConcept, type OkfConcept } from "./okf.js";
 import { normalizeTarget } from "./link-target.js";
 import type { OpsEnv } from "./ops-context.js";
 import { isOperationalPath } from "./paths.js";
 import { validateBoxName } from "./scaffold.js";
-import { loadTaskEnvelopes } from "./task.js";
+
 import type { Box } from "./types.js";
 import {
   boxNotePath,
@@ -262,19 +262,12 @@ function resolveRenameTarget(tent: LoadedTent, conceptIdOrPath: string): Box {
 }
 
 async function assertRenameOccupationAllowed(
-  env: OpsEnv,
-  tent: LoadedTent,
-  concept: Box
+  _env: OpsEnv,
+  _tent: LoadedTent,
+  _concept: Box
 ): Promise<void> {
-  // Occupation oracle = active task envelopes only (Node owner/status is not a rename lock).
-  // Same findActiveOccupation gate as placeBox / claim (self, ancestor, descendant, root).
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const hit = findActiveOccupation(tent, concept, tasks);
-  if (hit) {
-    throw new Error(
-      `Cannot rename ${concept.name}: active task ${hit.task.path} occupies this range (${hit.relation}).`
-    );
-  }
+  // V0.2 cx-tsw53f: rename with stable nodeId is legal under concurrent Task refs.
+  // Context Card re-resolves by id and refreshes path hints — no occupation freeze.
 }
 
 function assertNotOperationalPath(path: string): void {

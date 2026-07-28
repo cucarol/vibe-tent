@@ -177,7 +177,10 @@ import {
   type AnnotationProjection,
   type AnnotationRecord,
 } from "../core/annotation.js";
-import { envelopeIsActiveOccupation } from "../core/claim.js";
+import {
+  listDirectActiveTasksForNode,
+  taskDirectlyReferencesNode,
+} from "../core/task-node-refs.js";
 import {
   TaskLifecycleError,
   isActiveTaskState,
@@ -247,7 +250,6 @@ import {
   SEMANTIC_DOCS_WRITE_FIELDS,
   RPC_A2A_ASK,
   RPC_A2A_DENIED,
-  RPC_COLLAB_AMBIGUOUS,
   RPC_LIFECYCLE,
   type ArtifactRef,
   type BoxProjection,
@@ -260,6 +262,7 @@ import {
   type GraphProjection,
   type GraphRelationEdge,
   type NodeCollaboration,
+  type NodeCollaborationActiveTask,
   type NodeCollaborationDeliverySummary,
   type NodeCollaborationSessionSummary,
   type NodeCollaborationTaskSummary,
@@ -6393,10 +6396,10 @@ async function boxProjectionsRpc(
 }
 
 /**
- * V0.2 Node-keyed collaboration projection (task-api §2.3).
- * Direct-claim nonterminal Task only; Session/Delivery only via explicit ids.
- * No universal todo/doing/done; idle → null task/session/delivery.
- * Session probe: only unique sessionIds from selected active tasks (never all machine sessions).
+ * V0.2 Node-keyed collaboration projection (task-api §2.3 / cx-tsw53f).
+ * Multi-Task: all directly-referencing active Tasks; Session/Delivery via explicit ids.
+ * No universal todo/doing/done; idle → activeTasks: [] / activeTaskCount: 0.
+ * No singular task/session/delivery wire. Deterministic order: createdAt/id/path.
  */
 async function nodeCollaborationRpc(
   ctx: HandlerContext,
@@ -6415,12 +6418,12 @@ async function nodeCollaborationRpc(
   }
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
-  const selected = resolveDirectActiveTaskForNode(concept.id, tasks);
+  const selected = listDirectActiveTasksForNode(concept.id, tasks);
   const sessionsById = await loadSessionSummariesForCollaboration(
     ctx,
-    selected ? collectExplicitSessionIds([selected]) : []
+    collectExplicitSessionIds(selected)
   );
-  return projectNodeCollaborationFromSelected(
+  return projectNodeCollaborationMulti(
     workspaceId,
     concept.id,
     selected,
@@ -6461,8 +6464,7 @@ async function nodeCollaborationsRpc(
   const tasks = await loadTaskEnvelopes(mount.env.fs);
   const deliveries = await loadDeliveries(mount.env.fs);
 
-  // Resolve selected active tasks first (fail-loud on multi-active), then probe sessions.
-  const selectedByNodeId = new Map<string, TaskEnvelope | null>();
+  const selectedByNodeId = new Map<string, TaskEnvelope[]>();
   for (const id of ids) {
     if (selectedByNodeId.has(id)) continue; // duplicate ids share one resolution
     const concept = tent.byId.get(id);
@@ -6476,21 +6478,22 @@ async function nodeCollaborationsRpc(
         { nodeId: concept.id, path: concept.path, detail: concept.invalidReason }
       );
     }
-    selectedByNodeId.set(id, resolveDirectActiveTaskForNode(id, tasks));
+    selectedByNodeId.set(id, listDirectActiveTasksForNode(id, tasks));
   }
 
+  const allSelected = [...selectedByNodeId.values()].flat();
   const sessionsById = await loadSessionSummariesForCollaboration(
     ctx,
-    collectExplicitSessionIds([...selectedByNodeId.values()])
+    collectExplicitSessionIds(allSelected)
   );
 
   const items: NodeCollaboration[] = [];
   for (const id of ids) {
     items.push(
-      projectNodeCollaborationFromSelected(
+      projectNodeCollaborationMulti(
         workspaceId,
         id,
-        selectedByNodeId.get(id) ?? null,
+        selectedByNodeId.get(id) ?? [],
         deliveries,
         sessionsById
       )
@@ -6539,81 +6542,57 @@ function collectExplicitSessionIds(
 }
 
 /**
- * Exactly zero or one directly-claiming active Task for a Node.
- * Multiple matches are corrupted operational state — fail loud with stable RPC code + task ids.
- * Never silently selects load-order first.
- */
-function resolveDirectActiveTaskForNode(
-  nodeId: string,
-  tasks: readonly TaskEnvelope[]
-): TaskEnvelope | null {
-  const matches = tasks.filter(
-    (t) => t.claims.includes(nodeId) && isActiveTaskState(t.state)
-  );
-  if (matches.length === 0) return null;
-  if (matches.length === 1) return matches[0]!;
-  const taskIds = matches.map((t) => t.id || t.path);
-  throw new RpcError(
-    RPC_COLLAB_AMBIGUOUS,
-    `Multiple active tasks directly claim node ${nodeId}: ${taskIds.join(", ")}`,
-    { nodeId, taskIds }
-  );
-}
-
-/**
- * Build one V0.2 Node collaboration item from an already-selected direct active task.
+ * Build multi-Task V0.2 Node collaboration item.
  * Session/Delivery only when Task carries explicit sessionId / activeDeliveryId that resolve.
+ * No singular task/session/delivery fields.
+ * activeTaskCount is projection-only: always entries.length (unpaginated; no totalCount).
  */
-function projectNodeCollaborationFromSelected(
+function projectNodeCollaborationMulti(
   workspaceId: string,
   nodeId: string,
-  activeTask: TaskEnvelope | null,
+  activeTasks: readonly TaskEnvelope[],
   deliveries: import("../core/delivery.js").DeliveryRecord[],
   sessionsById: ReadonlyMap<string, NodeCollaborationSessionSummary>
 ): NodeCollaboration {
-  if (!activeTask) {
-    return {
-      workspaceId,
-      nodeId,
-      task: null,
-      session: null,
-      delivery: null,
+  const entries: NodeCollaborationActiveTask[] = activeTasks.map((activeTask) => {
+    const assigneeKind = taskAssigneeKind(activeTask);
+    const taskSummary: NodeCollaborationTaskSummary = {
+      id: activeTask.id || activeTask.path,
+      state: activeTask.state,
+      assigneeKind,
     };
-  }
-
-  const assigneeKind = taskAssigneeKind(activeTask);
-  const taskSummary: NodeCollaborationTaskSummary = {
-    id: activeTask.id || activeTask.path,
-    state: activeTask.state,
-    assigneeKind,
-  };
-  if (assigneeKind === "agentProfile") {
-    taskSummary.profileId = activeTask.role;
-  } else {
-    taskSummary.role = activeTask.role;
-  }
-  if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
-  if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
-
-  let session: NodeCollaborationSessionSummary | null = null;
-  if (activeTask.sessionId) {
-    session = sessionsById.get(activeTask.sessionId) ?? null;
-  }
-
-  let delivery: NodeCollaborationDeliverySummary | null = null;
-  if (activeTask.activeDeliveryId) {
-    const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
-    if (found) {
-      delivery = { id: found.id, status: found.status };
+    if (assigneeKind === "agentProfile") {
+      taskSummary.profileId = activeTask.role;
+    } else {
+      taskSummary.role = activeTask.role;
     }
-  }
+    if (activeTask.sessionId) taskSummary.sessionId = activeTask.sessionId;
+    if (activeTask.activeDeliveryId) taskSummary.activeDeliveryId = activeTask.activeDeliveryId;
+    if (activeTask.createdAt) taskSummary.createdAt = activeTask.createdAt;
+    if (activeTask.path) taskSummary.path = activeTask.path;
 
+    let session: NodeCollaborationSessionSummary | null = null;
+    if (activeTask.sessionId) {
+      session = sessionsById.get(activeTask.sessionId) ?? null;
+    }
+
+    let delivery: NodeCollaborationDeliverySummary | null = null;
+    if (activeTask.activeDeliveryId) {
+      const found = deliveries.find((d) => d.id === activeTask.activeDeliveryId);
+      if (found) {
+        delivery = { id: found.id, status: found.status };
+      }
+    }
+
+    return { task: taskSummary, session, delivery };
+  });
+
+  // Projection-only derived count — never a second fact source; never paginated total.
   return {
     workspaceId,
     nodeId,
-    task: taskSummary,
-    session,
-    delivery,
+    activeTasks: entries,
+    activeTaskCount: entries.length,
   };
 }
 
@@ -6650,10 +6629,8 @@ function projectBoxCollaboration(
       { boxId: concept.id, path: concept.path, detail: concept.invalidReason }
     );
   }
-  // Active occupation (queued|running|waiting|delivered) → doing + assignee + activeTaskId.
-  const activeTask = tasks.find(
-    (t) => t.claims.includes(concept.id) && isActiveTaskState(t.state)
-  );
+  // Legacy box.projection: first direct active Task (multi-Task truth is node.collaboration).
+  const activeTask = listDirectActiveTasksForNode(concept.id, tasks)[0];
   if (activeTask) {
     const fromTask = boxProjectionOf(activeTask);
     const out: BoxProjection = {
@@ -6669,7 +6646,7 @@ function projectBoxCollaboration(
   // Historical accepted work (task.accept / auto-integrate) → done; no assignee/activeTaskId.
   // Prefer Task state=accepted (Delivery is accepted in the same mutation).
   const acceptedTask = tasks.find(
-    (t) => t.claims.includes(concept.id) && t.state === "accepted"
+    (t) => taskDirectlyReferencesNode(t, concept.id) && t.state === "accepted"
   );
   if (acceptedTask) {
     const fromTask = boxProjectionOf(acceptedTask);
@@ -11806,24 +11783,19 @@ function tagsFromFrontmatterData(data: Record<string, unknown>): string[] {
   return data.tags.filter((item): item is string => typeof item === "string");
 }
 
+/**
+ * Direct active Node ref only (cx-tsw53f). Workspace context and
+ * ancestor/descendant refs do not freeze concept mutations.
+ */
 function hasActiveTaskForConcept(
   tent: LoadedTent,
   conceptId: string,
   conceptPath: string,
   tasks: import("../core/task.js").TaskEnvelope[]
 ): boolean {
-  for (const task of tasks) {
-    if (!envelopeIsActiveOccupation(task)) continue;
-    if (task.claims.includes(conceptId) || task.claims.includes("root")) return true;
-    for (const claimId of task.claims) {
-      const claimed = tent.byId.get(claimId);
-      if (!claimed) continue;
-      if (isAncestorPath(claimed.path, conceptPath) || isAncestorPath(conceptPath, claimed.path)) {
-        return true;
-      }
-    }
-  }
-  return false;
+  void tent;
+  void conceptPath;
+  return listDirectActiveTasksForNode(conceptId, tasks).length > 0;
 }
 
 function isAncestorPath(ancestor: string, child: string): boolean {

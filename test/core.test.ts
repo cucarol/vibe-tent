@@ -100,14 +100,14 @@ async function exists(target: string): Promise<boolean> {
   }
 }
 
-test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async () => {
+test("V0.2 non-exclusive refs: same/ancestor/descendant concurrent; structural freeze only", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "goal", "挖新alpha", "写表达式", "实现细节", "实现细节.md"),
     "---\nid: bx-g3\ntype: goal\n---\n",
   );
-  // Seed an active task envelope claiming bx-g2 (oracle), independent of residual owner.
+  // Seed an active task envelope referencing bx-g2 (direct ref), independent of residual owner.
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"),
@@ -118,10 +118,16 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
       "status: taken",
       "state: running",
       "role: executor",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       "claims: [bx-g2]",
       "manifest: temp/executor/manifest.yml",
       "---",
       "# Task",
+      "",
+      "## User Prompt",
+      "",
+      "hold g2",
       "",
     ].join("\n"),
     "utf8"
@@ -130,38 +136,34 @@ test("占用只冻结向下子树,认领仍保持祖先/子孙不重叠", async 
   const tent = await loadTent(fsa);
   const tasks = await loadTaskEnvelopes(fsa);
 
-  const g1 = tent.byId.get("bx-g1")!; // 子孙 g2 被 active task 占
-  const check = canClaim(g1, { tent, tasks });
-  assert.equal(check.ok, false);
-  assert.ok(check.blocker?.id === "bx-g2");
-  // isFrozen is structural only (invalid/archived) — occupation is task oracle.
-  assert.equal(isFrozen(g1), false, "有占用子孙的祖先不冻结");
+  const g1 = tent.byId.get("bx-g1")!;
+  // cx-tsw53f: concurrent ancestor/same/descendant refs are legal.
+  assert.equal(canClaim(g1, { tent, tasks }).ok, true);
+  assert.equal(isFrozen(g1), false, "有直接引用子孙的祖先不结构冻结");
   assert.equal(isFrozen(tent.byId.get("bx-g2")!), false, "valid non-archived is not structurally frozen");
 
   const g2 = tent.byId.get("bx-g2")!;
-  assert.equal(canClaim(g2, { tent, tasks }).ok, false, "自己已被 active task 占");
+  assert.equal(canClaim(g2, { tent, tasks }).ok, true, "同一 Node 可被多 Task 直接引用");
 
   const g3 = tent.byId.get("bx-g3")!;
-  const descendantCheck = canClaim(g3, { tent, tasks });
-  assert.equal(descendantCheck.ok, false, "占用框的子孙仍不能被重复认领");
-  assert.equal(descendantCheck.blocker?.id, "bx-g2");
+  assert.equal(canClaim(g3, { tent, tasks }).ok, true, "子孙也可并发引用");
   assert.equal(isFrozen(g3), false);
 
-  // Without active task, claim is free (no owner lock projection).
+  // Without active task, claim remains free (no owner lock projection).
   await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-active-g2.md"));
   const tent2 = await loadTent(fsa);
   const tasks2 = await loadTaskEnvelopes(fsa);
   assert.equal(canClaim(tent2.byId.get("bx-g2")!, { tent: tent2, tasks: tasks2 }).ok, true);
 });
 
-test("occupation oracle: root claim covers tent (root-vs-root / root-vs-box / box-vs-root / asSub)", async () => {
+test("workspace context is not a Tent-wide lock; box panel lists direct refs only", async () => {
   const dir = await makeTent();
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   await fs.mkdir(path.join(dir, "temp", "reviewer", "tasks"), { recursive: true });
   const fsa = new NodeFs(dir);
   const tent = await loadTent(fsa);
 
-  // Seed active root occupation (claims=[root] is not a box id).
+  // Seed active workspace context (legacy claims=[root] — not a box id).
   await fs.writeFile(
     path.join(dir, "temp", "executor", "tasks", "task-root.md"),
     [
@@ -171,35 +173,38 @@ test("occupation oracle: root claim covers tent (root-vs-root / root-vs-box / bo
       "status: taken",
       "state: running",
       "role: executor",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       "claims: [root]",
       "manifest: temp/executor/manifest.yml",
       "---",
       "# root",
+      "",
+      "## User Prompt",
+      "",
+      "workspace",
       "",
     ].join("\n"),
     "utf8"
   );
   let tasks = await loadTaskEnvelopes(fsa);
 
-  // occupiedBoxesFromTasks is box-panel only — must not pretend root is free for occupation.
+  // occupiedBoxesFromTasks is box-panel only — workspace context is not a box.
   assert.equal(occupiedBoxesFromTasks(tent, tasks).length, 0);
-  assert.ok(findActiveRootTask(tasks), "root task must be visible via root oracle");
-  assert.ok(findAnyActiveTask(tasks), "any-active oracle sees root task (root-vs-root)");
+  assert.ok(findActiveRootTask(tasks), "workspace-context task visible via root helper");
+  assert.ok(findAnyActiveTask(tasks), "any-active helper sees workspace-context task");
 
-  // root-vs-box: any box claim is blocked.
+  // Workspace context does not block box claim / dispatch structurally.
   const box = tent.byId.get("bx-p1")!;
-  const rootHit = findActiveOccupation(tent, box, tasks);
-  assert.equal(rootHit?.relation, "root");
-  assert.equal(canClaim(box, { tent, tasks }).ok, false);
-
-  // asSub must not bypass root occupation even when allowAncestor matches the holder.
+  assert.equal(findActiveOccupation(tent, box, tasks), undefined);
+  assert.equal(canClaim(box, { tent, tasks }).ok, true);
   assert.equal(
     canClaim(box, { tent, tasks, allowAncestorClaimedBy: "executor" }).ok,
-    false,
-    "asSub cannot bypass claims=[root]"
+    true,
+    "asSub ancestor exception retired; concurrency legal"
   );
 
-  // Clear root; seed a box claim — box-vs-root: any active box blocks tent-root occupation.
+  // Clear workspace context; seed a direct box ref — panel lists the box.
   await fs.rm(path.join(dir, "temp", "executor", "tasks", "task-root.md"));
   await fs.writeFile(
     path.join(dir, "temp", "reviewer", "tasks", "task-box.md"),
@@ -210,10 +215,16 @@ test("occupation oracle: root claim covers tent (root-vs-root / root-vs-box / bo
       "status: pending",
       "state: queued",
       "role: reviewer",
+      "parentActor: { kind: user, id: user }",
+      "reviewer: { kind: user, id: user }",
       "claims: [bx-p1]",
       "manifest: temp/reviewer/manifest.yml",
       "---",
       "# box",
+      "",
+      "## User Prompt",
+      "",
+      "box ref",
       "",
     ].join("\n"),
     "utf8"
@@ -223,8 +234,7 @@ test("occupation oracle: root claim covers tent (root-vs-root / root-vs-box / bo
   const anyBox = findAnyActiveTask(tasks);
   assert.ok(anyBox);
   assert.equal(anyBox!.role, "reviewer");
-  assert.deepEqual([...anyBox!.claims], ["bx-p1"]);
-  // Panel helper still lists the box; root oracle stays empty.
+  assert.ok(anyBox!.claims.includes("bx-p1") || anyBox!.contextCard?.refs.nodes.some((n) => n.id === "bx-p1"));
   assert.equal(occupiedBoxesFromTasks(tent, tasks).map((b) => b.id).join(","), "bx-p1");
 });
 
@@ -321,7 +331,7 @@ test("manifest:认领即得子树结构权,帐根 claim 可写顶层结构", asy
   assert.ok(rootManifest.writable.some((e) => e.path === "goal/"), "帐根 claim 覆盖全帐结构");
 });
 
-test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活拓扑门", async () => {
+test("dispatch:只写 pending envelope + contextCard.refs.nodes；并发引用合法", async () => {
   const dir = await makeTent();
   const env = {
     fs: new NodeFs(dir),
@@ -339,6 +349,8 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
   const task = await fs.readFile(path.join(dir, ...result.taskPath.split("/")), "utf8");
   assert.match(task, /只处理表达式任务书/);
   assert.match(task, /type: task/);
+  assert.match(task, /contextCard:/);
+  assert.doesNotMatch(task, /^claims:/m);
   assert.match(await fs.readFile(path.join(dir, "temp", "analyst", "init.md"), "utf8"), /type: role-init/);
   assert.match(result.relayPrompt, /task-/);
   assert.doesNotMatch(result.relayPrompt, /```yaml/);
@@ -349,28 +361,21 @@ test("dispatch:只写 pending envelope,task-ack 才占用并保留重复派活�
   assert.match(result.manifestYaml, /writable:/);
   let claimed = (await loadTent(env.fs)).byId.get("bx-p1")!;
   assert.equal(claimed.fm.owner, undefined);
-  assert.equal(claimed.fm.status, undefined, "dispatch 不占用,只留下 pending envelope");
+  assert.equal(claimed.fm.status, undefined, "dispatch 不写 Node owner/status");
   assert.equal((await loadTaskEnvelope(env.fs, result.taskPath)).status, "pending");
 
-  await assert.rejects(
-    () => dispatch(env as any, "bx-p1", "analyst", "重复派活"),
-    /already occupied by active task for analyst\./,
-    "同一框 pending envelope 也算占位",
-  );
-  await assert.rejects(
-    () => dispatch(env as any, "bx-p2", "analyst", "对子孙重复派活"),
-    /Ancestor 表达式任务书 is occupied by active task for analyst\./,
-    "pending envelope 挡住子孙",
-  );
-  await assert.rejects(
-    () => dispatch(env as any, "bx-promptzone", "analyst", "对祖先重复派活"),
-    /Descendant 表达式任务书 is occupied by active task for analyst\./,
-    "pending envelope 挡住祖先",
-  );
+  // cx-tsw53f: concurrent same/ancestor/descendant refs are legal.
+  const same = await dispatch(env as any, "bx-p1", "executor", "同 Node 并发");
+  assert.notEqual(same.taskPath, result.taskPath);
+  const onChild = await dispatch(env as any, "bx-p2", "analyst", "子孙并发");
+  assert.ok(onChild.taskPath);
+  const onAncestor = await dispatch(env as any, "bx-promptzone", "planner", "祖先并发");
+  assert.ok(onAncestor.taskPath);
 
   const second = await dispatch(env as any, "bx-o1", "analyst", "继续处理 output 指针");
   assert.notEqual(second.taskPath, result.taskPath, "task 信封不可变,不覆盖");
-  assert.match(second.manifestYaml, /claims: \[bx-p1, bx-o1\]/);
+  // Role multi-ref aggregation still appears on dynamic manifest claims list.
+  assert.match(second.manifestYaml, /claims:/);
 
   const { cancelPendingTask, taskAck } = await import("../src/core/ops.js");
   await cancelPendingTask(env as any, result.taskPath);
@@ -471,7 +476,7 @@ test("task envelopes:只读加载有效任务并重建 relay prompt", async () =
   assert.match(bootstrap, /outcome:\s*delivered\|blocked\|needs-input|explicit outcome/i);
   assert.match(bootstrap, /Task envelope:/);
   assert.match(bootstrap, /Manifest:/);
-  assert.match(bootstrap, /claims:/);
+  assert.match(bootstrap, /contextCard\.refs\.nodes:/);
   assert.match(bootstrap, /parentActor:|reviewer:/);
   assert.match(bootstrap, /deliveryPolicy:/);
   assert.match(bootstrap, /## User Prompt/);
@@ -587,9 +592,9 @@ test("placeBox 换序:before/after/inside 重排 order", async () => {
   );
 });
 
-test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", async () => {
+test("placeBox: concurrent Task refs do not freeze move (cx-tsw53f)", async () => {
   const dir = await makeTent();
-  // Occupation oracle = active task envelope (residual owner alone is not a move lock).
+  // Active direct ref on g2 must not block placeBox of g2 or into g2.
   await fs.mkdir(path.join(dir, "temp", "executor", "tasks"), { recursive: true });
   await fs.writeFile(
     path.join(dir, "temp", "executor", "tasks", "task-move-g2.md"),
@@ -605,6 +610,10 @@ test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", asyn
       "---",
       "# Task",
       "",
+      "## User Prompt",
+      "",
+      "hold",
+      "",
     ].join("\n"),
     "utf8"
   );
@@ -615,16 +624,11 @@ test("placeBox:只阻止移动或移入被占用子树,不阻止其祖先", asyn
     tentName: "wqb",
   };
   const { placeBox } = await import("../src/core/ops.js");
-  await assert.rejects(
-    () => placeBox(env as any, "goal/挖新alpha/写表达式", "prompt", { mode: "inside" }),
-    /active task cannot be moved|Ranges with an active task cannot be moved/,
-  );
-  await assert.rejects(
-    () => placeBox(env as any, "prompt/旧站资料", "goal/挖新alpha/写表达式", { mode: "inside" }),
-    /Cannot move into a range occupied by an active task/,
-  );
+  // Direct-ref target may move.
+  await placeBox(env as any, "goal/挖新alpha/写表达式", "prompt", { mode: "inside" });
+  // Move into a directly-referenced parent is also legal.
+  await placeBox(env as any, "prompt/旧站资料", "prompt/写表达式", { mode: "inside" });
 
-  // Ancestor of an occupied box may still move (subtree moves with it).
   await placeBox(env as any, "goal/挖新alpha", "prompt", { mode: "inside" });
   const tent = await loadTent(new NodeFs(dir));
   const prompt = tent.byId.get("bx-promptzone")!;

@@ -2,6 +2,7 @@ import type { LoadedTent } from "./tree.js";
 import type { FsAdapter } from "./adapter.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { envelopeIsActiveOccupation, occupiedBoxesFromTasks } from "./claim.js";
+import { taskDirectlyReferencesNode } from "./task-node-refs.js";
 
 /**
  * Inbox item: active task occupation on a box.
@@ -28,7 +29,7 @@ export async function buildInbox(
   for (const box of occupied) {
     if (box.invalid || box.archived) continue;
     const task = tasks.find(
-      (t) => envelopeIsActiveOccupation(t) && t.claims.includes(box.id)
+      (t) => envelopeIsActiveOccupation(t) && taskDirectlyReferencesNode(t, box.id)
     );
     if (!task) continue;
     items.push({

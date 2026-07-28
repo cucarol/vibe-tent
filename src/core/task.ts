@@ -31,12 +31,23 @@ import {
 } from "./task-model.js";
 import {
   assertIntegrationAuthorityMatchesParent,
+  buildTaskContextCard,
+  computeContextGeneration,
   deriveIntegrationAuthority,
   loadTaskContextCardFromFrontmatter,
+  projectAssigneeFromTask,
   serializeTaskContextCardForFrontmatter,
+  TaskContextCardError,
   type IntegrationAuthority,
   type TaskContextCardV1,
 } from "./task-context-card.js";
+import {
+  isWorkspaceRootClaim,
+  loadContextCardNodeRefsFromFrontmatter,
+  taskReferencedNodeIds,
+  WORKSPACE_ROOT_CLAIM,
+  type TaskNodeRef,
+} from "./task-node-refs.js";
 
 export interface RoleWorkspaceContract {
   workspace: string;
@@ -51,6 +62,11 @@ export interface TaskEnvelopeInput {
    * Role tasks: durable role name. Profile tasks: profileId (legacy field name kept).
    */
   role: string;
+  /**
+   * Node refs for this Task (durable id + optional path hint).
+   * Persisted only as Task.contextCard.refs.nodes[] — never as claims[].
+   * Pass `[{ id: "root", path: "./" }]` (or claimRoot via ops) for workspace context only.
+   */
   claims: { id: string; path: string }[];
   manifestPath: string;
   userPrompt: string;
@@ -86,6 +102,18 @@ export interface TaskEnvelopeInput {
    * Profile tasks use temp/agent-profiles/<safe-id>/tasks; roles use temp/<role>/tasks.
    */
   tasksDir?: string;
+  /**
+   * Optional explicit objective/acceptance for contextCard.
+   * Defaults: objective = userPrompt; acceptance = [objective] when omitted.
+   */
+  objective?: string;
+  acceptance?: string[];
+  /**
+   * Optional precomputed contextGeneration for new writes.
+   * When omitted, a deterministic dispatch-time generation is derived from
+   * workspace/assignee identity (no chat-memory invention).
+   */
+  contextGeneration?: string;
 }
 
 /** Legacy two-state for B2 / dogfood CLI. */
@@ -99,7 +127,18 @@ export type TaskEnvelopeStatus = "pending" | "taken";
 export interface TaskEnvelope {
   path: string;
   role: string;
+  /**
+   * @deprecated Legacy Node id list. New wire uses contextCard.refs.nodes.
+   * Still projected in-memory from nodes (or residual claims during migrate) for
+   * call sites that have not switched to taskReferencedNodeIds yet.
+   * Never written on new envelopes.
+   */
   claims: string[];
+  /**
+   * Workspace-wide context (legacy claims included "root").
+   * Not a fake Node ref and not a Tent-wide lock — concurrent workspace Tasks are legal.
+   */
+  workspaceContext?: boolean;
   manifest: string;
   status: TaskEnvelopeStatus;
   /** Full lifecycle state; always derived for legacy files. */
@@ -414,14 +453,53 @@ export function resolveDispatchActors(input: {
 export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<TaskEnvelope> {
   if (!(await fs.exists(path))) throw new Error(`Task envelope not found: ${path}.`);
   const { data, body } = parseFrontmatter(await fs.readFile(path));
-  if (
-    data.type !== "task" ||
-    typeof data.role !== "string" ||
-    typeof data.manifest !== "string" ||
-    !Array.isArray(data.claims) ||
-    !data.claims.every((claim) => typeof claim === "string")
-  ) {
+  if (data.type !== "task" || typeof data.role !== "string" || typeof data.manifest !== "string") {
     throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+
+  const legacyClaims: string[] | undefined = Array.isArray(data.claims)
+    ? data.claims.every((claim: unknown) => typeof claim === "string")
+      ? (data.claims as string[])
+      : undefined
+    : undefined;
+  if (Array.isArray(data.claims) && legacyClaims === undefined) {
+    throw new Error(`Invalid task envelope format: ${path}.`);
+  }
+
+  // Prefer full Context Card v1. Migration-partial nested cards (nodes/objective only)
+  // still project Node refs without inventing missing actor/digest fields.
+  let contextCard: TaskContextCardV1 | undefined;
+  let nodeIdsFromCard: string[] = [];
+  let hasNodeRefWire = false;
+  if (data.contextCard !== undefined && data.contextCard !== null) {
+    try {
+      const loaded = loadTaskContextCardFromFrontmatter(data);
+      if (loaded) {
+        contextCard = loaded;
+        nodeIdsFromCard = loaded.refs.nodes.map((n) => n.id).filter(Boolean);
+        hasNodeRefWire = true;
+      }
+    } catch (err) {
+      const partial = loadContextCardNodeRefsFromFrontmatter(data);
+      if (!partial) throw err;
+      // Incomplete full-card body: keep occupation/ref projection; leave contextCard unset.
+      if (!(err instanceof TaskContextCardError)) throw err;
+      nodeIdsFromCard = partial.refs.nodes.map((n) => n.id).filter(Boolean);
+      hasNodeRefWire = true;
+    }
+  } else {
+    const loaded = loadTaskContextCardFromFrontmatter(data);
+    if (loaded) {
+      contextCard = loaded;
+      nodeIdsFromCard = loaded.refs.nodes.map((n) => n.id).filter(Boolean);
+      hasNodeRefWire = true;
+    }
+  }
+
+  if (!hasNodeRefWire && !legacyClaims) {
+    throw new Error(
+      `Invalid task envelope format: ${path} (missing contextCard.refs.nodes and claims).`
+    );
   }
 
   const legacyStatus: TaskEnvelopeStatus = data.status === "taken" ? "taken" : "pending";
@@ -430,10 +508,21 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
   // V0.2 parent/reviewer: explicit wire required after disk migration.
   const actors = resolveActorsFromDisk(data);
 
+  // In-memory claims projection: prefer contextCard.refs.nodes; else residual claims.
+  const projectedClaims = hasNodeRefWire
+    ? [
+        ...(data.workspaceContext === true ||
+        (legacyClaims?.some(isWorkspaceRootClaim) ?? false)
+          ? [WORKSPACE_ROOT_CLAIM]
+          : []),
+        ...nodeIdsFromCard.filter((id) => !isWorkspaceRootClaim(id)),
+      ]
+    : (legacyClaims ?? []);
+
   const task: TaskEnvelope = {
     path,
     role: data.role,
-    claims: data.claims,
+    claims: projectedClaims,
     manifest: data.manifest,
     status: stateToLegacyStatus(state),
     state,
@@ -441,6 +530,12 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
     reviewer: actors.reviewer,
     prompt: body.trim() || undefined,
   };
+  if (
+    data.workspaceContext === true ||
+    projectedClaims.some(isWorkspaceRootClaim)
+  ) {
+    task.workspaceContext = true;
+  }
   if (typeof data.id === "string" && isTaskId(data.id)) task.id = data.id;
   if (data.asSub === true) task.asSub = true;
   if (typeof data.workspace === "string") task.workspace = data.workspace;
@@ -472,8 +567,7 @@ export async function loadTaskEnvelope(fs: FsAdapter, path: string): Promise<Tas
       task.reviewer
     );
   }
-  // Context Card v1: nested `contextCard` or flat fields. Partial → fail loud.
-  const contextCard = loadTaskContextCardFromFrontmatter(data);
+  // Context Card v1 already loaded above (nested or flat). Partial → fail loud.
   if (contextCard) {
     task.contextCard = contextCard;
     task.contextGeneration = contextCard.contextGeneration;
@@ -586,8 +680,12 @@ function formatTaskPointers(task: TaskEnvelope): string {
     `Task envelope: ${task.path}`,
     `Manifest: ${task.manifest}`,
   ];
-  if (task.claims?.length) {
-    lines.push(`claims: ${task.claims.join(", ")}`);
+  const nodeIds = taskReferencedNodeIds(task);
+  if (nodeIds.length) {
+    lines.push(`contextCard.refs.nodes: ${nodeIds.join(", ")}`);
+  }
+  if (task.workspaceContext) {
+    lines.push(`workspaceContext: true`);
   }
   if (task.parentActor) {
     lines.push(
@@ -741,7 +839,14 @@ export async function writeTaskEnvelope(
       : join(TEMP_DIR, input.role, "tasks"));
   await ensureDir(fs, dir);
   const id = input.id && isTaskId(input.id) ? input.id : makeTaskId();
-  const stem = taskStem(clock.now(), input.claims[0]?.id || "root");
+
+  // Split workspace/root context from Node refs — never persist fake "root" Node.
+  const workspaceContext = input.claims.some((c) => isWorkspaceRootClaim(c.id));
+  const nodeRefs: TaskNodeRef[] = input.claims
+    .filter((c) => !isWorkspaceRootClaim(c.id))
+    .map((c) => ({ id: c.id, path: c.path }));
+  const primaryRef = nodeRefs[0]?.id || (workspaceContext ? "root" : "node");
+  const stem = taskStem(clock.now(), primaryRef);
   const path = await uniqueMarkdownPath(fs, dir, stem);
   const now = clock.now();
   const actors = resolveDispatchActors({
@@ -763,6 +868,52 @@ export async function writeTaskEnvelope(
         `downstream Task Agent → parent must use review (parent=${actors.parentActor.kind}:${actors.parentActor.id}).`
     );
   }
+
+  const objective = (input.objective?.trim() || userPrompt).trim();
+  if (!objective) throw new Error("Dispatch requires a non-empty objective (user prompt).");
+  const acceptance =
+    input.acceptance && input.acceptance.length > 0
+      ? input.acceptance.map((s) => s.trim()).filter(Boolean)
+      : [objective];
+  if (acceptance.length === 0) {
+    throw new Error("Dispatch requires non-empty acceptance (or objective).");
+  }
+
+  // Full Context Card v1 on every new write — sole Node-ref wire is refs.nodes[].
+  // contextGeneration is deterministic from workspace/assignee identity (no secrets).
+  const contextGeneration =
+    input.contextGeneration?.trim() ||
+    computeContextGeneration({
+      workspaceIdentity: input.workspace?.workspace || "local-workspace",
+      rulesPointerDigest: "dispatch-default-rules",
+      agentsPointerDigest: "dispatch-default-agents",
+      extraStable: {
+        assigneeKind,
+        assignee: input.role,
+        taskId: id,
+      },
+    });
+  const assignee = projectAssigneeFromTask({
+    role: input.role,
+    assigneeKind,
+    agentId: input.agentId,
+  });
+  const contextCard = buildTaskContextCard({
+    objective,
+    acceptance,
+    refs: {
+      nodes: nodeRefs,
+      tasks: [],
+      deliveries: [],
+      git: [],
+    },
+    parentActor: actors.parentActor,
+    reviewer: actors.reviewer,
+    assignee,
+    contextGeneration,
+    userPrompt,
+  });
+
   const data: Record<string, unknown> = {
     type: "task",
     id,
@@ -772,12 +923,16 @@ export async function writeTaskEnvelope(
     assigneeKind,
     parentActor: serializeTaskActorRef(actors.parentActor),
     reviewer: serializeTaskActorRef(actors.reviewer),
-    claims: input.claims.map((claim) => claim.id),
+    // Sole new persisted source wire — do not write claims[].
+    contextCard: serializeTaskContextCardForFrontmatter(contextCard),
+    contextGeneration: contextCard.contextGeneration,
+    taskDeltaDigest: contextCard.taskDeltaDigest,
     manifest: input.manifestPath,
     deliveryPolicy,
     createdAt: now,
     updatedAt: now,
   };
+  if (workspaceContext) data.workspaceContext = true;
   // Persist only when true; missing means peer (false). Git-lane sub marker only.
   if (input.asSub === true) data.asSub = true;
   if (input.agentId?.trim()) data.agentId = input.agentId.trim();
@@ -788,10 +943,13 @@ export async function writeTaskEnvelope(
     data.branch = input.workspace.branch;
     data.targetBranch = input.workspace.targetBranch;
   }
-  const pointers = input.claims.map((claim) => `- ${claim.id}: ${claim.path}`).join("\n");
+  const pointers = [
+    ...(workspaceContext ? [`- workspace: ./ (stable workspace context; not a Node ref)`] : []),
+    ...nodeRefs.map((claim) => `- ${claim.id}: ${claim.path || "(path hint pending)"}`),
+  ].join("\n");
   const body =
     `# Task\n\n` +
-    `## Context Pointers\n\n${pointers}\n\n` +
+    `## Context Pointers\n\n${pointers || "(none)"}\n\n` +
     `- Manifest: ${input.manifestPath}\n` +
     (input.id || id ? `- Task id: ${id}\n` : "") +
     `\n## User Prompt\n\n${userPrompt}\n`;
@@ -1042,7 +1200,7 @@ export function workspaceLaneOf(task: TaskEnvelope): WorkspaceLane | undefined {
 }
 
 export function primaryBoxId(task: TaskEnvelope): string | undefined {
-  return task.claims.find((c) => c !== "root");
+  return taskReferencedNodeIds(task)[0];
 }
 
 function parseTaskState(value: unknown, legacy: TaskEnvelopeStatus): TaskState {

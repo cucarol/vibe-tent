@@ -84,7 +84,7 @@ export type BoxProjection = {
 };
 
 /**
- * Direct-claim Task pointer on a Node (V0.2 `node.collaboration`).
+ * Direct-ref Task pointer on a Node (V0.2 `node.collaboration`).
  * Raw lifecycle fields only — never maps to universal todo/doing/done.
  */
 export type NodeCollaborationTaskSummary = {
@@ -99,6 +99,9 @@ export type NodeCollaborationTaskSummary = {
   assigneeKind?: "role" | "agentProfile";
   sessionId?: string;
   activeDeliveryId?: string;
+  /** Optional createdAt for clients that re-sort (server already orders). */
+  createdAt?: string;
+  path?: string;
 };
 
 /** Session summary attached only via Task.sessionId (never inferred). */
@@ -116,17 +119,37 @@ export type NodeCollaborationDeliverySummary = {
 };
 
 /**
+ * One active Task entry on a Node (multi-Task wire, cx-tsw53f).
+ * Joined only by explicit Task.sessionId / activeDeliveryId.
+ */
+export type NodeCollaborationActiveTask = {
+  task: NodeCollaborationTaskSummary;
+  session: NodeCollaborationSessionSummary | null;
+  delivery: NodeCollaborationDeliverySummary | null;
+};
+
+/**
  * V0.2 Node-keyed collaboration projection (`node.collaboration` item).
- * Entities stay separate: at most one directly-claiming nonterminal Task;
- * Session/Delivery only through explicit ids. Idle Node → all null.
+ * Multiple active Tasks may directly reference the same Node.
+ * No singular task/session/delivery or activeTaskId compatibility alias.
+ * Idle Node → activeTasks: [] / activeTaskCount: 0.
  * No Node owner/status/coordination fields.
+ *
+ * `activeTaskCount` is **projection-only derived data** (judge addendum):
+ * never persisted on Task/Node, never a second collaboration fact.
+ * With the current unpaginated `activeTasks` array it **must always equal
+ * `activeTasks.length`**. Do not invent totalCount / pagination / truncation.
  */
 export type NodeCollaboration = {
   workspaceId: string;
   nodeId: string;
-  task: NodeCollaborationTaskSummary | null;
-  session: NodeCollaborationSessionSummary | null;
-  delivery: NodeCollaborationDeliverySummary | null;
+  /** Full unpaginated list of direct active Task entries (deterministic order). */
+  activeTasks: NodeCollaborationActiveTask[];
+  /**
+   * Derived convenience: always `activeTasks.length` under current unpaginated wire.
+   * Not durable; not independently authoritative.
+   */
+  activeTaskCount: number;
 };
 
 /**
@@ -1034,7 +1057,8 @@ export const RPC_A2A_DENIED = -32020;
 export const RPC_A2A_ASK = -32021;
 export const RPC_LIFECYCLE = -32022;
 /**
- * Corrupted operational state: more than one directly-claiming active Task on one Node.
- * `node.collaboration(s)` fails loud with `{ nodeId, taskIds }` — never picks first by path order.
+ * @deprecated V0.2 cx-tsw53f: multiple active Tasks may directly reference one Node.
+ * `node.collaboration(s)` returns activeTasks[] — no longer fails on multi-active.
+ * Kept only so older clients that still special-case this code compile.
  */
 export const RPC_COLLAB_AMBIGUOUS = -32023;

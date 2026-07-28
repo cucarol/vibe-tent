@@ -217,43 +217,49 @@ Rules:
 - Default reject path is **rework**: `delivered → running` with review note, matching current “reject keeps occupation”.
 - Adapter process events never write box frontmatter; the service maps them into `running | waiting | failed`.
 
-### 2.3 Occupation oracle and Node collaboration projection (V0.2)
+### 2.3 Node refs (non-exclusive) and collaboration projection (V0.2 / cx-tsw53f)
 
-**Single runtime oracle:** active Task envelopes (`queued | running | waiting | delivered`, including legacy envelopes that only carry `status: pending|taken` and derive `state`) are the **only** mutual-exclusion source for `task.dispatch` / `task.claim`.
+**Node is not a mutex.** Active Task envelopes reference Nodes via **`Task.contextCard.refs.nodes[]`** (durable `id` authoritative; `path` is a refreshable hint). Same Node, ancestor, descendant, and workspace/root context may be referenced by multiple active Tasks concurrently. Code isolation is Task worktree + Git integration — not a Node-tree lock. Authority remains parentActor / reviewer / roster (not asSub ancestor occupation).
 
 | Source | Role |
 | --- | --- |
-| Active Task envelope (`claims` + lifecycle `state`) | **Mutex + collaboration facts** (sole product truth) |
+| `Task.contextCard.refs.nodes[]` (+ lifecycle `state`) | **Node context refs + collaboration facts** (sole product truth for Node linkage) |
+| Legacy `claims[]` | **One-shot migrate → nodes**; new writes never persist `claims` |
+| Workspace context (`workspaceContext` / legacy `root`) | Stable workspace context — **not** a fake Node ref and **not** a Tent-wide lock |
 | Node frontmatter `owner` / `status` | **Retired** — stripped on migrate; never dual-written by claim/accept |
+
+**Structural gates only for new dispatch:** `archived` / `invalid` still deny. Archive/purge fail **only** when the **exact** Node is **directly** referenced by an active Task; ancestor/descendant refs do not block. Rename/move with stable `nodeId` remain legal; Context re-resolves by id.
 
 **V0.2 public read model:** `node.collaboration` / `node.collaborations` (not universal `todo|doing|done`).
 
-| Condition | `task` | `session` | `delivery` |
-| --- | --- | --- | --- |
-| No **directly-claiming** nonterminal Task on this Node | `null` | `null` | `null` |
-| Direct claim active (`queued\|running\|waiting\|delivered`) | raw `id` / `state` / assignee role or profile / `sessionId?` / `activeDeliveryId?` | summary only when `task.sessionId` resolves | summary only when `task.activeDeliveryId` resolves |
-| Ancestor-only occupation (child not in `claims`) | `null` on the non-claimed Node | `null` | `null` |
-| Terminal (`accepted` / `rejected` / `interrupted` / `failed`) | `null` (no occupation chip) | `null` | `null` |
+| Condition | Wire |
+| --- | --- |
+| No **directly-referencing** active Task on this Node | `activeTasks: []`, `activeTaskCount: 0` |
+| One or more direct active refs (`queued\|running\|waiting\|delivered`) | `activeTasks: NodeCollaborationActiveTask[]` ordered by `createdAt` / `id` / `path`; each item `{ task, session\|null, delivery\|null }` |
+| Ancestor/descendant-only refs | **not** painted on this Node |
+| Terminal Tasks | omitted from `activeTasks` |
+
+**`activeTaskCount` (judge addendum):** projection-only derived data. Never persisted on Task/Node disk; never a second collaboration fact. With the current **unpaginated** `activeTasks` array it **must always equal `activeTasks.length`**. Do **not** pre-seed `totalCount` / pagination / truncation semantics on this wire.
 
 Rules:
 
-- Project **at most one** Task per Node; match is **direct** `claims.includes(nodeId)` only — never ancestor/descendant-derived paint.
-- **Multiple** directly-claiming active Tasks on one Node is corrupted operational state: RPC fails loud (`RPC_COLLAB_AMBIGUOUS` / `-32023`) with `{ nodeId, taskIds }` — never silently picks load-order first.
-- Project **raw Task.state** (no Node-level todo/doing/done).
-- Attach Session (`id` / `state` / `alive` / `turnBusy`) and Delivery (`id` / `status`) **only** through explicit Task ids — never path/name/time inference. Stale ids that do not resolve project `session`/`delivery` as `null` while keeping the Task pointer.
+- Match is **direct** `contextCard.refs.nodes` id (legacy migrate bridge: residual `claims`) only — never ancestor/descendant-derived paint.
+- **Multiple** directly-referencing active Tasks on one Node are **legal** and all projected (deterministic order). No singular `task` / `session` / `delivery` or `activeTaskId` compatibility alias on the final wire.
+- Project **raw Task.state** per entry (no Node-level todo/doing/done).
+- Attach Session / Delivery **only** through explicit Task ids — never path/name/time inference. Stale ids → `session`/`delivery` null while keeping the Task pointer.
 - Batch `node.collaborations({ ids })` preserves input order (including duplicate ids); empty `ids` → empty `items`.
-- Load tent + tasks + deliveries **once** per batch. Session probe only unique `sessionId`s from selected active tasks for the requested Node ids — idle / unrelated machine sessions incur no probe (no N+1 by node).
+- Load tent + tasks + deliveries **once** per batch. Session probe only unique `sessionId`s from selected active tasks.
 - Missing / invalid Node ids fail loud (`-32004` / invalid concept).
 - Entities stay separate: no Node owner/status/coordination fields on the wire.
+- `activeTaskCount === activeTasks.length` on every item (derived mirror only).
 
-**Forbidden:** UI or agents writing `assignee` / legacy `owner`/`status` on Nodes—including via ordinary **`docs.write`** / frontmatter body patches. Collaboration progress is Task/Session/Delivery (+ `node.collaboration`) only. Residual disk keys without an active task **must not** pretend occupation.
+**Forbidden:** UI or agents writing `assignee` / legacy `owner`/`status` on Nodes—including via ordinary **`docs.write`** / frontmatter body patches. Collaboration progress is Task/Session/Delivery (+ `node.collaboration`) only.
 
 ### 2.4 Parallelism and `docs.fork`
 
-- Default: second active task on the same box is rejected at dispatch (topology + active-task check).
-- Parallelism: **`docs.fork(boxId | path)`** (canonical command) then `task.dispatch` on the fork root. Legacy CLI `tent fork` is an alias.
-- `docs.fork` copies the concept/box subtree for parallel occupation; it does **not** start a task or session by itself.
-- Multi-role orchestration: dispatch distinct child boxes; parent occupation follows existing ancestor/descendant mutual exclusion.
+- Default: multiple active Tasks may reference the **same** Node (non-exclusive refs).
+- Optional isolation: **`docs.fork(boxId | path)`** still copies a concept subtree when callers want a separate durable Node; it does **not** start a task or session by itself.
+- Multi-role orchestration may dispatch concurrent refs on shared Nodes; write isolation is worktree/Git, not Node occupation.
 
 ---
 
@@ -301,11 +307,11 @@ All mutations go through Local Tent Service → core. Logical verbs below; trans
 - `operationalRetention.preview` / `operationalRetention.purge` — user-only terminal operational heat cleanup (see §6); preview read-only; purge via MutationBus; event `retention.purged` only when files deleted
 - `workspace.settings` / `workspace.settings.update` — workspace collaboration settings (see §5.3); read projection + user-only MutationBus update; event `workspace.settings.updated` only on successful actual change (no-op / failure emit none)
 - `annotation.list` / `annotation.create` / `annotation.resolve` / `annotation.reopen` / `annotation.delete` — Node Markdown **underline annotations** (划线注释). First-class records under system root (`annotations.json`), keyed by `nodeId` (not path). Mutations are **user-only** via MutationBus. Create validates body range/quote + `documentEtag` (docs etag family). List projects live relocate (`anchored` \| `relocated` \| `orphan`) without rewriting stored anchors or the document. Events: `annotation.changed` (invalidation only; payload `action`, `id`, `nodeId`). Not chat, not Task, not auto Agent inject — UI may later map a comment to `task.sendInput` explicitly.
-- `node.collaboration({ workspaceId, id | path | boxId })` → `{ workspaceId, nodeId, task, session, delivery }`
-  - **V0.2 truth** for Canvas / UI collab chips. Same concept selector conventions as `docs.get`; missing or invalid concepts fail cleanly.
-  - `task` is at most one **directly-claiming** nonterminal Task (raw state + assignee + optional session/delivery ids), or `null` when idle. Multi-active direct claims → `-32023` with `{ nodeId, taskIds }`.
-  - `session` / `delivery` are nullable summaries attached **only** via `task.sessionId` / `task.activeDeliveryId` (probe only those session ids).
-- `node.collaborations({ workspaceId, ids })` → `{ workspaceId, items }` with `items` ordered as `ids`; empty `ids` → empty `items`; one tent/task/delivery load; session probes only unique explicit ids from selected tasks.
+- `node.collaboration({ workspaceId, id | path | boxId })` → `{ workspaceId, nodeId, activeTasks, activeTaskCount }`
+  - **V0.2 truth** for Canvas / UI collab chips (cx-tsw53f multi-Task). Same concept selector conventions as `docs.get`; missing or invalid concepts fail cleanly.
+  - `activeTasks` lists **all** directly-referencing active Tasks (raw state + assignee + optional session/delivery ids per entry), ordered by `createdAt`/`id`/`path`. Idle → `[]` / `activeTaskCount: 0`. No singular `task`/`session`/`delivery` alias.
+  - Per entry, `session` / `delivery` are nullable summaries attached **only** via that Task’s `sessionId` / `activeDeliveryId`.
+- `node.collaborations({ workspaceId, ids })` → `{ workspaceId, items }` with multi-Task item semantics; `items` ordered as `ids`; empty `ids` → empty `items`; one tent/task/delivery load; session probes only unique explicit ids from selected tasks.
 - `output.provenance({ workspaceId, id | outputId | path })` → Output → Delivery → Task → sourceNode chain (see §2.5). Not occupation; not folded into `node.collaboration`.
 - `subscribe` (via common **EventEnvelope** — architecture §5.2): `task.state`, `delivery.updated`, `session.state`, `proposal.updated` (after successful submit/resolve only; payload `path`, `boxId`, `role`, `status`, `reason`), `a2a.ask`, `registry.roles.updated` (after successful role create/update/delete only; payload `action`, `name`), `toolApproval.pending` / `toolApproval.resolved`, `userAsk.pending` / `userAsk.resolved`, `taskInput.pending` / `taskInput.delivered` / `taskInput.consumed` / `taskInput.cancelled`, `retention.purged` (after successful purge that deleted files), `workspace.settings.updated` (after successful settings mutation that actually changed the projection; payload `settings`), `annotation.changed` (after successful annotation create/resolve/reopen/delete; payload `action`, `id`, `nodeId`), plus document events `concept.changed` / `concept.removed` from the docs group
 

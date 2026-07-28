@@ -5,6 +5,7 @@
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
 import { canClaim, envelopeIsActiveOccupation } from "./claim.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
 import {
   createDeliveryUnlocked,
   loadDeliveries,
@@ -28,7 +29,6 @@ import {
   patchTaskEnvelope,
   primaryBoxId,
   taskAssigneeKind,
-  taskAsSub,
   type TaskEnvelope,
 } from "./task.js";
 import { agentProfileDeliveriesDir } from "./paths.js";
@@ -117,28 +117,14 @@ export async function taskClaim(env: OpsEnv, taskPath: string, options: TaskClai
     assertTransition(task.state, "claim", "running");
 
     const tent = await loadTent(env.fs);
-    const claimedBoxes = task.claims
-      .filter((claimId) => claimId !== "root")
-      .map((claimId) => requireBoxById(tent, claimId));
+    const claimedBoxes = taskReferencedNodeIds(task).map((claimId) =>
+      requireBoxById(tent, claimId)
+    );
 
-    // asSub Git lane: helper may claim a free child under parent Role's active ancestor.
-    // Peer claims still require a fully free ancestor/descendant chain.
-    // Occupation oracle = active Task envelopes only. Authority uses parentActor.
-    const parentRole =
-      task.parentActor?.kind === "role" ? task.parentActor.id : undefined;
-    const allowAncestorClaimedBy =
-      taskAsSub(task) && parentRole && parentRole !== task.role ? parentRole : undefined;
-
-    const allTasks = await loadTaskEnvelopes(env.fs);
-    // Exclude this task itself (still queued) so claim is not blocked by its own envelope.
-    const peerTasks = allTasks.filter((t) => t.path !== taskPath && t.path !== task.path);
-
+    // V0.2: Node refs are non-exclusive. Structural gates only (invalid/archived).
+    // asSub ancestor occupation exception removed — authority is parentActor/reviewer/roster.
     for (const box of claimedBoxes) {
-      const claimable = canClaim(box, {
-        tent,
-        tasks: peerTasks,
-        ...(allowAncestorClaimedBy ? { allowAncestorClaimedBy } : {}),
-      });
+      const claimable = canClaim(box);
       if (!claimable.ok) throw new Error(`Cannot claim task: ${claimable.reason || "box cannot be claimed"}`);
     }
 

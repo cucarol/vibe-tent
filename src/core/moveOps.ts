@@ -3,7 +3,7 @@
 // Occupation freeze model matches placeBox (not rename's stricter descendant ban).
 
 import { withTentMutation, type FsAdapter } from "./adapter.js";
-import { findActiveOccupation } from "./claim.js";
+// V0.2 cx-tsw53f: move remains legal under concurrent Task Node refs (stable nodeId).
 import { parseFrontmatter, serializeFrontmatter } from "./frontmatter.js";
 import { buildConceptIndex } from "./okf.js";
 import type { OpsEnv } from "./ops-context.js";
@@ -13,7 +13,6 @@ import {
   rewriteConceptLinks,
   type RewriteConceptLinksOptions,
 } from "./renameOps.js";
-import { loadTaskEnvelopes } from "./task.js";
 import type { Box } from "./types.js";
 import {
   boxNotePath,
@@ -84,36 +83,12 @@ async function moveNodeUnlocked(
   }
   assertNotOperationalPath(moved.path);
 
-  // placeBox freeze: block self / ancestor / root occupation — not mere descendant.
-  const tasks = await loadTaskEnvelopes(env.fs);
-  const movedHit = findActiveOccupation(tent, moved, tasks);
-  if (
-    movedHit &&
-    (movedHit.relation === "self" ||
-      movedHit.relation === "ancestor" ||
-      movedHit.relation === "root")
-  ) {
-    throw new Error(
-      "Ranges with an active task cannot be moved; complete or interrupt the task first."
-    );
-  }
-
+  // Concurrent Task refs do not freeze move; Context re-resolves by durable nodeId.
   const parentBox = resolveNewParent(tent, newParentId);
   if (parentBox) {
     if (!isUsableBox(parentBox)) throw new Error("Target parent box is invalid or archived.");
     assertContentMutable(parentBox, "used as move parent");
     assertNotOperationalPath(parentBox.path);
-  }
-  const parentHit = parentBox ? findActiveOccupation(tent, parentBox, tasks) : undefined;
-  if (
-    parentHit &&
-    (parentHit.relation === "self" ||
-      parentHit.relation === "ancestor" ||
-      parentHit.relation === "root")
-  ) {
-    throw new Error(
-      "Cannot move into a range occupied by an active task; complete or interrupt the task first."
-    );
   }
 
   const newParentPath = parentBox ? parentBox.path : "";

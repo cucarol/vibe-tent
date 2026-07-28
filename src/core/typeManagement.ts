@@ -3,6 +3,7 @@ import { Box } from "./types.js";
 import { loadTent } from "./tree.js";
 import { loadTaskEnvelopes } from "./task.js";
 import { envelopeIsActiveOccupation } from "./claim.js";
+import { taskReferencedNodeIds } from "./task-node-refs.js";
 import {
   BUILTIN_SECONDARY_TYPES,
   CANONICAL_PRIMARY_TYPES,
@@ -105,16 +106,10 @@ export async function inspectTypeDeletion(
 
   for (const task of tasks) {
     if (!envelopeIsActiveOccupation(task)) continue;
-    for (const claimId of task.claims) {
-      if (claimId === "root") {
-        // Root occupation blocks any type deletion that still has references.
-        if (referenced.length > 0) {
-          ownerMap.set("root", { id: "root", path: "./", owner: task.role });
-        }
-        continue;
-      }
-      if (!relatedIds.has(claimId)) continue;
-      const box = tent.byId.get(claimId);
+    // Direct Node refs only (cx-tsw53f). Workspace context is not a Tent-wide type lock.
+    for (const nodeId of taskReferencedNodeIds(task)) {
+      if (!relatedIds.has(nodeId)) continue;
+      const box = tent.byId.get(nodeId);
       if (!box) continue;
       ownerMap.set(box.id, { id: box.id, path: box.path, owner: task.role });
     }

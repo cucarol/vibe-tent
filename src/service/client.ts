@@ -934,10 +934,11 @@ export class ServiceClient {
   }
 
   /**
-   * V0.2 Node-keyed collaboration projection (task-api §2.3).
+   * V0.2 Node-keyed collaboration projection (task-api §2.3 / cx-tsw53f).
    * Resolve by id, boxId, or path (same conventions as docs.get).
-   * At most one directly-claiming nonterminal Task; Session/Delivery only via explicit ids.
-   * Idle Node returns null task/session/delivery.
+   * Multi-Task: activeTasks[] + activeTaskCount (projection-only mirror of length);
+   * Session/Delivery only via explicit ids. No totalCount/pagination.
+   * Idle Node returns activeTasks: [] / activeTaskCount: 0.
    */
   nodeCollaboration(
     workspaceId: string,
@@ -950,7 +951,7 @@ export class ServiceClient {
   }
 
   /**
-   * V0.2 batch Node collaboration projection — same item semantics as node.collaboration.
+   * V0.2 batch Node collaboration projection — same multi-Task item semantics.
    * `ids` order is preserved in the returned `items` array. Empty ids → empty items.
    * Loads workspace tasks/sessions/deliveries once per batch (no N+1).
    */
