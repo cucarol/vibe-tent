@@ -5,9 +5,19 @@
 
 import * as fs from "node:fs";
 import * as path from "node:path";
-import type { AgentProfileSkillRef } from "../adapters/acp/mcp-skills.js";
 import type { RoleDefinition } from "./skillRoleRegistry.js";
 import type { AssigneeKind } from "./task-model.js";
+
+/**
+ * Narrow skill-ref shape owned by Core for managed compose.
+ * Structural match to adapter AgentProfileSkillRef (name/path/enabled) —
+ * Core must not import adapters (build:core rootDir=src/core).
+ */
+export type ManagedSkillRef = {
+  name: string;
+  path?: string;
+  enabled?: boolean;
+};
 
 /** Built-in contract skill names (bundled under package skills/). */
 export const BUILTIN_TENT_TASK_SKILL = "tent-task" as const;
@@ -195,15 +205,15 @@ export function splitManagedBootstrapStableAndDynamic(full: string): {
 export function composeManagedSkillRefs(input: {
   packageRoot: string;
   assigneeKind?: AssigneeKind;
-  profileSkills?: AgentProfileSkillRef[];
-}): AgentProfileSkillRef[] {
+  profileSkills?: ManagedSkillRef[];
+}): ManagedSkillRef[] {
   void input.packageRoot; // reserved for future path resolution of extras
   // Always reserve both built-in names so profile cannot re-inject them as meta.
   const reserved = new Set<string>([
     BUILTIN_TENT_ROLE_SKILL.toLowerCase(),
     BUILTIN_TENT_TASK_SKILL.toLowerCase(),
   ]);
-  const out: AgentProfileSkillRef[] = [];
+  const out: ManagedSkillRef[] = [];
   const seen = new Set<string>(reserved);
 
   for (const ref of input.profileSkills ?? []) {
